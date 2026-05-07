@@ -51,4 +51,45 @@ describe("renderMarkdown", () => {
     expect(html).toContain('<span class="tag">#x</span>');
     expect(html).not.toContain("&lt;span");
   });
+
+  // Obsidian piped wikilinks: [[target|display]] should resolve to the
+  // target's id while showing display as the link text. Pre-fix the
+  // renderer looked up the literal "target|display" string in titleMap
+  // (always missed) and rendered the pipe through to the visible link.
+  it("resolves piped wikilinks via the target slug", () => {
+    const map = new Map([["book-on-writing-well", { id: "id-zinsser" }]]);
+    const html = renderMarkdown(
+      "see [[book-on-writing-well|On Writing Well]]",
+      map,
+    );
+    expect(html).toContain('class="wl"');
+    expect(html).toContain('data-id="id-zinsser"');
+    expect(html).toContain(">On Writing Well</a>");
+  });
+
+  // Pipes inside [[…|…]] must not be treated as table-cell separators.
+  // Pre-fix `splitRow` naively split on `|`, so a single piped wikilink
+  // inside a row split it into too many cells and visually broke the
+  // link across columns.
+  it("preserves piped wikilinks inside table cells", () => {
+    const map = new Map([["book-on-writing-well", { id: "id-zinsser" }]]);
+    const md = [
+      "| Book | Shared Ground |",
+      "|---|---|",
+      "| *[[book-on-writing-well|On Writing Well]]* (Zinsser) | Cut clutter |",
+    ].join("\n");
+    const html = renderMarkdown(md, map);
+    // Exactly two body cells, not three: the wikilink's pipe should
+    // not have leaked into a column boundary.
+    const tdCount = (html.match(/<td>/g) || []).length;
+    expect(tdCount).toBe(2);
+    // The wikilink resolves to its target and shows the display text.
+    expect(html).toContain('data-id="id-zinsser"');
+    expect(html).toContain(">On Writing Well</a>");
+    // First cell holds the link AND the trailing "(Zinsser)" — wasn't
+    // split mid-link.
+    expect(html).toMatch(
+      /<td><em>.*On Writing Well.*<\/em>\s*\(Zinsser\)<\/td>/,
+    );
+  });
 });
