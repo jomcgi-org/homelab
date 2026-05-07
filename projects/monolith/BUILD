@@ -2786,3 +2786,24 @@ bdd_test(
         "agent/tests/conftest.py",
     ],
 )
+
+bdd_test(
+    name = "agent_bdd_checks_test",
+    srcs = [
+        "agent/tests/__init__.py",
+        "agent/tests/bdd_checks_test.py",
+        "agent/tests/conftest.py",
+    ],
+)
+
+py_test(
+    name = "agent_checks_firing_alerts_test",
+    srcs = ["agent/checks_firing_alerts_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
