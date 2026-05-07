@@ -12,6 +12,14 @@
 
 **One forward-compat concession:** the `routine_jobs` migration includes an `attempts INTEGER NOT NULL DEFAULT 0` column. v1 code does not read or increment it. It exists pre-deployed so v2's eventual priority calc can populate it without an online migration on a populated table. The migration's docstring explains this.
 
+**Schema convention (CRITICAL — applies to every SQL string in this plan):** All agent-owned tables live in the **`claude_agent` schema**. Every SQL reference to `routine_jobs` or `agent_locks` MUST use the `claude_agent.` prefix:
+
+- Agent tables → `claude_agent.routine_jobs`, `claude_agent.agent_locks`
+- Existing scheduler tables (used by `check-stuck-jobs` etc.) → `scheduler.scheduled_jobs` (existing convention, unchanged)
+- Anything else (knowledge ingest, dead letters) → consult the existing module being mirrored
+
+The schema gives the agent surface its own namespace independent of `public` and `scheduler`, makes the agent-vs-cluster data boundary explicit, and leaves room for a future per-schema GRANT if we ever scope DB access by role. The Task 1 migration creates the schema; subsequent tasks must respect it in every query.
+
 **Worktree:** All work happens in `/tmp/claude-worktrees/agent-mcp-design` on branch `feat/agent-mcp-design` (already exists, with the design doc commits).
 
 ---
@@ -43,20 +51,27 @@ Read `projects/monolith/chart/migrations/20260407000000_scheduled_jobs.sql`. Not
 **Step 2: Write the migration SQL**
 
 ```sql
--- Adds tables for the agent MCP surface (v1):
---   routine_jobs  - delegated work claimed and run by cloud Routines
---                   (the claude-routine-agent actor). Distinct from
---                   scheduled_jobs which is owned by the in-cluster
---                   tick loop; these tables share no rows.
---   agent_locks   - opportunistic TTL locks for ad-hoc dedup keyed
---                   by free-form string.
+-- Adds the claude_agent schema and its tables for the agent MCP surface (v1):
+--   claude_agent.routine_jobs  - delegated work claimed and run by cloud Routines
+--                                (the claude-routine-agent actor). Distinct from
+--                                scheduler.scheduled_jobs which is owned by the
+--                                in-cluster tick loop; these tables share no rows.
+--   claude_agent.agent_locks   - opportunistic TTL locks for ad-hoc dedup keyed
+--                                by free-form string.
 --
--- The `attempts` column on routine_jobs is intentionally unused by
--- v1 code. It is pre-deployed so v2's planned priority calculation
--- (which counts how many times a gap has been picked up) does not
--- require an online migration against a populated table.
+-- Schema isolation: the claude_agent schema gives the agent surface its own
+-- namespace independent of public and scheduler. This makes the boundary
+-- between agent-owned and cluster-owned data explicit, and leaves room for
+-- a future per-schema GRANT if we ever scope DB access by role.
+--
+-- The `attempts` column on routine_jobs is intentionally unused by v1 code.
+-- It is pre-deployed so v2's planned priority calculation (which counts how
+-- many times a gap has been picked up) does not require an online migration
+-- against a populated table.
 
-CREATE TABLE routine_jobs (
+CREATE SCHEMA IF NOT EXISTS claude_agent;
+
+CREATE TABLE claude_agent.routine_jobs (
     name             TEXT PRIMARY KEY,
     routine_kind     TEXT NOT NULL,
     interval_secs    INTEGER,
@@ -74,13 +89,13 @@ CREATE TABLE routine_jobs (
 );
 
 CREATE INDEX idx_routine_jobs_due
-    ON routine_jobs (next_run_at)
+    ON claude_agent.routine_jobs (next_run_at)
     WHERE locked_by IS NULL;
 
 CREATE INDEX idx_routine_jobs_kind
-    ON routine_jobs (routine_kind);
+    ON claude_agent.routine_jobs (routine_kind);
 
-CREATE TABLE agent_locks (
+CREATE TABLE claude_agent.agent_locks (
     key          TEXT PRIMARY KEY,
     holder       TEXT NOT NULL,
     acquired_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -89,7 +104,7 @@ CREATE TABLE agent_locks (
 );
 
 CREATE INDEX idx_agent_locks_expires
-    ON agent_locks (expires_at);
+    ON claude_agent.agent_locks (expires_at);
 ```
 
 **Step 3: Commit**
@@ -259,14 +274,14 @@ def acquire(key: str, holder: str, ttl_secs: int) -> AcquireResult:
     """Take a lock keyed by `key`. Steals expired locks; refuses live ones."""
     sql = text(
         """
-        INSERT INTO agent_locks (key, holder, expires_at)
+        INSERT INTO claude_agent.agent_locks (key, holder, expires_at)
         VALUES (:key, :holder, now() + (:ttl || ' seconds')::interval)
         ON CONFLICT (key) DO UPDATE
             SET holder = EXCLUDED.holder,
                 acquired_at = now(),
                 expires_at = EXCLUDED.expires_at,
                 lock_id = gen_random_uuid()
-            WHERE agent_locks.expires_at < now()
+            WHERE claude_agent.agent_locks.expires_at < now()
         RETURNING lock_id, expires_at
         """
     )
@@ -283,7 +298,7 @@ def extend(lock_id: UUID, ttl_secs: int) -> datetime | None:
     lock no longer exists or has been re-acquired (different lock_id)."""
     sql = text(
         """
-        UPDATE agent_locks
+        UPDATE claude_agent.agent_locks
            SET expires_at = now() + (:ttl || ' seconds')::interval
          WHERE lock_id = :lock_id
         RETURNING expires_at
@@ -297,7 +312,7 @@ def extend(lock_id: UUID, ttl_secs: int) -> datetime | None:
 
 def release(lock_id: UUID) -> bool:
     """Release a lock by id. Returns True if a row was deleted."""
-    sql = text("DELETE FROM agent_locks WHERE lock_id = :lock_id")
+    sql = text("DELETE FROM claude_agent.agent_locks WHERE lock_id = :lock_id")
     with Session(get_engine()) as session:
         result = session.execute(sql, {"lock_id": str(lock_id)})
         session.commit()
@@ -309,7 +324,7 @@ def list_active(prefix: str | None = None) -> list[dict]:
     sql = text(
         """
         SELECT key, holder, acquired_at, expires_at
-          FROM agent_locks
+          FROM claude_agent.agent_locks
          WHERE expires_at > now()
            AND (:prefix IS NULL OR key LIKE :prefix || '%')
          ORDER BY expires_at
