@@ -52,7 +52,7 @@ def list_jobs(due_only: bool = False, kind: str | None = None) -> list[dict]:
                     AND next_run_at <= now()
                     AND (locked_by IS NULL
                          OR locked_at + (ttl_secs || ' seconds')::interval < now())))
-           AND (:kind IS NULL OR routine_kind = :kind)
+           AND (:kind::text IS NULL OR routine_kind = :kind::text)
          ORDER BY next_run_at NULLS LAST, name
         """
     )
@@ -94,7 +94,7 @@ def claim_job(
                     locked_by IS NULL
                     OR locked_at + (ttl_secs || ' seconds')::interval < now()
                )
-               AND (:kind IS NULL OR routine_kind = :kind)
+               AND (:kind::text IS NULL OR routine_kind = :kind::text)
              ORDER BY next_run_at ASC
              LIMIT 1
              FOR UPDATE SKIP LOCKED
