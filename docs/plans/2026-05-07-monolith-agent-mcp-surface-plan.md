@@ -12,7 +12,9 @@
 
 **One forward-compat concession:** the `routine_jobs` migration includes an `attempts INTEGER NOT NULL DEFAULT 0` column. v1 code does not read or increment it. It exists pre-deployed so v2's eventual priority calc can populate it without an online migration on a populated table. The migration's docstring explains this.
 
-**BUILD convention (CRITICAL — applies to every task that adds a new test file):** This repo's `projects/monolith/BUILD` is **hand-rolled, not gazelle-generated.** When you add a new `*_test.py` file, you MUST also add a `py_test(...)` target for it in `projects/monolith/BUILD`. Pattern (use this verbatim, adjusting `name`, `srcs`, and any extra `deps`):
+**BUILD convention (CRITICAL — applies to every task that adds a new test file):** This repo's `projects/monolith/BUILD` is **hand-rolled, not gazelle-generated.** When you add a new `*_test.py` file, you MUST also add a test target in `projects/monolith/BUILD`. **Two patterns** depending on what the test exercises:
+
+**Pattern A — `py_test` for pure-Python tests** (no DB, no Postgres-specific SQL). Use for env-var manipulation, mocked HTTP, MCP smoke-import tests, anything that doesn't touch the real database. Pattern:
 
 ```python
 py_test(
@@ -22,12 +24,31 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
-        # add others as needed: "@pip//pytest_asyncio", "@pip//sqlmodel", etc.
+        # add others as needed: "@pip//pytest_asyncio", "@pip//httpx", etc.
     ],
 )
 ```
 
-The `agent/**/*.py` glob is already added to both `monolith_backend` and `:main`. The `# gazelle:exclude agent` directive is already present. Each task implementer just appends a `py_test` block per test file. Without this, the test file ships in the source library but is never executed by CI — silent failure.
+Test file lives next to the source: `agent/<module>_test.py`.
+
+**Pattern B — `bdd_test` for DB-backed tests** (Postgres-specific SQL: `FOR UPDATE SKIP LOCKED`, `gen_random_uuid()`, JSONB, `ON CONFLICT ... DO UPDATE WHERE`, schema-qualified tables). Use for `agent.locks`, `agent.routine_jobs`, the DB-touching parts of `agent.checks`. The `bdd_test` macro (defined in `projects/monolith/bdd_test.bzl` and already loaded in `projects/monolith/BUILD`) adds `data = ["//projects/monolith/chart:migrations", "@postgres_test//:postgres"]` and `env = {"PYTEST_ADDOPTS": "-p shared.testing.plugin"}` automatically — the plugin spins up Postgres 16 + pgvector and applies every `chart/migrations/*.sql` for the test session. Pattern:
+
+```python
+bdd_test(
+    name = "agent_<module>_bdd_test",
+    srcs = [
+        "agent/tests/__init__.py",
+        "agent/tests/conftest.py",
+        "agent/tests/bdd_<module>_test.py",
+    ],
+)
+```
+
+Test file lives under `agent/tests/` (subdir, not colocated). The first DB-backed task to land creates `agent/tests/__init__.py` (empty) and `agent/tests/conftest.py` with a fixture that mirrors `shared/tests/conftest.py`'s `scheduler_db`: takes the session-scoped `pg` fixture from `shared.testing.plugin`, sets `DATABASE_URL`, calls `app.db.get_engine.cache_clear()`, and cleans up the relevant `claude_agent.*` table between tests. Subsequent DB-backed tasks reuse the existing `agent/tests/conftest.py` and just add a new `bdd_<module>_test.py`.
+
+**Why two patterns:** SQLite translation of Postgres-specific lock semantics would test rewritten code, not production code — false confidence is worse than no test. Real-Postgres tests via `bdd_test` are the only honest option for code that depends on `FOR UPDATE SKIP LOCKED` or `ON CONFLICT WHERE`.
+
+The `agent/**/*.py` glob is already added to both `monolith_backend` and `:main`. The `# gazelle:exclude agent` directive is already present. Without a test target (either `py_test` or `bdd_test`), the test file ships in the source library but is never executed by CI — silent failure.
 
 **Schema convention (CRITICAL — applies to every SQL string in this plan):** All agent-owned tables live in the **`claude_agent` schema**. Every SQL reference to `routine_jobs` or `agent_locks` MUST use the `claude_agent.` prefix:
 
@@ -250,7 +271,10 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Files:**
 
 - Create: `projects/monolith/agent/locks.py`
-- Create: `projects/monolith/agent/locks_test.py`
+- Create: `projects/monolith/agent/tests/__init__.py` (empty — first DB-backed task in the agent package creates the test subdir)
+- Create: `projects/monolith/agent/tests/conftest.py` (defines the `agent_db` fixture, mirroring `shared/tests/conftest.py`'s `scheduler_db` — Task 4 reuses this conftest)
+- Create: `projects/monolith/agent/tests/bdd_locks_test.py` (lives under `tests/`, not colocated, because `bdd_test` macro convention)
+- Modify: `projects/monolith/BUILD` (add a `bdd_test` target — see BUILD convention Pattern B at top of plan)
 
 **Step 1: Read the existing lock pattern**
 
@@ -376,7 +400,7 @@ Re-read the code against CLAUDE.md anti-patterns: no error-handling for cases th
 **Step 5: Commit**
 
 ```bash
-git add projects/monolith/agent/locks.py projects/monolith/agent/locks_test.py
+git add projects/monolith/agent/locks.py projects/monolith/agent/tests/ projects/monolith/BUILD
 git commit -m "feat(monolith): add agent.locks for opportunistic TTL locks
 
 acquire/extend/release/list_active over agent_locks. Steals expired
@@ -393,7 +417,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Files:**
 
 - Create: `projects/monolith/agent/routine_jobs.py`
-- Create: `projects/monolith/agent/routine_jobs_test.py`
+- Create: `projects/monolith/agent/tests/bdd_routine_jobs_test.py` (Task 3 already created `agent/tests/__init__.py` and `agent/tests/conftest.py` — reuse them; the conftest's `agent_db` fixture also cleans `claude_agent.routine_jobs`)
+- Modify: `projects/monolith/BUILD` (add a `bdd_test` target per Pattern B)
 
 **Step 1: Read existing scheduler module**
 
@@ -442,7 +467,7 @@ Verify: every function uses `Session(get_engine())` with explicit commit. No sil
 **Step 5: Commit**
 
 ```bash
-git add projects/monolith/agent/routine_jobs.py projects/monolith/agent/routine_jobs_test.py
+git add projects/monolith/agent/routine_jobs.py projects/monolith/agent/tests/bdd_routine_jobs_test.py projects/monolith/BUILD
 git commit -m "feat(monolith): add agent.routine_jobs operations
 
 list/claim/complete/register/deregister/trigger over routine_jobs.
