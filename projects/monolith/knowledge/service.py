@@ -1,5 +1,6 @@
 """Startup hook that registers the knowledge scheduled jobs."""
 
+import asyncio
 import logging
 import os
 import time
@@ -11,6 +12,7 @@ from dulwich import porcelain
 from sqlalchemy import select, update
 from sqlmodel import Session
 
+from app.db import get_engine
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
 from knowledge.models import Note, NoteLink
@@ -177,61 +179,63 @@ async def garden_handler(session: Session) -> datetime | None:
     return None
 
 
-def _run_layout_pass(session: Session) -> tuple[int, int, int]:
+def _run_layout_pass() -> tuple[int, int, int]:
     """Compute layout positions for the current graph and persist them.
 
-    Commits via the passed-in session. Caller MUST commit any prior
-    uncommitted state first — see reconcile_handler's pre-layout
-    ``session.commit()``. Otherwise the reconciler upserts and the
-    layout writes share a transaction, and a layout failure would roll
-    back the upserts too. Caller is also responsible for catching
-    exceptions and translating them to structured log events. Mirrors
+    Opens its own DB session so the work can be dispatched onto a worker
+    thread via ``asyncio.to_thread`` without sharing SQLAlchemy state
+    with the caller's loop-thread session. Mirrors
     ``KnowledgeStore.get_graph``'s edge filter (only edges where both
     endpoints map to known note_ids) so positions and degrees stay
-    coherent with what the API ships.
+    coherent with what the API ships. Caller is responsible for
+    catching exceptions and translating them to structured log events.
     """
     params = LayoutParams.from_env()
 
-    note_rows = session.execute(
-        select(Note.id, Note.note_id, Note.layout_x, Note.layout_y)
-    ).all()
-    fk_to_note_id: dict[int, str] = {r.id: r.note_id for r in note_rows}
-    nodes = [
-        NodePos(id=r.note_id, prior_x=r.layout_x, prior_y=r.layout_y) for r in note_rows
-    ]
+    with Session(get_engine()) as session:
+        note_rows = session.execute(
+            select(Note.id, Note.note_id, Note.layout_x, Note.layout_y)
+        ).all()
+        fk_to_note_id: dict[int, str] = {r.id: r.note_id for r in note_rows}
+        nodes = [
+            NodePos(id=r.note_id, prior_x=r.layout_x, prior_y=r.layout_y)
+            for r in note_rows
+        ]
 
-    edge_rows = session.execute(select(NoteLink.src_note_fk, NoteLink.target_id)).all()
-    note_id_set = set(fk_to_note_id.values())
-    # Mirror ``KnowledgeStore.get_graph``'s slug-normalize-then-resolve
-    # logic. Body wikilinks store ``target_id`` as raw user-typed text
-    # (``"Steve Krug"``); gap stubs and ``_processed`` notes carry
-    # ``note_id`` in slug form. Without this normalization FA2 treats
-    # gap edges as missing and the gap nodes get no position from
-    # ``compute_layout`` (the API then drops them as orphans).
-    slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}
-    edges: list[EdgeRef] = []
-    for r in edge_rows:
-        if r.src_note_fk not in fk_to_note_id:
-            continue
-        canonical_target = slug_to_note_id.get(_slugify(r.target_id))
-        if canonical_target is None:
-            continue
-        edges.append(
-            EdgeRef(source=fk_to_note_id[r.src_note_fk], target=canonical_target)
-        )
-
-    positions = compute_layout(nodes, edges, params)
-
-    if positions:
-        for note_id, (x, y) in positions.items():
-            session.execute(
-                update(Note)
-                .where(Note.note_id == note_id)
-                .values(layout_x=x, layout_y=y)
+        edge_rows = session.execute(
+            select(NoteLink.src_note_fk, NoteLink.target_id)
+        ).all()
+        note_id_set = set(fk_to_note_id.values())
+        # Mirror ``KnowledgeStore.get_graph``'s slug-normalize-then-resolve
+        # logic. Body wikilinks store ``target_id`` as raw user-typed text
+        # (``"Steve Krug"``); gap stubs and ``_processed`` notes carry
+        # ``note_id`` in slug form. Without this normalization FA2 treats
+        # gap edges as missing and the gap nodes get no position from
+        # ``compute_layout`` (the API then drops them as orphans).
+        slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}
+        edges: list[EdgeRef] = []
+        for r in edge_rows:
+            if r.src_note_fk not in fk_to_note_id:
+                continue
+            canonical_target = slug_to_note_id.get(_slugify(r.target_id))
+            if canonical_target is None:
+                continue
+            edges.append(
+                EdgeRef(source=fk_to_note_id[r.src_note_fk], target=canonical_target)
             )
-        session.commit()
 
-    return len(nodes), len(edges), len(positions)
+        positions = compute_layout(nodes, edges, params)
+
+        if positions:
+            for note_id, (x, y) in positions.items():
+                session.execute(
+                    update(Note)
+                    .where(Note.note_id == note_id)
+                    .values(layout_x=x, layout_y=y)
+                )
+            session.commit()
+
+        return len(nodes), len(edges), len(positions)
 
 
 async def reconcile_handler(session: Session) -> datetime | None:
@@ -257,16 +261,21 @@ async def reconcile_handler(session: Session) -> datetime | None:
         },
     )
 
-    # Persist reconciler upserts before the layout step so layout failure
-    # can never roll back upsert state. The scheduler will commit again on
-    # return; the second commit is a no-op.
+    # Persist reconciler upserts before the layout step so the layout
+    # pass — which opens its own session in a worker thread — sees the
+    # upserts via the committed snapshot.
     session.commit()
 
+    # Dispatch the layout pass to a worker thread. ``compute_layout`` is
+    # CPU-bound (FA2 + the hard-collide pass); running it on the asyncio
+    # loop blocked uvicorn for >20s on the live graph and tripped the
+    # ``/healthz`` liveness probe, which surfaced as 5xx on the notes
+    # page. ``_run_layout_pass`` opens its own SQLAlchemy session so no
+    # session is shared across threads.
     start = time.perf_counter()
     try:
-        node_count, edge_count, positioned = _run_layout_pass(session)
+        node_count, edge_count, positioned = await asyncio.to_thread(_run_layout_pass)
     except Exception:  # noqa: BLE001 — layout failure must not affect reconcile result
-        session.rollback()  # clear any aborted txn so the scheduler's commit doesn't blow up
         logger.exception("knowledge.layout: pass failed")
     else:
         logger.info(
