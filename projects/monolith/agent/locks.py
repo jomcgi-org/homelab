@@ -83,7 +83,7 @@ def list_active(prefix: str | None = None) -> list[dict]:
         SELECT key, holder, acquired_at, expires_at
           FROM claude_agent.agent_locks
          WHERE expires_at > now()
-           AND (:prefix::text IS NULL OR key LIKE :prefix::text || '%')
+           AND (CAST(:prefix AS text) IS NULL OR key LIKE CAST(:prefix AS text) || '%')
          ORDER BY expires_at
         """
     )
