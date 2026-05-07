@@ -175,34 +175,13 @@
       .addAll(simNodes);
   }
 
-  function findNode(mx, my) {
-    // Label hit-test first: labels are big rectangles, easier targets
-    // than 3px node disks. Since labels are drawn in screen coords
-    // (post-transform), we test mx/my directly against their boxes.
-    for (const p of placedLabels) {
-      if (mx >= p.bx && mx <= p.bx + p.bw && my >= p.by && my <= p.by + p.bh) {
-        return p.node;
-      }
-    }
-    if (!quadtree) return null;
-    const [x, y] = transform.invert([mx, my]);
-    const r = 14 / transform.k;
-    const n = quadtree.find(x, y, r);
-    return n && activeClusters.has(n.cluster) ? n : null;
-  }
-
-  // ───────────────────────── render ─────────────────────────
-
-  function render() {
-    if (!ctx || !stage) return;
-    const w = stage.clientWidth;
-    const h = stage.clientHeight;
-    ctx.clearRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.translate(transform.x, transform.y);
-    ctx.scale(transform.k, transform.k);
-
+  // Builds the active filter view: which nodes survive the current
+  // search term + selection, plus a flag for "any filter active".
+  // Render, hit-testing, and the zoom-to-selection bbox all read this
+  // so they agree about what's visible. When a filter is active,
+  // matchSet IS the set of drawn nodes; everything else is skipped
+  // entirely (no ghost-dim layer).
+  function computeFilterState() {
     const term = (searchTerm || "").trim().toLowerCase();
     const selectedNode = selectedId ? byId.get(selectedId) : null;
     const filtering = !!term || !!selectedNode;
@@ -221,6 +200,45 @@
       const neigh = neighborsOf.get(selectedNode.id);
       if (neigh) for (const id of neigh) matchSet.add(id);
     }
+    return { term, selectedNode, filtering, matchSet };
+  }
+
+  function findNode(mx, my) {
+    // Label hit-test first: labels are big rectangles, easier targets
+    // than 3px node disks. Since labels are drawn in screen coords
+    // (post-transform), we test mx/my directly against their boxes.
+    for (const p of placedLabels) {
+      if (mx >= p.bx && mx <= p.bx + p.bw && my >= p.by && my <= p.by + p.bh) {
+        return p.node;
+      }
+    }
+    if (!quadtree) return null;
+    const [x, y] = transform.invert([mx, my]);
+    const r = 14 / transform.k;
+    const n = quadtree.find(x, y, r);
+    if (!n) return null;
+    if (!activeClusters.has(n.cluster)) return null;
+    // Filtered-out nodes aren't painted, so don't let the quadtree
+    // claim clicks for them either — otherwise empty-looking pixels
+    // would still snap-select an invisible node.
+    const { filtering, matchSet } = computeFilterState();
+    if (filtering && !matchSet.has(n.id)) return null;
+    return n;
+  }
+
+  // ───────────────────────── render ─────────────────────────
+
+  function render() {
+    if (!ctx || !stage) return;
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+
+    const { selectedNode, filtering, matchSet } = computeFilterState();
 
     // Edges (faint).
     ctx.lineWidth = Math.max(0.4, 0.7 / transform.k);
@@ -238,7 +256,11 @@
     }
     ctx.stroke();
 
-    // Highlighted edges around the selected node.
+    // Highlighted edges around the selected node. Same visibility
+    // gates as the faint-edge pass: cluster filter + matchSet, so a
+    // search term that excludes a neighbour also drops the spoke
+    // pointing at that neighbour (otherwise the spoke would stop in
+    // empty space where the node used to be drawn).
     if (selectedNode) {
       ctx.lineWidth = Math.max(1.2, 1.6 / transform.k);
       ctx.strokeStyle = `rgba(20,20,20,${CFG.edgeOpacityActive})`;
@@ -247,6 +269,9 @@
         const s = typeof l.source === "object" ? l.source : byId.get(l.source);
         const t = typeof l.target === "object" ? l.target : byId.get(l.target);
         if (!s || !t) continue;
+        if (!activeClusters.has(s.cluster) || !activeClusters.has(t.cluster))
+          continue;
+        if (filtering && !(matchSet.has(s.id) && matchSet.has(t.id))) continue;
         if (s.id === selectedNode.id || t.id === selectedNode.id) {
           ctx.moveTo(s.x, s.y);
           ctx.lineTo(t.x, t.y);
@@ -258,11 +283,14 @@
     // Nodes. Thin stroke so the cluster colour fill dominates visually
     // — at the prototype's 3.2px radius a 1.2px stroke ate most of the
     // disk, making nodes read as black dots.
+    //
+    // When a filter is active, non-matching nodes are skipped entirely
+    // rather than dimmed: the previous 0.08-alpha ghost layer made
+    // zoomed-in selection views feel cluttered with unrelated context.
     ctx.lineWidth = Math.max(0.4, 0.8 / transform.k);
     for (const n of simNodes) {
       if (!activeClusters.has(n.cluster)) continue;
-      const dim = filtering && !matchSet.has(n.id);
-      ctx.globalAlpha = dim ? 0.08 : 1;
+      if (filtering && !matchSet.has(n.id)) continue;
       ctx.fillStyle = n.color;
       ctx.strokeStyle = "#141414";
       ctx.beginPath();
@@ -270,7 +298,6 @@
       ctx.fill();
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
 
     // Hover ring.
     if (hovered) {
@@ -481,11 +508,18 @@
     let y0 = n.y;
     let y1 = n.y;
     let count = 0;
+    // Only fit the bbox to neighbours that are actually drawn — if a
+    // search term excludes them, or their cluster chip is off, they
+    // shouldn't pull the viewport open. Note that when only `n` itself
+    // is selected (no search term), matchSet already contains it plus
+    // every neighbour, so the gate is a no-op for the common case.
+    const { filtering, matchSet } = computeFilterState();
     const neigh = neighborsOf.get(n.id);
     if (neigh) {
       for (const id of neigh) {
         const nb = byId.get(id);
         if (!nb || !activeClusters.has(nb.cluster)) continue;
+        if (filtering && !matchSet.has(nb.id)) continue;
         if (nb.x < x0) x0 = nb.x;
         if (nb.x > x1) x1 = nb.x;
         if (nb.y < y0) y0 = nb.y;
