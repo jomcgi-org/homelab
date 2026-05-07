@@ -376,37 +376,86 @@ The `BLOCKING-GAP[kind=...]:` prefix is the only convention v1 ships. The option
 - **Depth limit on transitive gaps.** If implementing gap A produces gap B, and implementing B produces gap C, stop after N hops (e.g. 2). Otherwise an implementer Routine could chase its own tail.
 - **Human-readable gap names.** No UUIDs or hashes — gap identifiers should be the kind of string a human can understand at a glance (`missing-bb-mcp-cache-stats`, not `gap-7f3e2`).
 
-### Improving the loop: tiered models + iterative review (v2+)
+### Improving the loop: sandwiched model pipeline (v2+)
 
-Single-pass implementation is wasteful at one end and risky at the other. A small agent pipeline with cost-tiered roles fixes both:
+Single-pass implementation is wasteful at one end and risky at the other. A small agent pipeline with cost-tiered roles fixes both. The shape is a **sandwich**: Opus on both judgment ends, Sonnet for execution in the middle. Opus plans, Sonnet implements (and revises), Opus reviews iteratively, Opus does a final coherence check before handing to a human merger.
 
-| Role                                             | Model default | Why                                                                    |
-| ------------------------------------------------ | ------------- | ---------------------------------------------------------------------- |
-| Discovery / triage (`check-*`, `find-stale-prs`) | Haiku         | Mechanical querying, simple decisions                                  |
-| Implementer (drafts capability-gap PRs)          | Sonnet        | Pattern-matching from existing code; bulk edits, low risk per edit     |
-| PR reviewer bot                                  | Opus          | Judgment work — catches subtle bugs, concurrency issues, security gaps |
-| Reviser (addresses reviewer feedback)            | Sonnet        | Same as implementer — structured edits guided by review comments       |
+```
+Gap registered
+   ↓
+[Planner]     Opus   — produces a plan (architecture, files, gotchas, tests)
+   ↓
+[Implementer] Sonnet — executes the plan, drafts the PR; same Routine handles revisions
+   ↓
+[Reviewer]    Opus   — iterative critique against the plan; APPROVE | REQUEST_CHANGES | CLOSE
+   ↓                   ↳ on REQUEST_CHANGES: Implementer revises (loop, max N iterations)
+[Merger]      Opus   — terminal coherence check; APPROVE_FOR_HUMAN | CLOSE
+   ↓
+Human merges (or closes)
+```
 
-**Constraint:** the reviewer must be a **different Routine instance** from the implementer, even on the same model. A single context that drafts-then-reviews rationalizes its own work; separation forces independent assessment.
+| Role                                             | Model default | What this role does well                                                                                                                                     |
+| ------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Discovery / triage (`check-*`, `find-stale-prs`) | Haiku         | Mechanical querying, simple yes/no decisions                                                                                                                 |
+| **Planner**                                      | **Opus**      | Architecture choice, scope decisions, "list 2-3 approaches, pick the simplest" (matches CLAUDE.md philosophy). Mistakes here cascade — pay for quality once. |
+| **Implementer**                                  | **Sonnet**    | Pattern-matching from existing code, bulk edits guided by a plan. Same Routine handles revisions across iterations (no separate "reviser" role).             |
+| **Reviewer**                                     | **Opus**      | Iterative critique against the plan. Calibrated to **minimize complexity**: push back on over-engineering, premature abstraction, scope creep.               |
+| **Merger**                                       | **Opus**      | Terminal coherence check after iteration converges. Different question from Reviewer: "is the merged result actually solving the gap, or has it drifted?"    |
+
+**Why two Opus roles (Reviewer + Merger) instead of one:**
+
+- **Reviewer is iterative critique** in the middle of the loop ("what should change this iteration?")
+- **Merger is terminal assessment** at the end ("does the whole PR cohere with the original gap?")
+
+Different questions, different prompts. Cost of separating: one extra Opus call per PR. Benefit: catches drift across iterations that an in-loop reviewer might miss because each individual diff looked fine on its own.
+
+**Constraint:** Planner, Implementer, Reviewer, and Merger must each be **different Routine instances**. A single context that drafts-then-reviews rationalizes its own work; separation forces independent assessment. Reviewer must evaluate against the plan as an external artifact, not "remember" why it was made.
+
+**Reviewer calibration (the most consequential prompt detail):**
+
+The Reviewer's prompt explicitly biases toward minimizing complexity. Echoing the repo's existing engineering philosophy ("three similar lines is better than a premature abstraction"), the Reviewer should:
+
+- Reject new abstractions unless three concrete callers exist
+- Push back on backwards-compatibility shims for code that has no external callers
+- Flag changes that go beyond the plan's stated scope
+- Prefer additive changes over refactors when both solve the gap
+- Treat any "// will be useful when…" comments as scope creep, not foresight
+
+This calibration is the difference between "Reviewer finds issues" and "Reviewer prevents the failure mode we actually have." Without explicit complexity-aversion in the prompt, Opus tends to optimize for thoroughness — which produces more, not better, change requests.
 
 **State machine via PR labels** (no new in-cluster surface — pure GH label conventions):
 
 ```
 Gap registered (routine_jobs row, kind="capability-gap")
-        ↓ implementer Routine claims, drafts PR
-PR opened with labels:  capability-gap, needs-bot-review, iteration:0
-        ↓ reviewer Routine fires (queries for needs-bot-review)
-Reviewer posts verdict:
-  • APPROVE         → label: bot-approved-needs-human   → notify operator
-  • REQUEST_CHANGES → label: bot-requested-changes      → reviser fires
-  • CLOSE           → label: bot-closed-wontfix         → comments rationale, closes PR
-        ↓ reviser Routine (if REQUEST_CHANGES and iteration < N)
-PR updated, label flipped back to needs-bot-review, iteration:k+1
+        ↓ Planner Routine claims, opens GH issue with plan as body
+GH issue:  capability-gap, has-plan
+        ↓ Implementer Routine fires, drafts PR linked to issue
+PR labels: capability-gap, needs-bot-review, iteration:0
+        ↓ Reviewer Routine fires (queries for needs-bot-review)
+Reviewer verdict:
+  • APPROVE         → label: needs-merger-check          → Merger fires
+  • REQUEST_CHANGES → label: bot-requested-changes        → Implementer revises
+  • CLOSE           → label: bot-closed-wontfix           → comment rationale, close PR
+        ↓ Implementer (if REQUEST_CHANGES and iteration < N)
+PR updated, label flips back to needs-bot-review, iteration:k+1
         ↺ loop, max N iterations (default 3)
-At iteration == N:  label adds max-iterations-reached, notify operator
+        ↓ Merger Routine (on needs-merger-check)
+Merger verdict:
+  • APPROVE_FOR_HUMAN          → label: bot-approved-needs-human         → notify operator
+  • REQUIRES_MANUAL_VISUAL     → label: requires-manual-visual-review    → notify operator with reason
+  • CLOSE                      → label: bot-closed-wontfix               → comment rationale, close PR
+At iteration == N without converging: label adds max-iterations-reached, notify operator
 ```
 
-**Routine `kind` values added in v2+:** `implementer`, `reviewer`, `reviser`. Each is a separate cloud Routine with its own cron schedule and prompt. Suggested cadences: implementer hourly, reviewer every 10 min, reviser every 15 min. None are real-time — review latency in tens of minutes is fine for capability gaps.
+**Routine `kind` values added in v2+:** `planner`, `implementer`, `reviewer`, `merger`. Each is a separate cloud Routine with its own cron schedule and prompt. Suggested cadences: planner hourly, implementer hourly (offset), reviewer every 10 min, merger every 15 min. None are real-time — capability-gap latency in tens of minutes is fine.
+
+**Carveout: visual / UX changes always get manual human review.**
+
+Bot review is calibrated for code correctness, not visual or UX impact. Any PR that touches paths likely to produce visible changes — `projects/agent_platform/sandbox-frontend/`, `projects/websites/`, dashboard manifests, anything frontend — gets the `requires-manual-visual-review` label from the Merger and an explicit reminder in the Discord notification that the human should pull the branch and inspect rendered output, not just diff. The Merger's prompt detects these paths and routes accordingly.
+
+Most code changes (MCP tool definitions, scheduler handlers, Bazel targets, semgrep rules, k8s manifests for non-visual services, ADRs) don't have visual impact and can flow through the standard `bot-approved-needs-human` path with light human review of the diff.
+
+Either way, **auto-merge remains forbidden.** The Merger's "approve" outcome is a recommendation to the human, not a merge command. Lifting this is a v3 conversation that requires evidence (≥N consecutive bot-approved PRs that humans also merged unchanged) — not a v2+ default.
 
 **Hooks the cluster might add for v2+:**
 
@@ -418,8 +467,8 @@ Both are deferrable — the v1 surface plus PR labels are sufficient to run the 
 **Failure modes to engineer against from day one:**
 
 - **Sycophancy.** Reviewer rubber-stamps because the diff "looks structurally fine." Mitigations: reviewer prompt explicitly lists categories to challenge (concurrency, security, error handling, hidden assumptions); reviewer must cite specific lines in REQUEST_CHANGES verdicts; periodic human spot-check of `bot-approved-needs-human` PRs against actual quality.
-- **Death spiral.** Revise → re-review → revise forever. Hard cap at iteration 3, then human-or-close. Also: reviser prompt instructed to push back if reviewer feedback is wrong, not just comply.
-- **Cost runaway.** Sonnet drafting + Opus reviewing + Sonnet revising × 3 iterations × N gaps/day can be expensive. Per-PR token budget enforced by the implementer/reviser prompts (each iteration's diff size has a cap). If a gap consistently exceeds budget, mark it `requires-human` and stop.
+- **Death spiral.** Revise → re-review → revise forever. Hard cap at iteration 3, then human-or-close. Also: Implementer prompt instructed to push back if Reviewer feedback is wrong, not just comply.
+- **Cost runaway.** Opus planning + Sonnet drafting + Opus reviewing × 3 iterations + Opus merging × N gaps/day can be expensive. Per-PR token budget enforced in the Implementer prompt (each iteration's diff size has a cap). If a gap consistently exceeds budget, mark it `requires-human` and stop.
 - **Cross-contamination.** Two Routines simultaneously implementing related gaps could conflict. The opportunistic `agent_locks` surface from v1 covers this — implementer takes a lock per gap, scoped to the duration of the PR draft session.
 
 **Open design questions for v2+ (not blocking v1):**
