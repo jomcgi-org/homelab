@@ -10,6 +10,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
 from knowledge.frontmatter import ParsedFrontmatter
+from knowledge.gardener import _slugify
 from knowledge.links import Link
 from knowledge.models import Chunk, Gap, Note, NoteLink
 from shared.chunker import Chunk as ChunkPayload
@@ -350,10 +351,17 @@ class KnowledgeStore:
         of truth so server-computed ``degree`` matches the visible-edge
         count the user sees.
 
-        Edges with unresolved or filtered-out targets (target_id pointing
-        to a string that doesn't match any in-set note's note_id) are
-        dropped — gap-promoted wikilinks survive as edges into
-        ``type='gap'`` nodes.
+        Edges with unresolved targets are dropped — no phantom edges.
+        Targets are resolved by slugifying ``NoteLink.target_id`` (which
+        stores the raw user-typed wikilink text, e.g. ``"Steve Krug"``)
+        and matching against the slugified ``note_id`` of each visible
+        note. This is the same normalization ``gaps.discover_gaps`` uses
+        when promoting unresolved wikilinks into ``type='gap'`` stubs, so
+        a wikilink ``[[Steve Krug]]`` consistently resolves to the gap at
+        ``_researching/steve-krug.md`` instead of being treated as an
+        unresolved string. The edge's ``target`` field is rewritten to
+        the canonical ``note_id`` so it joins cleanly with the
+        corresponding node on the frontend.
 
         Each node payload also ships server-computed ``degree`` (count of
         incident visible edges) and persisted ``x`` / ``y`` layout
@@ -370,12 +378,15 @@ class KnowledgeStore:
             )
         ).all()
         # Filter out notes whose type isn't in the graph set BEFORE we
-        # build note_ids — that way the existing edge filter
-        # (``row.target in note_ids``) automatically drops edges that
-        # point at filtered-out neighbours, keeping degree counts
-        # coherent with the visible edges.
+        # build note_ids — that way the edge filter automatically drops
+        # edges that point at filtered-out neighbours, keeping degree
+        # counts coherent with the visible edges.
         note_rows = [row for row in all_note_rows if row.type in GRAPH_NOTE_TYPES]
         note_ids = {row.note_id for row in note_rows}
+        # Map each visible note's slug back to its canonical note_id so a
+        # title-form wikilink (``"Steve Krug"``) resolves to the same node
+        # as its slug-form counterpart (``"steve-krug"``).
+        slug_to_note_id = {_slugify(nid): nid for nid in note_ids}
 
         link_rows = self.session.execute(
             select(
@@ -386,16 +397,21 @@ class KnowledgeStore:
             ).join(Note, NoteLink.src_note_fk == Note.id)
         ).all()
 
-        edges = [
-            {
-                "source": row.source,
-                "target": row.target,
-                "kind": row.kind,
-                "edge_type": row.edge_type,
-            }
-            for row in link_rows
-            if row.source in note_ids and row.target in note_ids
-        ]
+        edges: list[dict] = []
+        for row in link_rows:
+            if row.source not in note_ids:
+                continue
+            canonical_target = slug_to_note_id.get(_slugify(row.target))
+            if canonical_target is None:
+                continue
+            edges.append(
+                {
+                    "source": row.source,
+                    "target": canonical_target,
+                    "kind": row.kind,
+                    "edge_type": row.edge_type,
+                }
+            )
 
         # Compute degree from the response edges so server-side semantics
         # match exactly what the client used to compute (increment both
