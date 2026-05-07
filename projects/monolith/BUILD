@@ -2777,3 +2777,12 @@ bdd_test(
         "agent/tests/conftest.py",
     ],
 )
+
+bdd_test(
+    name = "agent_bdd_routine_jobs_test",
+    srcs = [
+        "agent/tests/__init__.py",
+        "agent/tests/bdd_routine_jobs_test.py",
+        "agent/tests/conftest.py",
+    ],
+)
