@@ -177,6 +177,7 @@ async def lifespan(app: FastAPI):
 
 
 import knowledge.mcp  # noqa: F401 — registers tools on shared MCP instance
+import agent.mcp  # noqa: F401 — registers monolith-agent-* tools on shared MCP instance
 
 from app.mcp_app import mcp as monolith_mcp
 
