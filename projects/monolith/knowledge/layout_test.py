@@ -210,6 +210,40 @@ class TestComputeLayout:
                     f"{ids[i]} and {ids[j]} overlap: distance={d}, min={2 * r}"
                 )
 
+    def test_compute_layout_handles_coincident_priors(self):
+        """Two nodes seeded at exactly the same point are pushed apart.
+
+        FA2 with identical prior positions can produce coincident output
+        centers; the vectorized collide pass must invent a finite push
+        direction (rather than dividing by zero) and separate them. This
+        exercises the ``d2 == 0`` branch in :func:`_resolve_overlaps`.
+        """
+        nodes = [
+            _node("a", 0.0, 0.0),
+            _node("b", 0.0, 0.0),
+            _node("c", 0.0, 0.0),
+        ]
+        edges = [EdgeRef("a", "b"), EdgeRef("b", "c"), EdgeRef("a", "c")]
+        params = LayoutParams(seed=42)
+
+        positions = compute_layout(nodes, edges, params)
+
+        assert set(positions.keys()) == {"a", "b", "c"}
+        assert _all_finite(positions)
+        # The collide pass should have separated all pairs by at least the
+        # sum of their render radii (degree=2 for every node here).
+        r = _expected_radius(2)
+        eps = 1e-6
+        ids = list(positions)
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                xa, ya = positions[ids[i]]
+                xb, yb = positions[ids[j]]
+                d = math.hypot(xa - xb, ya - yb)
+                assert d >= 2 * r - eps, (
+                    f"{ids[i]} and {ids[j]} overlap: distance={d}, min={2 * r}"
+                )
+
 
 class TestLayoutParamsValidation:
     def test_validates_positive_max_iter(self):

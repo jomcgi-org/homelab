@@ -831,7 +831,13 @@ class TestReconcileHandlerLayout:
     async def test_reconcile_handler_layout_failure_does_not_roll_back_upserts(
         self, monkeypatch, tmp_path, session, fake_embed_client, caplog
     ):
-        """Layout exception is caught; upsert state is preserved."""
+        """Layout exception is caught; reconcile upsert state is preserved.
+
+        ``_run_layout_pass`` runs on a worker thread with its own DB
+        session, so any failure inside it cannot poison the caller's
+        session. The handler still has to log the exception and return
+        cleanly so the scheduler treats the reconcile run as successful.
+        """
         from knowledge.models import Note
 
         monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
@@ -842,7 +848,7 @@ class TestReconcileHandlerLayout:
             "---\nid: a\ntitle: A\n---\nBody.",
         )
 
-        def boom(_session):
+        def boom():
             raise RuntimeError("boom")
 
         # Patch at the import target — same module the handler resolves
@@ -864,68 +870,6 @@ class TestReconcileHandlerLayout:
         assert len(notes) == 1
         assert notes[0].note_id == "a"
         # And the layout pass didn't run, so positions are still None.
-        assert notes[0].layout_x is None
-        assert notes[0].layout_y is None
-
-    @pytest.mark.asyncio
-    async def test_reconcile_handler_layout_failure_after_partial_writes_rolls_back(
-        self, monkeypatch, tmp_path, session, fake_embed_client, caplog
-    ):
-        """Layout that issues an UPDATE then raises must roll back cleanly.
-
-        Exercises the post-rollback contract: the layout pass writes one
-        Note row's layout_x/layout_y, then raises. Without
-        ``session.rollback()`` in the except branch, Postgres would mark
-        the txn aborted and the scheduler's subsequent ``_complete_job``
-        commit would raise ``PendingRollbackError`` — misattributing the
-        layout failure as a reconcile failure. With the rollback the
-        partial UPDATE is discarded and reconcile_handler returns
-        cleanly; the test note's layout_x/layout_y stay None.
-        """
-        from sqlalchemy import update
-
-        from knowledge.models import Note
-
-        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
-        self._setup_vault(tmp_path)
-        self._write_note(
-            tmp_path,
-            "a.md",
-            "---\nid: a\ntitle: A\n---\nBody.",
-        )
-
-        def boom_after_update(s):
-            # Issue a real UPDATE through the same session, then raise.
-            # Without rollback the next session.commit() (scheduler's)
-            # would surface PendingRollbackError under Postgres.
-            s.execute(
-                update(Note)
-                .where(Note.note_id == "a")
-                .values(layout_x=9.9, layout_y=8.8)
-            )
-            raise RuntimeError("boom-after-update")
-
-        monkeypatch.setattr("knowledge.service._run_layout_pass", boom_after_update)
-
-        with (
-            patch("knowledge.service.EmbeddingClient", return_value=fake_embed_client),
-            caplog.at_level(logging.ERROR, logger="knowledge.service"),
-        ):
-            result = await service.reconcile_handler(session)
-
-        # The handler returned cleanly and logged the failure.
-        assert result is None
-        assert any("knowledge.layout: pass failed" in r.message for r in caplog.records)
-
-        # A subsequent commit must succeed — i.e. the session is no
-        # longer in an aborted state. This is the key regression check:
-        # without the rollback, this commit would raise.
-        session.commit()
-
-        # Partial UPDATE was rolled back: layout positions stay None.
-        notes = list(session.scalars(select(Note)))
-        assert len(notes) == 1
-        assert notes[0].note_id == "a"
         assert notes[0].layout_x is None
         assert notes[0].layout_y is None
 
