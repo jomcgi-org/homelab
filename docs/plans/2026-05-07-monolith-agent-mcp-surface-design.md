@@ -321,6 +321,63 @@ projects/monolith/agent/
 
 Migrations go in the existing monolith Alembic chain (one revision adds both new tables).
 
+## Future: self-improving loop (v2)
+
+The architecture leaves a clean path for a self-improving feedback loop:
+
+```
+Routine A fails on a task because it lacks capability X
+       ↓
+Routine A reports failure with a structured "blocking-gap" marker
+       ↓
+A "register-jobs" Routine scans recent failures, dedupes gaps, opens GH
+issues (label `capability-gap`) prioritized by how many jobs each gap blocks
+       ↓
+An "implementer" Routine picks the highest-fan-out gap, opens a PR
+implementing the missing capability, normal CI + human PR review
+       ↓
+Once merged, Routine A's next scheduled run succeeds (no longer blocked)
+```
+
+**Scope of "capability."** The implementer Routine isn't restricted to monolith MCP tools — a capability gap can be **any change the homelab repo can encode**. Examples:
+
+| Gap kind            | Example gap name                     | What the implementer does                                         |
+| ------------------- | ------------------------------------ | ----------------------------------------------------------------- |
+| `mcp-tool`          | `monolith-agent-list-recent-deploys` | Add a new `@mcp.tool` handler in `projects/monolith/agent/mcp.py` |
+| `scheduler-handler` | `cleanup-orphan-build-cache`         | Add Python handler + scheduler row in `projects/monolith/`        |
+| `k8s-manifest`      | `imageupdater-yaml-for-service-x`    | Create `projects/<service>/deploy/imageupdater.yaml`              |
+| `helm-values`       | `enable-otel-on-service-y`           | Edit `projects/<service>/deploy/values.yaml`                      |
+| `network-policy`    | `allow-monolith-egress-to-grafana`   | Add a manifest (respecting the Linkerd NetworkPolicy memory)      |
+| `bazel-target`      | `add-py3-image-for-z`                | Add BUILD file entries                                            |
+| `semgrep-rule`      | `forbid-direct-prod-db-writes`       | Add rule under `bazel/semgrep/`                                   |
+| `adr`               | `decision-on-routine-priority`       | Create `docs/decisions/<category>/NN-<topic>.md`                  |
+
+The implementer Routine has full read/write access to the cloned repo (via cloud Claude Code's `--remote` bundle or git clone), can run `format`, and opens a PR via `gh`. **No new in-cluster surface is needed for v2** — the v1 tools plus the cloud Routine's existing repo + GH access are sufficient.
+
+**v1 recording hook (zero schema change).** Routines that fail due to a missing capability use a free-form convention in their `complete-routine-job` summary:
+
+```
+status:  "error: missing capability"
+summary: "BLOCKING-GAP[kind=mcp-tool]: monolith-agent-foo-tool — needed to enumerate X for kind=pr-fix"
+```
+
+The `BLOCKING-GAP[kind=...]:` prefix is the only convention v1 ships. The optional `[kind=...]` lets the implementer branch on which subsystem to edit (a `kind=mcp-tool` gap is a Python edit; a `kind=k8s-manifest` gap is a YAML edit). v2 will promote both to structured fields; until then, the convention is parseable and forward-compatible.
+
+**v2 deferred work (not in this design):**
+
+- **Capability-gap registry** — either a new column on `routine_jobs` or a sibling table tracking `(gap_name, blocked_job_name)` relationships.
+- **Fan-out priority calculation** — `ORDER BY count(distinct blocked_job_name) DESC`. Plus a `priority` field on `routine_jobs` rows so a single blocked critical job can outrank 10 blocked trivial ones.
+- **Implementer Routine** — a `claude-routine-agent` Routine of `kind="capability-gap"` whose prompt is "pick the highest-priority open capability gap, implement it as a PR against this repo, never auto-merge — wait for CI + human review."
+- **GH issue mirror** — capability gaps mirror to GH issues (label `capability-gap`) so humans can see, comment, deprioritize, or close as wontfix.
+
+**Hard constraints v2 must respect:**
+
+- **No auto-merge for capability-gap PRs.** Always go through normal review. The loop is "self-proposing," not "self-merging." A buggy implementer can suggest bad fixes; CI + your review catches them.
+- **Depth limit on transitive gaps.** If implementing gap A produces gap B, and implementing B produces gap C, stop after N hops (e.g. 2). Otherwise an implementer Routine could chase its own tail.
+- **Human-readable gap names.** No UUIDs or hashes — gap identifiers should be the kind of string a human can understand at a glance (`missing-bb-mcp-cache-stats`, not `gap-7f3e2`).
+
+Why defer: the priority machinery (fan-out, depth limits, kind-based filtering) is much easier to design from real failure data than from imagined examples. v1 captures the data; v2 designs the consumer when we have actual gaps to look at.
+
 ## Out of scope for v1
 
 - Retry/backoff for failed routine jobs (Routine itself decides whether to retry, by re-running on its next cron tick or registering a follow-up row).
