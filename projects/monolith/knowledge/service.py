@@ -11,6 +11,7 @@ from dulwich import porcelain
 from sqlalchemy import select, update
 from sqlmodel import Session
 
+from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
 from knowledge.models import Note, NoteLink
 from knowledge.reconciler import Reconciler
@@ -201,11 +202,23 @@ def _run_layout_pass(session: Session) -> tuple[int, int, int]:
 
     edge_rows = session.execute(select(NoteLink.src_note_fk, NoteLink.target_id)).all()
     note_id_set = set(fk_to_note_id.values())
-    edges = [
-        EdgeRef(source=fk_to_note_id[r.src_note_fk], target=r.target_id)
-        for r in edge_rows
-        if r.src_note_fk in fk_to_note_id and r.target_id in note_id_set
-    ]
+    # Mirror ``KnowledgeStore.get_graph``'s slug-normalize-then-resolve
+    # logic. Body wikilinks store ``target_id`` as raw user-typed text
+    # (``"Steve Krug"``); gap stubs and ``_processed`` notes carry
+    # ``note_id`` in slug form. Without this normalization FA2 treats
+    # gap edges as missing, the gap nodes are classified as orphans by
+    # ``compute_layout``, and they drift to the perimeter ring.
+    slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}
+    edges: list[EdgeRef] = []
+    for r in edge_rows:
+        if r.src_note_fk not in fk_to_note_id:
+            continue
+        canonical_target = slug_to_note_id.get(_slugify(r.target_id))
+        if canonical_target is None:
+            continue
+        edges.append(
+            EdgeRef(source=fk_to_note_id[r.src_note_fk], target=canonical_target)
+        )
 
     positions = compute_layout(nodes, edges, params)
 

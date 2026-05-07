@@ -581,6 +581,68 @@ def test_get_graph_drops_edges_with_unresolved_targets(session):
     assert result["edges"] == []
 
 
+def test_get_graph_resolves_title_form_wikilink_to_slug_note_id(session):
+    # Body wikilinks land in NoteLink.target_id as the user-typed text
+    # (``"Steve Krug"``), but gap stubs (and most _processed notes)
+    # store note_id in slug form (``"steve-krug"``). The graph endpoint
+    # must slug-normalize before the membership check, otherwise inbound
+    # edges to gap nodes are silently dropped — they render as orphans
+    # on the canvas perimeter.
+    store = KnowledgeStore(session)
+    _upsert(
+        store,
+        note_id="src",
+        path="src.md",
+        content_hash="h-src",
+        title="Source",
+        metadata=_meta(title="Source", type="atom"),
+        links=[Link(target="Steve Krug", display=None)],
+    )
+    _upsert(
+        store,
+        note_id="steve-krug",
+        path="_researching/steve-krug.md",
+        content_hash="h-gap",
+        title="Steve Krug",
+        metadata=_meta(title="Steve Krug", type="gap"),
+    )
+
+    result = store.get_graph()
+
+    edges = result["edges"]
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge["source"] == "src"
+    # Edge target is rewritten to the canonical slug so it joins
+    # cleanly with the corresponding node id on the frontend.
+    assert edge["target"] == "steve-krug"
+    by_id = {n["id"]: n for n in result["nodes"]}
+    assert by_id["src"]["degree"] == 1
+    assert by_id["steve-krug"]["degree"] == 1
+
+
+def test_get_graph_drops_title_form_wikilink_with_no_matching_slug(session):
+    # Negative companion to the title-form resolution test: when the
+    # slugified target still doesn't match any visible note, the edge
+    # is dropped — slug normalization must not invent phantom edges.
+    store = KnowledgeStore(session)
+    _upsert(
+        store,
+        note_id="src",
+        path="src.md",
+        content_hash="h-src",
+        title="Source",
+        metadata=_meta(title="Source", type="atom"),
+        # No note with note_id="steve-krug" exists.
+        links=[Link(target="Steve Krug", display=None)],
+    )
+
+    result = store.get_graph()
+
+    assert any(n["id"] == "src" for n in result["nodes"])
+    assert result["edges"] == []
+
+
 def test_get_graph_returns_empty_for_empty_session(session):
     store = KnowledgeStore(session)
 
