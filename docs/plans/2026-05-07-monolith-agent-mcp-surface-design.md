@@ -376,6 +376,58 @@ The `BLOCKING-GAP[kind=...]:` prefix is the only convention v1 ships. The option
 - **Depth limit on transitive gaps.** If implementing gap A produces gap B, and implementing B produces gap C, stop after N hops (e.g. 2). Otherwise an implementer Routine could chase its own tail.
 - **Human-readable gap names.** No UUIDs or hashes — gap identifiers should be the kind of string a human can understand at a glance (`missing-bb-mcp-cache-stats`, not `gap-7f3e2`).
 
+### Improving the loop: tiered models + iterative review (v2+)
+
+Single-pass implementation is wasteful at one end and risky at the other. A small agent pipeline with cost-tiered roles fixes both:
+
+| Role                                             | Model default | Why                                                                    |
+| ------------------------------------------------ | ------------- | ---------------------------------------------------------------------- |
+| Discovery / triage (`check-*`, `find-stale-prs`) | Haiku         | Mechanical querying, simple decisions                                  |
+| Implementer (drafts capability-gap PRs)          | Sonnet        | Pattern-matching from existing code; bulk edits, low risk per edit     |
+| PR reviewer bot                                  | Opus          | Judgment work — catches subtle bugs, concurrency issues, security gaps |
+| Reviser (addresses reviewer feedback)            | Sonnet        | Same as implementer — structured edits guided by review comments       |
+
+**Constraint:** the reviewer must be a **different Routine instance** from the implementer, even on the same model. A single context that drafts-then-reviews rationalizes its own work; separation forces independent assessment.
+
+**State machine via PR labels** (no new in-cluster surface — pure GH label conventions):
+
+```
+Gap registered (routine_jobs row, kind="capability-gap")
+        ↓ implementer Routine claims, drafts PR
+PR opened with labels:  capability-gap, needs-bot-review, iteration:0
+        ↓ reviewer Routine fires (queries for needs-bot-review)
+Reviewer posts verdict:
+  • APPROVE         → label: bot-approved-needs-human   → notify operator
+  • REQUEST_CHANGES → label: bot-requested-changes      → reviser fires
+  • CLOSE           → label: bot-closed-wontfix         → comments rationale, closes PR
+        ↓ reviser Routine (if REQUEST_CHANGES and iteration < N)
+PR updated, label flipped back to needs-bot-review, iteration:k+1
+        ↺ loop, max N iterations (default 3)
+At iteration == N:  label adds max-iterations-reached, notify operator
+```
+
+**Routine `kind` values added in v2+:** `implementer`, `reviewer`, `reviser`. Each is a separate cloud Routine with its own cron schedule and prompt. Suggested cadences: implementer hourly, reviewer every 10 min, reviser every 15 min. None are real-time — review latency in tens of minutes is fine for capability gaps.
+
+**Hooks the cluster might add for v2+:**
+
+- `attempts` column on `routine_jobs` — counts how many times the gap has been picked up. Lets a "register-jobs" Routine deprioritize gaps that keep failing review.
+- Optional: a small SQL view `gap_outcomes` that aggregates merged vs closed-as-wontfix PRs by `gap_kind`, so the operator can see which kinds the loop handles well.
+
+Both are deferrable — the v1 surface plus PR labels are sufficient to run the loop without them.
+
+**Failure modes to engineer against from day one:**
+
+- **Sycophancy.** Reviewer rubber-stamps because the diff "looks structurally fine." Mitigations: reviewer prompt explicitly lists categories to challenge (concurrency, security, error handling, hidden assumptions); reviewer must cite specific lines in REQUEST_CHANGES verdicts; periodic human spot-check of `bot-approved-needs-human` PRs against actual quality.
+- **Death spiral.** Revise → re-review → revise forever. Hard cap at iteration 3, then human-or-close. Also: reviser prompt instructed to push back if reviewer feedback is wrong, not just comply.
+- **Cost runaway.** Sonnet drafting + Opus reviewing + Sonnet revising × 3 iterations × N gaps/day can be expensive. Per-PR token budget enforced by the implementer/reviser prompts (each iteration's diff size has a cap). If a gap consistently exceeds budget, mark it `requires-human` and stop.
+- **Cross-contamination.** Two Routines simultaneously implementing related gaps could conflict. The opportunistic `agent_locks` surface from v1 covers this — implementer takes a lock per gap, scoped to the duration of the PR draft session.
+
+**Open design questions for v2+ (not blocking v1):**
+
+1. **Cost budget mechanism.** Per-PR token cap? Per-day total? How does the implementer Routine know its own remaining budget?
+2. **Reviewer quality calibration.** How do we tell over time if Opus is being too lenient or too strict? Need a feedback signal (e.g. % of bot-approved PRs that the human then closes vs merges).
+3. **Cross-gap dependencies.** If gap A and gap B both need to be implemented for a Routine to unblock, does the implementer batch them into one PR or sequence?
+
 Why defer: the priority machinery (fan-out, depth limits, kind-based filtering) is much easier to design from real failure data than from imagined examples. v1 captures the data; v2 designs the consumer when we have actual gaps to look at.
 
 ## Out of scope for v1
