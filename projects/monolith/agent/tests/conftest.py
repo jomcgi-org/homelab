@@ -30,9 +30,16 @@ def agent_db(pg):
     raw_url = pg.url.replace("postgresql+psycopg://", "postgresql://", 1)
     os.environ["DATABASE_URL"] = raw_url
 
-    from app.db import get_engine
+    # ``app.db.DATABASE_URL`` is a module-level constant captured at import
+    # time, so updating ``os.environ["DATABASE_URL"]`` alone is not enough —
+    # ``get_engine()`` would still call ``create_engine`` with the prod
+    # default. Patch the module attribute directly and clear the cache so
+    # the next ``get_engine()`` call builds an engine pointed at the test
+    # Postgres started by the ``pg`` fixture.
+    from app import db as app_db
 
-    get_engine.cache_clear()
+    app_db.DATABASE_URL = pg.url
+    app_db.get_engine.cache_clear()
 
     engine = create_engine(pg.url)
     with engine.connect() as conn:
@@ -44,4 +51,4 @@ def agent_db(pg):
     with engine.connect() as conn:
         _clean(conn)
     engine.dispose()
-    get_engine.cache_clear()
+    app_db.get_engine.cache_clear()
