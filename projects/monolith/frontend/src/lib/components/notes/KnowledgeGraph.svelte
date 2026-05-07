@@ -51,7 +51,14 @@
     hubBoost: 0.325,
     edgeOpacity: 0.16,
     edgeOpacityActive: 0.85,
-    labelMinZoom: 1.2,
+    // Labels turn on only when the user has actively zoomed in past
+    // any default-fit state. ``fitToBbox()`` caps initial zoom at 1.5×
+    // (see line ~548), so this threshold sits clearly above that —
+    // default page-load shows zero labels regardless of layout size,
+    // selection still gets a label always, search still labels its
+    // matches, and zooming in past 1.6× turns on the high-degree
+    // visible-node labels.
+    labelMinZoom: 1.6,
     labelMaxCount: 60,
   };
 
