@@ -2768,3 +2768,12 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+bdd_test(
+    name = "agent_bdd_locks_test",
+    srcs = [
+        "agent/tests/__init__.py",
+        "agent/tests/bdd_locks_test.py",
+        "agent/tests/conftest.py",
+    ],
+)
