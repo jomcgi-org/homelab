@@ -119,3 +119,12 @@ gardener:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/litellm-claude-auth"
+
+agent:
+  discord:
+    defaultServerId: "1501965852042330302"
+    defaultChannelId: "1501965852969402517"
+    allowedChannelIds:
+      - "1501965852969402517"
+  signoz:
+    url: "http://signoz.signoz.svc.cluster.local:8080"
