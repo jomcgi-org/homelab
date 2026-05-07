@@ -490,6 +490,32 @@ class ChatBot(discord.Client):
         await self._process_message(message)
 
 
+#: Module-level reference to the running bot, set by `create_bot()`.
+#: Used by in-process callers (e.g. the agent.notify MCP tool) that
+#: need to send Discord messages without going through a FastAPI
+#: request scope. Tests patch this attribute directly.
+bot: ChatBot | None = None
+
+
 def create_bot() -> ChatBot:
     """Factory function for the Discord bot."""
-    return ChatBot()
+    global bot
+    bot = ChatBot()
+    return bot
+
+
+async def send_message(channel_id: str, content: str, level: str = "info") -> None:
+    """Send a Discord message from in-process code (e.g. an MCP tool).
+
+    Used by the agent.notify tool and any other internal caller that
+    needs to ping Discord without going through NATS.
+    """
+    prefix = {"info": "", "warn": "⚠️ ", "error": "\U0001f534 "}.get(level, "")
+    if bot is None:
+        raise RuntimeError("Discord bot is not running; cannot send message")
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        # bot.get_channel is sync and returns None if cache hasn't seen the channel;
+        # fall back to API fetch.
+        channel = await bot.fetch_channel(int(channel_id))
+    await channel.send(f"{prefix}{content}")

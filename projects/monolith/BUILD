@@ -358,6 +358,17 @@ py_test(
 )
 
 py_test(
+    name = "chat_bot_send_message_test",
+    srcs = ["chat/bot_send_message_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "chat_agent_test",
     srcs = ["chat/agent_test.py"],
     imports = ["."],
