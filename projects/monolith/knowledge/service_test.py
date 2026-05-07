@@ -848,7 +848,7 @@ class TestReconcileHandlerLayout:
             "---\nid: a\ntitle: A\n---\nBody.",
         )
 
-        def boom():
+        def boom(_engine):
             raise RuntimeError("boom")
 
         # Patch at the import target — same module the handler resolves
