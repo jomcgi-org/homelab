@@ -10,9 +10,9 @@ from pathlib import Path
 from dulwich import porcelain
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
-from app.db import get_engine
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
 from knowledge.models import Note, NoteLink
@@ -179,20 +179,23 @@ async def garden_handler(session: Session) -> datetime | None:
     return None
 
 
-def _run_layout_pass() -> tuple[int, int, int]:
+def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
     """Compute layout positions for the current graph and persist them.
 
-    Opens its own DB session so the work can be dispatched onto a worker
-    thread via ``asyncio.to_thread`` without sharing SQLAlchemy state
-    with the caller's loop-thread session. Mirrors
-    ``KnowledgeStore.get_graph``'s edge filter (only edges where both
-    endpoints map to known note_ids) so positions and degrees stay
-    coherent with what the API ships. Caller is responsible for
-    catching exceptions and translating them to structured log events.
+    Opens its own SQLAlchemy session bound to the caller-supplied engine
+    so the work can be dispatched onto a worker thread via
+    ``asyncio.to_thread`` without sharing the loop-thread session.
+    Engines are thread-safe (the connection pool lives on them); sessions
+    are not, which is why the caller passes ``session.get_bind()``
+    instead of the session itself. Mirrors ``KnowledgeStore.get_graph``'s
+    edge filter (only edges where both endpoints map to known note_ids)
+    so positions and degrees stay coherent with what the API ships.
+    Caller is responsible for catching exceptions and translating them
+    to structured log events.
     """
     params = LayoutParams.from_env()
 
-    with Session(get_engine()) as session:
+    with Session(engine) as session:
         note_rows = session.execute(
             select(Note.id, Note.note_id, Note.layout_x, Note.layout_y)
         ).all()
@@ -270,11 +273,13 @@ async def reconcile_handler(session: Session) -> datetime | None:
     # CPU-bound (FA2 + the hard-collide pass); running it on the asyncio
     # loop blocked uvicorn for >20s on the live graph and tripped the
     # ``/healthz`` liveness probe, which surfaced as 5xx on the notes
-    # page. ``_run_layout_pass`` opens its own SQLAlchemy session so no
-    # session is shared across threads.
+    # page. ``_run_layout_pass`` opens its own SQLAlchemy session bound
+    # to the caller's engine — engines are thread-safe, sessions are not.
     start = time.perf_counter()
     try:
-        node_count, edge_count, positioned = await asyncio.to_thread(_run_layout_pass)
+        node_count, edge_count, positioned = await asyncio.to_thread(
+            _run_layout_pass, session.get_bind()
+        )
     except Exception:  # noqa: BLE001 — layout failure must not affect reconcile result
         logger.exception("knowledge.layout: pass failed")
     else:
