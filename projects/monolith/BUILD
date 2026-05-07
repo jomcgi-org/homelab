@@ -1,3 +1,4 @@
+# gazelle:exclude agent
 # gazelle:exclude chat
 # gazelle:exclude app
 # gazelle:exclude e2e
@@ -31,6 +32,7 @@ py_venv_binary(
     name = "main",
     srcs = glob(
         [
+            "agent/**/*.py",
             "app/**/*.py",
             "chat/**/*.py",
             "knowledge/**/*.py",
@@ -55,6 +57,7 @@ py_library(
     name = "monolith_backend",
     srcs = glob(
         [
+            "agent/**/*.py",
             "app/**/*.py",
             "chat/**/*.py",
             "knowledge/**/*.py",
@@ -2752,6 +2755,16 @@ py_test(
     deps = [
         ":monolith_backend",
         ":shared_testing",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "agent_config_test",
+    srcs = ["agent/config_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
         "@pip//pytest",
     ],
 )

@@ -12,6 +12,23 @@
 
 **One forward-compat concession:** the `routine_jobs` migration includes an `attempts INTEGER NOT NULL DEFAULT 0` column. v1 code does not read or increment it. It exists pre-deployed so v2's eventual priority calc can populate it without an online migration on a populated table. The migration's docstring explains this.
 
+**BUILD convention (CRITICAL — applies to every task that adds a new test file):** This repo's `projects/monolith/BUILD` is **hand-rolled, not gazelle-generated.** When you add a new `*_test.py` file, you MUST also add a `py_test(...)` target for it in `projects/monolith/BUILD`. Pattern (use this verbatim, adjusting `name`, `srcs`, and any extra `deps`):
+
+```python
+py_test(
+    name = "agent_<module>_test",
+    srcs = ["agent/<module>_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        # add others as needed: "@pip//pytest_asyncio", "@pip//sqlmodel", etc.
+    ],
+)
+```
+
+The `agent/**/*.py` glob is already added to both `monolith_backend` and `:main`. The `# gazelle:exclude agent` directive is already present. Each task implementer just appends a `py_test` block per test file. Without this, the test file ships in the source library but is never executed by CI — silent failure.
+
 **Schema convention (CRITICAL — applies to every SQL string in this plan):** All agent-owned tables live in the **`claude_agent` schema**. Every SQL reference to `routine_jobs` or `agent_locks` MUST use the `claude_agent.` prefix:
 
 - Agent tables → `claude_agent.routine_jobs`, `claude_agent.agent_locks`
