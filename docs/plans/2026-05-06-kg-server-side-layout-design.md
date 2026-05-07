@@ -42,16 +42,16 @@ plots them and never runs a force simulation.
 
 ## Design decisions (locked)
 
-| Dimension              | Decision                                                                                                       |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Layout language        | Python force-directed (NetworkX `forceatlas2_layout` + structural split, see "Layout algorithm pivot" below)   |
-| Cadence                | At end of every reconcile cycle, post-commit                                                                   |
-| Stability              | Soft: seed prior positions, run 50–100 refine iterations                                                       |
-| Frontend behavior      | Pure render — strip d3-force, plot positions verbatim                                                          |
-| Storage                | `layout_x`, `layout_y` columns on `knowledge.notes`                                                            |
-| Tunability (params)    | Helm `values.yaml` → env → `LayoutParams.from_env()`                                                           |
-| Tunability (iteration) | Local `preview-layout.py` script + `homelab scheduler jobs run-now knowledge.reconcile` to skip the 5-min wait |
-| Orphan handling        | None initially — iterate on standard params; revisit only if visually wrong                                    |
+| Dimension              | Decision                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Layout language        | Python force-directed (NetworkX `forceatlas2_layout` + hard collide post-process, see "Layout algorithm pivot" below) |
+| Cadence                | At end of every reconcile cycle, post-commit                                                                          |
+| Stability              | Soft: seed prior positions, run 50–100 refine iterations                                                              |
+| Frontend behavior      | Pure render — strip d3-force, plot positions verbatim                                                                 |
+| Storage                | `layout_x`, `layout_y` columns on `knowledge.notes`                                                                   |
+| Tunability (params)    | Helm `values.yaml` → env → `LayoutParams.from_env()`                                                                  |
+| Tunability (iteration) | Local `preview-layout.py` script + `homelab scheduler jobs run-now knowledge.reconcile` to skip the 5-min wait        |
+| Orphan handling        | None initially — iterate on standard params; revisit only if visually wrong                                           |
 
 ## Architecture
 
@@ -407,6 +407,36 @@ entirely (opt-out path for cheap layouts on tiny test fixtures).
 
 `core_fraction`, `ring_radius_fraction`, `max_iter`, and `seed` were
 unchanged.
+
+### Tuning iteration v2 (2026-05-07)
+
+The FA2 + halo dict tuning above closed the worst gaps but dense atom
+clusters still showed visible stacking after the second deploy. A
+deeper round of changes followed:
+
+| Change                    | Before | After | Rationale                                                                                                                                                                                                                |
+| ------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scaling_ratio`           | 5.0    | 2.0   | High `scaling_ratio` was over-spreading the _whole_ cluster (filling the canvas edges) without solving the close-pair overlap that mattered. Dropped back to FA2's default; let the new collide pass handle the overlap. |
+| Orphan ring               | on     | off   | The orphan ring carried no graph information and stole canvas area from the connected core. Orphans are now filtered out of the API response (`KnowledgeStore.get_graph`) so layout never sees them.                     |
+| Hard collide post-process | —      | new   | After FA2 + post-scale, run a simultaneous-update Lloyd-style relaxation (~120 iters, uniform-grid spatial index) that pushes apart any two node centers closer than the sum of their render radii.                      |
+| Frontend `baseRadius`     | 2.8    | 1.82  | 35% smaller dots — less visible overlap even in residual close-pair cases the collide pass can't fully resolve.                                                                                                          |
+| Frontend `hubBoost`       | 0.5    | 0.325 | 35% smaller (proportional to baseRadius).                                                                                                                                                                                |
+
+The collide pass uses simultaneous update — accumulate every pair's
+displacement into per-node deltas, then apply once per iteration. That
+avoids the asymmetric pushes that sequential Lloyd updates produce and
+keeps the algorithm cycle-stable. Hard-coded `max_iter=120` and
+`extra_pad=0.003` at the call site rather than exposing as Helm knobs;
+small surface, easy to add later if tuning need arises.
+
+**Discovered data bug (followup investigation needed):** during this
+tuning round we noticed that 506 of the 543 "orphan" nodes were gap
+notes with zero incoming edges — contradicting the design assumption
+that gap stubs always have at least one source note linking them in.
+Filtering orphans at the API hides the symptom, but the underlying
+data inconsistency (gap rows whose source note no longer references
+them, or never did) is a separate cleanup. Tracked as a separate
+followup, not in scope for this layout iteration.
 
 **Why FA2 over the other paths considered:**
 

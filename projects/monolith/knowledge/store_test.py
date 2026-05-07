@@ -577,7 +577,10 @@ def test_get_graph_drops_edges_with_unresolved_targets(session):
 
     result = store.get_graph()
 
-    assert any(n["id"] == "id-a" for n in result["nodes"])
+    # The unresolved edge is dropped, which leaves id-a with no edges.
+    # Orphans (no edges) are filtered out of the graph response so the
+    # layout step doesn't waste effort on disconnected dots.
+    assert result["nodes"] == []
     assert result["edges"] == []
 
 
@@ -639,7 +642,9 @@ def test_get_graph_drops_title_form_wikilink_with_no_matching_slug(session):
 
     result = store.get_graph()
 
-    assert any(n["id"] == "src" for n in result["nodes"])
+    # The unresolved edge leaves ``src`` with no edges; the orphan
+    # filter then drops the node from the response entirely.
+    assert result["nodes"] == []
     assert result["edges"] == []
 
 
@@ -675,7 +680,8 @@ def test_get_graph_drops_typed_edges_with_unresolved_targets(session):
 
     result = store.get_graph()
 
-    assert any(n["id"] == "id-a" for n in result["nodes"])
+    # Edge dropped, id-a becomes an orphan, orphan filter drops the node.
+    assert result["nodes"] == []
     assert result["edges"] == []
 
 
@@ -718,8 +724,11 @@ def test_get_graph_response_includes_degree_and_positions(session):
     """Server now computes degree (was client-side) and ships positions on each node."""
     store = KnowledgeStore(session)
 
-    # note-a links to both note-b and note-c; note-d is isolated. note-a
-    # also has persisted layout coordinates; the others do not.
+    # note-a links to both note-b and note-c. note-a also has persisted
+    # layout coordinates; the others do not. (We used to also seed an
+    # isolated note-d here, but orphans are now filtered out of the
+    # graph response — see test_get_graph_filters_orphan_and_typed_nodes
+    # for the dedicated orphan-filter assertions.)
     _upsert(
         store,
         note_id="note-a",
@@ -748,14 +757,6 @@ def test_get_graph_response_includes_degree_and_positions(session):
         title="C",
         metadata=_meta(title="C", type="atom"),
     )
-    _upsert(
-        store,
-        note_id="note-d",
-        path="d.md",
-        content_hash="h-d",
-        title="D",
-        metadata=_meta(title="D", type="atom"),
-    )
 
     # Set layout coordinates on note-a directly — the upsert path doesn't
     # touch layout fields (those are written by the layout job, not ingest).
@@ -771,30 +772,35 @@ def test_get_graph_response_includes_degree_and_positions(session):
     assert by_id["note-a"]["degree"] == 2
     assert by_id["note-b"]["degree"] == 1
     assert by_id["note-c"]["degree"] == 1
-    assert by_id["note-d"]["degree"] == 0  # isolated node
 
     assert by_id["note-a"]["x"] == 0.3
     assert by_id["note-a"]["y"] == -0.4
     assert by_id["note-b"]["x"] is None
     assert by_id["note-b"]["y"] is None
-    assert by_id["note-d"]["x"] is None
-    assert by_id["note-d"]["y"] is None
 
 
 def test_get_graph_filters_nodes_by_type(session):
-    """Notes whose type isn't in GRAPH_NOTE_TYPES are dropped.
+    """Notes whose type isn't in GRAPH_NOTE_TYPES are dropped, and
+    orphan nodes (no edges) are dropped too.
 
-    Locks in the server-as-source-of-truth contract: the type filter
-    used to live client-side in +page.svelte, where the server's
-    ``degree`` (computed over all visible edges) was incoherent with
-    what the user saw (since the client further dropped nodes). Now the
-    server filters first, then computes degree, so the two stay aligned.
+    Locks in two server-as-source-of-truth contracts:
+
+    1. The type filter used to live client-side in +page.svelte, where
+       the server's ``degree`` (computed over all visible edges) was
+       incoherent with what the user saw (since the client further
+       dropped nodes). Now the server filters first, then computes
+       degree, so the two stay aligned.
+    2. Orphan filtering (added in feat/kg-layout-v2): orphans carry no
+       graph information and waste layout effort, so we drop them on
+       the way out.
     """
     store = KnowledgeStore(session)
 
     # An in-set atom links to a paper (in-set) and a "weird" note (out-
     # of-set). Only the atom→paper edge should survive; the atom's
-    # degree should be 1, not 2.
+    # degree should be 1, not 2. Plus an isolated in-set atom that has
+    # no edges at all — should be dropped by the orphan filter even
+    # though its type passes the type filter.
     _upsert(
         store,
         note_id="atom-1",
@@ -823,11 +829,23 @@ def test_get_graph_filters_nodes_by_type(session):
         title="Weird",
         metadata=_meta(title="Weird", type="something-weird"),
     )
+    # Isolated atom — passes the type filter, fails the orphan filter.
+    _upsert(
+        store,
+        note_id="lonely-1",
+        path="lonely.md",
+        content_hash="h-lonely",
+        title="Lonely",
+        metadata=_meta(title="Lonely", type="atom"),
+    )
 
     result = store.get_graph()
 
     node_ids = {n["id"] for n in result["nodes"]}
-    assert node_ids == {"atom-1", "paper-1"}, "weird-typed node must be dropped"
+    assert node_ids == {"atom-1", "paper-1"}, (
+        "weird-typed node must be dropped by type filter; "
+        "lonely-1 must be dropped by orphan filter"
+    )
 
     edge_pairs = {(e["source"], e["target"]) for e in result["edges"]}
     assert edge_pairs == {("atom-1", "paper-1")}, (
@@ -845,6 +863,9 @@ def test_get_graph_drops_notes_with_null_type(session):
     """A note with type=None is dropped from the graph response."""
     store = KnowledgeStore(session)
 
+    # Use a connected pair so the orphan filter doesn't also drop the
+    # typed survivor — this test is about the null-type path, not
+    # orphan filtering.
     _upsert(
         store,
         note_id="typed",
@@ -852,6 +873,15 @@ def test_get_graph_drops_notes_with_null_type(session):
         content_hash="h-t",
         title="T",
         metadata=_meta(title="T", type="atom"),
+        links=[Link(target="typed-2", display=None)],
+    )
+    _upsert(
+        store,
+        note_id="typed-2",
+        path="typed-2.md",
+        content_hash="h-t2",
+        title="T2",
+        metadata=_meta(title="T2", type="atom"),
     )
     _upsert(
         store,
@@ -865,4 +895,4 @@ def test_get_graph_drops_notes_with_null_type(session):
     result = store.get_graph()
 
     node_ids = {n["id"] for n in result["nodes"]}
-    assert node_ids == {"typed"}, "untyped note must be dropped"
+    assert node_ids == {"typed", "typed-2"}, "untyped note must be dropped"

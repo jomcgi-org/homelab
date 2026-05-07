@@ -39,11 +39,16 @@
 
   // Render-time tuning only. Layout (positions, spread, edge tension)
   // runs server-side in projects/monolith/knowledge/layout.py
-  // (FA2 + structural orphan ring). The render code does not own any
-  // layout parameters.
+  // (FA2 + hard collide post-process). The render code does not own
+  // any layout parameters.
+  //
+  // baseRadius/hubBoost reduced 35% from 2.8/0.5 in feat/kg-layout-v2
+  // to reduce visible overlap in dense atom clusters; combined with
+  // API-side orphan filtering and a hard collide post-process this
+  // minimizes node overlap while preserving the FA2 cluster shape.
   const CFG = {
-    baseRadius: 2.8,
-    hubBoost: 0.5,
+    baseRadius: 1.82,
+    hubBoost: 0.325,
     edgeOpacity: 0.16,
     edgeOpacityActive: 0.85,
     labelMinZoom: 1.2,
@@ -102,10 +107,11 @@
   }
 
   // Server coords arrive normalised to ~[-1, +1] (see compute_layout in
-  // knowledge/layout.py — connected nodes scaled to core_fraction,
-  // orphans placed at ring_radius_fraction). projectXY scales them so
-  // the unit canvas fills the smaller stage dimension minus a margin;
-  // fitToBbox() later refines the initial zoom.
+  // knowledge/layout.py — connected nodes scaled to core_fraction, then
+  // a hard collide post-process spreads them out further; orphans are
+  // filtered out at the API layer so they never reach this component).
+  // projectXY scales them so the unit canvas fills the smaller stage
+  // dimension minus a margin; fitToBbox() later refines the initial zoom.
 
   function rebuildGraph() {
     const w = stage?.clientWidth ?? canvas?.width ?? 1200;
