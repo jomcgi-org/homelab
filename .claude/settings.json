@@ -107,7 +107,7 @@
     "frontend-design@claude-plugins-official": true,
     "github@claude-plugins-official": true,
     "playwright@claude-plugins-official": true,
-    "coderabbit@claude-plugins-official": true,
     "impeccable@impeccable": true
-  }
+  },
+  "skillListingBudgetFraction": 0.02
 }
