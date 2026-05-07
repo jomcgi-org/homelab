@@ -13,6 +13,9 @@ Routine can pull one signal at a time without a wrapping aggregate.
                             retry attempts (mirrors ``GET /api/knowledge/dead-letter``).
 - ``check_firing_alerts`` : SigNoz ``/api/v1/rules`` rules whose state is
                             ``firing``.
+- ``trigger_job``         : kick a ``scheduler.scheduled_jobs`` row to
+                            run on the next tick by setting
+                            ``next_run_at = now()``.
 """
 
 from __future__ import annotations
@@ -182,3 +185,18 @@ async def check_firing_alerts(
         for rule in rules
         if rule.get("state") == "firing"
     ]
+
+
+def trigger_job(name: str) -> bool:
+    """Kick a ``scheduler.scheduled_jobs`` row to run on the next tick.
+
+    Sets ``next_run_at = now()`` for the named row. Returns True if a
+    row was updated, False if no row by that name exists.
+    """
+    sql = text(
+        "UPDATE scheduler.scheduled_jobs SET next_run_at = now() WHERE name = :name"
+    )
+    with Session(get_engine()) as session:
+        result = session.execute(sql, {"name": name})
+        session.commit()
+    return result.rowcount > 0
