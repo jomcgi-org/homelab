@@ -2780,6 +2780,17 @@ py_test(
     ],
 )
 
+py_test(
+    name = "agent_notify_test",
+    srcs = ["agent/notify_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
 bdd_test(
     name = "agent_bdd_locks_test",
     srcs = [
