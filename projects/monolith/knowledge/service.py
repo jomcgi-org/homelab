@@ -206,8 +206,8 @@ def _run_layout_pass(session: Session) -> tuple[int, int, int]:
     # logic. Body wikilinks store ``target_id`` as raw user-typed text
     # (``"Steve Krug"``); gap stubs and ``_processed`` notes carry
     # ``note_id`` in slug form. Without this normalization FA2 treats
-    # gap edges as missing, the gap nodes are classified as orphans by
-    # ``compute_layout``, and they drift to the perimeter ring.
+    # gap edges as missing and the gap nodes get no position from
+    # ``compute_layout`` (the API then drops them as orphans).
     slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}
     edges: list[EdgeRef] = []
     for r in edge_rows:

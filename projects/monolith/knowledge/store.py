@@ -425,6 +425,15 @@ class KnowledgeStore:
                 degree_by_note_id.get(edge["target"], 0) + 1
             )
 
+        # Orphans (no edges) carry no graph information; we filter them
+        # out so the layout step doesn't waste effort and the renderer
+        # doesn't show floating dots. The 506 unlinked gap notes
+        # observed in prod are a separate data bug — see followup TODO.
+        connected_note_ids = set(degree_by_note_id)
+        connected_note_rows = [
+            row for row in note_rows if row.note_id in connected_note_ids
+        ]
+
         return {
             "nodes": [
                 {
@@ -435,7 +444,7 @@ class KnowledgeStore:
                     "x": row.layout_x,
                     "y": row.layout_y,
                 }
-                for row in note_rows
+                for row in connected_note_rows
             ],
             "edges": edges,
             # indexed_at remains the cluster-wide max — it represents the

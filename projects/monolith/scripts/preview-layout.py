@@ -7,19 +7,21 @@ writes a single self-contained HTML file you open in a browser to visualize
 the layout. No force simulation runs in the browser — positions are baked
 in by ``compute_layout`` exactly as they would be in prod.
 
-The layout splits the graph into a connected core (laid out by
-``nx.forceatlas2_layout`` and post-scaled to ``--core-fraction``) and an
-orphan ring on the canvas perimeter at ``--ring-radius-fraction``.
+The layout runs ``nx.forceatlas2_layout`` on the connected subgraph,
+post-scales the result to ``--core-fraction``, and applies a hard
+collide post-process so no two node circles overlap. This script's
+``compute_layout`` call drops orphans and runs the hard collide pass
+automatically — same path as prod, no orphan-ring step anymore (orphans
+are filtered out at the API layer in production).
 
 Usage:
     python preview-layout.py \\
         --snapshot graph.json \\
-        --scaling-ratio 5.0 \\
+        --scaling-ratio 2.0 \\
         --gravity 0.1 \\
         --max-iter 100 \\
         --no-linlog \\
         --core-fraction 0.99 \\
-        --ring-radius-fraction 0.995 \\
         --node-size-scale 0.005 \\
         --seed 42 \\
         --out preview.html
@@ -52,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Path to a graph JSON snapshot ({nodes:[...], edges:[...]}).",
     )
-    parser.add_argument("--scaling-ratio", type=float, default=5.0)
+    parser.add_argument("--scaling-ratio", type=float, default=2.0)
     parser.add_argument("--gravity", type=float, default=0.1)
     parser.add_argument("--max-iter", type=int, default=100)
     parser.add_argument(
@@ -69,7 +71,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Disable FA2 logarithmic attraction.",
     )
     parser.add_argument("--core-fraction", type=float, default=0.99)
-    parser.add_argument("--ring-radius-fraction", type=float, default=0.995)
     parser.add_argument(
         "--node-size-scale",
         type=float,
@@ -101,7 +102,6 @@ def main(argv: list[str] | None = None) -> int:
         max_iter=args.max_iter,
         linlog=args.linlog,
         core_fraction=args.core_fraction,
-        ring_radius_fraction=args.ring_radius_fraction,
         node_size_scale=args.node_size_scale,
         seed=args.seed,
     )
@@ -133,7 +133,7 @@ def _render_html(
     title = html.escape(
         f"layout preview (sr={params.scaling_ratio}, g={params.gravity}, "
         f"it={params.max_iter}, ll={params.linlog}, "
-        f"core={params.core_fraction}, ring={params.ring_radius_fraction}, "
+        f"core={params.core_fraction}, "
         f"nss={params.node_size_scale}, seed={params.seed})"
     )
     return f"""<!doctype html>

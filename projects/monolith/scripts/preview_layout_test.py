@@ -144,8 +144,6 @@ def test_preview_layout_passes_params_to_compute_layout(tmp_path, monkeypatch):
             "--no-linlog",
             "--core-fraction",
             "0.8",
-            "--ring-radius-fraction",
-            "0.9",
             "--node-size-scale",
             "0.01",
             "--seed",
@@ -161,6 +159,5 @@ def test_preview_layout_passes_params_to_compute_layout(tmp_path, monkeypatch):
     assert p.max_iter == 75
     assert p.linlog is False
     assert p.core_fraction == 0.8
-    assert p.ring_radius_fraction == 0.9
     assert p.node_size_scale == 0.01
     assert p.seed == 7

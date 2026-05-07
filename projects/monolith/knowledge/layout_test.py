@@ -1,14 +1,14 @@
 """Unit tests for knowledge.layout — pure compute_layout function.
 
-The layout splits the graph into a connected core (laid out by
-``nx.forceatlas2_layout``) and an orphan ring (hash-determined angles
-on the canvas perimeter). Tests cover both branches plus the param
-plumbing and validation paths.
+The layout runs FA2 on the connected subgraph, post-scales the result
+to ``core_fraction`` of the canvas, and then applies a hard collide
+post-process so no two node circles overlap. Orphan nodes (no edges)
+are filtered upstream by ``KnowledgeStore.get_graph`` and never reach
+this function — see ``store_test.py`` for that path.
 """
 
 from __future__ import annotations
 
-import hashlib
 import math
 
 import pytest
@@ -24,9 +24,15 @@ def _all_finite(positions: dict[str, tuple[float, float]]) -> bool:
     return all(math.isfinite(x) and math.isfinite(y) for x, y in positions.values())
 
 
-def _expected_orphan_angle(nid: str) -> float:
-    h = int(hashlib.sha256(nid.encode()).hexdigest()[:8], 16)
-    return 2 * math.pi * (h / 0xFFFFFFFF)
+# Render-radius constants — kept in sync with the production
+# ``_RENDER_BASE_R`` / ``_RENDER_HUB_BOOST`` in ``layout.py`` so the
+# overlap test asserts against the same circles the collide pass uses.
+_BASE_R = 1.82 / 340
+_HUB_BOOST = 0.325 / 340
+
+
+def _expected_radius(degree: int) -> float:
+    return _BASE_R + _HUB_BOOST * math.log2(1 + degree)
 
 
 class TestComputeLayout:
@@ -70,12 +76,10 @@ class TestComputeLayout:
     def test_compute_layout_handles_empty_graph(self):
         assert compute_layout([], [], LayoutParams()) == {}
 
-    def test_compute_layout_handles_single_node(self):
-        """Single orphan node: ring placement, no FA2."""
+    def test_compute_layout_handles_single_orphan_returns_no_position(self):
+        """A node with no edges is silently skipped — orphans are filtered upstream."""
         positions = compute_layout([_node("solo")], [], LayoutParams())
-        assert set(positions.keys()) == {"solo"}
-        x, y = positions["solo"]
-        assert math.isfinite(x) and math.isfinite(y)
+        assert positions == {}
 
     def test_compute_layout_handles_disconnected_components(self):
         """Two cliques with no shared nodes — all positioned, all in core."""
@@ -94,12 +98,6 @@ class TestComputeLayout:
 
         assert set(positions.keys()) == {n.id for n in nodes}
         assert _all_finite(positions)
-        # All connected → all inside the core radius.
-        eps = 1e-9
-        for nid, (x, y) in positions.items():
-            assert max(abs(x), abs(y)) <= params.core_fraction + eps, (
-                f"{nid}=({x},{y}) outside core_fraction={params.core_fraction}"
-            )
 
     def test_compute_layout_filters_nan_inputs_via_module_contract(self):
         """A NaN prior must be ignored at the seed step, not propagated."""
@@ -127,8 +125,8 @@ class TestComputeLayout:
 
         assert loose != tight
 
-    def test_compute_layout_uses_full_canvas_radius_when_orphans_present(self):
-        """Mixed graph: orphans live on the ring, connected fits the core."""
+    def test_compute_layout_skips_orphans_silently(self):
+        """Mixed graph: connected nodes get positions, orphans get no key."""
         nodes = [
             _node("a"),
             _node("b"),
@@ -141,65 +139,12 @@ class TestComputeLayout:
 
         positions = compute_layout(nodes, edges, params)
 
-        eps = 1e-9
-        for nid in ("orph1", "orph2"):
-            x, y = positions[nid]
-            r = math.hypot(x, y)
-            assert abs(r - params.ring_radius_fraction) < 1e-9, (
-                f"{nid} ring radius {r} != {params.ring_radius_fraction}"
-            )
-
-        # The connected nodes' bounding box must reach exactly
-        # core_fraction (post-scale fits the core to that radius).
-        connected_max_extent = max(
-            max(abs(positions[nid][0]), abs(positions[nid][1]))
-            for nid in ("a", "b", "c")
-        )
-        assert abs(connected_max_extent - params.core_fraction) < 1e-9, (
-            f"connected max extent {connected_max_extent} != "
-            f"core_fraction {params.core_fraction}"
-        )
-
-    def test_compute_layout_orphan_positions_are_hash_stable(self):
-        """An orphan's angle depends only on its id, not the rest of the graph."""
-        params = LayoutParams(seed=42)
-
-        alone = compute_layout([_node("X")], [], params)
-        with_others = compute_layout(
-            [_node(nid) for nid in ("X", "A", "B", "C", "D", "E")], [], params
-        )
-
-        assert alone["X"] == with_others["X"]
-
-        expected_angle = _expected_orphan_angle("X")
-        x, y = alone["X"]
-        assert math.isclose(
-            math.atan2(y, x) % (2 * math.pi), expected_angle, abs_tol=1e-9
-        )
-
-    def test_compute_layout_orphan_ring_positions_are_deterministic(self):
-        """Same orphan-only graph called twice yields identical positions."""
-        nodes = [_node(nid) for nid in ("orph1", "orph2", "orph3")]
-        params = LayoutParams(seed=42)
-
-        first = compute_layout(nodes, [], params)
-        second = compute_layout(nodes, [], params)
-
-        assert first == second
-
-    def test_compute_layout_handles_no_edges_all_orphans(self):
-        """Every node is an orphan: ring is populated, no FA2 invocation."""
-        nodes = [_node(nid) for nid in ("a", "b", "c")]
-        params = LayoutParams(seed=42)
-
-        positions = compute_layout(nodes, [], params)
-
+        # Orphans get no entry in the output — they're expected to be
+        # filtered upstream in ``KnowledgeStore.get_graph``; if any sneak
+        # through, ``compute_layout`` silently skips them rather than
+        # placing them on a perimeter ring.
         assert set(positions.keys()) == {"a", "b", "c"}
-        for nid, (x, y) in positions.items():
-            r = math.hypot(x, y)
-            assert abs(r - params.ring_radius_fraction) < 1e-9, (
-                f"{nid} ring radius {r} != {params.ring_radius_fraction}"
-            )
+        assert _all_finite(positions)
 
     def test_compute_layout_handles_no_orphans_all_connected(self):
         """Every node is connected: only the FA2 + core-scale path runs."""
@@ -211,17 +156,6 @@ class TestComputeLayout:
 
         assert set(positions.keys()) == {"a", "b", "c"}
         assert _all_finite(positions)
-        eps = 1e-9
-        for nid, (x, y) in positions.items():
-            assert max(abs(x), abs(y)) <= params.core_fraction + eps
-
-    def test_compute_layout_orphan_x_node_alone_is_pure_ring(self):
-        """A node with no edges goes straight to the ring (regression)."""
-        params = LayoutParams(seed=42)
-        positions = compute_layout([_node("solo")], [], params)
-        x, y = positions["solo"]
-        r = math.hypot(x, y)
-        assert abs(r - params.ring_radius_fraction) < 1e-9
 
     def test_compute_layout_with_node_size_scale_changes_output(self):
         """node_size_scale must be plumbed through to FA2 — same graph with
@@ -245,6 +179,36 @@ class TestComputeLayout:
         )
 
         assert no_halo != with_halo
+
+    def test_compute_layout_resolves_overlaps_in_dense_clusters(self):
+        """The hard collide post-process must leave no two nodes overlapping.
+
+        Seed a tight 3-node triangle (every node is hub-adjacent so FA2's
+        own halo dict packs them as close as it can), call compute_layout,
+        and assert that no two output positions have center distance less
+        than ``rA + rB`` — i.e. circles never overlap. A small float
+        epsilon accounts for the iterative pass not always fully
+        converging on the last micro-overlap.
+        """
+        nodes = [_node(nid) for nid in ("a", "b", "c")]
+        edges = [EdgeRef("a", "b"), EdgeRef("b", "c"), EdgeRef("a", "c")]
+        params = LayoutParams(scaling_ratio=2.0, max_iter=100, seed=42)
+
+        positions = compute_layout(nodes, edges, params)
+
+        # Each node has degree 2 in this triangle; render radius is
+        # the same for all three.
+        r = _expected_radius(2)
+        eps = 1e-6
+        ids = list(positions)
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                xa, ya = positions[ids[i]]
+                xb, yb = positions[ids[j]]
+                d = math.hypot(xa - xb, ya - yb)
+                assert d >= 2 * r - eps, (
+                    f"{ids[i]} and {ids[j]} overlap: distance={d}, min={2 * r}"
+                )
 
 
 class TestLayoutParamsValidation:
@@ -283,22 +247,6 @@ class TestLayoutParamsValidation:
         with pytest.raises(ValueError, match=r"core_fraction must be in \(0, 1\]"):
             LayoutParams(core_fraction=0.0)
 
-    def test_validates_ring_radius_fraction_upper_bound(self):
-        with pytest.raises(
-            ValueError, match=r"ring_radius_fraction must be in \(0, 1\]"
-        ):
-            LayoutParams(ring_radius_fraction=1.5)
-
-    def test_validates_ring_radius_fraction_lower_bound(self):
-        with pytest.raises(
-            ValueError, match=r"ring_radius_fraction must be in \(0, 1\]"
-        ):
-            LayoutParams(ring_radius_fraction=0.0)
-
-    def test_validates_core_fraction_not_greater_than_ring(self):
-        with pytest.raises(ValueError, match="must be <= ring_radius_fraction"):
-            LayoutParams(core_fraction=0.95, ring_radius_fraction=0.5)
-
     def test_node_size_scale_zero_is_allowed(self):
         # node_size_scale=0 means "no halo" — must construct without raising.
         params = LayoutParams(node_size_scale=0.0)
@@ -316,12 +264,11 @@ class TestLayoutParamsValidation:
 class TestLayoutParamsFromEnv:
     def test_uses_defaults_when_env_empty(self):
         params = LayoutParams.from_env({})
-        assert params.scaling_ratio == 5.0
+        assert params.scaling_ratio == 2.0
         assert params.gravity == 0.1
         assert params.max_iter == 100
         assert params.linlog is False
         assert params.core_fraction == 0.99
-        assert params.ring_radius_fraction == 0.995
         assert params.node_size_scale == 0.005
         assert params.seed == 42
 
@@ -333,7 +280,6 @@ class TestLayoutParamsFromEnv:
                 "KNOWLEDGE_LAYOUT_MAX_ITER": "200",
                 "KNOWLEDGE_LAYOUT_LINLOG": "1",
                 "KNOWLEDGE_LAYOUT_CORE_FRACTION": "0.8",
-                "KNOWLEDGE_LAYOUT_RING_RADIUS_FRACTION": "0.9",
                 "KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE": "0.01",
                 "KNOWLEDGE_LAYOUT_SEED": "7",
             }
@@ -343,7 +289,6 @@ class TestLayoutParamsFromEnv:
         assert params.max_iter == 200
         assert params.linlog is True
         assert params.core_fraction == 0.8
-        assert params.ring_radius_fraction == 0.9
         assert params.node_size_scale == 0.01
         assert params.seed == 7
 
@@ -364,7 +309,5 @@ class TestLayoutParamsFromEnv:
             LayoutParams.from_env({"KNOWLEDGE_LAYOUT_SCALING_RATIO": "-0.1"})
         with pytest.raises(ValueError):
             LayoutParams.from_env({"KNOWLEDGE_LAYOUT_CORE_FRACTION": "2.0"})
-        with pytest.raises(ValueError):
-            LayoutParams.from_env({"KNOWLEDGE_LAYOUT_RING_RADIUS_FRACTION": "0"})
         with pytest.raises(ValueError):
             LayoutParams.from_env({"KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE": "-0.001"})
