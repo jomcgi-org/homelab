@@ -74,7 +74,7 @@ def _serialize_dead_letter(row: dict) -> dict:
 async def monolith_agent_acquire_lock(key: str, holder: str, ttl_secs: int) -> dict:
     """Acquire an opportunistic TTL lock keyed by ``key``.
 
-    Steals expired locks; refuses live ones. Returns ``acquired=False``
+    Steals expired locks but refuses live ones. Returns ``acquired=False``
     when another holder has the key with a still-live TTL.
     """
     result = locks.acquire(key, holder, ttl_secs)
@@ -123,8 +123,8 @@ async def monolith_agent_notify(
 ) -> dict:
     """Post a Discord message via the in-process bot.
 
-    Defaults to the homelab channel from settings; ``channel``, if
-    specified, must be in the configured allow-list.
+    Defaults to the homelab channel from settings. The ``channel`` arg,
+    if specified, must be in the configured allow-list.
     """
     return await notify_mod.notify(message, level=level, channel=channel)
 
