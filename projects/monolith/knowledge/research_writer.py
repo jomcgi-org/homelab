@@ -60,6 +60,7 @@ def write_research_raw(
 
     fm = {
         "type": "research",
+        "visibility": "public",
         "id": slug,
         "title": f"Research note: {title}",
         "derived_from_gap": slug,

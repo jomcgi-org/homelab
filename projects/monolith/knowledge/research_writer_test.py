@@ -130,3 +130,35 @@ def test_research_raw_path_format(tmp_path: Path) -> None:
     assert out.parent.name == "research"
     assert out.parent.parent.name == "_inbox"
     assert out.name == "thing.md"
+
+
+def test_research_raw_sets_visibility_public(tmp_path: Path) -> None:
+    out_path = write_research_raw(
+        vault_root=tmp_path,
+        slug="dora-metrics",
+        title="DORA Metrics",
+        summary="...",
+        supported_claims=[],
+        sources=[],
+        agent_model="sonnet",
+        researched_at="2026-05-07T12:00:00Z",
+    )
+    text = out_path.read_text()
+    assert "visibility: public" in text
+    fm = _read_fm(out_path)
+    assert fm["visibility"] == "public"
+
+
+def test_failed_research_does_not_set_visibility(tmp_path: Path) -> None:
+    """Quarantined drafts are forensic; visibility is irrelevant."""
+    out_path = quarantine(
+        vault_root=tmp_path,
+        slug="bad",
+        attempt=1,
+        summary="...",
+        pre_filter_claims=[],
+        sources=[],
+        agent_model="sonnet",
+        researched_at="2026-05-07T12:00:00Z",
+    )
+    assert "visibility" not in out_path.read_text()
