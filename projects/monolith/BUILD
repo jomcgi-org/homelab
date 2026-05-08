@@ -53,6 +53,19 @@ py_venv_binary(
     deps = [":monolith_backend"],  # keep
 )
 
+# Phase-1 vault-mutation script: walk a vault and inject `visibility:` lines
+# into note frontmatter that lacks the key. Run via `bazel run`:
+#   bazel run //projects/monolith:add_visibility_field -- \
+#       --vault-root /path/to/vault --dirs _processed
+py_venv_binary(
+    name = "add_visibility_field",
+    srcs = ["knowledge/tools/add_visibility_field.py"],
+    imports = ["."],
+    main = "knowledge/tools/add_visibility_field.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_backend"],
+)
+
 py_library(
     name = "monolith_backend",
     srcs = glob(
@@ -1836,6 +1849,16 @@ py_test(
 py_test(
     name = "knowledge_visibility_test",
     srcs = ["knowledge/visibility_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "knowledge_tools_add_visibility_field_test",
+    srcs = ["knowledge/tools/add_visibility_field_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
