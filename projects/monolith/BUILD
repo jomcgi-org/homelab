@@ -59,11 +59,8 @@ py_venv_binary(
 #       --vault-root /path/to/vault --dirs _processed
 py_venv_binary(
     name = "add_visibility_field",
-    srcs = ["knowledge/tools/add_visibility_field.py"],
-    imports = ["."],
     main = "knowledge/tools/add_visibility_field.py",
     visibility = ["//:__subpackages__"],
-    deps = [":monolith_backend"],
 )
 
 # Phase-2 vault-mutation script: classify every unlabelled note via the
@@ -75,11 +72,8 @@ py_venv_binary(
 # quote note content and must never be committed.
 py_venv_binary(
     name = "classify_visibility_backfill",
-    srcs = ["knowledge/tools/classify_visibility_backfill.py"],
-    imports = ["."],
     main = "knowledge/tools/classify_visibility_backfill.py",
     visibility = ["//:__subpackages__"],
-    deps = [":monolith_backend"],
 )
 
 py_library(
@@ -2911,4 +2905,28 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
+)
+
+semgrep_target_test(
+    name = "add_visibility_field_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":add_visibility_field",
+)
+
+semgrep_target_test(
+    name = "classify_visibility_backfill_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":classify_visibility_backfill",
 )
