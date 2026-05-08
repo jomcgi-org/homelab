@@ -8,7 +8,7 @@ NoteId = NewType("NoteId", str)
 
 from pgvector.sqlalchemy import Vector
 from pydantic import field_validator
-from sqlalchemy import JSON, Column, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, Column, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
@@ -43,6 +43,10 @@ GapState = Literal[
     "rejected",
 ]
 
+# Mirror of the CHECK constraint in
+# chart/migrations/20260507000000_knowledge_notes_visibility.sql - keep in sync.
+Visibility = Literal["public", "private"]
+
 # Postgres uses native TEXT[] for tags/aliases; SQLite falls back to JSON
 # so the in-memory test fixture can create the tables.
 _STRING_ARRAY = PG_ARRAY(String).with_variant(JSON(), "sqlite")
@@ -53,7 +57,17 @@ _JSONB = JSONB().with_variant(JSON(), "sqlite")
 
 class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     __tablename__ = "notes"
-    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+    __table_args__ = (
+        # Mirrors the CHECK constraint in
+        # chart/migrations/20260507000000_knowledge_notes_visibility.sql.
+        # Declared on the model (in addition to the migration) so SQLite-backed
+        # unit tests using SQLModel.metadata.create_all() also enforce it.
+        CheckConstraint(
+            "visibility IS NULL OR visibility IN ('public', 'private')",
+            name="notes_visibility_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     note_id: NoteId = Field(
@@ -64,6 +78,9 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     content_hash: str
     type: str | None = None
     status: str | None = None
+    visibility: Visibility | None = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
     source: str | None = None
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     aliases: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
