@@ -8,8 +8,26 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from knowledge.gardener import GARDENER_VERSION, Gardener
+from knowledge.gardener import GARDENER_VERSION, Gardener, _DISTILL_PROMPT
 from knowledge.models import AtomRawProvenance, Note
+from knowledge.visibility import VISIBILITY_CRITERIA
+
+
+def test_distill_prompt_includes_visibility_criteria():
+    """The distill prompt must require a `visibility:` frontmatter field
+    and embed the verbatim criteria text from `knowledge.visibility`.
+
+    Distilled atoms come from completed task notes — typically workplace
+    specifics — so the criteria steer most outputs to `private`. Drift
+    between this prompt and the public-route filters is the primary leak
+    failure mode, hence the assertion on the imported constant.
+    """
+    rendered = _DISTILL_PROMPT.format(
+        note_id="n", note_path="x", processed_root="p", title="t"
+    )
+    assert "visibility:" in rendered
+    # criteria must be appended verbatim — drift = leak
+    assert VISIBILITY_CRITERIA.strip() in rendered
 
 
 @pytest.fixture(name="session")
