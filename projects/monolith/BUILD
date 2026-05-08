@@ -1834,6 +1834,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_visibility_test",
+    srcs = ["knowledge/visibility_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_gardener_test",
     srcs = ["knowledge/gardener_test.py"],
     imports = ["."],
