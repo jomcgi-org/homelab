@@ -243,3 +243,56 @@ class TestEditNote:
 
         assert r.status_code == 404
         assert "vault file missing" in r.json().get("detail", "")
+
+    def test_edit_note_preserves_visibility_in_frontmatter(self, client, tmp_path):
+        """PUT must preserve visibility frontmatter on body/title rewrites.
+
+        Regression guard for the public-notes-visibility V1: the PUT endpoint
+        rewrites the file's frontmatter from the parsed metadata. If a future
+        refactor drops ``visibility`` from the re-serialized frontmatter, the
+        next reconciler pass will null the column on disk and silently leak
+        previously-public notes back to private (or vice versa). Tasks 4-5
+        wire ``visibility`` through the parser -> store flow; this test makes
+        sure the PUT round-trip doesn't undo that on every manual edit.
+        """
+        note_path = "rt.md"
+        original = (
+            "---\n"
+            "title: Round Trip\n"
+            "visibility: public\n"
+            "tags:\n"
+            "- demo\n"
+            "---\n"
+            "\n"
+            "Original body\n"
+        )
+        (tmp_path / note_path).write_text(original)
+
+        mock_note = {
+            "note_id": "rt",
+            "title": "Round Trip",
+            "path": note_path,
+            "type": "note",
+            "tags": ["demo"],
+        }
+
+        with patch("knowledge.router.KnowledgeStore") as MockStore:
+            MockStore.return_value.get_note_by_id.return_value = mock_note
+
+            r = client.put(
+                "/api/knowledge/notes/rt",
+                json={"content": "Edited body."},
+            )
+
+        assert r.status_code == 200
+
+        # Re-parse the rewritten file and assert the visibility key survived
+        # the round-trip through the PUT serializer.
+        written = (tmp_path / note_path).read_text()
+        parts = written.split("---\n")
+        assert len(parts) >= 3, f"Expected frontmatter delimiters, got: {written}"
+        fm = yaml.safe_load(parts[1])
+        assert fm.get("visibility") == "public", (
+            f"PUT dropped visibility from frontmatter; got fm={fm!r}"
+        )
+        assert "Edited body." in parts[2]
