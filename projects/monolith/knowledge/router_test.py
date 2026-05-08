@@ -778,3 +778,171 @@ class TestGraphEndpoint:
         assert second.content == b""
         assert second.headers["etag"] == etag
         assert "s-maxage=3600" in second.headers["cache-control"]
+
+
+class TestPublicGraphEndpoint:
+    """Tests for GET /api/knowledge/public/graph.
+
+    Strict-visibility variant of /graph: only ``visibility='public'`` notes
+    appear as nodes, and edges are kept only when *both* endpoints are
+    public. Mirrors the cache-header / ETag contract of the private graph
+    so the CDN behaves identically.
+    """
+
+    def test_public_graph_only_public_nodes(self, real_session):
+        """Private/null-visibility notes are excluded from nodes; private
+        targets are excluded from edges even when the source is public."""
+        store = KnowledgeStore(real_session)
+        # pub-A links to pub-B (kept) and to priv-X (dropped: target private).
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+            links=[
+                Link(target="pub-B", display=None),
+                Link(target="priv-X", display=None),
+            ],
+        )
+        _upsert(
+            store,
+            note_id="pub-B",
+            path="pub-b.md",
+            content_hash="h-pb",
+            title="Pub B",
+            metadata=_meta(title="Pub B", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+        _upsert(
+            store,
+            note_id="priv-X",
+            path="priv-x.md",
+            content_hash="h-px",
+            title="Priv X",
+            metadata=_meta(title="Priv X", type="atom", visibility="private"),
+            n_chunks=0,
+        )
+        # null-Y links to pub-B but is itself null-visibility → both the
+        # node and the edge must be dropped.
+        _upsert(
+            store,
+            note_id="null-Y",
+            path="null-y.md",
+            content_hash="h-ny",
+            title="Null Y",
+            metadata=_meta(title="Null Y", type="atom", visibility=None),
+            n_chunks=0,
+            links=[Link(target="pub-B", display=None)],
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 200
+        body = res.json()
+        node_ids = {n["id"] for n in body["nodes"]}
+        assert node_ids == {"pub-A", "pub-B"}
+        edge_pairs = {(e["source"], e["target"]) for e in body["edges"]}
+        assert edge_pairs == {("pub-A", "pub-B")}
+
+    def test_public_graph_excludes_gap_stubs(self, real_session):
+        """Gap stub notes (type='gap', visibility=NULL) never appear in
+        the public graph regardless of how they're linked."""
+        store = KnowledgeStore(real_session)
+        # Public note that wikilinks to an unresolved gap stub.
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+            links=[Link(target="UnresolvedThing", display=None)],
+        )
+        # The gap stub the gardener would create — auto-generated, no
+        # explicit visibility, type='gap'.
+        _upsert(
+            store,
+            note_id="unresolved-thing",
+            path="_researching/unresolved-thing.md",
+            content_hash="h-ut",
+            title="UnresolvedThing",
+            metadata=_meta(title="UnresolvedThing", type="gap", visibility=None),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        body = res.json()
+        node_ids = {n["id"] for n in body["nodes"]}
+        assert "unresolved-thing" not in node_ids
+
+    def test_public_graph_cache_headers(self, real_session):
+        """Public graph carries the same CDN cache directives as /graph."""
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        cc = res.headers.get("cache-control", "")
+        assert "s-maxage=3600" in cc
+        assert "stale-while-revalidate=86400" in cc
+
+    def test_public_graph_etag_changes_when_public_set_mutates(self, real_session):
+        """Adding a new public note invalidates the ETag (node-count
+        component changes even if timestamps don't move enough)."""
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            etag_a = c.get("/api/knowledge/public/graph").headers["etag"]
+            _upsert(
+                store,
+                note_id="pub-B",
+                path="pub-b.md",
+                content_hash="h-pb",
+                title="Pub B",
+                metadata=_meta(title="Pub B", type="atom", visibility="public"),
+                n_chunks=0,
+            )
+            etag_b = c.get("/api/knowledge/public/graph").headers["etag"]
+        finally:
+            app.dependency_overrides.clear()
+
+        assert etag_a != etag_b
