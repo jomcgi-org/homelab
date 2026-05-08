@@ -66,6 +66,22 @@ py_venv_binary(
     deps = [":monolith_backend"],
 )
 
+# Phase-2 vault-mutation script: classify every unlabelled note via the
+# `claude` CLI subprocess and write the decision back into frontmatter.
+# Run via `bazel run`:
+#   bazel run //projects/monolith:classify_visibility_backfill -- \
+#       --vault-root /path/to/vault --report /tmp/visibility-report.json
+# The report path MUST be outside the repo working tree — rationales
+# quote note content and must never be committed.
+py_venv_binary(
+    name = "classify_visibility_backfill",
+    srcs = ["knowledge/tools/classify_visibility_backfill.py"],
+    imports = ["."],
+    main = "knowledge/tools/classify_visibility_backfill.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_backend"],
+)
+
 py_library(
     name = "monolith_backend",
     srcs = glob(
@@ -1859,6 +1875,16 @@ py_test(
 py_test(
     name = "knowledge_tools_add_visibility_field_test",
     srcs = ["knowledge/tools/add_visibility_field_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "knowledge_tools_classify_visibility_backfill_test",
+    srcs = ["knowledge/tools/classify_visibility_backfill_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
