@@ -2849,6 +2849,7 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//fastmcp",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],

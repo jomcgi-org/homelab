@@ -94,26 +94,124 @@ async def test_mcp_endpoint_lists_all_agent_tools(monkeypatch):
 
     This is the strictest production-fidelity check: it goes through
     the same SSE transport that Context Forge and Claude.ai's connector
-    use. If FastMCP's http_app() applies any filter or signature
-    validation that drops tools, this fails where Layer 1 passes.
+    use. We boot ``app.main:app`` via ``httpx.ASGITransport`` and do
+    the real MCP handshake (SSE GET → POST ``initialize`` → POST
+    ``tools/list`` on the per-session messages endpoint). If the SSE
+    handler diverges from ``mcp.list_tools()`` for any tool, this
+    fails where Layer 1 passes.
     """
+    import asyncio  # noqa: PLC0415
+    import json  # noqa: PLC0415
+    import logging  # noqa: PLC0415
+
+    import httpx  # noqa: PLC0415
+
+    logger = logging.getLogger(__name__)
+
     monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "0")
     monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID", "0")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x:x@127.0.0.1:1/x")
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "stub")
     monkeypatch.setenv("SIGNOZ_URL", "http://signoz.test")
 
-    # Import the running app exactly as production does.
-    from app.main import _mcp_app  # noqa: PLC0415
+    from app.main import app  # noqa: PLC0415
 
-    tools = await _mcp_app._mcp_server.list_tools()  # noqa: SLF001
-    # _mcp_server is the underlying low-level server FastMCP wraps; its
-    # list_tools() returns whatever the SSE transport will serve. If
-    # FastMCP filtered any tool out at http_app() build time, it won't
-    # appear here.
-    registered = {t.name for t in tools}
-    missing = EXPECTED_AGENT_TOOLS - registered
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        timeout=httpx.Timeout(30.0),
+    ) as client:
+        # Open the SSE stream. The first event carries the per-session
+        # POST endpoint URL — capture it, then drive the protocol.
+        endpoint_event = asyncio.Future()
+        tool_list_event = asyncio.Future()
+
+        async def consume_sse():
+            try:
+                async with client.stream(
+                    "GET", "/mcp/", headers={"Accept": "text/event-stream"}
+                ) as resp:
+                    assert resp.status_code == 200, (
+                        f"SSE GET failed: {resp.status_code}"
+                    )
+                    current_event = None
+                    async for line in resp.aiter_lines():
+                        if line.startswith("event:"):
+                            current_event = line.split(":", 1)[1].strip()
+                        elif line.startswith("data:"):
+                            data = line.split(":", 1)[1].strip()
+                            if (
+                                current_event == "endpoint"
+                                and not endpoint_event.done()
+                            ):
+                                endpoint_event.set_result(data)
+                            else:
+                                # JSON-RPC message
+                                try:
+                                    obj = json.loads(data)
+                                    if (
+                                        isinstance(obj, dict)
+                                        and obj.get("id") == 2
+                                        and not tool_list_event.done()
+                                    ):
+                                        tool_list_event.set_result(obj)
+                                        return
+                                except json.JSONDecodeError:
+                                    pass
+            except Exception as exc:
+                logger.exception("SSE consumer failed")
+                if not endpoint_event.done():
+                    endpoint_event.set_exception(exc)
+                if not tool_list_event.done():
+                    tool_list_event.set_exception(exc)
+
+        sse_task = asyncio.create_task(consume_sse())
+        try:
+            endpoint_url = await asyncio.wait_for(endpoint_event, timeout=10.0)
+
+            # Send initialize.
+            init_resp = await client.post(
+                endpoint_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "integration-test", "version": "1"},
+                    },
+                },
+            )
+            assert init_resp.status_code in (200, 202), (
+                f"initialize failed: {init_resp.status_code} {init_resp.text}"
+            )
+
+            # Send the initialized notification.
+            await client.post(
+                endpoint_url,
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            )
+
+            # Request tools/list.
+            list_resp = await client.post(
+                endpoint_url,
+                json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            )
+            assert list_resp.status_code in (200, 202), (
+                f"tools/list failed: {list_resp.status_code}"
+            )
+
+            # The response comes back through the SSE stream.
+            obj = await asyncio.wait_for(tool_list_event, timeout=10.0)
+        finally:
+            sse_task.cancel()
+
+    assert "result" in obj, f"tools/list response missing result: {obj}"
+    served = {t["name"] for t in obj["result"]["tools"]}
+    missing = EXPECTED_AGENT_TOOLS - served
     assert not missing, (
-        f"Tools missing from SSE-served list: {sorted(missing)}. "
-        f"Total agent tools served: {len({t for t in registered if 'agent' in t})}"
+        f"Tools missing from SSE wire response: {sorted(missing)}. "
+        f"Total agent tools served on wire: {len({t for t in served if 'agent' in t})}"
     )
