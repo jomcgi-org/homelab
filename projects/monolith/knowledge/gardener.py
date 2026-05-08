@@ -160,6 +160,7 @@ Steps:
 4. If the task was routine with no notable learnings, create no new notes.
 5. Each new note must have YAML frontmatter with:
    - id, title, type (atom or fact), tags
+   - visibility: public|private   # REQUIRED — see criteria below
    - edges: derives_from: [{note_id}]
 6. Do NOT create a new active/task note. Only create atom or fact notes.
 
@@ -176,9 +177,11 @@ words ("the team", "production"), multi-clause phrases, and the atom's
 own title. If a target already exists at `{processed_root}/<slug>.md`,
 prefer that slug; otherwise write the natural title-cased form.
 
+{VISIBILITY_CRITERIA}
+
 Title: {title}
 
-"""
+""".replace("{VISIBILITY_CRITERIA}", VISIBILITY_CRITERIA)
 
 _CLAUDE_TIMEOUT_SECS = 900
 
