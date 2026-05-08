@@ -2841,3 +2841,15 @@ py_test(
         "@pip//pytest_asyncio",
     ],
 )
+
+py_test(
+    name = "agent_mcp_integration_test",
+    srcs = ["agent/mcp_integration_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
