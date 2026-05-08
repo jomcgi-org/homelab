@@ -164,6 +164,34 @@ class TestParse:
         meta, _ = parse(raw)
         assert meta.title == "ratio 3:1 works"
 
+    def test_visibility_public_parsed(self):
+        raw = "---\nid: a\ntitle: A\nvisibility: public\n---\nbody"
+        meta, _ = parse(raw)
+        assert meta.visibility == "public"
+
+    def test_visibility_private_parsed(self):
+        raw = "---\nid: a\ntitle: A\nvisibility: private\n---\nbody"
+        meta, _ = parse(raw)
+        assert meta.visibility == "private"
+
+    def test_visibility_missing_is_none(self):
+        raw = "---\nid: a\ntitle: A\n---\nbody"
+        meta, _ = parse(raw)
+        assert meta.visibility is None
+
+    def test_visibility_empty_string_is_none(self):
+        raw = "---\nid: a\ntitle: A\nvisibility:\n---\nbody"
+        meta, _ = parse(raw)
+        assert meta.visibility is None
+
+    def test_visibility_unknown_value_warns_and_nulls(self, caplog):
+        """Bad classifier output must not break ingest — warn, treat as null."""
+        raw = "---\nid: a\ntitle: A\nvisibility: yellow\n---\nbody"
+        with caplog.at_level("WARNING", logger="monolith.knowledge.frontmatter"):
+            meta, _ = parse(raw)
+        assert meta.visibility is None
+        assert any("visibility" in r.message.lower() for r in caplog.records)
+
     def test_nested_edges_not_broken_by_sanitizer(self):
         raw = (
             "---\n"

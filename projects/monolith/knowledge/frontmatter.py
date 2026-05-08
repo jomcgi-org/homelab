@@ -58,6 +58,7 @@ _PROMOTED_KEYS = {
     "title",
     "type",
     "status",
+    "visibility",
     "source",
     "tags",
     "aliases",
@@ -85,6 +86,7 @@ class ParsedFrontmatter:
     title: str | None = None
     type: str | None = None
     status: str | None = None
+    visibility: str | None = None
     source: str | None = None
     tags: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
@@ -136,6 +138,15 @@ def _build(data: dict[str, Any]) -> ParsedFrontmatter:
     meta.title = _str_or_none(data.get("title"))
     meta.type = _str_or_none(data.get("type"))
     meta.status = _str_or_none(data.get("status"))
+    raw_visibility = _str_or_none(data.get("visibility"))
+    if raw_visibility in (None, "public", "private"):
+        meta.visibility = raw_visibility
+    else:
+        logger.warning(
+            "frontmatter visibility has unknown value %r — treating as null",
+            raw_visibility,
+        )
+        meta.visibility = None
     meta.source = _str_or_none(data.get("source"))
     meta.tags = _string_list(data.get("tags"))
     meta.aliases = _string_list(data.get("aliases"))
