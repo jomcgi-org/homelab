@@ -30,9 +30,10 @@ from knowledge import frontmatter
 from knowledge.gaps import answer_gap, list_review_queue, split_csv
 from knowledge.gardener import Gardener, _slugify
 from knowledge.ingest_queue import IngestQueueItem
-from knowledge.models import AtomRawProvenance, RawInput
+from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
-from knowledge.store import KnowledgeStore
+from knowledge.store import GRAPH_NOTE_TYPES, KnowledgeStore
+from knowledge.visibility import public_notes_filter
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,104 @@ def get_graph(
     for key, value in headers.items():
         response.headers[key] = value
     return graph
+
+
+@router.get("/public/graph")
+def get_public_graph(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """Public-only knowledge graph: only public nodes, only doubly-public edges.
+
+    Mirrors :func:`get_graph` but applies ``public_notes_filter()`` to both
+    ends of every edge so a private note can never appear as a node *or* a
+    target. Same Cache-Control + ETag semantics so the CDN treats this
+    payload identically.
+    """
+    # Only public notes whose type is in the renderable graph set. Gap
+    # stubs (type='gap') with NULL visibility are excluded by the
+    # visibility filter alone, but this also keeps the type filter
+    # consistent with get_graph().
+    public_note_rows = session.execute(
+        select(
+            Note.note_id,
+            Note.title,
+            Note.type,
+            Note.indexed_at,
+            Note.layout_x,
+            Note.layout_y,
+        )
+        .where(public_notes_filter())
+        .where(Note.type.in_(list(GRAPH_NOTE_TYPES)))
+    ).all()
+
+    public_note_ids = {row.note_id for row in public_note_rows}
+    slug_to_note_id = {_slugify(nid): nid for nid in public_note_ids}
+
+    if public_note_ids:
+        # Single SQL join enforces both-ends-public: source side via the
+        # join filter, target side via the IN clause against the resolved
+        # public slug set (mirrors get_graph's slug→canonical resolution).
+        link_rows = session.execute(
+            select(
+                Note.note_id.label("source"),
+                NoteLink.target_id.label("target"),
+                NoteLink.kind,
+                NoteLink.edge_type,
+            )
+            .join(Note, NoteLink.src_note_fk == Note.id)
+            .where(public_notes_filter())
+        ).all()
+    else:
+        link_rows = []
+
+    edges: list[dict] = []
+    for row in link_rows:
+        canonical_target = slug_to_note_id.get(_slugify(row.target))
+        if canonical_target is None:
+            continue
+        edges.append(
+            {
+                "source": row.source,
+                "target": canonical_target,
+                "kind": row.kind,
+                "edge_type": row.edge_type,
+            }
+        )
+
+    degree_by_note_id: dict[str, int] = {}
+    for edge in edges:
+        degree_by_note_id[edge["source"]] = degree_by_note_id.get(edge["source"], 0) + 1
+        degree_by_note_id[edge["target"]] = degree_by_note_id.get(edge["target"], 0) + 1
+
+    nodes = [
+        {
+            "id": row.note_id,
+            "title": row.title,
+            "type": row.type,
+            "degree": degree_by_note_id.get(row.note_id, 0),
+            "x": row.layout_x,
+            "y": row.layout_y,
+        }
+        for row in public_note_rows
+    ]
+
+    indexed_at = _as_utc(
+        max((row.indexed_at for row in public_note_rows), default=None)
+    )
+    etag = _graph_etag(len(public_note_rows), indexed_at)
+    headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
+    if indexed_at is not None:
+        headers["Last-Modified"] = format_datetime(indexed_at, usegmt=True)
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+
+    for key, value in headers.items():
+        response.headers[key] = value
+    logger.info("public.graph.served nodes=%d edges=%d", len(nodes), len(edges))
+    return {"nodes": nodes, "edges": edges}
 
 
 @router.get("/notes/{note_id}")
