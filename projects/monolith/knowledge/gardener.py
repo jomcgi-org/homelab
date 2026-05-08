@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from knowledge import frontmatter
 from knowledge.models import AtomRawProvenance, Note, RawInput
+from knowledge.visibility import VISIBILITY_CRITERIA
 
 logger = logging.getLogger("monolith.knowledge.gardener")
 
@@ -63,6 +64,7 @@ title: "<concise title — MUST be quoted if it contains a colon>"
 aliases: [<optional list of alternative wikilink forms — see Aliases section below>]
 type: atom|fact|active
 derived_from_raw: {raw_id}
+visibility: public|private   # REQUIRED — see criteria below
 tags: [optional]
 edges:
   derives_from: [source-slug]   # allowed edge types: derives_from | refines | generalizes | related | contradicts | supersedes
@@ -139,9 +141,11 @@ prefer that exact slug as the link target. If it doesn't exist, write
 the natural title-cased form — the gap-classifier and aliases system
 handle resolution.
 
+{VISIBILITY_CRITERIA}
+
 Title: {title}
 
-"""
+""".replace("{VISIBILITY_CRITERIA}", VISIBILITY_CRITERIA)
 
 _DISTILL_PROMPT = """\
 You are a knowledge gardener. A task has been completed. Extract any reusable

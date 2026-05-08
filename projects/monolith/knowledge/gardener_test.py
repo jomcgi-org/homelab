@@ -16,6 +16,23 @@ from knowledge.gardener import (
     _slugify,
     _split_frontmatter,
 )
+from knowledge.visibility import VISIBILITY_CRITERIA
+
+
+def test_gardener_prompt_includes_visibility_criteria():
+    """The atom-creation prompt must require a `visibility:` frontmatter field
+    and embed the verbatim criteria text from `knowledge.visibility`.
+
+    Drift between the criteria the LLM sees here and the criteria the public
+    routes / sanitizer enforce is the primary leakage failure mode for the
+    public-notes feature, so this test asserts on the imported constant.
+    """
+    rendered = _CLAUDE_PROMPT_HEADER.format(
+        raw_id="r", raw_file_path="x", processed_root="p", title="t"
+    )
+    assert "visibility: public|private" in rendered
+    # criteria must be appended verbatim — drift = leak
+    assert VISIBILITY_CRITERIA.strip() in rendered
 
 
 def _write(tmp_path: Path, rel: str, content: str) -> None:
