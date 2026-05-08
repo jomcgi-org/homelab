@@ -23,6 +23,7 @@ from typing import Literal
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -33,7 +34,12 @@ from knowledge.ingest_queue import IngestQueueItem
 from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import GRAPH_NOTE_TYPES, KnowledgeStore
-from knowledge.visibility import public_notes_filter
+from knowledge.visibility import (
+    effective_visibility,
+    public_notes_filter,
+    sanitize_public_body,
+)
+from knowledge.visibility import _slugify as _visibility_slugify
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
@@ -237,6 +243,70 @@ def get_public_graph(
         response.headers[key] = value
     logger.info("public.graph.served nodes=%d edges=%d", len(nodes), len(edges))
     return {"nodes": nodes, "edges": edges}
+
+
+@router.get("/public/notes/{note_id}")
+def get_public_note(
+    note_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Return a single note iff its effective visibility is ``public``.
+
+    The 404 response is identical for missing notes AND for notes that
+    exist but are private/null-visibility — the existence of a private
+    note must never be observable. Body wikilinks targeting private
+    notes are stripped to plain text via :func:`sanitize_public_body`;
+    wikilinks targeting public notes are left intact for the frontend
+    renderer to resolve.
+    """
+    note = session.exec(select(Note).where(Note.note_id == note_id)).one_or_none()
+    if note is None or effective_visibility(note) != "public":
+        # Identical 404 for missing and private — never expose existence.
+        # The reason is logged but not surfaced in the response.
+        reason = "not_found" if note is None else "private_gated"
+        logger.info("public.note.404 note_id=%s reason=%s", note_id, reason)
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    # Load the body from the vault. Reuse the same path-traversal guard
+    # the private GET /notes/{id} uses so a malformed path can't escape
+    # the vault root.
+    vault_root = _get_vault_root()
+    resolved = (vault_root / note.path).resolve()
+    if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+        # Same identical 404 — don't leak that the DB row exists but
+        # the file is missing/escaped.
+        logger.info("public.note.404 note_id=%s reason=vault_file_missing", note_id)
+        raise HTTPException(status_code=404, detail="Not Found")
+    raw = resolved.read_text()
+    _, body = frontmatter.parse(raw)
+
+    # Slugified ids of every non-public note. ``sanitize_public_body``
+    # slugifies wikilink display text via ``visibility._slugify`` and
+    # drops the bracketing on any match — use the same helper here so
+    # the sets compare consistently. Note: ``or_(... != 'public', ...
+    # IS NULL)`` is required because in SQL ``NULL != 'public'`` is
+    # ``NULL``, not true, so a bare ``!=`` would silently leave NULL-
+    # visibility notes out of the private set.
+    private_slugs = {
+        _visibility_slugify(n.note_id)
+        for n in session.exec(
+            select(Note).where(
+                or_(Note.visibility != "public", Note.visibility.is_(None))
+            )
+        ).all()
+    }
+    sanitized = sanitize_public_body(body, private_slugs)
+
+    indexed_at = _as_utc(note.indexed_at)
+    logger.info("public.note.served note_id=%s", note_id)
+    return {
+        "note_id": note.note_id,
+        "title": note.title,
+        "tags": list(note.tags or []),
+        "aliases": list(note.aliases or []),
+        "indexed_at": indexed_at.isoformat() if indexed_at is not None else None,
+        "body": sanitized,
+    }
 
 
 @router.get("/notes/{note_id}")

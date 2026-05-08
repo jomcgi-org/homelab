@@ -946,3 +946,229 @@ class TestPublicGraphEndpoint:
             app.dependency_overrides.clear()
 
         assert etag_a != etag_b
+
+
+def _seed_public_note_file(
+    vault_dir,
+    *,
+    note_id: str,
+    body: str,
+    filename: str | None = None,
+) -> str:
+    """Write a body file under ``vault_dir`` and return its relative path.
+
+    The endpoint loads the body from disk via ``vault_root / note.path``,
+    so tests that exercise the served body must materialise the file.
+    """
+    rel_path = filename or f"{note_id}.md"
+    dest = vault_dir / rel_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Wrap in a minimal frontmatter terminator so frontmatter.parse()
+    # treats the supplied text as the body. Without the terminator, the
+    # whole file is body — which is also fine but explicit is better.
+    dest.write_text(f"---\nid: {note_id}\n---\n\n{body}")
+    return rel_path
+
+
+class TestPublicNoteEndpoint:
+    """Tests for GET /api/knowledge/public/notes/{note_id}.
+
+    Strict-visibility per-note endpoint paired with /public/graph. Two
+    properties under explicit assertion:
+
+    1. Identical 404 response for missing AND for private notes — the
+       existence of a private note must never be observable.
+    2. Body wikilinks targeting private notes are stripped to plain
+       text via :func:`sanitize_public_body`; wikilinks targeting public
+       notes are left intact for the frontend to resolve.
+    """
+
+    def test_public_note_200_for_public(self, real_session, tmp_path, monkeypatch):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        path_a = _seed_public_note_file(
+            vault_dir, note_id="pub-A", body="Hello [[pub-B]] world."
+        )
+        path_b = _seed_public_note_file(vault_dir, note_id="pub-B", body="B body.")
+        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path=path_a,
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+        _upsert(
+            store,
+            note_id="pub-B",
+            path=path_b,
+            content_hash="h-pb",
+            title="Pub B",
+            metadata=_meta(title="Pub B", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/notes/pub-A")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 200
+        body = res.json()
+        # Public-target wikilink left intact for the frontend to resolve.
+        assert "[[pub-B]]" in body["body"]
+
+    def test_public_note_404_for_missing(self, real_session, tmp_path, monkeypatch):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/notes/does-not-exist")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 404
+
+    def test_public_note_404_for_private_same_response_shape(
+        self, real_session, tmp_path, monkeypatch
+    ):
+        """Private and missing notes return byte-identical 404 payloads."""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        path_priv = _seed_public_note_file(vault_dir, note_id="priv-X", body="secret.")
+        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="priv-X",
+            path=path_priv,
+            content_hash="h-px",
+            title="Priv X",
+            metadata=_meta(title="Priv X", type="atom", visibility="private"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res_priv = c.get("/api/knowledge/public/notes/priv-X")
+            res_miss = c.get("/api/knowledge/public/notes/does-not-exist")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res_priv.status_code == 404
+        assert res_miss.status_code == 404
+        # Identical body — never expose that priv-X exists.
+        assert res_priv.json() == res_miss.json()
+
+    def test_public_note_strips_private_wikilinks_from_body(
+        self, real_session, tmp_path, monkeypatch
+    ):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        path_a = _seed_public_note_file(
+            vault_dir,
+            note_id="pub-A",
+            body="See [[pub-B]] and avoid [[Some Colleague]].",
+        )
+        path_b = _seed_public_note_file(vault_dir, note_id="pub-B", body="B.")
+        path_priv = _seed_public_note_file(
+            vault_dir, note_id="some-colleague", body="private."
+        )
+        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path=path_a,
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+        _upsert(
+            store,
+            note_id="pub-B",
+            path=path_b,
+            content_hash="h-pb",
+            title="Pub B",
+            metadata=_meta(title="Pub B", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+        _upsert(
+            store,
+            note_id="some-colleague",
+            path=path_priv,
+            content_hash="h-sc",
+            title="Some Colleague",
+            metadata=_meta(title="Some Colleague", type="atom", visibility="private"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/notes/pub-A")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 200
+        payload = res.json()
+        body = payload["body"]
+        assert "[[pub-B]]" in body
+        assert "[[Some Colleague]]" not in body
+        # Bracket text is preserved — sanitize_public_body strips the
+        # [[…]] wrapper but keeps the display text. See the design note
+        # in knowledge/visibility.py: the loud leak is the *graph edge*
+        # (already filtered by /public/graph), not the display string.
+        assert "Some Colleague" in body
+
+    def test_public_note_response_excludes_internal_fields(
+        self, real_session, tmp_path, monkeypatch
+    ):
+        """The ``extra`` JSONB blob (arbitrary system metadata) is never
+        serialized into the public response — we serialize an explicit
+        whitelist of fields, not ``**note.dict()``."""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        path_a = _seed_public_note_file(vault_dir, note_id="pub-A", body="Hello world.")
+        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path=path_a,
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(
+                title="Pub A",
+                type="atom",
+                visibility="public",
+                extra={"internal_only": "secret"},
+            ),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/notes/pub-A")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 200
+        body = res.json()
+        assert "extra" not in body
+        assert "secret" not in str(body)
