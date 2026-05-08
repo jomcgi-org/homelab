@@ -47,7 +47,8 @@ def test_skips_files_with_no_frontmatter(tmp_path):
 
 def test_skips_files_with_unparseable_frontmatter(tmp_path):
     note = tmp_path / "_processed/broken.md"
-    _write(note, "---\nthis: is: not: yaml\n---\nbody\n")
+    # Unclosed flow collection — sanitizer doesn't touch this; yaml raises.
+    _write(note, "---\nfoo: [unclosed\n---\nbody\n")
     stats = run(vault_root=tmp_path, dirs=["_processed"])
     assert stats.parse_skipped == 1
 
