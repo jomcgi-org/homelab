@@ -97,6 +97,7 @@ class KnowledgeStore:
                 content_hash=content_hash,
                 type=metadata.type,
                 status=metadata.status,
+                visibility=metadata.visibility,
                 source=metadata.source,
                 tags=metadata.tags,
                 aliases=metadata.aliases,

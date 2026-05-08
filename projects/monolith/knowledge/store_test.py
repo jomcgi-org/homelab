@@ -191,6 +191,51 @@ class TestUpsertNote:
         assert by_kind["link"][0].target_title == "the b"
 
 
+class TestUpsertVisibility:
+    """``visibility`` from frontmatter must be persisted to the DB column.
+
+    The reconciler treats disk frontmatter as canonical, so every upsert
+    must rewrite this column — including back to NULL when the key is
+    removed.
+    """
+
+    def test_upsert_writes_visibility_public(self, store, session):
+        _upsert(
+            store,
+            note_id="vis-pub",
+            path="vp.md",
+            metadata=_meta(title="VP", visibility="public"),
+        )
+        note = session.execute(
+            select(Note).where(Note.note_id == "vis-pub")
+        ).scalar_one()
+        assert note.visibility == "public"
+
+    def test_upsert_writes_visibility_private(self, store, session):
+        _upsert(
+            store,
+            note_id="vis-priv",
+            path="vpr.md",
+            metadata=_meta(title="VPr", visibility="private"),
+        )
+        note = session.execute(
+            select(Note).where(Note.note_id == "vis-priv")
+        ).scalar_one()
+        assert note.visibility == "private"
+
+    def test_upsert_null_visibility_writes_null(self, store, session):
+        _upsert(
+            store,
+            note_id="vis-null",
+            path="vn.md",
+            metadata=_meta(title="VN", visibility=None),
+        )
+        note = session.execute(
+            select(Note).where(Note.note_id == "vis-null")
+        ).scalar_one()
+        assert note.visibility is None
+
+
 class TestUpsertAtomicity:
     def test_upsert_replace_is_atomic_on_mid_insert_failure(self, store, session):
         _upsert(
