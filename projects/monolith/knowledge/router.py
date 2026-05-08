@@ -223,6 +223,8 @@ def edit_note(
         fm_dict["type"] = parsed.type
     if parsed.status is not None:
         fm_dict["status"] = parsed.status
+    if parsed.visibility is not None:
+        fm_dict["visibility"] = parsed.visibility
     if parsed.source is not None:
         fm_dict["source"] = parsed.source
     if parsed.tags:
