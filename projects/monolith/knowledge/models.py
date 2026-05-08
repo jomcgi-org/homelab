@@ -44,7 +44,7 @@ GapState = Literal[
 ]
 
 # Mirror of the CHECK constraint in
-# chart/migrations/20260507000000_knowledge_notes_visibility.sql - keep in sync.
+# chart/migrations/20260508000000_knowledge_notes_visibility.sql - keep in sync.
 Visibility = Literal["public", "private"]
 
 # Postgres uses native TEXT[] for tags/aliases; SQLite falls back to JSON
@@ -59,7 +59,7 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     __tablename__ = "notes"
     __table_args__ = (
         # Mirrors the CHECK constraint in
-        # chart/migrations/20260507000000_knowledge_notes_visibility.sql.
+        # chart/migrations/20260508000000_knowledge_notes_visibility.sql.
         # Declared on the model (in addition to the migration) so SQLite-backed
         # unit tests using SQLModel.metadata.create_all() also enforce it.
         CheckConstraint(
