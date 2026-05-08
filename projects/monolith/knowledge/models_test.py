@@ -313,6 +313,35 @@ def test_note_model_has_optional_layout_columns():
     assert note.layout_y == -0.2
 
 
+def test_note_visibility_accepts_public_private_or_none():
+    Note(note_id="a", path="a.md", title="A", content_hash="h", visibility="public")
+    Note(note_id="b", path="b.md", title="B", content_hash="h", visibility="private")
+    Note(note_id="c", path="c.md", title="C", content_hash="h", visibility=None)
+
+
+def test_note_visibility_rejected_at_db_constraint(session):
+    """The Literal is type-only; the SQL CHECK is what enforces at write time.
+
+    Insert a bogus value via raw SQL and assert the constraint fires. The
+    CheckConstraint is declared on the Note model so SQLModel.metadata.create_all
+    emits it for SQLite too — keeping this test honest in CI without needing a
+    real Postgres instance.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "INSERT INTO notes "
+                "(note_id, path, title, content_hash, visibility) "
+                "VALUES (:id, :p, :t, :h, :v)"
+            ),
+            {"id": "x", "p": "x.md", "t": "X", "h": "h", "v": "yellow"},
+        )
+        session.flush()
+
+
 def test_gap_has_note_id_unique_constraint():
     """note_id is the projection-layer identity — must be UNIQUE in the schema."""
     from sqlalchemy import UniqueConstraint
