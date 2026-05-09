@@ -20,6 +20,18 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.public.servicePort | int }}
+    # Public knowledge API — narrowly scoped to /api/knowledge/public/* so we
+    # never expose the unfiltered /api/knowledge/{notes,gaps,dead-letter,…}
+    # surface on the public hostname. The backend itself enforces the same
+    # filter via knowledge.visibility.public_notes_filter; this is the
+    # ingress-layer belt-and-braces.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/knowledge/public
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.service.apiPort | int }}
     # Everything else — SvelteKit reroute hook maps to /public/ internally
     - matches:
         - path:
