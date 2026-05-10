@@ -611,7 +611,7 @@ class TestClassifyGapsHandler:
         )
 
     def test_on_startup_registers_research_gaps_job(self, session):
-        """Startup registers knowledge.research-gaps with a 5-minute tick."""
+        """Startup registers knowledge.research-gaps with a daily tick."""
         from knowledge.service import on_startup
         from shared.scheduler import ScheduledJob
         from sqlmodel import select
@@ -621,7 +621,7 @@ class TestClassifyGapsHandler:
         job = session.execute(
             select(ScheduledJob).where(ScheduledJob.name == "knowledge.research-gaps")
         ).scalar_one()
-        assert job.interval_secs == 300
+        assert job.interval_secs == 86400
         assert job.ttl_secs == 1200  # was 600
 
     @pytest.mark.asyncio
