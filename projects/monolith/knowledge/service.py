@@ -41,7 +41,7 @@ _CLASSIFY_INTERVAL_SECS = 60  # 1-minute tick
 # risking a second replica racing Edit calls on the same stubs.
 _CLASSIFY_TTL_SECS = 360  # 300s subprocess timeout + 60s headroom
 _CLASSIFY_BATCH_SIZE = 10
-_RESEARCH_INTERVAL_SECS = 300
+_RESEARCH_INTERVAL_SECS = 86400  # once per day
 _RESEARCH_TTL_SECS = (
     1200  # 20min lock-lease (Sonnet research runs can be slow with web tools)
 )
