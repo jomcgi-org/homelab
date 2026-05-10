@@ -7,8 +7,9 @@
 # Required env vars (read at Claude Code session time, not by this script):
 #   BUILDBUDDY_API_KEY  - for the BuildBuddy MCP server (defined in .mcp.json)
 #
-# Optional env vars used by this script:
-#   GITHUB_TOKEN        - if set, used to authenticate the gh CLI
+# Required env vars (also used by this script):
+#   GITHUB_TOKEN        - authenticates crane to ghcr.io (needed to pull the
+#                         private tools image) and the gh CLI
 
 set -euo pipefail
 
@@ -57,19 +58,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Pull vendored tools (helm, prettier, gofumpt, ruff, etc.)
+# 3. Authenticate crane to ghcr.io (required to pull the private tools image)
+# ---------------------------------------------------------------------------
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+	echo "==> Authenticating crane to ghcr.io"
+	echo "$GITHUB_TOKEN" | crane auth login ghcr.io --username x-access-token --password-stdin
+elif crane auth get ghcr.io >/dev/null 2>&1; then
+	echo "==> crane already authenticated to ghcr.io"
+else
+	echo "WARNING: \$GITHUB_TOKEN is not set and crane has no cached ghcr.io credentials."
+	echo "         bootstrap.sh may fail if the tools image is private."
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Pull vendored tools (helm, prettier, gofumpt, ruff, etc.)
 # ---------------------------------------------------------------------------
 echo "==> Running ./bootstrap.sh"
 ./bootstrap.sh
 
 # ---------------------------------------------------------------------------
-# 4. direnv allow (per-path approval — required for .envrc to load)
+# 5. direnv allow (per-path approval — required for .envrc to load)
 # ---------------------------------------------------------------------------
 echo "==> direnv allow"
 direnv allow .
 
 # ---------------------------------------------------------------------------
-# 5. gh CLI auth (if GITHUB_TOKEN is set and not already authenticated)
+# 6. gh CLI auth (if GITHUB_TOKEN is set and not already authenticated)
 # ---------------------------------------------------------------------------
 if command -v gh >/dev/null 2>&1; then
 	if gh auth status >/dev/null 2>&1; then
