@@ -42,7 +42,8 @@ fi
 
 # Use Python to detect forbidden patterns, with docstring-boundary awareness.
 # Content is passed via MCP_CONTENT env var to avoid stdin/heredoc conflicts.
-WARNINGS=$(MCP_CONTENT="$NEW_CONTENT" python3 - "$FILE_PATH" <<'PYTHON'
+WARNINGS=$(
+	MCP_CONTENT="$NEW_CONTENT" python3 - "$FILE_PATH" <<'PYTHON'
 import os
 import re
 import sys
@@ -90,7 +91,7 @@ if [[ -n "$WARNINGS" ]]; then
 		PR #2301 (mcp_description_compliance_test.py) for the CI test.
 
 		Forbidden patterns detected:
-$WARNINGS
+		$WARNINGS
 
 		Forbidden patterns reference:
 		  Anywhere in file:   &&  ||  \$(  "> "  "< "
