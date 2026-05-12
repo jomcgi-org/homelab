@@ -1,0 +1,29 @@
+rules:
+  - id: no-broad-public-api-prefix
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      Public HTTPRoute PathPrefix is too broad and risks exposing private API
+      surfaces. Prefixes like `/api` or `/api/knowledge` will forward every
+      request under that namespace — including unauthenticated endpoints that
+      were never meant to be publicly reachable. Narrow the prefix to the exact
+      public sub-path (e.g. `/api/knowledge/public`) as described in PR #2304's
+      belt-and-braces pattern: the ingress rule should mirror the same scope
+      enforced by the backend's visibility filter.
+    metadata:
+      category: security
+      subcategory: gateway-api
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [helm, kubernetes, gateway-api]
+    paths:
+      include:
+        - "**/chart/templates/httproute-public*"
+    patterns:
+      - pattern: |
+          type: PathPrefix
+          value: $VALUE
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: '^/api(/[^/]+)?$'
