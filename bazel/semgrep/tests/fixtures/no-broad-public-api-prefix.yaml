@@ -1,0 +1,133 @@
+# Tests for no-broad-public-api-prefix rule.
+# Public HTTPRoute PathPrefix values of /api or /api/<single-segment> are too
+# broad and risk exposing private endpoints. Prefixes must be scoped to at
+# least three segments (e.g. /api/knowledge/public) to be safe on a public
+# hostname.
+---
+# Broad /api prefix — flags entire API namespace as public.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: too-broad-api
+spec:
+  rules:
+    - matches:
+        - path:
+            # ruleid: no-broad-public-api-prefix
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
+
+---
+# /api/knowledge is still too broad — exposes notes, gaps, dead-letter, etc.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: too-broad-knowledge
+spec:
+  rules:
+    - matches:
+        - path:
+            # ruleid: no-broad-public-api-prefix
+            type: PathPrefix
+            value: /api/knowledge
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
+
+---
+# /api/users is still only two segments — too broad for a public route.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: too-broad-users
+spec:
+  rules:
+    - matches:
+        - path:
+            # ruleid: no-broad-public-api-prefix
+            type: PathPrefix
+            value: /api/users
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
+
+---
+# ok: no-broad-public-api-prefix — /api/knowledge/public is narrowly scoped (3 segments).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: narrowly-scoped-knowledge
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/knowledge/public
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
+
+---
+# ok: no-broad-public-api-prefix — root prefix / is not an /api path.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: root-prefix
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
+
+---
+# ok: no-broad-public-api-prefix — /_app/ prefix for SvelteKit assets is not an /api path.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app-assets
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /_app/
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
+
+---
+# ok: no-broad-public-api-prefix — /api/v1/health/live is 4 segments, sufficiently scoped.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: deep-health-route
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/health/live
+      backendRefs:
+        - name: my-service
+          port: 8080
+      timeouts:
+        request: 30s
