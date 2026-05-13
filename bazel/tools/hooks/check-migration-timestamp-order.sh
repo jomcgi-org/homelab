@@ -60,7 +60,7 @@ for f in "$MIGRATIONS_DIR"/*.sql; do
 done
 
 if [[ -z "$LATEST_TS" ]]; then
-	exit 0  # No existing timestamped migrations to compare against.
+	exit 0 # No existing timestamped migrations to compare against.
 fi
 
 # Warn if the new timestamp does not strictly follow the existing latest.
