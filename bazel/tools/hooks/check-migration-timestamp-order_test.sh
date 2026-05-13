@@ -109,7 +109,7 @@ run_test() {
 	local name="$1"
 	local input_json="$2"
 	local want_exit="$3"
-	local want_stderr_re="$4"  # regex that must match stderr (empty = no output expected)
+	local want_stderr_re="$4" # regex that must match stderr (empty = no output expected)
 
 	local stderr_out
 	local got_exit=0
