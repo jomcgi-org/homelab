@@ -1,0 +1,40 @@
+rules:
+  - id: no-session-in-to-thread
+    patterns:
+      - pattern: asyncio.to_thread($FN, ..., $SESSION, ...)
+      - metavariable-regex:
+          metavariable: $SESSION
+          regex: ^session$
+    message: >-
+      `$SESSION` (a SQLAlchemy Session) is passed directly into
+      `asyncio.to_thread(...)`. SQLAlchemy Sessions are NOT thread-safe: sharing
+      one between the event loop and a worker thread causes data races, identity-map
+      corruption, and hard-to-reproduce transaction errors.
+
+      Pass `engine` (or `session.get_bind()`) instead and create a new Session
+      inside the threaded function:
+
+        def _sync_fn(engine, ...):
+            with Session(engine) as session:
+                ...
+
+        await asyncio.to_thread(_sync_fn, engine, ...)
+
+      See PR #2297 for the canonical precedent in this codebase.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: thread-safety
+      cwe: ["CWE-362: Concurrent Execution using Shared Resource with Improper Synchronization"]
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [python, asyncio, sqlalchemy, sqlmodel]
+      description: >-
+        SQLAlchemy Session passed to asyncio.to_thread — Sessions are not
+        thread-safe and must not be shared between the event loop and worker
+        threads.
+    paths:
+      include:
+        - "projects/**/*.py"

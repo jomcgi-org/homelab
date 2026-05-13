@@ -1,0 +1,45 @@
+# Reference fixture for the no-session-in-to-thread semgrep rule.
+# This file documents ok/bad patterns for human review.
+# The actual semgrep test fixture is bazel/semgrep/rules/python/no_session_in_to_thread.py.
+#
+# Background: SQLAlchemy Sessions maintain an identity map and a connection
+# that are not safe to share across OS threads. Passing a Session to
+# asyncio.to_thread() runs the threaded function in the ThreadPoolExecutor
+# while the event loop continues; if any other coroutine uses the same
+# Session concurrently the result is data races and identity-map corruption.
+# See PR #2297 for the canonical fix pattern in this codebase.
+
+examples:
+  bad:
+    - description: >-
+        session passed as second arg to asyncio.to_thread — the threaded
+        function and the event loop may both use the Session concurrently
+      code: |
+        result = await asyncio.to_thread(sync_read, session)
+
+    - description: session passed after other positional args
+      code: |
+        result = await asyncio.to_thread(sync_query, item_id, limit, session)
+
+  ok:
+    - description: engine passed instead — new Session created inside the thread
+      code: |
+        async def handler(engine, item_id):
+            result = await asyncio.to_thread(_sync_read, engine, item_id)
+
+        def _sync_read(engine, item_id):
+            with Session(engine) as session:
+                return session.get(MyModel, item_id)
+
+    - description: session.get_bind() passed — new Session created inside the thread
+      code: |
+        result = await asyncio.to_thread(_sync_fn, session.get_bind())
+
+    - description: variable named db_session — does not match the ^session$ regex
+      code: |
+        result = await asyncio.to_thread(sync_fn, db_session, item_id)
+
+    - description: session used in event-loop coroutine, not passed to thread
+      code: |
+        objs = session.query(MyModel).all()
+        result = await asyncio.to_thread(cpu_bound_work, objs)
