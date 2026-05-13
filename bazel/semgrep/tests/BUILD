@@ -15,6 +15,7 @@ filegroup(
             "fixtures/no-create-extension-sql.yaml",
             "fixtures/no-deprecated-api-subdomain.yaml",
             "fixtures/no-discarded-json-marshal.yaml",
+            "fixtures/no-session-in-to-thread.yaml",
             "fixtures/no-shared-preload-libraries-cnpg.yaml",
             "fixtures/no-unquoted-helm-range-args.yaml",
             "fixtures/python-shadow-module-import.yaml",
