@@ -7,7 +7,7 @@ Photo-based GPS trip logging with elevation enrichment.
 | Component      | Description                                                                                |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | **backend**    | FastAPI server that replays trip data from NATS JetStream and serves REST + WebSocket APIs |
-| **frontend**   | Timeline view with day-by-day maps and per-day elevation stats (ascent, descent, min/max)  |
+| **frontend**   | Timeline view with day-by-day maps and per-day elevation stats (ascent, descent, min/max) — deployed as a Cloudflare Pages app (not part of the Helm chart) |
 | **nginx**      | Reverse-proxy routing layer — routes incoming requests to the backend API, imgproxy (resized images), or SeaweedFS (full-resolution images) |
 | **imgproxy**   | Image resizing and processing service — serves optimised trip photos on demand              |
 | **tools**      | CLI tools for trip data management — six sub-directories: `publish-trip-images` (image ingestion with EXIF extraction), `backfill-elevation` (replays NATS points and enriches with elevation data), `delete-trip-points` (publishes tombstone messages to delete points), `publish-gap-route` (parses KML files to fill route gaps), `detect-wildlife` (wildlife detection inference + GoPro camera control), `elevation` (elevation API client library) |
