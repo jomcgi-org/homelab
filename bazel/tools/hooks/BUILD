@@ -27,3 +27,9 @@ sh_test(
     srcs = ["check-deployment-component-label_test.sh"],
     data = [":check-deployment-component-label.sh"],
 )
+
+sh_test(
+    name = "check_migration_timestamp_order_test",
+    srcs = ["check-migration-timestamp-order_test.sh"],
+    data = [":check-migration-timestamp-order.sh"],
+)
