@@ -2,13 +2,18 @@
 # HTTPRoute rules with backendRefs must declare a timeouts section so that
 # Envoy's default 15-second timeout does not silently drop long-running
 # requests (streaming, uploads, LLM inference, etc.).
+#
+# The rule uses languages: [generic] (spacegrep) rather than languages: [yaml]
+# because real chart templates contain {{ }} Helm directives that break the YAML
+# parser. In generic mode the finding is anchored at the `rules:` token, so
+# # ruleid: annotations must appear on the line immediately before `rules:`.
 ---
-# ruleid: no-httproute-rule-without-timeout
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: my-service
 spec:
+# ruleid: no-httproute-rule-without-timeout
   rules:
     - matches:
         - path:
@@ -19,12 +24,12 @@ spec:
           port: 8080
 
 ---
-# ruleid: no-httproute-rule-without-timeout
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: api-route
 spec:
+# ruleid: no-httproute-rule-without-timeout
   rules:
     - matches:
         - path:
@@ -34,6 +39,26 @@ spec:
         - name: api-service
           port: 80
           weight: 100
+
+---
+# Helm template syntax test: the rule must fire even when {{ }} directives are
+# present (YAML parser would reject this file; generic mode handles it fine).
+{{- if .Values.cfIngress.public.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "service.fullname" . }}-public
+spec:
+# ruleid: no-httproute-rule-without-timeout
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "service.fullname" . }}
+          port: {{ .Values.service.port | int }}
+{{- end }}
 
 ---
 # ok: no-httproute-rule-without-timeout — timeouts section present after backendRefs
@@ -89,3 +114,23 @@ spec:
       backendRefs:
         - name: reverse-service
           port: 9090
+
+---
+# ok: no-httproute-rule-without-timeout — Helm template with explicit timeouts
+{{- if .Values.cfIngress.public.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "service.fullname" . }}-public
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "service.fullname" . }}
+          port: {{ .Values.service.port | int }}
+      timeouts:
+        request: 60s
+{{- end }}

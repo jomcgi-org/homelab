@@ -20,6 +20,8 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.public.servicePort | int }}
+      timeouts:
+        request: 60s
     # Public knowledge API — narrowly scoped to /api/knowledge/public/* so we
     # never expose the unfiltered /api/knowledge/{notes,gaps,dead-letter,…}
     # surface on the public hostname. The backend itself enforces the same
@@ -32,6 +34,8 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
+      timeouts:
+        request: 30s
     # Everything else — SvelteKit reroute hook maps to /public/ internally
     - matches:
         - path:
@@ -40,6 +44,8 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.public.servicePort | int }}
+      timeouts:
+        request: 60s
 ---
 {{- $rlParams := dict
   "name" (printf "%s-public" (include "monolith.fullname" .))
