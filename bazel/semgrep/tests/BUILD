@@ -87,6 +87,13 @@ filegroup(
     srcs = ["fixtures/claude-print-missing-permission-mode.yaml"],
 )
 
+# Fixture for the no-session-in-to-thread rule (languages: python).
+# Referenced by //bazel/semgrep/rules:no_session_in_to_thread_test.
+filegroup(
+    name = "no_session_in_to_thread_fixtures",
+    srcs = ["fixtures/no-session-in-to-thread.yaml"],
+)
+
 # Fixtures for kubernetes rules (require-readiness-probe, require-resource-limits, etc.).
 # Referenced by //bazel/semgrep/rules:kubernetes_rules_test.
 # New rule fixtures should be added here as they are created.

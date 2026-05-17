@@ -311,3 +311,19 @@ semgrep_test(
     rules = [":claude_print_missing_permission_mode_rule"],
     tags = ["semgrep"],
 )
+
+# no-session-in-to-thread uses languages: [python] so its fixture is a YAML file.
+# This test wires the rule to its annotation fixture independently of python_rules_test
+# (which scans python/*.py sources and does not include YAML-annotated fixtures).
+filegroup(
+    name = "no_session_in_to_thread_rule",
+    srcs = ["python/no-session-in-to-thread.yaml"],
+)
+
+semgrep_test(
+    name = "no_session_in_to_thread_test",
+    srcs = ["//bazel/semgrep/tests:no_session_in_to_thread_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":no_session_in_to_thread_rule"],
+    tags = ["semgrep"],
+)
