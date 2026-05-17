@@ -1,6 +1,6 @@
 rules:
   - id: no-httproute-rule-without-timeout
-    languages: [yaml]
+    languages: [generic]
     severity: WARNING
     message: >-
       HTTPRoute rule has `backendRefs` but no `timeouts` section. Envoy's
