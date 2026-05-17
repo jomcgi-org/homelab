@@ -33,3 +33,9 @@ sh_test(
     srcs = ["check-migration-timestamp-order_test.sh"],
     data = [":check-migration-timestamp-order.sh"],
 )
+
+sh_test(
+    name = "check_constant_change_test_grep_test",
+    srcs = ["check-constant-change-test-grep_test.sh"],
+    data = [":check-constant-change-test-grep.sh"],
+)
