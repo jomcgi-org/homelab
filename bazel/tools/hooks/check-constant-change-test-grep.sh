@@ -49,10 +49,10 @@ fi
 # Matches names like TIMEOUT, _INTERVAL_SECS, MAX_RETRIES, etc.
 # Output format: one "NAME VALUE" pair per line.
 extract_constants() {
-	printf '%s\n' "$1" \
-		| grep -oE '[_A-Z][A-Z0-9_]* = [0-9]+' \
-		| sed 's/ = / /' \
-		|| true
+	printf '%s\n' "$1" |
+		grep -oE '[_A-Z][A-Z0-9_]* = [0-9]+' |
+		sed 's/ = / /' ||
+		true
 }
 
 OLD_PAIRS=$(extract_constants "$OLD_CONTENT")
@@ -75,6 +75,6 @@ while IFS=' ' read -r name old_val; do
 			File: $FILE_PATH
 		EOF
 	fi
-done <<< "$OLD_PAIRS"
+done <<<"$OLD_PAIRS"
 
 exit 0
