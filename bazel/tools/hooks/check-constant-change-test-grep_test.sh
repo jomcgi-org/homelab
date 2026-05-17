@@ -195,10 +195,10 @@ BATCH_SIZE = 100'
 NEW_MULTI='MAX_RETRIES = 3
 _INTERVAL = 120
 BATCH_SIZE = 100'
-WARN_OUT=$(make_edit_json "$PY_FILE" "$OLD_MULTI" "$NEW_MULTI" \
-	| bash "$HOOK" 2>&1 >/dev/null || true)
-if echo "$WARN_OUT" | grep -qE "WARNING.*_INTERVAL.*60.*120" \
-	&& ! echo "$WARN_OUT" | grep -qE "MAX_RETRIES|BATCH_SIZE"; then
+WARN_OUT=$(make_edit_json "$PY_FILE" "$OLD_MULTI" "$NEW_MULTI" |
+	bash "$HOOK" 2>&1 >/dev/null || true)
+if echo "$WARN_OUT" | grep -qE "WARNING.*_INTERVAL.*60.*120" &&
+	! echo "$WARN_OUT" | grep -qE "MAX_RETRIES|BATCH_SIZE"; then
 	echo "PASS [edit_multi_only_changed_warns]"
 	PASS=$((PASS + 1))
 else
@@ -241,8 +241,8 @@ run_test "empty_json_allowed" \
 # 11. Warning message includes grep command with old value
 GREP_OUT=$(make_edit_json "$PY_FILE" \
 	'_MAX_TOKENS = 4096' \
-	'_MAX_TOKENS = 8192' \
-	| bash "$HOOK" 2>&1 >/dev/null || true)
+	'_MAX_TOKENS = 8192' |
+	bash "$HOOK" 2>&1 >/dev/null || true)
 if echo "$GREP_OUT" | grep -qE 'grep.*4096.*\*_test\.py'; then
 	echo "PASS [warning_includes_grep_command]"
 	PASS=$((PASS + 1))
