@@ -39,3 +39,9 @@ sh_test(
     srcs = ["check-constant-change-test-grep_test.sh"],
     data = [":check-constant-change-test-grep.sh"],
 )
+
+sh_test(
+    name = "check_public_route_visibility_filter_test",
+    srcs = ["check-public-route-visibility-filter_test.sh"],
+    data = [":check-public-route-visibility-filter.sh"],
+)
