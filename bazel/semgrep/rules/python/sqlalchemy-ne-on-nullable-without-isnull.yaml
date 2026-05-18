@@ -1,0 +1,25 @@
+rules:
+  - id: sqlalchemy-ne-on-nullable-without-isnull
+    patterns:
+      - pattern: $STMT.where(..., $MODEL.$FIELD != $VAL, ...)
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: ^(visibility|status|edge_type|gap_class)$
+    message: >-
+      `$MODEL.$FIELD != $VAL` on a nullable column silently excludes NULL rows.
+      In SQL, `NULL != 'x'` evaluates to `NULL` (not `TRUE`), so rows where
+      `$FIELD` is NULL are silently dropped from the result set. Wrap with
+      `or_($MODEL.$FIELD != $VAL, $MODEL.$FIELD.is_(None))` to include them.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: orm
+      cwe: ["CWE-573: Improper Following of Specification by Caller"]
+      confidence: HIGH
+      likelihood: HIGH
+      impact: MEDIUM
+      technology: [python, sqlalchemy, sqlmodel]
+      description: >-
+        Bare != on a nullable SQLAlchemy column silently excludes NULL rows —
+        wrap with or_(..., Model.field.is_(None)) to include NULL-valued rows.
