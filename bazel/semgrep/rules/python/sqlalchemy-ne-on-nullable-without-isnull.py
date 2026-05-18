@@ -24,13 +24,9 @@ def bad_gap_class_ne(session):
 
 # ruleid: sqlalchemy-ne-on-nullable-without-isnull
 def bad_visibility_chained_where(session):
-    return (
-        session.exec(
-            select(Note)
-            .where(Note.author == "alice")
-            .where(Note.visibility != "private")
-        ).all()
-    )
+    return session.exec(
+        select(Note).where(Note.author == "alice").where(Note.visibility != "private")
+    ).all()
 
 
 # ok: visibility wrapped with or_ including .is_(None)
