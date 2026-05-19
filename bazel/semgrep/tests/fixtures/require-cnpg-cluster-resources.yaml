@@ -1,6 +1,10 @@
 # Tests for require-cnpg-cluster-resources rule.
 # CNPG Cluster CRDs must declare spec.resources.requests.memory to prevent
 # pods from being OOM-killed when the node is under memory pressure.
+#
+# The rule uses languages: [generic] (spacegrep). In generic mode the finding
+# is anchored at the `spec:` token, so # ruleid: annotations must appear on
+# the line immediately before `spec:`.
 ---
 # ok: require-cnpg-cluster-resources — has resources.requests.memory
 apiVersion: postgresql.cnpg.io/v1
@@ -43,20 +47,20 @@ spec:
           image: myapp:latest
 
 ---
-# ruleid: require-cnpg-cluster-resources
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: missing-all-resources
+# ruleid: require-cnpg-cluster-resources
 spec:
   instances: 3
 
 ---
-# ruleid: require-cnpg-cluster-resources
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: missing-requests-memory
+# ruleid: require-cnpg-cluster-resources
 spec:
   instances: 3
   resources:
@@ -64,13 +68,42 @@ spec:
       memory: "2Gi"
 
 ---
-# ruleid: require-cnpg-cluster-resources
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: has-requests-cpu-but-not-memory
+# ruleid: require-cnpg-cluster-resources
 spec:
   instances: 3
   resources:
     requests:
       cpu: "500m"
+
+---
+# Helm template syntax test: the rule must fire even when {{ }} directives are
+# present (YAML parser would reject this file; generic mode handles it fine).
+{{- if .Values.postgresql.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "service.fullname" . }}-pg
+# ruleid: require-cnpg-cluster-resources
+spec:
+  instances: {{ .Values.postgresql.instances }}
+  storage:
+    size: {{ .Values.postgresql.storage.size }}
+{{- end }}
+
+---
+# ok: Helm template with resources.requests.memory present
+{{- if .Values.postgresql.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "service.fullname" . }}-pg
+spec:
+  instances: {{ .Values.postgresql.instances }}
+  resources:
+    requests:
+      memory: {{ .Values.postgresql.resources.requests.memory | quote }}
+{{- end }}
