@@ -16,6 +16,17 @@ rules:
       `fsGroup: 65532` in `spec.template.spec.securityContext`. Without it, the
       volume is owned by root and the container will fail with a permission denied
       error. Add `fsGroup: 65532` to your `podSecurityContext` values.
+    # NOTE: This rule intentionally keeps languages: [yaml] rather than [generic].
+    # The pattern-not checks for securityContext.fsGroup which is a sibling key to
+    # volumes: in the pod spec (not nested inside volumes:). In spacegrep's generic
+    # mode, pattern-not is evaluated within the anchor region only (the volumes: block),
+    # where fsGroup never appears — so the pattern-not would always be satisfied,
+    # producing a false positive on every correctly-configured PVC deployment.
+    #
+    # Consequence: this rule is a Helm template blind spot. The YAML parser silently
+    # bails on {{ }} directives, so the rule never fires on chart templates. The
+    # no-yaml-language-in-helm-template-rule meta-rule flags this for future
+    # redesign once a safe conversion path is identified.
     languages: [yaml]
     severity: ERROR
     metadata:
