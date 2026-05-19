@@ -3,6 +3,10 @@
 # broad and risk exposing private endpoints. Prefixes must be scoped to at
 # least three segments (e.g. /api/knowledge/public) to be safe on a public
 # hostname.
+#
+# The rule uses languages: [generic] (spacegrep) with pattern-regex. In generic
+# mode the finding is anchored at the `type:` token, so # ruleid: annotations
+# must appear on the line immediately before `type: PathPrefix`.
 ---
 # Broad /api prefix — flags entire API namespace as public.
 apiVersion: gateway.networking.k8s.io/v1
@@ -131,3 +135,41 @@ spec:
           port: 8080
       timeouts:
         request: 30s
+
+---
+# Helm template syntax test: the rule must fire even when {{ }} directives are
+# present (YAML parser would reject this file; generic mode handles it fine).
+{{- if .Values.cfIngress.public.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "service.fullname" . }}-public
+spec:
+  rules:
+    - matches:
+        - path:
+            # ruleid: no-broad-public-api-prefix
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: {{ include "service.fullname" . }}
+          port: {{ .Values.service.port | int }}
+{{- end }}
+
+---
+# ok: no-broad-public-api-prefix — Helm template with narrowly scoped prefix
+{{- if .Values.cfIngress.public.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "service.fullname" . }}-public
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/knowledge/public
+      backendRefs:
+        - name: {{ include "service.fullname" . }}
+          port: {{ .Values.service.port | int }}
+{{- end }}
