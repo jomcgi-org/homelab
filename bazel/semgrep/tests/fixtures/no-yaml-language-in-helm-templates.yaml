@@ -1,0 +1,64 @@
+# Tests for no-yaml-language-in-helm-templates rule.
+# Flags semgrep rule files that combine languages: [yaml] with a paths.include
+# entry targeting chart/templates — such rules silently never fire on Helm
+# template files because the YAML parser bails on {{ }} directives.
+#
+# In yaml-mode semgrep tests, # ruleid: annotations appear at the start of
+# the document (right after ---), before the first key.
+---
+# ruleid: no-yaml-language-in-helm-templates
+rules:
+  - id: bad-yaml-helm-rule
+    languages: [yaml]
+    severity: WARNING
+    message: "some message"
+    paths:
+      include:
+        - "**/chart/templates/**"
+    pattern: "foo: bar"
+
+---
+# ruleid: no-yaml-language-in-helm-templates
+rules:
+  - id: bad-yaml-helm-rule-kubernetes-subdir
+    languages: [yaml]
+    severity: ERROR
+    message: "some message"
+    paths:
+      include:
+        - "**/chart/templates/deployment.yaml"
+    patterns:
+      - pattern: "foo: bar"
+
+---
+# ok: no-yaml-language-in-helm-templates — uses languages: [generic] for chart templates
+rules:
+  - id: ok-generic-helm-rule
+    languages: [generic]
+    severity: WARNING
+    message: "some message"
+    paths:
+      include:
+        - "**/chart/templates/**"
+    pattern: "foo: bar"
+
+---
+# ok: no-yaml-language-in-helm-templates — uses languages: [yaml] but not for chart templates
+rules:
+  - id: ok-yaml-non-chart-rule
+    languages: [yaml]
+    severity: WARNING
+    message: "some message"
+    paths:
+      include:
+        - "**/*.yaml"
+    pattern: "foo: bar"
+
+---
+# ok: no-yaml-language-in-helm-templates — no paths restriction, not targeting charts
+rules:
+  - id: ok-yaml-no-paths-rule
+    languages: [yaml]
+    severity: WARNING
+    message: "some message"
+    pattern: "foo: bar"

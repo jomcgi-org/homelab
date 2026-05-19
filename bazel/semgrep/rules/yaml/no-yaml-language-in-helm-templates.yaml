@@ -1,0 +1,35 @@
+rules:
+  - id: no-yaml-language-in-helm-templates
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      This semgrep rule uses `languages: [yaml]` but its `paths.include`
+      targets `**/chart/templates/**`. Helm templates contain `{{ }}` directives
+      that make them invalid YAML — the YAML parser silently bails on those files
+      and the rule never fires on real chart templates. Switch to
+      `languages: [generic]` (spacegrep) and adapt patterns as needed. See PR
+      #2319 for the conversion pattern.
+    metadata:
+      category: correctness
+      subcategory: semgrep
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [semgrep, helm]
+      description: >-
+        Detects semgrep rules that combine languages: [yaml] with a chart/templates
+        path filter — a combination that silently never fires on real Helm chart files.
+    paths:
+      include:
+        - "bazel/semgrep/rules/**/*.yaml"
+    patterns:
+      - pattern: |
+          languages:
+            - yaml
+      - pattern: |
+          paths:
+            include:
+              - $PATH
+      - metavariable-regex:
+          metavariable: $PATH
+          regex: '.*chart/templates.*'
