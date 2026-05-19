@@ -1,19 +1,23 @@
 # Tests for no-hardcoded-k8s-url-in-helm-env rule.
 # Helm template env vars must not hardcode .svc.cluster.local URLs — inject
 # via values.yaml so operators can override without editing the chart template.
+#
+# The rule uses languages: [generic] (spacegrep) with pattern-regex. In generic
+# mode the finding is anchored at the `value:` token, so # ruleid: annotations
+# must appear on the line immediately before `value:`.
 ---
-# ruleid: no-hardcoded-k8s-url-in-helm-env
 - name: CLICKHOUSE_URL
+  # ruleid: no-hardcoded-k8s-url-in-helm-env
   value: http://chi-signoz-clickhouse.signoz.svc.cluster.local:8123
 
 ---
-# ruleid: no-hardcoded-k8s-url-in-helm-env
 - name: OTEL_EXPORTER_OTLP_ENDPOINT
+  # ruleid: no-hardcoded-k8s-url-in-helm-env
   value: "http://signoz-otel-collector.signoz.svc.cluster.local:4317"
 
 ---
-# ruleid: no-hardcoded-k8s-url-in-helm-env
 - name: DATABASE_URL
+  # ruleid: no-hardcoded-k8s-url-in-helm-env
   value: 'postgres://user:pass@my-db.default.svc.cluster.local:5432/mydb'
 
 ---
@@ -38,3 +42,19 @@
 # ok: no-hardcoded-k8s-url-in-helm-env — localhost is not a cluster-local service URL
 - name: METRICS_ADDR
   value: http://localhost:9090
+
+---
+# Helm template syntax test: the rule must fire even when {{ }} directives are
+# present (YAML parser would reject this file; generic mode handles it fine).
+{{- if .Values.otel.enabled }}
+- name: OTEL_ENDPOINT
+  # ruleid: no-hardcoded-k8s-url-in-helm-env
+  value: http://my-otel-collector.monitoring.svc.cluster.local:4317
+{{- end }}
+
+---
+# ok: no-hardcoded-k8s-url-in-helm-env — Helm template with value from values.yaml
+{{- if .Values.otel.enabled }}
+- name: OTEL_ENDPOINT
+  value: {{ .Values.otel.endpoint | quote }}
+{{- end }}
