@@ -1,6 +1,6 @@
 rules:
   - id: no-broad-public-api-prefix
-    languages: [yaml]
+    languages: [generic]
     severity: WARNING
     message: >-
       Public HTTPRoute PathPrefix is too broad and risks exposing private API
@@ -20,10 +20,11 @@ rules:
     paths:
       include:
         - "**/chart/templates/httproute-public*"
-    patterns:
-      - pattern: |
-          type: PathPrefix
-          value: $VALUE
-      - metavariable-regex:
-          metavariable: $VALUE
-          regex: '^/api(/[^/]+)?$'
+    # languages: [generic] (spacegrep) is required here because Helm templates
+    # contain {{ }} directives that make them invalid YAML. The YAML parser
+    # silently bails on these files so the rule never fires in yaml mode.
+    # pattern-regex replaces patterns+metavariable-regex because spacegrep
+    # tokenises "/" separately, breaking $VALUE capture for path strings.
+    # The regex matches type: PathPrefix followed by value: /api with at most
+    # one additional path segment — i.e. /api or /api/<single-segment>.
+    pattern-regex: 'type:\s+PathPrefix\n[ \t]+value:\s+/api(/[^/\n]+)?(\n|$)'
