@@ -1,4 +1,15 @@
 # Tests for require-fsgroup-with-pvc rule.
+# NOTE: This rule uses languages: [yaml] and is intentionally NOT converted to
+# languages: [generic]. The pattern-not checks for securityContext.fsGroup which
+# is a sibling key to volumes: (never nested inside it). In spacegrep generic mode,
+# pattern-not is evaluated within the anchor region only — fsGroup never appears
+# inside volumes:, so the pattern-not would always be satisfied on every PVC
+# volume, producing a false positive on every correctly-configured deployment.
+#
+# Helm template blind spot: this rule will not fire on Helm templates that contain
+# {{ }} directives because the YAML parser silently bails on those files.
+# The no-yaml-language-in-helm-template-rule meta-rule flags this rule for future
+# redesign once a safe conversion strategy is identified.
 ---
 # ok: PVC volume with fsGroup set in podSecurityContext
 apiVersion: apps/v1
