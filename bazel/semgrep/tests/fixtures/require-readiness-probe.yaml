@@ -1,4 +1,7 @@
 # Tests for require-readiness-probe rule.
+# The rule uses languages: [generic] (spacegrep). In generic mode the finding
+# is anchored at the `containers:` token, so # ruleid: annotations must appear
+# on the line immediately before `containers:`.
 ---
 # ok: container has readinessProbe
 apiVersion: v1
@@ -17,12 +20,12 @@ spec:
         periodSeconds: 10
 
 ---
-# ruleid: require-readiness-probe
 apiVersion: v1
 kind: Pod
 metadata:
   name: bad-pod
 spec:
+# ruleid: require-readiness-probe
   containers:
     - name: app
       image: myapp:latest
@@ -33,3 +36,41 @@ spec:
         httpGet:
           path: /healthz
           port: 8080
+
+---
+# Helm template syntax test: the rule must fire even when {{ }} directives are
+# present (YAML parser would reject this file; generic mode handles it fine).
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service.fullname" . }}
+spec:
+  template:
+    spec:
+# ruleid: require-readiness-probe
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.service.port }}
+{{- end }}
+
+---
+# ok: Helm template with readinessProbe present
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service.fullname" . }}
+spec:
+  template:
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.service.port }}
+{{- end }}
