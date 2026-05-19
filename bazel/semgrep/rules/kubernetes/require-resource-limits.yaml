@@ -18,7 +18,13 @@ rules:
       limits a single misbehaving container can consume all available CPU/memory
       on the node, causing OOMKills for other workloads. Define at minimum a
       memory limit. CPU limits are optional but recommended.
-    languages: [yaml]
+    # languages: [generic] (spacegrep) is required here because Helm templates
+    # contain {{ }} directives that make them invalid YAML. The YAML parser
+    # silently bails on these files so the rule never fires in yaml mode.
+    # The pattern structure (pattern + same-scope pattern-not inside containers:)
+    # is compatible with spacegrep — both combinators are evaluated within the
+    # containers: region, and multi-level ... nesting is handled correctly.
+    languages: [generic]
     severity: WARNING
     metadata:
       category: correctness

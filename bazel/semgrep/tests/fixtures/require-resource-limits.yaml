@@ -1,4 +1,7 @@
 # Tests for require-resource-limits rule.
+# The rule uses languages: [generic] (spacegrep). In generic mode the finding
+# is anchored at the `containers:` token, so # ruleid: annotations must appear
+# on the line immediately before `containers:`.
 ---
 # ok: container has resource limits
 apiVersion: v1
@@ -18,24 +21,24 @@ spec:
           cpu: "500m"
 
 ---
-# ruleid: require-resource-limits
 apiVersion: v1
 kind: Pod
 metadata:
   name: bad-no-resources
 spec:
+# ruleid: require-resource-limits
   containers:
     - name: app
       image: myapp:latest
       # no resources block at all
 
 ---
-# ruleid: require-resource-limits
 apiVersion: v1
 kind: Pod
 metadata:
   name: bad-requests-only
 spec:
+# ruleid: require-resource-limits
   containers:
     - name: app
       image: myapp:latest
@@ -43,3 +46,42 @@ spec:
         requests:
           memory: "128Mi"
         # limits block missing
+
+---
+# Helm template syntax test: the rule must fire even when {{ }} directives are
+# present (YAML parser would reject this file; generic mode handles it fine).
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service.fullname" . }}
+spec:
+  template:
+    spec:
+# ruleid: require-resource-limits
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.service.port }}
+{{- end }}
+
+---
+# ok: Helm template with resource limits present
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service.fullname" . }}
+spec:
+  template:
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          resources:
+            requests:
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"
+{{- end }}
