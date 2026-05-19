@@ -16,7 +16,13 @@ rules:
                 memory: ...
     message: >
       CNPG Cluster missing resources.requests.memory — pods may be OOM-killed without memory requests.
-    languages: [yaml]
+    # languages: [generic] (spacegrep) is required here because Helm templates
+    # contain {{ }} directives that make them invalid YAML. The YAML parser
+    # silently bails on these files so the rule never fires in yaml mode.
+    # The pattern structure (pattern-inside + pattern + same-scope pattern-not
+    # inside spec:) is compatible with spacegrep — all three combinators are
+    # supported in generic mode.
+    languages: [generic]
     severity: WARNING
     metadata:
       category: correctness
