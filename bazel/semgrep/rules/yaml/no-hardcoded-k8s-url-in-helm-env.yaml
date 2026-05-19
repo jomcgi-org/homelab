@@ -1,6 +1,6 @@
 rules:
   - id: no-hardcoded-k8s-url-in-helm-env
-    languages: [yaml]
+    languages: [generic]
     severity: WARNING
     message: >-
       Hardcoded Kubernetes in-cluster service URL in a Helm template env var
@@ -18,10 +18,9 @@ rules:
     paths:
       include:
         - "**/chart/templates/**"
-    patterns:
-      - pattern: |
-          - name: $NAME
-            value: $URL
-      - metavariable-regex:
-          metavariable: $URL
-          regex: '.*\.svc\.cluster\.local.*'
+    # languages: [generic] (spacegrep) is required here because Helm templates
+    # contain {{ }} directives that make them invalid YAML. The YAML parser
+    # silently bails on these files and the rule never fires in yaml mode.
+    # pattern-regex is used because spacegrep tokenises "http" and ":" separately,
+    # breaking metavariable-regex capture of full unquoted URLs.
+    pattern-regex: 'value:[ \t]+"?[^"{\n]*\.svc\.cluster\.local'
