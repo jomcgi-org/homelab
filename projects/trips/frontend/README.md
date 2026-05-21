@@ -20,10 +20,10 @@ Interactive trip viewer for exploring travel routes and photos.
 
 ```bash
 # Install dependencies
-pnpm install
+npm install
 
 # Start dev server
-pnpm dev
+npm run dev
 ```
 
 The app connects to the trips API (`api.jomcgi.dev/trips`) for photo and route data.
