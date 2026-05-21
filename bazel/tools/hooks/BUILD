@@ -45,3 +45,9 @@ sh_test(
     srcs = ["check-public-route-visibility-filter_test.sh"],
     data = [":check-public-route-visibility-filter.sh"],
 )
+
+sh_test(
+    name = "check_semgrep_rule_has_fixture_test",
+    srcs = ["check-semgrep-rule-has-fixture_test.sh"],
+    data = [":check-semgrep-rule-has-fixture.sh"],
+)
