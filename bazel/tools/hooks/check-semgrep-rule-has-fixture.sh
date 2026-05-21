@@ -49,7 +49,7 @@ has_non_yaml_fixture() {
 }
 
 # Check 1: central fixtures dir — any extension (including .yaml)
-if compgen -G "${FIXTURES_DIR}/${STEM}."'*' > /dev/null 2>&1; then
+if compgen -G "${FIXTURES_DIR}/${STEM}."'*' >/dev/null 2>&1; then
 	exit 0
 fi
 
