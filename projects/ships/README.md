@@ -10,7 +10,7 @@ Real-time AIS vessel tracking with a MapLibre GL frontend.
 | **backend**  | REST + WebSocket API over SQLite with stationary-vessel deduplication (speed < 0.5 kn, distance < 100 m); replays the NATS stream on startup to build its SQLite DB and subscribes for live updates          |
 | **frontend** | React/Vite SPA served by a Bun-based proxy server (server.ts) that forwards API and WebSocket requests to the backend; renders a MapLibre GL map with live vessel positions, types, and courses              |
 | **chart**    | Helm chart for Kubernetes deployment                                                                                                                                                                         |
-| **deploy**   | ArgoCD Application, kustomization, and cluster-specific values                                                                                                                                               |
+| **deploy**   | ArgoCD Application, kustomization, cluster-specific values, and SigNoz HTTP health check alert (`marine-httpcheck-alert.yaml`)                                                                               |
 
 Detailed component documentation exists in [backend/README.md](backend/README.md), [ingest/README.md](ingest/README.md), and [chart/README.md](chart/README.md).
 
