@@ -51,3 +51,9 @@ sh_test(
     srcs = ["check-semgrep-rule-has-fixture_test.sh"],
     data = [":check-semgrep-rule-has-fixture.sh"],
 )
+
+sh_test(
+    name = "check_semgrep_helm_fixture_has_template_syntax_test",
+    srcs = ["check-semgrep-helm-fixture-has-template-syntax_test.sh"],
+    data = [":check-semgrep-helm-fixture-has-template-syntax.sh"],
+)
