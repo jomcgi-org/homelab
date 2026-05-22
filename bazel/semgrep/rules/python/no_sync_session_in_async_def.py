@@ -49,7 +49,11 @@ def ok_sync_commit(session):
 async def ok_with_to_thread(engine, item_id):
     def _sync_fn(engine, item_id):
         with Session(engine) as session:
-            return session.execute(select(MyModel).where(MyModel.id == item_id)).scalars().first()
+            return (
+                session.execute(select(MyModel).where(MyModel.id == item_id))
+                .scalars()
+                .first()
+            )
 
     return await asyncio.to_thread(_sync_fn, engine, item_id)
 
