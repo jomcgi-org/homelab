@@ -10,14 +10,14 @@ Claude.ai / Claude Code (external)
     │  HTTPS  mcp.jomcgi.dev
     ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  MCP OAuth Proxy  (prod / mcp-gateway namespace)                                           │
-│  projects/agent_platform/mcp_oauth_proxy                                                   │
-│  OAuth 2.1 AS — Google OIDC — injects X-Forwarded-User                                     │
+│  Cloudflare Access  (Managed OAuth — ADR 011)                                              │
+│  RFC 9728 discovery + DCR · token issuance + validation at edge                            │
+│  Injects Cf-Access-Authenticated-User-Email header                                         │
 └──────────────────────────────────────────┬─────────────────────────────────────────────────┘
-                                           │ proxies to ClusterIP :8000
+                                           │ forwards via Cloudflare Tunnel
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Context Forge  (prod / mcp-gateway namespace)                                             │
+│  Context Forge  (prod / mcp namespace)                                                     │
 │  projects/agent_platform/context_forge  ·  IBM mcp-context-forge v1.0.0-RC1                │
 │  MCP gateway — aggregates tool servers, RBAC by team                                       │
 │  Backends: Postgres (state) + Redis (sessions)                                             │
@@ -339,7 +339,7 @@ A thin FastMCP wrapper around the orchestrator REST API. Registered with Context
 ```mermaid
 sequenceDiagram
     actor Claude as Claude.ai / Claude Code
-    participant Proxy as MCP OAuth Proxy
+    participant CFA as Cloudflare Access
     participant CF as Context Forge
     participant MCP as agent-orchestrator-mcp
     participant Orch as agent-orchestrator
@@ -347,9 +347,9 @@ sequenceDiagram
     participant Ctrl as agent-sandbox controller
     participant Pod as Goose sandbox pod
 
-    Claude->>Proxy: MCP: submit_job(task="Fix CI")
-    Proxy->>Proxy: Validate OAuth JWT (Google OIDC)
-    Proxy->>CF: forward + X-Forwarded-User
+    Claude->>CFA: MCP: submit_job(task="Fix CI")
+    CFA->>CFA: Validate token (Managed OAuth)
+    CFA->>CF: forward + Cf-Access-Authenticated-User-Email
     CF->>CF: RBAC check (team scope)
     CF->>MCP: route to agent-orchestrator-mcp
     MCP->>Orch: POST /jobs {task, profile, max_retries}
@@ -370,7 +370,8 @@ sequenceDiagram
     Orch->>NATS: KV PUT {SUCCEEDED}
     Orch->>Ctrl: Delete SandboxClaim
 
-    Claude->>CF: MCP: get_job_output(id="01JQ...")
+    Claude->>CFA: MCP: get_job_output(id="01JQ...")
+    CFA->>CF: forward
     CF->>MCP: route
     MCP->>Orch: GET /jobs/01JQ.../output
     Orch->>NATS: KV GET job-records/01JQ...
@@ -386,7 +387,7 @@ sequenceDiagram
 **Chart:** `projects/agent_platform/context_forge/` (wraps upstream IBM `mcp-stack` Helm chart)
 **Deploy:** `projects/agent_platform/context-forge/deploy/`
 **Namespace:** `mcp-gateway`
-**External:** `https://mcp.jomcgi.dev/mcp/` (Cloudflare tunnel -> MCP OAuth Proxy -> Context Forge)
+**External:** `https://mcp.jomcgi.dev/mcp/` (Cloudflare Managed OAuth -> Cloudflare Tunnel -> Context Forge)
 **In-cluster:** `http://context-forge.mcp-gateway.svc.cluster.local:8000/mcp`
 
 IBM's [`mcp-context-forge`](https://github.com/ibm/mcp-context-forge) aggregates multiple upstream MCP servers behind a single endpoint with RBAC-based tool distribution.
@@ -407,17 +408,16 @@ Claude.ai / Claude Code
     │
     │ HTTPS
     ▼
+Cloudflare Access          (Managed OAuth — ADR 011)
+    │  - RFC 9728 discovery + DCR (Dynamic Client Registration)
+    │  - Token issuance and validation at edge
+    │  - Injects Cf-Access-Authenticated-User-Email header
+    ▼
 Cloudflare Tunnel          (DDoS protection, TLS termination)
     │
     ▼
-MCP OAuth Proxy            (obot-platform/mcp-oauth-proxy)
-    │  - RFC 9728 discovery + DCR (Dynamic Client Registration)
-    │  - Delegates identity to Google OIDC
-    │  - Issues its own short-lived JWTs to MCP clients
-    │  - Injects X-Forwarded-User: <google email>
-    ▼
 Context Forge              (TRUST_PROXY_AUTH=true)
-    │  - Reads identity from X-Forwarded-User header
+    │  - Reads identity from Cf-Access-Authenticated-User-Email header
     │  - Resolves team membership from identity
     │  - Applies RBAC: tools.read + tools.execute for "developer" role
     ▼
@@ -513,8 +513,9 @@ This is the intended extension point for future webhook dispatch, DLQ handling, 
 | [003 - Context Forge](decisions/agents/003-context-forge.md)                     | MCP gateway deployment             |
 | [004 - Autonomous Agents](decisions/agents/004-autonomous-agents.md)             | Goose + agent-sandbox architecture |
 | [005 - Role-Based MCP Access](decisions/agents/005-role-based-mcp-access.md)     | Context Forge RBAC model           |
-| [006 - OIDC Auth MCP Gateway](decisions/agents/006-oidc-auth-mcp-gateway.md)     | OAuth proxy + Google OIDC          |
+| [006 - OIDC Auth MCP Gateway](decisions/agents/006-oidc-auth-mcp-gateway.md)     | OAuth proxy + Google OIDC (superseded by 011) |
 | [007 - Agent Orchestrator](decisions/agents/007-agent-orchestrator.md)           | Orchestrator service design        |
+| [011 - Cloudflare Managed OAuth](decisions/agents/011-cloudflare-managed-oauth.md) | Replaces in-cluster OAuth proxy with Cloudflare Access |
 
 ## Quick Reference
 
