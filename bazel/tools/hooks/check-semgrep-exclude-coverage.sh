@@ -58,7 +58,8 @@ STEM=$(basename "$FILE_PATH" .yaml)
 # inside an exclude block) and check whether any lacks an inline comment.
 # We use a small Python script so we can parse YAML-ish indented list items
 # without a full YAML parser dependency.
-UNDOCUMENTED=$(echo "$CONTENT" | python3 - <<'PY'
+UNDOCUMENTED=$(
+	echo "$CONTENT" | python3 - <<'PY'
 import sys, re
 
 lines = sys.stdin.read().splitlines()
