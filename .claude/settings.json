@@ -128,6 +128,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-semgrep-helm-fixture-has-template-syntax.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-semgrep-exclude-coverage.sh",
+            "timeout": 10
           }
         ]
       }

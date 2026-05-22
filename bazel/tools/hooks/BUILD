@@ -57,3 +57,9 @@ sh_test(
     srcs = ["check-semgrep-helm-fixture-has-template-syntax_test.sh"],
     data = [":check-semgrep-helm-fixture-has-template-syntax.sh"],
 )
+
+sh_test(
+    name = "check_semgrep_exclude_coverage_test",
+    srcs = ["check-semgrep-exclude-coverage_test.sh"],
+    data = [":check-semgrep-exclude-coverage.sh"],
+)
