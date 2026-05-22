@@ -1,0 +1,43 @@
+rules:
+  - id: no-sync-session-in-async-def
+    patterns:
+      - pattern-inside: |
+          async def $FUNC(...):
+              ...
+      - pattern-either:
+          - pattern: session.execute(...)
+          - pattern: session.scalars(...)
+          - pattern: session.commit()
+          - pattern: session.flush()
+    message: >-
+      SQLAlchemy Session method `$MATCHED_VAR` called directly inside an
+      `async def`. Synchronous Session I/O runs on the event loop and blocks
+      all coroutines — including `/healthz` — for the duration of the query,
+      causing liveness probe trips and 5xx errors under load.
+
+      Offload the work to a thread and create a fresh Session inside it:
+
+        def _sync_fn(engine, ...):
+            with Session(engine) as session:
+                return session.execute(...)
+
+        await asyncio.to_thread(_sync_fn, engine, ...)
+
+      See PR #2297 for the canonical fix pattern in this codebase.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: asyncio
+      cwe: ["CWE-400: Uncontrolled Resource Consumption"]
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [python, asyncio, sqlalchemy, sqlmodel]
+      description: >-
+        Synchronous SQLAlchemy Session I/O (execute, scalars, commit, flush)
+        called directly inside an async function blocks the event loop.
+        Offload to asyncio.to_thread() with a fresh Session instead.
+    paths:
+      include:
+        - "projects/**/*.py"
