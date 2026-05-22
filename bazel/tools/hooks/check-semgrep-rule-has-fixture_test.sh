@@ -198,6 +198,27 @@ run_test "top_level_rules_file_silent" \
 	"$(make_json "$TOP_RULE")" \
 	0 ""
 
+# 9. Rule has a colocated .yaml sibling (e.g. another YAML rule or config) but
+# no non-yaml fixture. has_non_yaml_fixture filters .yaml files, so the
+# sibling must NOT satisfy Check 2 → warns.
+# This explicitly exercises the `[[ "$f" == *.yaml ]] && continue` branch.
+RULE_F="${FAKE_RULES}/kubernetes/no-yaml-only-fixture.yaml"
+touch "$RULE_F"
+touch "${FAKE_RULES}/kubernetes/no-yaml-only-fixture.config.yaml"
+# The .yaml sibling is filtered out by has_non_yaml_fixture; no non-yaml
+# fixture exists → WARNING expected.
+run_test "rule_colocated_yaml_only_fixture_warns" \
+	"$(make_json "$RULE_F")" \
+	0 "WARNING.*no-yaml-only-fixture"
+
+# 10. Rule whose stem has no dashes (STEM_UNDERSCORED == STEM) and no fixture → warns.
+# Check 3 is skipped because the stem contains no dashes; warning must still fire.
+RULE_G="${FAKE_RULES}/kubernetes/noprivileged.yaml"
+touch "$RULE_G"
+run_test "rule_no_dashes_in_stem_no_fixture_warns" \
+	"$(make_json "$RULE_G")" \
+	0 "WARNING.*noprivileged"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

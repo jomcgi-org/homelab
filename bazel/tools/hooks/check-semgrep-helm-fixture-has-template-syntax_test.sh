@@ -266,6 +266,33 @@ run_test "write_fixture_no_matching_rule_silent" \
 		'no helm syntax here')" \
 	0 ""
 
+# 10. Edit: existing file has no {{ AND new_string has no {{ → warns
+# This exercises the third Edit sub-path: file exists, no {{ on disk, no {{ in new_string.
+printf '# plain fixture, no helm syntax\nmatchLabels:\n  app: myapp\n' >"$FIXTURE_PATH"
+run_test "edit_existing_file_no_helm_syntax_new_string_no_helm_syntax_warns" \
+	"$(make_edit_json "$FIXTURE_PATH" \
+		'app: myapp' \
+		'app: newapp')" \
+	0 "WARNING.*require-component-label"
+rm -f "$FIXTURE_PATH"
+
+# 11. Edit: file does not exist AND new_string has no {{ → warns
+# Ensures the warning fires for brand-new fixtures written via Edit without helm syntax.
+run_test "edit_new_file_no_helm_syntax_warns" \
+	"$(make_edit_json "$FIXTURE_PATH" \
+		'' \
+		'matchLabels:
+  app: myapp')" \
+	0 "WARNING.*require-component-label"
+
+# 12. Edit: empty new_string (no content to check) → silent
+# The early-exit on empty FIXTURE_CONTENT prevents a false positive.
+run_test "edit_empty_new_string_silent" \
+	"$(make_edit_json "$FIXTURE_PATH" \
+		'app: myapp' \
+		'')" \
+	0 ""
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
