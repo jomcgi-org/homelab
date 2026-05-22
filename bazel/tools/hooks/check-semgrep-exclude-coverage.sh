@@ -59,10 +59,10 @@ STEM=$(basename "$FILE_PATH" .yaml)
 # We use a small Python script so we can parse YAML-ish indented list items
 # without a full YAML parser dependency.
 UNDOCUMENTED=$(
-	echo "$CONTENT" | python3 - <<'PY'
-import sys, re
+	RULE_CONTENT="$CONTENT" python3 <<'PY'
+import re, os
 
-lines = sys.stdin.read().splitlines()
+lines = os.environ.get('RULE_CONTENT', '').splitlines()
 in_exclude = False
 found_undocumented = False
 
