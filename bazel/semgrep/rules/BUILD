@@ -327,3 +327,19 @@ semgrep_test(
     rules = [":no_session_in_to_thread_rule"],
     tags = ["semgrep"],
 )
+
+# sveltekit-public-route-fetches-private-knowledge-api uses languages: [generic] scoped to
+# **/routes/public/**/*page.server.*. Wired to its own .js annotation fixture independently of
+# typescript_rules_test (which only scans *.ts fixtures).
+filegroup(
+    name = "sveltekit_public_route_fetches_private_knowledge_api_rule",
+    srcs = ["typescript/sveltekit-public-route-fetches-private-knowledge-api.yaml"],
+)
+
+semgrep_test(
+    name = "sveltekit_public_route_fetches_private_knowledge_api_test",
+    srcs = ["//bazel/semgrep/tests:sveltekit_public_route_fetches_private_knowledge_api_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":sveltekit_public_route_fetches_private_knowledge_api_rule"],
+    tags = ["semgrep"],
+)

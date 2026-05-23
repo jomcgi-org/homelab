@@ -38,6 +38,13 @@ filegroup(
     srcs = glob(["fixtures/*.ts"]),
 )
 
+# Fixture for the sveltekit-public-route-fetches-private-knowledge-api rule (languages: generic).
+# Referenced by //bazel/semgrep/rules:sveltekit_public_route_fetches_private_knowledge_api_test.
+filegroup(
+    name = "sveltekit_public_route_fetches_private_knowledge_api_fixtures",
+    srcs = ["fixtures/sveltekit-public-route-fetches-private-knowledge-api.js"],
+)
+
 # Fixture for the no-create-event-dispatcher-runes rule (languages: generic, paths: projects/**/*.svelte).
 # Referenced by //bazel/semgrep/rules:no_create_event_dispatcher_runes_test.
 filegroup(
