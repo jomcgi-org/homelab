@@ -1,0 +1,25 @@
+rules:
+  - id: sveltekit-public-route-fetches-private-knowledge-api
+    languages: [generic]
+    severity: ERROR
+    paths:
+      include:
+        - "**/routes/public/**/*page.server.*"
+    message: >-
+      Files under routes/public/ must use the visibility-filtered
+      /api/knowledge/public/ endpoints, not the private /api/knowledge/ ones.
+      Fetching private endpoints from a public route leaks private notes to
+      unauthenticated users. Replace /api/knowledge/graph with
+      /api/knowledge/public/graph and /api/knowledge/notes/ with
+      /api/knowledge/public/notes/.
+    metadata:
+      category: security
+      subcategory: data-exposure
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [sveltekit, typescript, javascript]
+      description: Public SvelteKit route fetching private knowledge API endpoint
+    pattern-either:
+      - pattern-regex: '\/api\/knowledge\/graph'
+      - pattern-regex: '\/api\/knowledge\/notes'
