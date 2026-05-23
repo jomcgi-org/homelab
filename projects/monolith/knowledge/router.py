@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
@@ -643,7 +644,10 @@ def _map_gap_error(exc: ValueError) -> HTTPException:
     msg = str(exc)
     if "Gap not found" in msg:
         return HTTPException(status_code=404, detail=msg)
-    if "expected" in msg:  # "expected 'in_review'" / "expected one of [...]"
+    if re.search(
+        r"\bexpected\b", msg
+    ):  # "expected 'in_review'" / "expected one of [...]"
+        # \b word boundary so "unexpected" (substring) doesn't false-match.
         return HTTPException(status_code=409, detail=msg)
     if "frontmatter terminator" in msg:
         return HTTPException(status_code=400, detail=msg)
