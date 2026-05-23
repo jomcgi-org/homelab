@@ -18,6 +18,7 @@ from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
 from knowledge.models import Note, NoteLink
 from knowledge.reconciler import Reconciler
 from knowledge.store import KnowledgeStore
+from knowledge.visibility import public_notes_filter
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,71 @@ def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
         return len(nodes), len(edges), len(positions)
 
 
+def _run_public_layout_pass(engine: Engine) -> tuple[int, int, int]:
+    """Compute layout positions for the public-visibility subgraph only.
+
+    Mirrors :func:`_run_layout_pass` but restricts to ``visibility = 'public'``
+    notes and persists positions to ``layout_x_public`` / ``layout_y_public``.
+    The full-graph layout (``layout_x`` / ``layout_y``) is unchanged — the
+    two passes are independent so the private notes page continues to render
+    from its existing positions regardless of which finishes first.
+
+    Edge filter mirrors :func:`get_public_graph`: both endpoints must
+    resolve to a public note (source via the SQL filter on ``Note``, target
+    via the slug→canonical resolution against the public-only id set).
+    """
+    params = LayoutParams.from_env()
+
+    with Session(engine) as session:
+        note_rows = session.execute(
+            select(
+                Note.id,
+                Note.note_id,
+                Note.layout_x_public,
+                Note.layout_y_public,
+            ).where(public_notes_filter())
+        ).all()
+        fk_to_note_id: dict[int, str] = {r.id: r.note_id for r in note_rows}
+        nodes = [
+            NodePos(id=r.note_id, prior_x=r.layout_x_public, prior_y=r.layout_y_public)
+            for r in note_rows
+        ]
+
+        if not nodes:
+            return 0, 0, 0
+
+        edge_rows = session.execute(
+            select(NoteLink.src_note_fk, NoteLink.target_id)
+            .join(Note, NoteLink.src_note_fk == Note.id)
+            .where(public_notes_filter())
+        ).all()
+        note_id_set = set(fk_to_note_id.values())
+        slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}
+        edges: list[EdgeRef] = []
+        for r in edge_rows:
+            if r.src_note_fk not in fk_to_note_id:
+                continue
+            canonical_target = slug_to_note_id.get(_slugify(r.target_id))
+            if canonical_target is None:
+                continue
+            edges.append(
+                EdgeRef(source=fk_to_note_id[r.src_note_fk], target=canonical_target)
+            )
+
+        positions = compute_layout(nodes, edges, params)
+
+        if positions:
+            for note_id, (x, y) in positions.items():
+                session.execute(
+                    update(Note)
+                    .where(Note.note_id == note_id)
+                    .values(layout_x_public=x, layout_y_public=y)
+                )
+            session.commit()
+
+        return len(nodes), len(edges), len(positions)
+
+
 async def reconcile_handler(session: Session) -> datetime | None:
     """Scheduler handler: run the knowledge vault reconciler."""
     if not _vault_sync_ready():
@@ -290,6 +356,30 @@ async def reconcile_handler(session: Session) -> datetime | None:
                 "edge_count": edge_count,
                 "positioned": positioned,
                 "duration_ms": int((time.perf_counter() - start) * 1000),
+            },
+        )
+
+    # Public-only layout pass: independent of the full-graph pass so the
+    # private notes page never loses its layout if the public pass fails,
+    # and vice versa. Runs sequentially on a worker thread for the same
+    # event-loop-blocking reason as the full pass.
+    public_start = time.perf_counter()
+    try:
+        (
+            public_node_count,
+            public_edge_count,
+            public_positioned,
+        ) = await asyncio.to_thread(_run_public_layout_pass, session.get_bind())
+    except Exception:  # noqa: BLE001 — same isolation rule as the full-graph pass
+        logger.exception("knowledge.layout: public pass failed")
+    else:
+        logger.info(
+            "knowledge.layout: public pass succeeded",
+            extra={
+                "node_count": public_node_count,
+                "edge_count": public_edge_count,
+                "positioned": public_positioned,
+                "duration_ms": int((time.perf_counter() - public_start) * 1000),
             },
         )
 

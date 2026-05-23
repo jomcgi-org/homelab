@@ -90,6 +90,14 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     indexed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     layout_x: float | None = None
     layout_y: float | None = None
+    # Force-directed layout positions computed over the public-visibility
+    # subgraph only — used by GET /knowledge/public/graph so the public
+    # /notes page renders a dense layout instead of inheriting the full
+    # graph's positions (which leave visible holes where private clusters
+    # used to anchor). Populated by a separate gardener layout pass; the
+    # public endpoint COALESCEs back to layout_x/y until the first pass.
+    layout_x_public: float | None = None
+    layout_y_public: float | None = None
 
 
 class Chunk(SQLModel, table=True):

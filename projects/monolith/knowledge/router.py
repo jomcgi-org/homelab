@@ -23,7 +23,7 @@ from typing import Literal
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -170,8 +170,14 @@ def get_public_graph(
             Note.title,
             Note.type,
             Note.indexed_at,
-            Note.layout_x,
-            Note.layout_y,
+            # Prefer public-only layout positions (computed over the public
+            # subgraph by knowledge.service._run_public_layout_pass); fall
+            # back to the full-graph positions if the public pass hasn't
+            # populated this row yet, so a fresh deploy never serves NULL
+            # coords. Same shape consumed by /private/notes — keep both as
+            # nullable in the response, the client handles either.
+            func.coalesce(Note.layout_x_public, Note.layout_x).label("x"),
+            func.coalesce(Note.layout_y_public, Note.layout_y).label("y"),
         )
         .where(public_notes_filter())
         .where(Note.type.in_(list(GRAPH_NOTE_TYPES)))
@@ -222,8 +228,8 @@ def get_public_graph(
             "title": row.title,
             "type": row.type,
             "degree": degree_by_note_id.get(row.note_id, 0),
-            "x": row.layout_x,
-            "y": row.layout_y,
+            "x": row.x,
+            "y": row.y,
         }
         for row in public_note_rows
     ]
@@ -242,7 +248,14 @@ def get_public_graph(
     for key, value in headers.items():
         response.headers[key] = value
     logger.info("public.graph.served nodes=%d edges=%d", len(nodes), len(edges))
-    return {"nodes": nodes, "edges": edges}
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        # Mirrors get_graph's response — StatusBar in the SvelteKit page
+        # reads this to display "indexed Xm ago". Previously omitted so
+        # the public page showed "indexed —" while the private one didn't.
+        "indexed_at": indexed_at.isoformat() if indexed_at is not None else None,
+    }
 
 
 @router.get("/public/notes/{note_id}")

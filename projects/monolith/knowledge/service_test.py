@@ -873,6 +873,107 @@ class TestReconcileHandlerLayout:
         assert notes[0].layout_x is None
         assert notes[0].layout_y is None
 
+    @pytest.mark.asyncio
+    async def test_reconcile_handler_populates_public_layout_positions(
+        self, monkeypatch, tmp_path, session, fake_embed_client
+    ):
+        """Only public notes get layout_x_public/y_public; private stay NULL.
+
+        Mirrors the full-graph layout assertion above. The public pass
+        runs over visibility='public' only, so private notes must keep
+        NULL public coords even though they have full-graph coords.
+        """
+        from knowledge.models import Note
+
+        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
+        self._setup_vault(tmp_path)
+        self._write_note(
+            tmp_path,
+            "pub.md",
+            "---\nid: pub\ntitle: Pub\nvisibility: public\n---\n[[priv]] and [[pub2]].",
+        )
+        self._write_note(
+            tmp_path,
+            "pub2.md",
+            "---\nid: pub2\ntitle: Pub2\nvisibility: public\n---\n[[pub]].",
+        )
+        self._write_note(
+            tmp_path,
+            "priv.md",
+            "---\nid: priv\ntitle: Priv\nvisibility: private\n---\nBody.",
+        )
+
+        with patch("knowledge.service.EmbeddingClient", return_value=fake_embed_client):
+            await service.reconcile_handler(session)
+
+        notes = {n.note_id: n for n in session.scalars(select(Note))}
+        assert set(notes) == {"pub", "pub2", "priv"}
+        # Public notes get public-layout positions (in addition to the
+        # full-graph ones every note gets).
+        for nid in ("pub", "pub2"):
+            assert notes[nid].layout_x_public is not None, (
+                f"{nid} missing layout_x_public"
+            )
+            assert notes[nid].layout_y_public is not None, (
+                f"{nid} missing layout_y_public"
+            )
+            assert math.isfinite(notes[nid].layout_x_public)
+            assert math.isfinite(notes[nid].layout_y_public)
+        # Private note: no public layout (the pass filtered it out).
+        assert notes["priv"].layout_x_public is None
+        assert notes["priv"].layout_y_public is None
+
+    @pytest.mark.asyncio
+    async def test_reconcile_handler_public_layout_failure_isolated(
+        self, monkeypatch, tmp_path, session, fake_embed_client, caplog
+    ):
+        """Public layout failure must not affect full-graph layout or upserts.
+
+        Patches ``_run_public_layout_pass`` to raise; the full-graph
+        pass still runs and populates layout_x/layout_y, and the
+        reconciler upsert is committed.
+        """
+        from knowledge.models import Note
+
+        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
+        self._setup_vault(tmp_path)
+        self._write_note(
+            tmp_path,
+            "a.md",
+            "---\nid: a\ntitle: A\nvisibility: public\n---\nLinks to [[b]].",
+        )
+        self._write_note(
+            tmp_path,
+            "b.md",
+            "---\nid: b\ntitle: B\nvisibility: public\n---\nBack to [[a]].",
+        )
+
+        def boom(_engine):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("knowledge.service._run_public_layout_pass", boom)
+
+        with (
+            patch("knowledge.service.EmbeddingClient", return_value=fake_embed_client),
+            caplog.at_level(logging.ERROR, logger="knowledge.service"),
+        ):
+            result = await service.reconcile_handler(session)
+
+        assert result is None
+        assert any(
+            "knowledge.layout: public pass failed" in r.message for r in caplog.records
+        )
+        notes = list(session.scalars(select(Note)))
+        assert len(notes) == 2
+        # Full-graph layout still ran successfully.
+        for note in notes:
+            assert note.layout_x is not None
+            assert note.layout_y is not None
+        # Public layout failed, so public coords are NULL.
+        for note in notes:
+            assert note.layout_x_public is None
+            assert note.layout_y_public is None
+
     # Note: the "preserves positions across no-op cycles" integration
     # test was removed because FA2 doesn't reach a stable equilibrium
     # on the 2-node-connected fixture used here — both per-node drift
