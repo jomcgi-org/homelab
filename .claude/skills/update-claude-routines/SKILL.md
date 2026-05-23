@@ -79,29 +79,42 @@ spaces). The short names above already conform.
    `ToolSearch` with `select:RemoteTrigger` to load it.
 
 2. **Find the YAMLs.** Glob `projects/monolith/claude_routines/*.yaml`. If the
-   user supplied a routine name as an arg (e.g. `/update-claude-routines backlog-audit`),
-   filter to that one file. Otherwise reconcile all.
+   user supplied a routine slug as an arg (e.g.
+   `/update-claude-routines backlog-audit`), filter to that one file. If no
+   YAML matches the slug, print "No YAML in projects/monolith/claude_routines/
+   has slug '<arg>'. Available: <list of slugs>." and exit (no partial-apply).
+   Otherwise reconcile all.
 
-3. **Read each YAML.** Parse it with the user's YAML library of choice (just
-   Read the file and parse in-context — no need for a script).
+3. **Read each YAML.** Parse in-context — just Read the file and reason about
+   its structure; no Python or external script needed. Note that `prompt: |`
+   (YAML literal block) PRESERVES the trailing newline of the prompt content
+   and the API stores it verbatim — relevant if anyone ever adds a diff-based
+   equality check.
 
-4. **Validate.** Read `projects/monolith/claude_routines/schema.json` and
-   confirm each YAML conforms. On failure, print the JSON Schema error path
-   (e.g., `mcp_connectors[0]: must be a string`) and exit before any
-   RemoteTrigger calls.
+4. **Validate against schema.json.** Read
+   `projects/monolith/claude_routines/schema.json` and confirm each YAML
+   conforms. Validation is **by inspection** — there's no JSON Schema library
+   to invoke in-context; compare YAML fields against the schema's `required`,
+   `type`, `enum`, and `pattern` constraints and surface mismatches. On
+   failure, print the JSON path of the bad field and exit BEFORE any
+   RemoteTrigger calls. Idempotency: nothing partially applied.
 
-5. **Resolve names.** For each YAML:
-   - Replace `environment: <name>` with `environment_id: <env_id>` from the
+5. **Resolve names → IDs.** For each YAML:
+   - Replace `environment: <name>` with `environment_id: <env_id>` using the
      table above. Fail with a clear message if the name is unknown.
    - Replace each `mcp_connectors[i]` short name with the full
-     `{connector_uuid, name, url}` object from the table above. Fail with a
+     `{connector_uuid, name, url}` object using the table above. Fail with a
      link to https://claude.ai/customize/connectors if any name is unknown.
 
-6. **Build the API body.** Each YAML maps to a `RemoteTrigger create`/`update`
-   body. Generate a fresh lowercase v4 UUID for `events[0].data.uuid`. The
-   prompt content goes in `events[0].data.message.content`.
+6. **Build the API body.** Generate a fresh lowercase v4 UUID for
+   `events[0].data.uuid` — yes, even on UPDATE. The API replaces the prior
+   UUID without observable churn (verified empirically); preserving the
+   existing UUID via `RemoteTrigger get` is optional and not load-bearing.
+   The prompt content from the YAML goes in `events[0].data.message.content`
+   verbatim.
 
-   The full body shape (matching the /schedule skill):
+   Always send the **full body** — never a partial update. See step 7c on the
+   always-update rule.
 
    ```json
    {
@@ -129,21 +142,55 @@ spaces). The short names above already conform.
    }
    ```
 
-7. **Reconcile.** For each YAML:
-   - Call `RemoteTrigger` action `list` to get all existing routines.
-   - Find the routine with matching `name`. If none, call `action: create`
-     with the body. If one exists, call `action: update` with `trigger_id`
-     set to the existing one's `id` and `body` containing only the changed
-     fields (partial update — pass the full body if computing the diff is
-     awkward, the API tolerates it).
+   The `allowed_tools: []` in the body is silently replaced by the API with
+   a 17-item preset list at write time (see Notes); send `[]` anyway — don't
+   try to pre-populate.
 
-8. **Warn about orphans.** Any claude.ai routine whose name does NOT appear
-   in any YAML is an orphan. Print its name and ID, but DO NOT delete it —
-   claude.ai routines can only be removed via the web UI
+7. **Reconcile.** For each YAML:
+
+   a. **Get the current state.** Call `RemoteTrigger` action `list`. The
+   response shape is `{data: [<trigger>...], has_more: bool}`. If
+   `has_more` is true the response is paginated; the API does not yet
+   expose a documented cursor, so treat any `has_more: true` as a
+   "should-not-happen" error — print loudly and stop without mutating.
+   (A user with >~50 routines is the only realistic trigger; revisit
+   when it actually happens.)
+
+   b. **Match by name.** Each item in `data` is a bare trigger object — NOT
+   wrapped in `{trigger: ...}`. That wrapper appears only on `get`,
+   `create`, and `update` responses. The YAML's `name` field is compared
+   verbatim against each `data[i].name` — exact string match, spaces and
+   parentheses preserved, no case folding, no slugification.
+
+   c. **Decide create vs update — and always update on match.** If no
+   trigger matches: call `action: create` with the full body from step
+   6 (no `trigger_id`). If a trigger matches: call `action: update` with
+   `trigger_id` set to that trigger's `id`, passing the full body.
+
+   **Do not compute a diff to skip the update.** Diffing is brittle for
+   at least four reasons:
+   - the API overrides `allowed_tools` (your `[]` becomes a 17-item list),
+   - the server jitters `next_run_at` and `updated_at`,
+   - YAML `prompt: |` keeps a trailing newline that the API stores verbatim,
+   - `creator.display_name` and `permitted_tools` are returned but are
+     not sendable fields.
+
+   Always update when name matches. The API is idempotent for repeated
+   full-body writes with the same content. Cost: one API call per
+   routine per run.
+
+   d. **Read the response.** Both `create` and `update` wrap the result as
+   `{trigger: {<full trigger object>}}`. Pull `trigger.id` for
+   reporting; pull `trigger.next_run_at` to confirm the schedule was
+   accepted.
+
+8. **Warn about orphans.** Any trigger in `list.data` whose `name` does
+   NOT appear in any YAML is an orphan. Print its name and ID, but DO NOT
+   delete it — claude.ai routines can only be removed via the web UI
    (https://claude.ai/code/routines). Direct the user there if they want to
    prune.
 
-9. **Print a summary.** Format like:
+9. **Print a summary — always, even on zero-change runs.** Format:
 
    ```
    Reconciliation summary:
@@ -153,27 +200,36 @@ spaces). The short names above already conform.
      Orphans:    0
    ```
 
-   For created/updated routines, include the trigger ID and the claude.ai URL:
-   `https://claude.ai/code/routines/<trigger_id>`.
+   For created/updated routines include the trigger ID and the claude.ai
+   URL: `https://claude.ai/code/routines/<trigger_id>`. With the
+   always-update rule from step 7c, `Unchanged` will usually be 0 — that's
+   expected, not a bug. The column exists for a future diff-based skip.
 
 ## Errors and edge cases
 
-- **YAML schema failure** → print the JSON path of the bad field, exit before
-  any API calls. Idempotency: nothing partially-applied.
-- **Unknown `environment` name** → "Environment 'X' is not in the known list
-  ({Default, Unsafe}). Add it to this skill's resolution table if you've
-  registered a new environment in claude.ai."
-- **Unknown `mcp_connector` name** → "Connector 'X' is not connected on this
-  account. Connect it at https://claude.ai/customize/connectors and update
-  this skill's resolution table."
+- **YAML schema failure** → print the JSON path of the bad field, exit
+  before any API calls. Idempotency: nothing partially applied.
+- **Unknown `environment` name** → "Environment 'X' is not in the known
+  list ({Default, Unsafe}). Add it to this skill's resolution table if you
+  have registered a new environment in claude.ai."
+- **Unknown `mcp_connector` name** → "Connector 'X' is not connected on
+  this account. Connect it at https://claude.ai/customize/connectors and
+  update this skill's resolution table."
 - **`run_once_at` in the past** → "run_once_at is in the past
   (<timestamp>). Update the YAML or remove the field."
-- **RemoteTrigger 4xx** → print the response body verbatim and exit. Common
-  causes: `name` collision (a routine with the same name was created
-  out-of-band), invalid cron, expired claude.ai session.
-- **API silently overrides `allowed_tools: []`** → expected behavior. Don't
-  treat the override in the response as drift; the textual constraints in
-  the routine's prompt are what actually limit tool use.
+- **RemoteTrigger 4xx** → print the response body verbatim and exit.
+  Common causes: invalid cron, expired claude.ai session, malformed `name`
+  on `mcp_connections` (must match `[A-Za-z0-9_-]+`; no dots or spaces).
+- **`list` returns `has_more: true`** → pagination is not yet supported in
+  this skill. Print a warning ("paginated routine list not supported;
+  reconcile may be incomplete") and stop without mutating.
+- **API silently replaces `allowed_tools: []`** → expected; do not treat
+  the override in the response as drift. The textual constraints in the
+  prompt are what actually limit tool use.
+- **`permitted_tools: []` on `mcp_connections` in responses** → not a
+  sendable field. Omit on send; the API will populate the field with `[]`
+  unprompted.
+- **Slug arg doesn't match any YAML** → see step 2's exit behavior.
 
 ## Notes
 
@@ -185,3 +241,23 @@ spaces). The short names above already conform.
 - Prefer pinned model snapshots (`claude-haiku-4-5-20251001`) over family
   aliases (`claude-haiku-4-5`) for autonomous routines — the alias auto-tracks
   the latest snapshot, which can change behavior under the user.
+- **`allowed_tools` override (verified)** — when you send `"allowed_tools": []`
+  the API stores this exact list on the routine:
+  ```
+  preset:default, Task, Bash, Glob, Grep, Read, Edit, MultiEdit, Write,
+  NotebookEdit, WebFetch, TodoWrite, WebSearch, BashOutput, KillBash,
+  Skill, Tmux, Monitor, SendUserFile, REPL
+  ```
+  That is the actual tool surface the routine has at runtime. If you need a
+  narrower surface, enforce it via the prompt — there's no server-side way.
+- **Response envelope asymmetry** — `list` returns trigger objects bare
+  inside `data: [...]`; `get`, `create`, and `update` wrap their single
+  trigger as `{trigger: {...}}`. Don't mix the two when post-processing.
+- **`creator.display_name`** appears on `get`/`create`/`update` responses
+  but is omitted from `list` items. Cosmetic only; don't depend on it for
+  matching.
+- **Routines that have already fired** carry `last_fired_at` plus an
+  advanced `next_run_at`. This is _runtime state_, not drift from the YAML.
+- The `data[i]` items on a `list` response include the full `job_config`
+  and `mcp_connections` — there is no follow-up `get` needed for matching
+  or to read fields. Save the API call.
