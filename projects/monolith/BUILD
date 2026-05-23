@@ -2405,6 +2405,21 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_gap_review_endpoints_test",
+    srcs = ["knowledge/gap_review_endpoints_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_mcp_gap_test",
     srcs = ["knowledge/mcp_gap_test.py"],
     imports = ["."],

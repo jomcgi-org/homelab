@@ -484,12 +484,13 @@ class TestListGapsEndpoint:
 class TestReviewQueueEndpoint:
     """Tests for GET /api/knowledge/gaps/review-queue.
 
-    Delegates to list_review_queue(session); response is {"gaps": [...]}.
+    Delegates to list_gaps_for_review(session, mode=..., limit=...);
+    response is {"gaps": [...]}.
     """
 
     def test_happy_path_returns_gaps(self, note_client):
-        """list_review_queue result is wrapped in {"gaps": [...]}."""
-        with patch("knowledge.router.list_review_queue") as mock_queue:
+        """list_gaps_for_review result is wrapped in {"gaps": [...]}."""
+        with patch("knowledge.router.list_gaps_for_review") as mock_queue:
             mock_queue.return_value = [SAMPLE_GAP]
             r = note_client.get("/api/knowledge/gaps/review-queue")
 
@@ -498,26 +499,42 @@ class TestReviewQueueEndpoint:
 
     def test_empty_queue_returns_empty_list(self, note_client):
         """Empty queue returns {"gaps": []}."""
-        with patch("knowledge.router.list_review_queue") as mock_queue:
+        with patch("knowledge.router.list_gaps_for_review") as mock_queue:
             mock_queue.return_value = []
             r = note_client.get("/api/knowledge/gaps/review-queue")
 
         assert r.status_code == 200
         assert r.json() == {"gaps": []}
 
-    def test_session_forwarded_to_list_review_queue(self, note_client, fake_session):
-        """The injected DB session is forwarded to list_review_queue."""
-        with patch("knowledge.router.list_review_queue") as mock_queue:
+    def test_session_forwarded_to_list_gaps_for_review(self, note_client, fake_session):
+        """The injected DB session is forwarded to list_gaps_for_review."""
+        with patch("knowledge.router.list_gaps_for_review") as mock_queue:
             mock_queue.return_value = []
             note_client.get("/api/knowledge/gaps/review-queue")
 
-            mock_queue.assert_called_once_with(fake_session)
+            mock_queue.assert_called_once_with(fake_session, mode="pending", limit=50)
+
+    def test_mode_audit_forwarded(self, note_client, fake_session):
+        """mode=audit is forwarded to list_gaps_for_review."""
+        with patch("knowledge.router.list_gaps_for_review") as mock_queue:
+            mock_queue.return_value = []
+            note_client.get("/api/knowledge/gaps/review-queue?mode=audit")
+
+            mock_queue.assert_called_once_with(fake_session, mode="audit", limit=50)
+
+    def test_invalid_mode_rejected(self, note_client):
+        """mode= must be one of pending|audit (FastAPI Literal validation)."""
+        with patch("knowledge.router.list_gaps_for_review") as mock_queue:
+            mock_queue.return_value = []
+            r = note_client.get("/api/knowledge/gaps/review-queue?mode=bogus")
+
+        assert r.status_code == 422
 
     def test_multiple_gaps_returned_in_order(self, note_client):
-        """Multiple gaps are returned in the order list_review_queue provides."""
+        """Multiple gaps are returned in the order list_gaps_for_review provides."""
         gap_a = {**SAMPLE_GAP, "id": 1, "term": "alpha"}
         gap_b = {**SAMPLE_GAP, "id": 2, "term": "beta"}
-        with patch("knowledge.router.list_review_queue") as mock_queue:
+        with patch("knowledge.router.list_gaps_for_review") as mock_queue:
             mock_queue.return_value = [gap_a, gap_b]
             r = note_client.get("/api/knowledge/gaps/review-queue")
 
