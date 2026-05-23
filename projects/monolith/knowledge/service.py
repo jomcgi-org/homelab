@@ -332,8 +332,9 @@ async def reconcile_handler(session: Session) -> datetime | None:
 
     # Persist reconciler upserts before the layout step so the layout
     # pass — which opens its own session in a worker thread — sees the
-    # upserts via the committed snapshot.
-    session.commit()
+    # upserts via the committed snapshot. Offload the commit itself off
+    # the loop so the COMMIT round-trip doesn't block /healthz.
+    await asyncio.to_thread(session.commit)
 
     # Dispatch the layout pass to a worker thread. ``compute_layout`` is
     # CPU-bound (FA2 + the hard-collide pass); running it on the asyncio

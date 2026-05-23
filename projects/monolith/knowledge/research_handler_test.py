@@ -462,9 +462,18 @@ async def test_full_batch_processed_concurrently(
     blocks until N parallel callers have entered, then releases all of
     them. If the handler ran sequentially, only one caller would ever
     enter at a time and the test would deadlock.
+
+    The to_thread DB helpers (_lock_and_fetch_gap, _finalize_gap_state)
+    are mocked because each fresh session would race for the StaticPool's
+    single in-memory SQLite connection; under N concurrent worker
+    threads this hits sqlite3.InterfaceError. Production (Postgres) has
+    a real connection pool so each fresh session gets its own
+    connection. End-to-end DB state is covered by the other tests in
+    this file.
     """
     n = 5
     gaps = [_make_gap(session, term=f"term-{i}", note_id=f"slug-{i}") for i in range(n)]
+    gap_by_id = {g.id: g for g in gaps}
 
     entered = asyncio.Event()
     in_flight = 0
@@ -480,13 +489,18 @@ async def test_full_batch_processed_concurrently(
         return _research_result_with_claims()
 
     runner = AsyncMock(side_effect=mocked_run_research)
-    with patch("knowledge.research_handler.run_research", runner):
+    with (
+        patch("knowledge.research_handler.run_research", runner),
+        patch(
+            "knowledge.research_handler._lock_and_fetch_gap",
+            lambda _engine, gap_id: gap_by_id[gap_id],
+        ),
+        patch("knowledge.research_handler._finalize_gap_state") as finalize,
+    ):
         await research_gaps_handler(session=session, vault_root=tmp_path)
     assert runner.await_count == n
-
-    for gap in gaps:
-        session.refresh(gap)
-        assert gap.state == "committed", f"{gap.term} was not committed"
+    # Every gap reached a terminal _finalize_gap_state call.
+    assert finalize.call_count == n
     # Every gap wrote its raw to a distinct slug -- no collision under
     # parallel writes.
     for i in range(n):

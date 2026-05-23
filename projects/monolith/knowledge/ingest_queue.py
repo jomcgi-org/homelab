@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -11,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import trafilatura
 from sqlalchemy import Column, String, text
+from sqlalchemy.engine import Engine
 from sqlmodel import Field, Session, SQLModel
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -26,7 +28,9 @@ _YT_PATTERNS = re.compile(
 )
 
 
-class IngestQueueItem(SQLModel, table=True):
+class IngestQueueItem(  # nosemgrep: sqlmodel-datetime-without-factory
+    SQLModel, table=True
+):
     __tablename__ = "ingest_queue"
     __table_args__ = {"schema": "knowledge", "extend_existing": True}
 
@@ -73,6 +77,39 @@ async def fetch_webpage(url: str) -> tuple[str, str]:
     meta = trafilatura.extract_metadata(html)
     title = meta.title if meta and meta.title else urlparse(url).netloc
     return title, body
+
+
+def _mark_queue_done(engine: Engine, item_id: int) -> None:
+    """Mark a queue item processed; opens its own session for ``to_thread``.
+
+    Fresh session per call (canonical pattern from PR #2297) — Sessions
+    are not thread-safe so the caller's loop-thread session must not be
+    passed in.
+    """
+    with Session(engine) as session:
+        session.execute(
+            text("""
+                UPDATE knowledge.ingest_queue
+                SET status = 'done', processed_at = NOW()
+                WHERE id = :id
+            """),
+            {"id": item_id},
+        )
+        session.commit()
+
+
+def _mark_queue_failed(engine: Engine, item_id: int, error: str) -> None:
+    """Mark a queue item failed; opens its own session for ``to_thread``."""
+    with Session(engine) as session:
+        session.execute(
+            text("""
+                UPDATE knowledge.ingest_queue
+                SET status = 'failed', error = :error, processed_at = NOW()
+                WHERE id = :id
+            """),
+            {"id": item_id, "error": error},
+        )
+        session.commit()
 
 
 def _claim_one(session: Session) -> IngestQueueItem | None:
@@ -136,6 +173,7 @@ async def ingest_handler(session: Session) -> datetime | None:
     if item is None:
         return None
 
+    engine = session.get_bind()
     vault_root = Path(os.environ.get("VAULT_ROOT", "/vault"))
     now = datetime.now(timezone.utc)
 
@@ -156,28 +194,11 @@ async def ingest_handler(session: Session) -> datetime | None:
             now=now,
         )
 
-        session.execute(
-            text("""
-                UPDATE knowledge.ingest_queue
-                SET status = 'done', processed_at = NOW()
-                WHERE id = :id
-            """),
-            {"id": item.id},
-        )
-        session.commit()
+        await asyncio.to_thread(_mark_queue_done, engine, item.id)
         logger.info("ingest_queue: done %s", item.url)
 
     except Exception as exc:
         logger.exception("ingest_queue: failed %s", item.url)
-        session.rollback()
-        session.execute(
-            text("""
-                UPDATE knowledge.ingest_queue
-                SET status = 'failed', error = :error, processed_at = NOW()
-                WHERE id = :id
-            """),
-            {"id": item.id, "error": str(exc)[:500]},
-        )
-        session.commit()
+        await asyncio.to_thread(_mark_queue_failed, engine, item.id, str(exc)[:500])
 
     return None

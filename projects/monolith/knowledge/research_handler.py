@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+from sqlalchemy import update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -66,6 +67,85 @@ def _delete_stub(vault_root: Path, slug: str) -> None:
         stub.unlink()
     except FileNotFoundError:
         pass
+
+
+def _lock_and_fetch_gap(engine: Engine, gap_id: int) -> Gap | None:
+    """Atomically lock a classified gap to 'researching' and return a snapshot.
+
+    Returns None if the row is no longer at state='classified' (another
+    worker already claimed it). The returned ``Gap`` is detached from
+    the closed session, so callers must only read attributes that were
+    loaded by ``.get()`` and must not assign to its fields.
+
+    Opens its own session per the canonical PR #2297 pattern so that
+    ``asyncio.to_thread`` does not share a Session across the loop/
+    thread boundary (``no-session-in-to-thread`` rule).
+    """
+    with Session(engine) as session:
+        result = session.execute(
+            update(Gap)
+            .where(Gap.id == gap_id, Gap.state == "classified")
+            .values(state="researching")
+        )
+        session.commit()
+        if result.rowcount == 0:
+            return None
+        return session.get(Gap, gap_id)
+
+
+def _finalize_gap_state(
+    engine: Engine,
+    gap_id: int,
+    *,
+    state: str,
+    gap_class: str | None = None,
+    research_attempts: int | None = None,
+) -> None:
+    """Update a Gap row to a terminal state in a fresh session.
+
+    Bundles state + optional gap_class / research_attempts into one
+    UPDATE so the per-disposition path in ``_process_one`` makes one
+    DB round-trip per terminal transition rather than two.
+
+    Fresh session per call (canonical PR #2297 pattern) so the caller's
+    loop-thread session never crosses into the worker thread that runs
+    the COMMIT round-trip.
+    """
+    values: dict[str, object] = {"state": state}
+    if gap_class is not None:
+        values["gap_class"] = gap_class
+    if research_attempts is not None:
+        values["research_attempts"] = research_attempts
+    with Session(engine) as session:
+        session.execute(update(Gap).where(Gap.id == gap_id).values(**values))
+        session.commit()
+
+
+def _sweep_and_select_candidates(engine: Engine) -> tuple[int, list[Gap]]:
+    """Recover stuck 'researching' rows and fetch the next batch; sync DB I/O.
+
+    Takes the engine (not a session) and opens its own session per the
+    canonical PR #2297 pattern -- Sessions are not thread-safe and the
+    ``no-session-in-to-thread`` rule forbids passing the caller's
+    session across the loop/thread boundary.
+    """
+    with Session(engine) as session:
+        stuck = session.execute(
+            Gap.__table__.update()
+            .where(Gap.state == "researching")
+            .values(state="classified")
+        )
+        session.commit()
+        return stuck.rowcount, list(
+            session.execute(
+                select(Gap)
+                .where(Gap.gap_class == "external", Gap.state == "classified")
+                .order_by(Gap.id)
+                .limit(RESEARCH_BATCH_SIZE)
+            )
+            .scalars()
+            .all()
+        )
 
 
 def _mark_stub_discardable(vault_root: Path, slug: str) -> None:
@@ -135,29 +215,15 @@ async def research_gaps_handler(*, session: Session, vault_root: Path) -> None:
     # state='classified', so nothing would ever pick it back up. Sweep
     # stuck rows back to 'classified' before each tick. Safe under the
     # single-worker scheduler model.
-    stuck = session.execute(
-        Gap.__table__.update()
-        .where(Gap.state == "researching")
-        .values(state="classified")
+    stuck_count, candidates = await asyncio.to_thread(
+        _sweep_and_select_candidates, engine
     )
-    if stuck.rowcount:
+    if stuck_count:
         logger.warning(
             "knowledge.research-gaps: recovered %d stuck 'researching' rows to "
             "'classified'",
-            stuck.rowcount,
+            stuck_count,
         )
-    session.commit()
-
-    candidates = (
-        session.execute(
-            select(Gap)
-            .where(Gap.gap_class == "external", Gap.state == "classified")
-            .order_by(Gap.id)
-            .limit(RESEARCH_BATCH_SIZE)
-        )
-        .scalars()
-        .all()
-    )
 
     if not candidates:
         logger.info("knowledge.research-gaps: no candidates")
@@ -229,26 +295,21 @@ async def _claim_and_process(
             )
             return
 
-        with Session(engine) as task_session:
-            # Race-safe lock: only proceed if state still 'classified'.
-            result = task_session.execute(
-                Gap.__table__.update()
-                .where(Gap.id == gap_id, Gap.state == "classified")
-                .values(state="researching")
-            )
-            task_session.commit()
-            if result.rowcount == 0:
-                logger.info("knowledge.research-gaps: race lost for %s", term)
-                return
+        gap = await asyncio.to_thread(_lock_and_fetch_gap, engine, gap_id)
+        if gap is None:
+            logger.info("knowledge.research-gaps: race lost for %s", term)
+            return
 
-            # Re-fetch the gap in this session so _process_one's mutations
-            # are tracked by the ORM and committed against this connection.
-            gap = task_session.get(Gap, gap_id)
-            assert gap is not None, f"gap {gap_id} disappeared after lock"
-            await _process_one(session=task_session, gap=gap, vault_root=vault_root)
+        await _process_one(engine=engine, gap=gap, vault_root=vault_root)
 
 
-async def _process_one(*, session: Session, gap: Gap, vault_root: Path) -> None:
+async def _process_one(*, engine: Engine, gap: Gap, vault_root: Path) -> None:
+    # ``gap`` is the detached snapshot returned by ``_lock_and_fetch_gap``.
+    # We only READ from it here -- all state mutations go through
+    # ``_finalize_gap_state`` against a fresh session in a worker thread,
+    # so we don't share a Session across the loop/thread boundary
+    # (``no-session-in-to-thread`` rule).
+    #
     # gap.note_id is the slug used for both _inbox/research/<slug>.md
     # and _failed_research/<slug>-<N>.md. Schema permits NULL, but a
     # classified external gap reaching this point must have one (the
@@ -268,14 +329,17 @@ async def _process_one(*, session: Session, gap: Gap, vault_root: Path) -> None:
             "knowledge.research-gaps: research failure on %s; reverting state",
             gap.term,
         )
-        gap.state = "classified"
-        session.commit()
+        await asyncio.to_thread(_finalize_gap_state, engine, gap.id, state="classified")
         return
 
     if result.disposition == "personal":
-        gap.gap_class = "internal"
-        gap.state = "classified"
-        session.commit()
+        await asyncio.to_thread(
+            _finalize_gap_state,
+            engine,
+            gap.id,
+            state="classified",
+            gap_class="internal",
+        )
         _delete_stub(vault_root, gap.note_id)
         logger.info(
             "knowledge.research-gaps: %s -> personal (gap_class=internal); reason=%s",
@@ -285,9 +349,13 @@ async def _process_one(*, session: Session, gap: Gap, vault_root: Path) -> None:
         return
 
     if result.disposition == "discard":
-        gap.gap_class = "parked"
-        gap.state = "parked"
-        session.commit()
+        await asyncio.to_thread(
+            _finalize_gap_state,
+            engine,
+            gap.id,
+            state="parked",
+            gap_class="parked",
+        )
         _mark_stub_discardable(vault_root, gap.note_id)
         logger.info(
             "knowledge.research-gaps: %s -> discard (gap_class=parked); reason=%s",
@@ -319,20 +387,26 @@ async def _process_one(*, session: Session, gap: Gap, vault_root: Path) -> None:
                 "knowledge.research-gaps: quarantine write failed for %s",
                 gap.term,
             )
-            gap.state = "classified"
-            session.commit()
+            await asyncio.to_thread(
+                _finalize_gap_state, engine, gap.id, state="classified"
+            )
             return
 
-        gap.research_attempts = attempt
-        gap.state = "parked" if attempt >= RESEARCH_PARK_THRESHOLD else "classified"
-        session.commit()
-        if gap.state == "parked":
+        new_state = "parked" if attempt >= RESEARCH_PARK_THRESHOLD else "classified"
+        await asyncio.to_thread(
+            _finalize_gap_state,
+            engine,
+            gap.id,
+            state=new_state,
+            research_attempts=attempt,
+        )
+        if new_state == "parked":
             _delete_stub(vault_root, gap.note_id)
         logger.info(
             "knowledge.research-gaps: rejected %s (attempt=%d, state=%s)",
             gap.term,
             attempt,
-            gap.state,
+            new_state,
         )
         return
 
@@ -352,12 +426,10 @@ async def _process_one(*, session: Session, gap: Gap, vault_root: Path) -> None:
             "knowledge.research-gaps: raw write failed for %s; reverting state",
             gap.term,
         )
-        gap.state = "classified"
-        session.commit()
+        await asyncio.to_thread(_finalize_gap_state, engine, gap.id, state="classified")
         return
 
-    gap.state = "committed"
-    session.commit()
+    await asyncio.to_thread(_finalize_gap_state, engine, gap.id, state="committed")
     logger.info(
         "knowledge.research-gaps: committed %s (claims=%d)",
         gap.term,

@@ -40,4 +40,4 @@ rules:
         Offload to asyncio.to_thread() with a fresh Session instead.
     paths:
       include:
-        - "projects/**/*.py"
+        - "**/projects/**/*.py"
