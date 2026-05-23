@@ -1,0 +1,90 @@
+import { describe, it, expect, vi } from "vitest";
+import { load } from "./+page.server.js";
+
+function makeHeaders(map = {}) {
+  const lower = Object.fromEntries(
+    Object.entries(map).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  return { get: (name) => lower[name.toLowerCase()] ?? null };
+}
+
+describe("/public/notes load", () => {
+  it("hits the visibility-filtered public graph endpoint", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: makeHeaders(),
+      json: async () => ({ nodes: [], edges: [], indexed_at: null }),
+    });
+
+    await load({ fetch, setHeaders });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const url = fetch.mock.calls[0][0];
+    expect(url).toMatch(/\/api\/knowledge\/public\/graph$/);
+    // Belt-and-braces: must NEVER fall back to the unfiltered private endpoint
+    // — that would leak private nodes onto public.jomcgi.dev.
+    expect(url).not.toMatch(/\/api\/knowledge\/graph$/);
+  });
+
+  it("sets a 1h s-maxage cache-control header", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: makeHeaders(),
+      json: async () => ({ nodes: [], edges: [], indexed_at: null }),
+    });
+
+    const result = await load({ fetch, setHeaders });
+
+    expect(setHeaders).toHaveBeenCalledWith(
+      expect.objectContaining({
+        "cache-control": expect.stringContaining("s-maxage=3600"),
+      }),
+    );
+    expect(result.graph).toEqual({ nodes: [], edges: [], indexed_at: null });
+  });
+
+  it("forwards ETag and Last-Modified from the API response", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: makeHeaders({
+        ETag: '"abc-3"',
+        "Last-Modified": "Mon, 27 Apr 2026 12:00:00 GMT",
+      }),
+      json: async () => ({ nodes: [], edges: [], indexed_at: null }),
+    });
+
+    await load({ fetch, setHeaders });
+
+    expect(setHeaders).toHaveBeenCalledWith(
+      expect.objectContaining({
+        etag: '"abc-3"',
+        "last-modified": "Mon, 27 Apr 2026 12:00:00 GMT",
+      }),
+    );
+  });
+
+  it("omits ETag and Last-Modified when the API does not return them", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: makeHeaders(),
+      json: async () => ({ nodes: [], edges: [], indexed_at: null }),
+    });
+
+    await load({ fetch, setHeaders });
+
+    const headers = setHeaders.mock.calls[0][0];
+    expect(headers).not.toHaveProperty("etag");
+    expect(headers).not.toHaveProperty("last-modified");
+  });
+
+  it("throws a 503 when the backend fetch fails", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({ ok: false, status: 502 });
+
+    await expect(load({ fetch, setHeaders })).rejects.toThrow();
+  });
+});
