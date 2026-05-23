@@ -39,6 +39,13 @@ from knowledge.gaps import (
 from knowledge.gardener import Gardener, _slugify
 from knowledge.ingest_queue import IngestQueueItem
 from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
+from knowledge.notes import (
+    _note_to_review_dict,
+    list_notes_for_review,
+    reset_note_visibility,
+    set_note_visibility,
+    verify_note_visibility,
+)
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import GRAPH_NOTE_TYPES, KnowledgeStore
 from knowledge.visibility import (
@@ -326,6 +333,34 @@ def get_public_note(
         "aliases": list(note.aliases or []),
         "indexed_at": indexed_at.isoformat() if indexed_at is not None else None,
         "body": sanitized,
+    }
+
+
+@router.get("/notes/review-queue")
+def get_notes_review_queue_endpoint(
+    mode: Literal["pending", "audit"] = Query(default="pending"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Return notes for the private review page.
+
+    ``mode=pending`` (default) — notes with ``visibility IS NULL``
+    (never classified), oldest-created first.
+
+    ``mode=audit`` — notes with a visibility set but
+    ``visibility_verified IS FALSE`` (automation classified, human
+    hasn't confirmed). Most-recently-updated first.
+
+    Must be declared before the catch-all ``GET /notes/{note_id}`` route
+    below — FastAPI matches routes in declaration order, so without this
+    ordering, ``GET /notes/review-queue`` would resolve to
+    ``get_knowledge_note(note_id="review-queue")`` and 404.
+    """
+    vault_root = _get_vault_root()
+    return {
+        "notes": list_notes_for_review(
+            session, mode=mode, limit=limit, vault_root=vault_root
+        )
     }
 
 
@@ -668,3 +703,73 @@ def reopen_gap_endpoint(
         return reopen_gap(session, gap_id)
     except ValueError as exc:
         raise _map_gap_error(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Note visibility review endpoints
+# ---------------------------------------------------------------------------
+
+
+class SetNoteVisibilityRequest(BaseModel):
+    visibility: str
+
+
+def _map_note_error(exc: ValueError) -> HTTPException:
+    """Map a :class:`ValueError` from a note function to an HTTP error.
+
+    Parallel to :func:`_map_gap_error`. Notes raise distinct error
+    prefixes — kept as a separate mapper instead of generalising because
+    the two domains' message shapes diverged enough that a single helper
+    would need two lookup tables anyway.
+    """
+    msg = str(exc)
+    if "Note not found" in msg:
+        return HTTPException(status_code=404, detail=msg)
+    if "visibility is unset" in msg:
+        return HTTPException(status_code=409, detail=msg)
+    if "visibility must be" in msg:
+        return HTTPException(status_code=400, detail=msg)
+    return HTTPException(status_code=400, detail=msg)
+
+
+@router.post("/notes/{note_id}/visibility")
+def set_note_visibility_endpoint(
+    note_id: str,
+    data: SetNoteVisibilityRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Set ``visibility`` (public|private) and mark verified."""
+    vault_root = _get_vault_root()
+    try:
+        note = set_note_visibility(session, note_id, data.visibility, vault_root)
+    except ValueError as exc:
+        raise _map_note_error(exc) from exc
+    return _note_to_review_dict(note, vault_root)
+
+
+@router.post("/notes/{note_id}/verify-visibility")
+def verify_note_visibility_endpoint(
+    note_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Mark ``visibility_verified=True``. 409 if visibility is unset."""
+    vault_root = _get_vault_root()
+    try:
+        note = verify_note_visibility(session, note_id)
+    except ValueError as exc:
+        raise _map_note_error(exc) from exc
+    return _note_to_review_dict(note, vault_root)
+
+
+@router.post("/notes/{note_id}/reset-visibility")
+def reset_note_visibility_endpoint(
+    note_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Clear ``visibility`` and ``visibility_verified``. Sends back to pending."""
+    vault_root = _get_vault_root()
+    try:
+        note = reset_note_visibility(session, note_id, vault_root)
+    except ValueError as exc:
+        raise _map_note_error(exc) from exc
+    return _note_to_review_dict(note, vault_root)
