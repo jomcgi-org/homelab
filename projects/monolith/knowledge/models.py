@@ -8,7 +8,15 @@ NoteId = NewType("NoteId", str)
 
 from pgvector.sqlalchemy import Vector
 from pydantic import field_validator
-from sqlalchemy import JSON, CheckConstraint, Column, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    Column,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
@@ -80,6 +88,13 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     status: str | None = None
     visibility: Visibility | None = Field(
         default=None, sa_column=Column(String, nullable=True)
+    )
+    # True once a human has confirmed the automation-chosen visibility.
+    # Defaults False so historical/pre-existing notes surface in the
+    # /private/review audit queue until a human spot-checks them.
+    visibility_verified: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
     source: str | None = None
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
@@ -230,6 +245,14 @@ class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     )
     research_attempts: int = Field(
         default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    # True once a human has confirmed the automation-chosen gap_class /
+    # state transition. Defaults False so historical/pre-existing gaps
+    # surface in the /private/review audit queue until a human spot-checks
+    # them.
+    human_verified: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
     answer: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
