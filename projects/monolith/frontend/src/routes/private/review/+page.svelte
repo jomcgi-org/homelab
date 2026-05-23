@@ -1,6 +1,8 @@
 <script>
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
+  import ReviewCard from "$lib/private/components/ReviewCard.svelte";
+  import ModeToggle from "$lib/private/components/ModeToggle.svelte";
 
   let { data } = $props();
 
@@ -20,6 +22,19 @@
     url.searchParams.set("mode", m);
     index = 0;
     goto(url, { replaceState: true, invalidateAll: true });
+  }
+
+  // TODO Task 6: wire `handleDecide` into the decide endpoints + keyboard
+  // shortcuts. The callback receives the action ('yes' | 'no' | 'skip') and
+  // has closure access to `data.tab`, `data.mode`, and `current` — Task 6
+  // will use those to build the endpoint path and advance the index.
+  function handleDecide(action) {
+    console.log("decide", {
+      tab: data.tab,
+      mode: data.mode,
+      action,
+      itemId: current?.id,
+    });
   }
 </script>
 
@@ -46,25 +61,7 @@
       </button>
     </div>
 
-    <!-- TODO Task 5: replace inline mode buttons with <ModeToggle {mode} on:change={...} /> -->
-    <div class="modes" role="tablist" aria-label="Review mode">
-      <button
-        role="tab"
-        aria-selected={data.mode === "pending"}
-        class:active={data.mode === "pending"}
-        onclick={() => setMode("pending")}
-      >
-        Pending
-      </button>
-      <button
-        role="tab"
-        aria-selected={data.mode === "audit"}
-        class:active={data.mode === "audit"}
-        onclick={() => setMode("audit")}
-      >
-        Audit auto-decisions
-      </button>
-    </div>
+    <ModeToggle mode={data.mode} onChange={setMode} />
   </header>
 
   {#if data.error}
@@ -72,11 +69,12 @@
   {:else if !current}
     <p class="empty">Queue empty for {data.tab} / {data.mode}.</p>
   {:else}
-    <!-- TODO Task 5: replace with <ReviewCard item={current} tab={data.tab} mode={data.mode} on:decide={(e) => decide(e.detail, current)} /> -->
-    <article class="card-placeholder">
-      <h2>{data.tab === "gaps" ? current.term : current.title}</h2>
-      <pre>{JSON.stringify(current, null, 2)}</pre>
-    </article>
+    <ReviewCard
+      item={current}
+      tab={data.tab}
+      mode={data.mode}
+      onDecide={handleDecide}
+    />
     <footer class="counter">{index + 1} / {data.items.length}</footer>
   {/if}
 </section>
@@ -99,14 +97,12 @@
     border-bottom: 0.04rem solid var(--border);
   }
 
-  .tabs,
-  .modes {
+  .tabs {
     display: inline-flex;
     gap: 0.25rem;
   }
 
-  .tabs button,
-  .modes button {
+  .tabs button {
     font-family: var(--font);
     font-size: 0.75rem;
     font-weight: 700;
@@ -119,32 +115,8 @@
     cursor: pointer;
   }
 
-  .tabs button.active,
-  .modes button.active {
+  .tabs button.active {
     color: var(--fg);
-  }
-
-  .card-placeholder {
-    border: 0.04rem solid var(--border);
-    padding: 1rem 1.25rem;
-    border-radius: 4px;
-    background: var(--surface, transparent);
-  }
-
-  .card-placeholder h2 {
-    margin: 0 0 0.75rem 0;
-    font-size: 1rem;
-    font-weight: 700;
-  }
-
-  .card-placeholder pre {
-    font-family: var(--font);
-    font-size: 0.8rem;
-    line-height: 1.5;
-    color: var(--fg-secondary);
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0;
   }
 
   .counter {
