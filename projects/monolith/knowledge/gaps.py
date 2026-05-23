@@ -438,28 +438,203 @@ def classify_gaps(
     return classified
 
 
-def list_review_queue(session: Session) -> list[dict]:
-    """Return internal/hybrid gaps awaiting a user answer, oldest first."""
-    rows = (
-        session.execute(
+# Terminal states for the audit queue. A gap in one of these states had
+# its lifecycle ended by automation (answer_gap commits, research auto-
+# commits, classifier parks, reject_gap rejects). The audit queue surfaces
+# them so a human can spot-check the automation's call.
+_TERMINAL_GAP_STATES = ("committed", "rejected", "parked")
+
+
+def _gap_to_dict(gap: Gap) -> dict:
+    """Serialize a Gap row to the dict shape returned by review-queue endpoints.
+
+    Shared by the pending and audit list modes. Includes `state`,
+    `resolved_at`, and `human_verified` so the audit UI can render
+    timestamps and verification status without a second round-trip.
+    """
+    return {
+        "id": gap.id,
+        "term": gap.term,
+        "context": gap.context,
+        "gap_class": gap.gap_class,
+        "state": gap.state,
+        "created_at": gap.created_at,
+        "resolved_at": gap.resolved_at,
+        "human_verified": gap.human_verified,
+    }
+
+
+def list_gaps_for_review(
+    session: Session,
+    *,
+    mode: str = "pending",
+    limit: int = 50,
+) -> list[dict]:
+    """Return gaps for the private review page, filtered by ``mode``.
+
+    ``mode='pending'`` — gaps awaiting a user answer (``state='in_review'``,
+    ``gap_class IN ('internal','hybrid')``, ``human_verified IS FALSE``),
+    oldest first. This is the same queue that backs the original
+    ``list_review_queue`` helper plus the new ``human_verified`` filter
+    so verified gaps drop out of the queue immediately after a ``/verify``
+    or ``/answer`` call.
+
+    ``mode='audit'`` — terminal gaps (``committed|rejected|parked``) where
+    ``human_verified IS FALSE``, most-recently-resolved first. NULL
+    ``resolved_at`` sorts last (preserves the older behaviour where a
+    terminal gap with no resolved_at was a corner-case row, not the
+    first thing surfaced to the user).
+
+    Raises:
+        ValueError: if ``mode`` is not one of ``pending``/``audit``.
+    """
+    if mode == "pending":
+        stmt = (
             select(Gap)
             .where(Gap.state == "in_review")
             .where(Gap.gap_class.in_(("internal", "hybrid")))
+            .where(Gap.human_verified.is_(False))
             .order_by(Gap.created_at.asc(), Gap.id.asc())
+            .limit(limit)
         )
-        .scalars()
-        .all()
-    )
-    return [
-        {
-            "id": gap.id,
-            "term": gap.term,
-            "context": gap.context,
-            "gap_class": gap.gap_class,
-            "created_at": gap.created_at,
-        }
-        for gap in rows
-    ]
+    elif mode == "audit":
+        stmt = (
+            select(Gap)
+            .where(Gap.state.in_(_TERMINAL_GAP_STATES))
+            .where(Gap.human_verified.is_(False))
+            .order_by(Gap.resolved_at.desc().nulls_last(), Gap.id.desc())
+            .limit(limit)
+        )
+    else:
+        raise ValueError(f"unknown review-queue mode: {mode!r}")
+
+    rows = session.execute(stmt).scalars().all()
+    return [_gap_to_dict(gap) for gap in rows]
+
+
+def list_review_queue(session: Session) -> list[dict]:
+    """Return internal/hybrid gaps awaiting a user answer, oldest first.
+
+    Thin wrapper around :func:`list_gaps_for_review` for backward
+    compatibility — preserved for the small number of in-tree callers
+    (gap_lifecycle_test, gap_end_to_end_test, router test mocks) that
+    expect the original signature. New code should call
+    :func:`list_gaps_for_review` directly.
+    """
+    return list_gaps_for_review(session, mode="pending", limit=50)
+
+
+def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:
+    """Load a Gap by id or raise ValueError. Shared by reject/verify/reopen.
+
+    Mirrors :func:`answer_gap`'s error contract — the router layer maps
+    ``"Gap not found"`` substrings to HTTP 404.
+    """
+    gap = session.get(Gap, gap_id)
+    if gap is None:
+        raise ValueError(f"Gap not found: id={gap_id}")
+    return gap
+
+
+def _remove_stub_if_present(vault_root: Path, gap: Gap, *, action: str) -> None:
+    """Tombstone the ``_researching/<slug>.md`` stub for ``gap`` if it exists.
+
+    Matches :func:`answer_gap`'s stub cleanup: the stub is keyed by the
+    base slug of ``gap.term``, not by the (possibly suffixed) atom note_id.
+    Missing stub is tolerated. ``action`` is a free-form verb that flows
+    into the log line so different callers (``answer``/``reject``) are
+    distinguishable in logs.
+    """
+    slug = _slugify(gap.term)
+    stub_path = vault_root / RESEARCHING_DIR / f"{slug}.md"
+    if stub_path.is_file():
+        stub_path.unlink()
+        logger.info(
+            "gaps._remove_stub_if_present: removed stub %s for %s gap_id=%d",
+            stub_path.relative_to(vault_root),
+            action,
+            gap.id,
+        )
+
+
+def reject_gap(
+    session: Session,
+    gap_id: int,
+    vault_root: Path,
+) -> dict:
+    """Reject a pending gap: in_review → rejected, tombstone the stub.
+
+    Sets ``human_verified=True`` because the user explicitly took an
+    action on the gap — rejection is a verification just like answering.
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown or the gap is not in
+            ``state='in_review'``.
+    """
+    gap = _get_gap_or_raise(session, gap_id)
+    if gap.state != "in_review":
+        raise ValueError(
+            f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
+        )
+
+    gap.state = "rejected"
+    gap.resolved_at = datetime.now(timezone.utc)
+    gap.human_verified = True
+    _remove_stub_if_present(vault_root, gap, action="rejected")
+    session.commit()
+    session.refresh(gap)
+    logger.info("gaps.reject_gap: rejected gap_id=%d term=%r", gap_id, gap.term)
+    return _gap_to_dict(gap)
+
+
+def verify_gap(session: Session, gap_id: int) -> dict:
+    """Mark ``human_verified=True`` on a gap. Works on any state.
+
+    Pure acknowledgement — does not change ``state``, does not touch any
+    file. From the pending queue: drops the gap out of the pending filter
+    (which requires ``human_verified IS FALSE``) but keeps it in
+    ``state='in_review'`` so the user can still answer it later via
+    :func:`answer_gap`. From the audit queue: same effect, just starting
+    from a terminal state.
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown.
+    """
+    gap = _get_gap_or_raise(session, gap_id)
+    gap.human_verified = True
+    session.commit()
+    session.refresh(gap)
+    logger.info("gaps.verify_gap: verified gap_id=%d state=%s", gap_id, gap.state)
+    return _gap_to_dict(gap)
+
+
+def reopen_gap(session: Session, gap_id: int) -> dict:
+    """Reopen a terminal gap: committed|rejected|parked → in_review.
+
+    Clears ``resolved_at`` and resets ``human_verified=False`` so the
+    gap re-enters the pending queue for a fresh human decision. Does not
+    re-write the ``_researching`` stub — if the user wants to re-research,
+    they can flip ``triaged: keep`` on any surviving stub or hand-create
+    a new one. The pending UI doesn't need the stub.
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown or the gap is not in a
+            terminal state.
+    """
+    gap = _get_gap_or_raise(session, gap_id)
+    if gap.state not in _TERMINAL_GAP_STATES:
+        raise ValueError(
+            f"Gap id={gap_id} is in state={gap.state!r}, expected one of "
+            f"{list(_TERMINAL_GAP_STATES)}"
+        )
+
+    gap.state = "in_review"
+    gap.resolved_at = None
+    gap.human_verified = False
+    session.commit()
+    session.refresh(gap)
+    logger.info("gaps.reopen_gap: reopened gap_id=%d term=%r", gap_id, gap.term)
+    return _gap_to_dict(gap)
 
 
 def answer_gap(
@@ -537,6 +712,10 @@ def answer_gap(
     gap.answer = answer
     gap.state = "committed"
     gap.resolved_at = datetime.now(timezone.utc)
+    # User-initiated answer is itself a verification — keeps the
+    # /private/review audit queue's "human has looked at this" semantics
+    # consistent with reject_gap and verify_gap.
+    gap.human_verified = True
     # TODO(task-3): make file-write + DB-commit transactional (e.g. write to
     # <dest>.tmp, commit DB, rename). Today a commit failure after write leaves
     # an orphan file that a retry resolves to <slug>-1.md.

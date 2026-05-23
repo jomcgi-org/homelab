@@ -28,7 +28,14 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from knowledge import frontmatter
-from knowledge.gaps import answer_gap, list_review_queue, split_csv
+from knowledge.gaps import (
+    answer_gap,
+    list_gaps_for_review,
+    reject_gap,
+    reopen_gap,
+    split_csv,
+    verify_gap,
+)
 from knowledge.gardener import Gardener, _slugify
 from knowledge.ingest_queue import IngestQueueItem
 from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
@@ -575,10 +582,37 @@ def list_gaps_endpoint(
 
 @router.get("/gaps/review-queue")
 def get_review_queue_endpoint(
+    mode: Literal["pending", "audit"] = Query(default="pending"),
+    limit: int = Query(default=50, ge=1, le=200),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Return internal/hybrid gaps awaiting user review, oldest first."""
-    return {"gaps": list_review_queue(session)}
+    """Return gaps for the private review page.
+
+    ``mode=pending`` (default, back-compat) returns internal/hybrid gaps
+    awaiting a user answer, oldest first. ``mode=audit`` returns terminal
+    gaps (committed/rejected/parked) where ``human_verified=False``,
+    most-recently-resolved first.
+    """
+    return {"gaps": list_gaps_for_review(session, mode=mode, limit=limit)}
+
+
+def _map_gap_error(exc: ValueError) -> HTTPException:
+    """Map a :class:`ValueError` from a gap function to an HTTP error.
+
+    Centralises the string-prefix mapping so reject/verify/reopen/answer
+    all surface the same status codes. The post-MVP TODO on
+    ``answer_gap_endpoint`` (typed exceptions) applies here too — once
+    gaps.py raises typed errors, this helper collapses to an
+    ``isinstance`` dispatch.
+    """
+    msg = str(exc)
+    if "Gap not found" in msg:
+        return HTTPException(status_code=404, detail=msg)
+    if "expected" in msg:  # "expected 'in_review'" / "expected one of [...]"
+        return HTTPException(status_code=409, detail=msg)
+    if "frontmatter terminator" in msg:
+        return HTTPException(status_code=400, detail=msg)
+    return HTTPException(status_code=400, detail=msg)
 
 
 @router.post("/gaps/{gap_id}/answer")
@@ -596,11 +630,41 @@ def answer_gap_endpoint(
         # (GapNotFoundError, GapWrongStateError, GapAnswerRejectedError) so this
         # error mapping isn't coupled to specific string messages. The router
         # should map by exception class, not str(exc) substring.
-        msg = str(exc)
-        if "Gap not found" in msg:
-            raise HTTPException(status_code=404, detail=msg) from exc
-        if "expected 'in_review'" in msg:
-            raise HTTPException(status_code=409, detail=msg) from exc
-        if "frontmatter terminator" in msg:
-            raise HTTPException(status_code=400, detail=msg) from exc
-        raise HTTPException(status_code=400, detail=msg) from exc
+        raise _map_gap_error(exc) from exc
+
+
+@router.post("/gaps/{gap_id}/reject")
+def reject_gap_endpoint(
+    gap_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Reject a pending gap. Transitions in_review → rejected and tombstones the stub."""
+    vault_root = _get_vault_root()
+    try:
+        return reject_gap(session, gap_id, vault_root)
+    except ValueError as exc:
+        raise _map_gap_error(exc) from exc
+
+
+@router.post("/gaps/{gap_id}/verify")
+def verify_gap_endpoint(
+    gap_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Mark a gap as human-verified. Works on any state; no state change."""
+    try:
+        return verify_gap(session, gap_id)
+    except ValueError as exc:
+        raise _map_gap_error(exc) from exc
+
+
+@router.post("/gaps/{gap_id}/reopen")
+def reopen_gap_endpoint(
+    gap_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Reopen a terminal gap (committed/rejected/parked) back to in_review."""
+    try:
+        return reopen_gap(session, gap_id)
+    except ValueError as exc:
+        raise _map_gap_error(exc) from exc
