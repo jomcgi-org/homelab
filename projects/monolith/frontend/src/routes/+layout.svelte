@@ -5,21 +5,25 @@
 
   let { children } = $props();
 
+  let isPrivate = $derived($page.url.hostname.startsWith("private."));
+
   // Active-state derivation. The hooks.js reroute remaps
   // public.jomcgi.dev/* → /public/* and private.jomcgi.dev/* → /private/*
   // internally, but $page.url reflects the *browser* URL. So:
+  // - /review (private host) → "review"
   // - /notes (any host) → "notes"
   // - any URL on public.jomcgi.dev → "home"
   // - everything else → no active state
   let activeRoute = $derived.by(() => {
     const host = $page.url.hostname;
     const path = $page.url.pathname;
+    if (path === "/review" || path.startsWith("/review/")) return "review";
     if (path === "/notes" || path.startsWith("/notes/")) return "notes";
     if (host.startsWith("public.")) return "home";
     return "";
   });
 </script>
 
-<Nav route={activeRoute} />
+<Nav route={activeRoute} {isPrivate} />
 
 {@render children()}

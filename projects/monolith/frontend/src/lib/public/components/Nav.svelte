@@ -1,6 +1,6 @@
 <script>
-  /** @type {{ route?: string }} */
-  let { route = "home" } = $props();
+  /** @type {{ route?: string, isPrivate?: boolean }} */
+  let { route = "home", isPrivate = false } = $props();
 
   // NOTES is a same-host relative URL so it resolves to
   // public.jomcgi.dev/notes from the public homepage and to
@@ -8,7 +8,7 @@
   // bouncing public visitors into the auth-gated private surface.
   // Other links are cross-host by design — HOME always points at the
   // public site, ENGINEERING and CV live on the apex domain.
-  const items = [
+  const publicItems = [
     { slug: "home", label: "HOME", href: "https://public.jomcgi.dev/" },
     { slug: "notes", label: "NOTES", href: "/notes" },
     {
@@ -18,6 +18,17 @@
     },
     { slug: "cv", label: "CV", href: "https://jomcgi.dev/cv/" },
   ];
+
+  // REVIEW only renders on the private tier — the route exists only at
+  // routes/private/review/ and showing the link on public.jomcgi.dev
+  // would leak the existence of an internal surface.
+  const privateItems = [
+    { slug: "review", label: "REVIEW", href: "/review" },
+  ];
+
+  const items = $derived(
+    isPrivate ? [...publicItems, ...privateItems] : publicItems,
+  );
 </script>
 
 <svelte:head>
