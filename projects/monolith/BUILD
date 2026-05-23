@@ -1976,6 +1976,19 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_test_models_verification",
+    srcs = ["knowledge/test_models_verification.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_gap_stubs_test",
     srcs = ["knowledge/gap_stubs_test.py"],
     imports = ["."],
