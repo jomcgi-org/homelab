@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -179,6 +179,27 @@ def _make_item(source_type="youtube", url="https://youtube.com/watch?v=abc", ite
 
 
 class TestIngestHandler:
+    """Tests for ingest_handler.
+
+    The handler delegates DB writes to module-level helpers
+    (_mark_queue_done / _mark_queue_failed) that open their own
+    sessions in worker threads (see PR #2340 -- the canonical
+    fresh-session-per-to_thread pattern). The mock session passed in
+    here only serves to source ``engine = session.get_bind()``; the
+    actual UPDATEs happen inside the patched helpers, so we assert
+    against helper call_args rather than session.execute call_args.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_queue_writers(self):
+        with (
+            patch("knowledge.ingest_queue._mark_queue_done") as mock_done,
+            patch("knowledge.ingest_queue._mark_queue_failed") as mock_failed,
+        ):
+            self.mock_done = mock_done
+            self.mock_failed = mock_failed
+            yield
+
     @pytest.mark.asyncio
     async def test_empty_queue_returns_none(self):
         """When _claim_one returns None (empty queue), ingest_handler returns None."""
@@ -188,13 +209,13 @@ class TestIngestHandler:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_empty_queue_does_not_commit_or_rollback(self):
-        """Empty queue leaves the session untouched."""
+    async def test_empty_queue_does_not_call_queue_writers(self):
+        """Empty queue leaves the queue writers untouched."""
         session = MagicMock()
         with patch("knowledge.ingest_queue._claim_one", return_value=None):
             await ingest_handler(session)
-        session.commit.assert_not_called()
-        session.rollback.assert_not_called()
+        self.mock_done.assert_not_called()
+        self.mock_failed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_successful_youtube_ingest_calls_fetcher(self, tmp_path):
@@ -214,8 +235,8 @@ class TestIngestHandler:
         mock_fetch.assert_awaited_once_with(item.url)
 
     @pytest.mark.asyncio
-    async def test_successful_youtube_ingest_commits(self, tmp_path):
-        """Successful youtube ingest calls session.commit() exactly once."""
+    async def test_successful_youtube_ingest_marks_done(self, tmp_path):
+        """Successful youtube ingest calls _mark_queue_done exactly once."""
         item = _make_item(source_type="youtube")
         session = MagicMock()
         with (
@@ -231,12 +252,14 @@ class TestIngestHandler:
         ):
             result = await ingest_handler(session)
         assert result is None
-        session.commit.assert_called_once()
-        session.rollback.assert_not_called()
+        self.mock_done.assert_called_once()
+        self.mock_failed.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_successful_youtube_ingest_updates_status_to_done(self, tmp_path):
-        """Successful youtube ingest executes an UPDATE with status='done'."""
+    async def test_successful_youtube_ingest_passes_item_id_to_mark_done(
+        self, tmp_path
+    ):
+        """Successful youtube ingest passes the item's id to _mark_queue_done."""
         item = _make_item(source_type="youtube", item_id=42)
         session = MagicMock()
         with (
@@ -251,9 +274,10 @@ class TestIngestHandler:
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
-        # At least one execute call should mention 'done'
-        execute_sqls = [str(c.args[0]) for c in session.execute.call_args_list]
-        assert any("done" in sql for sql in execute_sqls)
+        # Positional args: (engine, item_id). Engine is the MagicMock-derived
+        # session.get_bind() return value; we just assert item_id.
+        args, _ = self.mock_done.call_args
+        assert args[1] == 42
 
     @pytest.mark.asyncio
     async def test_successful_webpage_ingest_calls_fetcher(self, tmp_path):
@@ -273,8 +297,8 @@ class TestIngestHandler:
         mock_fetch.assert_awaited_once_with(item.url)
 
     @pytest.mark.asyncio
-    async def test_successful_webpage_ingest_commits(self, tmp_path):
-        """Successful webpage ingest calls session.commit() exactly once."""
+    async def test_successful_webpage_ingest_marks_done(self, tmp_path):
+        """Successful webpage ingest calls _mark_queue_done exactly once."""
         item = _make_item(source_type="webpage", url="https://example.com")
         session = MagicMock()
         with (
@@ -290,12 +314,12 @@ class TestIngestHandler:
         ):
             result = await ingest_handler(session)
         assert result is None
-        session.commit.assert_called_once()
-        session.rollback.assert_not_called()
+        self.mock_done.assert_called_once()
+        self.mock_failed.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_triggers_rollback(self, tmp_path):
-        """When the fetcher raises, session.rollback() is called."""
+    async def test_failed_fetch_marks_failed(self, tmp_path):
+        """When the fetcher raises, _mark_queue_failed is called exactly once."""
         item = _make_item(source_type="youtube")
         session = MagicMock()
         with (
@@ -308,27 +332,12 @@ class TestIngestHandler:
         ):
             result = await ingest_handler(session)
         assert result is None
-        session.rollback.assert_called_once()
+        self.mock_failed.assert_called_once()
+        self.mock_done.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_commits_failure_update(self, tmp_path):
-        """After a fetch failure, session.commit() is called for the failed-status update."""
-        item = _make_item(source_type="youtube")
-        session = MagicMock()
-        with (
-            patch("knowledge.ingest_queue._claim_one", return_value=item),
-            patch(
-                "knowledge.ingest_queue.fetch_youtube_transcript",
-                AsyncMock(side_effect=RuntimeError("oops")),
-            ),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
-        ):
-            await ingest_handler(session)
-        session.commit.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_failed_fetch_updates_status_to_failed(self, tmp_path):
-        """Failed fetch executes an UPDATE with status='failed'."""
+    async def test_failed_fetch_passes_item_id_to_mark_failed(self, tmp_path):
+        """Failed fetch passes the item's id to _mark_queue_failed."""
         item = _make_item(source_type="youtube", item_id=99)
         session = MagicMock()
         with (
@@ -340,12 +349,13 @@ class TestIngestHandler:
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
-        execute_sqls = [str(c.args[0]) for c in session.execute.call_args_list]
-        assert any("failed" in sql for sql in execute_sqls)
+        # Positional args: (engine, item_id, error). We assert item_id.
+        args, _ = self.mock_failed.call_args
+        assert args[1] == 99
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_error_message_passed_to_update(self, tmp_path):
-        """The error message is included in the failed-status UPDATE parameters."""
+    async def test_failed_fetch_passes_error_message_to_mark_failed(self, tmp_path):
+        """The (truncated) error message is forwarded to _mark_queue_failed."""
         item = _make_item(source_type="youtube")
         session = MagicMock()
         error_text = "transcript unavailable for this video"
@@ -358,9 +368,9 @@ class TestIngestHandler:
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
-        # The error message should appear in the execute call params
-        all_call_kwargs = [str(c) for c in session.execute.call_args_list]
-        assert any(error_text in kw for kw in all_call_kwargs)
+        # Positional args: (engine, item_id, error).
+        args, _ = self.mock_failed.call_args
+        assert error_text in args[2]
 
     @pytest.mark.asyncio
     async def test_ingest_handler_returns_none_on_success(self, tmp_path):

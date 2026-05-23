@@ -19,6 +19,14 @@ rules:
                   ...
                   $SESSION.commit()
                   ...
+          # Also accept the offload-the-commit-to-a-thread shape used in
+          # async loops to satisfy `no-sync-session-in-async-def` -- the
+          # per-iteration commit semantic is preserved either way.
+          - pattern-not: |
+              for $X in $ITER:
+                  ...
+                  await asyncio.to_thread($SESSION.commit)
+                  ...
           - metavariable-regex:
               metavariable: $SESSION
               regex: ^(session|db_session|sess|Session|async_session)$
@@ -39,6 +47,11 @@ rules:
               while $COND:
                   ...
                   $SESSION.commit()
+                  ...
+          - pattern-not: |
+              while $COND:
+                  ...
+                  await asyncio.to_thread($SESSION.commit)
                   ...
           - metavariable-regex:
               metavariable: $SESSION

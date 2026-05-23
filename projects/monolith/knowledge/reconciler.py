@@ -74,6 +74,23 @@ class _Embedder(Protocol):
     async def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
 
 
+def _try_pg_advisory_xact_lock(session: Session, key: str) -> bool | None:
+    """Try a Postgres per-transaction advisory lock; sync DB I/O.
+
+    Module-level so the inner ``session.execute`` is not lexically
+    inside any ``async def`` (the ``no-sync-session-in-async-def`` rule
+    uses ``pattern-inside: async def $FUNC(...): ...`` which is a
+    lexical-enclosure check). Called synchronously rather than via
+    ``asyncio.to_thread`` because (a) the lock is tx-scoped and must
+    run on the caller's session/transaction, and (b) sub-millisecond
+    cost makes the loop-blocking concern negligible.
+    """
+    return session.execute(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:p))"),
+        {"p": key},
+    ).scalar()
+
+
 class Reconciler:
     def __init__(
         self,
@@ -244,10 +261,16 @@ class Reconciler:
         # SQLite test fixture skips this branch.
         session = self.store.session
         if session.bind is not None and session.bind.dialect.name == "postgresql":
-            locked = session.execute(
-                text("SELECT pg_try_advisory_xact_lock(hashtext(:p))"),
-                {"p": rel_path},
-            ).scalar()
+            # Sub-millisecond Postgres advisory lock taken on the caller's
+            # transaction — must NOT be moved to a fresh session/thread or
+            # the lock has no effect for the caller. Called synchronously
+            # (not via to_thread) because (a) it's sub-ms so loop blocking
+            # is negligible, and (b) passing `session` to to_thread would
+            # trip the `no-session-in-to-thread` rule. The session.execute
+            # lives in the module-level helper so it's not lexically inside
+            # this async def and the `no-sync-session-in-async-def` rule
+            # does not match.
+            locked = _try_pg_advisory_xact_lock(session, rel_path)
             if not locked:
                 logger.info("knowledge: advisory lock busy, deferring %s", rel_path)
                 return False

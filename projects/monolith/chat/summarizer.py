@@ -99,7 +99,7 @@ async def generate_summaries(
                         last_message_id=new_max_id,
                     )
                 )
-            session.commit()
+            await asyncio.to_thread(session.commit)
             write_user_summary(
                 channel_id=channel_id,
                 user_id=user_id,
@@ -126,9 +126,7 @@ async def generate_channel_summaries(
         select(Message.channel_id).group_by(Message.channel_id)
     ).all()
 
-    for (channel_id,) in [
-        (c,) if isinstance(c, str) else c for c in channels
-    ]:  # nosemgrep: session-add-in-loop
+    for (channel_id,) in [(c,) if isinstance(c, str) else c for c in channels]:
         try:
             existing = session.exec(
                 select(ChannelSummary).where(
@@ -197,7 +195,7 @@ async def generate_channel_summaries(
                         message_count=total_count,
                     )
                 )
-            session.commit()
+            await asyncio.to_thread(session.commit)
             write_channel_summary(
                 channel_id=channel_id,
                 summary=summary_text,
