@@ -2,9 +2,15 @@
   /** @type {{ route?: string }} */
   let { route = "home" } = $props();
 
+  // NOTES is a same-host relative URL so it resolves to
+  // public.jomcgi.dev/notes from the public homepage and to
+  // private.jomcgi.dev/notes from the private dashboard, without
+  // bouncing public visitors into the auth-gated private surface.
+  // Other links are cross-host by design — HOME always points at the
+  // public site, ENGINEERING and CV live on the apex domain.
   const items = [
     { slug: "home", label: "HOME", href: "https://public.jomcgi.dev/" },
-    { slug: "notes", label: "NOTES", href: "https://private.jomcgi.dev/notes" },
+    { slug: "notes", label: "NOTES", href: "/notes" },
     {
       slug: "engineering",
       label: "ENGINEERING",

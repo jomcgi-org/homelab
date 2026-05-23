@@ -947,6 +947,140 @@ class TestPublicGraphEndpoint:
 
         assert etag_a != etag_b
 
+    def test_public_graph_returns_indexed_at_in_body(self, real_session):
+        """StatusBar in the SvelteKit page reads data.graph.indexed_at;
+        the public endpoint previously emitted Last-Modified but omitted
+        the field from the JSON body, so the public /notes page showed
+        no indexed-at timestamp."""
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        body = res.json()
+        assert "indexed_at" in body
+        # ISO 8601 string (the actual instant is non-deterministic, set
+        # at upsert time — just assert the field is populated and
+        # roundtrips through fromisoformat).
+        from datetime import datetime as _dt
+
+        parsed = _dt.fromisoformat(body["indexed_at"])
+        assert parsed.tzinfo is not None  # always UTC-aware
+
+    def test_public_graph_indexed_at_null_when_no_public_notes(self, real_session):
+        """Empty public set → indexed_at is JSON null (not missing), so
+        the frontend can treat it as a known absence."""
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="priv-X",
+            path="priv-x.md",
+            content_hash="h-px",
+            title="Priv X",
+            metadata=_meta(title="Priv X", type="atom", visibility="private"),
+            n_chunks=0,
+        )
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        body = res.json()
+        assert body["nodes"] == []
+        assert body["indexed_at"] is None
+
+    def test_public_graph_prefers_public_layout_columns(self, real_session):
+        """When layout_x_public/y_public are set, the endpoint returns
+        them in preference to the full-graph layout_x/y."""
+        from knowledge.models import Note
+
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+        # Seed both columns with distinguishable values; endpoint must
+        # serve the *_public values.
+        note = real_session.scalars(select(Note).where(Note.note_id == "pub-A")).one()
+        note.layout_x = 0.1
+        note.layout_y = 0.2
+        note.layout_x_public = 0.7
+        note.layout_y_public = 0.8
+        real_session.add(note)
+        real_session.commit()
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        body = res.json()
+        nodes = body["nodes"]
+        assert len(nodes) == 1
+        assert nodes[0]["x"] == 0.7
+        assert nodes[0]["y"] == 0.8
+
+    def test_public_graph_falls_back_to_full_layout_when_public_null(
+        self, real_session
+    ):
+        """First-deploy safety: when the public layout pass hasn't yet
+        populated the new columns, the endpoint must serve the full-graph
+        layout via COALESCE so /notes doesn't render blank."""
+        from knowledge.models import Note
+
+        store = KnowledgeStore(real_session)
+        _upsert(
+            store,
+            note_id="pub-A",
+            path="pub-a.md",
+            content_hash="h-pa",
+            title="Pub A",
+            metadata=_meta(title="Pub A", type="atom", visibility="public"),
+            n_chunks=0,
+        )
+        note = real_session.scalars(select(Note).where(Note.note_id == "pub-A")).one()
+        note.layout_x = 0.1
+        note.layout_y = 0.2
+        # layout_x_public/y_public left NULL — simulates pre-first-pass.
+        real_session.add(note)
+        real_session.commit()
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            res = c.get("/api/knowledge/public/graph")
+        finally:
+            app.dependency_overrides.clear()
+
+        body = res.json()
+        nodes = body["nodes"]
+        assert len(nodes) == 1
+        assert nodes[0]["x"] == 0.1
+        assert nodes[0]["y"] == 0.2
+
 
 def _seed_public_note_file(
     vault_dir,
