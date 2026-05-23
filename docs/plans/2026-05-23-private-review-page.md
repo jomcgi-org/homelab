@@ -9,9 +9,35 @@ A new SvelteKit route in the existing monolith frontend talks to new HTTP endpoi
 
 **Tech Stack:**
 
-- Backend: FastAPI, SQLAlchemy 2.x, Alembic, psycopg3 (prod), SQLite (tests via `create_all`)
+- Backend: FastAPI, SQLModel, Atlas (raw SQL migrations), psycopg3 (prod), SQLite (tests via `create_all`)
 - Frontend: SvelteKit with Node adapter, form actions + `use:enhance`
 - CI: BuildBuddy (`bazel test //projects/monolith/...`)
+
+---
+
+## Status & Corrections (READ FIRST — overrides any conflicting guidance below)
+
+The original plan was written from a generic FastAPI/SQLAlchemy template. The implementers of Tasks 1–2 surfaced these conventions that **override** any conflicting code snippets in the per-task sections:
+
+- **Migrations: Atlas only.** Raw SQL files in `projects/monolith/chart/migrations/<YYYYMMDDHHMMSS>_<name>.sql`, hashed via `atlas.sum`. Forward-only — no `downgrade()`. There is **no Alembic** in this repo. Ignore every Alembic reference below.
+- **Models: SQLModel idioms.** Use `Field(..., sa_column=Column(Boolean, server_default="false", nullable=False), default=False)` — **not** SQLAlchemy 2.0 `Mapped[bool] = mapped_column(...)`.
+- **Tests: `<source>_test.py` siblings.** Test files live at `projects/monolith/knowledge/<source>_test.py` (e.g. `gap_model_test.py`), not in a `tests/` subdir. Ignore every `knowledge/tests/test_*.py` path below — translate to the sibling form.
+- **Session fixture: inline per-file `session`, not shared `db_session`.** Each test file defines its own ~15-line SQLite + `create_all` fixture named `session`. Copy from `gap_model_test.py`. There is no shared `db_session` fixture.
+- **BUILD target naming: `knowledge_<basename>_test`.** Deps mirror `knowledge_gap_api_test` for route-level tests (with `@pip//fastapi`, `@pip//httpx`) or `knowledge_gap_model_test` for model-only tests.
+- **`format`: pre-commit hook handles it.** The Bazel target is `//bazel/tools/format` but doesn't run on darwin. The `fast-format.sh --staged` pre-commit hook does the equivalent at commit time.
+- **Semgrep `unsafe-json-field-access` is strict.** Tests must use `r.json().get("k", default)` or assign through a `body = r.json()` intermediate — direct `r.json()["k"]` is rejected.
+
+### Completed tasks
+
+- **Task 1: ✅ Done** — commit `63fc16178`. Added `gap.human_verified` and `note.visibility_verified` columns + Atlas migration `20260523000000_review_verification_columns.sql`.
+- **Task 2: ✅ Done** — commit `3644e5e06`. Implemented `reject`/`verify`/`reopen` endpoints; extended `/review-queue` with `?mode=`; pending list now filters `human_verified IS FALSE`. Note design simplification: `/verify` works on any state (not just terminal), so we did **not** add a `/keep` endpoint.
+
+### Task 3+ corrections to apply mentally
+
+- Notes equivalent of `_map_gap_error`: probably needs a `_map_note_error`, or refactor both to use typed exceptions (TODO already in `answer_gap_endpoint`).
+- `_gap_to_dict` omits the large `answer` field. Notes' equivalent should similarly skip the note body and emit only `id, title, snippet (~200 chars), tier, visibility, visibility_verified, updated_at`.
+- Stub-file cleanup (`_remove_stub_if_present`) is gap-specific. Notes do not have a parallel on-disk stub concept — `reset_note_visibility` should only touch the DB row and the note's frontmatter `visibility` field.
+- Use `Literal["pending", "audit"]` as the query param type so FastAPI auto-422s invalid values.
 
 ---
 
@@ -338,7 +364,7 @@ EOF
 
 - Modify: `projects/monolith/knowledge/router.py`
 - Modify: `projects/monolith/knowledge/notes.py` (or wherever note write helpers live — verify before claiming)
-- Test: `projects/monolith/knowledge/tests/test_note_review_endpoints.py`
+- Test: `projects/monolith/knowledge/note_review_endpoints_test.py` (sibling-of-source convention — see Status & Corrections)
 
 **Step 1: Inventory before writing code**
 
