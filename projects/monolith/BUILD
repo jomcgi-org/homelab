@@ -1984,7 +1984,6 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
-        "@pip//sqlmodel",
     ],
 )
 
