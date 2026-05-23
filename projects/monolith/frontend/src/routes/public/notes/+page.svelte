@@ -7,19 +7,11 @@
 
   let { data } = $props();
 
-  // The server filters nodes by type (see GRAPH_NOTE_TYPES in store.py).
-  // We just pass through what arrives — no client-side filter needed.
   let nodes = $derived(data.graph.nodes);
   let edges = $derived(data.graph.edges);
   let indexedAt = $derived(data.graph.indexed_at);
-
-  // Degree is supplied per-node by the server (graph payload).
   let nodesWithDegree = $derived(nodes);
 
-  // activeClusters is initialised from the *initial* graph (a one-time
-  // snapshot), then mutated locally as the user toggles. Reading data
-  // (a $props value) inside $state() captures cleanly; reading a
-  // $derived inside $state() trips state_referenced_locally.
   let activeClusters = $state(
     new Set(data.graph.nodes.map((n) => n.type).filter(Boolean)),
   );
@@ -75,7 +67,7 @@
       {edges}
       onSelect={selectNode}
       onClose={() => (selectedId = null)}
-      apiBase="/api/knowledge/notes"
+      apiBase="/api/knowledge/public/notes"
     />
   </div>
 </div>

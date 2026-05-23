@@ -2,7 +2,14 @@
   import { renderMarkdown } from "./markdown.js";
   import { colorFor, labelFor } from "./clusters.js";
 
-  let { selectedId, nodes, edges, onSelect, onClose } = $props();
+  let {
+    selectedId,
+    nodes,
+    edges,
+    onSelect,
+    onClose,
+    apiBase = "/api/knowledge/notes",
+  } = $props();
 
   let byId = $derived(new Map(nodes.map((n) => [n.id, n])));
   let titleMap = $derived(
@@ -77,12 +84,15 @@
     loading = true;
     error = "";
     body = "";
-    fetch(`/api/knowledge/notes/${encodeURIComponent(selectedId)}`, {
+    fetch(`${apiBase}/${encodeURIComponent(selectedId)}`, {
       signal: controller.signal,
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("fetch failed"))))
       .then((data) => {
-        body = data.content ?? "";
+        // Private endpoint returns `content` (raw markdown incl. frontmatter,
+        // trimmed client-side); public endpoint returns `body` (already
+        // stripped + wikilink-sanitized server-side). Accept either.
+        body = data.content ?? data.body ?? "";
       })
       .catch((e) => {
         if (e.name !== "AbortError") error = "couldn't load note body";
