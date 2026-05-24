@@ -689,7 +689,12 @@ class TestListReviewQueueEdgeCases:
     """Return-shape and filtering guarantees for list_review_queue."""
 
     def test_result_dicts_contain_required_keys(self, session):
-        """Each element must have id, term, context, gap_class, created_at."""
+        """Each element must contain at least id, term, context, gap_class, created_at.
+
+        Extra keys (state, resolved_at, human_verified) are permitted; the
+        review UI consumes them in audit mode. Use subset semantics so
+        adding response fields later doesn't break this assertion.
+        """
         gap = Gap(
             term="test-term",
             context="some context",
@@ -704,7 +709,10 @@ class TestListReviewQueueEdgeCases:
 
         assert len(queue) == 1
         item = queue[0]
-        assert set(item.keys()) == {"id", "term", "context", "gap_class", "created_at"}
+        required = {"id", "term", "context", "gap_class", "created_at"}
+        assert required.issubset(item.keys()), (
+            f"missing required keys: {required - item.keys()}"
+        )
         assert item["term"] == "test-term"
         assert item["context"] == "some context"
         assert item["gap_class"] == "internal"
