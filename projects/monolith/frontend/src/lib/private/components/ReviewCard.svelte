@@ -49,7 +49,9 @@
 
 <article class="card">
   <header class="card-header">
-    <span class="card-tab">{tab === "gaps" ? "gap" : "note"}</span>
+    <span class="card-tab card-tab--{tab === 'gaps' ? 'gap' : 'note'}">
+      {tab === "gaps" ? "gap" : "note"}
+    </span>
     <h2 class="card-title">
       {tab === "gaps" ? item.term : item.title}
     </h2>
@@ -166,16 +168,22 @@
 </article>
 
 <style>
+  /* Neo-brutalist treatment: 2px solid black borders, pure white surface,
+     hard 0px corners, explicit monospace everywhere (so h2 does not fall
+     back to the browser serif default), bright accent fills for the type
+     badge and danger action, and inverted hover on buttons. Matches the
+     hard-edge / mono / uppercase language of Nav.svelte and the
+     --border-heavy token. */
+
   .card {
-    border: 0.04rem solid var(--border);
-    background: var(--surface);
-    padding: 1.25rem 1.5rem;
-    border-radius: 4px;
-    font-family: var(--font);
+    border: var(--border-heavy);
+    background: var(--bg);
+    padding: 1.5rem 1.75rem;
+    font-family: var(--font-mono);
     color: var(--fg);
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 1.25rem;
   }
 
   /* ── Header strip ─────────────────────────────────────────────── */
@@ -183,64 +191,80 @@
   .card-header {
     display: grid;
     grid-template-columns: max-content 1fr max-content;
-    align-items: baseline;
-    gap: 0.75rem;
-    padding-bottom: 0.6rem;
-    border-bottom: 0.04rem solid var(--border);
+    align-items: center;
+    gap: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: var(--border-heavy);
   }
 
   .card-tab {
-    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
-    padding: 0.15rem 0.4rem;
-    border: 0.04rem solid var(--fg-tertiary);
-    border-radius: 2px;
+    color: var(--fg);
+    padding: 0.3rem 0.6rem;
+    border: 2px solid var(--fg);
+    background: var(--bg);
+    white-space: nowrap;
+  }
+
+  .card-tab--gap {
+    background: var(--yellow);
+  }
+
+  .card-tab--note {
+    background: var(--green);
   }
 
   .card-title {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 700;
-    line-height: 1.3;
+    /* Explicit font-family so the h2 user-agent serif default does NOT
+       win over the inherited card-level mono. */
+    font-family: var(--font-mono);
+    font-size: 1.5rem;
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    color: var(--fg);
     word-break: break-word;
   }
 
   .card-badges {
     display: inline-flex;
-    gap: 0.4rem;
+    gap: 0.5rem;
     flex-wrap: wrap;
     justify-content: flex-end;
   }
 
   .badge {
-    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--fg-secondary);
-    padding: 0.15rem 0.4rem;
-    border: 0.04rem solid var(--border);
-    border-radius: 2px;
+    letter-spacing: 0.12em;
+    color: var(--fg);
+    padding: 0.3rem 0.55rem;
+    border: 2px solid var(--fg);
     background: var(--bg);
     font-variant-numeric: tabular-nums;
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.4rem;
     white-space: nowrap;
   }
 
   .badge-glyph {
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     line-height: 1;
-    color: var(--fg-tertiary);
+    color: var(--fg);
   }
 
   .badge--ok {
-    color: var(--st-ok, var(--fg));
-    border-color: var(--st-ok, var(--border));
+    background: var(--st-ok);
+    color: var(--bg);
+    border-color: var(--st-ok);
   }
 
   /* ── Metadata grid ────────────────────────────────────────────── */
@@ -248,29 +272,31 @@
   .card-meta {
     display: grid;
     grid-template-columns: max-content 1fr;
-    column-gap: 1rem;
-    row-gap: 0.25rem;
-    font-size: 0.8rem;
+    column-gap: 1.5rem;
+    row-gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
     line-height: 1.5;
   }
 
   .meta-key {
-    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
-    padding-top: 0.15rem;
+    color: var(--fg);
+    padding-top: 0.2rem;
   }
 
   .meta-val {
-    color: var(--fg-secondary);
+    color: var(--fg);
+    font-family: var(--font-mono);
     word-break: break-word;
     white-space: pre-wrap;
   }
 
   .meta-val--break {
-    /* Source URLs / file paths can be long-don't push the grid wider. */
     overflow-wrap: anywhere;
   }
 
@@ -279,19 +305,19 @@
   .card-tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem;
+    gap: 0.5rem;
   }
 
   .tag {
-    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--fg-secondary);
-    padding: 0.15rem 0.4rem;
-    border: 0.04rem solid var(--border);
-    border-radius: 2px;
-    background: var(--bg);
+    letter-spacing: 0.12em;
+    color: var(--fg);
+    padding: 0.25rem 0.55rem;
+    border: 2px solid var(--fg);
+    background: var(--cream);
   }
 
   /* ── Body subpanel (snippet / stub / answer) ──────────────────── */
@@ -299,44 +325,43 @@
   .card-body {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    border: 0.04rem solid var(--border);
-    border-radius: 2px;
+    gap: 0.6rem;
+    border: var(--border-heavy);
     background: var(--bg);
-    padding: 0.6rem 0.75rem;
+    padding: 1rem 1.25rem;
   }
 
   .body-label {
-    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
+    color: var(--fg);
   }
 
   .body-scroll {
     position: relative;
-    max-height: 24rem;
+    max-height: 28rem;
     overflow: auto;
     scrollbar-width: thin;
-    scrollbar-color: var(--fg-tertiary) transparent;
+    scrollbar-color: var(--fg) transparent;
   }
 
   .body-scroll::-webkit-scrollbar {
-    width: 4px;
+    width: 6px;
   }
 
   .body-scroll::-webkit-scrollbar-thumb {
-    background: var(--fg-tertiary);
-    border-radius: 2px;
+    background: var(--fg);
   }
 
   .body-text {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.78rem;
-    line-height: 1.55;
-    color: var(--fg-secondary);
+    font-size: 0.88rem;
+    line-height: 1.6;
+    color: var(--fg);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -345,42 +370,44 @@
 
   .actions {
     display: flex;
-    gap: 0.5rem;
-    margin-top: 0.25rem;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
     justify-content: flex-end;
     flex-wrap: wrap;
   }
 
   .action {
-    font-family: var(--font);
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
     color: var(--fg);
     background: var(--bg);
-    border: 0.04rem solid var(--border);
-    padding: 0.4rem 0.75rem;
-    border-radius: 2px;
+    border: 2px solid var(--fg);
+    padding: 0.55rem 1rem;
     cursor: pointer;
+    transition:
+      background 0.1s ease,
+      color 0.1s ease;
   }
 
   .action:hover {
-    background: var(--surface);
+    background: var(--fg);
+    color: var(--bg);
   }
 
   .action:focus-visible {
-    outline: 1.5px solid var(--fg);
+    outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
 
   .action--danger {
-    color: var(--danger);
-    border-color: var(--danger);
+    background: var(--coral);
   }
 
   .action--danger:hover {
-    background: var(--danger);
-    color: var(--bg);
+    background: var(--fg);
+    color: var(--coral);
   }
 </style>
