@@ -419,3 +419,287 @@ class TestAnswerGapSetsHumanVerified:
         reloaded = session.get(Gap, gap.id)
         assert reloaded.state == "committed"
         assert reloaded.human_verified is True
+
+
+# ---------------------------------------------------------------------------
+# DELETE / POST .../undelete — soft-delete + undo for gaps
+# ---------------------------------------------------------------------------
+
+
+class TestSoftDeleteGap:
+    """Tests for DELETE /api/knowledge/gaps/{gap_id} and POST .../undelete.
+
+    Soft-delete stamps ``deleted_at`` and hard-deletes the
+    ``_researching/<slug>.md`` stub (regenerable). Undelete clears
+    ``deleted_at``; the stub is regenerated lazily by the next
+    ``discover_gaps`` cycle (not by undelete itself).
+    """
+
+    def test_delete_sets_deleted_at_and_removes_from_audit_queue(
+        self, client, session, tmp_path
+    ):
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="doomed-audit",
+            state="committed",
+            gap_class="internal",
+            human_verified=False,
+            resolved_at=datetime.now(timezone.utc),
+        )
+
+        # Sanity: appears in audit queue first.
+        r0 = client.get("/api/knowledge/gaps/review-queue?mode=audit")
+        assert gap.id in [g["id"] for g in r0.json().get("gaps", [])]
+
+        r = client.delete(f"/api/knowledge/gaps/{gap.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("id") == gap.id
+        assert body.get("deleted_at") is not None
+
+        # After delete: gone from audit.
+        r1 = client.get("/api/knowledge/gaps/review-queue?mode=audit")
+        assert gap.id not in [g["id"] for g in r1.json().get("gaps", [])]
+
+        session.expire_all()
+        reloaded = session.get(Gap, gap.id)
+        assert reloaded.deleted_at is not None
+
+    def test_delete_removes_pending_gap_from_pending_queue(self, client, session):
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="doomed-pending",
+            state="in_review",
+            gap_class="internal",
+            human_verified=False,
+        )
+
+        r0 = client.get("/api/knowledge/gaps/review-queue")
+        assert gap.id in [g["id"] for g in r0.json().get("gaps", [])]
+
+        r = client.delete(f"/api/knowledge/gaps/{gap.id}")
+        assert r.status_code == 200
+
+        r1 = client.get("/api/knowledge/gaps/review-queue")
+        assert gap.id not in [g["id"] for g in r1.json().get("gaps", [])]
+
+    def test_delete_hard_removes_stub_file(self, client, session, tmp_path):
+        from knowledge.gap_stubs import RESEARCHING_DIR
+
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="Stubbed Doom",
+            state="in_review",
+            gap_class="internal",
+        )
+
+        stub_dir = tmp_path / RESEARCHING_DIR
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        # _slugify("Stubbed Doom") = "stubbed-doom"
+        stub_path = stub_dir / "stubbed-doom.md"
+        stub_path.write_text("---\nid: stubbed-doom\n---\n\nstub body\n")
+        assert stub_path.exists()
+
+        r = client.delete(f"/api/knowledge/gaps/{gap.id}")
+        assert r.status_code == 200
+        assert not stub_path.exists()
+
+    def test_delete_is_idempotent(self, client, session):
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="double-delete",
+            state="in_review",
+            gap_class="internal",
+        )
+
+        first = client.delete(f"/api/knowledge/gaps/{gap.id}")
+        assert first.status_code == 200
+        first_ts = first.json().get("deleted_at")
+        assert first_ts is not None
+
+        # Second DELETE returns the same payload (idempotent), NOT a 404.
+        second = client.delete(f"/api/knowledge/gaps/{gap.id}")
+        assert second.status_code == 200
+        assert second.json().get("deleted_at") == first_ts
+
+    def test_get_lifecycle_endpoints_404_after_delete(self, client, session, tmp_path):
+        """Write helpers (_get_gap_or_raise) treat deleted as not-found."""
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="hidden-gap",
+            state="in_review",
+            gap_class="internal",
+        )
+
+        client.delete(f"/api/knowledge/gaps/{gap.id}")
+
+        # reject/verify/reopen all go through _get_gap_or_raise.
+        r_reject = client.post(f"/api/knowledge/gaps/{gap.id}/reject")
+        assert r_reject.status_code == 404
+
+        r_verify = client.post(f"/api/knowledge/gaps/{gap.id}/verify")
+        assert r_verify.status_code == 404
+
+    def test_undelete_restores_row_to_queues(self, client, session):
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="round-trip-gap",
+            state="in_review",
+            gap_class="internal",
+        )
+
+        client.delete(f"/api/knowledge/gaps/{gap.id}")
+        r = client.post(f"/api/knowledge/gaps/{gap.id}/undelete")
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("id") == gap.id
+        assert body.get("deleted_at") is None
+
+        session.expire_all()
+        reloaded = session.get(Gap, gap.id)
+        assert reloaded.deleted_at is None
+
+        # Back in the pending queue.
+        r1 = client.get("/api/knowledge/gaps/review-queue")
+        assert gap.id in [g["id"] for g in r1.json().get("gaps", [])]
+
+    def test_undelete_live_gap_returns_409(self, client, session):
+        _make_source_note(session)
+        gap = _make_gap(
+            session,
+            term="alive-gap",
+            state="in_review",
+            gap_class="internal",
+        )
+
+        r = client.post(f"/api/knowledge/gaps/{gap.id}/undelete")
+        # "is not deleted" maps to 409 (distinct from 404 not-found).
+        assert r.status_code == 409
+
+    def test_undelete_unknown_gap_returns_404(self, client):
+        r = client.post("/api/knowledge/gaps/9999/undelete")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Richer review-queue response dicts
+# ---------------------------------------------------------------------------
+
+
+class TestGapReviewQueueDictShape:
+    """Tests for the audit-UI fields added in this PR.
+
+    The original /private/review page asked the user to evaluate gaps
+    from only `term`/`gap_class`/`state` — too thin to actually decide.
+    The dict now includes `referenced_by_count`, `stub_body`,
+    `research_attempts`, and `answer` so the UI can render in-place.
+    """
+
+    def test_dict_includes_new_audit_fields(self, client, session, tmp_path):
+        _make_source_note(session)
+        _make_gap(
+            session,
+            term="rich-gap",
+            state="committed",
+            gap_class="internal",
+            human_verified=False,
+            resolved_at=datetime.now(timezone.utc),
+        )
+
+        r = client.get("/api/knowledge/gaps/review-queue?mode=audit")
+        assert r.status_code == 200
+        gaps = r.json().get("gaps", [])
+        assert len(gaps) == 1
+        item = gaps[0]
+        # Subset check — forward-compatible.
+        assert set(item.keys()) >= {
+            "id",
+            "term",
+            "context",
+            "gap_class",
+            "state",
+            "human_verified",
+            "referenced_by_count",
+            "research_attempts",
+            "answer",
+            "stub_body",
+            "deleted_at",
+        }
+        # No stub on disk so stub_body is None; no inbound links so count is 0.
+        assert item["stub_body"] is None
+        assert item["referenced_by_count"] == 0
+
+    def test_referenced_by_count_reflects_note_links(self, client, session, tmp_path):
+        from knowledge.models import NoteLink
+
+        src = _make_source_note(session, note_id="linker")
+        _make_gap(
+            session,
+            term="linked-term",
+            state="in_review",
+            gap_class="internal",
+        )
+        # Two wikilinks pointing at the gap's term, plus a frontmatter
+        # edge that should NOT count (kind='edge' excluded).
+        session.add(
+            NoteLink(
+                src_note_fk=src.id,
+                target_id="linked-term",
+                target_title=None,
+                kind="link",
+                edge_type=None,
+            )
+        )
+        session.add(
+            NoteLink(
+                src_note_fk=src.id,
+                target_id="linked-term",
+                target_title=None,
+                kind="link",
+                edge_type=None,
+            )
+        )
+        session.add(
+            NoteLink(
+                src_note_fk=src.id,
+                target_id="linked-term",
+                target_title=None,
+                kind="edge",
+                edge_type="related",
+            )
+        )
+        session.commit()
+
+        r = client.get("/api/knowledge/gaps/review-queue?mode=pending")
+        assert r.status_code == 200
+        item = r.json().get("gaps", [])[0]
+        assert item["referenced_by_count"] == 2
+
+    def test_stub_body_read_from_researching_dir(self, client, session, tmp_path):
+        from knowledge.gap_stubs import RESEARCHING_DIR
+
+        _make_source_note(session)
+        _make_gap(
+            session,
+            term="With Stub",
+            state="in_review",
+            gap_class="internal",
+        )
+        stub_dir = tmp_path / RESEARCHING_DIR
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        # _slugify("With Stub") = "with-stub"
+        (stub_dir / "with-stub.md").write_text(
+            "---\nid: with-stub\n---\n\nthe stub body content\n"
+        )
+
+        r = client.get("/api/knowledge/gaps/review-queue?mode=pending")
+        assert r.status_code == 200
+        item = r.json().get("gaps", [])[0]
+        assert item["stub_body"] is not None
+        assert "the stub body content" in item["stub_body"]

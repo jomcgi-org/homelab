@@ -445,14 +445,28 @@ def classify_gaps(
 _TERMINAL_GAP_STATES = ("committed", "rejected", "parked")
 
 
-def _gap_to_dict(gap: Gap) -> dict:
+def _gap_to_dict(gap: Gap, session: Session | None = None) -> dict:
     """Serialize a Gap row to the dict shape returned by review-queue endpoints.
 
     Shared by the pending and audit list modes. Includes `state`,
     `resolved_at`, and `human_verified` so the audit UI can render
     timestamps and verification status without a second round-trip.
+
+    When ``session`` is provided, the dict is enriched with fields the
+    /private/review audit UI needs to evaluate a gap in-place without a
+    second per-row fetch:
+
+    * ``referenced_by_count`` — count of ``NoteLink`` rows pointing at
+      this gap's term (slugified), so the UI can show "5 notes link to
+      this term".
+    * ``research_attempts`` / ``answer`` — already on the model; surfaced
+      so the audit UI can show "researched 3 times, no answer captured".
+
+    ``stub_body`` is NOT loaded here because the stub path is keyed by
+    ``vault_root`` which lives at the router layer. Callers that want it
+    (the review-queue endpoints) call ``_attach_stub_body`` after.
     """
-    return {
+    payload = {
         "id": gap.id,
         "term": gap.term,
         "context": gap.context,
@@ -461,7 +475,59 @@ def _gap_to_dict(gap: Gap) -> dict:
         "created_at": gap.created_at,
         "resolved_at": gap.resolved_at,
         "human_verified": gap.human_verified,
+        "research_attempts": gap.research_attempts,
+        "answer": gap.answer,
+        "deleted_at": gap.deleted_at,
     }
+    if session is not None:
+        # NoteLink.target_id stores the raw wikilink text (case-preserved),
+        # so match against both the canonical term AND its slugified form
+        # to catch e.g. ``[[Steve Krug]]`` vs ``[[steve-krug]]`` linking
+        # at the same conceptual target.
+        slug = _slugify(gap.term)
+        count = session.execute(
+            select(func.count())
+            .select_from(NoteLink)
+            .where(NoteLink.kind == "link")
+            .where(NoteLink.target_id.in_((gap.term, slug)))
+        ).scalar_one()
+        payload["referenced_by_count"] = int(count or 0)
+    return payload
+
+
+# Cap stub-body bytes returned per gap so the review-queue payload stays
+# small even when classifier dumped a long research draft into the stub.
+_STUB_BODY_MAX_BYTES = 4096
+
+
+def _read_stub_body(vault_root: Path, gap: Gap) -> str | None:
+    """Return the first ~4 KiB of the gap's `_researching/<slug>.md` stub.
+
+    Returns ``None`` when the stub file doesn't exist (deleted by
+    ``reject_gap`` / ``answer_gap``, or never written). Errors are
+    swallowed and returned as ``None`` — review-queue listing is best-
+    effort metadata and must never break on a partial vault.
+    """
+    slug = _slugify(gap.term)
+    stub_path = vault_root / RESEARCHING_DIR / f"{slug}.md"
+    try:
+        if not stub_path.is_file():
+            return None
+        with stub_path.open("rb") as fh:
+            raw = fh.read(_STUB_BODY_MAX_BYTES + 1)
+    except OSError:
+        logger.warning(
+            "gaps._read_stub_body: failed to read %s for gap_id=%s",
+            stub_path,
+            gap.id,
+        )
+        return None
+    if len(raw) > _STUB_BODY_MAX_BYTES:
+        raw = raw[:_STUB_BODY_MAX_BYTES]
+    # decode(errors="replace") cannot raise on any byte sequence; no
+    # try/except needed (bare ``except Exception`` is also blocked by
+    # the no-broad-except-swallow semgrep rule).
+    return raw.decode("utf-8", errors="replace")
 
 
 def list_gaps_for_review(
@@ -469,6 +535,7 @@ def list_gaps_for_review(
     *,
     mode: str = "pending",
     limit: int = 50,
+    vault_root: Path | None = None,
 ) -> list[dict]:
     """Return gaps for the private review page, filtered by ``mode``.
 
@@ -485,6 +552,11 @@ def list_gaps_for_review(
     terminal gap with no resolved_at was a corner-case row, not the
     first thing surfaced to the user).
 
+    Both modes filter out soft-deleted rows (``deleted_at IS NULL``).
+    When ``vault_root`` is provided, each row's ``stub_body`` is read
+    from ``_researching/<slug>.md`` so the audit UI has enough body
+    text to evaluate the gap without a per-row round-trip.
+
     Raises:
         ValueError: if ``mode`` is not one of ``pending``/``audit``.
     """
@@ -494,6 +566,7 @@ def list_gaps_for_review(
             .where(Gap.state == "in_review")
             .where(Gap.gap_class.in_(("internal", "hybrid")))
             .where(Gap.human_verified.is_(False))
+            .where(Gap.deleted_at.is_(None))
             .order_by(Gap.created_at.asc(), Gap.id.asc())
             .limit(limit)
         )
@@ -502,6 +575,7 @@ def list_gaps_for_review(
             select(Gap)
             .where(Gap.state.in_(_TERMINAL_GAP_STATES))
             .where(Gap.human_verified.is_(False))
+            .where(Gap.deleted_at.is_(None))
             .order_by(Gap.resolved_at.desc().nulls_last(), Gap.id.desc())
             .limit(limit)
         )
@@ -509,7 +583,13 @@ def list_gaps_for_review(
         raise ValueError(f"unknown review-queue mode: {mode!r}")
 
     rows = session.execute(stmt).scalars().all()
-    return [_gap_to_dict(gap) for gap in rows]
+    payloads: list[dict] = []
+    for gap in rows:
+        payload = _gap_to_dict(gap, session=session)
+        if vault_root is not None:
+            payload["stub_body"] = _read_stub_body(vault_root, gap)
+        payloads.append(payload)
+    return payloads
 
 
 def list_review_queue(session: Session) -> list[dict]:
@@ -528,10 +608,12 @@ def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:
     """Load a Gap by id or raise ValueError. Shared by reject/verify/reopen.
 
     Mirrors :func:`answer_gap`'s error contract — the router layer maps
-    ``"Gap not found"`` substrings to HTTP 404.
+    ``"Gap not found"`` substrings to HTTP 404. Soft-deleted gaps
+    (``deleted_at IS NOT NULL``) are treated as not-found so write paths
+    can't mutate them; use :func:`undelete_gap` to restore first.
     """
     gap = session.get(Gap, gap_id)
-    if gap is None:
+    if gap is None or gap.deleted_at is not None:
         raise ValueError(f"Gap not found: id={gap_id}")
     return gap
 
@@ -584,7 +666,7 @@ def reject_gap(
     session.commit()
     session.refresh(gap)
     logger.info("gaps.reject_gap: rejected gap_id=%d term=%r", gap_id, gap.term)
-    return _gap_to_dict(gap)
+    return _gap_to_dict(gap, session=session)
 
 
 def verify_gap(session: Session, gap_id: int) -> dict:
@@ -605,7 +687,7 @@ def verify_gap(session: Session, gap_id: int) -> dict:
     session.commit()
     session.refresh(gap)
     logger.info("gaps.verify_gap: verified gap_id=%d state=%s", gap_id, gap.state)
-    return _gap_to_dict(gap)
+    return _gap_to_dict(gap, session=session)
 
 
 def reopen_gap(session: Session, gap_id: int) -> dict:
@@ -634,7 +716,7 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     session.commit()
     session.refresh(gap)
     logger.info("gaps.reopen_gap: reopened gap_id=%d term=%r", gap_id, gap.term)
-    return _gap_to_dict(gap)
+    return _gap_to_dict(gap, session=session)
 
 
 def answer_gap(
@@ -659,7 +741,7 @@ def answer_gap(
             ``state='in_review'``.
     """
     gap = session.get(Gap, gap_id)
-    if gap is None:
+    if gap is None or gap.deleted_at is not None:
         raise ValueError(f"Gap not found: id={gap_id}")
     if gap.state != "in_review":
         raise ValueError(
@@ -733,3 +815,61 @@ def answer_gap(
         "path": str(relative_path),
         "note_id": note_id,
     }
+
+
+def delete_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
+    """Soft-delete a gap. Sets ``deleted_at``; hard-deletes the stub file.
+
+    Stubs at ``_researching/<slug>.md`` are regenerable from the gap's
+    ``term`` (``discover_gaps`` will write a fresh one on its next tick
+    after undelete, provided there's still at least one source wikilink
+    pointing at the term). Hard-deleting the file now keeps the vault
+    tidy without losing anything that can't be reconstructed.
+
+    Idempotent on already-deleted rows — calling delete twice is a no-op
+    that returns the same payload.
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown. Soft-deleted gaps return
+            the same 404 path via :func:`_get_gap_or_raise` UNLESS this
+            function's idempotent short-circuit catches it first.
+    """
+    # Bypass _get_gap_or_raise's deleted-as-404 to make delete idempotent.
+    gap = session.get(Gap, gap_id)
+    if gap is None:
+        raise ValueError(f"Gap not found: id={gap_id}")
+    if gap.deleted_at is not None:
+        return _gap_to_dict(gap, session=session)
+
+    gap.deleted_at = datetime.now(timezone.utc)
+    _remove_stub_if_present(vault_root, gap, action="soft-deleted")
+    session.add(gap)
+    session.commit()
+    session.refresh(gap)
+    logger.info("gaps.delete_gap: soft-deleted gap_id=%d term=%r", gap_id, gap.term)
+    return _gap_to_dict(gap, session=session)
+
+
+def undelete_gap(session: Session, gap_id: int) -> dict:
+    """Undo soft-delete: clear ``deleted_at``. The stub is regenerated
+    lazily by the next ``discover_gaps`` cycle (or stays absent if the
+    source wikilinks were rewritten/removed in the interim).
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown, or if the gap is not
+            currently soft-deleted (calling undelete on a live row is
+            almost certainly a UI bug worth surfacing).
+    """
+    # Bypass _get_gap_or_raise's deleted-as-404 so we can find the row.
+    gap = session.get(Gap, gap_id)
+    if gap is None:
+        raise ValueError(f"Gap not found: id={gap_id}")
+    if gap.deleted_at is None:
+        raise ValueError(f"Gap id={gap_id} is not deleted")
+
+    gap.deleted_at = None
+    session.add(gap)
+    session.commit()
+    session.refresh(gap)
+    logger.info("gaps.undelete_gap: restored gap_id=%d term=%r", gap_id, gap.term)
+    return _gap_to_dict(gap, session=session)

@@ -21,7 +21,17 @@ from knowledge.visibility import VISIBILITY_CRITERIA
 
 logger = logging.getLogger("monolith.knowledge.gardener")
 
-_EXCLUDED_DIRS = {"_processed", "_raw", "_researching", ".obsidian", ".trash"}
+_EXCLUDED_DIRS = {
+    "_processed",
+    "_raw",
+    "_researching",
+    # Soft-deleted notes are moved here by knowledge.notes.delete_note.
+    # Skipping the directory prevents the gardener from re-ingesting
+    # trashed notes as fresh raws on the next discover tick.
+    "_trash",
+    ".obsidian",
+    ".trash",
+}
 
 # Version stamp recorded on every provenance row the gardener produces.
 # Bump this when the prompt or model changes to trigger a manual reprocess.

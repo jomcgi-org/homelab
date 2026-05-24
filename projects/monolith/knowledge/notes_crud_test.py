@@ -1,13 +1,17 @@
 """Unit tests for knowledge notes CRUD endpoints."""
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.pool import StaticPool
 
 from app.db import get_session
 from app.main import app
+from knowledge.models import Note
 from knowledge.service import VAULT_ROOT_ENV
 
 
@@ -21,6 +25,44 @@ def client(fake_session, tmp_path, monkeypatch):
     """TestClient with overridden session and a temp vault root."""
     monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
     app.dependency_overrides[get_session] = lambda: fake_session
+    yield TestClient(app, raise_server_exceptions=False)
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def real_session():
+    """Real SQLite session for tests that exercise the DB instead of mocking it.
+
+    Mirrors the fixture in gap_review_endpoints_test.py: strips Postgres-
+    only schema= overrides so create_all() lands every table in the
+    default SQLite schema. Restores them in a finally block so other tests
+    using the shared SQLModel.metadata aren't poisoned.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as s:
+            yield s
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
+@pytest.fixture()
+def db_client(real_session, tmp_path, monkeypatch):
+    """TestClient backed by a real session — used by the soft-delete tests."""
+    monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
+    app.dependency_overrides[get_session] = lambda: real_session
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 
@@ -106,69 +148,91 @@ class TestCreateNote:
         assert (tmp_path / path).exists()
 
 
-class TestDeleteNote:
-    """Tests for DELETE /api/knowledge/notes/{note_id}."""
+def _insert_note(session: Session, *, note_id: str, path: str) -> Note:
+    """Insert a Note row used by the soft-delete tests."""
+    note = Note(
+        note_id=note_id,
+        path=path,
+        title=note_id,
+        content_hash=f"hash-{note_id}",
+        type="atom",
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(note)
+    session.commit()
+    session.refresh(note)
+    return note
 
-    def test_delete_note_removes_file_and_db(self, client, tmp_path):
-        """DELETE existing note returns 200, removes file, and calls store.delete_note."""
+
+class TestDeleteNote:
+    """Tests for DELETE /api/knowledge/notes/{note_id}.
+
+    Behaviour changed from the original hard-delete to a soft-delete
+    that moves the file into ``_trash/`` and stamps ``deleted_at`` on
+    the row. The DB row survives so POST /undelete can restore it.
+    """
+
+    def test_delete_note_soft_deletes_and_moves_to_trash(
+        self, db_client, real_session, tmp_path
+    ):
         note_path = "delete-me.md"
         (tmp_path / note_path).write_text("---\ntitle: Doomed\n---\n\nGoodbye\n")
+        note = _insert_note(real_session, note_id="del123", path=note_path)
 
-        mock_note = {
-            "note_id": "del123",
-            "title": "Doomed",
-            "path": note_path,
-            "type": "note",
-            "tags": [],
-        }
-
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            instance = MockStore.return_value
-            instance.get_note_by_id.return_value = mock_note
-
-            r = client.delete("/api/knowledge/notes/del123")
+        r = db_client.delete("/api/knowledge/notes/del123")
 
         assert r.status_code == 200
         body = r.json()
-        assert body["deleted"] is True
-        assert body["note_id"] == "del123"
+        assert body.get("id") == "del123"
+        assert body.get("deleted_at") is not None
+
+        # Original file is gone; trash file exists.
         assert not (tmp_path / note_path).exists()
-        instance.delete_note.assert_called_once_with(note_path)
+        trash_files = list((tmp_path / "_trash").glob("*-delete-me.md"))
+        assert len(trash_files) == 1, f"expected 1 trash entry, got {trash_files}"
 
-    def test_delete_note_not_found(self, client):
+        # DB row survives with deleted_at set and pre_delete_path captured.
+        real_session.expire_all()
+        reloaded = real_session.get(Note, note.id)
+        assert reloaded is not None
+        assert reloaded.deleted_at is not None
+        assert reloaded.pre_delete_path == note_path
+        assert reloaded.path.startswith("_trash/")
+
+    def test_delete_note_not_found(self, db_client):
         """DELETE for nonexistent note_id returns 404."""
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.get_note_by_id.return_value = None
-
-            r = client.delete("/api/knowledge/notes/nonexistent")
-
+        r = db_client.delete("/api/knowledge/notes/nonexistent")
         assert r.status_code == 404
-        assert "note not found" in r.json().get("detail", "")
+        detail = r.json().get("detail", "")
+        assert "not found" in detail.lower()
 
-    def test_delete_note_missing_file_still_cleans_db(self, client, tmp_path):
-        """DELETE when file is already gone still returns 200 and cleans DB."""
+    def test_delete_note_already_deleted_returns_404(
+        self, db_client, real_session, tmp_path
+    ):
+        """A second DELETE on a soft-deleted note 404s — the row is hidden."""
         note_path = "already-gone.md"
-        # Don't create the file — simulate it being deleted externally.
+        (tmp_path / note_path).write_text("---\ntitle: Ghost\n---\n\nBoo\n")
+        _insert_note(real_session, note_id="gone456", path=note_path)
 
-        mock_note = {
-            "note_id": "gone456",
-            "title": "Ghost",
-            "path": note_path,
-            "type": "note",
-            "tags": [],
-        }
+        first = db_client.delete("/api/knowledge/notes/gone456")
+        assert first.status_code == 200
 
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            instance = MockStore.return_value
-            instance.get_note_by_id.return_value = mock_note
+        second = db_client.delete("/api/knowledge/notes/gone456")
+        assert second.status_code == 404
 
-            r = client.delete("/api/knowledge/notes/gone456")
+    def test_delete_note_missing_file_still_soft_deletes(
+        self, db_client, real_session, tmp_path
+    ):
+        """DELETE when file is already gone still stamps the row."""
+        # Insert a row but don't write the file — simulate external deletion.
+        _insert_note(real_session, note_id="ghost", path="ghost.md")
 
+        r = db_client.delete("/api/knowledge/notes/ghost")
         assert r.status_code == 200
         body = r.json()
-        assert body["deleted"] is True
-        assert body["note_id"] == "gone456"
-        instance.delete_note.assert_called_once_with(note_path)
+        assert body.get("deleted_at") is not None
+        # No _trash file expected because there was nothing to move.
+        assert not (tmp_path / "_trash").exists()
 
 
 class TestEditNote:

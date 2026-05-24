@@ -198,7 +198,9 @@ def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
 
     with Session(engine) as session:
         note_rows = session.execute(
-            select(Note.id, Note.note_id, Note.layout_x, Note.layout_y)
+            select(Note.id, Note.note_id, Note.layout_x, Note.layout_y).where(
+                Note.deleted_at.is_(None)
+            )
         ).all()
         fk_to_note_id: dict[int, str] = {r.id: r.note_id for r in note_rows}
         nodes = [
@@ -206,6 +208,11 @@ def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
             for r in note_rows
         ]
 
+        # Source-side deletes are excluded via the fk_to_note_id filter
+        # below; an inner join here would still pull edges whose source
+        # was deleted, but the loop drops anything not in fk_to_note_id.
+        # Filtering at SQL is purely an optimisation, not a correctness
+        # requirement.
         edge_rows = session.execute(
             select(NoteLink.src_note_fk, NoteLink.target_id)
         ).all()
@@ -264,7 +271,9 @@ def _run_public_layout_pass(engine: Engine) -> tuple[int, int, int]:
                 Note.note_id,
                 Note.layout_x_public,
                 Note.layout_y_public,
-            ).where(public_notes_filter())
+            )
+            .where(public_notes_filter())
+            .where(Note.deleted_at.is_(None))
         ).all()
         fk_to_note_id: dict[int, str] = {r.id: r.note_id for r in note_rows}
         nodes = [
@@ -279,6 +288,7 @@ def _run_public_layout_pass(engine: Engine) -> tuple[int, int, int]:
             select(NoteLink.src_note_fk, NoteLink.target_id)
             .join(Note, NoteLink.src_note_fk == Note.id)
             .where(public_notes_filter())
+            .where(Note.deleted_at.is_(None))
         ).all()
         note_id_set = set(fk_to_note_id.values())
         slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}

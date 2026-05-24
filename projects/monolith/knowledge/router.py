@@ -31,10 +31,12 @@ from app.db import get_session
 from knowledge import frontmatter
 from knowledge.gaps import (
     answer_gap,
+    delete_gap,
     list_gaps_for_review,
     reject_gap,
     reopen_gap,
     split_csv,
+    undelete_gap,
     verify_gap,
 )
 from knowledge.gardener import Gardener, _slugify
@@ -42,9 +44,11 @@ from knowledge.ingest_queue import IngestQueueItem
 from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
+    delete_note,
     list_notes_for_review,
     reset_note_visibility,
     set_note_visibility,
+    undelete_note,
     verify_note_visibility,
 )
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
@@ -196,6 +200,7 @@ def get_public_graph(
         )
         .where(public_notes_filter())
         .where(Note.type.in_(list(GRAPH_NOTE_TYPES)))
+        .where(Note.deleted_at.is_(None))
     ).all()
 
     public_note_ids = {row.note_id for row in public_note_rows}
@@ -214,6 +219,7 @@ def get_public_graph(
             )
             .join(Note, NoteLink.src_note_fk == Note.id)
             .where(public_notes_filter())
+            .where(Note.deleted_at.is_(None))
         ).all()
     else:
         link_rows = []
@@ -287,7 +293,9 @@ def get_public_note(
     wikilinks targeting public notes are left intact for the frontend
     renderer to resolve.
     """
-    note = session.exec(select(Note).where(Note.note_id == note_id)).one_or_none()
+    note = session.exec(
+        select(Note).where(Note.note_id == note_id).where(Note.deleted_at.is_(None))
+    ).one_or_none()
     if note is None or effective_visibility(note) != "public":
         # Identical 404 for missing and private — never expose existence.
         # The reason is logged but not surfaced in the response.
@@ -318,9 +326,9 @@ def get_public_note(
     private_slugs = {
         _visibility_slugify(n.note_id)
         for n in session.exec(
-            select(Note).where(
-                or_(Note.visibility != "public", Note.visibility.is_(None))
-            )
+            select(Note)
+            .where(or_(Note.visibility != "public", Note.visibility.is_(None)))
+            .where(Note.deleted_at.is_(None))
         ).all()
     }
     sanitized = sanitize_public_body(body, private_slugs)
@@ -389,25 +397,46 @@ def delete_note_endpoint(
     note_id: str,
     session: Session = Depends(get_session),
 ) -> dict:
-    """Delete a note from the vault and clean up DB records."""
-    store = KnowledgeStore(session)
-    note = store.get_note_by_id(note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="note not found")
+    """Soft-delete a note. Moves the file to ``_trash/`` and hides the row.
 
+    Backs the /private/review audit "delete" action. The DB row survives
+    so :func:`undelete_note_endpoint` can restore it; the on-disk file
+    is moved to ``_trash/<ts>-<slug>.md`` where both the gardener and
+    raw-ingest scanners skip it. There is no auto-purge of ``_trash/``
+    today — the user can hand-clean periodically.
+
+    NOTE: this is a behaviour change from the original hard-delete. The
+    response shape used to be ``{"deleted": True, "note_id": ...}``; it
+    is now the standard review-dict payload (matching the other
+    note-action endpoints), with ``deleted_at`` populated.
+    """
     vault_root = _get_vault_root()
-    resolved = (vault_root / note["path"]).resolve()
-    if not resolved.is_relative_to(vault_root):
-        raise HTTPException(status_code=400, detail="invalid note path")
+    try:
+        note = delete_note(session, note_id, vault_root)
+    except ValueError as exc:
+        raise _map_note_error(exc) from exc
+    return _note_to_review_dict(note, vault_root)
 
-    # Remove the file if it exists — don't error if already gone.
-    if resolved.is_file():
-        resolved.unlink()
 
-    # Always clean up DB records (Note, Chunk, NoteLink).
-    store.delete_note(note["path"])
+@router.post("/notes/{note_id}/undelete")
+def undelete_note_endpoint(
+    note_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Undo a soft-delete: restore the file from ``_trash/`` and unhide the row.
 
-    return {"deleted": True, "note_id": note_id}
+    Calling this on a live note returns 404 — the row isn't "not found"
+    from the user's perspective, but the error contract reuses the
+    Note-not-found mapper for consistency with the other write paths.
+    Use the audit-mode review queue + delete action to land here in the
+    first place.
+    """
+    vault_root = _get_vault_root()
+    try:
+        note = undelete_note(session, note_id, vault_root)
+    except ValueError as exc:
+        raise _map_note_error(exc) from exc
+    return _note_to_review_dict(note, vault_root)
 
 
 @router.put("/notes/{note_id}")
@@ -628,8 +657,18 @@ def get_review_queue_endpoint(
     awaiting a user answer, oldest first. ``mode=audit`` returns terminal
     gaps (committed/rejected/parked) where ``human_verified=False``,
     most-recently-resolved first.
+
+    Each row carries the richer review-dict shape: ``referenced_by_count``
+    (how many notes link at the term), ``research_attempts``, ``answer``,
+    plus a ``stub_body`` read from ``_researching/<slug>.md`` so the
+    audit UI can render in-place without a per-row round-trip.
     """
-    return {"gaps": list_gaps_for_review(session, mode=mode, limit=limit)}
+    vault_root = _get_vault_root()
+    return {
+        "gaps": list_gaps_for_review(
+            session, mode=mode, limit=limit, vault_root=vault_root
+        )
+    }
 
 
 def _map_gap_error(exc: ValueError) -> HTTPException:
@@ -644,6 +683,10 @@ def _map_gap_error(exc: ValueError) -> HTTPException:
     msg = str(exc)
     if "Gap not found" in msg:
         return HTTPException(status_code=404, detail=msg)
+    if "is not deleted" in msg:
+        # Calling undelete on a live row is a UI bug, not "not found"
+        # — surface a distinct 409 so the frontend can react sensibly.
+        return HTTPException(status_code=409, detail=msg)
     if re.search(
         r"\bexpected\b", msg
     ):  # "expected 'in_review'" / "expected one of [...]"
@@ -705,6 +748,31 @@ def reopen_gap_endpoint(
     """Reopen a terminal gap (committed/rejected/parked) back to in_review."""
     try:
         return reopen_gap(session, gap_id)
+    except ValueError as exc:
+        raise _map_gap_error(exc) from exc
+
+
+@router.delete("/gaps/{gap_id}")
+def delete_gap_endpoint(
+    gap_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Soft-delete a gap. Hard-deletes the stub file; regenerable on undelete."""
+    vault_root = _get_vault_root()
+    try:
+        return delete_gap(session, gap_id, vault_root)
+    except ValueError as exc:
+        raise _map_gap_error(exc) from exc
+
+
+@router.post("/gaps/{gap_id}/undelete")
+def undelete_gap_endpoint(
+    gap_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Undo a soft-delete: the gap reappears in queries; stub regenerates lazily."""
+    try:
+        return undelete_gap(session, gap_id)
     except ValueError as exc:
         raise _map_gap_error(exc) from exc
 

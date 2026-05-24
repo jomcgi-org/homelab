@@ -431,7 +431,8 @@ class TestReviewQueueModes:
         assert r.status_code == 422
 
     def test_response_shape_includes_required_fields(self, client, session, tmp_path):
-        long_body = "First sentence of the body. " * 30  # > 200 chars
+        # Body with >100 lines to exercise the 100-line snippet cap.
+        long_body = "\n".join(f"line {i}" for i in range(200))
         _make_note(
             session,
             tmp_path,
@@ -446,7 +447,8 @@ class TestReviewQueueModes:
         items = r.json().get("notes", [])
         assert len(items) == 1
         item = items[0]
-        # Required fields per the design.
+        # Required fields per the audit-UI redesign — the original five
+        # plus the new context-surfacing fields (tags/type/source).
         assert set(item.keys()) >= {
             "id",
             "title",
@@ -454,13 +456,20 @@ class TestReviewQueueModes:
             "visibility",
             "visibility_verified",
             "updated_at",
+            "tags",
+            "type",
+            "source",
+            "deleted_at",
         }
         # Full body must NOT be included — only the snippet.
         assert "body" not in item
         assert "content" not in item
-        # Snippet capped at 200 chars.
-        assert len(item["snippet"]) <= 200
-        assert item["snippet"].startswith("First sentence")
+        # Snippet is now capped at ~100 lines (was 200 chars).
+        snippet_lines = item["snippet"].splitlines()
+        assert len(snippet_lines) <= 100
+        assert snippet_lines[0] == "line 0"
+        # Should NOT include line 150 — past the 100-line cap.
+        assert "line 150" not in item["snippet"]
 
     def test_pagination_via_limit(self, client, session, tmp_path):
         now = datetime.now(timezone.utc)
@@ -482,3 +491,160 @@ class TestReviewQueueModes:
         # Oldest first — pg-0 was created longest ago.
         ids = [n["id"] for n in items]
         assert ids == ["pg-0", "pg-1", "pg-2"]
+
+
+# ---------------------------------------------------------------------------
+# DELETE / POST .../undelete — soft-delete + undo
+# ---------------------------------------------------------------------------
+
+
+class TestSoftDeleteNote:
+    """Tests for DELETE /api/knowledge/notes/{note_id} and POST .../undelete.
+
+    Soft-delete moves the on-disk file to ``_trash/<ts>-<slug>.md`` and
+    stamps ``deleted_at`` on the row; undelete moves the file back to
+    the path captured in ``pre_delete_path`` and clears both columns.
+    """
+
+    def test_delete_sets_deleted_at_and_removes_from_queue(
+        self, client, session, tmp_path
+    ):
+        note = _make_note(session, tmp_path, note_id="del-pending", visibility=None)
+
+        # Sanity: appears in pending queue before delete.
+        r0 = client.get("/api/knowledge/notes/review-queue")
+        ids = [n["id"] for n in r0.json().get("notes", [])]
+        assert "del-pending" in ids
+
+        r = client.delete("/api/knowledge/notes/del-pending")
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("id") == "del-pending"
+        assert body.get("deleted_at") is not None
+
+        # After delete: no longer in queue.
+        r1 = client.get("/api/knowledge/notes/review-queue")
+        ids_after = [n["id"] for n in r1.json().get("notes", [])]
+        assert "del-pending" not in ids_after
+
+        session.expire_all()
+        reloaded = session.get(Note, note.id)
+        assert reloaded.deleted_at is not None
+        assert reloaded.pre_delete_path is not None
+
+    def test_delete_moves_file_to_trash(self, client, session, tmp_path):
+        note = _make_note(
+            session,
+            tmp_path,
+            note_id="trash-me",
+            body="contents to preserve",
+            visibility=None,
+        )
+        original_path = tmp_path / note.path
+        assert original_path.exists()
+
+        r = client.delete("/api/knowledge/notes/trash-me")
+        assert r.status_code == 200
+
+        # Original gone, trash entry present, contents preserved.
+        assert not original_path.exists()
+        trash_dir = tmp_path / "_trash"
+        assert trash_dir.is_dir()
+        trash_files = list(trash_dir.glob("*-trash-me.md"))
+        assert len(trash_files) == 1
+        assert "contents to preserve" in trash_files[0].read_text()
+
+    def test_delete_already_deleted_returns_404(self, client, session, tmp_path):
+        _make_note(session, tmp_path, note_id="twice", visibility=None)
+
+        first = client.delete("/api/knowledge/notes/twice")
+        assert first.status_code == 200
+
+        second = client.delete("/api/knowledge/notes/twice")
+        assert second.status_code == 404
+
+    def test_get_visibility_endpoints_404_after_delete(self, client, session, tmp_path):
+        """Write helpers (_get_note_or_raise) treat deleted as not-found."""
+        _make_note(session, tmp_path, note_id="hidden", visibility="public")
+
+        client.delete("/api/knowledge/notes/hidden")
+
+        # All write helpers go through _get_note_or_raise — should 404 now.
+        r_verify = client.post("/api/knowledge/notes/hidden/verify-visibility")
+        assert r_verify.status_code == 404
+
+        r_reset = client.post("/api/knowledge/notes/hidden/reset-visibility")
+        assert r_reset.status_code == 404
+
+        r_set = client.post(
+            "/api/knowledge/notes/hidden/visibility",
+            json={"visibility": "private"},
+        )
+        assert r_set.status_code == 404
+
+    def test_undelete_restores_row_and_file(self, client, session, tmp_path):
+        note = _make_note(
+            session,
+            tmp_path,
+            note_id="round-trip",
+            body="original body",
+            visibility=None,
+        )
+        original_relative = note.path
+        original_abs = tmp_path / original_relative
+
+        # Delete.
+        client.delete("/api/knowledge/notes/round-trip")
+        assert not original_abs.exists()
+
+        # Undelete.
+        r = client.post("/api/knowledge/notes/round-trip/undelete")
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("id") == "round-trip"
+        assert body.get("deleted_at") is None
+
+        # File restored at exactly the original path.
+        assert original_abs.exists()
+        assert "original body" in original_abs.read_text()
+
+        session.expire_all()
+        reloaded = session.get(Note, note.id)
+        assert reloaded.deleted_at is None
+        assert reloaded.pre_delete_path is None
+        assert reloaded.path == original_relative
+
+    def test_undelete_live_note_returns_404(self, client, session, tmp_path):
+        """Calling undelete on a non-deleted row returns 404 (mapped from
+        the "is not deleted" ValueError)."""
+        _make_note(session, tmp_path, note_id="alive", visibility=None)
+
+        r = client.post("/api/knowledge/notes/alive/undelete")
+        assert r.status_code == 404
+
+    def test_undelete_unknown_note_returns_404(self, client):
+        r = client.post("/api/knowledge/notes/nope/undelete")
+        assert r.status_code == 404
+
+    def test_delete_excludes_from_pending_and_audit(self, client, session, tmp_path):
+        # Audit-mode note: visibility set, not verified.
+        _make_note(
+            session,
+            tmp_path,
+            note_id="audit-doomed",
+            visibility="public",
+            visibility_verified=False,
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        # Before delete: shows in audit.
+        r0 = client.get("/api/knowledge/notes/review-queue?mode=audit")
+        assert "audit-doomed" in [n["id"] for n in r0.json().get("notes", [])]
+
+        client.delete("/api/knowledge/notes/audit-doomed")
+
+        # After delete: gone from audit AND pending.
+        r1 = client.get("/api/knowledge/notes/review-queue?mode=audit")
+        assert "audit-doomed" not in [n["id"] for n in r1.json().get("notes", [])]
+        r2 = client.get("/api/knowledge/notes/review-queue?mode=pending")
+        assert "audit-doomed" not in [n["id"] for n in r2.json().get("notes", [])]

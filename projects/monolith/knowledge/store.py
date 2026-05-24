@@ -160,6 +160,9 @@ class KnowledgeStore:
         Chunk.embedding, groups by note, and returns the best (minimum
         distance) chunk score per note as ``score = 1 - distance``,
         penalised by chunk length to downrank ultra-short stubs.
+
+        Soft-deleted notes (``deleted_at IS NOT NULL``) are excluded —
+        their content should not surface in search after a delete.
         """
         distance = Chunk.embedding.cosine_distance(query_embedding)
         len_penalty = func.least(
@@ -177,6 +180,7 @@ class KnowledgeStore:
                 best_score,
             )
             .join(Chunk, Chunk.note_fk == Note.id)
+            .where(Note.deleted_at.is_(None))
             .group_by(Note.id)
             .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
             .order_by(best_score.desc())
@@ -235,6 +239,7 @@ class KnowledgeStore:
                 best_score,
             )
             .join(Chunk, Chunk.note_fk == Note.id)
+            .where(Note.deleted_at.is_(None))
             .group_by(Note.id)
             .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
             .order_by(best_score.desc())
@@ -331,6 +336,7 @@ class KnowledgeStore:
                 Note.tags,
             )
             .where(Note.note_id == note_id)
+            .where(Note.deleted_at.is_(None))
             .limit(1)
         ).first()
         if row is None:
@@ -376,7 +382,7 @@ class KnowledgeStore:
                 Note.indexed_at,
                 Note.layout_x,
                 Note.layout_y,
-            )
+            ).where(Note.deleted_at.is_(None))
         ).all()
         # Filter out notes whose type isn't in the graph set BEFORE we
         # build note_ids — that way the edge filter automatically drops
@@ -395,7 +401,9 @@ class KnowledgeStore:
                 NoteLink.target_id.label("target"),
                 NoteLink.kind,
                 NoteLink.edge_type,
-            ).join(Note, NoteLink.src_note_fk == Note.id)
+            )
+            .join(Note, NoteLink.src_note_fk == Note.id)
+            .where(Note.deleted_at.is_(None))
         ).all()
 
         edges: list[dict] = []
@@ -515,7 +523,10 @@ class KnowledgeStore:
         always small (< 1000) so this is fine.
         """
         stmt = (
-            select(Note).where(Note.type == "active").order_by(Note.indexed_at.desc())
+            select(Note)
+            .where(Note.type == "active")
+            .where(Note.deleted_at.is_(None))
+            .order_by(Note.indexed_at.desc())
         )
         notes = self.session.execute(stmt).scalars().all()
 
@@ -587,6 +598,7 @@ class KnowledgeStore:
             )
             .join(Chunk, Chunk.note_fk == Note.id)
             .where(Note.type == "active")
+            .where(Note.deleted_at.is_(None))
             .group_by(Note.id)
             .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
             .order_by(best_score.desc())
@@ -641,7 +653,11 @@ class KnowledgeStore:
         done/cancelled, and clears it when moving away from those statuses.
         """
         note = self.session.execute(
-            select(Note).where(Note.note_id == note_id, Note.type == "active")
+            select(Note).where(
+                Note.note_id == note_id,
+                Note.type == "active",
+                Note.deleted_at.is_(None),
+            )
         ).scalar_one_or_none()
         if note is None:
             raise ValueError(f"Task not found: {note_id}")
@@ -671,8 +687,16 @@ class KnowledgeStore:
         classes: list[str] | None = None,
         limit: int = 100,
     ) -> list[dict]:
-        """List gaps with optional state/class filters, most recent first."""
-        stmt = select(Gap).order_by(Gap.created_at.desc(), Gap.id.desc()).limit(limit)
+        """List gaps with optional state/class filters, most recent first.
+
+        Soft-deleted gaps (``deleted_at IS NOT NULL``) are excluded.
+        """
+        stmt = (
+            select(Gap)
+            .where(Gap.deleted_at.is_(None))
+            .order_by(Gap.created_at.desc(), Gap.id.desc())
+            .limit(limit)
+        )
         if states:
             stmt = stmt.where(Gap.state.in_(states))
         if classes:
@@ -696,9 +720,13 @@ class KnowledgeStore:
         ]
 
     def get_gap_by_id(self, gap_id: int) -> dict | None:
-        """Fetch a single gap by id, or None if no gap matches."""
+        """Fetch a single gap by id, or None if no gap matches.
+
+        Soft-deleted gaps return ``None`` so callers can't accidentally
+        surface tombstoned rows. Restore via :func:`gaps.undelete_gap`.
+        """
         gap = self.session.get(Gap, gap_id)
-        if gap is None:
+        if gap is None or gap.deleted_at is not None:
             return None
         return {
             "id": gap.id,

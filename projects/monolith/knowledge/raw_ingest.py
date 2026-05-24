@@ -28,6 +28,10 @@ _EXCLUDED_TOP_LEVEL = {
     # re-ingests them as raw notes and strips the gap pipeline's
     # source of truth. Kept in sync with gardener._EXCLUDED_DIRS.
     "_researching",
+    # _trash/ holds soft-deleted notes moved by knowledge.notes.delete_note.
+    # Skipping here prevents the raw-ingest scanner from re-ingesting
+    # them as fresh raws. Kept in sync with gardener._EXCLUDED_DIRS.
+    "_trash",
     ".obsidian",
     ".trash",
 }

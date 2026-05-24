@@ -13,6 +13,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    DateTime,
     Integer,
     String,
     UniqueConstraint,
@@ -113,6 +114,23 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     # public endpoint COALESCEs back to layout_x/y until the first pass.
     layout_x_public: float | None = None
     layout_y_public: float | None = None
+    # Soft-delete timestamp for the /private/review audit "delete" action.
+    # NULL means live; NOT NULL means the row is hidden from every user-
+    # facing read path (review-queue, graph, search, get-by-id). The
+    # on-disk file is moved to _trash/<ts>-<slug>.md at soft-delete time;
+    # undelete moves it back to the path captured in pre_delete_path.
+    # Mirrors chart/migrations/20260523120000_review_soft_delete.sql.
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # Original vault-relative path captured at soft-delete time. NULL for
+    # live rows. Read back by undelete_note to restore the file to its
+    # original location without parsing the trash filename. Kept separate
+    # from ``path`` so the live ``path`` column always reflects where the
+    # file currently lives on disk (in _trash/ for deleted rows).
+    pre_delete_path: str | None = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
 
 
 class Chunk(SQLModel, table=True):
@@ -258,4 +276,13 @@ class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     classified_at: datetime | None = None
     resolved_at: datetime | None = None
+    # Soft-delete timestamp for the /private/review audit "delete" action.
+    # NULL means live; NOT NULL means the row is hidden from every user-
+    # facing read path (review-queue, list_gaps, get_gap_by_id, graph).
+    # The ``_researching/<slug>.md`` stub is hard-deleted at soft-delete
+    # time and regenerated lazily by ``discover_gaps`` on undelete.
+    # Mirrors chart/migrations/20260523120000_review_soft_delete.sql.
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     pipeline_version: str = Field(sa_column=Column(String, nullable=False))
