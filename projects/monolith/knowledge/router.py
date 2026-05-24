@@ -495,7 +495,9 @@ def edit_note(
 
     fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
     file_content = f"---\n{fm_str}---\n\n{body}\n"
-    resolved.write_text(file_content)  # nosemgrep: tainted-path-traversal-stdlib-fastapi (guarded by is_relative_to check above)
+    resolved.write_text(
+        file_content
+    )  # nosemgrep: tainted-path-traversal-stdlib-fastapi (guarded by is_relative_to check above)
 
     return {"path": note["path"], "note_id": note_id}
 
@@ -565,7 +567,9 @@ def create_note(data: CreateNoteRequest) -> dict:
         dest = vault_root / filename
         counter += 1
 
-    dest.write_text(file_content)  # nosemgrep: tainted-path-traversal-stdlib-fastapi (dest always confined to vault_root via / operator)
+    dest.write_text(
+        file_content
+    )  # nosemgrep: tainted-path-traversal-stdlib-fastapi (dest always confined to vault_root via / operator)
     return {"path": filename}
 
 
