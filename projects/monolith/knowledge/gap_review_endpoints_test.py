@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from knowledge.gaps import GAPS_PIPELINE_VERSION, answer_gap
+from knowledge.gaps import GAPS_PIPELINE_VERSION, answer_gap, approve_gap
 from knowledge.models import Gap, Note
 from knowledge.service import VAULT_ROOT_ENV
 
@@ -164,6 +164,64 @@ class TestRejectGap:
     def test_unknown_gap_id_returns_404(self, client):
         r = client.post("/api/knowledge/gaps/9999/reject")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# approve_gap — gate external research behind explicit user approval.
+# ---------------------------------------------------------------------------
+
+
+class TestApproveGap:
+    def test_approve_gap_flips_in_review_external_to_classified(self, session):
+        """Happy path: in_review + external -> classified, human_verified=True."""
+        gap = _make_gap(
+            session, term="linkerd-mtls", state="in_review", gap_class="external"
+        )
+        result = approve_gap(session, gap.id)
+        session.refresh(gap)
+        assert gap.state == "classified"
+        assert gap.human_verified is True
+        assert result["state"] == "classified"
+
+    def test_approve_gap_rejects_unknown_id(self, session):
+        """Unknown gap_id -> ValueError('Gap not found ...')."""
+        with pytest.raises(ValueError, match="Gap not found"):
+            approve_gap(session, 999_999)
+
+    def test_approve_gap_rejects_wrong_state(self, session):
+        """state != 'in_review' -> ValueError("expected 'in_review'")."""
+        gap = _make_gap(session, term="x", state="classified", gap_class="external")
+        with pytest.raises(ValueError, match="expected 'in_review'"):
+            approve_gap(session, gap.id)
+
+    def test_approve_gap_rejects_internal_class(self, session):
+        """gap_class != 'external' -> ValueError("expected 'external'")."""
+        gap = _make_gap(
+            session, term="my-therapist", state="in_review", gap_class="internal"
+        )
+        with pytest.raises(ValueError, match="expected 'external'"):
+            approve_gap(session, gap.id)
+
+    def test_approve_gap_rejects_hybrid_class(self, session):
+        """Hybrid is user-answerable, not auto-researchable; reject approval."""
+        gap = _make_gap(
+            session,
+            term="my-neovim-config",
+            state="in_review",
+            gap_class="hybrid",
+        )
+        with pytest.raises(ValueError, match="expected 'external'"):
+            approve_gap(session, gap.id)
+
+    def test_approve_gap_idempotency_second_call_rejected(self, session):
+        """Once approved (state=classified), a second approve raises the
+        wrong-state error — the gap must be re-routed through the cron, not
+        re-approved.
+        """
+        gap = _make_gap(session, term="x", state="in_review", gap_class="external")
+        approve_gap(session, gap.id)
+        with pytest.raises(ValueError, match="expected 'in_review'"):
+            approve_gap(session, gap.id)
 
 
 # ---------------------------------------------------------------------------
