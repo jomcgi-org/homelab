@@ -135,9 +135,7 @@ def _discard_result() -> ResearchResult:
 
 
 class TestSweepAndSelectCandidates:
-    def test_selects_classified_external_gaps(
-        self, engine, session: Session
-    ) -> None:
+    def test_selects_classified_external_gaps(self, engine, session: Session) -> None:
         _make_gap(session, term="gap-a", note_id="gap-a")
         _make_gap(session, term="gap-b", note_id="gap-b")
         stuck_count, candidates = _sweep_and_select_candidates(engine)
@@ -146,10 +144,10 @@ class TestSweepAndSelectCandidates:
         assert "gap-a" in note_ids
         assert "gap-b" in note_ids
 
-    def test_excludes_non_external_gap_class(
-        self, engine, session: Session
-    ) -> None:
-        _make_gap(session, term="internal-gap", note_id="internal-gap", gap_class="internal")
+    def test_excludes_non_external_gap_class(self, engine, session: Session) -> None:
+        _make_gap(
+            session, term="internal-gap", note_id="internal-gap", gap_class="internal"
+        )
         _make_gap(session, term="hybrid-gap", note_id="hybrid-gap", gap_class="hybrid")
         _, candidates = _sweep_and_select_candidates(engine)
         assert candidates == []
@@ -164,7 +162,9 @@ class TestSweepAndSelectCandidates:
     def test_recovers_single_stuck_researching_row(
         self, engine, session: Session
     ) -> None:
-        gap = _make_gap(session, term="stuck-gap", note_id="stuck-gap", state="researching")
+        gap = _make_gap(
+            session, term="stuck-gap", note_id="stuck-gap", state="researching"
+        )
         stuck_count, candidates = _sweep_and_select_candidates(engine)
         assert stuck_count == 1
         # Recovered row should now appear as a candidate.
@@ -176,9 +176,7 @@ class TestSweepAndSelectCandidates:
         stuck_count, _ = _sweep_and_select_candidates(engine)
         assert stuck_count == 2
 
-    def test_respects_research_batch_size_limit(
-        self, engine, session: Session
-    ) -> None:
+    def test_respects_research_batch_size_limit(self, engine, session: Session) -> None:
         for i in range(RESEARCH_BATCH_SIZE + 5):
             _make_gap(
                 session,
@@ -198,9 +196,27 @@ class TestSweepAndSelectCandidates:
     def test_mixed_state_only_classified_external_selected(
         self, engine, session: Session
     ) -> None:
-        _make_gap(session, term="eligible", note_id="eligible", state="classified", gap_class="external")
-        _make_gap(session, term="ineligible-internal", note_id="ii", state="classified", gap_class="internal")
-        _make_gap(session, term="ineligible-in-review", note_id="ir", state="in_review", gap_class="external")
+        _make_gap(
+            session,
+            term="eligible",
+            note_id="eligible",
+            state="classified",
+            gap_class="external",
+        )
+        _make_gap(
+            session,
+            term="ineligible-internal",
+            note_id="ii",
+            state="classified",
+            gap_class="internal",
+        )
+        _make_gap(
+            session,
+            term="ineligible-in-review",
+            note_id="ir",
+            state="in_review",
+            gap_class="external",
+        )
         _, candidates = _sweep_and_select_candidates(engine)
         assert len(candidates) == 1
         assert candidates[0].note_id == "eligible"

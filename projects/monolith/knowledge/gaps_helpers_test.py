@@ -225,9 +225,7 @@ class TestRemoveStubIfPresent:
         _remove_stub_if_present(tmp_path, gap, action="answer")
         assert not stub.exists()
 
-    def test_only_removes_matching_stub(
-        self, session: Session, tmp_path: Path
-    ) -> None:
+    def test_only_removes_matching_stub(self, session: Session, tmp_path: Path) -> None:
         """The function must not remove unrelated stubs in the same directory."""
         gap = _make_gap(session, term="target-gap", note_id="target-gap")
         target_stub = _write_stub(tmp_path, "target-gap")
