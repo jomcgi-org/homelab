@@ -31,6 +31,7 @@ from app.db import get_session
 from knowledge import frontmatter
 from knowledge.gaps import (
     answer_gap,
+    approve_gap,
     delete_gap,
     list_gaps_for_review,
     reject_gap,
@@ -728,6 +729,22 @@ def reject_gap_endpoint(
     vault_root = _get_vault_root()
     try:
         return reject_gap(session, gap_id, vault_root)
+    except ValueError as exc:
+        raise _map_gap_error(exc) from exc
+
+
+@router.post("/gaps/{gap_id}/approve")
+def approve_gap_endpoint(
+    gap_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Approve an external gap for auto-research.
+
+    Transitions ``in_review`` → ``classified`` so the daily research
+    cron's sweep picks it up. Only valid for ``gap_class='external'``.
+    """
+    try:
+        return approve_gap(session, gap_id)
     except ValueError as exc:
         raise _map_gap_error(exc) from exc
 
