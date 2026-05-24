@@ -396,9 +396,14 @@
 {/if}
 
 <style>
+  /* Page chrome: brutalist counterpart to Nav. 2px black border on the
+     bar (matching --border-heavy), explicit monospace throughout, and
+     the active-tab underline mirrors Nav.svelte's coral-on-hover /
+     black-on-active so this page reads as a sibling of the site nav. */
+
   .review {
-    padding: 2rem 2.5rem;
-    font-family: var(--font);
+    padding: 2.5rem 2.75rem;
+    font-family: var(--font-mono);
     color: var(--fg);
     background: var(--bg);
     min-height: calc(100vh - 4rem);
@@ -408,9 +413,9 @@
     display: flex;
     gap: 2rem;
     align-items: center;
-    margin-bottom: 1.5rem;
-    padding-bottom: 0.75rem;
-    border-bottom: 0.04rem solid var(--border);
+    margin-bottom: 1.75rem;
+    padding-bottom: 1rem;
+    border-bottom: var(--border-heavy);
   }
 
   .tabs {
@@ -419,37 +424,60 @@
   }
 
   .tabs button {
-    font-family: var(--font);
-    font-size: 0.75rem;
+    position: relative;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
     color: var(--fg-tertiary);
     background: transparent;
     border: none;
-    padding: 0.4rem 0.6rem;
+    padding: 0.5rem 0.75rem;
     cursor: pointer;
+  }
+
+  .tabs button::after {
+    content: "";
+    position: absolute;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 0.2rem;
+    height: 2px;
+    background: var(--coral);
+    transform: scaleX(0);
+    transition: transform 160ms ease;
+  }
+
+  .tabs button:hover::after {
+    transform: scaleX(1);
   }
 
   .tabs button.active {
     color: var(--fg);
   }
 
+  .tabs button.active::after {
+    background: var(--fg);
+    transform: scaleX(1);
+  }
+
   .legend {
     margin-left: auto;
-    font-size: 0.7rem;
-    color: var(--fg-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--fg);
     letter-spacing: 0.04em;
   }
 
   .legend kbd {
-    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-    font-size: 0.7rem;
-    padding: 0.05rem 0.3rem;
-    border: 0.04rem solid var(--border);
-    border-radius: 0.2rem;
-    color: var(--fg-secondary, var(--fg));
-    background: transparent;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.1rem 0.4rem;
+    border: 2px solid var(--fg);
+    color: var(--fg);
+    background: var(--bg);
   }
 
   .banner {
@@ -457,39 +485,50 @@
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    margin-bottom: 1rem;
-    padding: 0.5rem 0.75rem;
-    border: 0.04rem solid var(--danger);
-    color: var(--danger);
-    font-size: 0.8rem;
-    border-radius: 0.2rem;
+    margin-bottom: 1.25rem;
+    padding: 0.65rem 0.85rem;
+    border: 2px solid var(--fg);
+    background: var(--coral);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    font-weight: 700;
   }
 
   .banner-dismiss {
     background: transparent;
     border: none;
     color: inherit;
-    font-size: 1rem;
+    font-size: 1.1rem;
     line-height: 1;
     cursor: pointer;
     padding: 0 0.25rem;
+    font-weight: 700;
   }
 
   .counter {
-    font-size: 0.75rem;
-    color: var(--fg-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--fg);
     letter-spacing: 0.04em;
-    margin-top: 1rem;
+    margin-top: 1.25rem;
     font-variant-numeric: tabular-nums;
   }
 
   .error {
-    color: var(--danger);
-    font-size: 0.85rem;
+    color: var(--fg);
+    background: var(--coral);
+    border: 2px solid var(--fg);
+    padding: 0.65rem 0.85rem;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 700;
   }
 
   .empty {
     color: var(--fg-tertiary);
-    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    letter-spacing: 0.04em;
   }
 </style>
