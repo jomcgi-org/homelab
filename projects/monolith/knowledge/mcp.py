@@ -19,6 +19,7 @@ from sqlmodel import Session
 from app.db import get_engine
 from app.mcp_app import mcp
 from knowledge import frontmatter
+from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import list_review_queue, split_csv
 from knowledge.gardener import _slugify
@@ -207,26 +208,23 @@ async def edit_note(
 
 @mcp.tool
 async def delete_note(note_id: str) -> dict:
-    """Delete a knowledge note from the vault and database.
+    """Soft-delete a knowledge note.
 
-    Removes both the markdown file from disk and the database record.
+    Moves the markdown file to the vault _trash directory and sets
+    deleted_at on the row. The note disappears from all user-facing
+    read paths (review queue, graph, search) but the row survives so
+    undelete_note can restore the file to its original location.
 
     Args:
         note_id: The stable note identifier.
     """
     with Session(get_engine()) as session:
-        store = KnowledgeStore(session)
-        note = store.get_note_by_id(note_id)
-        if note is None:
-            return {"error": f"note not found: {note_id}"}
-
         vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-        resolved = (vault_root / note["path"]).resolve()
-        if resolved.is_relative_to(vault_root) and resolved.is_file():
-            resolved.unlink()
-
-        store.delete_note(note["path"])
-        return {"deleted": True, "note_id": note_id}
+        try:
+            note = notes_module.delete_note(session, note_id, vault_root)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"deleted": True, "note_id": note.note_id}
 
 
 # ---------------------------------------------------------------------------

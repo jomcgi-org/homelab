@@ -512,7 +512,15 @@ class TestReviewQueueEndpoint:
             mock_queue.return_value = []
             note_client.get("/api/knowledge/gaps/review-queue")
 
-            mock_queue.assert_called_once_with(fake_session, mode="pending", limit=50)
+            # vault_root kwarg added to support stub_body reading off disk
+            # in _gap_to_dict; assert it's forwarded but don't pin its
+            # exact value (vault root is env-derived).
+            mock_queue.assert_called_once()
+            call = mock_queue.call_args
+            assert call.args == (fake_session,)
+            assert call.kwargs.get("mode") == "pending"
+            assert call.kwargs.get("limit") == 50
+            assert "vault_root" in call.kwargs
 
     def test_mode_audit_forwarded(self, note_client, fake_session):
         """mode=audit is forwarded to list_gaps_for_review."""
@@ -520,7 +528,12 @@ class TestReviewQueueEndpoint:
             mock_queue.return_value = []
             note_client.get("/api/knowledge/gaps/review-queue?mode=audit")
 
-            mock_queue.assert_called_once_with(fake_session, mode="audit", limit=50)
+            mock_queue.assert_called_once()
+            call = mock_queue.call_args
+            assert call.args == (fake_session,)
+            assert call.kwargs.get("mode") == "audit"
+            assert call.kwargs.get("limit") == 50
+            assert "vault_root" in call.kwargs
 
     def test_invalid_mode_rejected(self, note_client):
         """mode= must be one of pending|audit (FastAPI Literal validation)."""

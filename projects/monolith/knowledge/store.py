@@ -51,7 +51,14 @@ class KnowledgeStore:
         self.session = session
 
     def get_indexed(self) -> dict[str, str]:
-        result = self.session.execute(select(Note.path, Note.content_hash))
+        # Soft-deleted rows are excluded so the reconciler doesn't see a
+        # note's _trash/ path as "indexed" and then hard-delete the row
+        # when _walk() reports the file is missing from _processed/ /
+        # _researching/. Without this filter the soft-delete window would
+        # silently collapse to one reconciler cycle (~5 min).
+        result = self.session.execute(
+            select(Note.path, Note.content_hash).where(Note.deleted_at.is_(None))
+        )
         return {path: ch for path, ch in result.all()}
 
     def upsert_note(
