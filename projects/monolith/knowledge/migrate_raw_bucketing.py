@@ -128,8 +128,8 @@ def _grandfather_raws(vault_root: Path, session: Session) -> int:
 
 
 def _grandfather_atoms(session: Session) -> int:
-    atoms = session.exec(  # nosemgrep: sqlmodel-select-missing-deleted-at-filter (migration must grandfather all notes regardless of deletion state)
-        select(Note).where(Note.type.in_(["atom", "fact", "active"]))
+    atoms = session.exec(
+        select(Note).where(Note.type.in_(["atom", "fact", "active"]))  # nosemgrep: sqlmodel-select-missing-deleted-at-filter (migration must grandfather all notes regardless of deletion state)
     ).all()
     inserted = 0
     for atom in atoms:
