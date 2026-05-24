@@ -295,65 +295,59 @@ class TestEditNoteTool:
 
 
 class TestDeleteNoteTool:
-    """Tests for the delete_note MCP tool."""
+    """Tests for the delete_note MCP tool.
+
+    The tool now delegates to notes.delete_note (soft-delete) instead of
+    the old hard-delete path. File-on-disk semantics, missing-file
+    tolerance, and Trash bookkeeping are all covered in notes_test.py;
+    here we only verify the MCP tool plumbing.
+    """
 
     @pytest.mark.asyncio
-    async def test_deletes_file_and_db(self, tmp_path, monkeypatch):
+    async def test_soft_deletes_via_notes_module(self, tmp_path, monkeypatch):
         vault_dir = tmp_path / "vault"
         vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention")
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
 
+        fake_note = MagicMock()
+        fake_note.note_id = "n1"
+
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch(
+                "knowledge.mcp.notes_module.delete_note", return_value=fake_note
+            ) as mock_delete,
+        ):
+            result = await delete_note("n1")
+
+        assert result == {"deleted": True, "note_id": "n1"}
+        mock_delete.assert_called_once()
+        call = mock_delete.call_args
+        # Positional signature: notes.delete_note(session, note_id, vault_root)
+        assert call.args[1] == "n1"
+        assert call.args[2] == vault_dir.resolve()
+
+    @pytest.mark.asyncio
+    async def test_value_error_returns_error_dict(self, tmp_path, monkeypatch):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
         monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
 
         mock_session = MagicMock()
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
             patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch(
+                "knowledge.mcp.notes_module.delete_note",
+                side_effect=ValueError("Note not found: note_id=missing"),
+            ),
         ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
-            result = await delete_note("n1")
-
-        assert result == {"deleted": True, "note_id": "n1"}
-        assert not note_file.exists()
-        MockStore.return_value.delete_note.assert_called_once_with(
-            "papers/attention.md"
-        )
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_error(self):
-        mock_session = MagicMock()
-        with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
-        ):
-            MockStore.return_value.get_note_by_id.return_value = None
-            result = await delete_note("nonexistent")
+            result = await delete_note("missing")
 
         assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_already_deleted_file_still_cleans_db(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        mock_session = MagicMock()
-        with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
-        ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
-            result = await delete_note("n1")
-
-        assert result == {"deleted": True, "note_id": "n1"}
-        MockStore.return_value.delete_note.assert_called_once_with(
-            "papers/attention.md"
-        )
+        assert "Note not found" in result["error"]
 
 
 # ---------------------------------------------------------------------------
