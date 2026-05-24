@@ -11,6 +11,8 @@ rules:
           select($MODEL). ... .where(..., $MODEL.deleted_at == $V, ...)
       - pattern-not-inside: |
           select($MODEL). ... .where(..., $MODEL.deleted_at != $V, ...)
+      - pattern-not-inside: |
+          select($MODEL). ... .where(..., $MODEL.deleted_at.is_not($V), ...)
     message: >-
       `select($MODEL)` is missing a soft-delete filter on `$MODEL.deleted_at`.
       PR #2350 added a `deleted_at` column to $MODEL for soft-deletion. Queries that
