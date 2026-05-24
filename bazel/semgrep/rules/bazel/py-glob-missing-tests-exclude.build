@@ -37,7 +37,10 @@ py_venv_binary(
     main = "main.py",
     srcs = glob(
         ["**/*.py"],
-        exclude = ["*/tests/**", "*_test.py"],
+        # Exclude both pytest naming conventions:
+        # - *_test.py (sibling-of-source convention)
+        # - test_*.py (pytest default convention)
+        exclude = ["*/tests/**", "**/*_test.py", "**/test_*.py"],
     ),
 )
 

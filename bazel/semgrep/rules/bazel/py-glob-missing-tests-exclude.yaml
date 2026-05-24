@@ -4,10 +4,14 @@ rules:
     severity: WARNING
     message: >-
       py_library or py_venv_binary uses glob(["**/*.py"]) without excluding
-      test directories. Add exclude=["*/tests/**"] to prevent conftest.py and
-      fixture files from being bundled into the production library target.
-      This was the root cause in commit 61fcaa4 where domain tests/conftest.py
-      files were inadvertently included in monolith_backend.
+      test directories. Add exclude=["*/tests/**", "**/*_test.py",
+      "**/test_*.py"] to keep conftest.py, fixtures, and test files out of
+      the production library target. Both pytest naming conventions
+      (sibling-style *_test.py AND default test_*.py) must be excluded --
+      missing the latter caused a 217-target test cascade on PR #2349 when
+      one broken assertion in a test_*.py file auto-collected into every
+      downstream test target's runfiles. Root cause for tests/conftest.py
+      bundling: commit 61fcaa4.
     metadata:
       category: correctness
     paths:
