@@ -41,7 +41,12 @@ py_venv_binary(
             "shared/**/*.py",
         ],
         exclude = [
+            # pytest discovers both *_test.py (sibling convention) and
+            # test_*.py (its default). Exclude both so that any test
+            # file in these source trees stays out of the production
+            # binary AND out of downstream test targets' runfiles.
             "**/*_test.py",
+            "**/test_*.py",
             "*/tests/**/*.py",
             "shared/testing/**/*.py",
         ],
@@ -89,7 +94,13 @@ py_library(
             "shared/**/*.py",
         ],
         exclude = [
+            # pytest discovers both *_test.py (sibling convention) and
+            # test_*.py (its default). Exclude both so a broken test in
+            # one knowledge/*.py file does not cascade across every
+            # downstream test target that depends on this library
+            # (per the 217-target cascade on PR #2349).
             "**/*_test.py",
+            "**/test_*.py",
             "*/tests/**/*.py",
             "shared/testing/**/*.py",
         ],
