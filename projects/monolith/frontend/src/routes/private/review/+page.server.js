@@ -49,6 +49,23 @@ function isAllowedPath(path) {
   return typeof path === "string" && path.startsWith("/api/knowledge/");
 }
 
+// FastAPI errors come back as {"detail": "<message>"} JSON. Pull the
+// human string out so the client error banner shows
+//   "cannot verify note_id='patricia-selinger': visibility is unset"
+// instead of the raw JSON envelope. Falls back to the raw text on any
+// parse failure so we never lose information.
+async function readError(res) {
+  const text = await res.text();
+  try {
+    const body = JSON.parse(text);
+    if (body && typeof body.detail === "string") return body.detail;
+    if (body && typeof body.error === "string") return body.error;
+  } catch {
+    /* not JSON -- fall through */
+  }
+  return text;
+}
+
 export const actions = {
   // decide: POST to the monolith with no body — used for every endpoint
   // except notes' set-visibility (which needs a JSON body).
@@ -65,7 +82,7 @@ export const actions = {
     if (!res.ok) {
       // Surface the upstream status verbatim so the client can branch on
       // 404 (item was soft-deleted in another tab) without parsing text.
-      return fail(res.status, { error: await res.text() });
+      return fail(res.status, { error: await readError(res) });
     }
     return { ok: true };
   },
@@ -88,7 +105,7 @@ export const actions = {
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
-      return fail(res.status, { error: await res.text() });
+      return fail(res.status, { error: await readError(res) });
     }
     return { ok: true };
   },
@@ -108,7 +125,7 @@ export const actions = {
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
-      return fail(res.status, { error: await res.text() });
+      return fail(res.status, { error: await readError(res) });
     }
     return { ok: true };
   },
@@ -128,7 +145,7 @@ export const actions = {
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
-      return fail(res.status, { error: await res.text() });
+      return fail(res.status, { error: await readError(res) });
     }
     return { ok: true };
   },

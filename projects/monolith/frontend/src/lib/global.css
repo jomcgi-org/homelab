@@ -1,3 +1,14 @@
+/* ── Shared design tokens (canonical source) ──────────────────────
+ * @import MUST be at the very top of the file. The CSS spec requires
+ * @import rules before any other rules; PostCSS / vite silently strip
+ * @import statements that come after other declarations, which causes
+ * the shared tokens (--yellow, --border-heavy, --coral, --cream,
+ * --font-mono, etc.) to never load. That manifests as headings using
+ * the browser's serif fallback (because font-family: var(--font-mono)
+ * resolves to nothing) and brutalist borders/badges going invisible.
+ */
+@import "../../../../websites/shared/tokens.css";
+
 /* ── Reset ──────────────────────────────────── */
 *,
 *::before,
@@ -27,9 +38,6 @@ a {
   color: inherit;
   text-decoration: none;
 }
-
-/* ── Shared design tokens (canonical source) ── */
-@import "../../../../websites/shared/tokens.css";
 
 /* ── Private-only intermediate aliases ──────── */
 /*
