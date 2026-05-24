@@ -149,20 +149,21 @@
 
   <div class="actions">
     {#if mode === "pending"}
-      <button class="action" onclick={() => onDecide("yes")}>
+      <button class="action action--keep" onclick={() => onDecide("yes")}>
         {tab === "gaps" ? "Keep (y)" : "Public (y)"}
       </button>
-      <button class="action" onclick={() => onDecide("no")}>
+      <button class="action action--reject" onclick={() => onDecide("no")}>
         {tab === "gaps" ? "Reject (n)" : "Private (n)"}
       </button>
     {:else}
-      <button class="action" onclick={() => onDecide("yes")}>Agree (y)</button>
+      <button class="action action--agree" onclick={() => onDecide("yes")}
+        >Agree (y)</button
+      >
       <button class="action" onclick={() => onDecide("no")}>Flip (n)</button>
       <button class="action" onclick={() => onDecide("skip")}>Skip (s)</button>
-      <button
-        class="action action--danger"
-        onclick={() => onDecide("delete")}
-      >Delete (d)</button>
+      <button class="action action--danger" onclick={() => onDecide("delete")}
+        >Delete (d)</button
+      >
     {/if}
   </div>
 </article>
@@ -178,12 +179,17 @@
   .card {
     border: var(--border-heavy);
     background: var(--bg);
-    padding: 1.5rem 1.75rem;
+    padding: 1.25rem 1.5rem;
     font-family: var(--font-mono);
     color: var(--fg);
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 1rem;
+    /* Single-screen layout: fill the parent's remaining height so the
+       review surface fits in one viewport. Body subpanels scroll
+       internally; actions stay pinned at the bottom. */
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   /* ── Header strip ─────────────────────────────────────────────── */
@@ -195,6 +201,7 @@
     gap: 1rem;
     padding-bottom: 1rem;
     border-bottom: var(--border-heavy);
+    flex-shrink: 0;
   }
 
   .card-tab {
@@ -210,8 +217,12 @@
     white-space: nowrap;
   }
 
+  /* Aligns with the knowledge graph cluster palette:
+       --cluster-gap   = coral
+       --cluster-paper = green (used for notes here)
+     so a gap card visually rhymes with a gap node in the graph. */
   .card-tab--gap {
-    background: var(--yellow);
+    background: var(--coral);
   }
 
   .card-tab--note {
@@ -322,13 +333,24 @@
 
   /* ── Body subpanel (snippet / stub / answer) ──────────────────── */
 
+  /* The LAST card-body (which is always the big one -- snippet or stub)
+     flex-grows so the card fills available vertical space. Earlier
+     bodies (a captured answer above the stub for gaps) stay
+     natural-sized and DO NOT shrink -- otherwise their inner <pre>
+     overflows the box and visually bleeds into the next subpanel. */
   .card-body {
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    gap: 0.5rem;
     border: var(--border-heavy);
     background: var(--bg);
-    padding: 1rem 1.25rem;
+    padding: 0.85rem 1rem;
+    flex-shrink: 0;
+  }
+
+  .card-body:last-of-type {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .body-label {
@@ -338,11 +360,16 @@
     text-transform: uppercase;
     letter-spacing: 0.14em;
     color: var(--fg);
+    background: var(--cream);
+    padding: 0.25rem 0.55rem;
+    border: 2px solid var(--fg);
+    align-self: flex-start;
   }
 
   .body-scroll {
     position: relative;
-    max-height: 28rem;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--fg) transparent;
@@ -371,9 +398,9 @@
   .actions {
     display: flex;
     gap: 0.75rem;
-    margin-top: 0.5rem;
     justify-content: flex-end;
     flex-wrap: wrap;
+    flex-shrink: 0;
   }
 
   .action {
@@ -387,14 +414,22 @@
     border: 2px solid var(--fg);
     padding: 0.55rem 1rem;
     cursor: pointer;
+    /* Flat-by-default, pop-on-hover: button lifts up-left and casts a
+       hard offset shadow; on active it lands flat again. */
+    transform: translate(0, 0);
     transition:
-      background 0.1s ease,
-      color 0.1s ease;
+      transform 0.08s ease,
+      box-shadow 0.08s ease;
   }
 
   .action:hover {
-    background: var(--fg);
-    color: var(--bg);
+    transform: translate(-2px, -2px);
+    box-shadow: 4px 4px 0 0 var(--fg);
+  }
+
+  .action:active {
+    transform: translate(0, 0);
+    box-shadow: 0 0 0 0 var(--fg);
   }
 
   .action:focus-visible {
@@ -402,12 +437,20 @@
     outline-offset: 2px;
   }
 
-  .action--danger {
+  /* Variant fills -- semantically coloured per cluster palette. */
+  .action--keep {
+    background: var(--yellow);
+  }
+
+  .action--reject {
     background: var(--coral);
   }
 
-  .action--danger:hover {
-    background: var(--fg);
-    color: var(--coral);
+  .action--agree {
+    background: var(--green);
+  }
+
+  .action--danger {
+    background: var(--coral);
   }
 </style>

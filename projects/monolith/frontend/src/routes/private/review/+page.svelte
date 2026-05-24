@@ -8,9 +8,18 @@
 
   let { data } = $props();
 
-  // Card index within the current queue. Reset on tab/mode change or refetch.
+  // Cursor for j/k navigation + skip. y/n/delete do NOT touch this --
+  // they add the item's id to `processedIds` so the visible list
+  // shrinks and the next item slides into place automatically.
   let index = $state(0);
   let pendingError = $state(null);
+
+  // Items the user has acted on (y/n/delete) in this session. We filter
+  // these out of data.items so a slow backend round-trip can't make a
+  // verified item reappear after invalidateAll(). When tab/mode changes
+  // or invalidateAll completes, this set is reconciled against the new
+  // data.items so stale ids drop out.
+  let processedIds = $state(new Set());
 
   // Active undo toast — null when no recent deletion. Shape:
   //   { tab, id, label, key } where key is a monotonic counter so the
@@ -19,33 +28,44 @@
   let tombstone = $state(null);
   let toastCounter = 0;
 
-  let current = $derived(data.items[index]);
+  // Items the user has NOT yet acted on. The user sees this filtered
+  // list; index points into it. When y/n/delete fires, the acted item
+  // moves to processedIds, this list shrinks by 1, and current
+  // advances automatically without an explicit index++.
+  let visibleItems = $derived(
+    data.items.filter((it) => !processedIds.has(String(it.id))),
+  );
+  let current = $derived(visibleItems[index]);
 
-  // If the queue shrinks (e.g. after invalidateAll refetch with fewer items),
-  // clamp the index so `current` doesn't go undefined while items remain.
+  // Keep index in range when the visible list shrinks (action removes
+  // an item, invalidate returns fewer items, etc.).
   $effect(() => {
-    if (data.items.length === 0) {
+    if (visibleItems.length === 0) {
       if (index !== 0) index = 0;
       return;
     }
-    if (index > data.items.length - 1) {
-      index = 0;
+    if (index > visibleItems.length - 1) {
+      index = Math.max(0, visibleItems.length - 1);
     }
   });
+
+  function resetSession() {
+    index = 0;
+    pendingError = null;
+    processedIds = new Set();
+  }
 
   function setTab(t) {
     const url = new URL($page.url);
     url.searchParams.set("tab", t);
-    index = 0;
-    pendingError = null;
+    resetSession();
     goto(url, { replaceState: true, invalidateAll: true });
   }
 
   function setMode(m) {
     const url = new URL($page.url);
     url.searchParams.set("mode", m);
-    index = 0;
-    pendingError = null;
+    resetSession();
     goto(url, { replaceState: true, invalidateAll: true });
   }
 
@@ -103,12 +123,29 @@
     return `Deleted ${noun} "${trimmed}"`;
   }
 
+  // j/k preview navigation -- doesn't process anything. Bounded by
+  // visibleItems length so we never land on an undefined card.
   function advance() {
-    if (index < data.items.length - 1) index++;
+    if (index < visibleItems.length - 1) index++;
   }
 
   function back() {
     if (index > 0) index--;
+  }
+
+  // Add an item id to processedIds (= "this is no longer visible to me
+  // in this session"). Returns a rollback closure that removes it again
+  // on failure.
+  function markProcessed(id) {
+    const key = String(id);
+    const next = new Set(processedIds);
+    next.add(key);
+    processedIds = next;
+    return () => {
+      const rollback = new Set(processedIds);
+      rollback.delete(key);
+      processedIds = rollback;
+    };
   }
 
   // Apart from `delete`, every action POSTs to a /verify, /reject,
@@ -133,15 +170,17 @@
       return;
     }
 
-    const { path, body } = endpointFor(data.tab, data.mode, action, current);
+    const target = current;
+    const { path, body } = endpointFor(data.tab, data.mode, action, target);
 
     // Any further decision clears the previous undo toast — the user has
     // moved on, and stale tombstones are confusing.
     tombstone = null;
 
-    // Optimistic UI: advance immediately, roll back on failure.
-    const prevIndex = index;
-    advance();
+    // Optimistic: hide the item from the visible queue immediately.
+    // Next item slides into `current` via the derived store. Rollback
+    // restores the item if the backend rejects.
+    const rollback = markProcessed(target.id);
 
     const formData = new FormData();
     formData.set("path", path);
@@ -155,37 +194,38 @@
       });
       const result = deserialize(await res.text());
       if (result.type === "failure" || result.type === "error") {
-        // 404 from a decide path means the row was already soft-deleted
-        // (likely from another window). Silently advance — no error UI.
+        // 404 from a decide path means the row was already gone in
+        // another tab; keep it processed-and-hidden, no error UI.
         if (result.status === 404) {
           pendingError = null;
         } else {
-          index = prevIndex;
+          rollback();
           pendingError = result.data?.error ?? "Decide failed";
           return;
         }
       } else {
         pendingError = null;
       }
-      // Refill the queue when we're near the end.
-      if (data.items.length - index <= 3) {
+      // Refill the visible queue when we're near the end. processedIds
+      // persists across the refetch so any items the backend hasn't
+      // committed yet stay hidden until the next setTab/setMode reset.
+      if (visibleItems.length <= 3) {
         await invalidateAll();
-        index = 0;
       }
     } catch (e) {
-      index = prevIndex;
+      rollback();
       pendingError = e?.message ?? String(e);
     }
   }
 
   async function handleDelete() {
     const target = current;
-    const prevIndex = index;
+    if (!target) return;
     const path = deletePathFor(data.tab, target);
     const label = tombstoneLabel(data.tab, target);
 
-    // Optimistic advance + arm the undo toast immediately.
-    advance();
+    // Optimistic: hide the card + arm the undo toast immediately.
+    const rollback = markProcessed(target.id);
     toastCounter += 1;
     tombstone = {
       tab: data.tab,
@@ -208,19 +248,18 @@
         // hit Undo if they meant to keep it (undelete is idempotent on
         // the backend in the unknown-id case it'll just 404 silently).
         if (result.status !== 404) {
-          index = prevIndex;
+          rollback();
           tombstone = null;
           pendingError = result.data?.error ?? "Delete failed";
           return;
         }
       }
       pendingError = null;
-      if (data.items.length - index <= 3) {
+      if (visibleItems.length <= 3) {
         await invalidateAll();
-        index = 0;
       }
     } catch (e) {
-      index = prevIndex;
+      rollback();
       tombstone = null;
       pendingError = e?.message ?? String(e);
     }
@@ -229,9 +268,12 @@
   async function handleUndo() {
     if (!tombstone) return;
     const t = tombstone;
-    // Optimistically dismiss the toast; if the call fails we'll re-arm
-    // it with an error label.
+    // Optimistically dismiss the toast and unhide the item from the
+    // visible queue so a successful undo immediately brings it back.
     tombstone = null;
+    const restored = new Set(processedIds);
+    restored.delete(String(t.id));
+    processedIds = restored;
 
     const formData = new FormData();
     formData.set("path", undeletePathFor(t.tab, t.id));
@@ -248,6 +290,8 @@
         // 409: gap was not deleted (idempotency edge). Treat both as
         // best-effort and surface a quiet inline error.
         pendingError = result.data?.error ?? "Undo failed";
+        // Re-hide the item; the visible queue should match server truth.
+        markProcessed(t.id);
         return;
       }
       pendingError = null;
@@ -255,6 +299,7 @@
       await invalidateAll();
     } catch (e) {
       pendingError = e?.message ?? String(e);
+      markProcessed(t.id);
     }
   }
 
@@ -346,16 +391,11 @@
 
     <ModeToggle mode={data.mode} onChange={setMode} />
 
-    <div class="legend" aria-hidden="true">
-      <kbd>j</kbd>/<kbd>k</kbd> nav
-      · <kbd>y</kbd>/<kbd>n</kbd> decide
-      {#if data.mode === "audit"}
-        · <kbd>s</kbd> skip
-        · <kbd>d</kbd> delete
-      {/if}
-      · <kbd>Tab</kbd> tab
-      · <kbd>m</kbd> mode
-    </div>
+    {#if visibleItems.length}
+      <span class="counter" aria-label="Queue position"
+        >{index + 1} / {visibleItems.length}</span
+      >
+    {/if}
   </header>
 
   {#if pendingError}
@@ -381,7 +421,6 @@
       mode={data.mode}
       onDecide={handleDecide}
     />
-    <footer class="counter">{index + 1} / {data.items.length}</footer>
   {/if}
 </section>
 
@@ -401,83 +440,81 @@
      the active-tab underline mirrors Nav.svelte's coral-on-hover /
      black-on-active so this page reads as a sibling of the site nav. */
 
+  /* Single-screen layout: the whole review surface fits in one viewport
+     so the user can power through items without scrolling. The Card
+     flex-grows to fill remaining height; its body subpanels scroll
+     internally when content overflows. */
   .review {
-    padding: 2.5rem 2.75rem;
+    padding: 1.5rem 2.5rem 1.5rem;
     font-family: var(--font-mono);
     color: var(--fg);
     background: var(--bg);
-    min-height: calc(100vh - 4rem);
+    height: calc(100vh - 4rem); /* 4rem reserves the site Nav header */
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    overflow: hidden;
   }
 
   .bar {
     display: flex;
-    gap: 2rem;
+    gap: 1.5rem;
     align-items: center;
-    margin-bottom: 1.75rem;
-    padding-bottom: 1rem;
+    padding-bottom: 0.75rem;
     border-bottom: var(--border-heavy);
+    flex-shrink: 0;
   }
 
+  /* Flat-by-default, pop-on-hover. Active tab is a filled yellow block
+     that sits flat (already chosen, no need to advertise interactivity);
+     inactive tabs gain a border + offset shadow on hover. */
   .tabs {
     display: inline-flex;
-    gap: 0.25rem;
+    gap: 0.6rem;
+    align-items: center;
   }
 
   .tabs button {
-    position: relative;
     font-family: var(--font-mono);
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
     color: var(--fg-tertiary);
     background: transparent;
-    border: none;
-    padding: 0.5rem 0.75rem;
+    border: 2px solid transparent;
+    padding: 0.45rem 0.75rem;
     cursor: pointer;
+    transform: translate(0, 0);
+    transition:
+      transform 0.08s ease,
+      box-shadow 0.08s ease,
+      background 0.08s ease,
+      color 0.08s ease,
+      border-color 0.08s ease;
   }
 
-  .tabs button::after {
-    content: "";
-    position: absolute;
-    left: 0.75rem;
-    right: 0.75rem;
-    bottom: 0.2rem;
-    height: 2px;
-    background: var(--coral);
-    transform: scaleX(0);
-    transition: transform 160ms ease;
-  }
-
-  .tabs button:hover::after {
-    transform: scaleX(1);
+  .tabs button:hover:not(.active) {
+    color: var(--fg);
+    border-color: var(--fg);
+    transform: translate(-2px, -2px);
+    box-shadow: 4px 4px 0 0 var(--fg);
   }
 
   .tabs button.active {
     color: var(--fg);
+    background: var(--yellow);
+    border-color: var(--fg);
   }
 
-  .tabs button.active::after {
-    background: var(--fg);
-    transform: scaleX(1);
-  }
-
-  .legend {
+  .counter {
     margin-left: auto;
     font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--fg);
-    letter-spacing: 0.04em;
-  }
-
-  .legend kbd {
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: 0.85rem;
     font-weight: 700;
-    padding: 0.1rem 0.4rem;
-    border: 2px solid var(--fg);
     color: var(--fg);
-    background: var(--bg);
+    letter-spacing: 0.08em;
+    font-variant-numeric: tabular-nums;
   }
 
   .banner {
@@ -504,15 +541,6 @@
     cursor: pointer;
     padding: 0 0.25rem;
     font-weight: 700;
-  }
-
-  .counter {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    color: var(--fg);
-    letter-spacing: 0.04em;
-    margin-top: 1.25rem;
-    font-variant-numeric: tabular-nums;
   }
 
   .error {
