@@ -419,16 +419,13 @@ def undelete_note(session: Session, note_id: str, vault_root: Path) -> Note:
             soft-deleted state. Both messages start with ``"Note not
             found"`` so :func:`router._map_note_error` maps to 404.
     """
-    # Bypass _get_note_or_raise's deleted-as-404 so we can find the row.
+    # Query specifically for soft-deleted rows — is_not(None) satisfies the
+    # deleted_at filter contract while only returning rows that are deleted.
     note = session.exec(
-        select(Note).where(
-            Note.note_id == note_id
-        )  # nosemgrep: sqlmodel-select-missing-deleted-at-filter (restore_note must find soft-deleted rows — that is its purpose)
+        select(Note).where(Note.note_id == note_id, Note.deleted_at.is_not(None))
     ).one_or_none()
     if note is None:
         raise ValueError(f"Note not found: note_id={note_id!r}")
-    if note.deleted_at is None:
-        raise ValueError(f"Note not found: note_id={note_id!r} is not deleted")
 
     # pre_delete_path SHOULD always be set by delete_note, but tolerate
     # the legacy edge case where a row was somehow marked deleted without
