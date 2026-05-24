@@ -4,12 +4,20 @@
   import { deserialize } from "$app/forms";
   import ReviewCard from "$lib/private/components/ReviewCard.svelte";
   import ModeToggle from "$lib/private/components/ModeToggle.svelte";
+  import UndoToast from "$lib/private/components/UndoToast.svelte";
 
   let { data } = $props();
 
   // Card index within the current queue. Reset on tab/mode change or refetch.
   let index = $state(0);
   let pendingError = $state(null);
+
+  // Active undo toast — null when no recent deletion. Shape:
+  //   { tab, id, label, key } where key is a monotonic counter so the
+  //   <UndoToast> re-mounts (and re-arms its timer) when a new delete
+  //   happens before the previous toast expires.
+  let tombstone = $state(null);
+  let toastCounter = 0;
 
   let current = $derived(data.items[index]);
 
@@ -74,6 +82,27 @@
     };
   }
 
+  function deletePathFor(tab, item) {
+    return tab === "gaps"
+      ? `/api/knowledge/gaps/${item.id}`
+      : `/api/knowledge/notes/${item.id}`;
+  }
+
+  function undeletePathFor(tab, id) {
+    return tab === "gaps"
+      ? `/api/knowledge/gaps/${id}/undelete`
+      : `/api/knowledge/notes/${id}/undelete`;
+  }
+
+  function tombstoneLabel(tab, item) {
+    const noun = tab === "gaps" ? "gap" : "note";
+    const name = tab === "gaps" ? item.term : item.title;
+    if (!name) return `Deleted ${noun}`;
+    // Trim long titles so the toast stays one line.
+    const trimmed = name.length > 64 ? name.slice(0, 61) + "..." : name;
+    return `Deleted ${noun} "${trimmed}"`;
+  }
+
   function advance() {
     if (index < data.items.length - 1) index++;
   }
@@ -82,6 +111,12 @@
     if (index > 0) index--;
   }
 
+  // Apart from `delete`, every action POSTs to a /verify, /reject,
+  // /reopen, or visibility endpoint via one of two form-action variants
+  // (with or without a JSON body). Delete uses the DELETE-method
+  // proxy action. All four share the same optimistic-advance pattern:
+  // bump the index, fire, roll back on failure (except 404 which is
+  // silently swallowed — the item went away in another tab).
   async function handleDecide(action) {
     if (!current) return;
     if (action === "skip") {
@@ -89,7 +124,20 @@
       return;
     }
 
+    if (action === "delete") {
+      // Guard: `d` is wired in audit mode only; the button is also only
+      // rendered in audit mode, but double-check so a future caller
+      // can't trigger a hard-delete in pending by accident.
+      if (data.mode !== "audit") return;
+      await handleDelete();
+      return;
+    }
+
     const { path, body } = endpointFor(data.tab, data.mode, action, current);
+
+    // Any further decision clears the previous undo toast — the user has
+    // moved on, and stale tombstones are confusing.
+    tombstone = null;
 
     // Optimistic UI: advance immediately, roll back on failure.
     const prevIndex = index;
@@ -107,11 +155,18 @@
       });
       const result = deserialize(await res.text());
       if (result.type === "failure" || result.type === "error") {
-        index = prevIndex;
-        pendingError = result.data?.error ?? "Decide failed";
-        return;
+        // 404 from a decide path means the row was already soft-deleted
+        // (likely from another window). Silently advance — no error UI.
+        if (result.status === 404) {
+          pendingError = null;
+        } else {
+          index = prevIndex;
+          pendingError = result.data?.error ?? "Decide failed";
+          return;
+        }
+      } else {
+        pendingError = null;
       }
-      pendingError = null;
       // Refill the queue when we're near the end.
       if (data.items.length - index <= 3) {
         await invalidateAll();
@@ -119,6 +174,86 @@
       }
     } catch (e) {
       index = prevIndex;
+      pendingError = e?.message ?? String(e);
+    }
+  }
+
+  async function handleDelete() {
+    const target = current;
+    const prevIndex = index;
+    const path = deletePathFor(data.tab, target);
+    const label = tombstoneLabel(data.tab, target);
+
+    // Optimistic advance + arm the undo toast immediately.
+    advance();
+    toastCounter += 1;
+    tombstone = {
+      tab: data.tab,
+      id: target.id,
+      label,
+      key: toastCounter,
+    };
+
+    const formData = new FormData();
+    formData.set("path", path);
+
+    try {
+      const res = await fetch(`?/deleteAction`, {
+        method: "POST",
+        body: formData,
+      });
+      const result = deserialize(await res.text());
+      if (result.type === "failure" || result.type === "error") {
+        // 404: already gone — leave the toast up so the user can still
+        // hit Undo if they meant to keep it (undelete is idempotent on
+        // the backend in the unknown-id case it'll just 404 silently).
+        if (result.status !== 404) {
+          index = prevIndex;
+          tombstone = null;
+          pendingError = result.data?.error ?? "Delete failed";
+          return;
+        }
+      }
+      pendingError = null;
+      if (data.items.length - index <= 3) {
+        await invalidateAll();
+        index = 0;
+      }
+    } catch (e) {
+      index = prevIndex;
+      tombstone = null;
+      pendingError = e?.message ?? String(e);
+    }
+  }
+
+  async function handleUndo() {
+    if (!tombstone) return;
+    const t = tombstone;
+    // Optimistically dismiss the toast; if the call fails we'll re-arm
+    // it with an error label.
+    tombstone = null;
+
+    const formData = new FormData();
+    formData.set("path", undeletePathFor(t.tab, t.id));
+
+    try {
+      const res = await fetch(`?/undeleteAction`, {
+        method: "POST",
+        body: formData,
+      });
+      const result = deserialize(await res.text());
+      if (result.type === "failure" || result.type === "error") {
+        // 404: gap/note doesn't exist (impossible if we just deleted it)
+        // or note isn't in deleted state — either way nothing to undo.
+        // 409: gap was not deleted (idempotency edge). Treat both as
+        // best-effort and surface a quiet inline error.
+        pendingError = result.data?.error ?? "Undo failed";
+        return;
+      }
+      pendingError = null;
+      // Refresh the queue so the restored item shows back up.
+      await invalidateAll();
+    } catch (e) {
       pendingError = e?.message ?? String(e);
     }
   }
@@ -157,6 +292,18 @@
           if (data.mode === "audit") {
             e.preventDefault();
             handleDecide("skip");
+          }
+          break;
+        case "d":
+          if (data.mode === "audit") {
+            e.preventDefault();
+            handleDecide("delete");
+          }
+          break;
+        case "u":
+          if (tombstone) {
+            e.preventDefault();
+            handleUndo();
           }
           break;
         case "Tab":
@@ -204,6 +351,7 @@
       · <kbd>y</kbd>/<kbd>n</kbd> decide
       {#if data.mode === "audit"}
         · <kbd>s</kbd> skip
+        · <kbd>d</kbd> delete
       {/if}
       · <kbd>Tab</kbd> tab
       · <kbd>m</kbd> mode
@@ -236,6 +384,16 @@
     <footer class="counter">{index + 1} / {data.items.length}</footer>
   {/if}
 </section>
+
+{#if tombstone}
+  {#key tombstone.key}
+    <UndoToast
+      label={tombstone.label}
+      onUndo={handleUndo}
+      onDismiss={() => (tombstone = null)}
+    />
+  {/key}
+{/if}
 
 <style>
   .review {
