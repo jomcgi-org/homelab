@@ -2029,8 +2029,8 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gaps_test",
-    srcs = ["knowledge/gaps_test.py"],
+    name = "knowledge_gap_logic_test",
+    srcs = ["knowledge/gap_logic_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
