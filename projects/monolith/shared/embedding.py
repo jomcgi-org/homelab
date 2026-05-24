@@ -69,7 +69,7 @@ class EmbeddingClient:
         for attempt in range(EMBED_MAX_RETRIES):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(
+                    resp = await client.post(  # nosemgrep: tainted-fastapi-http-request-httpx (self.base_url is a config value, not user input)
                         f"{self.base_url}/v1/embeddings",
                         json={"input": texts, "model": self.model},
                     )
