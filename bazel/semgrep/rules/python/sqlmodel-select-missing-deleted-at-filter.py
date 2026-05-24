@@ -53,7 +53,9 @@ rows = session.exec(
 
 
 # ok: is_not(None) — used when intentionally querying only soft-deleted rows (e.g. restore_note)
-rows = session.exec(select(Note).where(Note.note_id == nid, Note.deleted_at.is_not(None))).all()
+rows = session.exec(
+    select(Note).where(Note.note_id == nid, Note.deleted_at.is_not(None))
+).all()
 
 
 # ok: equality check on deleted_at (unusual but valid)
