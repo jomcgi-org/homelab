@@ -139,7 +139,11 @@ def _sweep_and_select_candidates(engine: Engine) -> tuple[int, list[Gap]]:
         return stuck.rowcount, list(
             session.execute(
                 select(Gap)
-                .where(Gap.gap_class == "external", Gap.state == "classified")
+                .where(
+                    Gap.deleted_at.is_(None),
+                    Gap.gap_class == "external",
+                    Gap.state == "classified",
+                )
                 .order_by(Gap.id)
                 .limit(RESEARCH_BATCH_SIZE)
             )

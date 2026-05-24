@@ -284,7 +284,9 @@ class Gardener:
         resolved = 0
         for row in pending:
             note = self.session.exec(
-                select(Note).where(Note.note_id == row.derived_note_id)
+                select(Note).where(
+                    Note.note_id == row.derived_note_id, Note.deleted_at.is_(None)
+                )
             ).first()
             if note is None:
                 continue
@@ -651,7 +653,7 @@ class Gardener:
         # Query all active-type notes, then filter for done status in Python
         # (avoids JSONB dialect differences between Postgres and SQLite).
         active_notes = self.session.exec(
-            select(Note).where(Note.type == "active")
+            select(Note).where(Note.type == "active", Note.deleted_at.is_(None))
         ).all()
         done_tasks = [
             n

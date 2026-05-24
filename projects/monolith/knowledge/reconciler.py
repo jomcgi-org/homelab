@@ -441,7 +441,7 @@ def _project_gap_frontmatter(
     validation — never let malformed frontmatter corrupt the DB.
     """
     gap = session.execute(
-        select(Gap).where(Gap.note_id == note_id)
+        select(Gap).where(Gap.note_id == note_id, Gap.deleted_at.is_(None))
     ).scalar_one_or_none()
     if gap is None:
         # Stub without a Gap row — discover_gaps will insert one later.
