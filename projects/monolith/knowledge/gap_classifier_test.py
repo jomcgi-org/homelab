@@ -187,34 +187,49 @@ def test_classifier_prompt_explicitly_forbids_appending_duplicate_keys():
     assert "/tmp/example.md" in rendered
 
 
-def test_classifier_prompt_routes_internal_and_hybrid_to_in_review():
-    """Drift detector: internal/hybrid must transition to in_review, not classified.
+def test_classifier_prompt_routes_internal_hybrid_external_to_in_review():
+    """Drift detector: internal/hybrid/external must transition to in_review.
 
-    Without this the review queue (which filters state == 'in_review')
-    is silently always empty — the bug fixed by this commit. The
-    research handler only consumes external+classified, so leaving
-    internal/hybrid at status: classified strands them with no consumer.
+    External moved into in_review in CLASSIFIER_VERSION opus-4-7@v2 to
+    gate Sonnet web research behind explicit user approval — the review
+    queue is the approval surface. Only `parked` should still route to
+    status: classified (a terminal label for parked gaps that bypass the
+    queue).
+
+    Without this test, regressing the routing for any of the three
+    user-actionable classes silently empties the pending review queue
+    for that class and (for external) re-enables the unguarded research
+    drain that v2 was introduced to stop.
     """
     rendered = _CLASSIFIER_PROMPT.format(
         classifier_version=CLASSIFIER_VERSION,
         stub_list="- /tmp/example.md",
     )
-    # Both terminal statuses for the discovered → classified/in_review
-    # transition must be reachable from the prompt.
-    assert "status: classified" in rendered, (
-        "prompt must still produce status: classified for external/parked"
-    )
+
+    # Both terminal-ish statuses must be reachable from the prompt:
+    # `in_review` (the user-actionable lane) and `classified` (the
+    # parked-only escape hatch).
     assert "status: in_review" in rendered, (
-        "prompt must produce status: in_review for internal/hybrid so the "
-        "review queue surfaces them for the user to answer"
+        "prompt must produce status: in_review for external/internal/hybrid"
     )
-    # The routing must be explicit — both class names appear within the
-    # short window after `status: in_review` so Sonnet can't reasonably
-    # misroute. 200 chars covers the bullet line plus its parenthetical.
-    after_in_review = rendered.split("status: in_review", 1)[1][:200]
-    assert "internal" in after_in_review, (
-        "in_review branch must name the internal class explicitly"
+    assert "status: classified" in rendered, (
+        "prompt must still produce status: classified for parked"
     )
-    assert "hybrid" in after_in_review, (
-        "in_review branch must name the hybrid class explicitly"
+
+    # The in_review branch must explicitly name all three user-actionable
+    # classes within a tight window so the model can't reasonably misroute.
+    # 240 chars covers the bullet line plus its parenthetical.
+    after_in_review = rendered.split("status: in_review", 1)[1][:240]
+    for cls in ("external", "internal", "hybrid"):
+        assert cls in after_in_review, (
+            f"in_review branch must name the {cls} class explicitly"
+        )
+
+    # The classified branch must name `parked` and must NOT name external
+    # (regression guard against the v1 routing reappearing).
+    after_classified = rendered.split("status: classified", 1)[1][:200]
+    assert "parked" in after_classified, "classified branch must name parked explicitly"
+    assert "external" not in after_classified, (
+        "classified branch must NOT mention external — v2 routes external "
+        "through in_review for approval gating"
     )
