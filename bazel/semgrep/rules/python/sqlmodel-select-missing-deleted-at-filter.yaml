@@ -1,0 +1,34 @@
+rules:
+  - id: sqlmodel-select-missing-deleted-at-filter
+    patterns:
+      - pattern: select($MODEL)
+      - metavariable-regex:
+          metavariable: $MODEL
+          regex: ^(Gap|Note)$
+      - pattern-not-inside: |
+          select($MODEL). ... .where(..., $MODEL.deleted_at.is_($V), ...)
+      - pattern-not-inside: |
+          select($MODEL). ... .where(..., $MODEL.deleted_at == $V, ...)
+      - pattern-not-inside: |
+          select($MODEL). ... .where(..., $MODEL.deleted_at != $V, ...)
+    message: >-
+      `select($MODEL)` is missing a soft-delete filter on `$MODEL.deleted_at`.
+      PR #2350 added a `deleted_at` column to $MODEL for soft-deletion. Queries that
+      lack `.where($MODEL.deleted_at.is_(None))` silently return soft-deleted rows to
+      callers. Add `.where($MODEL.deleted_at.is_(None))` as a separate clause or
+      include it in an existing `and_()`. Suppress with
+      `# nosemgrep: sqlmodel-select-missing-deleted-at-filter` only when intentionally
+      reading all rows (e.g. migration scripts or admin-only endpoints).
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: orm
+      cwe: ["CWE-1212: Incorrect Implementation of Authentication Algorithm"]
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [python, sqlmodel, sqlalchemy]
+      description: >-
+        select(Gap) or select(Note) without a deleted_at soft-delete filter silently
+        returns soft-deleted rows — add .where(Model.deleted_at.is_(None)).

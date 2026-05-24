@@ -1,0 +1,61 @@
+# Reference fixture for the sqlmodel-select-missing-deleted-at-filter semgrep rule.
+# This file documents ok/bad patterns for human review.
+# The actual semgrep test fixture is:
+#   bazel/semgrep/rules/python/sqlmodel-select-missing-deleted-at-filter.py
+#
+# Background: PR #2350 added a `deleted_at` column to the Gap and Note SQLModel
+# tables for soft-deletion. Existing queries that were not updated by that PR still
+# lack the filter, causing soft-deleted rows to leak into user-facing results.
+# This rule catches select(Gap) or select(Note) expressions that have no
+# .where(...deleted_at...) filter in the same chained expression.
+
+examples:
+  bad:
+    - description: bare select(Gap) — no .where() at all
+      code: |
+        rows = session.exec(select(Gap)).all()
+
+    - description: bare select(Note) — no .where() at all
+      code: |
+        rows = session.exec(select(Note)).all()
+
+    - description: select(Gap).where(...) present but no deleted_at filter
+      code: |
+        rows = session.exec(select(Gap).where(Gap.research_id == rid)).all()
+
+    - description: select(Note).where(...) present but no deleted_at filter
+      code: |
+        rows = session.exec(select(Note).where(Note.type == "raw")).all()
+
+    - description: session.execute (not session.exec) — same issue
+      code: |
+        rows = session.execute(select(Gap).where(Gap.term == term)).scalars().all()
+
+  ok:
+    - description: deleted_at.is_(None) as single where arg
+      code: |
+        rows = session.exec(select(Gap).where(Gap.deleted_at.is_(None))).all()
+
+    - description: deleted_at.is_(None) alongside other conditions in same .where()
+      code: |
+        rows = session.exec(
+            select(Gap).where(Gap.research_id == rid, Gap.deleted_at.is_(None))
+        ).all()
+
+    - description: chained .where() — deleted_at in a subsequent clause
+      code: |
+        rows = session.exec(
+            select(Note).where(Note.note_id == nid).where(Note.deleted_at.is_(None))
+        ).all()
+
+    - description: equality check on deleted_at
+      code: |
+        rows = session.exec(select(Gap).where(Gap.deleted_at == None)).all()
+
+    - description: select on a model without deleted_at — rule only covers Gap and Note
+      code: |
+        rows = session.exec(select(Chunk)).all()
+
+    - description: nosemgrep suppression for intentional all-rows read (e.g. migration)
+      code: |
+        rows = session.exec(select(Gap)).all()  # nosemgrep: sqlmodel-select-missing-deleted-at-filter

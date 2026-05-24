@@ -21,6 +21,7 @@ filegroup(
             "fixtures/python-shadow-module-import.yaml",
             "fixtures/require-cnpg-cluster-resources.yaml",
             "fixtures/require-component-label-in-selector.yaml",
+            "fixtures/sqlmodel-select-missing-deleted-at-filter.yaml",
             "fixtures/unsafe-json-field-access.yaml",
         ],
     ),
