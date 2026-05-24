@@ -670,6 +670,66 @@ class TestAnswerGapEndpoint:
         assert r.json().get("detail") == msg
 
 
+class TestApproveGapEndpoint:
+    """Tests for POST /api/knowledge/gaps/{gap_id}/approve.
+
+    The endpoint delegates to approve_gap() and maps ValueError messages
+    to specific HTTP status codes via the shared _map_gap_error helper:
+      - "Gap not found"        → 404
+      - "expected 'in_review'" → 409 (wrong state)
+      - "expected 'external'"  → 409 (wrong class)
+      - any other ValueError   → 400
+    """
+
+    def test_happy_path_returns_approve_gap_result(self, note_client, fake_session):
+        """Successful approve_gap() result is returned directly; (session, gap_id) forwarded."""
+        expected = {
+            "id": 1,
+            "state": "classified",
+            "gap_class": "external",
+            "human_verified": True,
+        }
+        with patch("knowledge.router.approve_gap") as mock_approve:
+            mock_approve.return_value = expected
+            r = note_client.post("/api/knowledge/gaps/1/approve")
+
+        assert r.status_code == 200
+        assert r.json() == expected
+        # No vault_root arg — approve does not touch files.
+        mock_approve.assert_called_once_with(fake_session, 1)
+
+    def test_unknown_id_returns_404(self, note_client):
+        """ValueError containing 'Gap not found' maps to HTTP 404."""
+        with patch("knowledge.router.approve_gap") as mock_approve:
+            mock_approve.side_effect = ValueError("Gap not found: id=999999")
+            r = note_client.post("/api/knowledge/gaps/999999/approve")
+
+        assert r.status_code == 404
+        assert "Gap not found" in r.json().get("detail", "")
+
+    def test_wrong_state_returns_409(self, note_client):
+        """ValueError containing 'expected in_review' maps to HTTP 409."""
+        with patch("knowledge.router.approve_gap") as mock_approve:
+            mock_approve.side_effect = ValueError(
+                "Gap 1 is in state 'classified', expected 'in_review'"
+            )
+            r = note_client.post("/api/knowledge/gaps/1/approve")
+
+        assert r.status_code == 409
+        assert "expected 'in_review'" in r.json().get("detail", "")
+
+    def test_wrong_class_returns_409(self, note_client):
+        """ValueError containing 'expected external' maps to HTTP 409."""
+        with patch("knowledge.router.approve_gap") as mock_approve:
+            mock_approve.side_effect = ValueError(
+                "Gap 1 has gap_class 'internal', expected 'external'"
+            )
+            r = note_client.post("/api/knowledge/gaps/1/approve")
+
+        assert r.status_code == 409
+        assert "expected 'external'" in r.json().get("detail", "")
+
+
 # The _meta/_upsert helpers below mirror the equivalents in store_test.py
 # (we don't import them across test files because Bazel's per-test py_test
 # targets exclude sibling *_test.py srcs).
@@ -1052,7 +1112,9 @@ class TestPublicGraphEndpoint:
         )
         # Seed both columns with distinguishable values; endpoint must
         # serve the *_public values.
-        note = real_session.scalars(select(Note).where(Note.note_id == "pub-A")).one()
+        note = real_session.scalars(
+            select(Note).where(Note.note_id == "pub-A", Note.deleted_at.is_(None))
+        ).one()
         note.layout_x = 0.1
         note.layout_y = 0.2
         note.layout_x_public = 0.7
@@ -1091,7 +1153,9 @@ class TestPublicGraphEndpoint:
             metadata=_meta(title="Pub A", type="atom", visibility="public"),
             n_chunks=0,
         )
-        note = real_session.scalars(select(Note).where(Note.note_id == "pub-A")).one()
+        note = real_session.scalars(
+            select(Note).where(Note.note_id == "pub-A", Note.deleted_at.is_(None))
+        ).one()
         note.layout_x = 0.1
         note.layout_y = 0.2
         # layout_x_public/y_public left NULL — simulates pre-first-pass.
