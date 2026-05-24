@@ -94,7 +94,9 @@ def _write_vault_note(
 class TestReadNoteSnippet:
     def test_returns_body_without_frontmatter(self, tmp_path: Path) -> None:
         note = _make_note(path="note.md")
-        _write_vault_note(tmp_path, "note.md", body="This is the body.", visibility="public")
+        _write_vault_note(
+            tmp_path, "note.md", body="This is the body.", visibility="public"
+        )
         snippet = _read_note_snippet(tmp_path, note)
         assert "This is the body." in snippet
         # Frontmatter key must not bleed into the snippet.
