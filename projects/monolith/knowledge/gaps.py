@@ -727,6 +727,50 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     return _gap_to_dict(gap, session=session)
 
 
+def approve_gap(session: Session, gap_id: int) -> dict:
+    """Approve an external gap for auto-research: in_review -> classified.
+
+    The classifier (CLASSIFIER_VERSION opus-4-7@v2 onward) routes external
+    gaps into ``state='in_review'`` so the user can explicitly opt into
+    spending Sonnet web-research tokens on each one. Flipping back to
+    ``state='classified'`` re-arms the daily research cron's
+    ``_sweep_and_select_candidates`` sweep, which selects on
+    ``gap_class='external' AND state='classified'`` -- so this function
+    is the *only* path back into the research pipeline after the v2
+    cutover.
+
+    Sets ``human_verified=True`` because approval is an explicit user
+    action on the gap, mirroring :func:`reject_gap` / :func:`answer_gap`.
+    Does not touch the stub file: the reconciler will project the new
+    state on its next tick.
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown, the gap is not in
+            ``state='in_review'``, or the gap's ``gap_class`` is not
+            ``'external'`` (only externals consume the research pipeline;
+            approving an internal/hybrid would be a no-op at best and a
+            wrong-pipeline routing at worst).
+    """
+    gap = _get_gap_or_raise(session, gap_id)
+    if gap.state != "in_review":
+        raise ValueError(
+            f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
+        )
+    if gap.gap_class != "external":
+        raise ValueError(
+            f"Gap id={gap_id} has gap_class={gap.gap_class!r}, expected 'external'"
+        )
+
+    gap.state = "classified"
+    gap.human_verified = True
+    session.commit()
+    session.refresh(gap)
+    logger.info(
+        "gaps.approve_gap: approved gap_id=%d term=%r for research", gap_id, gap.term
+    )
+    return _gap_to_dict(gap, session=session)
+
+
 def answer_gap(
     session: Session,
     gap_id: int,
