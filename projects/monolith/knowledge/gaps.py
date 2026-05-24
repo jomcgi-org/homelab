@@ -221,7 +221,9 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
 
     # Pre-load Gap rows by both note_id (post-stub identity) and term (for
     # legacy backfill of rows where note_id is still NULL).
-    all_gaps = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+    all_gaps = (
+        session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+    )
     existing_by_note_id: dict[str, Gap] = {g.note_id: g for g in all_gaps if g.note_id}
     existing_by_term: dict[str, Gap] = {g.term: g for g in all_gaps}
 
@@ -402,9 +404,13 @@ def classify_gaps(
             )
         return 0
 
-    rows = session.execute(
-        select(Gap).where(Gap.deleted_at.is_(None), Gap.state == "discovered")
-    ).scalars().all()
+    rows = (
+        session.execute(
+            select(Gap).where(Gap.deleted_at.is_(None), Gap.state == "discovered")
+        )
+        .scalars()
+        .all()
+    )
 
     classified = 0
     now = datetime.now(timezone.utc)
