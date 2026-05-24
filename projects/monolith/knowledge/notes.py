@@ -420,7 +420,9 @@ def undelete_note(session: Session, note_id: str, vault_root: Path) -> Note:
             found"`` so :func:`router._map_note_error` maps to 404.
     """
     # Bypass _get_note_or_raise's deleted-as-404 so we can find the row.
-    note = session.exec(select(Note).where(Note.note_id == note_id)).one_or_none()
+    note = session.exec(  # nosemgrep: sqlmodel-select-missing-deleted-at-filter (restore_note must find soft-deleted rows — that is its purpose)
+        select(Note).where(Note.note_id == note_id)
+    ).one_or_none()
     if note is None:
         raise ValueError(f"Note not found: note_id={note_id!r}")
     if note.deleted_at is None:
