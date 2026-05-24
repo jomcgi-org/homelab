@@ -356,6 +356,8 @@ def delete_note(session: Session, note_id: str, vault_root: Path) -> Note:
 
     original_relative = note.path
     src = (vault_root / original_relative).resolve()
+    moved_src: Path | None = None
+    moved_dest: Path | None = None
     if src.is_file() and src.is_relative_to(vault_root):
         trash_dir = vault_root / _TRASH_DIR_NAME
         trash_dir.mkdir(exist_ok=True)
@@ -365,12 +367,13 @@ def delete_note(session: Session, note_id: str, vault_root: Path) -> Note:
         )
         dest = trash_dir / filename
         shutil.move(str(src), str(dest))
+        moved_src, moved_dest = src, dest
         note.path = str(dest.relative_to(vault_root))
     else:
         # File already gone (raced delete, partial vault, etc.). Keep
         # the existing ``note.path`` so undelete still has a meaningful
         # pre_delete_path to restore to. Don't fabricate a trash entry
-        # — there's nothing to move.
+        # -- there's nothing to move.
         logger.info(
             "notes.delete_note: file %s missing on disk for note_id=%r; "
             "DB-only soft-delete",
@@ -381,7 +384,17 @@ def delete_note(session: Session, note_id: str, vault_root: Path) -> Note:
     note.pre_delete_path = original_relative
     note.deleted_at = datetime.now(timezone.utc)
     session.add(note)
-    session.commit()
+    try:
+        session.commit()
+    except Exception:
+        # DB commit failed AFTER we already moved the file. Roll the
+        # filesystem back so the on-disk state still matches the
+        # persisted DB row (which now reverts to pointing at the
+        # original path). Without this we'd leave the file orphaned in
+        # _trash/ with the live row claiming it's at the original path.
+        if moved_src is not None and moved_dest is not None and moved_dest.exists():
+            shutil.move(str(moved_dest), str(moved_src))
+        raise
     session.refresh(note)
     logger.info(
         "notes.delete_note: soft-deleted note_id=%r original_path=%s trash_path=%s",
