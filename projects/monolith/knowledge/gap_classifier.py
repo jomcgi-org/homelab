@@ -26,7 +26,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CLASSIFIER_VERSION = "opus-4-7@v1"
+CLASSIFIER_VERSION = "opus-4-7@v2"
 
 _CLASSIFY_TIMEOUT_SECS = 300  # 5 minutes per batch — generous for N=10 stubs
 
@@ -68,10 +68,14 @@ Obsidian vault — into four classes.
     | `gap_class: internal` | `gap_class: hybrid` | `gap_class: parked`
   - find: `status: discovered` → replace with the status that matches
     the class you just chose:
-      - `status: classified` for `gap_class: external` or `parked`
-        (external flows into the research pipeline; parked is terminal)
-      - `status: in_review` for `gap_class: internal` or `hybrid`
-        (these surface in the user's review queue for them to answer)
+      - `status: in_review` for `gap_class: external`, `internal`, or
+        `hybrid` (every gap that could ever flow into the research
+        pipeline or need a user answer goes through the review queue
+        first — Joe approves external rows from there before any
+        tokens are spent)
+      - `status: classified` for `gap_class: parked` only (terminal
+        — never flows further; classified is the terminal label for
+        parked gaps that bypass the review queue)
   - find: `classified_at: null` → replace with the current ISO timestamp
     (UTC, e.g. `classified_at: '2026-04-25T08:00:00Z'`)
   - find: `classifier_version: null` → replace with
