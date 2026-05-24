@@ -2436,6 +2436,45 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_notes_test",
+    srcs = ["knowledge/notes_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pyyaml",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_gaps_helpers_test",
+    srcs = ["knowledge/gaps_helpers_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_research_handler_unit_test",
+    srcs = ["knowledge/research_handler_unit_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_mcp_gap_test",
     srcs = ["knowledge/mcp_gap_test.py"],
     imports = ["."],
