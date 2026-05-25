@@ -66,8 +66,11 @@ def split_csv(value: str | None) -> list[str] | None:
 # This is NOT used when classifier is absent (that path is a no-op).
 _DEFAULT_GAP_CLASS = "internal"
 
-# Classes that are ready for user review after classification.
-_USER_REVIEW_CLASSES = {"internal", "hybrid"}
+# Classes that are ready for user attention after classification. Internal/
+# hybrid await an answer via `answer_gap`; external awaits an approval to
+# spend research tokens via `approve_gap` (added in CLASSIFIER_VERSION
+# opus-4-7@v2).
+_USER_REVIEW_CLASSES = {"internal", "hybrid", "external"}
 
 # Valid classifier outputs — mirrors the CHECK constraint on gaps.gap_class.
 _VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
@@ -385,8 +388,10 @@ def classify_gaps(
     The review queue only populates once a real classifier lands (Task 3).
 
     State transitions (real-classifier path):
-        * ``internal`` / ``hybrid`` → ``in_review`` (ready for user)
-        * ``external`` → ``classified`` (research pipeline deferred)
+        * ``internal`` / ``hybrid`` → ``in_review`` (ready for user answer)
+        * ``external`` → ``in_review`` (awaits user approval to spend
+          research tokens — see :func:`approve_gap`; added in
+          CLASSIFIER_VERSION ``opus-4-7@v2``)
         * ``parked`` → ``classified`` (queryable, not budget-consuming)
 
     Returns the number of gaps classified. When ``classifier`` is ``None``,
@@ -547,12 +552,15 @@ def list_gaps_for_review(
 ) -> list[dict]:
     """Return gaps for the private review page, filtered by ``mode``.
 
-    ``mode='pending'`` — gaps awaiting a user answer (``state='in_review'``,
-    ``gap_class IN ('internal','hybrid')``, ``human_verified IS FALSE``),
-    oldest first. This is the same queue that backs the original
-    ``list_review_queue`` helper plus the new ``human_verified`` filter
-    so verified gaps drop out of the queue immediately after a ``/verify``
-    or ``/answer`` call.
+    ``mode='pending'`` — gaps awaiting user attention (``state='in_review'``,
+    ``human_verified IS FALSE``). For ``gap_class='internal'`` / ``hybrid``
+    the user is expected to answer via :func:`answer_gap`. For
+    ``gap_class='external'`` the user approves auto-research via
+    :func:`approve_gap`. Both lanes surface in the same queue so the UI
+    can render either affordance per row. Oldest first. This is the same
+    queue that backs the original ``list_review_queue`` helper plus the
+    new ``human_verified`` filter so verified gaps drop out of the queue
+    immediately after a ``/verify``, ``/answer``, or ``/approve`` call.
 
     ``mode='audit'`` — terminal gaps (``committed|rejected|parked``) where
     ``human_verified IS FALSE``, most-recently-resolved first. NULL
@@ -572,7 +580,7 @@ def list_gaps_for_review(
         stmt = (
             select(Gap)
             .where(Gap.state == "in_review")
-            .where(Gap.gap_class.in_(("internal", "hybrid")))
+            .where(Gap.gap_class.in_(("internal", "hybrid", "external")))
             .where(Gap.human_verified.is_(False))
             .where(Gap.deleted_at.is_(None))
             .order_by(Gap.created_at.asc(), Gap.id.asc())

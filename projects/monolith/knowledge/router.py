@@ -658,10 +658,11 @@ def get_review_queue_endpoint(
 ) -> dict:
     """Return gaps for the private review page.
 
-    ``mode=pending`` (default, back-compat) returns internal/hybrid gaps
-    awaiting a user answer, oldest first. ``mode=audit`` returns terminal
-    gaps (committed/rejected/parked) where ``human_verified=False``,
-    most-recently-resolved first.
+    ``mode=pending`` (default, back-compat) returns internal/hybrid/external
+    gaps awaiting user attention (internal/hybrid await an answer; external
+    awaits approval to spend research tokens), oldest first. ``mode=audit``
+    returns terminal gaps (committed/rejected/parked) where
+    ``human_verified=False``, most-recently-resolved first.
 
     Each row carries the richer review-dict shape: ``referenced_by_count``
     (how many notes link at the term), ``research_attempts``, ``answer``,

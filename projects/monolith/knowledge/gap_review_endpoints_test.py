@@ -15,7 +15,12 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from knowledge.gaps import GAPS_PIPELINE_VERSION, answer_gap, approve_gap
+from knowledge.gaps import (
+    GAPS_PIPELINE_VERSION,
+    answer_gap,
+    approve_gap,
+    list_gaps_for_review,
+)
 from knowledge.models import Gap, Note
 from knowledge.service import VAULT_ROOT_ENV
 
@@ -452,6 +457,24 @@ class TestReviewQueueModes:
     def test_invalid_mode_returns_422(self, client):
         r = client.get("/api/knowledge/gaps/review-queue?mode=junk")
         assert r.status_code == 422
+
+    def test_pending_mode_includes_external_in_review(self, session):
+        """External gaps in `in_review` must appear in pending so the user
+        can approve them. Regression guard for the v2 gating cutover: before
+        this test, list_gaps_for_review filtered gap_class IN (internal,
+        hybrid) and the migrated backlog never rendered in the UI.
+        """
+        gap = _make_gap(
+            session,
+            term="rust-ownership",
+            state="in_review",
+            gap_class="external",
+        )
+        rows = list_gaps_for_review(session, mode="pending")
+        assert any(r["id"] == gap.id for r in rows), (
+            "external in_review gaps must be in the pending queue alongside "
+            "internal/hybrid"
+        )
 
 
 # ---------------------------------------------------------------------------
