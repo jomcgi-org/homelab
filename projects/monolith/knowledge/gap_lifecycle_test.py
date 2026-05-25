@@ -478,7 +478,7 @@ def test_classify_gaps_routes_by_class(session, tmp_path):
         .scalars()
         .all()
     }
-    assert rows["ext"] == ("external", "classified")
+    assert rows["ext"] == ("external", "in_review")
     assert rows["int"] == ("internal", "in_review")
     assert rows["hyb"] == ("hybrid", "in_review")
     assert rows["park"] == ("parked", "classified")
@@ -502,7 +502,17 @@ def test_classify_gaps_skips_already_classified(session, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_list_review_queue_only_returns_internal_hybrid_in_review(session):
+def test_list_review_queue_returns_internal_hybrid_external_in_review(session):
+    """All three user-actionable classes (internal/hybrid/external) at
+    state=in_review must appear in the queue, FIFO by created_at. The
+    queue's filter is class IN (internal, hybrid, external) AND
+    state=in_review AND human_verified IS FALSE (v2 cutover).
+
+    Also asserts:
+    - classified rows are excluded regardless of class (only in_review
+      rows appear; classified is a downstream / parked state)
+    - discovered rows are excluded (not yet classified)
+    """
     src = _make_note(session, "s", title="S")
     # Manually construct gaps in varied states so we can assert filtering.
     now = datetime.now(timezone.utc)
@@ -513,7 +523,7 @@ def test_list_review_queue_only_returns_internal_hybrid_in_review(session):
             gap_class="internal",
             state="in_review",
             pipeline_version=GAPS_PIPELINE_VERSION,
-            created_at=now - timedelta(seconds=30),
+            created_at=now - timedelta(seconds=40),
         ),
         Gap(
             term="b-hybrid",
@@ -521,10 +531,18 @@ def test_list_review_queue_only_returns_internal_hybrid_in_review(session):
             gap_class="hybrid",
             state="in_review",
             pipeline_version=GAPS_PIPELINE_VERSION,
-            created_at=now - timedelta(seconds=20),
+            created_at=now - timedelta(seconds=30),
         ),
         Gap(
             term="c-external",
+            context="",
+            gap_class="external",
+            state="in_review",
+            pipeline_version=GAPS_PIPELINE_VERSION,
+            created_at=now - timedelta(seconds=20),
+        ),
+        Gap(
+            term="d-external-classified",
             context="",
             gap_class="external",
             state="classified",
@@ -532,7 +550,7 @@ def test_list_review_queue_only_returns_internal_hybrid_in_review(session):
             created_at=now - timedelta(seconds=10),
         ),
         Gap(
-            term="d-internal-discovered",
+            term="e-internal-discovered",
             context="",
             gap_class="internal",
             state="discovered",
@@ -546,9 +564,12 @@ def test_list_review_queue_only_returns_internal_hybrid_in_review(session):
     queue = list_review_queue(session)
 
     terms = [row["term"] for row in queue]
-    assert terms == ["a-internal", "b-hybrid"]  # FIFO, only in_review+internal/hybrid
+    # FIFO by created_at: internal, hybrid, external (the three in_review rows).
+    # d-external-classified and e-internal-discovered are excluded by state.
+    assert terms == ["a-internal", "b-hybrid", "c-external"]
     assert queue[0]["gap_class"] == "internal"
     assert queue[1]["gap_class"] == "hybrid"
+    assert queue[2]["gap_class"] == "external"
 
 
 def test_list_review_queue_empty(session):
@@ -684,7 +705,7 @@ def test_classify_gaps_rejects_invalid_classifier_output(session, tmp_path, capl
         .scalars()
         .all()
     }
-    assert rows["good"] == ("external", "classified")
+    assert rows["good"] == ("external", "in_review")
     assert rows["bad"] == ("internal", "in_review")
     assert any(
         "classifier returned invalid class 'bogus'" in record.getMessage()

@@ -609,7 +609,9 @@ def list_gaps_for_review(
 
 
 def list_review_queue(session: Session) -> list[dict]:
-    """Return internal/hybrid gaps awaiting a user answer, oldest first.
+    """Return user-actionable gaps awaiting attention (internal/hybrid
+    await an answer; external awaits an approval to spend research
+    tokens), oldest first.
 
     Thin wrapper around :func:`list_gaps_for_review` for backward
     compatibility — preserved for the small number of in-tree callers
