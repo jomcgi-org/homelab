@@ -1,5 +1,6 @@
 """Unit tests for knowledge/router.py — /search and /notes endpoints."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -682,7 +683,9 @@ class TestApproveGapEndpoint:
     """
 
     def test_happy_path_returns_approve_gap_result(self, note_client, fake_session):
-        """Successful approve_gap() result is returned directly; (session, gap_id) forwarded."""
+        """Successful approve_gap() result is returned directly; (session, gap_id,
+        vault_root) forwarded. Endpoint now resolves vault_root from env so
+        approve_gap can sync the stub's status field — see the v2 gating fix."""
         expected = {
             "id": 1,
             "state": "classified",
@@ -695,8 +698,14 @@ class TestApproveGapEndpoint:
 
         assert r.status_code == 200
         assert r.json() == expected
-        # No vault_root arg — approve does not touch files.
-        mock_approve.assert_called_once_with(fake_session, 1)
+        # vault_root is resolved by _get_vault_root() at request time; we
+        # only need to confirm the positional forwarding shape, not the
+        # exact path string.
+        mock_approve.assert_called_once()
+        call_args = mock_approve.call_args
+        assert call_args.args[0] is fake_session
+        assert call_args.args[1] == 1
+        assert isinstance(call_args.args[2], Path)
 
     def test_unknown_id_returns_404(self, note_client):
         """ValueError containing 'Gap not found' maps to HTTP 404."""

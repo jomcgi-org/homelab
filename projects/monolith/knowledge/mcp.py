@@ -422,8 +422,9 @@ async def approve_research_gap(gap_id: int) -> dict:
         gap_id: The id of a gap currently in state in_review with
             gap_class external.
     """
+    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
     with Session(get_engine()) as session:
         try:
-            return _approve_gap(session, gap_id)
+            return _approve_gap(session, gap_id, vault_root)
         except ValueError as exc:
             return {"error": str(exc)}

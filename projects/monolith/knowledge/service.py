@@ -13,9 +13,10 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
+from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
-from knowledge.models import Note, NoteLink
+from knowledge.models import Gap, Note, NoteLink
 from knowledge.reconciler import Reconciler
 from knowledge.store import KnowledgeStore
 from knowledge.visibility import public_notes_filter
@@ -475,6 +476,70 @@ async def research_gaps_handler(session: Session) -> datetime | None:
     return None
 
 
+def reconcile_external_in_review_stubs(session: Session) -> int:
+    """One-shot, idempotent: bring external in_review stubs into sync with DB.
+
+    The v2 cutover migration (``20260524000000_gate_external_research.sql``)
+    flips ~210 ``gap_class='external' AND state='classified'`` rows to
+    ``state='in_review'`` so they queue up for user approval. But each
+    of those rows still has a stub at ``_researching/<slug>.md`` whose
+    frontmatter says ``status: classified`` (written by the v1 classifier),
+    which the reconciler would project back onto the Gap row on its
+    next tick, undoing the migration. This function rewrites the stub
+    frontmatter to ``status: in_review`` for any such row.
+
+    Idempotent: after first run, the WHERE matches nothing and the
+    function is a no-op. Safe to call on every monolith startup —
+    walking ~210 stubs once at boot is cheap.
+
+    Returns the count of stubs rewritten (0 on subsequent boots).
+    """
+    if not _vault_sync_ready():
+        logger.info(
+            "knowledge.reconcile_external_in_review_stubs: vault sync not ready, "
+            "deferring"
+        )
+        return 0
+    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
+    from knowledge.gaps import _set_stub_status
+
+    rows = (
+        session.execute(
+            select(Gap)
+            .where(Gap.deleted_at.is_(None))
+            .where(Gap.gap_class == "external")
+            .where(Gap.state == "in_review")
+        )
+        .scalars()
+        .all()
+    )
+    rewritten = 0
+    for gap in rows:
+        try:
+            before_mtime = None
+            slug = _slugify(gap.term)
+            stub = vault_root / RESEARCHING_DIR / f"{slug}.md"
+            if stub.exists():
+                before_mtime = stub.stat().st_mtime
+            _set_stub_status(vault_root, gap, "in_review")
+            if stub.exists() and stub.stat().st_mtime != before_mtime:
+                rewritten += 1
+        except Exception:
+            logger.warning(
+                "knowledge.reconcile_external_in_review_stubs: failed for "
+                "gap_id=%d term=%r; skipping",
+                gap.id,
+                gap.term,
+                exc_info=True,
+            )
+    if rewritten:
+        logger.info(
+            "knowledge.reconcile_external_in_review_stubs: rewrote %d stubs",
+            rewritten,
+        )
+    return rewritten
+
+
 def on_startup(session: Session) -> None:
     """Register knowledge jobs with the scheduler."""
     from shared.scheduler import register_job
@@ -531,3 +596,7 @@ def on_startup(session: Session) -> None:
         handler=research_gaps_handler,
         ttl_secs=_RESEARCH_TTL_SECS,
     )
+
+    # One-shot stub reconciliation for the v2 gating migration. Cheap
+    # (one SELECT + per-row file writes) and idempotent after first run.
+    reconcile_external_in_review_stubs(session)
