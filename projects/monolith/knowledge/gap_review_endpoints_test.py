@@ -177,37 +177,39 @@ class TestRejectGap:
 
 
 class TestApproveGap:
-    def test_approve_gap_flips_in_review_external_to_classified(self, session):
+    def test_approve_gap_flips_in_review_external_to_classified(
+        self, session, tmp_path
+    ):
         """Happy path: in_review + external -> classified, human_verified=True."""
         gap = _make_gap(
             session, term="linkerd-mtls", state="in_review", gap_class="external"
         )
-        result = approve_gap(session, gap.id)
+        result = approve_gap(session, gap.id, tmp_path)
         session.refresh(gap)
         assert gap.state == "classified"
         assert gap.human_verified is True
         assert result["state"] == "classified"
 
-    def test_approve_gap_rejects_unknown_id(self, session):
+    def test_approve_gap_rejects_unknown_id(self, session, tmp_path):
         """Unknown gap_id -> ValueError('Gap not found ...')."""
         with pytest.raises(ValueError, match="Gap not found"):
-            approve_gap(session, 999_999)
+            approve_gap(session, 999_999, tmp_path)
 
-    def test_approve_gap_rejects_wrong_state(self, session):
+    def test_approve_gap_rejects_wrong_state(self, session, tmp_path):
         """state != 'in_review' -> ValueError("expected 'in_review'")."""
         gap = _make_gap(session, term="x", state="classified", gap_class="external")
         with pytest.raises(ValueError, match="expected 'in_review'"):
-            approve_gap(session, gap.id)
+            approve_gap(session, gap.id, tmp_path)
 
-    def test_approve_gap_rejects_internal_class(self, session):
+    def test_approve_gap_rejects_internal_class(self, session, tmp_path):
         """gap_class != 'external' -> ValueError("expected 'external'")."""
         gap = _make_gap(
             session, term="my-therapist", state="in_review", gap_class="internal"
         )
         with pytest.raises(ValueError, match="expected 'external'"):
-            approve_gap(session, gap.id)
+            approve_gap(session, gap.id, tmp_path)
 
-    def test_approve_gap_rejects_hybrid_class(self, session):
+    def test_approve_gap_rejects_hybrid_class(self, session, tmp_path):
         """Hybrid is user-answerable, not auto-researchable; reject approval."""
         gap = _make_gap(
             session,
@@ -216,17 +218,51 @@ class TestApproveGap:
             gap_class="hybrid",
         )
         with pytest.raises(ValueError, match="expected 'external'"):
-            approve_gap(session, gap.id)
+            approve_gap(session, gap.id, tmp_path)
 
-    def test_approve_gap_idempotency_second_call_rejected(self, session):
+    def test_approve_gap_idempotency_second_call_rejected(self, session, tmp_path):
         """Once approved (state=classified), a second approve raises the
         wrong-state error — the gap must be re-routed through the cron, not
         re-approved.
         """
         gap = _make_gap(session, term="x", state="in_review", gap_class="external")
-        approve_gap(session, gap.id)
+        approve_gap(session, gap.id, tmp_path)
         with pytest.raises(ValueError, match="expected 'in_review'"):
-            approve_gap(session, gap.id)
+            approve_gap(session, gap.id, tmp_path)
+
+    def test_approve_gap_writes_stub_status_to_classified(self, session, tmp_path):
+        """approve_gap must update the stub's `status` field so the next
+        reconciler tick doesn't revert the DB row.
+        """
+        from knowledge.gap_stubs import RESEARCHING_DIR
+        from knowledge.gardener import _slugify
+
+        gap = _make_gap(
+            session, term="merkle-tree", state="in_review", gap_class="external"
+        )
+        # Seed the stub with status=in_review, matching what the v2
+        # classifier writes.
+        slug = _slugify(gap.term)
+        stub_dir = tmp_path / RESEARCHING_DIR
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        stub = stub_dir / f"{slug}.md"
+        stub.write_text(
+            "---\n"
+            f"id: {slug}\n"
+            "title: Merkle Tree\n"
+            "gap_class: external\n"
+            "status: in_review\n"
+            "---\nbody\n"
+        )
+
+        approve_gap(session, gap.id, tmp_path)
+
+        text = stub.read_text()
+        assert "status: classified" in text, (
+            f"approve_gap must rewrite stub status to classified; got:\n{text}"
+        )
+        # The gap_class line should still be there — we only changed status.
+        assert "gap_class: external" in text
 
 
 # ---------------------------------------------------------------------------

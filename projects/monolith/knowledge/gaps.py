@@ -634,6 +634,43 @@ def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:
     return gap
 
 
+def _set_stub_status(vault_root: Path, gap: Gap, status: str) -> None:
+    """Overwrite a stub's ``status:`` frontmatter field in place.
+
+    Keeps the stub and the DB row's ``state`` in sync forward — the
+    reconciler projects stub frontmatter onto the Gap row on every
+    tick, so a DB-only state update would drift back on the next
+    reconciler cycle (~30s). Used by :func:`approve_gap` and by the
+    one-shot backlog reconciliation in ``service.on_startup``.
+
+    Idempotent: a stub whose status already matches ``status`` is left
+    alone (no rewrite, so mtime stays stable). Missing stub is a no-op
+    (the reconciler will recreate the Gap row's state from whatever
+    runs the next gardener tick).
+
+    Mirrors :func:`research_handler._mark_stub_discardable` in shape.
+    """
+    slug = _slugify(gap.term)
+    stub = vault_root / RESEARCHING_DIR / f"{slug}.md"
+    try:
+        text = stub.read_text()
+    except FileNotFoundError:
+        return
+    if not text.startswith("---\n"):
+        return
+    parts = text.split("---\n", 2)
+    if len(parts) < 3:
+        return
+    meta = yaml.safe_load(parts[1])
+    if not isinstance(meta, dict):
+        return
+    if meta.get("status") == status:
+        return  # already matches — skip the write to keep mtime stable.
+    meta["status"] = status
+    fm_str = yaml.dump(meta, default_flow_style=False, sort_keys=False)
+    stub.write_text(f"---\n{fm_str}---\n{parts[2]}")
+
+
 def _remove_stub_if_present(vault_root: Path, gap: Gap, *, action: str) -> None:
     """Tombstone the ``_researching/<slug>.md`` stub for ``gap`` if it exists.
 
@@ -735,7 +772,7 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     return _gap_to_dict(gap, session=session)
 
 
-def approve_gap(session: Session, gap_id: int) -> dict:
+def approve_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
     """Approve an external gap for auto-research: in_review -> classified.
 
     The classifier (CLASSIFIER_VERSION opus-4-7@v2 onward) routes external
@@ -749,8 +786,12 @@ def approve_gap(session: Session, gap_id: int) -> dict:
 
     Sets ``human_verified=True`` because approval is an explicit user
     action on the gap, mirroring :func:`reject_gap` / :func:`answer_gap`.
-    Does not touch the stub file: the reconciler will project the new
-    state on its next tick.
+    Also rewrites the stub's ``status`` frontmatter field to
+    ``classified`` via :func:`_set_stub_status` so the next reconciler
+    tick (~30s) does not project the stale ``in_review`` value back
+    onto the Gap row. Stub-write failures are logged at WARNING but
+    do not roll back the approval — the DB commit is the source of
+    truth and the reconciler will recover on a subsequent tick.
 
     Raises:
         ValueError: if ``gap_id`` is unknown, the gap is not in
@@ -773,6 +814,19 @@ def approve_gap(session: Session, gap_id: int) -> dict:
     gap.human_verified = True
     session.commit()
     session.refresh(gap)
+    # Sync the stub's `status` field so the next reconciler tick
+    # (~30s) doesn't project the stale `in_review` value back onto
+    # the Gap row. See _set_stub_status for the projection direction.
+    try:
+        _set_stub_status(vault_root, gap, "classified")
+    except Exception:
+        logger.warning(
+            "gaps.approve_gap: stub status sync failed for gap_id=%d term=%r; "
+            "the reconciler may revert the row on its next tick",
+            gap_id,
+            gap.term,
+            exc_info=True,
+        )
     logger.info(
         "gaps.approve_gap: approved gap_id=%d term=%r for research", gap_id, gap.term
     )

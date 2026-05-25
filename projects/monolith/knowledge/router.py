@@ -742,10 +742,13 @@ def approve_gap_endpoint(
     """Approve an external gap for auto-research.
 
     Transitions ``in_review`` → ``classified`` so the daily research
-    cron's sweep picks it up. Only valid for ``gap_class='external'``.
+    cron's sweep picks it up. Also writes the stub's ``status`` field
+    to ``classified`` so the next reconciler tick doesn't revert the
+    Gap row. Only valid for ``gap_class='external'``.
     """
+    vault_root = _get_vault_root()
     try:
-        return approve_gap(session, gap_id)
+        return approve_gap(session, gap_id, vault_root)
     except ValueError as exc:
         raise _map_gap_error(exc) from exc
 
