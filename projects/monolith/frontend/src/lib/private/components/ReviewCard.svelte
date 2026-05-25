@@ -150,7 +150,11 @@
   <div class="actions">
     {#if mode === "pending"}
       <button class="action action--keep" onclick={() => onDecide("yes")}>
-        {tab === "gaps" ? "Keep (y)" : "Public (y)"}
+        {#if tab === "gaps"}
+          {item.gap_class === "external" ? "Approve (y)" : "Keep (y)"}
+        {:else}
+          Public (y)
+        {/if}
       </button>
       <button class="action action--reject" onclick={() => onDecide("no")}>
         {tab === "gaps" ? "Reject (n)" : "Private (n)"}
