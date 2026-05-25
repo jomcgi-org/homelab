@@ -91,7 +91,7 @@ def test_discover_gaps_finds_unresolved_wikilink(session, tmp_path):
     created = discover_gaps(session, tmp_path)
 
     assert created == 1
-    gaps = session.execute(select(Gap)).scalars().all()
+    gaps = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
     assert len(gaps) == 1
     gap = gaps[0]
     assert gap.term == "missing-concept"
@@ -112,7 +112,10 @@ def test_discover_gaps_skips_resolved_links(session, tmp_path):
     created = discover_gaps(session, tmp_path)
 
     assert created == 0
-    assert session.execute(select(Gap)).scalars().all() == []
+    assert (
+        session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+        == []
+    )
     # No stub should have been written.
     assert not (tmp_path / RESEARCHING_DIR).exists() or not list(
         (tmp_path / RESEARCHING_DIR).iterdir()
@@ -148,7 +151,10 @@ def test_discover_gaps_skips_links_resolved_via_alias(session, tmp_path):
     created = discover_gaps(session, tmp_path)
 
     assert created == 0
-    assert session.execute(select(Gap)).scalars().all() == []
+    assert (
+        session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+        == []
+    )
     assert not (tmp_path / RESEARCHING_DIR).exists() or not list(
         (tmp_path / RESEARCHING_DIR).iterdir()
     )
@@ -165,7 +171,12 @@ def test_discover_gaps_is_idempotent(session, tmp_path):
 
     assert first == 1
     assert second == 0
-    assert len(session.execute(select(Gap)).scalars().all()) == 1
+    assert (
+        len(
+            session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+        )
+        == 1
+    )
     # Stub still exists and is unchanged on re-run (write_stub is idempotent).
     assert stub_path.read_text() == first_stub
 
@@ -193,7 +204,9 @@ def test_discover_gaps_captures_source_title_as_context(session, tmp_path):
 
     discover_gaps(session, tmp_path)
 
-    gap = session.execute(select(Gap).where(Gap.term == "cilium")).scalar_one()
+    gap = session.execute(
+        select(Gap).where(Gap.term == "cilium", Gap.deleted_at.is_(None))
+    ).scalar_one()
     assert gap.context == "Kubernetes Networking"
 
 
@@ -204,7 +217,7 @@ def test_discover_gaps_writes_stub_file(session, tmp_path):
 
     assert discover_gaps(session, tmp_path) == 1
 
-    gap = session.execute(select(Gap)).scalar_one()
+    gap = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalar_one()
     assert gap.term == "some-term"
     assert gap.note_id == "some-term"
 
@@ -280,7 +293,9 @@ def test_discover_gaps_backfills_existing_rows_with_no_stubs(session, tmp_path):
         _add_body_link(session, src_fk=source.id, target_id=term)
 
     # Pre-conditions: no note_id, no stubs
-    gaps_before = session.execute(select(Gap)).scalars().all()
+    gaps_before = (
+        session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+    )
     assert all(g.note_id is None for g in gaps_before)
     for term in terms:
         stub = tmp_path / RESEARCHING_DIR / f"{term}.md"
@@ -290,7 +305,9 @@ def test_discover_gaps_backfills_existing_rows_with_no_stubs(session, tmp_path):
     discover_gaps(session, tmp_path)
 
     # Post-conditions: each Gap row has note_id set, each stub exists
-    gaps_after = session.execute(select(Gap)).scalars().all()
+    gaps_after = (
+        session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+    )
     assert len(gaps_after) == len(terms), "no duplicate rows inserted"
     for gap in gaps_after:
         assert gap.note_id is not None, f"note_id still NULL for {gap.term}"
@@ -337,7 +354,9 @@ def test_discover_gaps_heals_missing_row(session, tmp_path):
     assert stub.read_bytes() == stub_bytes_before
 
     # The Gap row reflects the stub's existence via note_id.
-    gap = session.execute(select(Gap).where(Gap.term == "orphan")).scalar_one()
+    gap = session.execute(
+        select(Gap).where(Gap.term == "orphan", Gap.deleted_at.is_(None))
+    ).scalar_one()
     assert gap.note_id == "orphan"
 
 
@@ -351,7 +370,7 @@ def test_discover_gaps_dedupes_referenced_by(session, tmp_path):
 
     assert discover_gaps(session, tmp_path) == 1
 
-    gaps = session.execute(select(Gap)).scalars().all()
+    gaps = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
     assert len(gaps) == 1
     assert gaps[0].term == "shared-term"
     assert gaps[0].note_id == "shared-term"
@@ -382,7 +401,9 @@ def test_discover_gaps_collapses_slug_collisions(session, tmp_path):
     discover_gaps(session, tmp_path)
 
     rows = (
-        session.execute(select(Gap).where(Gap.note_id == "outside-in-tdd"))
+        session.execute(
+            select(Gap).where(Gap.note_id == "outside-in-tdd", Gap.deleted_at.is_(None))
+        )
         .scalars()
         .all()
     )
@@ -419,7 +440,9 @@ def test_classify_gaps_without_classifier_is_noop(session, tmp_path, caplog):
         classified = classify_gaps(session)  # no classifier wired
 
     assert classified == 0
-    for gap in session.execute(select(Gap)).scalars().all():
+    for gap in (
+        session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+    ):
         assert gap.gap_class is None
         assert gap.state == "discovered"
         assert gap.classified_at is None
@@ -451,7 +474,9 @@ def test_classify_gaps_routes_by_class(session, tmp_path):
 
     rows = {
         g.term: (g.gap_class, g.state)
-        for g in session.execute(select(Gap)).scalars().all()
+        for g in session.execute(select(Gap).where(Gap.deleted_at.is_(None)))
+        .scalars()
+        .all()
     }
     assert rows["ext"] == ("external", "classified")
     assert rows["int"] == ("internal", "in_review")
@@ -655,7 +680,9 @@ def test_classify_gaps_rejects_invalid_classifier_output(session, tmp_path, capl
 
     rows = {
         g.term: (g.gap_class, g.state)
-        for g in session.execute(select(Gap)).scalars().all()
+        for g in session.execute(select(Gap).where(Gap.deleted_at.is_(None)))
+        .scalars()
+        .all()
     }
     assert rows["good"] == ("external", "classified")
     assert rows["bad"] == ("internal", "in_review")

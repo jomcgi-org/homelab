@@ -380,7 +380,9 @@ class TestDiscoverGapsPhaseA:
         count = discover_gaps(session, tmp_path)
 
         assert count == 1
-        rows = session.execute(select(Gap)).scalars().all()
+        rows = (
+            session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+        )
         assert len(rows) == 1
         assert rows[0].term == "real-concept"
 
@@ -443,7 +445,9 @@ class TestDiscoverGapsPhaseB:
         discover_gaps(session, tmp_path)
 
         rows = (
-            session.execute(select(Gap).where(Gap.note_id == "gone-term"))
+            session.execute(
+                select(Gap).where(Gap.note_id == "gone-term", Gap.deleted_at.is_(None))
+            )
             .scalars()
             .all()
         )
@@ -467,7 +471,9 @@ class TestDiscoverGapsPhaseB:
         discover_gaps(session, tmp_path)
 
         rows = (
-            session.execute(select(Gap).where(Gap.note_id == "kept-term"))
+            session.execute(
+                select(Gap).where(Gap.note_id == "kept-term", Gap.deleted_at.is_(None))
+            )
             .scalars()
             .all()
         )
@@ -491,7 +497,11 @@ class TestDiscoverGapsPhaseB:
         discover_gaps(session, tmp_path)
 
         rows = (
-            session.execute(select(Gap).where(Gap.note_id == "unmarked-term"))
+            session.execute(
+                select(Gap).where(
+                    Gap.note_id == "unmarked-term", Gap.deleted_at.is_(None)
+                )
+            )
             .scalars()
             .all()
         )
@@ -518,7 +528,11 @@ class TestDiscoverGapsPhaseB:
         discover_gaps(session, tmp_path)
 
         rows = (
-            session.execute(select(Gap).where(Gap.note_id == "ghost")).scalars().all()
+            session.execute(
+                select(Gap).where(Gap.note_id == "ghost", Gap.deleted_at.is_(None))
+            )
+            .scalars()
+            .all()
         )
         assert len(rows) == 1
 
@@ -550,7 +564,11 @@ class TestDiscoverGapsPhaseB:
 
         # Gap row and stub still exist.
         rows = (
-            session.execute(select(Gap).where(Gap.note_id == "active-discard"))
+            session.execute(
+                select(Gap).where(
+                    Gap.note_id == "active-discard", Gap.deleted_at.is_(None)
+                )
+            )
             .scalars()
             .all()
         )
@@ -577,7 +595,11 @@ class TestDiscoverGapsSlugFolding:
         discover_gaps(session, tmp_path)
 
         rows = (
-            session.execute(select(Gap).where(Gap.note_id == "outside-in-tdd"))
+            session.execute(
+                select(Gap).where(
+                    Gap.note_id == "outside-in-tdd", Gap.deleted_at.is_(None)
+                )
+            )
             .scalars()
             .all()
         )
@@ -607,7 +629,9 @@ class TestDiscoverGapsSlugFolding:
         # The wikilink pointing at the gap stub is NOT resolved — a new Gap
         # row must be inserted.
         assert count == 1
-        rows = session.execute(select(Gap)).scalars().all()
+        rows = (
+            session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
+        )
         assert len(rows) == 1
 
 
@@ -664,7 +688,7 @@ class TestClassifyGapsEdgeCases:
             count = classify_gaps(session, classifier=classifier)
 
         assert count == 1
-        gap = session.execute(select(Gap)).scalar_one()
+        gap = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalar_one()
         assert gap.gap_class == "internal"
         assert gap.state == "in_review"
 
@@ -676,7 +700,7 @@ class TestClassifyGapsEdgeCases:
 
         classify_gaps(session, classifier=lambda t, c: "external")
 
-        gap = session.execute(select(Gap)).scalar_one()
+        gap = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalar_one()
         assert gap.classified_at is not None
 
 
