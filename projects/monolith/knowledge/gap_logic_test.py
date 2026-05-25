@@ -741,8 +741,13 @@ class TestListReviewQueueEdgeCases:
         assert item["context"] == "some context"
         assert item["gap_class"] == "internal"
 
-    def test_excludes_external_in_review_gaps(self, session):
-        """state=in_review but gap_class=external must NOT appear in the queue."""
+    def test_includes_external_in_review_gaps(self, session):
+        """state=in_review + gap_class=external MUST appear in the queue
+        so the user can approve auto-research (v2 cutover). Regression
+        guard: before v2 this test asserted the *opposite* — external
+        was filtered out of the queue. v2 makes external user-actionable
+        via approve_gap, so it joins internal/hybrid in the pending lane.
+        """
         gap = Gap(
             term="ext",
             context="",
@@ -753,7 +758,9 @@ class TestListReviewQueueEdgeCases:
         session.add(gap)
         session.commit()
 
-        assert list_review_queue(session) == []
+        queue = list_review_queue(session)
+        assert [row["term"] for row in queue] == ["ext"]
+        assert queue[0]["gap_class"] == "external"
 
 
 # ---------------------------------------------------------------------------
