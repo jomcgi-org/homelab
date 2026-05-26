@@ -17,5 +17,5 @@ See [docs/agents.md](../../docs/agents.md) for the full architecture.
 | **goose_agent**          | Goose agent container and configuration. Includes 19 agent recipe YAML files in `image/recipes/` (deep-plan, code-fix, research, web-research, adr-writer, bazel, ci-debug, feature, pr-review, and more) and the apko container image definition in `image/`. |
 | **inference**            | On-cluster LLM inference and embedding inference (model configured per environment) |
 | **vllm**                 | Alternative LLM serving backend (full Helm chart with templates and vendored dependencies in `vllm/deploy/` — not wired to ArgoCD) |
-| **chart**                | Umbrella Helm chart bundling orchestrator, sandboxes, MCP servers, NATS, and agent-sandbox (`cluster_agents`, `inference`, and `api_gateway` have separate ArgoCD Applications) |
+| **chart**                | Umbrella Helm chart bundling orchestrator, goose-sandboxes, MCP servers, NATS, and agent-sandbox (`cluster_agents`, `inference`, and `api_gateway` have separate ArgoCD Applications) |
 | **deploy**               | ArgoCD Application, kustomization, and cluster-specific values |
