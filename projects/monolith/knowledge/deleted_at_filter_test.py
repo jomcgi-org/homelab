@@ -138,21 +138,29 @@ class TestDiscoverGapsDeletedAt:
     def test_soft_deleted_gap_does_not_block_rediscovery(
         self, session: Session, tmp_path: Path
     ) -> None:
-        """A soft-deleted Gap row must not be treated as 'already existing'.
+        """A soft-deleted Gap for one term must not interfere with discovery of
+        a different unresolved term.
 
         discover_gaps filters deleted_at.is_(None) when loading existing Gap
-        rows (~line 224).  Without the filter, a deleted Gap would suppress
-        the re-insertion and the term would stay invisible to the pipeline.
+        rows (~line 224).  Soft-deleted rows are excluded from
+        ``existing_by_note_id`` so they don't occupy slots for other terms,
+        and are excluded from ``gap_candidates`` so they are never tombstoned.
+
+        Note: a soft-deleted Gap *cannot* be re-inserted under the same
+        note_id / term due to the UniqueConstraint on both columns.  The
+        filter's value lies in preventing tombstoning and in not letting a
+        stale soft-deleted row shadow an unrelated fresh discovery.
         """
         src = _make_note(session, "source-note")
-        _add_link(session, src_fk=src.id, target_id="deleted-term")
+        # Link to a FRESH term that has no existing Gap row (live or deleted).
+        _add_link(session, src_fk=src.id, target_id="brand-new-term")
 
-        # Seed a soft-deleted Gap for the same term — simulates a term that
-        # was previously discovered, then soft-deleted by a review action.
+        # Seed a soft-deleted Gap for a DIFFERENT term — must not interfere
+        # with discovery of "brand-new-term".
         soft_deleted = Gap(
-            term="deleted-term",
+            term="old-deleted-term",
             context="",
-            note_id="deleted-term",
+            note_id="old-deleted-term",
             pipeline_version=GAPS_PIPELINE_VERSION,
             state="discovered",
             deleted_at=_NOW,
@@ -160,19 +168,20 @@ class TestDiscoverGapsDeletedAt:
         session.add(soft_deleted)
         session.commit()
 
-        # With the filter in place, discover_gaps sees no live gap for this
-        # term and inserts a fresh one, returning created=1.
+        # discover_gaps must discover "brand-new-term" and return created=1,
+        # unaffected by the soft-deleted gap for the unrelated term.
         created = discover_gaps(session, tmp_path)
 
         assert created == 1
         live_gaps = (
             session.execute(
-                select(Gap).where(Gap.deleted_at.is_(None), Gap.term == "deleted-term")
+                select(Gap).where(Gap.deleted_at.is_(None))
             )
             .scalars()
             .all()
         )
         assert len(live_gaps) == 1
+        assert live_gaps[0].term == "brand-new-term"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +298,10 @@ class TestResolvePendingProvenanceDeletedAt:
         resolved = gardener._resolve_pending_provenance()
 
         assert resolved == 1
+        # _resolve_pending_provenance modifies objects in-memory but does not
+        # commit; the production caller (garden()) commits afterward.  Commit
+        # here so session.refresh() reads the updated DB state.
+        session.commit()
         session.refresh(pending)
         assert pending.atom_fk == live_note.id
         assert pending.derived_note_id is None
