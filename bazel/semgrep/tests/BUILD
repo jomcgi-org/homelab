@@ -109,6 +109,13 @@ filegroup(
     srcs = ["fixtures/css-import-after-rules.css"],
 )
 
+# Fixture for the sveltekit-form-action-unvalidated-path rule (languages: javascript, typescript).
+# Referenced by //bazel/semgrep/rules:sveltekit_form_action_unvalidated_path_test.
+filegroup(
+    name = "sveltekit_form_action_unvalidated_path_fixtures",
+    srcs = ["fixtures/sveltekit-form-action-unvalidated-path.js"],
+)
+
 # Fixtures for kubernetes rules (require-readiness-probe, require-resource-limits, etc.).
 # Referenced by //bazel/semgrep/rules:kubernetes_rules_test.
 # New rule fixtures should be added here as they are created.
