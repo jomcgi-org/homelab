@@ -46,6 +46,13 @@ filegroup(
     srcs = ["fixtures/sveltekit-public-route-fetches-private-knowledge-api.js"],
 )
 
+# Fixture for the sveltekit-server-hardcoded-api-base-fallback rule (languages: generic).
+# Referenced by //bazel/semgrep/rules:sveltekit_server_hardcoded_api_base_fallback_test.
+filegroup(
+    name = "sveltekit_server_hardcoded_api_base_fallback_fixtures",
+    srcs = ["fixtures/sveltekit-server-hardcoded-api-base-fallback.js"],
+)
+
 # Fixture for the no-create-event-dispatcher-runes rule (languages: generic, paths: projects/**/*.svelte).
 # Referenced by //bazel/semgrep/rules:no_create_event_dispatcher_runes_test.
 filegroup(

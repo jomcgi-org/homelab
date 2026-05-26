@@ -344,6 +344,22 @@ semgrep_test(
     tags = ["semgrep"],
 )
 
+# sveltekit-server-hardcoded-api-base-fallback uses languages: [generic] scoped to
+# **/*+page.server.* and **/*+layout.server.*. Wired to its own .js annotation fixture
+# independently of typescript_rules_test (which only scans *.ts fixtures).
+filegroup(
+    name = "sveltekit_server_hardcoded_api_base_fallback_rule",
+    srcs = ["typescript/sveltekit-server-hardcoded-api-base-fallback.yaml"],
+)
+
+semgrep_test(
+    name = "sveltekit_server_hardcoded_api_base_fallback_test",
+    srcs = ["//bazel/semgrep/tests:sveltekit_server_hardcoded_api_base_fallback_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":sveltekit_server_hardcoded_api_base_fallback_rule"],
+    tags = ["semgrep"],
+)
+
 # css-import-after-rules uses languages: [generic] scoped to **/*.css.
 # Wired to its own .css annotation fixture independently of generic_rules_test
 # (which only scans no-stale-repo-paths fixtures).
