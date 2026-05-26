@@ -1,0 +1,26 @@
+rules:
+  - id: css-import-after-rules
+    languages: [generic]
+    severity: WARNING
+    paths:
+      include:
+        - "**/*.css"
+    message: >-
+      @import found after a CSS rule block. The CSS specification requires all
+      @import statements to appear before any other rules; PostCSS and Vite
+      silently strip late @imports, causing design tokens or resets to vanish
+      at build time. Move all @import statements to the top of the file, before
+      any selector blocks. (This bug was fixed in PR #2353 where global.css
+      had `@import tokens.css` after the reset block.)
+    metadata:
+      category: correctness
+      subcategory: css
+      confidence: HIGH
+      likelihood: HIGH
+      impact: MEDIUM
+      technology: [css, postcss, vite]
+      description: >-
+        Detects @import statements that appear after a CSS rule block (a closing
+        brace). PostCSS/Vite silently strip late @imports per CSS spec, causing
+        design tokens to vanish at build time.
+    pattern-regex: '}\s*\n\s*@import'
