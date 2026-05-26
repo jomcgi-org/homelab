@@ -8,8 +8,10 @@
 // ruleid: sveltekit-form-action-unvalidated-path
 async function badDirect(request) {
   const data = await request.formData();
-  const path = data.get('path');
-  const res = await fetch('https://internal-service.local' + path, { method: 'GET' });
+  const path = data.get("path");
+  const res = await fetch("https://internal-service.local" + path, {
+    method: "GET",
+  });
   return res;
 }
 
@@ -17,9 +19,11 @@ async function badDirect(request) {
 // ruleid: sveltekit-form-action-unvalidated-path
 async function badNoValidation(request) {
   const data = await request.formData();
-  const path = data.get('path');
-  const url = 'https://internal-service.local' + path;
-  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+  const path = data.get("path");
+  const url = "https://internal-service.local" + path;
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+  });
   return res.json();
 }
 
@@ -27,11 +31,13 @@ async function badNoValidation(request) {
 // ok: sveltekit-form-action-unvalidated-path
 async function goodStartsWith(request) {
   const data = await request.formData();
-  const path = data.get('path');
-  if (!path.startsWith('/public/')) {
-    return { status: 400, error: 'invalid path' };
+  const path = data.get("path");
+  if (!path.startsWith("/public/")) {
+    return { status: 400, error: "invalid path" };
   }
-  const res = await fetch('https://internal-service.local' + path, { method: 'GET' });
+  const res = await fetch("https://internal-service.local" + path, {
+    method: "GET",
+  });
   return res;
 }
 
@@ -39,10 +45,12 @@ async function goodStartsWith(request) {
 // ok: sveltekit-form-action-unvalidated-path
 async function goodAllowList(request) {
   const data = await request.formData();
-  const path = data.get('path');
+  const path = data.get("path");
   if (!isAllowedPath(path)) {
-    return { status: 400, error: 'path not allowed' };
+    return { status: 400, error: "path not allowed" };
   }
-  const res = await fetch('https://internal-service.local' + path, { method: 'GET' });
+  const res = await fetch("https://internal-service.local" + path, {
+    method: "GET",
+  });
   return res;
 }
