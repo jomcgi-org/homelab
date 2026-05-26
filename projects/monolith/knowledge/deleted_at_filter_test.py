@@ -167,9 +167,7 @@ class TestDiscoverGapsDeletedAt:
         assert created == 1
         live_gaps = (
             session.execute(
-                select(Gap).where(
-                    Gap.deleted_at.is_(None), Gap.term == "deleted-term"
-                )
+                select(Gap).where(Gap.deleted_at.is_(None), Gap.term == "deleted-term")
             )
             .scalars()
             .all()
@@ -348,9 +346,7 @@ class TestDistillCompletedTasksDeletedAt:
 
 
 class TestProjectGapFrontmatterDeletedAt:
-    def test_soft_deleted_gap_is_treated_as_missing(
-        self, session: Session
-    ) -> None:
+    def test_soft_deleted_gap_is_treated_as_missing(self, session: Session) -> None:
         """_project_gap_frontmatter must return early when the Gap is soft-deleted.
 
         The select on ~line 444 filters Gap.deleted_at.is_(None), so a
@@ -391,9 +387,7 @@ class TestProjectGapFrontmatterDeletedAt:
 
 
 class TestGrandfatherAtomsDeletedAt:
-    def test_soft_deleted_atom_is_not_grandfathered(
-        self, session: Session
-    ) -> None:
+    def test_soft_deleted_atom_is_not_grandfathered(self, session: Session) -> None:
         """_grandfather_atoms must skip Notes with deleted_at set.
 
         The filter on ~line 133 selects only live (deleted_at IS NULL) atoms.
@@ -431,9 +425,7 @@ class TestGrandfatherAtomsDeletedAt:
 
         assert count == 1
         prov = session.exec(
-            select(AtomRawProvenance).where(
-                AtomRawProvenance.atom_fk == live_atom.id
-            )
+            select(AtomRawProvenance).where(AtomRawProvenance.atom_fk == live_atom.id)
         ).all()
         assert len(prov) == 1
 
@@ -444,9 +436,7 @@ class TestGrandfatherAtomsDeletedAt:
 
 
 class TestSweepAndSelectCandidatesDeletedAt:
-    def test_soft_deleted_external_classified_gap_is_not_selected(
-        self, engine
-    ) -> None:
+    def test_soft_deleted_external_classified_gap_is_not_selected(self, engine) -> None:
         """_sweep_and_select_candidates must not return soft-deleted gaps.
 
         The filter on ~line 142 includes Gap.deleted_at.is_(None).  A gap
@@ -471,9 +461,7 @@ class TestSweepAndSelectCandidatesDeletedAt:
         candidate_ids = [g.note_id for g in candidates]
         assert "soft-deleted-external" not in candidate_ids
 
-    def test_live_external_classified_gap_is_still_selected(
-        self, engine
-    ) -> None:
+    def test_live_external_classified_gap_is_still_selected(self, engine) -> None:
         """Live eligible gaps must still be returned (regression guard)."""
         with Session(engine) as session:
             live_gap = Gap(
