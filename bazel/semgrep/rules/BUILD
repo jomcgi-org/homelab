@@ -343,3 +343,19 @@ semgrep_test(
     rules = [":sveltekit_public_route_fetches_private_knowledge_api_rule"],
     tags = ["semgrep"],
 )
+
+# css-import-after-rules uses languages: [generic] scoped to **/*.css.
+# Wired to its own .css annotation fixture independently of generic_rules_test
+# (which only scans no-stale-repo-paths fixtures).
+filegroup(
+    name = "css_import_after_rules_rule",
+    srcs = ["generic/css-import-after-rules.yaml"],
+)
+
+semgrep_test(
+    name = "css_import_after_rules_test",
+    srcs = ["//bazel/semgrep/tests:css_import_after_rules_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":css_import_after_rules_rule"],
+    tags = ["semgrep"],
+)

@@ -1,0 +1,29 @@
+/* Test fixtures for the css-import-after-rules semgrep rule.
+ *
+ * Annotations:
+ *   /* ruleid: css-import-after-rules */  — match starts on the next non-annotation line
+ *   /* ok: css-import-after-rules */      — the next non-annotation line must NOT be flagged
+ */
+
+/* GOOD: @import before any CSS rules — PostCSS/Vite processes these correctly */
+@import 'tokens.css';
+@import url('reset.css');
+
+:root {
+  --color-bg: #fff;
+  --color-text: #333;
+}
+
+/* ok: css-import-after-rules */
+body { font-family: sans-serif; }
+
+h1 {
+  font-size: 2rem;
+}
+
+/* BAD: @import after a CSS rule block — PostCSS/Vite silently strips it.
+ * Reproduces the bug fixed in PR #2353 (global.css had @import tokens.css
+ * after the reset block, causing design tokens to vanish). */
+/* ruleid: css-import-after-rules */
+body { margin: 0; padding: 0; }
+@import 'tokens.css';
