@@ -1,0 +1,31 @@
+rules:
+  - id: sveltekit-server-hardcoded-api-base-fallback
+    languages: [generic]
+    severity: ERROR
+    paths:
+      include:
+        - "**/*+page.server.*"
+        - "**/*+layout.server.*"
+    message: >-
+      Hard-coded URL fallback found in a SvelteKit server file. Using
+      `process.env.X || "http://..."` silently serves from the wrong backend
+      when the env var is not injected — masking misconfiguration as generic
+      5xx errors rather than a startup failure. Set the env var in
+      values.yaml and use `process.env.X` without a fallback (or throw at
+      startup if undefined). This is the same class of bug as the
+      `no-hardcoded-k8s-service-url` rule for Go/Python.
+      See PR #2342 where `process.env.API_BASE || "http://localhost:8000"`
+      was introduced in a SvelteKit server file.
+    metadata:
+      category: security
+      subcategory: misconfiguration
+      confidence: HIGH
+      likelihood: HIGH
+      impact: MEDIUM
+      technology: [sveltekit, typescript, javascript]
+      description: >-
+        Detects `process.env.X || "http://..."` patterns in SvelteKit server
+        files (+page.server.* / +layout.server.*). The localhost or hardcoded
+        URL fallback masks missing env-var injection and silently routes
+        traffic to the wrong backend.
+    pattern-regex: 'process\.env\b.*\|\|.*https?://'
