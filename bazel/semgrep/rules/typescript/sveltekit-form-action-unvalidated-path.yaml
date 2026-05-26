@@ -9,7 +9,8 @@ rules:
       guard before the fetch — either `path.startsWith('/allowed-prefix/')` or an
       allow-list function like `isAllowedPath(path)` — and return `fail(400)` if
       the check fails. (PR #2349 initially had this bug before the implementer
-      added `isAllowedPath()`.)
+      added `isAllowedPath()`.) Add `nosemgrep: sveltekit-form-action-unvalidated-path`
+      to suppress false positives after manual review.
     metadata:
       category: security
       subcategory: ssrf
@@ -30,12 +31,16 @@ rules:
       - pattern-not: |
           $PATH = $DATA.get(...);
           ...
-          $PATH.startsWith(...)
+          if (!$PATH.startsWith(...)) {
+            ...
+          }
           ...
           fetch($PREFIX + $PATH, ...)
       - pattern-not: |
           $PATH = $DATA.get(...);
           ...
-          isAllowedPath($PATH)
+          if (!isAllowedPath($PATH)) {
+            ...
+          }
           ...
           fetch($PREFIX + $PATH, ...)
