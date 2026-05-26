@@ -236,7 +236,9 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
     # re-insertion and resurrection is the semantically correct behaviour
     # (the term is live again).
     soft_deleted_gaps = (
-        session.execute(select(Gap).where(Gap.deleted_at.isnot(None))).scalars().all()  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
+        session.execute(select(Gap).where(Gap.deleted_at.isnot(None)))
+        .scalars()
+        .all()  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
     )
     soft_deleted_by_note_id: dict[str, Gap] = {
         g.note_id: g for g in soft_deleted_gaps if g.note_id
