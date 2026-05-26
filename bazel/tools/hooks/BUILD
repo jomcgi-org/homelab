@@ -63,3 +63,9 @@ sh_test(
     srcs = ["check-semgrep-exclude-coverage_test.sh"],
     data = [":check-semgrep-exclude-coverage.sh"],
 )
+
+sh_test(
+    name = "check_sveltekit_duplicate_api_base_test",
+    srcs = ["check-sveltekit-duplicate-api-base_test.sh"],
+    data = [":check-sveltekit-duplicate-api-base.sh"],
+)
