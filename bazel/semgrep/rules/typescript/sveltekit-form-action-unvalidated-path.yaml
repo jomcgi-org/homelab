@@ -1,0 +1,41 @@
+rules:
+  - id: sveltekit-form-action-unvalidated-path
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      SvelteKit form action passes `data.get(...)` result directly into fetch()
+      URL construction without a prior path validation. This is an SSRF vector:
+      an attacker can supply an arbitrary path to reach internal services. Add a
+      guard before the fetch — either `path.startsWith('/allowed-prefix/')` or an
+      allow-list function like `isAllowedPath(path)` — and return `fail(400)` if
+      the check fails. (PR #2349 initially had this bug before the implementer
+      added `isAllowedPath()`.)
+    metadata:
+      category: security
+      subcategory: ssrf
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [sveltekit, typescript, javascript]
+      description: >-
+        SvelteKit form action passes an unvalidated user-supplied path directly
+        into a fetch() call, enabling SSRF. Validate with startsWith() or an
+        allow-list before using in fetch().
+    patterns:
+      - pattern: |
+          $PATH = $DATA.get(...);
+          ...
+          fetch($PREFIX + $PATH, ...)
+      - pattern-not: |
+          $PATH = $DATA.get(...);
+          ...
+          $PATH.startsWith(...)
+          ...
+          fetch($PREFIX + $PATH, ...)
+      - pattern-not: |
+          $PATH = $DATA.get(...);
+          ...
+          isAllowedPath($PATH)
+          ...
+          fetch($PREFIX + $PATH, ...)

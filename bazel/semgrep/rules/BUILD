@@ -359,3 +359,19 @@ semgrep_test(
     rules = [":css_import_after_rules_rule"],
     tags = ["semgrep"],
 )
+
+# sveltekit-form-action-unvalidated-path uses languages: [javascript, typescript] to catch
+# SSRF via unvalidated data.get() paths passed directly into fetch(). Wired to its own
+# .js annotation fixture independently of typescript_rules_test (which scans *.ts fixtures).
+filegroup(
+    name = "sveltekit_form_action_unvalidated_path_rule",
+    srcs = ["typescript/sveltekit-form-action-unvalidated-path.yaml"],
+)
+
+semgrep_test(
+    name = "sveltekit_form_action_unvalidated_path_test",
+    srcs = ["//bazel/semgrep/tests:sveltekit_form_action_unvalidated_path_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":sveltekit_form_action_unvalidated_path_rule"],
+    tags = ["semgrep"],
+)
