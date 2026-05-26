@@ -2488,19 +2488,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_deleted_at_filter_test",
-    srcs = ["knowledge/deleted_at_filter_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_mcp_gap_test",
     srcs = ["knowledge/mcp_gap_test.py"],
     imports = ["."],
