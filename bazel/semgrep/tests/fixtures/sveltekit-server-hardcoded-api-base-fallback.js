@@ -16,7 +16,7 @@ const BASE_URL = process.env.BASE_URL || "https://api.example.com";
 
 // Single-quoted localhost:
 // ruleid: sveltekit-server-hardcoded-api-base-fallback
-const svcUrl = process.env.SVC_URL || 'http://localhost:3000/api';
+const svcUrl = process.env.SVC_URL || "http://localhost:3000/api";
 
 // Bracket-notation env access with fallback:
 // ruleid: sveltekit-server-hardcoded-api-base-fallback
