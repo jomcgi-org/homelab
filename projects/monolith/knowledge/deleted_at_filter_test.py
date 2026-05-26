@@ -174,11 +174,7 @@ class TestDiscoverGapsDeletedAt:
 
         assert created == 1
         live_gaps = (
-            session.execute(
-                select(Gap).where(Gap.deleted_at.is_(None))
-            )
-            .scalars()
-            .all()
+            session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
         )
         assert len(live_gaps) == 1
         assert live_gaps[0].term == "brand-new-term"
