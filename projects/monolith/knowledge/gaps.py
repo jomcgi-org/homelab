@@ -230,6 +230,18 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
     existing_by_note_id: dict[str, Gap] = {g.note_id: g for g in all_gaps if g.note_id}
     existing_by_term: dict[str, Gap] = {g.term: g for g in all_gaps}
 
+    # Pre-load soft-deleted Gap rows by note_id for resurrection. When a
+    # wikilink still points to a previously soft-deleted term, we clear
+    # deleted_at rather than inserting a duplicate — UNIQUE(note_id) prevents
+    # re-insertion and resurrection is the semantically correct behaviour
+    # (the term is live again).
+    soft_deleted_gaps = (
+        session.execute(select(Gap).where(Gap.deleted_at.isnot(None))).scalars().all()
+    )
+    soft_deleted_by_note_id: dict[str, Gap] = {
+        g.note_id: g for g in soft_deleted_gaps if g.note_id
+    }
+
     stub_dir = vault_root / RESEARCHING_DIR
     # Canonical Zulu form (no microseconds, no offset) — matches the design
     # doc examples and the test fixture strings, keeps stub frontmatter
@@ -278,24 +290,32 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
                 legacy.note_id = slug
                 backfilled += 1
             else:
-                # SAVEPOINT per insert: a concurrent discoverer could insert
-                # the same slug between SELECT and INSERT. Nesting the add lets
-                # that single row fail without rolling back every gap this
-                # cycle. With Task 1's UNIQUE(note_id) in place this is the
-                # last line of defence — slug-folding above already collapses
-                # the in-process collisions.
-                with session.begin_nested():
-                    session.add(
-                        Gap(
-                            term=canonical_term,
-                            context=slug_context[slug],
-                            note_id=slug,
-                            pipeline_version=GAPS_PIPELINE_VERSION,
-                            state="discovered",
+                soft_del = soft_deleted_by_note_id.get(slug)
+                if soft_del is not None:
+                    # Resurrect: clear deleted_at so the gap re-enters the
+                    # pipeline. A plain INSERT would violate UNIQUE(note_id).
+                    soft_del.deleted_at = None
+                    inserted += 1
+                    row_inserted = True
+                else:
+                    # SAVEPOINT per insert: a concurrent discoverer could insert
+                    # the same slug between SELECT and INSERT. Nesting the add
+                    # lets that single row fail without rolling back every gap
+                    # this cycle. With UNIQUE(note_id) this is the last line
+                    # of defence — slug-folding above already collapses the
+                    # in-process collisions.
+                    with session.begin_nested():
+                        session.add(
+                            Gap(
+                                term=canonical_term,
+                                context=slug_context[slug],
+                                note_id=slug,
+                                pipeline_version=GAPS_PIPELINE_VERSION,
+                                state="discovered",
+                            )
                         )
-                    )
-                inserted += 1
-                row_inserted = True
+                    inserted += 1
+                    row_inserted = True
 
         # Stub write is unconditional — write_stub is idempotent. Track whether
         # a new stub was actually written so we can surface healing work.
