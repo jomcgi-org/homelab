@@ -391,3 +391,19 @@ semgrep_test(
     rules = [":sveltekit_form_action_unvalidated_path_rule"],
     tags = ["semgrep"],
 )
+
+# svelte-hardcoded-color-in-style uses languages: [generic] scoped to **/*.svelte.
+# Wired to its own .svelte annotation fixture independently of typescript_rules_test
+# (which only scans *.ts fixtures).
+filegroup(
+    name = "svelte_hardcoded_color_in_style_rule",
+    srcs = ["typescript/svelte-hardcoded-color-in-style.yaml"],
+)
+
+semgrep_test(
+    name = "svelte_hardcoded_color_in_style_test",
+    srcs = ["//bazel/semgrep/tests:svelte_hardcoded_color_in_style_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":svelte_hardcoded_color_in_style_rule"],
+    tags = ["semgrep"],
+)

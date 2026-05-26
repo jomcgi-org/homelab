@@ -1,0 +1,27 @@
+rules:
+  - id: svelte-hardcoded-color-in-style
+    languages: [generic]
+    severity: WARNING
+    paths:
+      include:
+        - "**/*.svelte"
+    message: >-
+      Hex color literal found in a Svelte file. Hard-coded colors bypass the
+      CSS token system (tokens.css / var(--token)) and silently fall out of
+      sync when the design palette changes. Replace hex values with the
+      appropriate CSS custom property: e.g., `color: #141414` →
+      `color: var(--fg)`, `background: #f1ebdc` → `background: var(--bg)`.
+      See PR #2342 where three hardcoded hex colors were left after a palette
+      refactor and had to be fixed separately.
+    metadata:
+      category: maintainability
+      subcategory: design-tokens
+      confidence: HIGH
+      likelihood: MEDIUM
+      impact: LOW
+      technology: [svelte, css, postcss]
+      description: >-
+        Detects hard-coded CSS hex color literals inside Svelte files.
+        They bypass the CSS custom-property token system and drift silently
+        when the design palette is updated.
+    pattern-regex: ':\s*#[0-9a-fA-F]{3,8}\b'

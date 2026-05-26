@@ -60,6 +60,13 @@ filegroup(
     srcs = ["fixtures/no-create-event-dispatcher-runes.svelte"],
 )
 
+# Fixture for the svelte-hardcoded-color-in-style rule (languages: generic, paths: **/*.svelte).
+# Referenced by //bazel/semgrep/rules:svelte_hardcoded_color_in_style_test.
+filegroup(
+    name = "svelte_hardcoded_color_in_style_fixtures",
+    srcs = ["fixtures/svelte-hardcoded-color-in-style.svelte"],
+)
+
 # Fixture for the no-stale-repo-paths rule (languages: generic).
 # Referenced by //bazel/semgrep/rules:generic_rules_test.
 filegroup(
