@@ -29,6 +29,13 @@ _EXCLUDED_DIRS = {
     # Skipping the directory prevents the gardener from re-ingesting
     # trashed notes as fresh raws on the next discover tick.
     "_trash",
+    # _discord/ holds per-user and per-channel summary mirrors written
+    # by chat/vault_export.py. Those files are explicitly NOT meant for
+    # KG ingest — see vault_export.py's module docstring. Without this
+    # exclusion, the gardener walks the directory and queues every
+    # mirror file for decomposition, flooding the KG with channel ×
+    # user × cycle noise. Kept in sync with raw_ingest._EXCLUDED_TOP_LEVEL.
+    "_discord",
     ".obsidian",
     ".trash",
 }

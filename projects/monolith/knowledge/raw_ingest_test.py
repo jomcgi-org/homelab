@@ -231,6 +231,31 @@ def test_infer_source_research_does_not_override_explicit_meta_source():
     assert _infer_source("manual", ("_inbox", "research", "x.md")) == "manual"
 
 
+def test_excluded_top_level_and_excluded_dirs_stay_in_sync():
+    """Drift detector: raw_ingest._EXCLUDED_TOP_LEVEL and gardener._EXCLUDED_DIRS
+    must contain the same set of directories.
+
+    Both scanners walk the vault root and skip the same set of managed/private
+    directories. A directory added to one but not the other will be processed
+    by one pipeline and silently ignored by the other, causing inconsistencies
+    (e.g. PR #2370 added _discord/ to _EXCLUDED_TOP_LEVEL but missed
+    _EXCLUDED_DIRS, so the gardener still walked _discord/).
+
+    Known alias: raw_ingest uses the RAW_ROOT_NAME constant (== "_raw") while
+    gardener uses the literal "_raw". Both resolve to the same string, so the
+    sets compare equal without any normalization.
+    """
+    from knowledge import raw_ingest
+    from knowledge.gardener import _EXCLUDED_DIRS
+
+    assert raw_ingest._EXCLUDED_TOP_LEVEL == _EXCLUDED_DIRS, (
+        "raw_ingest._EXCLUDED_TOP_LEVEL and gardener._EXCLUDED_DIRS are out of sync.\n"
+        f"  Only in _EXCLUDED_TOP_LEVEL: {raw_ingest._EXCLUDED_TOP_LEVEL - _EXCLUDED_DIRS}\n"
+        f"  Only in _EXCLUDED_DIRS: {_EXCLUDED_DIRS - raw_ingest._EXCLUDED_TOP_LEVEL}\n"
+        "Add the missing entry to both sets and update this test's docstring."
+    )
+
+
 def test_excluded_top_level_contains_discord_to_match_vault_export_intent():
     """Drift detector: _discord/ must be excluded from move_phase.
 
