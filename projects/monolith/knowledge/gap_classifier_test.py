@@ -233,3 +233,28 @@ def test_classifier_prompt_routes_internal_hybrid_external_to_in_review():
         "classified branch must NOT mention external — v2 routes external "
         "through in_review for approval gating"
     )
+
+
+def test_classifier_prompt_includes_person_public_peer_subclassification():
+    """v3 adds person:public vs person:peer sub-tag distinction.
+
+    Without this rubric in the prompt, person-atoms get over-flagged
+    as private because the bare `person` tag is treated as a privacy
+    signal — Pierre-Simon Laplace ends up bucketed with actual peers
+    when his atom should default visibility: public. See 2026-05-28
+    vault audit for the over-flagging it caused.
+    """
+    rendered = _CLASSIFIER_PROMPT.format(
+        classifier_version=CLASSIFIER_VERSION,
+        stub_list="- /tmp/example.md",
+    )
+    assert "person:public" in rendered, "v3 must teach the person:public sub-tag"
+    assert "person:peer" in rendered, "v3 must teach the person:peer sub-tag"
+    assert "Daniel Kahneman" in rendered or "Bertrand Russell" in rendered, (
+        "public-figure examples must be present so the rubric is concrete "
+        "for the LLM (abstract definitions alone get misapplied)"
+    )
+    assert CLASSIFIER_VERSION == "opus-4-7@v3", (
+        "version bump propagates into stub frontmatter so future-Joe can "
+        "query for which classifier produced which atom"
+    )
