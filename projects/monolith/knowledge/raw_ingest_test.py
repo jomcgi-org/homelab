@@ -108,7 +108,9 @@ class TestReconcileRawPhase:
         assert rows[0].source == "vault-drop"
         assert rows[0].created_at is not None
 
-        notes = session.exec(select(Note).where(Note.type == "raw")).all()
+        notes = session.exec(
+            select(Note).where(Note.type == "raw", Note.deleted_at.is_(None))
+        ).all()
         assert len(notes) == 1
         assert notes[0].note_id == rows[0].raw_id
 
@@ -227,3 +229,22 @@ def test_infer_source_research_does_not_override_explicit_meta_source():
     from knowledge.raw_ingest import _infer_source
 
     assert _infer_source("manual", ("_inbox", "research", "x.md")) == "manual"
+
+
+def test_excluded_top_level_contains_discord_to_match_vault_export_intent():
+    """Drift detector: _discord/ must be excluded from move_phase.
+
+    chat/vault_export.py writes user + channel summaries to
+    _discord/<channel_id>/... with an explicit "NOT for KG ingest"
+    docstring. If _discord/ is removed from _EXCLUDED_TOP_LEVEL,
+    move_phase will atomically rename those files into _raw/ and the
+    gardener will turn each one into a permanent dated atom — exactly
+    the flood the exclusion was added to stop (2026-05-28 audit
+    deleted ~258 atoms produced this way).
+    """
+    from knowledge.raw_ingest import _EXCLUDED_TOP_LEVEL
+
+    assert "_discord" in _EXCLUDED_TOP_LEVEL, (
+        "_discord/ must be excluded from move_phase to match "
+        "chat/vault_export.py's intent (see module docstring there)"
+    )
