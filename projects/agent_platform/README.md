@@ -4,7 +4,7 @@ Autonomous AI agents in isolated Kubernetes sandbox pods.
 
 ## Overview
 
-Claude and Goose agents dispatched by a Go orchestrator over NATS JetStream, with tool access governed by Context Forge (IBM's MCP gateway) and RBAC-scoped per team. External access authenticated via Cloudflare Managed OAuth.
+Claude and Goose agents dispatched by a Go orchestrator over NATS JetStream, with tool access governed by Context Forge (homelab MCP gateway) and RBAC-scoped per team. External access authenticated via Cloudflare Managed OAuth.
 
 See [docs/agents.md](../../docs/agents.md) for the full architecture.
 
