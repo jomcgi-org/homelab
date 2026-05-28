@@ -102,5 +102,5 @@ The frontend reads `public/config.js` (not environment variables):
 - Retry decorators for network resilience in the scraper
 - Performance logging for scrape operations
 - Weather fetching is parallelised (up to 20 threads) to respect met.no rate limits
-- `update_forecast` produces an OCI container image (`update_image`) for scheduled runs
+- `update_forecast` produces an OCI container image (`update_image`); there is no deployed CronJob — runs are triggered manually via `bazel run //projects/hikes/update_forecast:update`
 - The frontend decompresses data entirely client-side via a WASM Brotli module — no backend API required
