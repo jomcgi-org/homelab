@@ -802,3 +802,84 @@ def test_answer_gap_succeeds_when_stub_missing(session, tmp_path):
     # Gap is committed
     session.refresh(gap)
     assert gap.state == "committed"
+
+
+# ---------------------------------------------------------------------------
+# answer_gap — Tombstone- prefix routing (2026-05-28 calibration)
+# ---------------------------------------------------------------------------
+
+
+def test_answer_gap_tombstone_em_dash_prefix_rejects_without_atom(session, tmp_path):
+    """'Tombstone — <reason>' answers route to reject, no atom file written."""
+    gap_id = _seed_reviewable_gap(session, term="some-term")
+    result = answer_gap(
+        session,
+        gap_id,
+        "Tombstone — vault convention, not worth a content atom",
+        tmp_path,
+    )
+    gap = session.get(Gap, gap_id)
+    assert gap.state == "rejected"
+    assert gap.human_verified is True
+    assert gap.resolved_at is not None
+    assert result["state"] == "rejected"
+    # Critical assertion: no atom file leaked into _processed/.
+    processed_root = tmp_path / "_processed"
+    assert not (processed_root / "some-term.md").exists(), (
+        "Tombstone-prefixed answer must NOT produce a _processed/<slug>.md file"
+    )
+
+
+def test_answer_gap_tombstone_space_prefix_rejects_without_atom(session, tmp_path):
+    """'Tombstone ...' (space after T) also short-circuits to reject."""
+    gap_id = _seed_reviewable_gap(session, term="another-term")
+    answer_gap(session, gap_id, "Tombstone vault convention, skip", tmp_path)
+    gap = session.get(Gap, gap_id)
+    assert gap.state == "rejected"
+    processed_root = tmp_path / "_processed"
+    assert not (processed_root / "another-term.md").exists()
+
+
+def test_answer_gap_tombstone_hyphen_prefix_rejects_without_atom(session, tmp_path):
+    """'Tombstone - <reason>' (ASCII hyphen, not em-dash) also short-circuits."""
+    gap_id = _seed_reviewable_gap(session, term="hyphen-term")
+    answer_gap(session, gap_id, "Tombstone - vault convention, skip", tmp_path)
+    gap = session.get(Gap, gap_id)
+    assert gap.state == "rejected"
+    processed_root = tmp_path / "_processed"
+    assert not (processed_root / "hyphen-term.md").exists()
+
+
+def test_answer_gap_real_answer_still_creates_atom(session, tmp_path):
+    """Regression guard: a normal answer (no Tombstone prefix) still creates the atom."""
+    gap_id = _seed_reviewable_gap(session, term="normal-term")
+    answer_gap(
+        session,
+        gap_id,
+        "This is a real answer that does not start with the Tombstone marker.",
+        tmp_path,
+    )
+    gap = session.get(Gap, gap_id)
+    assert gap.state == "committed"
+    processed_root = tmp_path / "_processed"
+    assert (processed_root / "normal-term.md").exists(), (
+        "non-Tombstone answers must still produce a _processed/<slug>.md file"
+    )
+
+
+def test_answer_gap_lowercase_tombstone_treated_as_real_answer(session, tmp_path):
+    """Regression guard: lowercase 'tombstone' (e.g. in 'tombstones in old
+    graveyards…' or 'tombstone records in storage engines…') is NOT a marker
+    and must produce a normal atom.
+    """
+    gap_id = _seed_reviewable_gap(session, term="graveyard-term")
+    answer_gap(
+        session,
+        gap_id,
+        "tombstones in old graveyards typically lean for soil-mechanics reasons.",
+        tmp_path,
+    )
+    gap = session.get(Gap, gap_id)
+    assert gap.state == "committed"
+    processed_root = tmp_path / "_processed"
+    assert (processed_root / "graveyard-term.md").exists()
