@@ -2187,6 +2187,17 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_reconcile_external_in_review_stubs_test",
+    srcs = ["knowledge/reconcile_external_in_review_stubs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_search_test",
     srcs = ["knowledge/knowledge_search_test.py"],
     data = ["knowledge/tools/knowledge-search"],
