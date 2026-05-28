@@ -32,6 +32,17 @@ _EXCLUDED_TOP_LEVEL = {
     # Skipping here prevents the raw-ingest scanner from re-ingesting
     # them as fresh raws. Kept in sync with gardener._EXCLUDED_DIRS.
     "_trash",
+    # _discord/ holds per-user and per-channel summary mirrors written
+    # by chat/vault_export.py. Those files are intentionally in-place
+    # (overwritten on every summarisation cycle, no dated snapshots)
+    # and explicitly NOT meant for KG ingest — see vault_export.py's
+    # module docstring. Without this exclusion, move_phase atomically
+    # renames the mirror into _raw/YYYY/MM/DD/<hash>-<slug>.md on
+    # every cycle, the gardener turns each into a permanent dated atom,
+    # and the KG fills up with combinatorial channel × user × cycle
+    # noise. Today's vault audit (2026-05-28) deleted ~258 atoms that
+    # originated this way.
+    "_discord",
     ".obsidian",
     ".trash",
 }
