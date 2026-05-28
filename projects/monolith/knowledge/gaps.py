@@ -855,6 +855,25 @@ def approve_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
     return _gap_to_dict(gap, session=session)
 
 
+def _is_tombstone_answer(answer: str) -> bool:
+    """Detect the user's 'Tombstone — ...' convention on a gap answer.
+
+    Matches the leading marker in any of the user's actual forms:
+    ``Tombstone `` (capital T then ASCII space), ``Tombstone—`` (em-dash
+    directly), ``Tombstone -`` (ASCII hyphen). Case-sensitive on the
+    capital T — lowercased ``tombstone`` could plausibly appear in
+    legitimate answers about graveyards, soft-deletes, or tombstone
+    fields in storage engines, none of which the user wants
+    short-circuited.
+    """
+    stripped = (answer or "").lstrip()
+    if not stripped.startswith("Tombstone"):
+        return False
+    after = stripped[len("Tombstone") :]
+    # space, em-dash, ASCII hyphen, or end-of-string all count.
+    return after[:1] in (" ", "—", "-", "")
+
+
 def answer_gap(
     session: Session,
     gap_id: int,
@@ -887,6 +906,23 @@ def answer_gap(
         raise ValueError(
             "answer may not contain a frontmatter terminator ('---' on its own line)"
         )
+
+    if _is_tombstone_answer(answer):
+        # User convention: "Tombstone — <reason>" means "this gap doesn't
+        # deserve a content atom". Route to reject_gap semantics: gap is
+        # closed, stub removed, NO atom file written. Honors the marker
+        # text the user has been typing for months that the system never
+        # acted on (2026-05-28 vault audit found 14 zombie atoms produced
+        # by the answer-and-then-create-atom path on Tombstone-prefixed
+        # answers).
+        gap.state = "rejected"
+        gap.human_verified = True
+        gap.resolved_at = datetime.now(timezone.utc)
+        _remove_stub_if_present(vault_root, gap, action="tombstoned")
+        session.commit()
+        session.refresh(gap)
+        logger.info("gaps.answer_gap: tombstoned gap_id=%d term=%r", gap_id, gap.term)
+        return _gap_to_dict(gap, session=session)
 
     processed_root = vault_root / "_processed"
     processed_root.mkdir(parents=True, exist_ok=True)
