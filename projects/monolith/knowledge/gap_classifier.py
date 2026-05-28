@@ -26,7 +26,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CLASSIFIER_VERSION = "opus-4-7@v2"
+CLASSIFIER_VERSION = "opus-4-7@v3"
 
 _CLASSIFY_TIMEOUT_SECS = 300  # 5 minutes per batch — generous for N=10 stubs
 
@@ -84,6 +84,27 @@ Obsidian vault — into four classes.
   files. Do not run any Bash command.
 - If you cannot decide on a class for a stub, skip it (leave gap_class
   null). Do not guess.
+
+## Person-atom sub-classification (when applicable)
+
+When the gap term names a PERSON, additionally tag the resulting atom
+with one of these sub-tags so the privacy review can route correctly:
+
+- `person:public` — public historical or contemporary figures: authors,
+  scientists, philosophers, public intellectuals, sports figures, etc.
+  The atom can safely default to `visibility: public`. Examples:
+  Daniel Kahneman, Bertrand Russell, Christopher Alexander, Andy
+  Matuschak, Tom Chivers, Pierre-Simon Laplace.
+- `person:peer` — friends, family members, colleagues, Discord channel
+  members, or anyone Joe has a personal relationship with. The atom
+  defaults to `visibility: private`. Examples: anyone whose primary
+  reference is a Discord channel snapshot, anyone tagged `person` AND
+  `discord`, anyone with `user-profile` or `channel-snapshot` co-tags.
+
+If you cannot confidently distinguish (e.g. an ambiguous mononym, a
+historical figure you don't recognise), default to `person:peer` —
+privacy-conservative is the right error direction. The reviewer can
+upgrade to `person:public` from the review queue.
 
 ## Stubs to classify
 
