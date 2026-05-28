@@ -133,9 +133,9 @@ class TestVaultSyncNotReady:
             with caplog.at_level(logging.INFO, logger="knowledge.service"):
                 reconcile_external_in_review_stubs(session)
 
-        assert any(
-            "vault sync not ready" in r.message for r in caplog.records
-        ), "Expected 'vault sync not ready' in logs"
+        assert any("vault sync not ready" in r.message for r in caplog.records), (
+            "Expected 'vault sync not ready' in logs"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +223,7 @@ class TestNoStaleStubs:
 
 
 class TestStaleStubsRewritten:
-    def test_rewrites_single_stub_and_returns_one(
-        self, session, tmp_path, monkeypatch
-    ):
+    def test_rewrites_single_stub_and_returns_one(self, session, tmp_path, monkeypatch):
         """One stale stub (status: classified) is rewritten to in_review."""
         monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
         _make_gap(session, term="Linkerd mTLS")
