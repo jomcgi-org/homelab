@@ -72,5 +72,30 @@ def test_sanitize_malformed_brackets_left_alone():
 
 def test_criteria_text_present():
     """Smoke check — every prompt that imports this string must keep it."""
-    assert "visibility: public" in VISIBILITY_CRITERIA
-    assert "When in doubt: `private`." in VISIBILITY_CRITERIA
+    assert "visibility: public" in VISIBILITY_CRITERIA, (
+        "criteria must teach the public visibility value"
+    )
+    assert "When in doubt" in VISIBILITY_CRITERIA, (
+        "criteria must teach the privacy-conservative rule"
+    )
+    assert "private" in VISIBILITY_CRITERIA.lower(), (
+        "criteria must teach the private visibility value"
+    )
+
+
+def test_visibility_criteria_is_re_exported_from_profile_module():
+    """Drift detector: visibility.py's VISIBILITY_CRITERIA must be the
+    SAME object as profile.py's, not a hand-maintained copy.
+
+    Catches the regression where someone re-inlines the literal in
+    visibility.py because they couldn't find where it lived. The shared
+    object identity guarantees no drift can occur even if profile.py is
+    edited; both consumers see the same updated string.
+    """
+    from knowledge.profile import VISIBILITY_CRITERIA as profile_criteria
+    from knowledge.visibility import VISIBILITY_CRITERIA as visibility_criteria
+
+    assert profile_criteria is visibility_criteria, (
+        "visibility.py must re-export VISIBILITY_CRITERIA from "
+        "knowledge.profile (not maintain a separate copy)."
+    )
