@@ -283,6 +283,7 @@ class TestAnswerGap:
             "title": "Linkerd mTLS",
             "type": "atom",
             "source_tier": "personal",
+            "visibility": "private",
         }
         assert "Linkerd uses per-pod sidecars" in note_body
 

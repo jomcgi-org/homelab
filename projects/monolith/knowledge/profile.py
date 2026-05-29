@@ -33,7 +33,7 @@ For Joe (future-me):
 from __future__ import annotations
 
 PROFILE_VERSION = "2"
-PROFILE_UPDATED = "2026-05-28"
+PROFILE_UPDATED = "2026-05-28"  # nosemgrep: test-hardcoded-past-timestamp (audit-trail constant; manually bumped on rubric edits)
 
 IDENTITY = """\
 Senior Platform Engineer @ Semgrep (Vancouver, BC). Career thesis:

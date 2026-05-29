@@ -622,6 +622,7 @@ def test_answer_gap_writes_file_and_commits(session, tmp_path):
         "title": "Linkerd mTLS",
         "type": "atom",
         "source_tier": "personal",
+        "visibility": "private",
     }
     assert "Linkerd enables mTLS" in body
 
