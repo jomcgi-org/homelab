@@ -1878,6 +1878,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_profile_test",
+    srcs = ["knowledge/profile_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_tools_add_visibility_field_test",
     srcs = ["knowledge/tools/add_visibility_field_test.py"],
     imports = ["."],
