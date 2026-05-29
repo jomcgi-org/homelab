@@ -883,3 +883,39 @@ def test_answer_gap_lowercase_tombstone_treated_as_real_answer(session, tmp_path
     assert gap.state == "committed"
     processed_root = tmp_path / "_processed"
     assert (processed_root / "graveyard-term.md").exists()
+
+
+def test_answer_gap_atom_carries_visibility_private_by_default(session, tmp_path):
+    """User-typed gap answers default to visibility: private.
+
+    Rationale (see gaps.answer_gap atom-creation block): gap answers are
+    typically Joe writing about his own context (people, projects, personal
+    decisions). The visibility-review queue can flip to public for the
+    minority that are generic professional knowledge. Public-default
+    would be riskier because the body is user-supplied free-form text.
+
+    Pins the closing of the null-visibility regrowth path: before this
+    commit, answer_gap-produced atoms had no visibility field at all,
+    and they accumulated in the review queue indefinitely (74% of the
+    2026-05-28 audit's null-vis pile).
+    """
+    gap_id = _seed_reviewable_gap(session, term="some-term")
+    answer_gap(session, gap_id, "A perfectly normal answer about the term.", tmp_path)
+    atom = (tmp_path / "_processed" / "some-term.md").read_text()
+    assert "\nvisibility: private\n" in atom, (
+        f"atom must carry 'visibility: private' in frontmatter; got:\n{atom[:400]}"
+    )
+
+
+def test_answer_gap_tombstone_path_does_not_produce_atom(session, tmp_path):
+    """Regression guard for the interaction between today's two changes
+    to answer_gap. The Tombstone-prefix short-circuit (shipped in PR #2370)
+    must continue to skip atom creation entirely; no atom file means no
+    visibility field to assert about. If the visibility insertion broke
+    this short-circuit, the gardener would have to re-classify Tombstone
+    answers, and Joe's 'this gap doesn't deserve an atom' convention
+    silently regresses.
+    """
+    gap_id = _seed_reviewable_gap(session, term="tomb-term")
+    answer_gap(session, gap_id, "Tombstone - not worth a content atom", tmp_path)
+    assert not (tmp_path / "_processed" / "tomb-term.md").exists()

@@ -944,6 +944,13 @@ def answer_gap(
         "title": gap.term,
         "type": "atom",
         "source_tier": "personal",
+        # User-typed gap answers default private. Joe writes about his own
+        # context (people, projects, personal decisions) more often than
+        # generic knowledge; the visibility-review queue flips the minority
+        # that should be public. Public-default would be riskier here because
+        # the body is user-supplied free-form text. See profile.py's
+        # ASYMMETRIC_ERROR_PREFERENCE: 'private' is the right error direction.
+        "visibility": "private",
     }
     fm_str = yaml.dump(fm, default_flow_style=False, sort_keys=False)
     file_content = f"---\n{fm_str}---\n\n{answer}\n"
