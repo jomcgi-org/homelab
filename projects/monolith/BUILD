@@ -2778,6 +2778,15 @@ semgrep_target_test(
         # inline comments are not honoured. Exclude until per-finding
         # suppression is available in the core engine.
         "sqlmodel-datetime-without-factory",  # keep
+        # test-hardcoded-past-timestamp's own paths.include is
+        # [*_test.py, test_*.py] -- the rule is intended for test files
+        # only. The semgrep_target_test macro runs rules without
+        # honouring per-rule path filters, so the rule fires on
+        # production files like knowledge/profile.py that have
+        # intentional audit-trail date constants (PROFILE_UPDATED).
+        # Excluded from main_semgrep_test (which scans :main, production
+        # code); the rule still applies wherever it's meant to.
+        "test-hardcoded-past-timestamp",  # keep
         "tainted-fastapi-http-request-httpx",
         # note_id → DB lookup → note["path"] → file read is guarded by
         # is_relative_to(vault_root) but Semgrep Pro can't trace through
