@@ -14,47 +14,12 @@ from sqlalchemy.sql import ColumnElement
 
 from knowledge.models import Note
 
-VISIBILITY_CRITERIA = """\
-## Visibility (REQUIRED frontmatter field)
-
-Every note MUST set `visibility: public` or `visibility: private`.
-This controls whether the note appears on Joe's public website.
-
-Default to `private` whenever you are uncertain.
-
-Mark `public` when the note is about:
-- General engineering concepts, principles, heuristics (DORA, Conway's Law,
-  blameless postmortems, etc.) — anything you'd find in a textbook, blog,
-  or conference talk.
-- Skills, technologies, or methods covered in Joe's public CV / GitHub /
-  conference talks.
-- Verifiable facts about external systems, libraries, protocols, or tools.
-- Book / paper / talk summaries when the source is publicly available.
-
-Mark `private` when the note involves any of:
-- Names of current or former colleagues, managers, reports, or interviewers.
-- Specific employers in non-public ways: project codenames, internal
-  architecture, compensation, performance reviews, hiring decisions.
-- Job-search activity: interview prep, comp negotiation, target companies,
-  reasons-for-leaving, offer comparisons.
-- Personal life: family, finances, health, relationships, legal matters,
-  living situation.
-- Critiques or hot takes about identifiable people or companies that
-  aren't already in Joe's public writing.
-- Active tasks, daily/weekly journals, blockers — anything operational
-  about Joe's current work.
-
-Edge cases:
-- An atom about a generally-applicable pattern that includes a
-  workplace-specific example: rewrite the example out and mark public,
-  OR keep the example and mark private. Do not mark public with the
-  example intact.
-- A fact about an external library mentioned during a private incident:
-  the fact is public, the incident framing is private — split into two
-  notes if needed.
-
-When in doubt: `private`.
-"""
+# Re-export VISIBILITY_CRITERIA from the canonical profile module so existing
+# consumers (gardener.py:161, 197 inline {VISIBILITY_CRITERIA};
+# gardener_distill_test.py:30 asserts it in rendered prompts) keep importing
+# from knowledge.visibility without modification. The rubric itself lives
+# once, in profile.py.
+from knowledge.profile import VISIBILITY_CRITERIA  # noqa: F401 (re-export)
 
 EffectiveVisibility = Literal["public", "private"]
 
