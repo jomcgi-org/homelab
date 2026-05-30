@@ -23,6 +23,13 @@ _WORKFLOW_DEPS = [
     "@pip//psycopg",
     "@pip//psycopg_binary",
     "@pip//pydantic",
+    # boto3: S3 object PUT + tag rotation for the serving-artifact lifecycle
+    # (WF-STORAGE). pyiceberg/duckdb can read/write S3 objects but neither can
+    # set/rotate object *tags*, which platform/004's building->current->previous
+    # ->stale state machine requires. Added by WF-STORAGE — the one storage unit
+    # that touches S3 directly; no sibling workflow unit needs it, so this single
+    # additive line stays collision-free in practice.
+    "@pip//boto3",
 ]
 
 py_library(
