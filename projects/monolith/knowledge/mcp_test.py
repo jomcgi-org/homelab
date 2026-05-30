@@ -231,6 +231,30 @@ class TestCreateNoteTool:
         text = created.read_text()
         assert "title: Short body" in text
 
+    @pytest.mark.asyncio
+    async def test_visibility_arg_writes_frontmatter(self, tmp_path, monkeypatch):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+
+        result = await create_note(
+            content="An atom about service mesh.",
+            title="Linkerd mTLS",
+            visibility="public",
+        )
+
+        text = (vault_dir / result["path"]).read_text()
+        assert "visibility: public" in text
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_visibility(self, tmp_path, monkeypatch):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+
+        result = await create_note(content="body", visibility="weird-value")
+        assert "error" in result
+
 
 class TestEditNoteTool:
     """Tests for the edit_note MCP tool."""
@@ -291,6 +315,65 @@ class TestEditNoteTool:
             }
             result = await edit_note("n1", content="x")
 
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_preserves_existing_visibility(self, tmp_path, monkeypatch):
+        """Title-only edit must not drop visibility from frontmatter.
+
+        Regression guard for the bug that nulled visibility on thousands of
+        notes prior to this fix. Mirror the file shape that the gardener
+        emits (id + title + type + visibility) and confirm the rewrite
+        keeps the visibility line.
+        """
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        note_file = vault_dir / "papers" / "attention.md"
+        note_file.parent.mkdir(parents=True)
+        note_file.write_text(
+            "---\nid: n1\ntitle: Original\ntype: atom\nvisibility: public\n---\nOld body"
+        )
+
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
+            await edit_note("n1", title="Updated Title")
+
+        text = note_file.read_text()
+        assert "visibility: public" in text
+        assert "title: Updated Title" in text
+
+    @pytest.mark.asyncio
+    async def test_sets_visibility_when_passed(self, tmp_path, monkeypatch):
+        """Explicit visibility arg writes the field even if missing before."""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        note_file = vault_dir / "papers" / "attention.md"
+        note_file.parent.mkdir(parents=True)
+        note_file.write_text("---\nid: n1\ntitle: Original\n---\nOld body")
+
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
+            await edit_note("n1", visibility="private")
+
+        assert "visibility: private" in note_file.read_text()
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_visibility(self, tmp_path, monkeypatch):
+        result = await edit_note("n1", visibility="weird")
         assert "error" in result
 
 
