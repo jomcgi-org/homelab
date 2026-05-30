@@ -179,12 +179,66 @@ def test_classifier_prompt_explicitly_forbids_appending_duplicate_keys():
     # Sanity: ensure the .format() placeholders are still intact and the prompt
     # still substitutes cleanly. Catches stray `{` / `}` accidentally introduced
     # to the prompt body.
+    from knowledge.gap_classifier import (
+        _RELEVANCE_KEEP_TEXT,
+        _RELEVANCE_SKIP_TEXT,
+    )
+    from knowledge.profile import RELEVANCE_EMPLOYER_CARVE_OUTS
+
     rendered = _CLASSIFIER_PROMPT.format(
         classifier_version=CLASSIFIER_VERSION,
         stub_list="- /tmp/example.md",
+        relevance_keep=_RELEVANCE_KEEP_TEXT,
+        relevance_skip=_RELEVANCE_SKIP_TEXT,
+        carve_outs=RELEVANCE_EMPLOYER_CARVE_OUTS,
     )
     assert CLASSIFIER_VERSION in rendered
     assert "/tmp/example.md" in rendered
+
+
+def test_classifier_prompt_inlines_relevance_rubric():
+    """Drift detector for the profile.py -> classifier prompt wiring.
+
+    PR #2378 promoted Joe's relevance rubric to typed Python constants;
+    this test pins that those constants actually reach the classifier
+    prompt rendered at runtime. If anyone refactors the .format() call
+    site without passing the rubric, the prompt would silently revert
+    to the v3 four-class-only shape and SKIP-category gaps would once
+    again leak through as external.
+    """
+    from knowledge.gap_classifier import (
+        _RELEVANCE_KEEP_TEXT,
+        _RELEVANCE_SKIP_TEXT,
+    )
+    from knowledge.profile import (
+        RELEVANCE_EMPLOYER_CARVE_OUTS,
+        RELEVANCE_KEEP,
+        RELEVANCE_SKIP,
+    )
+
+    rendered = _CLASSIFIER_PROMPT.format(
+        classifier_version=CLASSIFIER_VERSION,
+        stub_list="- /tmp/example.md",
+        relevance_keep=_RELEVANCE_KEEP_TEXT,
+        relevance_skip=_RELEVANCE_SKIP_TEXT,
+        carve_outs=RELEVANCE_EMPLOYER_CARVE_OUTS,
+    )
+
+    # A sample of KEEP domains and SKIP categories should appear verbatim.
+    assert RELEVANCE_KEEP[0]["domain"] in rendered, (
+        "first KEEP domain missing from rendered prompt"
+    )
+    assert RELEVANCE_SKIP[0]["category"] in rendered, (
+        "first SKIP category missing from rendered prompt"
+    )
+    assert RELEVANCE_EMPLOYER_CARVE_OUTS in rendered, (
+        "carve-out paragraph missing from rendered prompt"
+    )
+    # The explanatory framing that ties the rubric to the four-class decision
+    # must survive prompt edits -- this is the load-bearing instruction.
+    assert "matches SKIP" in rendered or "matches a SKIP" in rendered, (
+        "prompt must instruct that SKIP-matching terms get parked"
+    )
 
 
 def test_classifier_prompt_routes_internal_hybrid_external_to_in_review():
