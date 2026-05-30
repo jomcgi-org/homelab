@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -46,11 +47,13 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         assert "FROM knowledge.gaps" in sql
-        # SCOPE GUARD: the sweep is read-only — it must never UPDATE/mutate.
+        # SCOPE GUARD: the sweep is read-only — a pure SELECT, never a mutation.
+        # Match whole-word DML verbs only (\b) so the ``deleted_at`` column does
+        # not trip the DELETE check.
         upper = sql.upper()
-        assert "UPDATE" not in upper
-        assert "INSERT" not in upper
-        assert "DELETE" not in upper
+        assert upper.strip().startswith("SELECT")
+        for verb in ("UPDATE", "INSERT", "DELETE", "DROP", "TRUNCATE"):
+            assert re.search(rf"\b{verb}\b", upper) is None, f"mutating verb {verb}"
         self._pending = list(self._gap_rows)
 
     def fetchall(self):
