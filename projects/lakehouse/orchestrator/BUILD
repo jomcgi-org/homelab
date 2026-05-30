@@ -19,6 +19,12 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # gazelle:resolve py temporalio.client @pip//temporalio
 # gazelle:resolve py temporalio.worker @pip//temporalio
 
+# The `workflows/` subpackage is hand-managed (glob-based BUILD) so the parallel
+# Wavefront-3 workflow units can drop one `<id>.py` file each with NO BUILD edit
+# (conflict-free). Exclude it from gazelle so it isn't rewritten into per-file
+# targets that would collide across those units.
+# gazelle:exclude workflows
+
 py_library(
     name = "orchestrator",
     srcs = [
