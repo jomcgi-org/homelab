@@ -1,4 +1,5 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # The `duckdb` import name maps to the @pip//duckdb wheel. It is not yet in
@@ -25,4 +26,22 @@ py_test(
         "@pip//duckdb",
         "@pip//pytest",
     ],
+)
+
+semgrep_test(
+    name = "__init___semgrep_test",
+    srcs = ["__init__.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "query_semgrep_test",
+    srcs = ["query.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "query_test_semgrep_test",
+    srcs = ["query_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
