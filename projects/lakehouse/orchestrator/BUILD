@@ -68,18 +68,6 @@ semgrep_target_test(
 )
 
 semgrep_test(
-    name = "__init___semgrep_test",
-    srcs = ["__init__.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "client_semgrep_test",
-    srcs = ["client.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
     name = "client_test_semgrep_test",
     srcs = ["client_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
