@@ -317,7 +317,7 @@ def test_classifier_prompt_includes_person_public_peer_subclassification():
         "public-figure examples must be present so the rubric is concrete "
         "for the LLM (abstract definitions alone get misapplied)"
     )
-    assert CLASSIFIER_VERSION == "opus-4-7@v3", (
+    assert CLASSIFIER_VERSION == "opus-4-7@v4", (
         "version bump propagates into stub frontmatter so future-Joe can "
         "query for which classifier produced which atom"
     )
