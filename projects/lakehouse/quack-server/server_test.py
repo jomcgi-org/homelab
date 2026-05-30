@@ -16,7 +16,7 @@ import json
 
 import duckdb
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 import server
 from projects.lakehouse import duckdb_query
@@ -185,37 +185,50 @@ def test_consumer_terminates_malformed_message():
 
 
 # --------------------------------------------------------------------------- #
-# HTTP API
+# HTTP API (module-level handlers — no HTTP client, no httpx/TestClient)
 # --------------------------------------------------------------------------- #
 
 
 def test_healthz_returns_ok_and_version():
     con = duckdb.connect(":memory:")
     state = server.ServingState(con, version="v3")
-    app = server.create_app(state)
-    client = TestClient(app)
-
-    resp = client.get("/healthz")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "artifact_version": "v3"}
+    assert server.healthz_payload(state) == {"status": "ok", "artifact_version": "v3"}
 
 
-def test_search_requires_token_when_configured():
+def test_create_app_registers_healthz_and_search_routes():
     con = duckdb.connect(":memory:")
-    state = server.ServingState(con, version="v1")
-    app = server.create_app(state, query_token="sekret")
-    client = TestClient(app)
+    state = server.ServingState(con, version="v3")
+    app = server.create_app(state)
+    paths = {route.path for route in app.routes}
+    assert {"/healthz", "/search"}.issubset(paths)
 
-    # No token -> 401 (auth runs before the query).
-    resp = client.post("/search", json={"query": [0.1, 0.2], "k": 5})
-    assert resp.status_code == 401
+
+def test_require_query_token_rejects_missing_token():
+    # When a token is configured, a missing/invalid Authorization header -> 401.
+    with pytest.raises(HTTPException) as exc:
+        server.require_query_token(None, "sekret")
+    assert exc.value.status_code == 401
+
+
+def test_require_query_token_accepts_matching_bearer():
+    # Correct bearer token returns without raising.
+    server.require_query_token("Bearer sekret", "sekret")
+
+
+def test_require_query_token_open_when_unset():
+    # No configured token -> endpoint is open (returns without raising).
+    server.require_query_token(None, None)
 
 
 def test_search_rejects_bad_k():
     con = duckdb.connect(":memory:")
     state = server.ServingState(con, version="v1")
-    app = server.create_app(state)  # no token -> auth open
-    client = TestClient(app)
+    with pytest.raises(HTTPException) as exc:
+        server.do_search(state, server.SearchRequest(query=[0.1, 0.2], k=0))
+    assert exc.value.status_code == 400
 
-    resp = client.post("/search", json={"query": [0.1, 0.2], "k": 0})
-    assert resp.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        server.do_search(
+            state, server.SearchRequest(query=[0.1, 0.2], k=server._MAX_SEARCH_K + 1)
+        )
+    assert exc.value.status_code == 400

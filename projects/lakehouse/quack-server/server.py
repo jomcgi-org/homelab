@@ -228,11 +228,14 @@ class SearchRequest(BaseModel):
     k: int = 10
 
 
-def _require_query_token(authorization: str | None, expected: str | None) -> None:
+def require_query_token(authorization: str | None, expected: str | None) -> None:
     """Enforce the ``QUACK_QUERY_TOKEN`` bearer token when one is configured.
 
     When ``expected`` is unset the endpoint is open (dev / in-cluster only). When
-    set, the request must carry ``Authorization: Bearer <token>``.
+    set, the request must carry ``Authorization: Bearer <token>``. Raises
+    :class:`fastapi.HTTPException` (401) on a missing/invalid token.
+
+    Module-level + free of FastAPI request objects so tests can call it directly.
     """
     if not expected:
         return
@@ -240,29 +243,43 @@ def _require_query_token(authorization: str | None, expected: str | None) -> Non
         raise HTTPException(status_code=401, detail="invalid or missing query token")
 
 
+def healthz_payload(state: ServingState) -> dict[str, Any]:
+    """Liveness body: ok + the currently-served artifact version (pure)."""
+    return {"status": "ok", "artifact_version": state.version}
+
+
+def do_search(state: ServingState, req: SearchRequest) -> dict[str, Any]:
+    """Run a VSS search for ``req`` against ``state`` (validates ``k``).
+
+    Raises :class:`fastapi.HTTPException` (400) for an out-of-range ``k``.
+    Module-level so tests exercise the handler logic without an HTTP client.
+    """
+    if req.k <= 0 or req.k > _MAX_SEARCH_K:
+        raise HTTPException(status_code=400, detail=f"k must be 1..{_MAX_SEARCH_K}")
+    results = state.search(req.query, req.k)
+    return {"results": results, "artifact_version": state.version}
+
+
 def create_app(state: ServingState, *, query_token: str | None = None) -> FastAPI:
     """Build the FastAPI app bound to ``state``.
 
-    Separated from :func:`main` so tests can construct the app over an in-memory
-    connection without any NATS / network setup.
+    Thin route wrappers delegate to the module-level handlers
+    (:func:`healthz_payload`, :func:`do_search`); the logic is unit-tested there,
+    so this only wires routing + auth. Separated from :func:`main` so the app can
+    be constructed over an in-memory connection with no NATS / network setup.
     """
     app = FastAPI(title="quack-server", docs_url=None, redoc_url=None)
 
     def auth(authorization: str | None = Header(default=None)) -> None:
-        _require_query_token(authorization, query_token)
+        require_query_token(authorization, query_token)
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        """Liveness probe: ok + the currently-served artifact version."""
-        return {"status": "ok", "artifact_version": state.version}
+        return healthz_payload(state)
 
     @app.post("/search")
     def search(req: SearchRequest, _: None = Depends(auth)) -> dict[str, Any]:
-        """VSS nearest-neighbour search over the current serving artifact."""
-        if req.k <= 0 or req.k > _MAX_SEARCH_K:
-            raise HTTPException(status_code=400, detail=f"k must be 1..{_MAX_SEARCH_K}")
-        results = state.search(req.query, req.k)
-        return {"results": results, "artifact_version": state.version}
+        return do_search(state, req)
 
     return app
 
