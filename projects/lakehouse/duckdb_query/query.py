@@ -18,12 +18,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
 
 import duckdb
-
-if TYPE_CHECKING:
-    from duckdb import DuckDBPyConnection
 
 # --------------------------------------------------------------------------- #
 # Defaults
@@ -136,7 +132,7 @@ def vector_search_sql(table: str, k: int) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def load_extensions(con: DuckDBPyConnection) -> None:
+def load_extensions(con: duckdb.DuckDBPyConnection) -> None:
     """``INSTALL`` + ``LOAD`` the lakehouse DuckDB extensions on ``con``.
 
     Installs ``httpfs``, ``iceberg`` and ``vss``. The first ``INSTALL`` of each
@@ -153,7 +149,7 @@ def connect(
     *,
     read_only_artifact: str | None = None,
     env: Mapping[str, str] | None = None,
-) -> DuckDBPyConnection:
+) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB connection wired for the SeaweedFS lakehouse.
 
     Steps performed:
