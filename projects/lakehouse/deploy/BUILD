@@ -1,5 +1,11 @@
 load("//bazel/helm:defs.bzl", "argocd_app")
 
+# gazelle:argocd disabled
+#
+# Hand-maintained (see ../chart/BUILD). Gazelle's helm extension would regenerate
+# this argocd_app without our semgrep_exclude_rules and would not fix the chart's
+# cross-package visibility, so we keep both BUILDs out of gazelle's hands.
+#
 # Path-based ArgoCD Application for the event-sourced lakehouse worker/quack/
 # dispatcher Deployments + KEDA scalers. Hand-written (not left to gazelle) so we
 # can carry semgrep_exclude_rules — gazelle's helm extension manages only chart/
