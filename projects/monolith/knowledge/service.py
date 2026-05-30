@@ -43,9 +43,13 @@ _CLASSIFY_INTERVAL_SECS = 60  # 1-minute tick
 # risking a second replica racing Edit calls on the same stubs.
 _CLASSIFY_TTL_SECS = 360  # 300s subprocess timeout + 60s headroom
 _CLASSIFY_BATCH_SIZE = 10
-_RESEARCH_INTERVAL_SECS = 86400  # once per day
+_RESEARCH_INTERVAL_SECS = 900  # every 15 minutes
 _RESEARCH_TTL_SECS = (
-    1200  # 20min lock-lease (Sonnet research runs can be slow with web tools)
+    # 20min lock-lease (Sonnet research runs can be slow with web tools).
+    # Exceeds the 15min interval intentionally: if a research tick takes
+    # longer than the interval, the next tick simply waits until the lock
+    # expires rather than racing against the in-flight run.
+    1200
 )
 _GIT_READY_SENTINEL = ".git-ready"
 _SYNC_READY_SENTINEL = ".sync-ready"
