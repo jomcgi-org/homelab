@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from temporalio import activity, workflow
+from temporalio.common import RetryPolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 with workflow.unsafe.imports_passed_through():
@@ -250,7 +251,7 @@ class GapDrainWorkflow:
             gap_context,
             start_to_close_timeout=timedelta(hours=1),
             heartbeat_timeout=timedelta(minutes=10),
-            retry_policy=workflow.RetryPolicy(
+            retry_policy=RetryPolicy(
                 initial_interval=timedelta(seconds=5),
                 backoff_coefficient=2.0,
                 # Cap backoff at 1h+ for external-dependency outages
@@ -278,7 +279,7 @@ class GapDrainSweepWorkflow:
             find_ready_gaps,
             limit,
             start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=workflow.RetryPolicy(
+            retry_policy=RetryPolicy(
                 initial_interval=timedelta(seconds=1),
                 backoff_coefficient=2.0,
                 maximum_interval=timedelta(minutes=1),

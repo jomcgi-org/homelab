@@ -50,6 +50,11 @@ Usage:
   value: {{ .Values.env.seaweedfsS3Endpoint | quote }}
 - name: ICEBERG_WAREHOUSE
   value: {{ .Values.env.icebergWarehouse | quote }}
+# DuckDB writes its extension cache to $HOME/.duckdb; the containers are
+# read-only-rootfs (HOME unset => /.duckdb fails). Point HOME at the writable
+# /tmp emptyDir every pod mounts, so httpfs/iceberg/vss INSTALL/LOAD works.
+- name: HOME
+  value: /tmp
 {{- end -}}
 
 {{/*
