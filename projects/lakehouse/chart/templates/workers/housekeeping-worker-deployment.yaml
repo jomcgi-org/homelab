@@ -3,8 +3,9 @@
 # workflow. min=1 max=2 (ScaledObject owns replicas, so it is not set here).
 #
 # Backfill reads monolith-pg READ-ONLY via DATABASE_URL, injected from the
-# 1Password-synced `-pg` Secret (key `uri`). Only this pool gets DATABASE_URL,
-# and only when the PG 1Password item is configured.
+# `<fullname>-pg` Secret (key `uri`) that Kyverno clones from
+# monolith/monolith-pg-app into this namespace (clone-monolith-pg-app policy).
+# Only this pool gets DATABASE_URL, and only when .Values.pg.enabled is true.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,7 +43,11 @@ spec:
             {{- if .Values.onepassword.s3.itemPath }}
             {{- include "lakehouse.s3Env" . | nindent 12 }}
             {{- end }}
-            {{- if .Values.onepassword.pg.itemPath }}
+            {{- if .Values.pg.enabled }}
+            # READ-ONLY monolith-pg URI for the backfill. The `<fullname>-pg`
+            # Secret is cloned from monolith/monolith-pg-app into this namespace
+            # by the Kyverno ClusterPolicy `clone-monolith-pg-app` (key `uri`) --
+            # no 1Password round-trip for the cluster-generated credential.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

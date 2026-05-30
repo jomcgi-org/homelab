@@ -159,10 +159,19 @@ dispatchers:
 # dummy (duckdb/duckdb); wired through 1Password so enabling auth later is a
 # values change, not a template change.
 # ---------------------------------------------------------------------------
+
+# Postgres backfill credential. When enabled, the housekeeping worker gets
+# DATABASE_URL (READ-ONLY) from the `<fullname>-pg` Secret that the Kyverno
+# ClusterPolicy `clone-monolith-pg-app` clones from monolith/monolith-pg-app
+# (key `uri`) into this namespace — no 1Password item, no manual step. Enable
+# in deploy/ once the lakehouse namespace exists (Kyverno backfills it).
+pg:
+  enabled: false
+
 onepassword:
   pg:
-    # Empty => no OnePasswordItem rendered and the housekeeping worker omits
-    # DATABASE_URL (backfill disabled). Set in deploy/ to enable PG backfill.
+    # DEPRECATED for PG: superseded by the Kyverno clone above. Leave empty.
+    # (Kept so the legacy OnePasswordItem template stays inert, not removed.)
     itemPath: ""
   s3:
     # Empty => no OnePasswordItem rendered; pods fall back to DuckDB's dummy

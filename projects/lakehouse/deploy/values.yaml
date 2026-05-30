@@ -24,15 +24,15 @@ dispatchers:
   image:
     tag: main
 
-onepassword:
-  pg:
-    # MANUAL PREREQUISITE: 1Password item with a `uri` field = a libpq postgres
-    # URL built from user `app`, the CNPG-generated monolith-pg `app` password,
-    # host monolith-pg-rw.monolith.svc.cluster.local, port 5432, db monolith.
-    # Used read-only by the backfill.
-    itemPath: vaults/k8s-homelab/items/lakehouse-pg
-  s3:
-    # MANUAL PREREQUISITE: 1Password item with S3_ACCESS_KEY_ID /
-    # S3_SECRET_ACCESS_KEY fields (dummy duckdb/duckdb fine while SeaweedFS S3
-    # auth is disabled).
-    itemPath: vaults/k8s-homelab/items/lakehouse-s3
+# PG backfill credential is cloned by Kyverno (clone-monolith-pg-app) from
+# monolith/monolith-pg-app into the lakehouse ns as `<fullname>-pg` (key `uri`)
+# — no 1Password round-trip for the cluster-generated credential. Just enable
+# the housekeeping worker's DATABASE_URL wiring.
+pg:
+  enabled: true
+
+# No `onepassword:` overrides here: the PG credential is Kyverno-cloned (not a
+# 1Password item) and S3 falls back to DuckDB dummies (SeaweedFS auth off). The
+# chart defaults leave both itemPaths unset so their OnePasswordItems don't
+# render. (Omitted rather than set to "" — empty deploy itemPaths are a flagged
+# correctness smell, no-empty-1password-itempath.)
