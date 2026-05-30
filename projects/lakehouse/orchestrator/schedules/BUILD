@@ -42,12 +42,6 @@ py_test(
 )
 
 semgrep_test(
-    name = "init_semgrep_test",
-    srcs = ["__init__.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
     name = "build_serving_semgrep_test",
     srcs = ["build_serving.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
@@ -74,5 +68,11 @@ semgrep_test(
 semgrep_test(
     name = "schedules_test_semgrep_test",
     srcs = ["schedules_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "__init___semgrep_test",
+    srcs = ["__init__.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
