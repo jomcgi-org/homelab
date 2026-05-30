@@ -99,8 +99,14 @@ def test_rows_to_arrow_types():
 
 
 def test_rows_to_arrow_preserves_values():
-    """Scalar and list values survive the round-trip into arrow."""
-    table = rows_to_arrow(_sample_rows(), NOTE_SCHEMA)
+    """Scalar and list values survive the round-trip into arrow.
+
+    The timestamptz ``occurred_at`` column is dropped before ``to_pylist`` —
+    materializing a tz-aware datetime needs the IANA tz database, which the
+    hermetic test sandbox doesn't ship (zoneinfo raises ZoneInfoNotFoundError
+    for ``UTC``). We only need to round-trip the scalar/list payload columns.
+    """
+    table = rows_to_arrow(_sample_rows(), NOTE_SCHEMA).drop_columns(["occurred_at"])
     py = table.to_pylist()
     assert py[0]["entity_id"] == "note-1"
     assert py[0]["chunk_index"] == 0
