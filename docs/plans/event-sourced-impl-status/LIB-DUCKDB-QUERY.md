@@ -77,6 +77,19 @@ the module-qualified `duckdb.DuckDBPyConnection` annotation (string-evaluated un
 `from __future__ import annotations`), so gazelle only sees the top-level
 `import duckdb` and the single resolve directive covers everything.
 
+## Semgrep `no-hardcoded-k8s-service-url` exclusion
+
+CI semgrep flagged `DEFAULT_S3_ENDPOINT = "seaweedfs-s3.seaweedfs.svc.cluster.local:8333"`
+under the `no-hardcoded-k8s-service-url` rule. The unit spec **requires** this exact
+default (endpoint "from `SEAWEEDFS_S3_ENDPOINT` (default `seaweedfs-s3...:8333`)"), and
+the env override is present — which is precisely the mitigation the rule guards against
+(release-rename drift). Resolved per the documented pattern: a
+`# gazelle:semgrep_exclude_rules no-hardcoded-k8s-service-url` directive plus
+`exclude_rules = ["no-hardcoded-k8s-service-url"]` on the `semgrep_test` targets
+(`# nosemgrep` is not honored by these targets). This is a query helper, not a Go
+application default, so the override-then-default shape is appropriate.
+
 ## Status
 
-Implemented. See PR on `feat/lakehouse-lib-duckdb`.
+Implemented. See PR on `feat/lakehouse-lib-duckdb`. pytest (4 tests) passed on the
+first Test run; only the semgrep target needed the exclusion above.
