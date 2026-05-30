@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: temporal-databases
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    # Wave 1: databases must exist before the Temporal app (wave 2) bootstraps.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi/homelab.git
+    path: projects/platform/temporal-databases
+    targetRevision: HEAD
+    # Plain kustomize (raw CNPG Database CRs) — no helm block. ArgoCD
+    # auto-detects the kustomization.yaml at this path.
+  destination:
+    server: https://kubernetes.default.svc
+    # CNPG Database CRs are namespaced and MUST live in the same namespace as
+    # the Cluster they reference (monolith-pg). The monolith namespace already
+    # exists, so CreateNamespace is intentionally omitted. This Application only
+    # manages the two Database CRs it declares; prune is scoped to those.
+    namespace: monolith
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Server-side apply keeps the foreign-owned monolith namespace's other
+      # resources untouched when applying these CRs.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
