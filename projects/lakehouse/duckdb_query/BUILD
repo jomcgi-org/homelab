@@ -8,6 +8,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # the requirements lock but did not regenerate the manifest), so resolve it
 # locally here to keep this unit independent of the shared manifest.
 # gazelle:resolve py duckdb @pip//duckdb
+# gazelle:resolve py certifi @pip//certifi
 
 py_library(
     name = "duckdb_query",
@@ -16,7 +17,10 @@ py_library(
         "query.py",
     ],
     visibility = ["//:__subpackages__"],
-    deps = ["@pip//duckdb"],
+    deps = [
+        "@pip//certifi",
+        "@pip//duckdb",
+    ],
 )
 
 py_test(

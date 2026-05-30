@@ -179,6 +179,13 @@ def connect(
     # emptyDir every lakehouse pod mounts).
     duckdb_home = (env or os.environ).get("DUCKDB_HOME", "/tmp")
     con = duckdb.connect(config={"home_directory": duckdb_home})
+    # The minimal hardened image has no system CA bundle DuckDB can find, so the
+    # HTTPS extension download from extensions.duckdb.org fails SSL verification
+    # ("Problem with the SSL CA cert"). DuckDB uses its own `ca_cert_file` (not
+    # OpenSSL/$SSL_CERT_FILE); point it at certifi's bundle (a hard dep).
+    import certifi
+
+    con.execute(f"SET ca_cert_file = '{certifi.where()}'")
     load_extensions(con)
     con.execute(s3_secret_sql(env))
     if read_only_artifact is not None:
