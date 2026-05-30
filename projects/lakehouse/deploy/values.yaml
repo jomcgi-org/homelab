@@ -10,9 +10,13 @@
 worker:
   image:
     tag: main
+    # `main` is mutable (re-pushed each merge) and this path-based chart isn't
+    # digest-pinned, so Always ensures restarted pods pull CI rebuilds.
+    pullPolicy: Always
 quack:
   image:
     tag: main
+    pullPolicy: Always
   # Front the read path with Cloudflare CDN once the public hostname is live.
   cfIngress:
     enabled: true
@@ -23,6 +27,7 @@ quack:
 dispatchers:
   image:
     tag: main
+    pullPolicy: Always
 
 # PG backfill credential is cloned by Kyverno (clone-monolith-pg-app) from
 # monolith/monolith-pg-app into the lakehouse ns as `<fullname>-pg` (key `uri`)
