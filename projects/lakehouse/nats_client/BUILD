@@ -18,7 +18,10 @@ py_library(
 py_test(
     name = "client_test",
     srcs = ["client_test.py"],
-    deps = ["//projects/lakehouse"],
+    deps = [
+        ":nats_client",
+        "@pip//pytest",
+    ],
 )
 
 semgrep_test(
