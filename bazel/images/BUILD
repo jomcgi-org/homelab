@@ -52,6 +52,7 @@ multirun(
         "//projects/grimoire/ws-gateway:image.push",
         "//projects/hikes/update_forecast:update_image.push",
         "//projects/lakehouse/image:image.push",
+        "//projects/lakehouse/quack-server:image.push",
         "//projects/monolith/chart:chart.push",
         "//projects/monolith/frontend:image.push",
         "//projects/monolith/obsidian-image:image.push",
