@@ -1,5 +1,6 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Temporal orchestration substrate (ADR agents/015): client + worker skeleton.
@@ -34,16 +35,16 @@ py_venv_binary(
     srcs = ["worker.py"],
     main = "worker.py",
     visibility = ["//:__subpackages__"],
-    deps = ["@pip//temporalio"],
+    deps = [
+        ":orchestrator",
+        "@pip//temporalio",
+    ],
 )
 
 py_test(
     name = "client_test",
     srcs = ["client_test.py"],
-    deps = [
-        ":orchestrator",
-        "@pip//pytest",
-    ],
+    deps = [":orchestrator"],
 )
 
 py_test(
@@ -52,7 +53,37 @@ py_test(
     deps = [
         ":orchestrator",
         "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//temporalio",
     ],
+)
+
+semgrep_target_test(
+    name = "worker_semgrep_test",
+    lockfiles = ["//bazel/requirements:all.txt"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
+    target = ":worker",
+)
+
+semgrep_test(
+    name = "__init___semgrep_test",
+    srcs = ["__init__.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "client_semgrep_test",
+    srcs = ["client.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "client_test_semgrep_test",
+    srcs = ["client_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "worker_test_semgrep_test",
+    srcs = ["worker_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )

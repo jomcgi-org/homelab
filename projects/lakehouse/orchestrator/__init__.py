@@ -44,7 +44,9 @@ def _default_target() -> str:
     yielding a working zero-config default. ``client.resolve_target`` prefers
     the ``TEMPORAL_TARGET`` env var over this.
     """
-    host = f"{DEFAULT_FRONTEND_SERVICE}.{DEFAULT_FRONTEND_NAMESPACE}.{_CLUSTER_DNS_SUFFIX}"
+    host = (
+        f"{DEFAULT_FRONTEND_SERVICE}.{DEFAULT_FRONTEND_NAMESPACE}.{_CLUSTER_DNS_SUFFIX}"
+    )
     return f"{host}:{DEFAULT_FRONTEND_PORT}"
 
 
