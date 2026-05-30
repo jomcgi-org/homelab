@@ -1,18 +1,19 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Temporal orchestration substrate (ADR agents/015): client + worker skeleton.
-# Real workflows/schedules and the worker image (py_venv_binary entrypoint
-# `python -m projects.lakehouse.orchestrator.worker`) land in Wavefront 3.
-# ci-format-bot (gazelle) normalizes this file and adds semgrep_test targets.
+# The `worker` py_venv_binary is the entrypoint
+# (`python -m projects.lakehouse.orchestrator.worker`); Wavefront 3 wraps it in
+# an apko image. ci-format-bot (gazelle) normalizes this file and adds
+# semgrep_test targets.
 #
 # The `temporalio` wheel is in the pip lock (added by LIB-SCAFFOLD) but the
-# generated gazelle module manifest (bazel/tools/python/gazelle_python.yaml) was
-# not regenerated to include it, so gazelle can't auto-resolve `import
-# temporalio`. Until that shared manifest is regenerated (a serialized scaffold
-# step — the file is GENERATED / DO NOT EDIT and carries a content check),
-# resolve the imports explicitly here. These directives are local to this
-# package and the documented gazelle escape hatch for this exact case.
+# generated gazelle module manifest (bazel/tools/python/gazelle_python.yaml,
+# GENERATED / DO NOT EDIT, content-checked) was not regenerated to include it,
+# so gazelle can't auto-resolve `import temporalio`. Until that shared manifest
+# is regenerated (a serialized scaffold step), resolve the imports explicitly
+# here — the documented gazelle escape hatch, local to this package.
 # gazelle:resolve py temporalio @pip//temporalio
 # gazelle:resolve py temporalio.client @pip//temporalio
 # gazelle:resolve py temporalio.worker @pip//temporalio
@@ -24,6 +25,14 @@ py_library(
         "client.py",
         "worker.py",
     ],
+    visibility = ["//:__subpackages__"],
+    deps = ["@pip//temporalio"],
+)
+
+py_venv_binary(
+    name = "worker",
+    srcs = ["worker.py"],
+    main = "worker.py",
     visibility = ["//:__subpackages__"],
     deps = ["@pip//temporalio"],
 )
