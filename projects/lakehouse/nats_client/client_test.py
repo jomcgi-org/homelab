@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from projects.lakehouse.nats_client import client as client_module
+import projects.lakehouse.nats_client.client as client_module
 from projects.lakehouse.nats_client.client import (
     DEFAULT_URL,
     MSG_ID_HEADER,
