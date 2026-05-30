@@ -28,8 +28,8 @@ py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//projects/lakehouse",
         "//projects/lakehouse/events",
-        "//projects/lakehouse/nats_client",
         "//projects/lakehouse/orchestrator",
         "@pip//temporalio",
     ],
@@ -46,8 +46,8 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
     deps = [
         ":dispatchers",
+        "//projects/lakehouse",
         "//projects/lakehouse/events",
-        "//projects/lakehouse/nats_client",
         "//projects/lakehouse/orchestrator",
         "@pip//temporalio",
     ],
@@ -89,30 +89,6 @@ semgrep_target_test(
     rules = ["//bazel/semgrep/rules:python_rules"],
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
     target = ":main",
-)
-
-semgrep_test(
-    name = "__init___semgrep_test",
-    srcs = ["__init__.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "artifact_ready_semgrep_test",
-    srcs = ["artifact_ready.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "gap_ready_semgrep_test",
-    srcs = ["gap_ready.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "run_semgrep_test",
-    srcs = ["run.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(
