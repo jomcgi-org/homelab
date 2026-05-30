@@ -1,0 +1,38 @@
+# Environment-specific overrides for the lakehouse chart (layered on top of
+# projects/lakehouse/chart/values.yaml). AUTHOR-ONLY this wavefront: the chart
+# is CI-validated but NOT wired into ArgoCD; the orchestrator enables it after
+# live Wavefront-1 verification. The 1Password itemPaths below are MANUAL
+# PREREQUISITES -- the items must exist and be populated before the housekeeping
+# worker can read PG and before the Quack /search token is enforced.
+
+# Pin the worker/quack/dispatcher images to the live tag. The Bazel image
+# pipeline manages digest pinning at build time; leave repository defaults.
+worker:
+  image:
+    tag: main
+quack:
+  image:
+    tag: main
+  # Front the read path with Cloudflare CDN once the public hostname is live.
+  cfIngress:
+    enabled: true
+    hostname: quack.jomcgi.dev
+  queryToken:
+    # MANUAL PREREQUISITE: 1Password item with a QUACK_QUERY_TOKEN field.
+    onepasswordItemPath: vaults/k8s-homelab/items/lakehouse-quack-query-token
+dispatchers:
+  image:
+    tag: main
+
+onepassword:
+  pg:
+    # MANUAL PREREQUISITE: 1Password item with a `uri` field = a libpq postgres
+    # URL built from user `app`, the CNPG-generated monolith-pg `app` password,
+    # host monolith-pg-rw.monolith.svc.cluster.local, port 5432, db monolith.
+    # Used read-only by the backfill.
+    itemPath: vaults/k8s-homelab/items/lakehouse-pg
+  s3:
+    # MANUAL PREREQUISITE: 1Password item with S3_ACCESS_KEY_ID /
+    # S3_SECRET_ACCESS_KEY fields (dummy duckdb/duckdb fine while SeaweedFS S3
+    # auth is disabled).
+    itemPath: vaults/k8s-homelab/items/lakehouse-s3

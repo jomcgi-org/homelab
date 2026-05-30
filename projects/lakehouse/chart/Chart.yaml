@@ -1,0 +1,10 @@
+apiVersion: v2
+name: lakehouse
+description: >-
+  Event-sourced lakehouse worker pools (Temporal task-queue Deployments + KEDA
+  autoscalers), the hot-swap Quack serving layer fronted by Cloudflare, and the
+  NATS->Iceberg/serving dispatchers. ADRs agents/015 (Temporal worker pools) and
+  platform/004 (Iceberg lakehouse + hot-swap Quack serving).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,28 @@
+{{- /*
+KEDA ScaledObject for the gap-drain worker pool. Scales the Deployment on the
+Temporal `gap-drain` task-queue depth. Persistent pool: min=2 always warm,
+max=10 (ADR 015). KEDA Temporal scaler:
+https://keda.sh/docs/latest/scalers/temporal/
+*/ -}}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-gap-drain-worker
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gap-drain-worker
+spec:
+  scaleTargetRef:
+    name: {{ include "lakehouse.fullname" . }}-gap-drain-worker
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.pools.gapDrain.minReplicas }}
+  maxReplicaCount: {{ .Values.pools.gapDrain.maxReplicas }}
+  triggers:
+    - type: temporal
+      metadata:
+        endpoint: {{ .Values.env.temporalTarget | quote }}
+        namespace: {{ .Values.temporalNamespace | quote }}
+        taskQueue: {{ .Values.pools.gapDrain.taskQueue | quote }}
+        queueTypes: {{ .Values.keda.queueTypes | quote }}
+        targetQueueSize: {{ .Values.pools.gapDrain.targetQueueSize | quote }}

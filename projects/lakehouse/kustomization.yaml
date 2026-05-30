@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Aggregator for the event-sourced lakehouse. INTENTIONALLY EMPTY this wavefront:
+# the W4 chart (./deploy) is AUTHOR-ONLY and must stay inert until the
+# orchestrator verifies Wavefront-1 live, then wires it by adding `- ./deploy`
+# here. Keeping this aggregator (rather than letting the home-cluster generator
+# auto-discover ./deploy directly) is what keeps the lakehouse Application
+# unsynced: the root references `projects/lakehouse`, which currently resolves to
+# nothing, so ArgoCD never creates the Application.
+resources: []
