@@ -12,6 +12,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 _WORKFLOW_DEPS = [
     "//projects/lakehouse/events",
+    # registry/ is a separate subpackage from //projects/lakehouse/events (the
+    # `events` target does not include it). Workflows that build typed event
+    # payloads (e.g. NoteCreatedPayload for the backfill) need it explicitly.
+    "//projects/lakehouse/events/registry",
     "//projects/lakehouse/nats_client",
     "//projects/lakehouse/iceberg",
     "//projects/lakehouse/duckdb_query",
