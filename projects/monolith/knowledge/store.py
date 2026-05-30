@@ -213,6 +213,7 @@ class KnowledgeStore:
         query_embedding: list[float],
         limit: int = 20,
         type_filter: str | None = None,
+        public_only: bool = False,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -254,6 +255,8 @@ class KnowledgeStore:
         )
         if type_filter is not None:
             notes_stmt = notes_stmt.where(Note.type == type_filter)
+        if public_only:
+            notes_stmt = notes_stmt.where(Note.visibility == "public")
 
         note_rows = self.session.execute(notes_stmt).all()
         if not note_rows:

@@ -14,6 +14,7 @@ can override it with a deterministic fake via ``app.dependency_overrides``.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -23,12 +24,20 @@ from typing import Literal
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app.db import get_session
 from knowledge import frontmatter
+from knowledge.chat import (
+    MAX_CONTEXT_NOTES,
+    RATE_LIMIT_RPM,
+    _build_context,
+    public_limiter,
+    stream_chat_response,
+)
 from knowledge.gaps import (
     answer_gap,
     approve_gap,
@@ -870,3 +879,122 @@ def reset_note_visibility_endpoint(
     except ValueError as exc:
         raise _map_note_error(exc) from exc
     return _note_to_review_dict(note, vault_root)
+
+
+# ── Notes chat ──────────────────────────────────────────────────────────────
+
+
+class ChatRequest(BaseModel):
+    question: str
+
+
+def _rate_limit_headers(remaining: int, reset_epoch: float) -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(RATE_LIMIT_RPM),
+        "X-RateLimit-Remaining": str(remaining),
+        "X-RateLimit-Reset": str(math.ceil(reset_epoch)),
+        "Cache-Control": "no-store",
+    }
+
+
+@router.post("/public/chat")
+async def public_notes_chat(
+    body: ChatRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
+) -> StreamingResponse:
+    """RAG chat over public notes only, rate-limited per IP.
+
+    Streams Server-Sent Events with ``{"type": "text_chunk", "text": "..."}``
+    events and a terminal ``{"type": "done"}``.
+
+    Rate limit headers (``X-RateLimit-*``) are set on the response.
+    When the limit is exceeded returns 429 with a JSON body instead of a stream.
+    """
+    ip = request.client.host if request.client else "unknown"
+    allowed, remaining, reset_epoch = await public_limiter.check(ip)
+
+    headers = _rate_limit_headers(remaining, reset_epoch)
+
+    if not allowed:
+        import json
+
+        reset_in = max(0, math.ceil(reset_epoch - __import__("time").time()))
+        body_bytes = json.dumps(
+            {
+                "error": "rate_limited",
+                "message": f"Public chat is rate-limited to {RATE_LIMIT_RPM} req/min on in-cluster infra. "
+                f"Retry in {reset_in}s.",
+                "retry_after": reset_in,
+            }
+        ).encode()
+        return Response(
+            content=body_bytes,
+            status_code=429,
+            media_type="application/json",
+            headers=headers,
+        )
+
+    if len(body.question.strip()) < 3:
+        raise HTTPException(400, "question too short")
+
+    try:
+        vector = await embed_client.embed(body.question)
+    except Exception:
+        logger.exception("public_notes_chat: embedding failed")
+        raise HTTPException(503, "embedding unavailable")
+
+    results = KnowledgeStore(session).search_notes_with_context(
+        query_embedding=vector,
+        limit=MAX_CONTEXT_NOTES,
+        public_only=True,
+    )
+    context = _build_context(results)
+
+    async def _generate():
+        async for chunk in stream_chat_response(body.question, context):
+            yield chunk
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
+@router.post("/chat")
+async def private_notes_chat(
+    body: ChatRequest,
+    session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
+) -> StreamingResponse:
+    """RAG chat over all notes (public + private).
+
+    Protected by Cloudflare Access at the ingress level; no app-level
+    rate limit applied here.
+    """
+    if len(body.question.strip()) < 3:
+        raise HTTPException(400, "question too short")
+
+    try:
+        vector = await embed_client.embed(body.question)
+    except Exception:
+        logger.exception("private_notes_chat: embedding failed")
+        raise HTTPException(503, "embedding unavailable")
+
+    results = KnowledgeStore(session).search_notes_with_context(
+        query_embedding=vector,
+        limit=MAX_CONTEXT_NOTES,
+    )
+    context = _build_context(results)
+
+    async def _generate():
+        async for chunk in stream_chat_response(body.question, context):
+            yield chunk
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store"},
+    )

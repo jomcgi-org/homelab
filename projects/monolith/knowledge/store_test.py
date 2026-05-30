@@ -488,6 +488,30 @@ class TestSearchNotesWithContext:
         assert results[0]["note_id"] == "n1"
         assert results[0]["type"] == "paper"
 
+    def test_public_only_excludes_private_notes(self):
+        _upsert(
+            self.store,
+            note_id="pub",
+            path="pub.md",
+            title="Public Note",
+            metadata=_meta(title="Public Note", visibility="public"),
+            n_chunks=1,
+        )
+        _upsert(
+            self.store,
+            note_id="priv",
+            path="priv.md",
+            title="Private Note",
+            metadata=_meta(title="Private Note", visibility="private"),
+            n_chunks=1,
+        )
+        results = self.store.search_notes_with_context(
+            query_embedding=[0.0] * 1024, public_only=True
+        )
+        ids = {r["note_id"] for r in results}
+        assert "pub" in ids
+        assert "priv" not in ids
+
     def test_empty_db_returns_empty_list(self):
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
         assert results == []

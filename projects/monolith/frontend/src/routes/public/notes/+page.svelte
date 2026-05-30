@@ -4,6 +4,7 @@
   import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
   import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
   import StatusBar from "$lib/components/notes/StatusBar.svelte";
+  import NotesChat from "$lib/components/notes/NotesChat.svelte";
 
   let { data } = $props();
 
@@ -69,6 +70,7 @@
       onClose={() => (selectedId = null)}
       apiBase="/api/knowledge/public/notes"
     />
+    <NotesChat apiBase="/api/knowledge/public" isPublic={true} />
   </div>
 </div>
 
