@@ -35,7 +35,10 @@ py_library(
 py_test(
     name = "catalog_test",
     srcs = ["catalog_test.py"],
-    deps = [":iceberg"],
+    deps = [
+        ":iceberg",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
@@ -45,6 +48,7 @@ py_test(
         ":iceberg",
         "//projects/lakehouse/iceberg/tables",
         "@pip//pyarrow",
+        "@pip//pytest",
     ],
 )
 
@@ -54,6 +58,7 @@ py_test(
     deps = [
         "//projects/lakehouse/iceberg/tables",
         "@pip//pyiceberg",
+        "@pip//pytest",
     ],
 )
 

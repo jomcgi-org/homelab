@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from pyiceberg.schema import Schema
 
 from projects.lakehouse.iceberg.tables import TABLES
@@ -56,18 +57,18 @@ def test_tables_values_are_schemas():
         assert isinstance(schema, Schema), f"{name} is not a Schema"
 
 
-def test_note_events_has_envelope_and_payload():
-    """note_events carries the full envelope + note payload columns."""
-    names = _field_names(TABLES["note_events"])
+@pytest.mark.parametrize(
+    ("table_name", "payload_fields"),
+    [
+        ("note_events", NOTE_PAYLOAD_FIELDS),
+        ("gap_events", GAP_PAYLOAD_FIELDS),
+    ],
+)
+def test_table_has_envelope_and_payload(table_name, payload_fields):
+    """Each domain table carries the full envelope + its payload columns."""
+    names = _field_names(TABLES[table_name])
     assert ENVELOPE_FIELDS <= names
-    assert NOTE_PAYLOAD_FIELDS <= names
-
-
-def test_gap_events_has_envelope_and_payload():
-    """gap_events carries the full envelope + gap payload columns."""
-    names = _field_names(TABLES["gap_events"])
-    assert ENVELOPE_FIELDS <= names
-    assert GAP_PAYLOAD_FIELDS <= names
+    assert payload_fields <= names
 
 
 def test_envelope_required_flags():
