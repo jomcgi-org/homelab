@@ -1,0 +1,118 @@
+# Idempotent Job: create the `warehouse` S3 bucket on SeaweedFS.
+#
+# Approach (option B): reuse the SAME image the cluster already runs
+# (chrislusf/seaweedfs:3.73, appVersion of the deployed chart) and drive the
+# master via `weed shell`. This avoids pulling a separate aws-cli image and
+# needs no S3 credentials — `enableAuth: false` on the S3 gateway and the
+# shell talks straight to the master over the cluster network.
+#
+# Idempotency: `weed shell` is a command interpreter, not a POSIX shell, so we
+# cannot branch inside it. Instead we first dump the bucket list with one
+# `weed shell` invocation, grep for `warehouse` at the POSIX-shell level, and
+# only run `s3.bucket.create` if the bucket is absent. This makes the Job safe
+# to re-run — ArgoCD recreates it on every sync via the PreSync hook below.
+#
+# Replication: created with `-replication 000` (no replication). The cluster is
+# single-node for SeaweedFS today (1 master / 1 volume replica), so true
+# rack-aware replication (ADR platform/004 risks) is NOT possible yet and is
+# DEFERRED until multiple volume servers exist. Documented deviation.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: warehouse-bucket-create
+  namespace: seaweedfs
+  labels:
+    app.kubernetes.io/name: warehouse-bucket
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    # Run on every ArgoCD sync and recreate cleanly each time. PreSync keeps the
+    # bucket present before any downstream lakehouse component syncs.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 5
+  # Reap the pod automatically a while after success to keep the namespace tidy.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: warehouse-bucket
+    spec:
+      restartPolicy: OnFailure
+      # This Job makes no Kubernetes API calls — only network calls to the
+      # SeaweedFS master — so it needs no ServiceAccount token.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: create-bucket
+          image: chrislusf/seaweedfs:3.73
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: MASTER
+              value: "seaweedfs-master.seaweedfs.svc.cluster.local:9333"
+            - name: BUCKET
+              value: "warehouse"
+            # Give weed a writable scratch/home dir under the read-only root FS.
+            - name: HOME
+              value: "/tmp"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "Waiting for SeaweedFS master at ${MASTER} ..."
+              i=0
+              until echo "cluster.check" | weed shell -master "${MASTER}" >/dev/null 2>&1; do
+                i=$((i + 1))
+                if [ "$i" -ge 30 ]; then
+                  echo "ERROR: master ${MASTER} not reachable after $i attempts" >&2
+                  exit 1
+                fi
+                echo "  master not ready yet (attempt $i); retrying in 5s..."
+                sleep 5
+              done
+
+              echo "Listing existing buckets..."
+              # s3.bucket.list prints a tree-style listing (leading whitespace,
+              # trailing size/replication metadata), so match the bucket name as
+              # a whole word anywhere on a line rather than requiring an exact line.
+              if echo "s3.bucket.list" | weed shell -master "${MASTER}" 2>/dev/null \
+                   | grep -Eq "(^|[[:space:]/])${BUCKET}([[:space:]/]|\$)"; then
+                echo "Bucket '${BUCKET}' already exists; nothing to do."
+                exit 0
+              fi
+
+              echo "Creating bucket '${BUCKET}' (replication=000, single-node)..."
+              # replication 000 = no replication; rack-aware deferred until multi-node.
+              echo "s3.bucket.create -name ${BUCKET} -replication 000" \
+                | weed shell -master "${MASTER}"
+
+              echo "Verifying bucket '${BUCKET}' exists..."
+              echo "s3.bucket.list" | weed shell -master "${MASTER}" 2>/dev/null \
+                | grep -Eq "(^|[[:space:]/])${BUCKET}([[:space:]/]|\$)"
+              echo "Bucket '${BUCKET}' created."
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
