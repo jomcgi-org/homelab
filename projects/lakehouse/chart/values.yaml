@@ -1,0 +1,166 @@
+# Default values for the lakehouse chart.
+# ADRs: agents/015 (Temporal worker pools + KEDA), platform/004 (Iceberg
+# lakehouse + hot-swap Quack serving). Env-specific overrides live in
+# projects/lakehouse/deploy/values.yaml.
+
+# ---------------------------------------------------------------------------
+# Shared upstream coordinates injected into every worker / quack / dispatcher
+# pod (see lakehouse.sharedEnv in _helpers.tpl). In-cluster Service DNS; these
+# are deliberate cluster constants overridable per-env.
+# ---------------------------------------------------------------------------
+env:
+  temporalTarget: temporal-frontend.temporal.svc.cluster.local:7233
+  natsUrl: nats://nats.nats.svc.cluster.local:4222
+  seaweedfsS3Endpoint: seaweedfs-s3.seaweedfs.svc.cluster.local:8333
+  icebergWarehouse: s3://warehouse/
+
+# Temporal namespace the workers poll and the KEDA scaler queries.
+temporalNamespace: default
+
+# ---------------------------------------------------------------------------
+# Pod / container security. uid 65532 non-root, drop ALL caps, RuntimeDefault
+# seccomp — mirrors projects/monolith/chart. Linkerd-meshed namespace; NO
+# NetworkPolicies (port 4143 mismatch, feedback_linkerd_networkpolicy.md).
+# ---------------------------------------------------------------------------
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# ---------------------------------------------------------------------------
+# Worker image (ONE image; pools differ only by TASK_QUEUE per ADR 015).
+# Built in Wavefront 3 (IMG-WORKER). Tag pinned by the Bazel image pipeline at
+# build time; never hand-set a @sha256 digest here.
+# ---------------------------------------------------------------------------
+worker:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/lakehouse/worker
+    tag: main
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# Per-task-queue worker pools. Each renders a Deployment (worker image +
+# TASK_QUEUE) and a KEDA ScaledObject (Temporal queue-depth trigger). min/max
+# per ADR 015 §"Worker pools, not the orchestrator".
+pools:
+  # Persistent KG-drain pool: always-warm minimum, scales out on backlog.
+  gapDrain:
+    taskQueue: gap-drain
+    minReplicas: 2
+    maxReplicas: 10
+    targetQueueSize: 5
+  # Bursty Iceberg build pool: scale-to-zero when idle, single builder at peak.
+  icebergBuilder:
+    taskQueue: iceberg-builder
+    minReplicas: 0
+    maxReplicas: 1
+    targetQueueSize: 1
+  # Maintenance pool: build_serving, tag_rotation, backfill. Keep one warm.
+  housekeeping:
+    taskQueue: housekeeping
+    minReplicas: 1
+    maxReplicas: 2
+    targetQueueSize: 5
+
+# KEDA ScaledObject tuning shared by all pools.
+keda:
+  pollingInterval: 15
+  cooldownPeriod: 60
+  queueTypes: workflow
+
+# ---------------------------------------------------------------------------
+# Quack serving layer (platform/004): 2 stateless pods holding an in-RAM
+# .duckdb, hot-swapped from S3 via a durable NATS consumer; queried over HTTP.
+# Internal ClusterIP Service; Cloudflare CDN fronts the public read path.
+# ---------------------------------------------------------------------------
+quack:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/lakehouse/quack-server
+    tag: main
+    pullPolicy: IfNotPresent
+  replicas: 2
+  # HTTP port the FastAPI server binds (quack-server/server.py PORT default).
+  port: 8080
+  # Initial serving artifact ATTACHed at startup before the first swap event
+  # (empty => pod starts with no artifact and waits for an artifact-ready event).
+  servingArtifactUrl: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # Per-deployment bearer token gating POST /search, synced from 1Password.
+  queryToken:
+    # 1Password item path yielding a QUACK_QUERY_TOKEN field. Empty => the
+    # /search endpoint is open (in-cluster only); set in deploy/ to enable.
+    onepasswordItemPath: ""
+  # Cloudflare CDN / ingress: an HTTPRoute attaches the internal Quack Service to
+  # the cluster Cloudflare gateway (platform/cloudflare-gateway), which sits
+  # behind the CF Tunnel + CDN. Disabled by default; the deploy overlay enables
+  # it with the public hostname.
+  cfIngress:
+    enabled: false
+    tier: public
+    hostname: quack.jomcgi.dev
+    gateway:
+      name: cloudflare-ingress
+      namespace: envoy-gateway-system
+
+# ---------------------------------------------------------------------------
+# Dispatchers (sibling W4 unit IMG-DISPATCHERS): long-running NATS->Temporal
+# bridge pods that start workflows from domain events. 2 replicas.
+# ---------------------------------------------------------------------------
+dispatchers:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/lakehouse/dispatchers
+    tag: main
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# 1Password-synced secrets.
+#
+# pg: the housekeeping worker's backfill activity reads monolith-pg READ-ONLY
+# via DATABASE_URL. monolith-pg's `app` password is CNPG-generated and lives in
+# the `monolith` namespace, so it cannot be referenced cross-namespace. We
+# materialise a full libpq URI into a Secret in THIS namespace via 1Password —
+# same pattern as Temporal's `temporal-pg` item. MANUAL PREREQUISITE: populate
+# the 1Password item's `uri` field with a libpq postgres URL (user `app`, the
+# CNPG-generated `app` password, host monolith-pg-rw.monolith.svc.cluster.local,
+# port 5432, db monolith) before the housekeeping worker can read PG.
+#
+# s3: SeaweedFS S3 credentials. Auth is disabled in this cluster so these may be
+# dummy (duckdb/duckdb); wired through 1Password so enabling auth later is a
+# values change, not a template change.
+# ---------------------------------------------------------------------------
+onepassword:
+  pg:
+    # Empty => no OnePasswordItem rendered and the housekeeping worker omits
+    # DATABASE_URL (backfill disabled). Set in deploy/ to enable PG backfill.
+    itemPath: ""
+  s3:
+    # Empty => no OnePasswordItem rendered; pods fall back to DuckDB's dummy
+    # default S3 creds (fine while SeaweedFS auth is disabled).
+    itemPath: ""

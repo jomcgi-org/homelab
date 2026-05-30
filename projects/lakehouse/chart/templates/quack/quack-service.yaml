@@ -1,0 +1,23 @@
+{{- /*
+Internal ClusterIP Service for the Quack serving pods (platform/004 §Security:
+"Quack server binds to cluster-internal Service only"). The Cloudflare CDN read
+path reaches this Service via the HTTPRoute -> cluster gateway -> CF Tunnel; the
+Service itself is never directly internet-exposed.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-quack
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quack
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.quack.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "lakehouse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: quack

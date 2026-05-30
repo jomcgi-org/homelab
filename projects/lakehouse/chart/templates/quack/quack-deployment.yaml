@@ -1,0 +1,90 @@
+# Quack serving pods (platform/004 §Hot-swap serving). 2 stateless replicas, each
+# holding an in-RAM .duckdb hot-swapped from S3 via a durable NATS consumer on
+# events.serving.artifact-ready. HTTP /search is fronted by Cloudflare CDN (see
+# quack-service.yaml + quack-httproute.yaml). Image: worker->quack image built in
+# Wavefront 3 (IMG-QUACK-SERVER).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-quack
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quack
+spec:
+  replicas: {{ .Values.quack.replicas }}
+  selector:
+    matchLabels:
+      {{- include "lakehouse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: quack
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "lakehouse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: quack
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # nosemgrep: require-readiness-probe, require-resource-limits
+        - name: quack
+          image: "{{ .Values.quack.image.repository }}:{{ .Values.quack.image.tag }}"
+          imagePullPolicy: {{ .Values.quack.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.quack.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.quack.port | quote }}
+            {{- if .Values.quack.servingArtifactUrl }}
+            - name: SERVING_ARTIFACT_URL
+              value: {{ .Values.quack.servingArtifactUrl | quote }}
+            {{- end }}
+            - name: NATS_URL
+              value: {{ .Values.env.natsUrl | quote }}
+            - name: SEAWEEDFS_S3_ENDPOINT
+              value: {{ .Values.env.seaweedfsS3Endpoint | quote }}
+            - name: ICEBERG_WAREHOUSE
+              value: {{ .Values.env.icebergWarehouse | quote }}
+            {{- if .Values.onepassword.s3.itemPath }}
+            {{- include "lakehouse.s3Env" . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.quack.queryToken.onepasswordItemPath }}
+            - name: QUACK_QUERY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lakehouse.fullname" . }}-quack-query-token
+                  key: QUACK_QUERY_TOKEN
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.quack.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            # Writable /tmp for the non-root (uid 65532) container: the in-RAM
+            # .duckdb artifact + DuckDB/httpfs S3 cache spill here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

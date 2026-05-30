@@ -1,0 +1,52 @@
+# iceberg-builder worker pool (ADR 015). ONE worker image with
+# TASK_QUEUE=iceberg-builder. Bursty pool — KEDA scales it to zero when idle
+# (min=0 max=1), so replicas is owned by the ScaledObject, not set here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-iceberg-builder-worker
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: iceberg-builder-worker
+spec:
+  selector:
+    matchLabels:
+      {{- include "lakehouse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: iceberg-builder-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "lakehouse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: iceberg-builder-worker
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # nosemgrep: require-readiness-probe, require-resource-limits
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          env:
+            - name: TASK_QUEUE
+              value: {{ .Values.pools.icebergBuilder.taskQueue | quote }}
+            {{- include "lakehouse.sharedEnv" . | nindent 12 }}
+            {{- if .Values.onepassword.s3.itemPath }}
+            {{- include "lakehouse.s3Env" . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            # Writable /tmp for the non-root (uid 65532) container: DuckDB/httpfs
+            # spill, certifi, and Temporal SDK scratch all land here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

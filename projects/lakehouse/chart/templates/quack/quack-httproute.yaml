@@ -1,0 +1,48 @@
+{{- /*
+Cloudflare CDN / ingress for the Quack read path (platform/004 §Read paths:
+"Quack pods -> Cloudflare CDN -> Web app/browser"). An HTTPRoute attaches the
+internal Quack Service to the cluster's Cloudflare gateway
+(projects/platform/cloudflare-gateway), which sits behind the Cloudflare Tunnel
+and CDN. Cloudflare caches GET responses at the edge; cache misses fall through
+to the in-RAM Quack pods. Mirrors the repo's existing Gateway-API ingress
+pattern (projects/monolith httproute-public, context-forge httproute).
+
+Disabled by default; the deploy overlay enables it with the public hostname.
+The `ingress-tier` label is how the cluster gateway selects which routes attach
+to the public listener.
+*/ -}}
+{{- if .Values.quack.cfIngress.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-quack
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quack
+    ingress-tier: {{ .Values.quack.cfIngress.tier }}
+spec:
+  parentRefs:
+    - name: {{ .Values.quack.cfIngress.gateway.name }}
+      namespace: {{ .Values.quack.cfIngress.gateway.namespace }}
+  hostnames:
+    - {{ .Values.quack.cfIngress.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+      backendRefs:
+        - name: {{ include "lakehouse.fullname" . }}-quack
+          port: {{ .Values.quack.port | int }}
+      # Explicit timeout: VSS /search is bounded; 30s absorbs a cold artifact
+      # ATTACH without letting a wedged query hang the edge connection. Envoy's
+      # silent 15s default would otherwise drop slow first-queries after a swap.
+      timeouts:
+        request: 30s
+{{- end }}

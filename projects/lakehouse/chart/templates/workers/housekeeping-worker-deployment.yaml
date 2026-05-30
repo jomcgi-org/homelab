@@ -1,0 +1,63 @@
+# housekeeping worker pool (ADR 015). ONE worker image with
+# TASK_QUEUE=housekeeping. Runs build_serving, tag_rotation, and the backfill
+# workflow. min=1 max=2 (ScaledObject owns replicas, so it is not set here).
+#
+# Backfill reads monolith-pg READ-ONLY via DATABASE_URL, injected from the
+# 1Password-synced `-pg` Secret (key `uri`). Only this pool gets DATABASE_URL,
+# and only when the PG 1Password item is configured.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-housekeeping-worker
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: housekeeping-worker
+spec:
+  selector:
+    matchLabels:
+      {{- include "lakehouse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: housekeeping-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "lakehouse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: housekeeping-worker
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # nosemgrep: require-readiness-probe, require-resource-limits
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          env:
+            - name: TASK_QUEUE
+              value: {{ .Values.pools.housekeeping.taskQueue | quote }}
+            {{- include "lakehouse.sharedEnv" . | nindent 12 }}
+            {{- if .Values.onepassword.s3.itemPath }}
+            {{- include "lakehouse.s3Env" . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.onepassword.pg.itemPath }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lakehouse.fullname" . }}-pg
+                  key: uri
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            # Writable /tmp for the non-root (uid 65532) container: DuckDB/httpfs
+            # spill, certifi, and Temporal SDK scratch all land here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

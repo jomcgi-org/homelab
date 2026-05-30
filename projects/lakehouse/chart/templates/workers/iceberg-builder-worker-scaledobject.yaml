@@ -1,0 +1,32 @@
+{{- /*
+KEDA ScaledObject for the iceberg-builder worker pool. Scale-to-zero (min=0)
+on the Temporal `iceberg-builder` task queue; max=1 (a single builder commits
+NATS->Iceberg). ADR 015. KEDA Temporal scaler:
+https://keda.sh/docs/latest/scalers/temporal/
+
+activationTargetQueueSize:0 (KEDA default) means a single queued task
+activates the scaler from zero — required for scale-to-zero to wake on demand.
+*/ -}}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "lakehouse.fullname" . }}-iceberg-builder-worker
+  labels:
+    {{- include "lakehouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: iceberg-builder-worker
+spec:
+  scaleTargetRef:
+    name: {{ include "lakehouse.fullname" . }}-iceberg-builder-worker
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.pools.icebergBuilder.minReplicas }}
+  maxReplicaCount: {{ .Values.pools.icebergBuilder.maxReplicas }}
+  triggers:
+    - type: temporal
+      metadata:
+        endpoint: {{ .Values.env.temporalTarget | quote }}
+        namespace: {{ .Values.temporalNamespace | quote }}
+        taskQueue: {{ .Values.pools.icebergBuilder.taskQueue | quote }}
+        queueTypes: {{ .Values.keda.queueTypes | quote }}
+        targetQueueSize: {{ .Values.pools.icebergBuilder.targetQueueSize | quote }}
+        activationTargetQueueSize: "0"

@@ -1,0 +1,73 @@
+{{/*
+Name/label helpers for the lakehouse chart. Mirrors projects/monolith/chart's
+release-name-as-fullname convention so resource names are stable and the chart
+is single-release.
+*/}}
+
+{{- define "lakehouse.fullname" -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Common labels applied to every object. app.kubernetes.io/name is the chart
+name; instance is the release; managed-by is helm.
+*/}}
+{{- define "lakehouse.labels" -}}
+app.kubernetes.io/name: lakehouse
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+Selector labels — the stable subset used in Deployment selectors / Service
+selectors. NEVER add mutable labels (e.g. version) here: selectors are
+immutable on Deployments.
+*/}}
+{{- define "lakehouse.selectorLabels" -}}
+app.kubernetes.io/name: lakehouse
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Shared cluster-service env injected into every worker / quack / dispatcher pod.
+Source of truth for the lakehouse's upstream coordinates (Temporal, NATS,
+SeaweedFS S3, Iceberg warehouse). Values come from .Values.env so deploy/
+overrides can retarget without touching templates. Emitted as a `env:` list
+fragment; callers append it after their pod-specific env entries.
+
+Usage:
+  env:
+    - name: TASK_QUEUE
+      value: gap-drain
+    {{- include "lakehouse.sharedEnv" . | nindent 12 }}
+*/}}
+{{- define "lakehouse.sharedEnv" -}}
+- name: TEMPORAL_TARGET
+  value: {{ .Values.env.temporalTarget | quote }}
+- name: NATS_URL
+  value: {{ .Values.env.natsUrl | quote }}
+- name: SEAWEEDFS_S3_ENDPOINT
+  value: {{ .Values.env.seaweedfsS3Endpoint | quote }}
+- name: ICEBERG_WAREHOUSE
+  value: {{ .Values.env.icebergWarehouse | quote }}
+{{- end -}}
+
+{{/*
+SeaweedFS S3 credentials env (access key id + secret) sourced from the synced
+1Password Secret. SeaweedFS S3 auth is disabled in this cluster, so these are
+dummy values, but the worker/quack DuckDB connection still issues
+CREATE SECRET ... so wiring real env keeps the secret path identical if auth is
+later enabled. See templates/onepassworditem-s3.yaml.
+*/}}
+{{- define "lakehouse.s3Env" -}}
+- name: S3_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "lakehouse.fullname" . }}-s3
+      key: S3_ACCESS_KEY_ID
+- name: S3_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "lakehouse.fullname" . }}-s3
+      key: S3_SECRET_ACCESS_KEY
+{{- end -}}
