@@ -1878,6 +1878,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_drift_detector_test",
+    srcs = ["knowledge/drift_detector_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_profile_test",
     srcs = ["knowledge/profile_test.py"],
     imports = ["."],

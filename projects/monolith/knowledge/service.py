@@ -51,6 +51,12 @@ _RESEARCH_TTL_SECS = (
     # expires rather than racing against the in-flight run.
     1200
 )
+# Drift detector compares DB visibility column vs file frontmatter for
+# every non-deleted note. Daily cadence: drift is rare and a full scan
+# of ~5000 notes runs in well under a minute, so once a day catches
+# regressions without burning cycles.
+_DRIFT_INTERVAL_SECS = 86400
+_DRIFT_TTL_SECS = 600  # 10min ceiling on a single scan
 _GIT_READY_SENTINEL = ".git-ready"
 _SYNC_READY_SENTINEL = ".sync-ready"
 _GIT_AUTHOR = b"vault-backup <vault-backup@monolith.local>"
@@ -599,6 +605,16 @@ def on_startup(session: Session) -> None:
         interval_secs=_RESEARCH_INTERVAL_SECS,
         handler=research_gaps_handler,
         ttl_secs=_RESEARCH_TTL_SECS,
+    )
+
+    from knowledge.drift_detector import detect_drift_handler
+
+    register_job(
+        session,
+        name="knowledge.detect-drift",
+        interval_secs=_DRIFT_INTERVAL_SECS,
+        handler=detect_drift_handler,
+        ttl_secs=_DRIFT_TTL_SECS,
     )
 
     # One-shot stub reconciliation for the v2 gating migration. Cheap
