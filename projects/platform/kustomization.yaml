@@ -9,12 +9,18 @@ resources:
   - ./cloudnative-pg/deploy
   - ./cloudflare-gateway # Envoy Gateway + Gateway API + Cloudflare Tunnel; CRDs must be before linkerd
   - ./coredns
+  - ./keda
   - ./kyverno
   - ./linkerd
   - ./longhorn
+  - ./nack # NATS JetStream controller; must reconcile before nats-streams (Stream CRDs)
   - ./nats
+  - ./nats-streams
   - ./nvidia-gpu-operator
   - ./opentelemetry-operator
   - ./seaweedfs
   - ./signoz
   - ./signoz-addons # Must be after signoz
+  - ./temporal # Event-sourced lakehouse (ADR 015); sync-wave 2, needs temporal-databases first
+  - ./temporal-databases # CNPG Database CRs for temporal + temporal_visibility; sync-wave 1
+  - ./warehouse-bucket # SeaweedFS warehouse bucket for the Iceberg lakehouse (platform/004)
