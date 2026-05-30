@@ -15,7 +15,7 @@
 # gazelle:resolve py server //projects/lakehouse/quack-server:quack-server
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -28,10 +28,11 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//projects/lakehouse",
         "//projects/lakehouse/duckdb_query",
-        "//projects/lakehouse/nats_client",
         "@pip//duckdb",
         "@pip//fastapi",
+        "@pip//pydantic",
         "@pip//uvicorn",
     ],
 )
@@ -40,14 +41,14 @@ py_library(
 py_venv_binary(
     name = "main",
     srcs = ["server.py"],
-    imports = ["."],
     main = "server.py",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//projects/lakehouse",
         "//projects/lakehouse/duckdb_query",
-        "//projects/lakehouse/nats_client",
         "@pip//duckdb",
         "@pip//fastapi",
+        "@pip//pydantic",
         "@pip//uvicorn",
     ],
 )
@@ -70,10 +71,10 @@ py_test(
     srcs = ["server_test.py"],
     imports = ["."],
     deps = [
+        "//projects/lakehouse/duckdb_query",
         "//projects/lakehouse/quack-server",
         "@pip//duckdb",
         "@pip//fastapi",
-        "@pip//httpx",
         "@pip//pytest",
     ],
 )
@@ -85,13 +86,15 @@ semgrep_test(
 )
 
 semgrep_test(
-    name = "server_semgrep_test",
-    srcs = ["server.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
     name = "server_test_semgrep_test",
     srcs = ["server_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_target_test(
+    name = "main_semgrep_test",
+    lockfiles = ["//bazel/requirements:all.txt"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
+    target = ":main",
 )
