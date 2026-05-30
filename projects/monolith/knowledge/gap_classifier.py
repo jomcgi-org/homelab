@@ -24,11 +24,41 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from knowledge.profile import (
+    RELEVANCE_EMPLOYER_CARVE_OUTS,
+    RELEVANCE_KEEP,
+    RELEVANCE_SKIP,
+)
+
 logger = logging.getLogger(__name__)
 
-CLASSIFIER_VERSION = "opus-4-7@v3"
+# v4 inlines the RELEVANCE_KEEP / RELEVANCE_SKIP rubric from profile.py so
+# the classifier parks SKIP-category terms (pop culture, religious history,
+# vendor marketing, etc.) on first classification instead of letting them
+# through as external. The night-of-2026-05-29 audit caught 428 such gaps
+# that the v3 prompt had wrongly marked external -- v4 closes that gap by
+# giving the classifier the same rubric Joe uses for manual triage.
+CLASSIFIER_VERSION = "opus-4-7@v4"
 
 _CLASSIFY_TIMEOUT_SECS = 300  # 5 minutes per batch — generous for N=10 stubs
+
+
+def _format_relevance_keep() -> str:
+    """Render RELEVANCE_KEEP as bullet text for the classifier prompt."""
+    return "\n".join(
+        f"- **{row['domain']}**: {row['signals']}" for row in RELEVANCE_KEEP
+    )
+
+
+def _format_relevance_skip() -> str:
+    """Render RELEVANCE_SKIP as bullet text for the classifier prompt."""
+    return "\n".join(
+        f"- **{row['category']}**: {row['examples']}" for row in RELEVANCE_SKIP
+    )
+
+
+_RELEVANCE_KEEP_TEXT = _format_relevance_keep()
+_RELEVANCE_SKIP_TEXT = _format_relevance_skip()
 
 
 _CLASSIFIER_PROMPT = """\
@@ -48,6 +78,33 @@ Obsidian vault — into four classes.
   user's specific setup is personal.
 - **parked**: queryable but not worth current budget. Example: highly
   niche terms, project-specific jargon that may never be revisited.
+
+## Relevance rubric (Joe's profile)
+
+The four-class decision must consider BOTH whether a term is publicly
+researchable AND whether it falls in a KEEP or SKIP domain per Joe's
+relevance profile. If the term clearly matches a SKIP category,
+classify it as `parked` even though it is publicly researchable --
+the research budget should not be spent on out-of-domain content.
+
+### KEEP domains -- worth research budget (verdict tends `external`)
+
+{relevance_keep}
+
+### SKIP categories -- NOT worth research budget (verdict: `parked`)
+
+{relevance_skip}
+
+### Carve-outs
+
+{carve_outs}
+
+A term that clearly fits a KEEP domain and is publicly researchable
+should be `external`. A term in a KEEP domain that requires Joe's
+specific annotation (his configuration, his project context) is
+`hybrid`. A term that is publicly researchable but matches SKIP is
+`parked`. A term that only Joe can resolve (named friend, his
+journal, his specific decision) is `internal`.
 
 ## Rules
 
@@ -149,6 +206,9 @@ async def classify_stubs(
     prompt = _CLASSIFIER_PROMPT.format(
         classifier_version=CLASSIFIER_VERSION,
         stub_list=stub_list,
+        relevance_keep=_RELEVANCE_KEEP_TEXT,
+        relevance_skip=_RELEVANCE_SKIP_TEXT,
+        carve_outs=RELEVANCE_EMPLOYER_CARVE_OUTS,
     )
 
     start = time.monotonic()
