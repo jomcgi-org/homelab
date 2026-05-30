@@ -621,7 +621,7 @@ class TestClassifyGapsHandler:
         job = session.execute(
             select(ScheduledJob).where(ScheduledJob.name == "knowledge.research-gaps")
         ).scalar_one()
-        assert job.interval_secs == 86400
+        assert job.interval_secs == service._RESEARCH_INTERVAL_SECS
         assert job.ttl_secs == 1200  # was 600
 
     @pytest.mark.asyncio
@@ -819,7 +819,7 @@ class TestReconcileHandlerLayout:
         with patch("knowledge.service.EmbeddingClient", return_value=fake_embed_client):
             await service.reconcile_handler(session)
 
-        notes = list(session.scalars(select(Note)))
+        notes = list(session.scalars(select(Note).where(Note.deleted_at.is_(None))))
         assert len(notes) == 2
         for note in notes:
             assert note.layout_x is not None, f"{note.note_id} has no layout_x"
@@ -866,7 +866,7 @@ class TestReconcileHandlerLayout:
         # Failure was logged at ERROR via logger.exception.
         assert any("knowledge.layout: pass failed" in r.message for r in caplog.records)
         # The upsert was committed: the new note exists.
-        notes = list(session.scalars(select(Note)))
+        notes = list(session.scalars(select(Note).where(Note.deleted_at.is_(None))))
         assert len(notes) == 1
         assert notes[0].note_id == "a"
         # And the layout pass didn't run, so positions are still None.
@@ -906,7 +906,10 @@ class TestReconcileHandlerLayout:
         with patch("knowledge.service.EmbeddingClient", return_value=fake_embed_client):
             await service.reconcile_handler(session)
 
-        notes = {n.note_id: n for n in session.scalars(select(Note))}
+        notes = {
+            n.note_id: n
+            for n in session.scalars(select(Note).where(Note.deleted_at.is_(None)))
+        }
         assert set(notes) == {"pub", "pub2", "priv"}
         # Public notes get public-layout positions (in addition to the
         # full-graph ones every note gets).
@@ -963,7 +966,7 @@ class TestReconcileHandlerLayout:
         assert any(
             "knowledge.layout: public pass failed" in r.message for r in caplog.records
         )
-        notes = list(session.scalars(select(Note)))
+        notes = list(session.scalars(select(Note).where(Note.deleted_at.is_(None))))
         assert len(notes) == 2
         # Full-graph layout still ran successfully.
         for note in notes:
