@@ -10,6 +10,8 @@ import pytest
 
 from knowledge.gap_classifier import (
     _CLASSIFIER_PROMPT,
+    _RELEVANCE_KEEP_TEXT,
+    _RELEVANCE_SKIP_TEXT,
     CLASSIFIER_VERSION,
     ClassifyStats,
     classify_stubs,
@@ -258,6 +260,9 @@ def test_classifier_prompt_routes_internal_hybrid_external_to_in_review():
     rendered = _CLASSIFIER_PROMPT.format(
         classifier_version=CLASSIFIER_VERSION,
         stub_list="- /tmp/example.md",
+        relevance_keep=_RELEVANCE_KEEP_TEXT,
+        relevance_skip=_RELEVANCE_SKIP_TEXT,
+        carve_outs=RELEVANCE_EMPLOYER_CARVE_OUTS,
     )
 
     # Both terminal-ish statuses must be reachable from the prompt:
@@ -301,6 +306,9 @@ def test_classifier_prompt_includes_person_public_peer_subclassification():
     rendered = _CLASSIFIER_PROMPT.format(
         classifier_version=CLASSIFIER_VERSION,
         stub_list="- /tmp/example.md",
+        relevance_keep=_RELEVANCE_KEEP_TEXT,
+        relevance_skip=_RELEVANCE_SKIP_TEXT,
+        carve_outs=RELEVANCE_EMPLOYER_CARVE_OUTS,
     )
     assert "person:public" in rendered, "v3 must teach the person:public sub-tag"
     assert "person:peer" in rendered, "v3 must teach the person:peer sub-tag"
