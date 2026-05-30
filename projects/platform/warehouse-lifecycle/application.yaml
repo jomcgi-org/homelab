@@ -1,0 +1,48 @@
+# ArgoCD Application: warehouse-lifecycle
+#
+# Idempotently applies a stale-artifact lifecycle (expiry) policy to the
+# existing `warehouse` S3 bucket on the existing SeaweedFS deployment
+# (ns seaweedfs) for the event-sourced lakehouse (ADR platform/004,
+# "Serving artifact lifecycle"): old serving artifacts under serving/ are
+# expired ~1 day after they go stale.
+#
+# This is a plain kustomize/directory Application (NOT a Helm chart) — there is
+# no upstream chart for "set a bucket lifecycle". The policy is applied by an
+# idempotent Job (see job.yaml) that talks to the SeaweedFS master via
+# `weed shell`, mirroring the sibling INFRA-SEAWEEDFS warehouse-bucket unit.
+#
+# Additive unit INFRA-SEAWEEDFS-LIFECYCLE. Does not touch
+# projects/platform/seaweedfs/ or projects/platform/warehouse-bucket/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: warehouse-lifecycle
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    # Sync after SeaweedFS itself and after the warehouse bucket exists (both
+    # wave 1); the Job retries against the master until it is reachable, so
+    # ordering is best-effort.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi/homelab.git
+    path: projects/platform/warehouse-lifecycle
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: seaweedfs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
