@@ -10,9 +10,20 @@
 # Resolve directives: gazelle's module manifest does not yet carry `duckdb`
 # (LIB-SCAFFOLD added the wheel to the lock but skipped the manifest regen, see
 # duckdb_query/BUILD), and the flat `server` import must map to this package's
-# own library.
+# own library. The nats_client submodule resolves to its own subpackage (not the
+# top-level //projects/lakehouse), mirroring nats_client/BUILD's directives —
+# otherwise gazelle maps it to //projects/lakehouse and NatsClient is missing
+# from the binary's deps.
 # gazelle:resolve py duckdb @pip//duckdb
 # gazelle:resolve py server //projects/lakehouse/quack-server:quack-server
+# gazelle:resolve py projects.lakehouse.nats_client //projects/lakehouse/nats_client:nats_client
+# gazelle:resolve py projects.lakehouse.nats_client.client //projects/lakehouse/nats_client:nats_client
+#
+# duckdb_query/query.py (a transitive dep scanned by the generated
+# main_semgrep_test) hardcodes the in-cluster SeaweedFS S3 endpoint as a
+# deliberate cluster constant — exclude that rule from the generated semgrep
+# targets, matching duckdb_query/BUILD.
+# gazelle:semgrep_exclude_rules no-hardcoded-k8s-service-url
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
@@ -28,8 +39,8 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        "//projects/lakehouse",
         "//projects/lakehouse/duckdb_query",
+        "//projects/lakehouse/nats_client",
         "@pip//duckdb",
         "@pip//fastapi",
         "@pip//pydantic",
@@ -41,11 +52,12 @@ py_library(
 py_venv_binary(
     name = "main",
     srcs = ["server.py"],
+    imports = ["."],
     main = "server.py",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//projects/lakehouse",
         "//projects/lakehouse/duckdb_query",
+        "//projects/lakehouse/nats_client",
         "@pip//duckdb",
         "@pip//fastapi",
         "@pip//pydantic",
@@ -82,17 +94,20 @@ py_test(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(
     name = "server_test_semgrep_test",
     srcs = ["server_test.py"],
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_target_test(
     name = "main_semgrep_test",
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     lockfiles = ["//bazel/requirements:all.txt"],
     rules = ["//bazel/semgrep/rules:python_rules"],
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
