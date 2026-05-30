@@ -137,7 +137,9 @@ async def stream_chat_response(
             async with client.stream("POST", url, json=payload) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    logger.error("notes_chat: upstream %d %s", resp.status_code, body[:200])
+                    logger.error(
+                        "notes_chat: upstream %d %s", resp.status_code, body[:200]
+                    )
                     yield 'data: {"type":"error","message":"inference unavailable"}\n\n'
                     return
 
@@ -155,7 +157,7 @@ async def stream_chat_response(
                         delta = obj["choices"][0]["delta"]
                         text = delta.get("content") or ""
                         if text:
-                            yield f'data: {json.dumps({"type": "text_chunk", "text": text})}\n\n'
+                            yield f"data: {json.dumps({'type': 'text_chunk', 'text': text})}\n\n"
                     except Exception:
                         pass
 

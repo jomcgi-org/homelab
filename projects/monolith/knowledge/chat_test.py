@@ -35,8 +35,7 @@ class TestBuildContext:
 
     def test_caps_at_max_context_notes(self):
         results = [
-            {"title": f"Note {i}", "snippet": "x", "section": ""}
-            for i in range(10)
+            {"title": f"Note {i}", "snippet": "x", "section": ""} for i in range(10)
         ]
         ctx = _build_context(results)
         # Only MAX_CONTEXT_NOTES (6) should appear.
@@ -121,9 +120,7 @@ def _client_with_overrides():
 class TestPublicChatEndpoint:
     def test_short_question_returns_400(self, _client_with_overrides):
         client, *_ = _client_with_overrides
-        res = client.post(
-            "/api/knowledge/public/chat", json={"question": "hi"}
-        )
+        res = client.post("/api/knowledge/public/chat", json={"question": "hi"})
         assert res.status_code == 400
 
     def test_rate_limit_headers_present_on_success(self, _client_with_overrides):
@@ -139,9 +136,7 @@ class TestPublicChatEndpoint:
             patch("knowledge.router.stream_chat_response", side_effect=_fake_stream),
             patch("knowledge.router.public_limiter") as mock_limiter,
         ):
-            mock_limiter.check = AsyncMock(
-                return_value=(True, 4, time.time() + 60)
-            )
+            mock_limiter.check = AsyncMock(return_value=(True, 4, time.time() + 60))
             res = client.post(
                 "/api/knowledge/public/chat",
                 json={"question": "what are transformers?"},
@@ -154,9 +149,7 @@ class TestPublicChatEndpoint:
         client, *_ = _client_with_overrides
 
         with patch("knowledge.router.public_limiter") as mock_limiter:
-            mock_limiter.check = AsyncMock(
-                return_value=(False, 0, time.time() + 30)
-            )
+            mock_limiter.check = AsyncMock(return_value=(False, 0, time.time() + 30))
             res = client.post(
                 "/api/knowledge/public/chat",
                 json={"question": "what are transformers?"},
