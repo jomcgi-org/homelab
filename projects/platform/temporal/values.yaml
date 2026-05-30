@@ -260,21 +260,11 @@ temporal:
   # (`helm test`-only; not needed for GitOps.)
 
   # ---------------------------------------------------------------------------
-  # Cross-namespace Postgres credential: the CNPG `app` password lives in secret
-  # `monolith-pg-app` in the `monolith` ns. We materialise it into a `temporal-pg`
-  # Secret in THIS namespace via the 1Password Operator. The `temporal-pg`
-  # 1Password item is a MANUAL PREREQUISITE (see status note) -- populate it with
-  # the current monolith-pg `app` password under a `password` field.
+  # Cross-namespace Postgres credential: the CNPG `app` password lives in Secret
+  # `monolith-pg-app` (ns `monolith`). It is cloned into THIS namespace as the
+  # `temporal-pg` Secret by the Kyverno ClusterPolicy `clone-monolith-pg-app`
+  # (projects/platform/kyverno/templates/clone-monolith-pg-secret-policy.yaml)
+  # with synchronize:true -- no manual 1Password step, auto-resyncs on rotation.
+  # `existingSecret: temporal-pg` above consumes it (key `password`).
   # ---------------------------------------------------------------------------
-  extraObjects:
-    - |
-      apiVersion: onepassword.com/v1
-      kind: OnePasswordItem
-      metadata:
-        name: temporal-pg
-        namespace: {{ .Release.Namespace }}
-        labels:
-          app.kubernetes.io/part-of: shared-infrastructure
-          app.kubernetes.io/managed-by: temporal
-      spec:
-        itemPath: vaults/k8s-homelab/items/temporal-pg
+  extraObjects: []
