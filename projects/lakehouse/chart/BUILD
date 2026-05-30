@@ -1,5 +1,13 @@
 load("//bazel/helm:defs.bzl", "helm_chart")
 
+# gazelle:argocd disabled
+#
+# The helm gazelle extension regenerates `helm_chart` with visibility derived
+# solely from overlays/ usage (generate.go discoverOverlaysUsingChart), which
+# resets our deploy-package visibility. This app is path-based with a separate
+# deploy/ package, so we hand-maintain both this BUILD and ../deploy/BUILD and
+# tell gazelle to leave them alone.
+#
 # Helm chart for the event-sourced lakehouse worker/quack/dispatcher Deployments
 # + KEDA scalers (ADRs agents/015, platform/004). AUTHOR-ONLY this wavefront:
 # CI-validated via helm_template_test / semgrep_manifest_test (see
@@ -13,8 +21,11 @@ load("//bazel/helm:defs.bzl", "helm_chart")
 helm_chart(
     name = "chart",
     lint = False,
-    # //projects/lakehouse:__subpackages__ so the colocated-but-separate-package
-    # deploy/ argocd_app (which references //projects/lakehouse/chart:chart) can
-    # see the chart filegroup; //overlays for the historical overlay rendering.
-    visibility = ["//overlays:__subpackages__"],
+    # //projects/lakehouse:__subpackages__ so the separate deploy/ package's
+    # argocd_app (which references //projects/lakehouse/chart:chart) can see the
+    # chart filegroup; //overlays for the historical overlay rendering.
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/lakehouse:__subpackages__",
+    ],
 )
