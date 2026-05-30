@@ -19,6 +19,7 @@ py_test(
     deps = [
         ":registry",
         "@pip//pydantic",
+        "@pip//pytest",
     ],
 )
 

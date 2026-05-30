@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, ValidationError
 
 from projects.lakehouse.events import registry
 from projects.lakehouse.events.registry import SCHEMAS, payload_model
@@ -57,6 +58,12 @@ def test_gap_created_payload_validates():
     assert p.topic == "t"
     assert p.gap_class == "external"
     assert p.state == "new"
+
+
+def test_gap_created_payload_requires_topic():
+    # ``topic`` is required; omitting it raises a pydantic ValidationError.
+    with pytest.raises(ValidationError):
+        GapCreatedPayload(gap_class="external", state="new")
 
 
 def test_note_created_payload_with_chunks():
