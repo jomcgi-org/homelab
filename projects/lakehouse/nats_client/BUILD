@@ -1,4 +1,5 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_library(
@@ -8,15 +9,32 @@ py_library(
         exclude = ["**/*_test.py"],
     ),
     visibility = ["//:__subpackages__"],
-    deps = ["@pip//nats_py"],
+    deps = [
+        "//projects/lakehouse",
+        "@pip//nats_py",
+    ],
 )
 
 py_test(
     name = "client_test",
     srcs = ["client_test.py"],
-    deps = [
-        ":nats_client",
-        "@pip//nats_py",
-        "@pip//pytest",
-    ],
+    deps = ["//projects/lakehouse"],
+)
+
+semgrep_test(
+    name = "__init___semgrep_test",
+    srcs = ["__init__.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "client_semgrep_test",
+    srcs = ["client.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "client_test_semgrep_test",
+    srcs = ["client_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
