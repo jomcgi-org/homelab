@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from projects.lakehouse.iceberg.catalog import (
     DEFAULT_S3_ENDPOINT,
     DEFAULT_WAREHOUSE,
@@ -53,3 +55,20 @@ def test_config_is_all_strings():
     cfg = catalog_config(env={})
     for key, value in cfg.items():
         assert isinstance(value, str), f"{key} is not a str: {value!r}"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "type",
+        "uri",
+        "warehouse",
+        "s3.endpoint",
+        "s3.region",
+        "s3.path-style-access",
+        "s3.force-virtual-addressing",
+    ],
+)
+def test_required_keys_present(key):
+    """Every key the catalog/FileIO relies on is always emitted."""
+    assert key in catalog_config(env={})

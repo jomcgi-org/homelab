@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 
 import pyarrow as pa
+import pytest
 
 from projects.lakehouse.iceberg.tables.note_events import SCHEMA as NOTE_SCHEMA
 from projects.lakehouse.iceberg.writer import append_events, rows_to_arrow
@@ -106,6 +107,8 @@ def test_rows_to_arrow_preserves_values():
     assert py[1]["chunk_index"] == 1
     assert py[0]["tags"] == ["a", "b"]
     assert py[1]["chunk_text"] == "chunk one"
+    # float embeddings survive the arrow round-trip (float32 tolerance).
+    assert py[0]["embedding"] == pytest.approx([0.1, 0.2, 0.3])
 
 
 def test_rows_to_arrow_empty():
