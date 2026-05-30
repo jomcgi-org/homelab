@@ -30,6 +30,10 @@ securityContext:
   runAsNonRoot: true
   runAsUser: 65532
   allowPrivilegeEscalation: false
+  # Read-only root FS: the only writable path these pods need is /tmp (DuckDB /
+  # httpfs spill, certifi, Temporal SDK scratch), which every pod mounts as an
+  # emptyDir. Satisfies the Semgrep Pro writable-filesystem-container rule.
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
