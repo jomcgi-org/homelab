@@ -1,0 +1,15 @@
+apiVersion: v2
+name: keda
+description: KEDA event-driven autoscaler - shared infrastructure
+type: application
+version: 1.0.0
+appVersion: "2.19.0"
+
+dependencies:
+  - name: keda
+    version: "2.19.0"
+    repository: https://kedacore.github.io/charts
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "Apache-2.0"
