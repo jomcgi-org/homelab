@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { Footer } from "$lib/public/components";
+  import { Footer, Sticker, Marquee } from "$lib/public/components";
   import { contact, name, summary, jobs, projects, skills } from "./cv-data.js";
 
   // Minimal inline-markdown tokenizer. The CV bullets carry just two markdown
@@ -28,6 +28,10 @@
     }
     return tokens;
   }
+
+  // Scrolling ticker of the stack, drawn from the skills data so it never
+  // drifts from the expertise section below.
+  const MARQUEE_ITEMS = skills.flatMap((c) => c.items);
 
   // Scroll-triggered reveals, mirroring the homepage's IntersectionObserver.
   onMount(() => {
@@ -57,14 +61,30 @@
   />
 </svelte:head>
 
+{#snippet inline(text)}
+  {#each tokenize(text) as tok}
+    {#if tok.type === "em"}<span class="metric">{tok.text}</span
+      >{:else if tok.type === "link"}<a
+        class="inline-link"
+        href={tok.href}
+        target="_blank"
+        rel="noreferrer">{tok.text}</a
+      >{:else}{tok.text}{/if}
+  {/each}
+{/snippet}
+
+{#snippet bandHead(num, title, meta)}
+  <div class="band-head">
+    <span class="band-num mono">{num}</span>
+    <span class="band-title mono">{title}</span>
+    <span class="band-meta mono">{meta}</span>
+  </div>
+{/snippet}
+
 <div class="cv page">
-  <!-- ═══ Identity hero ═══ -->
-  <header class="cv-hero">
-    <!-- decorative shapes, echoing the homepage gutter motifs -->
-    <svg class="deco deco-diamond" width="22" height="22" viewBox="0 0 24 24"
-      ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
-    >
-    <svg class="deco deco-star" width="48" height="48" viewBox="0 0 40 40"
+  <!-- ═══ Identity hero (cream) ═══ -->
+  <header class="band band--cream hero">
+    <svg class="deco deco-star" width="52" height="52" viewBox="0 0 40 40"
       ><path
         d="M20,2 L22.5,14 L34,10 L26,20 L34,30 L22.5,26 L20,38 L17.5,26 L6,30 L14,20 L6,10 L17.5,14 Z"
         fill="var(--blue)"
@@ -73,15 +93,24 @@
         stroke-linejoin="round"
       /></svg
     >
-    <svg class="deco deco-circle" width="20" height="20" viewBox="0 0 24 24"
-      ><circle cx="12" cy="12" r="10" fill="var(--coral)" stroke="var(--ink)" stroke-width="2" /></svg
+    <svg class="deco deco-diamond" width="20" height="20" viewBox="0 0 24 24"
+      ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="var(--coral)" stroke="var(--ink)" stroke-width="2" /></svg
+    >
+    <svg class="deco deco-squiggle" width="76" height="22" viewBox="0 0 80 24"
+      ><path
+        d="M2,12 Q 10,2 18,12 T 34,12 T 50,12 T 66,12 T 78,12"
+        fill="none"
+        stroke="var(--ink)"
+        stroke-width="2.5"
+        stroke-linecap="round"
+      /></svg
     >
 
     <div class="wrap-narrow hero-content">
       <p class="eyebrow">Curriculum Vitae</p>
       <h1 class="cv-name display">{name}</h1>
       <p class="cv-tagline mono">Senior Platform Engineer · GCP · Kubernetes · Reliability</p>
-      <p class="cv-summary">{summary}</p>
+      <p class="cv-summary">{@render inline(summary)}</p>
       <div class="cv-contacts">
         <a class="btn btn-primary" href={`mailto:${contact.email}`}>{contact.email}</a>
         <a class="btn btn-secondary" href={contact.linkedin.href} target="_blank" rel="noreferrer"
@@ -92,82 +121,70 @@
         >
         <span class="loc-chip mono">◍ {contact.location}</span>
       </div>
+      <Sticker color="var(--accent)" rotate={-4} class="hero-sticker"
+        >Reliability-obsessed</Sticker
+      >
     </div>
   </header>
 
-  <main class="wrap-narrow cv-body">
-    <!-- ═══ Work experience ═══ -->
-    <section class="cv-section reveal">
-      <h2 class="section-title display">Work Experience</h2>
+  <!-- ═══ Stack ticker ═══ -->
+  <Marquee items={MARQUEE_ITEMS} />
+
+  <!-- ═══ Work experience (paper) ═══ -->
+  <section class="band band--paper reveal">
+    <div class="wrap-narrow">
+      {@render bandHead("01", "Work Experience", `${jobs.length} Roles`)}
       <div class="jobs">
         {#each jobs as job}
-          <article class="card-hard job">
+          <article class="job">
             <div class="job-head">
               <div class="job-id">
                 <h3 class="job-company">{job.company}</h3>
-                <p class="job-title">{job.title}</p>
+                <p class="job-role mono">{job.title}</p>
               </div>
               <span class="job-dates mono">{job.dates}</span>
             </div>
             <ul class="bullets">
               {#each job.bullets as bullet}
-                <li>
-                  {#each tokenize(bullet) as tok}
-                    {#if tok.type === "em"}<span class="metric">{tok.text}</span
-                      >{:else if tok.type === "link"}<a
-                        class="inline-link"
-                        href={tok.href}
-                        target="_blank"
-                        rel="noreferrer">{tok.text}</a
-                      >{:else}{tok.text}{/if}
-                  {/each}
-                </li>
+                <li>{@render inline(bullet)}</li>
               {/each}
             </ul>
           </article>
         {/each}
       </div>
-    </section>
+    </div>
+  </section>
 
-    <!-- ═══ Personal projects ═══ -->
-    <section class="cv-section reveal">
-      <h2 class="section-title display">Personal Projects</h2>
-      <article class="card-hard projects-card">
-        <ul class="bullets">
-          {#each projects as project}
-            <li>
-              {#each tokenize(project) as tok}
-                {#if tok.type === "em"}<span class="metric">{tok.text}</span
-                  >{:else if tok.type === "link"}<a
-                    class="inline-link"
-                    href={tok.href}
-                    target="_blank"
-                    rel="noreferrer">{tok.text}</a
-                  >{:else}{tok.text}{/if}
-              {/each}
-            </li>
-          {/each}
-        </ul>
-      </article>
-    </section>
+  <!-- ═══ Personal projects (cream) ═══ -->
+  <section class="band band--cream reveal">
+    <div class="wrap-narrow">
+      {@render bandHead("02", "Personal Projects", "Homelab")}
+      <ul class="bullets bullets--lg">
+        {#each projects as project}
+          <li>{@render inline(project)}</li>
+        {/each}
+      </ul>
+    </div>
+  </section>
 
-    <!-- ═══ Technical expertise ═══ -->
-    <section class="cv-section reveal">
-      <h2 class="section-title display">Technical Expertise</h2>
+  <!-- ═══ Technical expertise (paper) ═══ -->
+  <section class="band band--paper reveal">
+    <div class="wrap-narrow">
+      {@render bandHead("03", "Technical Expertise", `${skills.length} Domains`)}
       <div class="skills">
         {#each skills as cat}
           <div class="skill-cat">
-            <h3 class="skill-label mono">{cat.label}</h3>
+            <h4 class="skill-label mono">{cat.label}</h4>
             <div class="chips">
               {#each cat.items as item}
-                <span class="chip">{item}</span>
+                <span class="chip mono">{item}</span>
               {/each}
             </div>
           </div>
         {/each}
       </div>
-    </section>
-  </main>
+    </div>
+  </section>
 
   <Footer />
 </div>
@@ -178,179 +195,230 @@
     color: var(--ink);
   }
 
-  /* ── Hero ─────────────────────────────────── */
-  .cv-hero {
+  /* ── Full-bleed bands ─────────────────────── */
+  .band {
+    border-bottom: 2px solid var(--ink);
+    padding: 48px 0;
     position: relative;
     overflow: hidden;
-    padding: 72px 0 56px;
-    border-bottom: 2px solid var(--ink);
+  }
+  .band--cream {
+    background: var(--cream);
+  }
+  .band--paper {
+    background: var(--paper);
   }
 
+  /* ── Hero ─────────────────────────────────── */
+  .hero {
+    padding: 64px 0 52px;
+  }
   .hero-content {
     position: relative;
   }
-
   .cv-name {
-    font-size: clamp(48px, 8vw, 92px);
-    margin: 6px 0 10px;
+    font-size: clamp(46px, 7.5vw, 88px);
+    margin: 8px 0 12px;
   }
-
   .cv-tagline {
     font-size: 13px;
     letter-spacing: 0.04em;
     color: var(--ink-3);
     margin-bottom: 22px;
   }
-
   .cv-summary {
     font-family: var(--sans);
-    font-size: clamp(17px, 1.6vw, 21px);
+    font-size: clamp(17px, 1.5vw, 20px);
     line-height: 1.55;
     color: var(--ink-2);
-    max-width: 60ch;
-    margin-bottom: 30px;
+    max-width: 62ch;
+    margin-bottom: 28px;
   }
-
   .cv-contacts {
     display: flex;
     flex-wrap: wrap;
     gap: 12px;
     align-items: center;
   }
-
   .loc-chip {
     display: inline-flex;
     align-items: center;
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.06em;
-    padding: 12px 18px;
+    padding: 13px 18px;
     border: 2px dashed var(--rule-2);
     color: var(--ink-2);
   }
+  :global(.hero-sticker) {
+    position: absolute;
+    top: -8px;
+    right: 0;
+  }
 
-  /* ── Decorative shapes (gutter, outside content box) ─── */
+  /* ── Decorative shapes (kept clear of the sticky nav) ─── */
   .deco {
     position: absolute;
     pointer-events: none;
   }
-  .deco-diamond {
-    top: 64px;
-    left: max(16px, calc(50% - 520px));
-  }
   .deco-star {
-    top: 56px;
-    right: max(16px, calc(50% - 520px));
+    top: 24px;
+    right: max(20px, calc(50% - 520px));
     transform: rotate(-12deg);
   }
-  .deco-circle {
-    bottom: 48px;
-    right: max(24px, calc(50% - 500px));
+  .deco-diamond {
+    bottom: 36px;
+    left: max(20px, calc(50% - 520px));
+  }
+  .deco-squiggle {
+    top: 40px;
+    left: max(16px, calc(50% - 530px));
   }
 
-  /* ── Body ─────────────────────────────────── */
-  .cv-body {
-    padding: 56px 32px 80px;
+  /* ── Chunky numbered section-header bar ───── */
+  .band-head {
+    display: flex;
+    align-items: stretch;
+    border: 2px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+    box-shadow: 4px 4px 0 var(--ink);
+    margin-bottom: 32px;
+  }
+  .band-num {
+    background: var(--accent);
+    color: var(--ink);
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.05em;
+    padding: 13px 16px;
+    border-right: 2px solid var(--ink);
+    display: flex;
+    align-items: center;
+  }
+  .band-title {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    padding: 13px 16px;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .band-meta {
+    display: flex;
+    align-items: center;
+    padding: 13px 16px;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--blue);
+    border-left: 2px solid rgba(255, 255, 255, 0.25);
   }
 
-  .cv-section + .cv-section {
-    margin-top: 56px;
-  }
-
-  .section-title {
-    font-size: clamp(30px, 4vw, 44px);
-    margin-bottom: 24px;
-    padding-bottom: 10px;
-    border-bottom: 2px solid var(--ink);
-  }
-
-  /* ── Job cards ────────────────────────────── */
+  /* ── Job entries (flat, non-interactive) ──── */
   .jobs {
     display: flex;
     flex-direction: column;
-    gap: 22px;
   }
-
   .job {
-    padding: 24px 26px;
+    padding: 26px 0;
+    border-bottom: 2px solid var(--rule);
   }
-
+  .job:first-child {
+    padding-top: 4px;
+  }
+  .job:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
   .job-head {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
+    align-items: flex-start;
     gap: 16px;
     flex-wrap: wrap;
     margin-bottom: 14px;
-    padding-bottom: 12px;
-    border-bottom: 1.5px solid var(--rule);
   }
-
   .job-company {
     font-family: var(--sans);
-    font-size: 22px;
-    font-weight: 600;
+    font-size: 24px;
+    font-weight: 700;
     line-height: 1.1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
-
-  .job-title {
-    font-family: var(--sans);
-    font-size: 15px;
+  .job-company::before {
+    content: "";
+    width: 13px;
+    height: 13px;
+    background: var(--coral);
+    border: 2px solid var(--ink);
+    flex-shrink: 0;
+  }
+  .job-role {
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     color: var(--ink-3);
-    margin-top: 2px;
+    margin-top: 6px;
+    margin-left: 23px;
   }
-
   .job-dates {
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--ink-2);
+    color: var(--ink);
     white-space: nowrap;
     background: var(--accent);
-    padding: 5px 10px;
-    border: 1.5px solid var(--ink);
+    padding: 7px 12px;
+    border: 2px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
   }
 
   /* ── Bullets ──────────────────────────────── */
   .bullets {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 11px;
+    margin-left: 23px;
   }
-
+  .bullets--lg {
+    margin-left: 0;
+    gap: 16px;
+  }
   .bullets li {
     position: relative;
-    padding-left: 22px;
+    padding-left: 24px;
     font-family: var(--sans);
     font-size: 15px;
     line-height: 1.55;
     color: var(--ink-2);
   }
-
+  .bullets--lg li {
+    font-size: 16px;
+  }
   .bullets li::before {
     content: "▸";
     position: absolute;
     left: 0;
     top: 0;
     color: var(--coral);
-    font-size: 14px;
+    font-size: 15px;
+    font-weight: 700;
   }
 
-  .projects-card {
-    padding: 24px 26px;
-  }
-
-  /* Emphasized metrics — coral underline, echoing the homepage hero links */
+  /* Emphasized metrics — yellow highlight block, the brutalist marker style */
   .metric {
     font-weight: 600;
     color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--coral);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 3px;
+    background: linear-gradient(transparent 58%, var(--accent) 58%);
+    padding: 0 1px;
   }
-
   .inline-link {
+    font-weight: 600;
     text-decoration: underline;
     text-decoration-color: var(--blue);
     text-decoration-thickness: 2px;
@@ -365,81 +433,95 @@
   .skills {
     display: flex;
     flex-direction: column;
-    gap: 22px;
+    gap: 20px;
   }
-
+  .skill-cat {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 20px;
+    align-items: start;
+    padding-bottom: 20px;
+    border-bottom: 2px solid var(--rule);
+  }
+  .skill-cat:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
   .skill-label {
-    font-size: 12px;
-    letter-spacing: 0.1em;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--ink-3);
-    margin-bottom: 10px;
+    color: var(--ink);
+    padding-top: 6px;
   }
-
   .chips {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
   }
-
   .chip {
-    font-family: var(--mono);
     font-size: 12px;
     font-weight: 500;
     padding: 7px 12px;
-    background: var(--paper);
-    border: 1.5px solid var(--ink);
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease,
-      background 120ms ease;
-  }
-
-  .chip:hover {
-    transform: translate(-2px, -2px);
+    background: var(--cream);
+    border: 2px solid var(--ink);
     box-shadow: 2px 2px 0 var(--ink);
-    background: var(--blue);
   }
 
   /* ── Responsive ───────────────────────────── */
   @media (max-width: 768px) {
-    .cv-hero {
-      padding: 48px 0 40px;
+    .hero {
+      padding: 40px 0 36px;
     }
-    .cv-body {
-      padding: 40px 20px 64px;
+    .band {
+      padding: 36px 0;
     }
-    .job {
-      padding: 20px;
+    .deco,
+    :global(.hero-sticker) {
+      display: none;
     }
-    .deco {
+    .band-num,
+    .band-title,
+    .band-meta {
+      padding: 11px 12px;
+      font-size: 12px;
+    }
+    .band-meta {
       display: none;
     }
     .job-head {
       flex-direction: column;
-      align-items: flex-start;
-      gap: 8px;
+      gap: 10px;
+    }
+    .skill-cat {
+      grid-template-columns: 1fr;
+      gap: 10px;
     }
   }
 
-  /* ── Print: flatten shadows/colours for a clean paper resume ─── */
+  /* ── Print: flat paper résumé ─────────────── */
   @media print {
     .cv {
       background: var(--paper);
     }
-    .deco {
-      display: none;
-    }
-    .card-hard {
-      box-shadow: none !important;
-      transform: none !important;
-      break-inside: avoid;
-    }
-    .job-dates {
-      background: transparent;
-    }
+    .deco,
+    :global(.hero-sticker),
+    :global(.marquee),
     :global(.footer) {
-      display: none;
+      display: none !important;
+    }
+    .band {
+      padding: 18px 0;
+      border-bottom: none;
+    }
+    .band-head,
+    .job-dates,
+    .chip {
+      box-shadow: none !important;
+    }
+    .job {
+      break-inside: avoid;
     }
   }
 </style>
