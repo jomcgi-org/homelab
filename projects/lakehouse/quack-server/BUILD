@@ -52,7 +52,6 @@ py_library(
 py_venv_binary(
     name = "main",
     srcs = ["server.py"],
-    imports = ["."],
     main = "server.py",
     visibility = ["//:__subpackages__"],
     deps = [
