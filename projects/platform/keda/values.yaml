@@ -1,0 +1,80 @@
+# KEDA event-driven autoscaler configuration for homelab.
+# Shared infrastructure: installs the KEDA CRDs (ScaledObject, ScaledJob,
+# TriggerAuthentication, etc.) and control-plane components consumed by
+# later worker-pool autoscalers. This unit only stands KEDA up; no
+# ScaledObjects are defined here.
+#
+# Values are wrapped under the `keda:` key because the upstream kedacore/keda
+# chart is pulled in as a subchart dependency (see Chart.yaml).
+keda:
+  # Install the KEDA CRDs (default). A later wavefront's ScaledObjects depend
+  # on these being present.
+  crds:
+    install: true
+
+  # Linkerd-meshed namespace: never use Kubernetes NetworkPolicies (port 4143
+  # mismatch breaks meshed traffic). The chart defaults this to false; keep it
+  # explicit so the intent is clear.
+  networkPolicy:
+    enabled: false
+
+  # Expose Prometheus metrics on port 8080 for the operator and the metrics
+  # apiserver. SigNoz autodiscovers scrape targets via the prometheus.io/*
+  # pod annotations below (see podAnnotations); we do NOT rely on the
+  # Prometheus Operator's ServiceMonitor/PodMonitor CRDs (not installed here).
+  prometheus:
+    operator:
+      enabled: true
+      port: 8080
+    metricServer:
+      enabled: true
+      port: 8080
+    webhooks:
+      enabled: true
+      port: 8080
+
+  # Pre-populate the Kyverno OTEL annotation to match the cluster mutation
+  # (prevents ArgoCD drift) and add prometheus.io/scrape annotations so SigNoz
+  # autodiscovers the metrics endpoints (port 8080, path /metrics).
+  podAnnotations:
+    keda:
+      otel.injected-by: kyverno/inject-otel-env-vars
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8080"
+      prometheus.io/path: "/metrics"
+    metricsAdapter:
+      otel.injected-by: kyverno/inject-otel-env-vars
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8080"
+      prometheus.io/path: "/metrics"
+    webhooks:
+      otel.injected-by: kyverno/inject-otel-env-vars
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8080"
+      prometheus.io/path: "/metrics"
+
+  # Modest resource requests/limits sized for a single-node homelab. The chart
+  # ships with 1 CPU / 1000Mi limits per component, which is oversized for our
+  # workload. These can be raised once worker-pool autoscaling load is observed.
+  resources:
+    operator:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    metricServer:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    webhooks:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
