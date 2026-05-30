@@ -80,4 +80,31 @@ workspace root + the package dir to match `imports = ["."]`.
 
 ## CI / Test / Push-images status
 
-_(filled in after the first CI run)_
+Merged to main via PR #2402 (rebase). Final CI: Test, Format, Manifest diff,
+Push images (multiarch image built + pushed to GHCR), semgrep, GitGuardian — all
+green.
+
+Two failures fixed during CI iteration:
+
+1. `server_test` imported `fastapi.testclient.TestClient`, which requires `httpx`
+   at import; gazelle strips `@pip//httpx` (the dependency is invisible to static
+   import analysis). Refactored the HTTP handlers into module-level functions
+   (`healthz_payload`, `do_search`, `require_query_token`) and test those directly
+   — no TestClient, no httpx.
+2. The generated `main_semgrep_test` scans the binary's transitive closure, which
+   includes `duckdb_query/query.py`'s deliberate hardcoded SeaweedFS S3 endpoint,
+   tripping `no-hardcoded-k8s-service-url`. Added
+   `# gazelle:semgrep_exclude_rules no-hardcoded-k8s-service-url` so the generated
+   semgrep targets exclude it (matching `duckdb_query/BUILD`).
+
+And one test hang fixed: `run_swap_consumer`'s idle/timeout branch re-polled with
+no `await` suspension point, so when `fetch` raised `TimeoutError` synchronously
+the async loop busy-spun and starved the event loop (the shutdown task setting
+`stop` never got scheduled) — `server_test` hit its 300s timeout. Fixed with
+`await asyncio.sleep(0)` on the idle branch (correct for production too) and made
+the test deterministic (the fake subscription sets `stop` once drained; the run is
+bounded by `asyncio.wait_for`).
+
+Also added `nats_client` resolve directives so gazelle keeps
+`//projects/lakehouse/nats_client` in the binary deps (it was mapping the submodule
+to the top-level `//projects/lakehouse`, dropping `NatsClient`).
