@@ -61,6 +61,22 @@ returns 42 with no extensions loaded.
 - DuckDB pinned to 1.5.3 in the lock (`@pip//duckdb`), matching the version
   platform/004 verified for ATTACH OR REPLACE hot-swap semantics.
 
+## Gazelle manifest gap (cross-unit note)
+
+First CI `Format check` failed: gazelle could not resolve `import duckdb` because
+`duckdb` (and `pyarrow`, `pyiceberg`, `temporalio`) are **missing from
+`bazel/tools/python/gazelle_python.yaml`** — LIB-SCAFFOLD added them to the
+requirements lock but did not regenerate that manifest. Rather than edit the shared
+manifest (collision-prone across the 5 parallel units), this unit stays independent
+via a `# gazelle:resolve py duckdb @pip//duckdb` directive in its BUILD. Sibling
+units that import `pyarrow`/`pyiceberg`/`temporalio` will hit the same gap and need
+either their own resolve directive or a serialized manifest regen.
+
+Also dropped the `TYPE_CHECKING` `from duckdb import DuckDBPyConnection` in favour of
+the module-qualified `duckdb.DuckDBPyConnection` annotation (string-evaluated under
+`from __future__ import annotations`), so gazelle only sees the top-level
+`import duckdb` and the single resolve directive covers everything.
+
 ## Status
 
 Implemented. See PR on `feat/lakehouse-lib-duckdb`.
