@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from knowledge.profile import RELEVANCE_EMPLOYER_CARVE_OUTS
 from knowledge.gap_classifier import (
     _CLASSIFIER_PROMPT,
     _RELEVANCE_KEEP_TEXT,
