@@ -27,7 +27,6 @@ py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
-        "//projects/lakehouse/iceberg/tables",
         "@pip//pyarrow",
         "@pip//pyiceberg",
     ],
@@ -36,10 +35,7 @@ py_library(
 py_test(
     name = "catalog_test",
     srcs = ["catalog_test.py"],
-    deps = [
-        ":iceberg",
-        "@pip//pytest",
-    ],
+    deps = [":iceberg"],
 )
 
 py_test(
@@ -49,7 +45,6 @@ py_test(
         ":iceberg",
         "//projects/lakehouse/iceberg/tables",
         "@pip//pyarrow",
-        "@pip//pytest",
     ],
 )
 
@@ -59,7 +54,6 @@ py_test(
     deps = [
         "//projects/lakehouse/iceberg/tables",
         "@pip//pyiceberg",
-        "@pip//pytest",
     ],
 )
 
@@ -78,5 +72,23 @@ semgrep_test(
 semgrep_test(
     name = "tables_test_semgrep_test",
     srcs = ["tables_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "__init___semgrep_test",
+    srcs = ["__init__.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "catalog_semgrep_test",
+    srcs = ["catalog.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "writer_semgrep_test",
+    srcs = ["writer.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
