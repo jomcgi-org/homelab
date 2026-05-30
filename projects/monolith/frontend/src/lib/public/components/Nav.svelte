@@ -2,12 +2,12 @@
   /** @type {{ route?: string, isPrivate?: boolean }} */
   let { route = "home", isPrivate = false } = $props();
 
-  // NOTES is a same-host relative URL so it resolves to
-  // public.jomcgi.dev/notes from the public homepage and to
-  // private.jomcgi.dev/notes from the private dashboard, without
+  // NOTES and CV are same-host relative URLs so they resolve to
+  // public.jomcgi.dev/* from the public homepage and to
+  // private.jomcgi.dev/* from the private dashboard, without
   // bouncing public visitors into the auth-gated private surface.
-  // Other links are cross-host by design — HOME always points at the
-  // public site, ENGINEERING and CV live on the apex domain.
+  // HOME always points at the public site; ENGINEERING still lives on
+  // the apex (legacy Astro) domain.
   const publicItems = [
     { slug: "home", label: "HOME", href: "https://public.jomcgi.dev/" },
     { slug: "notes", label: "NOTES", href: "/notes" },
@@ -16,7 +16,7 @@
       label: "ENGINEERING",
       href: "https://jomcgi.dev/engineering/",
     },
-    { slug: "cv", label: "CV", href: "https://jomcgi.dev/cv/" },
+    { slug: "cv", label: "CV", href: "/cv" },
   ];
 
   // REVIEW only renders on the private tier — the route exists only at
