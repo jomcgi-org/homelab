@@ -71,6 +71,34 @@ on `monolith-pg-rw`; `SQL_PASSWORD` resolves to `secretKeyRef{name: temporal-pg,
 schema Job emits postgres12 `setup-schema`/`update-schema` (no `create-database`);
 replicas 2/2/2/2 + web 1; OnePasswordItem renders into ns `temporal`; all services ClusterIP.
 
+### Manifest-hardening semgrep (`semgrep_exclude_rules` in BUILD)
+
+The gazelle-generated `//projects/platform/temporal:semgrep_test` scans the **rendered**
+chart. This is a wrapped-upstream chart whose `values` do not expose knobs for every
+hard-coded container. The split between genuine fixes and exclusions:
+
+**Fixed genuinely** (every container the chart lets us configure):
+
+- `runAsNonRoot: true` + `allowPrivilegeEscalation: false` + `capabilities.drop: [ALL]`
+  on frontend/history/matching/worker/web (via `server.<svc>.containerSecurityContext`
+  and `web.containerSecurityContext`), admintools (`admintools.containerSecurityContext`),
+  and the schema-Job containers (`schema.containerSecurityContext`). Confirmed in the
+  render: `manage-schema-default-store`, `manage-schema-visibility-store`,
+  `create-default-namespace`, and both `done` containers all carry `runAsNonRoot: true` +
+  drop ALL.
+
+**Excluded** (upstream-uncontrollable; mirrors the `signoz`/`opentelemetry-operator`
+wrapped-chart precedent):
+
+| Rule                             | Why excluded                                                                                                                                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `require-tmp-emptydir`           | Chart authors no `/tmp` emptyDir and exposes no per-container `volumeMount` for the schema-Job `done`/`create-default-namespace` and `helm test` pod containers. 8 findings.                         |
+| `…writable-filesystem-container` | Server/UI/admin-tools/sql-tool images write to their root FS (dockerize config render, work dirs); the chart exposes no `readOnlyRootFilesystem` + writable-mount pairing per container. 9 findings. |
+| `…run-as-non-root`               | The `cluster-health` pod in `templates/test.yaml` is a `helm.sh/hook: test` resource (**ArgoCD never deploys hook=test**) that is hard-coded with no securityContext and no values knob. 1 finding.  |
+
+> The `run-as-non-root` finding is **only** the throwaway `helm test` connection-check
+> pod; every real (deployed) container runs as non-root.
+
 ---
 
 ## MANUAL PREREQUISITE (must be done before the orchestrator wires Temporal into GitOps)
