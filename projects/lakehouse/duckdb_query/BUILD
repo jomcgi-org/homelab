@@ -1,3 +1,4 @@
+# gazelle:semgrep_exclude_rules no-hardcoded-k8s-service-url
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
@@ -31,17 +32,20 @@ py_test(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(
     name = "query_semgrep_test",
     srcs = ["query.py"],
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(
     name = "query_test_semgrep_test",
     srcs = ["query_test.py"],
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
