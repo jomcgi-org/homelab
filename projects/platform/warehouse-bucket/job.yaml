@@ -94,9 +94,13 @@ spec:
                 exit 0
               fi
 
-              echo "Creating bucket '${BUCKET}' (replication=000, single-node)..."
-              # replication 000 = no replication; rack-aware deferred until multi-node.
-              echo "s3.bucket.create -name ${BUCKET} -replication 000" \
+              echo "Creating bucket '${BUCKET}' (single-node, default replication)..."
+              # NOTE: SeaweedFS 3.73 `s3.bucket.create` only accepts `-name`
+              # (no `-replication` flag — passing it errors with "flag provided
+              # but not defined"). Replication is a cluster/volume-level setting
+              # here, not per-bucket via this command; rack-aware replication
+              # (ADR platform/004 risks) is deferred until multi-node anyway.
+              echo "s3.bucket.create -name ${BUCKET}" \
                 | weed shell -master "${MASTER}"
 
               echo "Verifying bucket '${BUCKET}' exists..."
