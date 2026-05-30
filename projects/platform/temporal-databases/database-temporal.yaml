@@ -1,0 +1,15 @@
+# Declarative CNPG Database for Temporal's core (history/persistence) store.
+# Managed by the CloudNativePG operator's Database controller (CRD), which
+# issues CREATE DATABASE against the existing monolith-pg cluster. Additive:
+# does not touch the Cluster resource or its bootstrap initdb block.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: temporal
+  namespace: monolith
+spec:
+  cluster:
+    name: monolith-pg
+  name: temporal
+  owner: app
+  ensure: present
