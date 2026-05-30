@@ -44,7 +44,10 @@ py_venv_binary(
 py_test(
     name = "client_test",
     srcs = ["client_test.py"],
-    deps = [":orchestrator"],
+    deps = [
+        ":orchestrator",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
