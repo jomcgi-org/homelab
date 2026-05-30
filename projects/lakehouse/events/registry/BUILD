@@ -19,7 +19,6 @@ py_test(
     deps = [
         ":registry",
         "@pip//pydantic",
-        "@pip//pytest",
     ],
 )
 
@@ -38,5 +37,11 @@ semgrep_test(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "registry_test_semgrep_test",
+    srcs = ["registry_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )

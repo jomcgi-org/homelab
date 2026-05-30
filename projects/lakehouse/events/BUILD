@@ -19,7 +19,6 @@ py_test(
     srcs = ["envelope_test.py"],
     deps = [
         ":events",
-        "@pip//pydantic",
         "@pip//pytest",
     ],
 )
@@ -63,5 +62,23 @@ semgrep_test(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "envelope_test_semgrep_test",
+    srcs = ["envelope_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "publish_test_semgrep_test",
+    srcs = ["publish_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "versioning_test_semgrep_test",
+    srcs = ["versioning_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
