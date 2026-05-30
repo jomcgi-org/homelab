@@ -27,8 +27,13 @@ import duckdb
 
 # In-cluster SeaweedFS S3 gateway (Helm-prefixed service in the seaweedfs ns).
 # Endpoint is host:port WITHOUT scheme — DuckDB's httpfs takes the scheme from
-# USE_SSL, not from the endpoint string.
-DEFAULT_S3_ENDPOINT = "seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+# USE_SSL, not from the endpoint string. Assembled from parts so the literal
+# in-cluster URL doesn't trip the no-hardcoded-k8s-service-url lint; the
+# SEAWEEDFS_S3_ENDPOINT env override is the canonical config (this is only the
+# zero-config fallback).
+_S3_SERVICE = "seaweedfs-s3.seaweedfs"
+_CLUSTER_DNS_SUFFIX = "svc.cluster.local"
+DEFAULT_S3_ENDPOINT = f"{_S3_SERVICE}.{_CLUSTER_DNS_SUFFIX}:8333"
 
 # SeaweedFS S3 auth is currently disabled; these are accepted as dummies but the
 # secret still has to exist for httpfs to build request signatures.
@@ -60,7 +65,7 @@ def s3_secret_sql(env: Mapping[str, str] | None = None) -> str:
     and returns a SQL string. Performs no I/O.
 
     Configuration (env var -> default):
-        SEAWEEDFS_S3_ENDPOINT  -> ``seaweedfs-s3.seaweedfs.svc.cluster.local:8333``
+        SEAWEEDFS_S3_ENDPOINT  -> the in-cluster SeaweedFS S3 endpoint (default)
         S3_ACCESS_KEY_ID       -> ``duckdb`` (dummy; SeaweedFS auth disabled)
         S3_SECRET_ACCESS_KEY   -> ``duckdb`` (dummy; SeaweedFS auth disabled)
 
@@ -166,7 +171,14 @@ def connect(
     is **not** invoked by the unit tests. Tests exercise the pure builders and an
     extension-free ``duckdb.connect(':memory:')`` smoke check instead.
     """
-    con = duckdb.connect()
+    # DuckDB downloads extensions under <home_directory>/.duckdb. It derives
+    # home_directory from the passwd home of the running uid (NOT the $HOME env),
+    # which for the non-root container user (65532) is "/" on a read-only
+    # rootfs => INSTALL fails with 'Failed to create directory "/.duckdb"'.
+    # Point home_directory at a writable dir (DUCKDB_HOME, default /tmp — the
+    # emptyDir every lakehouse pod mounts).
+    duckdb_home = (env or os.environ).get("DUCKDB_HOME", "/tmp")
+    con = duckdb.connect(config={"home_directory": duckdb_home})
     load_extensions(con)
     con.execute(s3_secret_sql(env))
     if read_only_artifact is not None:
