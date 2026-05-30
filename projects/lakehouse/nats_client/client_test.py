@@ -8,6 +8,8 @@ Coroutines are driven synchronously via ``asyncio.run`` so the suite needs no
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from projects.lakehouse.nats_client import client as client_module
 from projects.lakehouse.nats_client.client import (
     DEFAULT_URL,
@@ -121,12 +123,8 @@ def test_publish_without_msg_id_sends_no_headers():
 
 def test_publish_before_connect_raises():
     nc = NatsClient(url="nats://test:4222")
-    try:
+    with pytest.raises(RuntimeError, match=r"connect\(\)"):
         asyncio.run(nc.publish("s", b"p"))
-    except RuntimeError as exc:
-        assert "connect()" in str(exc)
-    else:  # pragma: no cover - explicit failure path
-        raise AssertionError("expected RuntimeError before connect()")
 
 
 # --- pull_subscribe / fetch ----------------------------------------------
