@@ -116,7 +116,7 @@ async def read_processed_notes_batch(offset: int, limit: int) -> list[dict]:
     ``path LIKE '_processed/%'`` and ``deleted_at IS NULL`` (the corpus is
     defined in WAVEFRONT-0-discover §4), LEFT JOINs ``knowledge.chunks`` to
     assemble per-note chunk lists (``chunk_index``, ``section_header``,
-    ``chunk_text``, ``embedding`` cast to ``float[]`` so psycopg returns a plain
+    ``chunk_text``, ``embedding`` cast to ``real[]`` so psycopg returns a plain
     list rather than a pgvector string), and returns plain JSON-serializable
     dicts (Temporal activity results must be serializable).
 
@@ -181,7 +181,7 @@ async def read_processed_notes_batch(offset: int, limit: int) -> list[dict]:
                 cur.execute(
                     """
                     SELECT note_fk, chunk_index, section_header,
-                           chunk_text, embedding::float[]
+                           chunk_text, embedding::real[]
                     FROM knowledge.chunks
                     WHERE note_fk = ANY(%(ids)s)
                     ORDER BY note_fk, chunk_index
