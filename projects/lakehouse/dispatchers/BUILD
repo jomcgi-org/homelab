@@ -17,6 +17,15 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # matching orchestrator/BUILD.
 # gazelle:resolve py temporalio @pip//temporalio
 # gazelle:resolve py temporalio.client @pip//temporalio
+#
+# Force `projects.lakehouse.nats_client` to resolve to its own subpackage target
+# rather than the parent //projects/lakehouse (which carries only the top-level
+# __init__.py, NOT the nats_client submodule). Without this, gazelle maps
+# `from projects.lakehouse.nats_client import NatsClient` (in run.py) to
+# //projects/lakehouse and NatsClient is missing from the binary/test runfiles
+# (ModuleNotFoundError at runtime). Mirrors nats_client/BUILD + quack-server/BUILD.
+# gazelle:resolve py projects.lakehouse.nats_client //projects/lakehouse/nats_client:nats_client
+# gazelle:resolve py projects.lakehouse.nats_client.client //projects/lakehouse/nats_client:nats_client
 
 py_library(
     name = "dispatchers",
@@ -28,8 +37,8 @@ py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
-        "//projects/lakehouse",
         "//projects/lakehouse/events",
+        "//projects/lakehouse/nats_client",
         "//projects/lakehouse/orchestrator",
         "@pip//temporalio",
     ],
@@ -46,8 +55,8 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
     deps = [
         ":dispatchers",
-        "//projects/lakehouse",
         "//projects/lakehouse/events",
+        "//projects/lakehouse/nats_client",
         "//projects/lakehouse/orchestrator",
         "@pip//temporalio",
     ],
