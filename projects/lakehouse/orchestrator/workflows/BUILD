@@ -27,7 +27,10 @@ _WORKFLOW_DEPS = [
 
 py_library(
     name = "workflows",
-    srcs = glob(["**/*.py"], exclude = ["**/*_test.py"]),
+    srcs = glob(
+        ["**/*.py"],
+        exclude = ["**/*_test.py"],
+    ),
     visibility = ["//:__subpackages__"],
     deps = _WORKFLOW_DEPS,
 )
@@ -37,7 +40,10 @@ py_library(
 # differentiated only by the TASK_QUEUE env var.
 py_venv_binary(
     name = "worker_main",
-    srcs = glob(["**/*.py"], exclude = ["**/*_test.py"]),
+    srcs = glob(
+        ["**/*.py"],
+        exclude = ["**/*_test.py"],
+    ),
     main = "run.py",
     visibility = ["//:__subpackages__"],
     deps = _WORKFLOW_DEPS,
