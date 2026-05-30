@@ -43,14 +43,22 @@ class _FakeMsg:
 
 
 class _FakeSub:
-    """Yields one batch of messages then raises TimeoutError to idle the loop."""
+    """Yields each preloaded batch once, then signals stop and idles.
 
-    def __init__(self, batches: list[list[_FakeMsg]]):
+    Once the batches are exhausted it sets ``stop`` (so the consumer's
+    ``while not stop.is_set()`` exits deterministically on the next check) and
+    raises ``TimeoutError`` to exercise the consumer's idle/re-poll branch. This
+    keeps the test free of sleep-based timing races.
+    """
+
+    def __init__(self, batches: list[list[_FakeMsg]], *, stop: asyncio.Event):
         self._batches = list(batches)
+        self._stop = stop
 
     async def fetch(self, batch=None, *, timeout=5.0):
         if self._batches:
             return self._batches.pop(0)
+        self._stop.set()
         raise TimeoutError
 
 
@@ -130,27 +138,36 @@ def test_parse_artifact_ready_rejects_missing_path():
 # --------------------------------------------------------------------------- #
 
 
+def _run_consumer_once(state, msgs: list[_FakeMsg]) -> _FakeClient:
+    """Run the swap consumer over a single preloaded batch, deterministically.
+
+    The fake subscription sets ``stop`` once the batch is drained, so the loop
+    exits on its next condition check. ``asyncio.wait_for`` bounds the run so a
+    regression that re-introduces an event-loop-starving busy spin fails fast
+    instead of hanging the whole test target to its 300s timeout.
+    """
+    stop = asyncio.Event()
+    sub = _FakeSub([msgs], stop=stop)
+    client = _FakeClient(sub)
+
+    async def drive():
+        await asyncio.wait_for(
+            server.run_swap_consumer(state, client, stop=stop, poll_timeout=0.01),
+            timeout=5.0,
+        )
+
+    asyncio.run(drive())
+    return client
+
+
 def test_consumer_issues_attach_or_replace_and_acks():
     state, executed = _recording_state()
     path = "s3://warehouse/serving/notes-v9.duckdb"
     msg = _FakeMsg(
         json.dumps({"payload": {"artifact_url": path, "version": "v9"}}).encode()
     )
-    sub = _FakeSub([[msg]])
-    client = _FakeClient(sub)
 
-    stop = asyncio.Event()
-
-    async def drive():
-        task = asyncio.create_task(
-            server.run_swap_consumer(state, client, stop=stop, poll_timeout=0.01)
-        )
-        # Let the loop drain the one batch, then hit the idle TimeoutError path.
-        await asyncio.sleep(0.05)
-        stop.set()
-        await task
-
-    asyncio.run(drive())
+    client = _run_consumer_once(state, [msg])
 
     # Subscribed to the right subject + durable.
     assert client.subscribed == (server.ARTIFACT_READY_SUBJECT, server.SWAP_DURABLE)
@@ -166,19 +183,8 @@ def test_consumer_issues_attach_or_replace_and_acks():
 def test_consumer_terminates_malformed_message():
     state, _ = _recording_state()
     msg = _FakeMsg(json.dumps({"payload": {}}).encode())
-    sub = _FakeSub([[msg]])
-    client = _FakeClient(sub)
-    stop = asyncio.Event()
 
-    async def drive():
-        task = asyncio.create_task(
-            server.run_swap_consumer(state, client, stop=stop, poll_timeout=0.01)
-        )
-        await asyncio.sleep(0.05)
-        stop.set()
-        await task
-
-    asyncio.run(drive())
+    _run_consumer_once(state, [msg])
 
     assert msg.termed is True
     assert msg.acked is False

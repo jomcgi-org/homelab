@@ -172,7 +172,13 @@ async def run_swap_consumer(
         try:
             msgs = await sub.fetch(timeout=poll_timeout)
         except (asyncio.TimeoutError, TimeoutError):
-            continue  # idle stream — re-poll
+            # Idle stream — re-poll. Yield to the event loop first: a real
+            # nats-py fetch suspends for ~poll_timeout, but if fetch raises the
+            # timeout synchronously (e.g. a fake in tests, or a fast-failing
+            # server) this loop would otherwise busy-spin and starve the loop —
+            # including the shutdown task that sets `stop`.
+            await asyncio.sleep(0)
+            continue
         for msg in msgs:
             await _apply_swap_message(state, msg)
 
