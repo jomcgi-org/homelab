@@ -16,8 +16,5 @@ helm_chart(
     # //projects/lakehouse:__subpackages__ so the colocated-but-separate-package
     # deploy/ argocd_app (which references //projects/lakehouse/chart:chart) can
     # see the chart filegroup; //overlays for the historical overlay rendering.
-    visibility = [
-        "//overlays:__subpackages__",
-        "//projects/lakehouse:__subpackages__",
-    ],
+    visibility = ["//overlays:__subpackages__"],
 )
