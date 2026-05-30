@@ -99,6 +99,7 @@ async def create_note(
     source: str | None = None,
     tags: list[str] | None = None,
     type: str | None = None,
+    visibility: str | None = None,
 ) -> dict:
     """Create a new knowledge note in the vault.
 
@@ -111,9 +112,14 @@ async def create_note(
         source: Optional source URL or reference.
         tags: Optional list of tags.
         type: Optional note type (e.g. "concept", "paper").
+        visibility: Optional public or private. Atoms without visibility
+            land in the review queue. Set explicitly to avoid that.
     """
     if not content or not content.strip():
         return {"error": "content must not be empty"}
+
+    if visibility is not None and visibility not in ("public", "private"):
+        return {"error": (f"visibility must be public or private, got {visibility!r}")}
 
     if title is None:
         title = content.strip()[:60]
@@ -125,6 +131,8 @@ async def create_note(
         fm["tags"] = tags
     if type:
         fm["type"] = type
+    if visibility:
+        fm["visibility"] = visibility
 
     file_content = "---\n" + yaml.dump(fm, default_flow_style=False) + "---\n" + content
 
@@ -147,18 +155,27 @@ async def edit_note(
     content: str | None = None,
     title: str | None = None,
     tags: list[str] | None = None,
+    visibility: str | None = None,
 ) -> dict:
     """Edit an existing knowledge note.
 
     Looks up the note by ID, merges the provided fields into the
-    existing frontmatter, and writes the updated file back.
+    existing frontmatter, and writes the updated file back. All
+    pre-existing frontmatter fields (visibility, source_tier, aliases,
+    edges, created/updated timestamps, custom extras) are preserved
+    on rewrite -- only the fields passed explicitly are modified.
 
     Args:
         note_id: The stable note identifier.
         content: New markdown body (replaces existing body if provided).
         title: New title (updates frontmatter if provided).
         tags: New tags list (updates frontmatter if provided).
+        visibility: Optional public or private. When None, the
+            existing visibility (if any) is preserved on rewrite.
     """
+    if visibility is not None and visibility not in ("public", "private"):
+        return {"error": (f"visibility must be public or private, got {visibility!r}")}
+
     with Session(get_engine()) as session:
         store = KnowledgeStore(session)
         note = store.get_note_by_id(note_id)
@@ -179,7 +196,13 @@ async def edit_note(
             parsed.tags = tags
         if content is not None:
             body = content
+        if visibility is not None:
+            parsed.visibility = visibility
 
+        # Mirrors router.edit_note's field list so every frontmatter field the
+        # parser knows about gets re-emitted. Drift between this list and the
+        # HTTP edit_note is the bug that silently nulled visibility on
+        # thousands of notes before this fix landed.
         fm_dict: dict[str, object] = {}
         if parsed.note_id:
             fm_dict["id"] = parsed.note_id
@@ -189,6 +212,8 @@ async def edit_note(
             fm_dict["type"] = parsed.type
         if parsed.status:
             fm_dict["status"] = parsed.status
+        if parsed.visibility is not None:
+            fm_dict["visibility"] = parsed.visibility
         if parsed.source:
             fm_dict["source"] = parsed.source
         if parsed.tags:
@@ -197,6 +222,10 @@ async def edit_note(
             fm_dict["aliases"] = parsed.aliases
         if parsed.edges:
             fm_dict["edges"] = parsed.edges
+        if parsed.created is not None:
+            fm_dict["created"] = parsed.created.isoformat()
+        if parsed.updated is not None:
+            fm_dict["updated"] = parsed.updated.isoformat()
         if parsed.extra:
             fm_dict.update(parsed.extra)
 
