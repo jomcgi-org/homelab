@@ -17,14 +17,17 @@ py_library(
         exclude = ["**/*_test.py"],
     ),
     visibility = ["//:__subpackages__"],
-    deps = ["@pip//nats_py"],
+    deps = [
+        "//projects/lakehouse",
+        "@pip//nats_py",
+    ],
 )
 
 py_test(
     name = "client_test",
     srcs = ["client_test.py"],
     deps = [
-        ":nats_client",
+        "//projects/lakehouse/nats_client",
         "@pip//pytest",
     ],
 )
