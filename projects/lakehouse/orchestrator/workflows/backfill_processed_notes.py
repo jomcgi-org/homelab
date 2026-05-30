@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from temporalio import activity, workflow
+from temporalio.common import RetryPolicy
 
 # Heavy / non-deterministic libraries are imported inside the workflow's
 # deterministic sandbox only through ``imports_passed_through`` so the SDK does
@@ -294,13 +295,13 @@ class BackfillFromProcessedNotesWorkflow:
         # Notes processed within THIS run segment; resets on continue_as_new.
         processed_this_run = 0
 
-        read_retry = workflow.RetryPolicy(
+        read_retry = RetryPolicy(
             initial_interval=timedelta(seconds=1),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(minutes=1),
             maximum_attempts=5,
         )
-        publish_retry = workflow.RetryPolicy(
+        publish_retry = RetryPolicy(
             initial_interval=timedelta(seconds=1),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(minutes=1),

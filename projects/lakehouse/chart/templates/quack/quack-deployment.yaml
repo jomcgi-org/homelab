@@ -39,6 +39,11 @@ spec:
               containerPort: {{ .Values.quack.port }}
               protocol: TCP
           env:
+            # DuckDB writes its extension cache to $HOME/.duckdb; this container
+            # is read-only-rootfs (HOME unset => /.duckdb fails). Point HOME at
+            # the writable /tmp emptyDir so httpfs/iceberg/vss INSTALL/LOAD works.
+            - name: HOME
+              value: /tmp
             - name: PORT
               value: {{ .Values.quack.port | quote }}
             {{- if .Values.quack.servingArtifactUrl }}
