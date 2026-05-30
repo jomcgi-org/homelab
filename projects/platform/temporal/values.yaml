@@ -32,6 +32,13 @@ temporal:
     podAnnotations:
       linkerd.io/inject: disabled
     containerSecurityContext:
+      # The upstream temporal-admin-tools image declares its user as the NAME
+      # `temporal` (uid 1000), not a number. With runAsNonRoot:true and no
+      # numeric runAsUser, the kubelet cannot verify the user is non-root and
+      # refuses to start the container ("image has non-numeric user (temporal),
+      # cannot verify user is non-root"). Unlike the server pods, the schema Job
+      # has no pod-level securityContext to inherit a uid from, so set it here.
+      runAsUser: 1000
       runAsNonRoot: true
       allowPrivilegeEscalation: false
       capabilities:
@@ -243,6 +250,10 @@ temporal:
       config.linkerd.io/opaque-ports: "7233"
       otel.injected-by: kyverno/inject-otel-env-vars
     containerSecurityContext:
+      # Same as the schema Job: the temporal-ui image's user is the NAME
+      # `temporal` (uid 1000); set a numeric runAsUser so runAsNonRoot can be
+      # verified (no pod-level securityContext here to inherit one).
+      runAsUser: 1000
       runAsNonRoot: true
       allowPrivilegeEscalation: false
       capabilities:
