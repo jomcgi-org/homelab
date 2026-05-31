@@ -1,6 +1,7 @@
 # gazelle:exclude agent
 # gazelle:exclude chat
 # gazelle:exclude chat_public
+# gazelle:exclude cluster
 # gazelle:exclude app
 # gazelle:exclude e2e
 # gazelle:exclude knowledge
@@ -50,6 +51,7 @@ py_venv_binary(
             "app/**/*.py",
             "chat/**/*.py",
             "chat_public/**/*.py",
+            "cluster/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "scheduler/**/*.py",
@@ -142,6 +144,7 @@ py_library(
             "app/**/*.py",
             "chat/**/*.py",
             "chat_public/**/*.py",
+            "cluster/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "scheduler/**/*.py",
@@ -522,6 +525,12 @@ py_test(
         "@pip//pytest",
         "@pip//sqlmodel",
         "@pip//tzdata",
+    name = "cluster_summarize_test",
+    srcs = ["cluster/summarize_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 
@@ -537,6 +546,14 @@ py_test(
     deps = [
         ":monolith_public_backend",
         "@pip//pytest",
+    name = "cluster_mcp_test",
+    srcs = ["cluster/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 

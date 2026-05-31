@@ -1,8 +1,10 @@
-"""Async Kubernetes client wrapper for read-only cluster queries.
+"""Async Kubernetes client wrapper for cluster queries.
 
-Thin layer over kubernetes_asyncio. Designed for reuse by future
-observability MCP tooling — keep the interface minimal and read-only.
-"""
+Thin layer over kubernetes_asyncio, shared by the home observability stats
+and the ``k8s-*`` debug MCP tools (``cluster/``). Read-only except for one
+explicitly-named mutation: ``sync_argocd_app`` patches an Application's
+``.operation`` field to trigger a sync (the same mechanism as
+``argocd app sync``). Keep the interface minimal."""
 
 from __future__ import annotations
 
@@ -46,6 +48,34 @@ def _parse_memory(s: str) -> float:
         if s.endswith(suffix):
             return float(s[: -len(suffix)]) * mult
     return float(s)
+
+
+# Curated allowlist of debuggable kinds. alias -> (api group "core"|"apps",
+# method singular, namespaced). The method singular is the snake_case form the
+# kubernetes client bakes into method names (e.g. config_map ->
+# read_namespaced_config_map). ArgoCD Applications are handled separately via
+# the custom-object API.
+_KINDS: dict[str, tuple[str, str, bool]] = {
+    "pods": ("core", "pod", True),
+    "services": ("core", "service", True),
+    "configmaps": ("core", "config_map", True),
+    "events": ("core", "event", True),
+    "namespaces": ("core", "namespace", False),
+    "nodes": ("core", "node", False),
+    "deployments": ("apps", "deployment", True),
+    "statefulsets": ("apps", "stateful_set", True),
+    "daemonsets": ("apps", "daemon_set", True),
+    "replicasets": ("apps", "replica_set", True),
+}
+
+_ARGO = ("argoproj.io", "v1alpha1", "applications")
+
+# Kinds usable from the generic list/get tools, plus the argo alias.
+RESOURCE_KINDS = sorted([*_KINDS.keys(), "applications"])
+
+
+class UnknownKindError(ValueError):
+    """Raised when a caller asks for a kind outside the curated allowlist."""
 
 
 class KubernetesClient:
@@ -189,6 +219,150 @@ class KubernetesClient:
             "memory_used_bytes": mem_used,
             "memory_capacity_bytes": mem_cap,
         }
+
+    def _typed_api(self, group: str, api: ApiClient):
+        return client.CoreV1Api(api) if group == "core" else client.AppsV1Api(api)
+
+    async def list_resources(
+        self,
+        kind: str,
+        namespace: str | None = None,
+        label_selector: str | None = None,
+    ) -> list[dict]:
+        """List a curated kind, returning sanitized dicts (raw, untrimmed).
+
+        Cluster-scoped kinds (nodes, namespaces) ignore ``namespace``.
+        ``applications`` lists ArgoCD apps from the argocd namespace.
+        """
+        api = await self._ensure_client()
+        if kind == "applications":
+            custom = client.CustomObjectsApi(api)
+            result = await custom.list_namespaced_custom_object(
+                group=_ARGO[0],
+                version=_ARGO[1],
+                namespace=namespace or "argocd",
+                plural=_ARGO[2],
+                label_selector=label_selector,
+            )
+            return result.get("items", [])
+
+        if kind not in _KINDS:
+            raise UnknownKindError(kind)
+        group, singular, namespaced = _KINDS[kind]
+        typed = self._typed_api(group, api)
+        kwargs = {"label_selector": label_selector} if label_selector else {}
+        if not namespaced:
+            resp = await getattr(typed, f"list_{singular}")(**kwargs)
+        elif namespace:
+            resp = await getattr(typed, f"list_namespaced_{singular}")(
+                namespace, **kwargs
+            )
+        else:
+            resp = await getattr(typed, f"list_{singular}_for_all_namespaces")(**kwargs)
+        return [api.sanitize_for_serialization(item) for item in resp.items]
+
+    async def get_resource(
+        self, kind: str, name: str, namespace: str | None = None
+    ) -> dict | None:
+        """Get a single curated resource as a sanitized dict, or None on miss."""
+        api = await self._ensure_client()
+        if kind == "applications":
+            try:
+                return await client.CustomObjectsApi(api).get_namespaced_custom_object(
+                    group=_ARGO[0],
+                    version=_ARGO[1],
+                    namespace=namespace or "argocd",
+                    plural=_ARGO[2],
+                    name=name,
+                )
+            except client.exceptions.ApiException:
+                return None
+
+        if kind not in _KINDS:
+            raise UnknownKindError(kind)
+        group, singular, namespaced = _KINDS[kind]
+        typed = self._typed_api(group, api)
+        try:
+            if namespaced:
+                obj = await getattr(typed, f"read_namespaced_{singular}")(
+                    name, namespace or "default"
+                )
+            else:
+                obj = await getattr(typed, f"read_{singular}")(name)
+        except client.exceptions.ApiException:
+            return None
+        return api.sanitize_for_serialization(obj)
+
+    async def get_pod_logs(
+        self,
+        namespace: str,
+        name: str,
+        container: str | None = None,
+        tail_lines: int = 200,
+        since_seconds: int | None = None,
+        previous: bool = False,
+    ) -> str:
+        """Read a pod's logs. Caller is responsible for any further trimming."""
+        api = await self._ensure_client()
+        v1 = client.CoreV1Api(api)
+        return await v1.read_namespaced_pod_log(
+            name=name,
+            namespace=namespace,
+            container=container,
+            tail_lines=tail_lines,
+            since_seconds=since_seconds,
+            previous=previous,
+            timestamps=True,
+        )
+
+    async def list_events(
+        self, namespace: str | None = None, involved_object: str | None = None
+    ) -> list[dict]:
+        """List core events, optionally scoped to a namespace and/or object name."""
+        api = await self._ensure_client()
+        v1 = client.CoreV1Api(api)
+        field_selector = (
+            f"involvedObject.name={involved_object}" if involved_object else None
+        )
+        if namespace:
+            resp = await v1.list_namespaced_event(
+                namespace, field_selector=field_selector
+            )
+        else:
+            resp = await v1.list_event_for_all_namespaces(field_selector=field_selector)
+        return [api.sanitize_for_serialization(item) for item in resp.items]
+
+    async def sync_argocd_app(
+        self,
+        name: str,
+        namespace: str = "argocd",
+        prune: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
+        """Trigger an ArgoCD sync by patching the Application's ``.operation``.
+
+        This is the same mechanism ``argocd app sync`` uses under the hood: the
+        application controller watches ``.operation`` and executes it. Note it
+        bypasses ArgoCD's own RBAC/audit — gated only by the K8s ``patch`` verb.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        body = {
+            "operation": {
+                "initiatedBy": {"username": "monolith-k8s-mcp"},
+                "sync": {"prune": prune, "dryRun": dry_run},
+            }
+        }
+        await custom.patch_namespaced_custom_object(
+            group=_ARGO[0],
+            version=_ARGO[1],
+            namespace=namespace,
+            plural=_ARGO[2],
+            name=name,
+            body=body,
+            _content_type="application/merge-patch+json",
+        )
+        return {"app": name, "synced": True, "prune": prune, "dry_run": dry_run}
 
     async def close(self) -> None:
         if self._api:

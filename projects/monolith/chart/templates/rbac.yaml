@@ -5,20 +5,25 @@ metadata:
   labels:
     {{- include "monolith.labels" . | nindent 4 }}
 rules:
+  # Core read surface for the k8s-* debug MCP tools. No secrets, no pods/exec.
   - apiGroups: [""]
-    resources: ["nodes", "pods"]
-    verbs: ["list"]
+    resources: ["nodes", "pods", "services", "configmaps", "events", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   # nodes/proxy lets the stats endpoint reach each kubelet's Summary API
   # (/stats/summary) for honest rssBytes memory usage, not just working set.
   - apiGroups: [""]
     resources: ["nodes/proxy"]
     verbs: ["get"]
   - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["list"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list"]
+  # get/list for reads; patch triggers an ArgoCD sync via .operation.
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
-    verbs: ["list", "get"]
+    verbs: ["get", "list", "patch"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes"]
     verbs: ["list"]
