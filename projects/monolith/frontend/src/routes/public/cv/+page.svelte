@@ -29,9 +29,18 @@
     return tokens;
   }
 
-  // Scrolling ticker of the stack, drawn from the skills data so it never
-  // drifts from the expertise section below.
-  const MARQUEE_ITEMS = skills.flatMap((c) => c.items);
+  // Identity ticker — deliberately NOT the skill list (that lives in the
+  // chip grid of section 03). Keeping these distinct avoids showing the same
+  // list twice; the marquee is a signature, the chips are the reference.
+  const MARQUEE_ITEMS = [
+    "Senior Platform Engineer",
+    "Reliability",
+    "Observability",
+    "Distributed Systems",
+    "OpenTelemetry Contributor",
+    "K3S Homelab",
+    "Vancouver, Canada",
+  ];
 
   // Scroll-triggered reveals, mirroring the homepage's IntersectionObserver.
   onMount(() => {
@@ -94,7 +103,7 @@
       /></svg
     >
     <svg class="deco deco-diamond" width="20" height="20" viewBox="0 0 24 24"
-      ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="var(--coral)" stroke="var(--ink)" stroke-width="2" /></svg
+      ><path d="M12,2 L22,12 L12,22 L2,12 Z" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
     >
     <svg class="deco deco-squiggle" width="76" height="22" viewBox="0 0 80 24"
       ><path
@@ -110,7 +119,6 @@
       <p class="eyebrow">Curriculum Vitae</p>
       <h1 class="cv-name display">{name}</h1>
       <p class="cv-tagline mono">Senior Platform Engineer · GCP · Kubernetes · Reliability</p>
-      <p class="cv-summary">{@render inline(summary)}</p>
       <div class="cv-contacts">
         <a class="btn btn-primary" href={`mailto:${contact.email}`}>{contact.email}</a>
         <a class="btn btn-secondary" href={contact.linkedin.href} target="_blank" rel="noreferrer"
@@ -121,13 +129,17 @@
         >
         <span class="loc-chip mono">◍ {contact.location}</span>
       </div>
+      <div class="summary-card">
+        <span class="summary-tab mono">Profile</span>
+        <p class="cv-summary">{@render inline(summary)}</p>
+      </div>
       <Sticker color="var(--accent)" rotate={-4} class="hero-sticker"
         >Reliability-obsessed</Sticker
       >
     </div>
   </header>
 
-  <!-- ═══ Stack ticker ═══ -->
+  <!-- ═══ Identity ticker (signature, not skills) ═══ -->
   <Marquee items={MARQUEE_ITEMS} />
 
   <!-- ═══ Work experience (paper) ═══ -->
@@ -226,19 +238,41 @@
     color: var(--ink-3);
     margin-bottom: 22px;
   }
-  .cv-summary {
-    font-family: var(--sans);
-    font-size: clamp(17px, 1.5vw, 20px);
-    line-height: 1.55;
-    color: var(--ink-2);
-    max-width: 62ch;
-    margin-bottom: 28px;
-  }
   .cv-contacts {
     display: flex;
     flex-wrap: wrap;
     gap: 12px;
     align-items: center;
+    margin-bottom: 30px;
+  }
+  /* Contrasting profile card so the bio doesn't blend into the cream band.
+     One accent treatment only: border + offset shadow + label tab. */
+  .summary-card {
+    position: relative;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    box-shadow: 6px 6px 0 var(--ink);
+    padding: 26px 30px 24px;
+    max-width: 66ch;
+  }
+  .summary-tab {
+    position: absolute;
+    top: -13px;
+    left: 24px;
+    background: var(--ink);
+    color: var(--paper);
+    border: 2px solid var(--ink);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+  }
+  .cv-summary {
+    font-family: var(--sans);
+    font-size: clamp(16px, 1.4vw, 19px);
+    line-height: 1.55;
+    color: var(--ink);
   }
   .loc-chip {
     display: inline-flex;
@@ -354,8 +388,7 @@
     content: "";
     width: 13px;
     height: 13px;
-    background: var(--coral);
-    border: 2px solid var(--ink);
+    background: var(--ink);
     flex-shrink: 0;
   }
   .job-role {
@@ -405,17 +438,21 @@
     position: absolute;
     left: 0;
     top: 0;
-    color: var(--coral);
+    color: var(--ink);
     font-size: 15px;
     font-weight: 700;
   }
 
-  /* Emphasized metrics — yellow highlight block, the brutalist marker style */
+  /* Metrics are the ONLY coral on the page — coral means "this is the number
+     that matters." Spans wrap just the metric token, so the marker stays a
+     clean single rectangle; box-decoration-break keeps any rare wrap tidy. */
   .metric {
-    font-weight: 600;
+    font-weight: 700;
     color: var(--ink);
-    background: linear-gradient(transparent 58%, var(--accent) 58%);
-    padding: 0 1px;
+    background: linear-gradient(transparent 56%, var(--coral) 56%);
+    padding: 0 3px;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
   }
   .inline-link {
     font-weight: 600;
