@@ -181,9 +181,7 @@ def dedupe_events(events: list[dict]) -> list[dict]:
                 "first_seen": first_seen,
                 "last_seen": last_seen,
             }
-    rows = sorted(
-        grouped.values(), key=lambda r: r["last_seen"] or "", reverse=True
-    )
+    rows = sorted(grouped.values(), key=lambda r: r["last_seen"] or "", reverse=True)
     return [_compact(r) for r in rows]
 
 
