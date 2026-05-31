@@ -5,10 +5,11 @@ The module is intentionally split into two layers:
   * **Pure SQL string builders** — ``s3_secret_sql``, ``attach_or_replace_sql`` and
     ``vector_search_sql``. They have no side effects, touch no network, and are the
     unit-tested surface.
-  * **Network / extension-touching helpers** — ``load_extensions`` (``INSTALL``/``LOAD``
-    of ``httpfs``/``iceberg``/``vss``, which download from the internet at runtime) and
-    ``connect`` (which calls ``load_extensions`` and configures the S3 secret). These
-    are kept out of the default test path so the hermetic CI never reaches the network.
+  * **Extension / S3-touching helpers** — ``load_extensions`` (``LOAD`` of the signed
+    extension binaries bundled into the image at ``/opt/duckdb_ext`` — gunzipped to a
+    writable dir, no network) and ``connect`` (which calls ``load_extensions`` and
+    configures the S3 secret). These are kept out of the default test path so the
+    hermetic CI never touches the on-disk bundle.
 
 DuckDB version is pinned to 1.5.3 (the version platform/004 verified for the
 ``ATTACH OR REPLACE`` hot-swap semantics).
@@ -16,7 +17,9 @@ DuckDB version is pinned to 1.5.3 (the version platform/004 verified for the
 
 from __future__ import annotations
 
+import gzip
 import os
+import shutil
 from collections.abc import Mapping
 
 import duckdb
@@ -46,11 +49,26 @@ _S3_REGION = "us-east-1"
 # Secret name used for the SeaweedFS S3 endpoint inside a DuckDB connection.
 _S3_SECRET_NAME = "seaweedfs"
 
-# DuckDB extensions needed for the lakehouse read/serving paths.
+# DuckDB extensions needed for the lakehouse read/serving paths. These are
+# bundled into the worker + quack images at _BUNDLED_EXT_DIR (see MODULE.bazel's
+# duckdb_ext_* multiarch_http_file rules) and LOAD-ed from a local path so the
+# hardened image never downloads them — DuckDB still verifies the embedded
+# signature on LOAD.
+#
+# ORDER MATTERS: with no installer to auto-resolve transitive extensions, each
+# must be LOAD-ed after its dependencies. avro + parquet are iceberg's readers,
+# so they precede iceberg.
+#   avro    — Avro decoder used by iceberg's manifest reads
+#   parquet — Parquet reader used by iceberg data files
 #   httpfs  — direct S3 reads against SeaweedFS
 #   iceberg — read Iceberg tables (workflow read path: warehouse.knowledge.*)
 #   vss     — HNSW vector search over the serving artifact's embedding column
-_EXTENSIONS = ("httpfs", "iceberg", "vss")
+_EXTENSIONS = ("avro", "parquet", "httpfs", "iceberg", "vss")
+
+# Where the multiarch_http_file tars place the signed .duckdb_extension.gz files
+# in the image rootfs (read-only at runtime). load_extensions gunzips each into a
+# writable scratch dir before LOAD-ing it.
+_BUNDLED_EXT_DIR = "/opt/duckdb_ext"
 
 
 # --------------------------------------------------------------------------- #
@@ -133,21 +151,40 @@ def vector_search_sql(table: str, k: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Network / extension-touching helpers (NOT exercised by hermetic tests)
+# Extension / S3-touching helpers (NOT exercised by hermetic tests)
 # --------------------------------------------------------------------------- #
 
 
-def load_extensions(con: duckdb.DuckDBPyConnection) -> None:
-    """``INSTALL`` + ``LOAD`` the lakehouse DuckDB extensions on ``con``.
+def load_extensions(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """``LOAD`` the lakehouse DuckDB extensions from the in-image bundle on ``con``.
 
-    Installs ``httpfs``, ``iceberg`` and ``vss``. The first ``INSTALL`` of each
-    downloads the extension binary from the DuckDB extension repository over the
-    network, so this MUST NOT be called from hermetic CI tests — it is deliberately
-    factored out of the pure builders for exactly that reason.
+    The signed extension binaries (``avro``, ``parquet``, ``httpfs``, ``iceberg``,
+    ``vss``) are baked into the image at ``_BUNDLED_EXT_DIR`` as gzipped
+    ``.duckdb_extension.gz`` files (see MODULE.bazel's ``duckdb_ext_*``
+    ``multiarch_http_file`` rules). The image rootfs is read-only, so each is
+    gunzipped once into a writable scratch dir (``$DUCKDB_HOME/duckdb_ext``,
+    default ``/tmp/duckdb_ext``) and then ``LOAD``-ed by absolute path.
+
+    No ``INSTALL`` and no network: ``LOAD '<path>'`` verifies the extension's
+    embedded signature locally, so the hardened image — which has no CA bundle
+    DuckDB's extension installer could use — never reaches extensions.duckdb.org.
+    Because it reads the on-disk bundle, this MUST NOT be called from hermetic CI
+    tests; it is deliberately factored out of the pure builders for that reason.
     """
+    env = os.environ if env is None else env
+    runtime_dir = os.path.join(env.get("DUCKDB_HOME", "/tmp"), "duckdb_ext")
+    os.makedirs(runtime_dir, exist_ok=True)
     for ext in _EXTENSIONS:
-        con.execute(f"INSTALL {ext};")
-        con.execute(f"LOAD {ext};")
+        gz_path = os.path.join(_BUNDLED_EXT_DIR, f"{ext}.duckdb_extension.gz")
+        ext_path = os.path.join(runtime_dir, f"{ext}.duckdb_extension")
+        if not os.path.exists(ext_path):
+            with gzip.open(gz_path, "rb") as src, open(ext_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        con.execute(f"LOAD '{ext_path}';")
 
 
 def connect(
@@ -159,34 +196,37 @@ def connect(
 
     Steps performed:
       1. ``duckdb.connect()`` (in-memory base connection).
-      2. ``load_extensions`` — installs/loads httpfs, iceberg, vss (network on first
-         install).
+      2. ``load_extensions`` — LOADs the bundled httpfs, iceberg, vss, avro, parquet
+         extensions from the in-image bundle (no network; see ``load_extensions``).
       3. Runs ``s3_secret_sql(env)`` so subsequent ``s3://`` reads authenticate
          against SeaweedFS.
       4. If ``read_only_artifact`` is given, ``ATTACH OR REPLACE`` it as schema
          ``notes`` (the hot-swap pattern from platform/004 §hot-swap). The path may be
          an ``s3://warehouse/serving/notes-vN.duckdb`` URI or a local ``.duckdb`` file.
 
-    Because steps 2-4 touch the network (extension download, S3 reads), this function
-    is **not** invoked by the unit tests. Tests exercise the pure builders and an
+    Because steps 2-4 touch the filesystem bundle and S3, this function is **not**
+    invoked by the unit tests. Tests exercise the pure builders and an
     extension-free ``duckdb.connect(':memory:')`` smoke check instead.
     """
-    # DuckDB downloads extensions under <home_directory>/.duckdb. It derives
-    # home_directory from the passwd home of the running uid (NOT the $HOME env),
-    # which for the non-root container user (65532) is "/" on a read-only
-    # rootfs => INSTALL fails with 'Failed to create directory "/.duckdb"'.
-    # Point home_directory at a writable dir (DUCKDB_HOME, default /tmp — the
-    # emptyDir every lakehouse pod mounts).
+    # DuckDB derives its home_directory from the passwd home of the running uid
+    # (NOT the $HOME env), which for the non-root container user (65532) is "/"
+    # on a read-only rootfs. Several DuckDB operations create <home>/.duckdb
+    # (settings, temp), which would fail with 'Failed to create directory
+    # "/.duckdb"'. Point home_directory at a writable dir (DUCKDB_HOME, default
+    # /tmp — the emptyDir every lakehouse pod mounts). Extensions are LOAD-ed from
+    # the bundle (load_extensions), not installed here, so this no longer governs
+    # extension downloads — it just keeps DuckDB's home writable.
     duckdb_home = (env or os.environ).get("DUCKDB_HOME", "/tmp")
     con = duckdb.connect(config={"home_directory": duckdb_home})
-    # The minimal hardened image has no system CA bundle DuckDB can find, so the
-    # HTTPS extension download from extensions.duckdb.org fails SSL verification
-    # ("Problem with the SSL CA cert"). DuckDB uses its own `ca_cert_file` (not
-    # OpenSSL/$SSL_CERT_FILE); point it at certifi's bundle (a hard dep).
+    # SeaweedFS S3 is plaintext (USE_SSL false) and extensions LOAD from the local
+    # bundle, so no CA bundle is needed for the lakehouse paths. Set DuckDB's own
+    # `ca_cert_file` (distinct from OpenSSL/$SSL_CERT_FILE) at certifi's bundle
+    # defensively, so any future HTTPS httpfs read (e.g. an external S3) verifies
+    # against a real trust store rather than failing on the empty system store.
     import certifi
 
     con.execute(f"SET ca_cert_file = '{certifi.where()}'")
-    load_extensions(con)
+    load_extensions(con, env=env)
     con.execute(s3_secret_sql(env))
     if read_only_artifact is not None:
         con.execute(attach_or_replace_sql("notes", read_only_artifact))

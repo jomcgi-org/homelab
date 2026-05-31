@@ -385,4 +385,65 @@ multiarch_http_file(
     binary_name = "claude",
 )
 
+# DuckDB extensions bundled into the lakehouse worker + quack images so they
+# never download at runtime. The minimal hardened image has no system CA bundle
+# DuckDB's extension installer can find (it uses its own HTTPS stack, not
+# OpenSSL/$SSL_CERT_FILE), so the runtime INSTALL from extensions.duckdb.org
+# fails SSL verification. Bundling the signed .duckdb_extension.gz binaries (and
+# LOAD-ing them from a local path) sidesteps the network entirely — DuckDB still
+# verifies the embedded signature on LOAD. Pinned to DuckDB 1.5.3, matching the
+# @pip//duckdb wheel. The genrule in multiarch_http_file gzip-wraps the tar
+# layer; the .gz payload lands verbatim at /opt/duckdb_ext/ and is gunzipped to
+# /tmp by duckdb_query.load_extensions at startup.
+# URL pattern: https://extensions.duckdb.org/v1.5.3/{linux_amd64,linux_arm64}/<ext>.duckdb_extension.gz
+multiarch_http_file(
+    name = "duckdb_ext_httpfs",
+    amd64_sha256 = "e33a4085f04b84bcbb25c27dec3a821731e4d2476b93cfc84aa46c963098b882",
+    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/httpfs.duckdb_extension.gz",
+    arm64_sha256 = "bde75aadc4ebf9edb4b9fecf4aac6025f35fdae56116b2673b0b4990242c3a02",
+    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/httpfs.duckdb_extension.gz",
+    binary_name = "httpfs.duckdb_extension.gz",
+    package_dir = "/opt/duckdb_ext",
+)
+
+multiarch_http_file(
+    name = "duckdb_ext_iceberg",
+    amd64_sha256 = "f011e851a635b9f0deabbd3c39800d80f28fb64075495bbee7b2b2dbb003fb5f",
+    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/iceberg.duckdb_extension.gz",
+    arm64_sha256 = "4d869567d4e23b86a78388faf5e1fc2c1b9197be66cf51231ab9193ee8e3b22c",
+    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/iceberg.duckdb_extension.gz",
+    binary_name = "iceberg.duckdb_extension.gz",
+    package_dir = "/opt/duckdb_ext",
+)
+
+multiarch_http_file(
+    name = "duckdb_ext_vss",
+    amd64_sha256 = "ef2c977241623a5240b95543bb6905e7106574662ac5729ee9785f08c2ebb9c4",
+    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/vss.duckdb_extension.gz",
+    arm64_sha256 = "10adb395d8f279e0204b1208a7f1861e61c4d566b0816ea5d4c48ccf4b96cdc6",
+    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/vss.duckdb_extension.gz",
+    binary_name = "vss.duckdb_extension.gz",
+    package_dir = "/opt/duckdb_ext",
+)
+
+multiarch_http_file(
+    name = "duckdb_ext_avro",
+    amd64_sha256 = "5eb32503dec69526fca96c3fa381b3c0e2ce7881c6a88dfa04e5fba0ca26ab80",
+    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/avro.duckdb_extension.gz",
+    arm64_sha256 = "dcd28c0f227b714e524d6d7eae79db7d14a10029303faed6fce71cdcbb81e08d",
+    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/avro.duckdb_extension.gz",
+    binary_name = "avro.duckdb_extension.gz",
+    package_dir = "/opt/duckdb_ext",
+)
+
+multiarch_http_file(
+    name = "duckdb_ext_parquet",
+    amd64_sha256 = "993380466638a09cd14e25b68c7fec3f4bd697c16a35af2452aee9f8c8c65f87",
+    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/parquet.duckdb_extension.gz",
+    arm64_sha256 = "31debdb5e8aac3e66e1d1d0c9103865c1b18b1c460f17c1048ba2e3b73ea028f",
+    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/parquet.duckdb_extension.gz",
+    binary_name = "parquet.duckdb_extension.gz",
+    package_dir = "/opt/duckdb_ext",
+)
+
 bazel_dep(name = "rules_pkg", version = "1.1.0")
