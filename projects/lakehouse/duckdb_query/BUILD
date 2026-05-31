@@ -20,6 +20,12 @@ py_library(
     deps = [
         "@pip//certifi",
         "@pip//duckdb",
+        # DuckDB's Python client imports pytz LAZILY when converting a
+        # TIMESTAMP WITH TIME ZONE column (note_events.occurred_at, tz=UTC) to a
+        # Python datetime on fetch — e.g. Quack's `SELECT *` /search. The minimal
+        # image has no pytz, so the fetch raises "No module named 'pytz'".
+        # `# keep`: no static import for gazelle to see.
+        "@pip//pytz",  # keep
     ],
 )
 
