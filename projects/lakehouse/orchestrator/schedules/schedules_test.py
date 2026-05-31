@@ -169,5 +169,7 @@ def test_each_module_exports_exactly_one_schedule() -> None:
     for mod in (build_serving, gap_drain_sweep, iceberg_batch, tag_rotation):
         mod_schedules = getattr(mod, "SCHEDULES", None)
         assert mod_schedules is not None, f"{mod.__name__} missing SCHEDULES"
-        assert len(mod_schedules) == 1, f"{mod.__name__} should export exactly one schedule"
+        assert len(mod_schedules) == 1, (
+            f"{mod.__name__} should export exactly one schedule"
+        )
         assert isinstance(mod_schedules[0], sched.ScheduleDefinition)
