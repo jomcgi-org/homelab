@@ -350,3 +350,147 @@ def test_run_no_dispatchers_is_a_noop():
     # No dispatchers -> no subscriptions, returns immediately.
     asyncio.run(run.run(dispatchers=[], nats_client=nats, temporal_client=client))
     assert nats.subscribed == []
+
+
+# --- artifact_ready module constants --------------------------------------
+
+
+def test_artifact_ready_module_constants():
+    assert artifact_ready.SUBJECT == "events.serving.artifact-ready"
+    assert artifact_ready.DURABLE == "artifact-ready-dispatcher"
+    # The DURABLE must not collide with quack-server's swap durable.
+    assert artifact_ready.DURABLE != "quack-serving-swap"
+
+
+def test_artifact_ready_logs_path_fallback(caplog):
+    """handle_artifact_ready falls back to 'path' when 'artifact_url' is absent."""
+    import logging
+
+    client = FakeTemporalClient()
+    envelope = build_envelope(
+        entity_type="serving-artifact",
+        entity_id="artifact-2026-05-31",
+        event_type="created",
+        event_version=1,
+        producer="lakehouse.build_serving",
+        payload={"path": "/data/serving/v6.duckdb", "version": "v6"},
+    )
+    with caplog.at_level(logging.INFO, logger="projects.lakehouse.dispatchers.artifact_ready"):
+        asyncio.run(artifact_ready.handle_artifact_ready(envelope, client))
+
+    assert "/data/serving/v6.duckdb" in caplog.text
+    assert client.calls == []  # still a stub — no workflow started
+
+
+def test_artifact_ready_logs_empty_payload(caplog):
+    """handle_artifact_ready handles an empty payload dict without error."""
+    import logging
+
+    client = FakeTemporalClient()
+    envelope = build_envelope(
+        entity_type="serving-artifact",
+        entity_id="artifact-empty",
+        event_type="created",
+        event_version=1,
+        producer="lakehouse.build_serving",
+        payload={},
+    )
+    with caplog.at_level(logging.INFO, logger="projects.lakehouse.dispatchers.artifact_ready"):
+        asyncio.run(artifact_ready.handle_artifact_ready(envelope, client))
+
+    assert "artifact-empty" in caplog.text
+    assert client.calls == []
+
+
+# --- gap_ready module constants -------------------------------------------
+
+
+def test_gap_ready_module_constants():
+    from projects.lakehouse.orchestrator import TaskQueue
+
+    assert gap_ready.SUBJECT == "events.knowledge.gap"
+    assert gap_ready.DURABLE == "gap-drain-dispatcher"
+    assert gap_ready.TRIGGER_EVENT_TYPE == "created"
+    assert gap_ready.WORKFLOW_TYPE == "GapDrainWorkflow"
+    assert gap_ready.TASK_QUEUE == TaskQueue.GAP_DRAIN.value  # "gap-drain"
+    assert gap_ready.WORKFLOW_ID_PREFIX == "gap-drain-"
+
+
+# --- run module constants -------------------------------------------------
+
+
+def test_run_poll_timeout_constant():
+    assert run.POLL_TIMEOUT == 5.0
+
+
+# --- run_dispatcher_loop (direct) -----------------------------------------
+
+
+def test_run_dispatcher_loop_dispatches_batch_and_acks():
+    """run_dispatcher_loop processes a single batch then idles."""
+    gap_d = gap_ready.DISPATCHERS[0]
+    msg = FakeMsg(_raw(_gap_envelope("55", "created")))
+    sub = FakeSubscription([[msg]])
+    client = FakeTemporalClient()
+
+    async def drive():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            run.run_dispatcher_loop(gap_d, sub, client, stop=stop)
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    asyncio.run(drive())
+
+    assert msg.acked is True
+    assert client.calls[0]["kwargs"]["id"] == "gap-drain-55"
+
+
+def test_run_dispatcher_loop_stops_when_stop_event_set():
+    """The loop exits cleanly once the stop asyncio.Event is set."""
+    gap_d = gap_ready.DISPATCHERS[0]
+    # Empty subscription — no messages. Loop must still exit when stop is set.
+    sub = FakeSubscription([])
+    client = FakeTemporalClient()
+
+    async def drive():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            run.run_dispatcher_loop(gap_d, sub, client, stop=stop)
+        )
+        # Yield a few times, then signal stop.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    # Must complete without hanging.
+    asyncio.run(drive())
+
+
+def test_run_dispatcher_loop_timeout_does_not_break_loop():
+    """TimeoutError on fetch is a normal idle-stream condition — loop continues."""
+    gap_d = gap_ready.DISPATCHERS[0]
+    good = FakeMsg(_raw(_gap_envelope("77", "created")))
+    # First fetch returns a message; second and subsequent raise TimeoutError.
+    sub = FakeSubscription([[good]])
+    client = FakeTemporalClient()
+
+    async def drive():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            run.run_dispatcher_loop(gap_d, sub, client, stop=stop)
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    asyncio.run(drive())
+
+    # The valid message before the timeouts was still processed.
+    assert good.acked is True
+    assert client.calls[0]["kwargs"]["id"] == "gap-drain-77"

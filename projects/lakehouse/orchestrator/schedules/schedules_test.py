@@ -119,3 +119,56 @@ def test_register_schedules_propagates_unexpected_errors() -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(sched.register_schedules(client))
+
+
+# --- per-module constants ------------------------------------------------
+
+
+def test_build_serving_module_constants() -> None:
+    from projects.lakehouse.orchestrator.schedules import build_serving
+
+    assert build_serving.WORKFLOW_TYPE == "BuildServingArtifactWorkflow"
+    assert build_serving.SCHEDULE_ID == "build-serving-artifact"
+    assert build_serving.CRON == "*/15 * * * *"
+
+
+def test_gap_drain_sweep_module_constants() -> None:
+    from projects.lakehouse.orchestrator.schedules import gap_drain_sweep
+
+    assert gap_drain_sweep.WORKFLOW_TYPE == "GapDrainSweepWorkflow"
+    assert gap_drain_sweep.SCHEDULE_ID == "gap-drain-sweep"
+    assert gap_drain_sweep.CRON == "*/5 * * * *"
+
+
+def test_iceberg_batch_module_constants() -> None:
+    from datetime import timedelta
+
+    from projects.lakehouse.orchestrator.schedules import iceberg_batch
+
+    assert iceberg_batch.WORKFLOW_TYPE == "IcebergBatchCommitWorkflow"
+    assert iceberg_batch.SCHEDULE_ID == "iceberg-batch-commit"
+    assert iceberg_batch.INTERVAL == timedelta(seconds=90)
+
+
+def test_tag_rotation_module_constants() -> None:
+    from projects.lakehouse.orchestrator.schedules import tag_rotation
+
+    assert tag_rotation.WORKFLOW_TYPE == "TagRotationWorkflow"
+    assert tag_rotation.SCHEDULE_ID == "tag-rotation"
+    assert tag_rotation.CRON == "*/15 * * * *"
+
+
+def test_each_module_exports_exactly_one_schedule() -> None:
+    """Each schedule module exports a SCHEDULES list with exactly one entry."""
+    from projects.lakehouse.orchestrator.schedules import (
+        build_serving,
+        gap_drain_sweep,
+        iceberg_batch,
+        tag_rotation,
+    )
+
+    for mod in (build_serving, gap_drain_sweep, iceberg_batch, tag_rotation):
+        schedules = getattr(mod, "SCHEDULES", None)
+        assert schedules is not None, f"{mod.__name__} missing SCHEDULES"
+        assert len(schedules) == 1, f"{mod.__name__} should export exactly one schedule"
+        assert isinstance(schedules[0], sched.ScheduleDefinition)
