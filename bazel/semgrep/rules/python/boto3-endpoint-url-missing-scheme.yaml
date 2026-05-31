@@ -1,0 +1,32 @@
+rules:
+  - id: boto3-endpoint-url-missing-scheme
+    patterns:
+      - pattern: boto3.client(..., endpoint_url=$URL, ...)
+      - metavariable-regex:
+          metavariable: $URL
+          regex: '^(?!"https?://)(?!''https?://)'
+    message: >-
+      boto3 endpoint_url set from a variable without verifying it has an http://
+      or https:// scheme — boto3 raises Invalid endpoint at runtime for
+      scheme-less host:port values. Add a guard like
+      `if not url.startswith(("http://", "https://")): url = "http://" + url`
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: boto3
+      confidence: MEDIUM
+      likelihood: MEDIUM
+      impact: HIGH
+      technology: [python, boto3, aws]
+      description: >-
+        boto3.client() endpoint_url set without scheme validation — scheme-less
+        host:port values raise Invalid endpoint at runtime
+    paths:
+      include:
+        - "**/*.py"
+      exclude:
+        - "**/*_test.py"
+        - "**/test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
