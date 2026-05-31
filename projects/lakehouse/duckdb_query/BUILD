@@ -59,9 +59,6 @@ semgrep_test(
     # duckdb-bound-param-in-array-distance: test file legitimately asserts
     # that bound params are absent — paths:exclude for *_test.py is not
     # honoured when semgrep-core receives absolute paths.
-    exclude_rules = [
-        "duckdb-bound-param-in-array-distance",
-        "no-hardcoded-k8s-service-url",
-    ],
+    exclude_rules = ["no-hardcoded-k8s-service-url"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
