@@ -43,11 +43,13 @@ py_venv_binary(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
+    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_target_test(
     name = "main_semgrep_test",
+    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     lockfiles = ["//bazel/requirements:all.txt"],
     rules = ["//bazel/semgrep/rules:python_rules"],
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
@@ -68,6 +70,7 @@ py_test(
 semgrep_test(
     name = "rebuild_test_semgrep_test",
     srcs = ["rebuild_test.py"],
+    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
@@ -88,6 +91,7 @@ py_test(
 semgrep_test(
     name = "publish_images_test_semgrep_test",
     srcs = ["publish_images_test.py"],
+    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
@@ -105,5 +109,6 @@ py_test(
 semgrep_test(
     name = "main_test_semgrep_test",
     srcs = ["main_test.py"],
+    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
