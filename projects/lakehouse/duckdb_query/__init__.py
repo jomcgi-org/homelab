@@ -14,9 +14,10 @@ Design split (important for hermetic CI):
   * **Pure SQL builders** (``s3_secret_sql``, ``attach_or_replace_sql``,
     ``vector_search_sql``) return SQL strings and touch no network — these are
     what the unit tests exercise.
-  * **Network/extension-touching helpers** (``load_extensions``, ``connect`` with
-    a remote artifact) install/load DuckDB extensions, which download from the
-    internet at runtime. These are kept out of the default test path.
+  * **Extension/S3-touching helpers** (``load_extensions``, ``connect`` with a
+    remote artifact) LOAD the signed DuckDB extensions bundled into the image at
+    ``/opt/duckdb_ext`` (no network) and read S3. These are kept out of the
+    default test path so hermetic CI never touches the on-disk bundle.
 
 SeaweedFS S3 auth is currently disabled, so the configured KEY_ID/SECRET may be
 dummy values; the secret is still required for the DuckDB ``httpfs`` S3 layer to

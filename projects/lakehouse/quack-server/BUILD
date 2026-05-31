@@ -74,6 +74,19 @@ py3_image(
         "PYTHONPATH": "/projects/lakehouse/quack-server/main.runfiles/_main:/projects/lakehouse/quack-server/main.runfiles/_main/projects/lakehouse/quack-server",
     },
     main = "server.py",
+    # Bundle the signed DuckDB extensions so the serving connection LOADs them
+    # from /opt/duckdb_ext/ instead of downloading at runtime (the hardened image
+    # has no CA bundle DuckDB's extension installer can use). Quack only strictly
+    # needs httpfs (S3 reads) + vss (HNSW search), but load_extensions loads the
+    # full set; bundling all five keeps the worker and quack images consistent.
+    # See MODULE.bazel and duckdb_query.load_extensions.
+    multiarch_tars = [
+        "@duckdb_ext_avro//:tar",
+        "@duckdb_ext_httpfs//:tar",
+        "@duckdb_ext_iceberg//:tar",
+        "@duckdb_ext_parquet//:tar",
+        "@duckdb_ext_vss//:tar",
+    ],
     repository = "ghcr.io/jomcgi/homelab/projects/lakehouse/quack-server",
 )
 

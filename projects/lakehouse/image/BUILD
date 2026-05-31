@@ -36,7 +36,18 @@ py3_image(
     # repo (//projects/agent_platform/orchestrator/mcp:image), which likewise
     # omits `main`.
     # Bundle the Claude Code CLI (same as the monolith backend image) so the
-    # gap-drain `run_research_session` activity can invoke the existing harness.
-    multiarch_tars = ["@claude_code//:tar"],
+    # gap-drain `run_research_session` activity can invoke the existing harness,
+    # plus the signed DuckDB extensions (httpfs/iceberg/vss/avro/parquet) so the
+    # iceberg-builder + read paths LOAD them from /opt/duckdb_ext/ rather than
+    # downloading at runtime — the hardened image has no CA bundle DuckDB's
+    # extension installer can use. See MODULE.bazel and duckdb_query.load_extensions.
+    multiarch_tars = [
+        "@claude_code//:tar",
+        "@duckdb_ext_avro//:tar",
+        "@duckdb_ext_httpfs//:tar",
+        "@duckdb_ext_iceberg//:tar",
+        "@duckdb_ext_parquet//:tar",
+        "@duckdb_ext_vss//:tar",
+    ],
     repository = "ghcr.io/jomcgi/homelab/projects/lakehouse/worker",
 )
