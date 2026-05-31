@@ -9,6 +9,7 @@ Coroutines are driven with ``asyncio.run``. The only real Temporal symbol used i
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 from temporalio.exceptions import WorkflowAlreadyStartedError
@@ -364,8 +365,6 @@ def test_artifact_ready_module_constants():
 
 def test_artifact_ready_logs_path_fallback(caplog):
     """handle_artifact_ready falls back to 'path' when 'artifact_url' is absent."""
-    import logging
-
     client = FakeTemporalClient()
     envelope = build_envelope(
         entity_type="serving-artifact",
@@ -386,8 +385,6 @@ def test_artifact_ready_logs_path_fallback(caplog):
 
 def test_artifact_ready_logs_empty_payload(caplog):
     """handle_artifact_ready handles an empty payload dict without error."""
-    import logging
-
     client = FakeTemporalClient()
     envelope = build_envelope(
         entity_type="serving-artifact",

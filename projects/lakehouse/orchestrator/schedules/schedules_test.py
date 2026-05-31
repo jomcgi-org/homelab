@@ -9,6 +9,7 @@ Discovery and spec-shape assertions never connect to a server.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from unittest import mock
 
 import pytest
@@ -141,8 +142,6 @@ def test_gap_drain_sweep_module_constants() -> None:
 
 
 def test_iceberg_batch_module_constants() -> None:
-    from datetime import timedelta
-
     from projects.lakehouse.orchestrator.schedules import iceberg_batch
 
     assert iceberg_batch.WORKFLOW_TYPE == "IcebergBatchCommitWorkflow"
@@ -168,7 +167,7 @@ def test_each_module_exports_exactly_one_schedule() -> None:
     )
 
     for mod in (build_serving, gap_drain_sweep, iceberg_batch, tag_rotation):
-        schedules = getattr(mod, "SCHEDULES", None)
-        assert schedules is not None, f"{mod.__name__} missing SCHEDULES"
-        assert len(schedules) == 1, f"{mod.__name__} should export exactly one schedule"
-        assert isinstance(schedules[0], sched.ScheduleDefinition)
+        mod_schedules = getattr(mod, "SCHEDULES", None)
+        assert mod_schedules is not None, f"{mod.__name__} missing SCHEDULES"
+        assert len(mod_schedules) == 1, f"{mod.__name__} should export exactly one schedule"
+        assert isinstance(mod_schedules[0], sched.ScheduleDefinition)
