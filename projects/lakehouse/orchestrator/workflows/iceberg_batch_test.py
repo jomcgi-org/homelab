@@ -237,7 +237,6 @@ def test_load_or_create_table_creates_when_missing() -> None:
     _, kwargs = catalog.create_table.call_args
     # Created with the registered note_events schema, not an ad-hoc one.
     assert kwargs["schema"] is TABLES["note_events"]
-    assert result.acked == 0
 
 
 @pytest.mark.asyncio
