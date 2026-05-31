@@ -276,6 +276,12 @@ def _s3_client():
     from botocore.config import Config
 
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", DEFAULT_S3_ENDPOINT)
+    # The chart injects a scheme-less host:port (shared with DuckDB's httpfs,
+    # which derives the scheme from USE_SSL). boto3 requires a scheme on
+    # endpoint_url and raises "Invalid endpoint" otherwise; SeaweedFS S3 is
+    # plaintext HTTP, so prefix http:// when absent.
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = "http://" + endpoint
     return boto3.client(
         "s3",
         endpoint_url=endpoint,

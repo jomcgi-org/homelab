@@ -192,3 +192,24 @@ def test_s3_client_uses_path_style_and_env_endpoint() -> None:
     assert created["kwargs"]["endpoint_url"] == "http://sw:8333"
     cfg = created["kwargs"]["config"]
     assert cfg.s3["addressing_style"] == "path"
+
+
+def test_s3_client_prefixes_http_for_scheme_less_endpoint() -> None:
+    """The chart injects a scheme-less host:port (shared with DuckDB); boto3
+    needs a scheme on endpoint_url, so _s3_client prefixes http://."""
+    created = {}
+
+    fake_boto3 = MagicMock()
+    fake_boto3.client.side_effect = lambda service, **kw: (
+        created.update(kw) or MagicMock()
+    )
+
+    with (
+        patch.dict(
+            "os.environ", {"SEAWEEDFS_S3_ENDPOINT": "sw-gateway:8333"}, clear=False
+        ),
+        patch.dict("sys.modules", {"boto3": fake_boto3}),
+    ):
+        mod._s3_client()
+
+    assert created["endpoint_url"] == "http://sw-gateway:8333"
