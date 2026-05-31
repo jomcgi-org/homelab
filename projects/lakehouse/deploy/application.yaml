@@ -11,16 +11,25 @@ metadata:
     argocd.argoproj.io/sync-wave: "3"
 spec:
   project: default
-  source:
-    repoURL: https://github.com/jomcgi/homelab.git
-    path: projects/lakehouse/chart
-    targetRevision: HEAD
-    helm:
-      releaseName: lakehouse
-      valueFiles:
-        # Chart defaults, then environment-specific overrides from deploy/.
-        - values.yaml
-        - ../deploy/values.yaml
+  sources:
+    # Chart from the OCI registry (pushed by CI via Bazel helm_push), digest-pinned
+    # at build time by helm_images_values. targetRevision is the Chart.yaml semver;
+    # CI keeps it in sync on version bumps. Pulling by version (not the `:main`
+    # path at HEAD) is what makes the merge of new images actually roll the pods.
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: lakehouse
+      targetRevision: 0.2.0
+      helm:
+        releaseName: lakehouse
+        # The chart's packaged values.yaml (with pinned image tags) is the base;
+        # this overlay adds environment-specific overrides — and must NOT set
+        # image.tag, or it would clobber the pin.
+        valueFiles:
+          - $values/projects/lakehouse/deploy/values.yaml
+    # Git repo, referenced as $values above, for the environment-specific overlay.
+    - repoURL: https://github.com/jomcgi/homelab.git
+      targetRevision: HEAD
+      ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: lakehouse

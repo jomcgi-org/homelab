@@ -6,10 +6,14 @@ load("//bazel/helm:defs.bzl", "argocd_app")
 # this argocd_app without our semgrep_exclude_rules and would not fix the chart's
 # cross-package visibility, so we keep both BUILDs out of gazelle's hands.
 #
-# Path-based ArgoCD Application for the event-sourced lakehouse worker/quack/
-# dispatcher Deployments + KEDA scalers. Hand-written (not left to gazelle) so we
-# can carry semgrep_exclude_rules — gazelle's helm extension manages only chart/
-# chart_files/release_name/namespace/values_files/tags and preserves this attr.
+# OCI-sourced ArgoCD Application for the event-sourced lakehouse worker/quack/
+# dispatcher Deployments + KEDA scalers (application.yaml pulls the chart from
+# ghcr.io/jomcgi/homelab/charts by version). This argocd_app target only renders
+# the LOCAL chart for CI validation (helm_template_test / semgrep_manifest_test) —
+# chart/chart_files/values_files stay path-local regardless of how the deployed
+# Application sources the chart. Hand-written (not left to gazelle) so we can carry
+# semgrep_exclude_rules — gazelle's helm extension manages only chart/chart_files/
+# release_name/namespace/values_files/tags and preserves this attr.
 #
 # require-readiness-probe: the gap-drain / iceberg-builder / housekeeping worker
 # pods and the dispatcher pods are Temporal task-queue pollers / NATS consumers
