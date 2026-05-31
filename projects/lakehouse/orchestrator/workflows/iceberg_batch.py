@@ -131,6 +131,29 @@ def _envelope_to_row(envelope: dict) -> dict:
     return row
 
 
+def _load_or_create_table(catalog, namespace: str, table_name: str):
+    """Load ``(namespace, table_name)`` from ``catalog``, creating it on first use.
+
+    The catalog is provisioned empty per environment (PyIceberg's SqlCatalog
+    auto-creates only its own metastore tables, not the per-domain Iceberg
+    tables), and there is no separate bootstrap step — so the writer ensure-creates
+    on first drain: create the namespace if absent, then create the table from its
+    registered schema in :data:`projects.lakehouse.iceberg.tables.TABLES`. Both
+    operations are idempotent, so steady-state drains take the load_table fast
+    path. Imports are deferred so importing this module (which the workflow
+    sandbox does to register the workflow) stays light and side-effect free.
+    """
+    from pyiceberg.exceptions import NoSuchTableError
+
+    from projects.lakehouse.iceberg.tables import TABLES
+
+    try:
+        return catalog.load_table((namespace, table_name))
+    except NoSuchTableError:
+        catalog.create_namespace_if_not_exists((namespace,))
+        return catalog.create_table((namespace, table_name), schema=TABLES[table_name])
+
+
 @temporalio.activity.defn
 async def drain_and_commit() -> DrainResult:
     """Pull one batch from NATS, group by table, commit to Iceberg, then ack.
@@ -199,7 +222,7 @@ async def drain_and_commit() -> DrainResult:
         catalog = load_warehouse_catalog()
         result = DrainResult(skipped_unmapped=skipped)
         for table_name, rows in rows_by_table.items():
-            table = catalog.load_table((namespace, table_name))
+            table = _load_or_create_table(catalog, namespace, table_name)
             append_events(table, rows)  # Iceberg commit (new snapshot).
             # Commit succeeded for this table — now (and only now) ack its msgs.
             for msg in msgs_by_table[table_name]:
