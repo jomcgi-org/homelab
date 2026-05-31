@@ -18,7 +18,7 @@ spec:
     # path at HEAD) is what makes the merge of new images actually roll the pods.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: lakehouse
-      targetRevision: 0.2.0
+      targetRevision: 0.2.1
       helm:
         releaseName: lakehouse
         # The chart's packaged values.yaml (with pinned image tags) is the base;
