@@ -137,6 +137,16 @@ def catalog_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
     env = os.environ if env is None else env
 
     endpoint = env.get("SEAWEEDFS_S3_ENDPOINT", DEFAULT_S3_ENDPOINT)
+    # pyiceberg hands ``s3.endpoint`` straight to pyarrow's S3FileSystem as
+    # ``endpoint_override`` with NO ``scheme`` kwarg, so pyarrow defaults to
+    # https. SeaweedFS S3 is plaintext HTTP, so a scheme-less endpoint triggers a
+    # TLS handshake against an HTTP server ("SSL routines::wrong version number").
+    # pyarrow honours a scheme embedded in endpoint_override, so ensure http://
+    # is present. The chart injects a scheme-less host:port shared with DuckDB
+    # (whose httpfs derives the scheme from USE_SSL instead), so the normalisation
+    # has to live here rather than in the shared env value.
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = "http://" + endpoint
     warehouse = env.get("ICEBERG_WAREHOUSE", DEFAULT_WAREHOUSE)
     catalog_uri = _catalog_uri(env)
     access_key = env.get("S3_ACCESS_KEY_ID", "")
