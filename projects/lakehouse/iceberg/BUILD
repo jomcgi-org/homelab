@@ -40,6 +40,13 @@ py_library(
         "@pip//psycopg",  # keep
         "@pip//psycopg_binary",  # keep
         "@pip//sqlalchemy",  # keep
+        # Writing the note_events timestamp[us, tz=UTC] column makes pyarrow
+        # resolve the "UTC" zone via Python's zoneinfo, which needs the IANA tz
+        # database. The minimal hardened image ships no system tz db, so zoneinfo
+        # falls back to the tzdata package — without it the append crashes with
+        # ZoneInfoNotFoundError: 'No time zone found with key UTC'. `# keep`: it
+        # has no import (zoneinfo discovers it as a data package at runtime).
+        "@pip//tzdata",  # keep
     ],
 )
 
