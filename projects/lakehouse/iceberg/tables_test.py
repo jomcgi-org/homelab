@@ -98,3 +98,61 @@ def test_unique_field_ids_per_schema():
     for name, schema in TABLES.items():
         ids = [f.field_id for f in schema.fields]
         assert len(ids) == len(set(ids)), f"{name} has duplicate top-level field IDs"
+
+
+# --- TABLE_NAME constants ------------------------------------------------
+
+
+def test_table_names_match_registry_keys():
+    """The TABLE_NAME string in each module must equal its key in TABLES."""
+    from projects.lakehouse.iceberg.tables import gap_events, note_events
+
+    assert gap_events.TABLE_NAME == "gap_events"
+    assert note_events.TABLE_NAME == "note_events"
+    assert gap_events.TABLE_NAME in TABLES
+    assert note_events.TABLE_NAME in TABLES
+
+
+# --- per-table field required/optional flags ----------------------------
+
+
+def test_note_events_note_id_is_required():
+    """``note_id`` is required=True in note_events (it's the note's own PK
+    column, distinct from the envelope's ``entity_id``)."""
+    by_name = {f.name: f for f in TABLES["note_events"].fields}
+    assert by_name["note_id"].required is True
+
+
+def test_gap_events_payload_fields_are_optional():
+    """Gap payload columns (topic, gap_class, state) are optional — a tombstone
+    row for a gap carries no payload, so they must allow NULL."""
+    by_name = {f.name: f for f in TABLES["gap_events"].fields}
+    for col in ("topic", "gap_class", "state"):
+        assert by_name[col].required is False, f"{col} should be optional"
+
+
+def test_note_events_chunk_fields_are_optional():
+    """Per-chunk columns are optional — a metadata-only note event (no chunks)
+    produces a single row with these columns null."""
+    by_name = {f.name: f for f in TABLES["note_events"].fields}
+    for col in ("chunk_text", "chunk_index", "section_header"):
+        assert by_name[col].required is False, f"{col} should be optional"
+
+
+# --- list element IDs uniqueness -----------------------------------------
+
+
+def test_note_events_list_element_ids_do_not_clash_with_field_ids():
+    """The list element IDs (101, 102, 103) must be distinct from every
+    top-level field ID in the schema (1–23)."""
+    from pyiceberg.types import ListType
+
+    schema = TABLES["note_events"]
+    top_ids = {f.field_id for f in schema.fields}
+    for f in schema.fields:
+        if isinstance(f.field_type, ListType):
+            elem_id = f.field_type.element_id
+            assert elem_id not in top_ids, (
+                f"List element ID {elem_id} on field '{f.name}' clashes with a "
+                f"top-level field ID"
+            )
