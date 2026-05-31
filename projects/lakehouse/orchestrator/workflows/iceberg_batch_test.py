@@ -197,6 +197,46 @@ async def test_drain_empty_fetch_returns_empty(patched_deps) -> None:
     patched_deps["sub"].fetch.return_value = []
     result = await mod.drain_and_commit()
     assert result.empty is True
+
+
+# --------------------------------------------------------------------------- #
+# _load_or_create_table — ensure-create on first use
+# --------------------------------------------------------------------------- #
+
+
+def test_load_or_create_table_uses_existing_when_present() -> None:
+    """When the table exists, load it directly — no create calls."""
+    catalog = MagicMock()
+    existing = MagicMock()
+    catalog.load_table.return_value = existing
+
+    result = mod._load_or_create_table(catalog, "knowledge", "note_events")
+
+    assert result is existing
+    catalog.create_namespace_if_not_exists.assert_not_called()
+    catalog.create_table.assert_not_called()
+
+
+def test_load_or_create_table_creates_when_missing() -> None:
+    """On NoSuchTableError, ensure the namespace then create the table from its
+    registered schema (TABLES) — the writer's bootstrap-on-first-drain path."""
+    from pyiceberg.exceptions import NoSuchTableError
+
+    from projects.lakehouse.iceberg.tables import TABLES
+
+    catalog = MagicMock()
+    catalog.load_table.side_effect = NoSuchTableError("nope")
+    created = MagicMock()
+    catalog.create_table.return_value = created
+
+    result = mod._load_or_create_table(catalog, "knowledge", "note_events")
+
+    assert result is created
+    catalog.create_namespace_if_not_exists.assert_called_once_with(("knowledge",))
+    catalog.create_table.assert_called_once()
+    _, kwargs = catalog.create_table.call_args
+    # Created with the registered note_events schema, not an ad-hoc one.
+    assert kwargs["schema"] is TABLES["note_events"]
     assert result.acked == 0
 
 
