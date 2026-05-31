@@ -15,7 +15,6 @@ reads the ``TASK_QUEUE`` env var and runs a worker against it.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -24,9 +23,6 @@ import temporalio.client
 import temporalio.worker
 
 from projects.lakehouse.orchestrator.client import get_client
-from projects.lakehouse.orchestrator.schedules import register_schedules
-
-logger = logging.getLogger(__name__)
 
 
 def discover_workflows() -> list[type]:
@@ -48,7 +44,6 @@ async def run_worker(
     workflows: Sequence[type] | None = None,
     activities: Sequence[Any] | None = None,
     client: temporalio.client.Client | None = None,
-    seed_schedules: bool = False,
 ) -> None:
     """Build a Temporal worker for ``task_queue`` and run it until cancelled.
 
@@ -57,22 +52,13 @@ async def run_worker(
     nothing registered is valid and simply polls; Wavefront 3 supplies real
     registrations (or ``discover_workflows()``).
 
-    ``seed_schedules`` (set by the real entrypoint, off for tests) idempotently
-    registers the lakehouse Temporal Schedules on boot — the cadence that drives
-    IcebergBatchCommit / BuildServingArtifact / TagRotation / gap-drain-sweep.
-    Without it those workflows never run on their own (they only fire when started
-    by hand). Registration is best-effort: a failure is logged but does not stop
-    the worker from serving its queue.
+    This is the *queue-polling skeleton* only — it intentionally knows nothing
+    about Temporal Schedules. Seeding the recurring schedules is a composition
+    concern owned by the entrypoint (``workflows/run.py``), which sits above both
+    this module and the ``schedules`` package; keeping it out of here avoids an
+    ``orchestrator -> schedules -> orchestrator`` dependency cycle.
     """
     worker_client = await get_client() if client is None else client
-    if seed_schedules:
-        try:
-            await register_schedules(worker_client)
-        except Exception:
-            logger.exception(
-                "Temporal schedule registration failed; worker will still run %s",
-                task_queue,
-            )
     worker = temporalio.worker.Worker(
         worker_client,
         task_queue=task_queue,

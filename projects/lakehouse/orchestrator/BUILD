@@ -33,10 +33,7 @@ py_library(
         "worker.py",
     ],
     visibility = ["//:__subpackages__"],
-    deps = [
-        "//projects/lakehouse/orchestrator/schedules",
-        "@pip//temporalio",
-    ],
+    deps = ["@pip//temporalio"],
 )
 
 py_venv_binary(
@@ -46,7 +43,6 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
     deps = [
         ":orchestrator",
-        "//projects/lakehouse/orchestrator/schedules",
         "@pip//temporalio",
     ],
 )

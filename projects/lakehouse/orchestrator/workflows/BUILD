@@ -26,6 +26,12 @@ _WORKFLOW_DEPS = [
     "//projects/lakehouse/iceberg/tables",
     "//projects/lakehouse/duckdb_query",
     "//projects/lakehouse/orchestrator",
+    # run.py (the worker entrypoint) seeds the lakehouse Temporal Schedules on
+    # boot, so the binary needs the schedule definitions. Declared here (not on
+    # //projects/lakehouse/orchestrator) because schedules depends BACK on
+    # orchestrator for TaskQueue — adding the reverse edge there forms a cycle.
+    # workflows sits above both, so this edge is acyclic.
+    "//projects/lakehouse/orchestrator/schedules",
     "@pip//temporalio",
     "@pip//pyiceberg",
     "@pip//pyarrow",
