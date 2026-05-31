@@ -1,0 +1,39 @@
+# Reference fixture for the duckdb-bound-param-in-array-distance semgrep rule.
+# This file documents ok/bad patterns for human review.
+# The actual semgrep test fixture is
+# bazel/semgrep/rules/python/duckdb-bound-param-in-array-distance.py.
+#
+# Background: DuckDB's HNSW index (vss extension) only engages when the query
+# vector is a plan-time constant embedded directly in the SQL text.  When the
+# vector is supplied via a bound parameter ($name or $1) DuckDB cannot evaluate
+# it at planning time and falls back to a full sequential scan.
+# See: https://duckdb.org/docs/extensions/vss.html#hnsw-index-scans
+
+examples:
+  bad:
+    - description: bound named param in array_distance — HNSW index not used
+      code: |
+        query = f"SELECT id FROM chunks ORDER BY array_distance(embedding, $query_vec::FLOAT[512]) LIMIT 10"
+        conn.execute(query, {"query_vec": vector})
+
+    - description: positional param $1 in array_distance — sequential scan
+      code: |
+        query = "SELECT id FROM chunks ORDER BY array_distance(embedding, $1::FLOAT[512]) LIMIT 10"
+        conn.execute(query, [vector])
+
+  ok:
+    - description: vector interpolated as a Python literal — plan-time constant
+      code: |
+        vec = [0.1] * 512
+        query = f"SELECT id FROM chunks ORDER BY array_distance(embedding, {vec}::FLOAT[512]) LIMIT 10"
+        conn.execute(query)
+
+    - description: hardcoded literal vector — plan-time constant
+      code: |
+        query = "SELECT id FROM chunks ORDER BY array_distance(embedding, [0.1, 0.2, 0.3]::FLOAT[3]) LIMIT 5"
+        conn.execute(query)
+
+    - description: bound param used outside array_distance — no index impact
+      code: |
+        query = "SELECT id FROM chunks WHERE category = $category"
+        conn.execute(query, {"category": "news"})

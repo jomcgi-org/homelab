@@ -10,6 +10,7 @@ filegroup(
         # Exclude SQL/generic and kubernetes-specific fixtures that are tested separately.
         exclude = [
             "fixtures/claude-print-missing-permission-mode.yaml",
+            "fixtures/duckdb-bound-param-in-array-distance.yaml",
             "fixtures/fastapi-bare-tuple-return.yaml",
             "fixtures/logger-exc-info-non-boolean.yaml",
             "fixtures/no-create-extension-sql.yaml",

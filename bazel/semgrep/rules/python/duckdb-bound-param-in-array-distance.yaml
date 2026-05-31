@@ -1,0 +1,32 @@
+rules:
+  - id: duckdb-bound-param-in-array-distance
+    pattern-either:
+      - pattern-regex: 'f"[^"]*array_distance\([^"]*\$[A-Za-z0-9_]'
+      - pattern-regex: "f'[^']*array_distance\\([^']*\\$[A-Za-z0-9_]"
+      - pattern-regex: '"[^"]*array_distance\([^"]*\$[A-Za-z0-9_]'
+      - pattern-regex: "'[^']*array_distance\\([^']*\\$[A-Za-z0-9_]"
+    message: >-
+      Bound parameters in array_distance() ORDER BY defeat DuckDB HNSW index
+      optimization — the optimizer only engages the index scan when the vector
+      is a plan-time constant. Inline the vector as a typed FLOAT[N] literal
+      instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: performance
+      subcategory: duckdb
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [python, duckdb]
+      description: >-
+        Bound parameter in array_distance() disables DuckDB HNSW index scan —
+        inline the vector as a FLOAT[N] literal for index-accelerated search
+    paths:
+      include:
+        - "**/*.py"
+      exclude:
+        - "**/*_test.py"
+        - "**/test_*.py"
+        - "**/tests/**"
+        - "**/conftest.py"
