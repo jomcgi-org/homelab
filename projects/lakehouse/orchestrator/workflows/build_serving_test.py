@@ -83,6 +83,14 @@ async def test_build_artifact_builds_indexes_tags_and_publishes() -> None:
     # rows_indexed query result
     con.execute.return_value.fetchone.return_value = (42,)
 
+    # The shared catalog resolves the current snapshot's metadata.json; the build
+    # iceberg_scans that exact path (no DuckDB version-guessing).
+    catalog = MagicMock()
+    metadata_location = (
+        "s3://warehouse/knowledge/note_events/metadata/00001-abc.metadata.json"
+    )
+    catalog.load_table.return_value.metadata_location = metadata_location
+
     s3 = MagicMock()
     nats_client = AsyncMock()
 
@@ -98,6 +106,10 @@ async def test_build_artifact_builds_indexes_tags_and_publishes() -> None:
 
     with (
         patch("projects.lakehouse.duckdb_query.query.connect", return_value=con),
+        patch(
+            "projects.lakehouse.iceberg.catalog.load_warehouse_catalog",
+            return_value=catalog,
+        ),
         patch.object(mod, "_s3_client", return_value=s3),
         patch(
             "projects.lakehouse.nats_client.client.NatsClient",
@@ -115,11 +127,17 @@ async def test_build_artifact_builds_indexes_tags_and_publishes() -> None:
     assert result.artifact_path == "s3://warehouse/serving/notes-v123.duckdb"
     assert result.rows_indexed == 42
 
-    # The DuckDB build ran the current-version-filter CREATE TABLE + HNSW index.
+    # Resolved the current snapshot via the shared catalog and iceberg_scanned
+    # that exact metadata.json path (not the table dir / version-guessing).
+    catalog.load_table.assert_called_once_with("knowledge.note_events")
+
+    # The DuckDB build ran the current-version-filter CREATE TABLE + HNSW index
+    # over the catalog-resolved metadata location.
     executed = " ".join(str(c.args[0]) for c in con.execute.call_args_list)
     assert "MAX(event_version)" in executed
     assert "USING HNSW (embedding)" in executed
     assert "event_type <> 'tombstoned'" in executed
+    assert metadata_location in executed
 
     # Uploaded with state=building tag (platform/004 lifecycle initial tag).
     s3.put_object.assert_called_once()

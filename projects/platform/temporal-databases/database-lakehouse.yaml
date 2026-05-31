@@ -1,0 +1,26 @@
+# Declarative CNPG Database for the lakehouse Iceberg catalog (PyIceberg
+# SqlCatalog). The catalog's pointer index (iceberg_tables /
+# iceberg_namespace_properties — "which metadata.json is current" per table)
+# lives here in Postgres so it is SHARED across all lakehouse worker pods (the
+# iceberg-builder writes pointers; the housekeeping build_serving reads them),
+# resolving the platform/004 "shared catalog" deviation that a pod-local SQLite
+# file introduced.
+#
+# Lives alongside the temporal databases because, like them, it is an additive
+# CNPG Database on the existing monolith-pg cluster (and must sit in the monolith
+# namespace next to that Cluster). Owner `app` — the same role the cluster-
+# generated monolith-pg credential (cloned into the lakehouse namespace as the
+# lakehouse-pg Secret) authenticates as, so those credentials can create the
+# catalog tables here. Additive: a NEW database, isolated from the monolith app
+# database; it does not touch the Cluster resource or the notes/embedding tables.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: lakehouse
+  namespace: monolith
+spec:
+  cluster:
+    name: monolith-pg
+  name: lakehouse
+  owner: app
+  ensure: present
