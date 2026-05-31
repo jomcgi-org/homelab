@@ -1,0 +1,48 @@
+# Reference fixture for the boto3-endpoint-url-missing-scheme semgrep rule.
+# This file documents ok/bad patterns for human review.
+# The actual semgrep test fixture is bazel/semgrep/rules/python/boto3-endpoint-url-missing-scheme.py.
+#
+# Background: boto3 requires endpoint_url to include an explicit http:// or
+# https:// scheme.  If a scheme-less string like "minio.internal:9000" or
+# "localhost:9000" is passed boto3 raises:
+#   botocore.exceptions.EndpointResolutionError: Invalid endpoint: ...
+# This most commonly happens when an env var or config value is read without
+# normalising it first.
+
+examples:
+  bad:
+    - description: env-var read without scheme normalization
+      code: |
+        endpoint = os.environ.get("S3_ENDPOINT_URL", "")
+        client = boto3.client("s3", endpoint_url=endpoint)
+
+    - description: scheme-less string literal passed directly
+      code: |
+        client = boto3.client("s3", endpoint_url="minio.internal:9000")
+
+    - description: host+port concatenated without scheme
+      code: |
+        client = boto3.client(
+            "s3",
+            endpoint_url=config["s3_host"] + ":" + config["s3_port"],
+        )
+
+  ok:
+    - description: hardcoded https URL — scheme is present
+      code: |
+        client = boto3.client("s3", endpoint_url="https://s3.amazonaws.com")
+
+    - description: hardcoded http URL — scheme is present
+      code: |
+        client = boto3.client("s3", endpoint_url="http://minio.local:9000")
+
+    - description: no endpoint_url — uses default AWS endpoint
+      code: |
+        client = boto3.client("s3", region_name="us-east-1")
+
+    - description: variable with scheme guard applied before client construction
+      code: |
+        url = os.environ.get("S3_ENDPOINT_URL", "")
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        client = boto3.client("s3", endpoint_url=url)

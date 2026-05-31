@@ -9,6 +9,7 @@ filegroup(
         # Exclude Go-rule reference fixtures that are not tested against yaml_rules.
         # Exclude SQL/generic and kubernetes-specific fixtures that are tested separately.
         exclude = [
+            "fixtures/boto3-endpoint-url-missing-scheme.yaml",
             "fixtures/claude-print-missing-permission-mode.yaml",
             "fixtures/fastapi-bare-tuple-return.yaml",
             "fixtures/logger-exc-info-non-boolean.yaml",
