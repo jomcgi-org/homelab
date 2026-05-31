@@ -227,6 +227,14 @@ def connect(
 
     con.execute(f"SET ca_cert_file = '{certifi.where()}'")
     load_extensions(con, env=env)
+    # The serving artifact persists a VSS HNSW index inside an on-disk .duckdb,
+    # and Quack ATTACHes that file to query it. Both the build (CREATE INDEX ...
+    # USING HNSW on the attached on-disk DB) and Quack's read require DuckDB's
+    # experimental persistent-HNSW flag — platform/004 §hot-swap deliberately
+    # ships a persistent HNSW serving artifact. Without it the index build raises
+    # "HNSW indexes can only be created in in-memory databases". Set after
+    # load_extensions since the vss extension registers this option.
+    con.execute("SET hnsw_enable_experimental_persistence = true;")
     con.execute(s3_secret_sql(env))
     if read_only_artifact is not None:
         con.execute(attach_or_replace_sql("notes", read_only_artifact))
