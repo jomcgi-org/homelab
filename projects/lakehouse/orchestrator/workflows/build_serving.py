@@ -167,10 +167,19 @@ async def build_artifact(version: int) -> BuildResult:
     from projects.lakehouse.duckdb_query.query import connect
     from projects.lakehouse.events.envelope import build_envelope
     from projects.lakehouse.events.publish import publish_event
+    from projects.lakehouse.iceberg.catalog import load_warehouse_catalog
     from projects.lakehouse.nats_client.client import NatsClient
 
     namespace = os.environ.get("ICEBERG_NAMESPACE", ICEBERG_NAMESPACE)
-    source_uri = f"s3://{SERVING_BUCKET}/{namespace}/{SOURCE_TABLE}"
+    # Resolve the *current* snapshot's metadata.json through the shared catalog
+    # rather than letting DuckDB guess the version from the table directory:
+    # DuckDB's iceberg version-guessing cannot parse PyIceberg SqlCatalog's
+    # metadata filenames, and the PG-backed catalog (shared across pods) is the
+    # source of truth for which snapshot is current. iceberg_scan reads the exact
+    # metadata.json path directly, so the build always reflects the latest commit.
+    catalog = load_warehouse_catalog()
+    table = catalog.load_table(f"{namespace}.{SOURCE_TABLE}")
+    source_uri = table.metadata_location
 
     artifact_uri = _artifact_s3_uri(version)
     artifact_key = _artifact_key(version)

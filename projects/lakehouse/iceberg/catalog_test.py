@@ -72,3 +72,47 @@ def test_config_is_all_strings():
 def test_required_keys_present(key):
     """Every key the catalog/FileIO relies on is always emitted."""
     assert key in catalog_config(env={})
+
+
+def test_catalog_uri_derived_from_database_url():
+    """With DATABASE_URL set (and no explicit override), the catalog URI reuses
+    those credentials but points at the dedicated `lakehouse` database with the
+    psycopg v3 driver — and preserves the query string (sslmode, etc.)."""
+    cfg = catalog_config(
+        env={
+            "DATABASE_URL": "postgresql://app:pw@monolith-pg-rw.monolith:5432/app?sslmode=require",
+        }
+    )
+    assert (
+        cfg["uri"]
+        == "postgresql+psycopg://app:pw@monolith-pg-rw.monolith:5432/lakehouse?sslmode=require"
+    )
+
+
+def test_explicit_catalog_uri_wins_over_database_url():
+    """An explicit ICEBERG_CATALOG_URI overrides the DATABASE_URL derivation."""
+    cfg = catalog_config(
+        env={
+            "ICEBERG_CATALOG_URI": "sqlite:////tmp/cat.db",
+            "DATABASE_URL": "postgresql://app:pw@host:5432/app",
+        }
+    )
+    assert cfg["uri"] == "sqlite:////tmp/cat.db"
+
+
+def test_catalog_db_name_is_overridable():
+    """ICEBERG_CATALOG_DB chooses the database when deriving from DATABASE_URL."""
+    cfg = catalog_config(
+        env={
+            "DATABASE_URL": "postgresql://app:pw@host:5432/app",
+            "ICEBERG_CATALOG_DB": "lakehouse_alt",
+        }
+    )
+    assert cfg["uri"] == "postgresql+psycopg://app:pw@host:5432/lakehouse_alt"
+
+
+def test_sqlite_fallback_when_no_database_url():
+    """No override and no DATABASE_URL -> the SQLite test fallback (type stays sql)."""
+    cfg = catalog_config(env={})
+    assert cfg["type"] == "sql"
+    assert cfg["uri"].startswith("sqlite://")

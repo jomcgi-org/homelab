@@ -38,6 +38,19 @@ spec:
             {{- if .Values.onepassword.s3.itemPath }}
             {{- include "lakehouse.s3Env" . | nindent 12 }}
             {{- end }}
+            {{- if .Values.pg.enabled }}
+            # The iceberg-builder writes table pointers through the shared
+            # Iceberg SqlCatalog, which lives in the `lakehouse` PG database.
+            # The `<fullname>-pg` Secret (Kyverno-cloned from monolith-pg-app,
+            # key `uri`) authenticates as `app`; iceberg.catalog repoints it at
+            # the `lakehouse` database. Same credential as the housekeeping
+            # backfill — the catalog never touches the monolith notes tables.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lakehouse.fullname" . }}-pg
+                  key: uri
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           securityContext:

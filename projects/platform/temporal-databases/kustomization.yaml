@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - database-temporal.yaml
   - database-temporal-visibility.yaml
+  - database-lakehouse.yaml
