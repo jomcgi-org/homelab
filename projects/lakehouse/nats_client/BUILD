@@ -28,6 +28,7 @@ py_test(
     srcs = ["client_test.py"],
     deps = [
         "//projects/lakehouse/nats_client",
+        "@pip//nats_py",
         "@pip//pytest",
     ],
 )
