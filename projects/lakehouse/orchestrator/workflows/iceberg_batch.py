@@ -102,25 +102,37 @@ class DrainResult:
     empty: bool = False
 
 
-def _envelope_to_row(envelope: dict) -> dict:
-    """Flatten an :class:`EventEnvelope` dict into an Iceberg row dict.
+def _envelope_to_rows(envelope: dict) -> list[dict]:
+    """Flatten an :class:`EventEnvelope` dict into one or more Iceberg row dicts.
 
     Envelope fields map 1:1 to the envelope columns shared by every ``*_events``
-    table; the ``payload`` dict's keys are spread into the payload columns. Keys
-    the target table's schema doesn't declare are dropped by
-    ``writer.rows_to_arrow`` (``pa.Table.from_pylist`` ignores extras), so a
-    superset payload is safe. ``occurred_at`` arrives as an ISO-8601 string (the
-    envelope is dumped with ``mode="json"``) and is parsed to a timezone-aware
-    ``datetime`` here: pyarrow's ``timestamp[us, tz=UTC]`` column does NOT
-    auto-parse ISO strings — ``Table.from_pylist`` reads the string as an epoch
-    int and fails with "object of type 'str' cannot be converted to int".
+    table; the payload's note-level keys spread into the payload columns. Keys the
+    target schema doesn't declare are dropped by ``writer.rows_to_arrow``
+    (``pa.Table.from_pylist`` ignores extras), so a superset payload is safe.
+
+    EXPLOSION: the ``note_events`` schema is flat *per chunk* — ``embedding``,
+    ``chunk_text``, ``chunk_index`` and ``section_header`` are columns, not a
+    nested list — but a ``NoteCreated`` payload carries its chunks as a nested
+    ``chunks`` list. This therefore emits **one row per chunk**, repeating the
+    note-level columns, and lifts each chunk's fields up to the flat columns.
+    Without the explode ``from_pylist`` silently drops the nested ``chunks`` list
+    and every chunk column lands NULL, leaving the serving build with zero
+    indexable vectors. A payload with no ``chunks`` (gap_events, or a chunkless
+    note) yields a single row with null chunk columns.
+
+    ``occurred_at`` arrives as an ISO-8601 string (the envelope is dumped with
+    ``mode="json"``) and is parsed to a timezone-aware ``datetime``: pyarrow's
+    ``timestamp[us, tz=UTC]`` column does NOT auto-parse ISO strings —
+    ``from_pylist`` reads the string as an epoch int and fails with "object of
+    type 'str' cannot be converted to int".
     """
-    payload = envelope.get("payload") or {}
+    payload = dict(envelope.get("payload") or {})
+    chunks = payload.pop("chunks", None) or []
     occurred_at = envelope.get("occurred_at")
     if isinstance(occurred_at, str):
         # datetime.fromisoformat handles the trailing 'Z' on Python 3.11+.
         occurred_at = datetime.fromisoformat(occurred_at)
-    row = {
+    base = {
         "schema_version": envelope.get("schema_version"),
         "entity_type": envelope.get("entity_type"),
         "entity_id": envelope.get("entity_id"),
@@ -132,10 +144,19 @@ def _envelope_to_row(envelope: dict) -> dict:
         "correlation_id": envelope.get("correlation_id"),
         "caused_by": envelope.get("caused_by"),
     }
-    # Spread payload columns (note_id, path, embedding, topic, gap_class, ...).
-    # rows_to_arrow drops any key not in the target schema.
-    row.update(payload)
-    return row
+    # Note-level payload columns (note_id, path, title, ... — chunks popped out).
+    base.update(payload)
+    if not chunks:
+        return [base]
+    rows = []
+    for chunk in chunks:
+        row = dict(base)
+        row["chunk_index"] = chunk.get("chunk_index")
+        row["section_header"] = chunk.get("section_header")
+        row["chunk_text"] = chunk.get("chunk_text")
+        row["embedding"] = chunk.get("embedding")
+        rows.append(row)
+    return rows
 
 
 def _load_or_create_table(catalog, namespace: str, table_name: str):
@@ -221,8 +242,9 @@ async def drain_and_commit() -> DrainResult:
                 # a redelivering message that ops can investigate.
                 skipped += 1
                 continue
-            rows_by_table.setdefault(table, []).append(
-                _envelope_to_row(envelope.model_dump(mode="json"))
+            # One event explodes into one row per chunk (see _envelope_to_rows).
+            rows_by_table.setdefault(table, []).extend(
+                _envelope_to_rows(envelope.model_dump(mode="json"))
             )
             msgs_by_table.setdefault(table, []).append(msg)
 

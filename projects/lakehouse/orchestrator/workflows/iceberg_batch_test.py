@@ -81,9 +81,12 @@ def test_table_by_entity_matches_publish_subjects() -> None:
         assert entity_type in SUBJECT_BY_ENTITY
 
 
-def test_envelope_to_row_spreads_payload_and_envelope() -> None:
+def test_envelope_to_rows_spreads_payload_and_envelope() -> None:
     env = _note_envelope()
-    row = mod._envelope_to_row(json.loads(env.model_dump_json()))
+    rows = mod._envelope_to_rows(json.loads(env.model_dump_json()))
+    # A chunkless payload yields exactly one row.
+    assert len(rows) == 1
+    row = rows[0]
     # Envelope columns present.
     assert row["entity_type"] == "note"
     assert row["entity_id"] == "n1"
@@ -95,6 +98,47 @@ def test_envelope_to_row_spreads_payload_and_envelope() -> None:
     # occurred_at is parsed from the ISO string to a datetime so pyarrow's
     # timestamptz column accepts it (from_pylist won't parse ISO strings).
     assert isinstance(row["occurred_at"], datetime)
+
+
+def test_envelope_to_rows_explodes_chunks() -> None:
+    """A NoteCreated payload carries chunks as a nested list; the flat note_events
+    schema is per-chunk, so each chunk becomes its own row with the note-level
+    columns repeated and the chunk's fields lifted to the flat columns."""
+    env = build_envelope(
+        entity_type="note",
+        entity_id="n2",
+        event_type="created",
+        event_version=3,
+        producer="test",
+        payload={
+            "note_id": "n2",
+            "path": "_processed/x.md",
+            "title": "X",
+            "chunks": [
+                {
+                    "chunk_index": 0,
+                    "section_header": "Intro",
+                    "chunk_text": "hello",
+                    "embedding": [0.1, 0.2],
+                },
+                {
+                    "chunk_index": 1,
+                    "section_header": "Body",
+                    "chunk_text": "world",
+                    "embedding": [0.3, 0.4],
+                },
+            ],
+        },
+    )
+    rows = mod._envelope_to_rows(json.loads(env.model_dump_json()))
+    assert len(rows) == 2
+    # Note-level columns repeated; the nested chunks list is NOT a column.
+    assert all(r["note_id"] == "n2" and r["path"] == "_processed/x.md" for r in rows)
+    assert all("chunks" not in r for r in rows)
+    # Each chunk's fields are lifted to the flat per-chunk columns.
+    assert [r["chunk_index"] for r in rows] == [0, 1]
+    assert [r["embedding"] for r in rows] == [[0.1, 0.2], [0.3, 0.4]]
+    assert [r["chunk_text"] for r in rows] == ["hello", "world"]
 
 
 # --------------------------------------------------------------------------- #
