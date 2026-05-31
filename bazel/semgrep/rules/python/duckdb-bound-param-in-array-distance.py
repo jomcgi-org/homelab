@@ -20,7 +20,7 @@ def bad_regular_string_positional():
 def bad_fstring_single_quote():
     vec_param = "$query_embedding"
     # ruleid: duckdb-bound-param-in-array-distance
-    query = f'SELECT id FROM docs ORDER BY array_distance(emb, $query_embedding::FLOAT[768]) LIMIT 5'
+    query = f"SELECT id FROM docs ORDER BY array_distance(emb, $query_embedding::FLOAT[768]) LIMIT 5"
     return conn.execute(query, {"query_embedding": [0.0] * 768}).fetchall()
 
 
