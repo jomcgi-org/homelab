@@ -475,9 +475,9 @@ def extract_exif(
 
 def get_s3_client():
     """Create S3 client for SeaweedFS."""
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    return boto3.client(
         "s3",
-        endpoint_url=SEAWEEDFS_ENDPOINT,  # default always has http:// scheme
+        endpoint_url=SEAWEEDFS_ENDPOINT,
         aws_access_key_id="any",  # SeaweedFS with auth disabled
         aws_secret_access_key="any",
         config=Config(signature_version="s3v4"),
