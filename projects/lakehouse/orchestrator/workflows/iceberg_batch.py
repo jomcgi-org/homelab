@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import temporalio.activity
 import temporalio.workflow
@@ -109,10 +109,17 @@ def _envelope_to_row(envelope: dict) -> dict:
     table; the ``payload`` dict's keys are spread into the payload columns. Keys
     the target table's schema doesn't declare are dropped by
     ``writer.rows_to_arrow`` (``pa.Table.from_pylist`` ignores extras), so a
-    superset payload is safe. ``occurred_at`` is left as the envelope's ISO
-    string; pyarrow casts it to the table's timestamptz column.
+    superset payload is safe. ``occurred_at`` arrives as an ISO-8601 string (the
+    envelope is dumped with ``mode="json"``) and is parsed to a timezone-aware
+    ``datetime`` here: pyarrow's ``timestamp[us, tz=UTC]`` column does NOT
+    auto-parse ISO strings — ``Table.from_pylist`` reads the string as an epoch
+    int and fails with "object of type 'str' cannot be converted to int".
     """
     payload = envelope.get("payload") or {}
+    occurred_at = envelope.get("occurred_at")
+    if isinstance(occurred_at, str):
+        # datetime.fromisoformat handles the trailing 'Z' on Python 3.11+.
+        occurred_at = datetime.fromisoformat(occurred_at)
     row = {
         "schema_version": envelope.get("schema_version"),
         "entity_type": envelope.get("entity_type"),
@@ -120,7 +127,7 @@ def _envelope_to_row(envelope: dict) -> dict:
         "event_type": envelope.get("event_type"),
         "event_version": envelope.get("event_version"),
         "event_id": envelope.get("event_id"),
-        "occurred_at": envelope.get("occurred_at"),
+        "occurred_at": occurred_at,
         "producer": envelope.get("producer"),
         "correlation_id": envelope.get("correlation_id"),
         "caused_by": envelope.get("caused_by"),
