@@ -46,6 +46,7 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
     deps = [
         ":orchestrator",
+        "//projects/lakehouse/orchestrator/schedules",
         "@pip//temporalio",
     ],
 )
