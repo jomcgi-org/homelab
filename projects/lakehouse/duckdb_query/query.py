@@ -139,7 +139,7 @@ def vector_search_sql(table: str, k: int, query_vector: Sequence[float]) -> str:
     The query embedding is **inlined as a ``FLOAT[N]`` literal**, NOT bound as a
     parameter — this is performance-critical. DuckDB's VSS optimiser only rewrites
     ``ORDER BY array_distance(col, q) LIMIT k`` into an ``HNSW_INDEX_SCAN`` when
-    ``q`` is a *constant* at plan time; a bound ``$query`` parameter is opaque to
+    ``q`` is a *constant* at plan time; a bound param (e.g. ``?query``) is opaque to
     it, so the query falls back to a full ``array_distance`` scan — O(rows),
     measured ~75ms over 3.4k vectors versus ~10ms with the index engaged. Inlining
     the literal lets the HNSW index do its job (and the gap widens with corpus size).
