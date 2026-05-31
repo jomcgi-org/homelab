@@ -55,6 +55,17 @@ Usage:
 # /tmp emptyDir every pod mounts, so httpfs/iceberg/vss INSTALL/LOAD works.
 - name: HOME
   value: /tmp
+# pyiceberg's S3 FileIO uses pyarrow's AWS C++ SDK, which now defaults to adding
+# a streaming trailing checksum (aws-chunked / STREAMING-UNSIGNED-PAYLOAD-TRAILER)
+# on PUT. SeaweedFS does NOT decode that framing — it persists the literal chunk
+# headers ("88C\r\n{...}\r\n...chunk-signature\r\n\r\n") into the object body,
+# corrupting every metadata.json / data file pyiceberg writes (SeaweedFS #6847,
+# #6583). Force the SDK back to the pre-checksum behaviour so PUTs are plain.
+# DuckDB/httpfs and boto3 are unaffected; the vars are harmless for them.
+- name: AWS_REQUEST_CHECKSUM_CALCULATION
+  value: when_required
+- name: AWS_RESPONSE_CHECKSUM_VALIDATION
+  value: when_required
 {{- end -}}
 
 {{/*

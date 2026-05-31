@@ -116,3 +116,29 @@ def test_sqlite_fallback_when_no_database_url():
     cfg = catalog_config(env={})
     assert cfg["type"] == "sql"
     assert cfg["uri"].startswith("sqlite://")
+
+
+def test_scheme_less_endpoint_gets_http_prefix():
+    """A scheme-less endpoint (the chart's shared host:port) is prefixed with
+    http:// — pyiceberg hands it to pyarrow which would otherwise default to
+    https and fail the TLS handshake against plaintext SeaweedFS."""
+    cfg = catalog_config(
+        env={"SEAWEEDFS_S3_ENDPOINT": "seaweedfs-s3.seaweedfs.svc.cluster.local:8333"}
+    )
+    assert cfg["s3.endpoint"] == "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+
+
+def test_explicit_scheme_endpoint_is_preserved():
+    """An endpoint that already carries a scheme is left untouched (either scheme)."""
+    assert (
+        catalog_config(env={"SEAWEEDFS_S3_ENDPOINT": "https://s3.example:9000"})[
+            "s3.endpoint"
+        ]
+        == "https://s3.example:9000"
+    )
+    assert (
+        catalog_config(env={"SEAWEEDFS_S3_ENDPOINT": "http://s3.example:9000"})[
+            "s3.endpoint"
+        ]
+        == "http://s3.example:9000"
+    )
