@@ -10,6 +10,7 @@ because it downloads a server binary.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -91,6 +92,9 @@ def test_envelope_to_row_spreads_payload_and_envelope() -> None:
     assert row["note_id"] == "n1"
     assert row["title"] == "t"
     assert row["embedding"] == [0.1, 0.2]
+    # occurred_at is parsed from the ISO string to a datetime so pyarrow's
+    # timestamptz column accepts it (from_pylist won't parse ISO strings).
+    assert isinstance(row["occurred_at"], datetime)
 
 
 # --------------------------------------------------------------------------- #
