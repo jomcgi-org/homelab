@@ -29,6 +29,17 @@ py_library(
     deps = [
         "@pip//pyarrow",
         "@pip//pyiceberg",
+        # pyiceberg's SqlCatalog imports SQLAlchemy + the psycopg driver LAZILY
+        # (only when a catalog is actually loaded), so gazelle cannot see them
+        # from the `import pyiceberg` statements and would otherwise omit them —
+        # leaving the worker venv without SQLAlchemy and crashing every catalog
+        # load with "No module named 'sqlalchemy'". `# keep` pins them as runtime
+        # deps so load_warehouse_catalog() can open the PG-backed catalog
+        # (postgresql+psycopg dialect). SQLAlchemy 2.0.x ships the psycopg-v3
+        # dialect; psycopg_binary supplies libpq for the minimal image.
+        "@pip//psycopg",  # keep
+        "@pip//psycopg_binary",  # keep
+        "@pip//sqlalchemy",  # keep
     ],
 )
 
