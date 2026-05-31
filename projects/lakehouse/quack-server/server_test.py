@@ -68,9 +68,22 @@ class _FakeClient:
     def __init__(self, sub: _FakeSub):
         self._sub = sub
         self.subscribed: tuple[str, str] | None = None
+        self.subscribe_kwargs: dict = {}
 
-    async def pull_subscribe(self, subject, durable, *, batch=10):
+    async def pull_subscribe(
+        self,
+        subject,
+        durable,
+        *,
+        batch=10,
+        deliver_last_per_subject=False,
+        inactive_threshold=None,
+    ):
         self.subscribed = (subject, durable)
+        self.subscribe_kwargs = {
+            "deliver_last_per_subject": deliver_last_per_subject,
+            "inactive_threshold": inactive_threshold,
+        }
         return self._sub
 
 
@@ -171,6 +184,16 @@ def test_consumer_issues_attach_or_replace_and_acks():
 
     # Subscribed to the right subject + durable.
     assert client.subscribed == (server.ARTIFACT_READY_SUBJECT, server.SWAP_DURABLE)
+    # Fan-out config: every Quack pod must hot-swap, so the swap consumer starts
+    # at LAST_PER_SUBJECT (picks up the current artifact on (re)start without
+    # replaying since-deleted history) with an inactive_threshold so orphaned
+    # per-pod durables self-clean. A shared durable would make this a queue group
+    # where only ONE pod swaps — the bug this asserts against.
+    assert client.subscribe_kwargs["deliver_last_per_subject"] is True
+    assert (
+        client.subscribe_kwargs["inactive_threshold"]
+        == server.SWAP_CONSUMER_INACTIVE_THRESHOLD_S
+    )
     # Exactly the ATTACH OR REPLACE SQL the pure builder produces was executed.
     expected_sql = duckdb_query.attach_or_replace_sql(server.SERVING_ALIAS, path)
     assert expected_sql in executed
@@ -188,6 +211,16 @@ def test_consumer_terminates_malformed_message():
 
     assert msg.termed is True
     assert msg.acked is False
+
+
+def test_swap_durable_is_per_pod_unique():
+    # The swap durable must be per-pod (host-suffixed), NOT the bare shared name.
+    # A shared durable forms a JetStream queue group where only one pod receives
+    # each artifact-ready message, so only one of N Quack replicas hot-swaps and
+    # the rest serve a stale snapshot. The host suffix makes every pod its own
+    # fan-out consumer.
+    assert server.SWAP_DURABLE.startswith("quack-serving-swap-")
+    assert server.SWAP_DURABLE != "quack-serving-swap"
 
 
 # --------------------------------------------------------------------------- #

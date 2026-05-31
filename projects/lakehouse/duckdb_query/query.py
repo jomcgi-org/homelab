@@ -20,7 +20,7 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import duckdb
 
@@ -133,32 +133,34 @@ def attach_or_replace_sql(alias: str, path: str) -> str:
 EMBEDDING_DIM = 1024
 
 
-def vector_search_sql(table: str, k: int, dim: int = EMBEDDING_DIM) -> str:
-    """Return a VSS nearest-neighbour query template for ``table`` returning ``k`` rows.
+def vector_search_sql(table: str, k: int, query_vector: Sequence[float]) -> str:
+    """Return a VSS nearest-neighbour query for ``table`` returning ``k`` rows.
 
-    Pure function. The returned SQL takes one parameter placeholder, ``$query`` —
-    the query embedding, a length-``dim`` vector. Callers bind ``$query`` at
-    execute time, e.g.::
+    The query embedding is **inlined as a ``FLOAT[N]`` literal**, NOT bound as a
+    parameter — this is performance-critical. DuckDB's VSS optimiser only rewrites
+    ``ORDER BY array_distance(col, q) LIMIT k`` into an ``HNSW_INDEX_SCAN`` when
+    ``q`` is a *constant* at plan time; a bound ``$query`` parameter is opaque to
+    it, so the query falls back to a full ``array_distance`` scan — O(rows),
+    measured ~75ms over 3.4k vectors versus ~10ms with the index engaged. Inlining
+    the literal lets the HNSW index do its job (and the gap widens with corpus size).
 
-        con.execute(vector_search_sql("notes.chunks", 10), {"query": vec})
-
-    ``$query`` is CAST to ``FLOAT[dim]`` so it matches the indexed ``embedding``
-    column's fixed-size ``FLOAT[N]`` type: a bound Python list binds as a
-    variable-length ``DOUBLE[]``, and ``array_distance`` has no ``FLOAT[N]`` ×
-    ``DOUBLE[]`` overload (it requires both operands to be the same fixed array
-    type). Ordering by ``array_distance`` lets DuckDB's VSS extension use the HNSW
-    index when the artifact was built with one (matching l2sq metric). ``k`` must
-    be a positive integer (interpolated into ``LIMIT``, so validated not bound).
+    ``query_vector`` must be a non-empty sequence of real numbers. Each element is
+    coerced to ``float`` and rendered with ``repr`` for full round-trip precision;
+    there is no SQL-injection surface because the values are numeric, never strings.
+    The cast to ``FLOAT[len]`` matches the indexed ``embedding`` column's fixed-size
+    type + l2sq metric. ``k`` is interpolated into ``LIMIT`` (validated, not bound).
     """
     if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
         raise ValueError(f"k must be a positive int, got {k!r}")
-    if not isinstance(dim, int) or isinstance(dim, bool) or dim <= 0:
-        raise ValueError(f"dim must be a positive int, got {dim!r}")
+    vec = [float(x) for x in query_vector]
+    if not vec:
+        raise ValueError("query_vector must be a non-empty sequence of numbers")
+    literal = "[" + ", ".join(repr(x) for x in vec) + f"]::FLOAT[{len(vec)}]"
 
     return (
-        f"SELECT *, array_distance(embedding, $query::FLOAT[{dim}]) AS distance\n"
+        f"SELECT *, array_distance(embedding, {literal}) AS distance\n"
         f"FROM {table}\n"
-        f"ORDER BY array_distance(embedding, $query::FLOAT[{dim}])\n"
+        f"ORDER BY array_distance(embedding, {literal})\n"
         f"LIMIT {k};"
     )
 

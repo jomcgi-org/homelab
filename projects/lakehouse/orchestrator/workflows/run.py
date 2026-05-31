@@ -31,6 +31,12 @@ def _main() -> None:
             task_queue,
             workflows=discover_workflows(),
             activities=discover_activities(),
+            # Idempotently register the lakehouse Temporal Schedules on boot so the
+            # recurring workflows (iceberg-commit, build-serving, tag-rotation,
+            # gap-drain-sweep) actually fire on cadence. Every pool boots through
+            # this entrypoint; register_schedules swallows AlreadyRunning, so
+            # concurrent boots converge to one set of schedules.
+            seed_schedules=True,
         )
     )
 

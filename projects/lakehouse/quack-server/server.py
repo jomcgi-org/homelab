@@ -51,10 +51,19 @@ logger = logging.getLogger(__name__)
 # (platform/004 §Write path: BuildServingArtifactWorkflow -> artifact-ready).
 ARTIFACT_READY_SUBJECT = "events.serving.artifact-ready"
 
-# Durable consumer name. A durable (consumer-group) name means a restarted pod
-# resumes from where it left off rather than replaying the whole stream; every
-# pod uses the same durable so each gets the swap event (JetStream fan-out).
-SWAP_DURABLE = "quack-serving-swap"
+# Durable consumer name — UNIQUE PER POD. The hot-swap must FAN OUT: every Quack
+# pod has to attach each new artifact. A *shared* durable is a consumer group, so
+# JetStream would hand each artifact-ready event to only ONE pod and the others
+# would keep serving the stale artifact (or 500 with no artifact). Suffixing the
+# pod hostname gives each pod its own consumer → true fan-out. Paired with
+# DeliverPolicy.LAST_PER_SUBJECT + an inactive_threshold (see run_swap_consumer)
+# so a (re)started pod picks up the current artifact without replaying the stream,
+# and orphaned per-pod consumers self-expire after the pod is gone.
+SWAP_DURABLE = f"quack-serving-swap-{os.environ.get('HOSTNAME') or 'local'}"
+
+# A (re)started pod must converge on the current artifact immediately, and idle
+# per-pod consumers must not pile up across restarts.
+SWAP_CONSUMER_INACTIVE_THRESHOLD_S = 600.0
 
 # Schema alias the serving artifact is ATTACHed under. Queries reference
 # ``<alias>.<table>`` (e.g. ``notes.chunks``); the swap rebinds the alias.
@@ -124,9 +133,13 @@ class ServingState:
         logger.info("hot-swapped serving artifact: path=%s version=%s", path, version)
 
     def search(self, query_vector: list[float], k: int) -> list[dict[str, Any]]:
-        """Run a VSS nearest-neighbour query, returning ``k`` rows as dicts."""
-        sql = duckdb_query.vector_search_sql(DEFAULT_SEARCH_TABLE, k)
-        cur = self.con.execute(sql, {"query": query_vector})
+        """Run a VSS nearest-neighbour query, returning ``k`` rows as dicts.
+
+        The query vector is inlined into the SQL (not bound) so DuckDB's VSS
+        optimiser engages the HNSW index — see ``duckdb_query.vector_search_sql``.
+        """
+        sql = duckdb_query.vector_search_sql(DEFAULT_SEARCH_TABLE, k, query_vector)
+        cur = self.con.execute(sql)
         columns = [d[0] for d in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
@@ -167,7 +180,12 @@ async def run_swap_consumer(
     ``stop`` lets the FastAPI shutdown hook (or a test) break the loop. Fetch
     timeouts are normal (idle stream) and simply re-poll.
     """
-    sub = await client.pull_subscribe(ARTIFACT_READY_SUBJECT, SWAP_DURABLE)
+    sub = await client.pull_subscribe(
+        ARTIFACT_READY_SUBJECT,
+        SWAP_DURABLE,
+        deliver_last_per_subject=True,
+        inactive_threshold=SWAP_CONSUMER_INACTIVE_THRESHOLD_S,
+    )
     while stop is None or not stop.is_set():
         try:
             msgs = await sub.fetch(timeout=poll_timeout)

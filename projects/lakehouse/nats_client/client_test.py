@@ -152,6 +152,41 @@ def test_pull_subscribe_creates_durable_consumer_and_fetches():
     underlying.fetch.assert_awaited_once_with(25, timeout=5.0)
 
 
+def test_pull_subscribe_fanout_uses_last_per_subject_config():
+    # Fan-out subscribers (e.g. each Quack pod hot-swapping) pass
+    # deliver_last_per_subject + inactive_threshold; the wrapper must translate
+    # those into an explicit ConsumerConfig so the server starts the consumer at
+    # the latest message per subject and auto-expires it when idle. The default
+    # (work-distribution) path must NOT build a config — asserted by the test
+    # above still passing.
+    from nats.js.api import DeliverPolicy
+
+    underlying = AsyncMock()
+    mock_js = AsyncMock()
+    mock_js.pull_subscribe.return_value = underlying
+
+    nc = NatsClient(url="nats://test:4222")
+    nc.js = mock_js
+
+    asyncio.run(
+        nc.pull_subscribe(
+            "events.lakehouse.artifact.ready",
+            "quack-serving-swap-pod-7",
+            deliver_last_per_subject=True,
+            inactive_threshold=600.0,
+        )
+    )
+
+    assert mock_js.pull_subscribe.await_count == 1
+    args, kwargs = mock_js.pull_subscribe.await_args
+    assert args[0] == "events.lakehouse.artifact.ready"
+    assert kwargs["durable"] == "quack-serving-swap-pod-7"
+    config = kwargs["config"]
+    assert config.durable_name == "quack-serving-swap-pod-7"
+    assert config.deliver_policy == DeliverPolicy.LAST_PER_SUBJECT
+    assert config.inactive_threshold == 600.0
+
+
 def test_fetch_batch_override():
     underlying = AsyncMock()
     underlying.fetch.return_value = []

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import nats
+from nats.js.api import ConsumerConfig, DeliverPolicy
 
 # In-cluster NATS service discovery address. The NATS server runs in the `nats`
 # namespace as service `nats` (Helm prepends the release name); the client is
@@ -103,17 +104,43 @@ class NatsClient:
         durable: str,
         *,
         batch: int = DEFAULT_BATCH,
+        deliver_last_per_subject: bool = False,
+        inactive_threshold: float | None = None,
     ):
-        """Create a durable (consumer-group) pull subscription.
+        """Create a durable pull subscription.
 
         Returns a small wrapper exposing ``fetch()`` (defaulting to ``batch``
         messages) plus the underlying nats-py ``PullSubscription`` for callers
         that need direct access (ack, unsubscribe, ...).
+
+        A *shared* ``durable`` is a consumer group — each message is delivered to
+        only one subscriber (work distribution; correct for the Iceberg drainer).
+        For a fan-out broadcast (every subscriber sees every message, e.g. each
+        Quack pod hot-swapping) give each subscriber a *unique* ``durable``.
+
+        ``deliver_last_per_subject`` starts a fresh consumer at the latest message
+        per subject (DeliverPolicy.LAST_PER_SUBJECT) instead of replaying the whole
+        stream — so a fan-out subscriber picks up the current state on (re)start
+        without re-processing historical (possibly since-deleted) messages.
+        ``inactive_threshold`` (seconds) lets the server auto-delete the consumer
+        once idle, so per-pod durables don't accumulate as orphans across restarts.
         """
         if self.js is None:
             raise RuntimeError("NatsClient.pull_subscribe called before connect()")
 
-        sub = await self.js.pull_subscribe(subject, durable=durable)
+        if deliver_last_per_subject or inactive_threshold is not None:
+            config = ConsumerConfig(
+                durable_name=durable,
+                deliver_policy=(
+                    DeliverPolicy.LAST_PER_SUBJECT
+                    if deliver_last_per_subject
+                    else DeliverPolicy.ALL
+                ),
+                inactive_threshold=inactive_threshold,
+            )
+            sub = await self.js.pull_subscribe(subject, durable=durable, config=config)
+        else:
+            sub = await self.js.pull_subscribe(subject, durable=durable)
         return _PullSubscription(sub, default_batch=batch)
 
     async def close(self) -> None:
