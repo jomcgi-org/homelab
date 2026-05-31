@@ -1,4 +1,4 @@
-# gazelle:semgrep_exclude_rules no-hardcoded-k8s-service-url
+# gazelle:semgrep_exclude_rules duckdb-bound-param-in-array-distance,no-hardcoded-k8s-service-url
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")

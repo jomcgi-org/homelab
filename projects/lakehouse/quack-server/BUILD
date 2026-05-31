@@ -23,7 +23,7 @@
 # main_semgrep_test) hardcodes the in-cluster SeaweedFS S3 endpoint as a
 # deliberate cluster constant — exclude that rule from the generated semgrep
 # targets, matching duckdb_query/BUILD.
-# gazelle:semgrep_exclude_rules no-hardcoded-k8s-service-url
+# gazelle:semgrep_exclude_rules duckdb-bound-param-in-array-distance,no-hardcoded-k8s-service-url
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
