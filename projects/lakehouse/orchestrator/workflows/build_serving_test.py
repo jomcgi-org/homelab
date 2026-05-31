@@ -53,6 +53,7 @@ def test_build_chunks_sql_applies_current_version_filter() -> None:
         schema="artifact.main",
         table="chunks",
         source_uri="s3://warehouse/knowledge/note_events",
+        embedding_dim=1024,
     )
     # Latest-version fold: MAX(event_version) per note_id, joined back.
     assert "MAX(event_version)" in sql
@@ -63,6 +64,9 @@ def test_build_chunks_sql_applies_current_version_filter() -> None:
     assert "embedding IS NOT NULL" in sql
     # Reads the Iceberg snapshot, not a raw parquet path.
     assert "iceberg_scan('s3://warehouse/knowledge/note_events')" in sql
+    # embedding is cast from variable FLOAT[] to fixed FLOAT[N] so the HNSW
+    # index can be built over it.
+    assert "CAST(embedding AS FLOAT[1024])" in sql
 
 
 def test_build_hnsw_sql_indexes_embedding() -> None:

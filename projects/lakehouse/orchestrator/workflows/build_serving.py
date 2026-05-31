@@ -73,6 +73,15 @@ ICEBERG_NAMESPACE = "knowledge"
 SERVING_SCHEMA = "main"
 SERVING_TABLE = "chunks"
 
+# Embedding dimensionality of the knowledge corpus (the monolith's embedding
+# model). The note_events ``embedding`` column is an Iceberg ``list<float>`` →
+# DuckDB reads it as a variable-length ``FLOAT[]``, but a VSS HNSW index requires
+# a fixed-size ``FLOAT[N]`` key. The chunks-build CAST pins it to this N so the
+# index can be created. All live embeddings share this dimension (single model);
+# a row of a different length would fail the CAST loudly rather than silently
+# corrupt the index.
+EMBEDDING_DIM = 1024
+
 # Serving-artifact-ready event (platform/004 §hot-swap trigger). Published on an
 # explicit subject — NOT one of the events.knowledge.* entity subjects — so it is
 # routed to the Quack swap consumer, not back into the Iceberg drainer.
@@ -128,7 +137,7 @@ current_rows AS (
       ON e.note_id = l.note_id
      AND e.event_version = l.max_version
 )
-SELECT *
+SELECT * EXCLUDE (embedding), CAST(embedding AS FLOAT[{embedding_dim}]) AS embedding
 FROM current_rows
 WHERE event_type <> 'tombstoned'
   AND embedding IS NOT NULL;
@@ -200,6 +209,7 @@ async def build_artifact(version: int) -> BuildResult:
                 schema=f"artifact.{SERVING_SCHEMA}",
                 table=SERVING_TABLE,
                 source_uri=source_uri,
+                embedding_dim=EMBEDDING_DIM,
             )
             con.execute(build_chunks)
             con.execute(
