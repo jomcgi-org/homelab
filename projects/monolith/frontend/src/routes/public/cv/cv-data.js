@@ -16,7 +16,7 @@ export const contact = {
 export const name = "Joe McGinley";
 
 export const summary =
-  "As a Senior Platform Engineer, I build and operate reliable, cost-effective distributed systems, primarily using GCP and Kubernetes. I thrive on improving performance and stability, having drastically cut processing times (weeks down to minutes), reduced costs by up to 89%, and eliminated recurring SLA violations. My approach relies on pragmatic automation, leveraging OpenTelemetry for deep system insights, and robust system design, especially for critical data platforms.";
+  "As a Senior Platform Engineer, I build and operate reliable, cost-effective distributed systems, primarily using GCP and Kubernetes. I thrive on improving performance and stability, having drastically cut processing times (**weeks down to minutes**), reduced costs by up to **89%**, and eliminated recurring SLA violations. My approach relies on pragmatic automation, leveraging OpenTelemetry for deep system insights, and robust system design, especially for critical data platforms.";
 
 export const jobs = [
   {
@@ -24,14 +24,14 @@ export const jobs = [
     title: "Senior Software Engineer II (Promoted Oct 2023)",
     dates: "Oct 2022 – Present",
     bullets: [
-      "Stabilized a critical, frequently failing product, **reducing incident Time-to-Resolve (TTR) by 40% and eliminating recurring SLA violations**, by leading a cross-functional Root Cause Analysis (RCA) squad to produce an RCA playbook and a backlog of automated tests and reliability improvements for service owners.",
-      "Reduced core document processing time from **weeks to minutes** by designing and building a scalable (25m+ docs) distributed event processing framework (Kubernetes/GKE), engineered for high resilience, scaling to cloud quota limits, and **scaling to zero for cost efficiency** enabling an 89% reduction in processing costs.",
-      "Optimized transactional write throughput for our primary 10TB Postgres database utilizing PGvector (HNSW), enabling significantly faster ingestion of customer data while balancing high-performance reads under strict infrastructure scaling constraints.",
+      "Stabilized a critical, frequently failing product, reducing incident Time-to-Resolve (TTR) by **40%** and eliminating recurring SLA violations, by leading a cross-functional Root Cause Analysis (RCA) squad to produce an RCA playbook and a backlog of automated tests and reliability improvements for service owners.",
+      "Reduced core document processing time from **weeks to minutes** by designing and building a scalable (25m+ docs) distributed event processing framework (Kubernetes/GKE), engineered for high resilience, scaling to cloud quota limits, and scaling to zero for cost efficiency enabling an **89%** reduction in processing costs.",
+      "Optimized transactional write throughput for our primary **10TB** Postgres database utilizing PGvector (HNSW), enabling significantly faster ingestion of customer data while balancing high-performance reads under strict infrastructure scaling constraints.",
       "Managed and performance-tuned a large-scale Neo4j knowledge graph, optimizing complex query performance and data ingestion pipelines for essential company insights.",
-      "Reduced incident Time-to-Identify (TTI) from **94 to 23 minutes and cut false alerts by 15%** by driving company-wide OpenTelemetry adoption, creating a unified observability standard (logs, metrics, traces) and centralizing monitoring/alerting.",
-      "Implemented an SLO framework translating business needs into measurable reliability targets, **designed for low-friction developer adoption**, guiding data-informed prioritization and clearly communicating essential non-functional requirements.",
-      "Increased data release stability from bi-weekly failures to >30 days uptime using automated recovery and OpenTelemetry, **allowing developers to ship features faster with reduced risk to users**.",
-      "Cut critical Postgres processing time by **55%** (to 9 hrs) via tuning and scaling, **enabling a faster release cadence and improving core software delivery performance metrics**.",
+      "Reduced incident Time-to-Identify (TTI) from **94 to 23 minutes** and cut false alerts by **15%** by driving company-wide OpenTelemetry adoption, creating a unified observability standard (logs, metrics, traces) and centralizing monitoring/alerting.",
+      "Implemented an SLO framework translating business needs into measurable reliability targets, designed for low-friction developer adoption, guiding data-informed prioritization and clearly communicating essential non-functional requirements.",
+      "Increased data release stability from bi-weekly failures to **>30 days** uptime using automated recovery and OpenTelemetry, allowing developers to ship features faster with reduced risk to users.",
+      "Cut critical Postgres processing time by **55%** (to **9 hrs**) via tuning and scaling, enabling a faster release cadence and improving core software delivery performance metrics.",
       "Served as the go-to expert for data orchestration, resolving complex cross-team workflow challenges and ensuring successful platform adoption.",
     ],
   },
@@ -63,7 +63,7 @@ export const jobs = [
     bullets: [
       "Designed robust batch and streaming ETL architectures enabling scalable data processing on Azure.",
       "Implemented automated infrastructure provisioning (Terraform) and deployment pipelines (CI/CD with Azure DevOps), improving platform stability and deployment velocity.",
-      "Deployed key data services and infrastructure, including systems supporting ML applications that drove significant cost savings (e.g., 40% CAC reduction).",
+      "Deployed key data services and infrastructure, including systems supporting ML applications that drove significant cost savings (e.g., **40%** CAC reduction).",
       "Consulted cross-functionally on data platform projects, influencing technical direction and implementation standards.",
     ],
   },
@@ -82,8 +82,8 @@ export const jobs = [
 export const projects = [
   "Actively contributing code and performing peer reviews for the OpenTelemetry project ([opentelemetry-python](https://github.com/open-telemetry/opentelemetry-python), [opentelemetry-python-contrib](https://github.com/open-telemetry/opentelemetry-python-contrib)).",
   "Designed and operate a bare-metal Kubernetes cluster (K3s) as a practical environment for reliability engineering experimentation.",
-  "Centralized observability using the **OpenTelemetry Collector** to process diverse signals (traces, metrics, logs from cluster/apps, GitHub webhook -> Otel traces); data forwarded to **Grafana Cloud and Honeycomb** for analysis, alerting, and SLO tracking.",
-  "Automated infrastructure and deployments using **GitOps CI/CD principles**, ensuring high availability awareness through **layered monitoring**: **Uptime Kuma** for on-site checks/alerts, backed by a **GCP uptime check with SMS alerting** monitoring the primary monitoring service itself.",
+  "Centralized observability using the OpenTelemetry Collector to process diverse signals (traces, metrics, logs from cluster/apps, GitHub webhook -> Otel traces); data forwarded to Grafana Cloud and Honeycomb for analysis, alerting, and SLO tracking.",
+  "Automated infrastructure and deployments using GitOps CI/CD principles, ensuring high availability awareness through layered monitoring: Uptime Kuma for on-site checks/alerts, backed by a GCP uptime check with SMS alerting monitoring the primary monitoring service itself.",
 ];
 
 export const skills = [
