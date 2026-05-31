@@ -101,9 +101,15 @@ def test_vector_search_sql_formats_with_k():
     sql = vector_search_sql("notes.chunks", 10)
 
     assert "FROM notes.chunks" in sql
-    assert "array_distance(embedding, $query)" in sql
-    assert "ORDER BY array_distance(embedding, $query)" in sql
+    # $query is cast to the embedding column's fixed-size FLOAT[N] type so
+    # array_distance has a matching overload (default dim 1024).
+    assert "array_distance(embedding, $query::FLOAT[1024])" in sql
+    assert "ORDER BY array_distance(embedding, $query::FLOAT[1024])" in sql
     assert "LIMIT 10;" in sql
+
+
+def test_vector_search_sql_dim_is_overridable():
+    assert "$query::FLOAT[384]" in vector_search_sql("t", 5, dim=384)
 
 
 def test_vector_search_sql_distinct_k_values():

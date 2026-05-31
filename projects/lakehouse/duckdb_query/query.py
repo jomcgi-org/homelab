@@ -124,28 +124,41 @@ def attach_or_replace_sql(alias: str, path: str) -> str:
     return f"ATTACH OR REPLACE '{path}' AS {alias} (READ_ONLY);"
 
 
-def vector_search_sql(table: str, k: int) -> str:
+# Embedding dimensionality of the serving artifact's indexed ``embedding`` column
+# (the monolith embedding model; matches build_serving.EMBEDDING_DIM). The column
+# is a fixed-size ``FLOAT[N]`` (so a VSS HNSW index can be built), so the query
+# vector must be cast to the SAME fixed type — DuckDB's array_distance has no
+# FLOAT[N] x DOUBLE[] (variable-list) overload, which is what a bound Python list
+# binds as.
+EMBEDDING_DIM = 1024
+
+
+def vector_search_sql(table: str, k: int, dim: int = EMBEDDING_DIM) -> str:
     """Return a VSS nearest-neighbour query template for ``table`` returning ``k`` rows.
 
     Pure function. The returned SQL takes one parameter placeholder, ``$query`` —
-    the query embedding (a ``FLOAT[]`` matching the indexed ``embedding`` column's
-    dimensionality). Callers bind ``$query`` at execute time, e.g.::
+    the query embedding, a length-``dim`` vector. Callers bind ``$query`` at
+    execute time, e.g.::
 
         con.execute(vector_search_sql("notes.chunks", 10), {"query": vec})
 
-    Ordering by ``array_distance(embedding, $query)`` lets DuckDB's VSS extension use
-    the HNSW index when the artifact was built with one. The HNSW index itself is
-    created by the serving-artifact build (Wavefront 3); this template only assumes
-    an ``embedding`` column exists. ``k`` must be a positive integer (it is
-    interpolated directly into ``LIMIT``, so it is validated rather than bound).
+    ``$query`` is CAST to ``FLOAT[dim]`` so it matches the indexed ``embedding``
+    column's fixed-size ``FLOAT[N]`` type: a bound Python list binds as a
+    variable-length ``DOUBLE[]``, and ``array_distance`` has no ``FLOAT[N]`` ×
+    ``DOUBLE[]`` overload (it requires both operands to be the same fixed array
+    type). Ordering by ``array_distance`` lets DuckDB's VSS extension use the HNSW
+    index when the artifact was built with one (matching l2sq metric). ``k`` must
+    be a positive integer (interpolated into ``LIMIT``, so validated not bound).
     """
     if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
         raise ValueError(f"k must be a positive int, got {k!r}")
+    if not isinstance(dim, int) or isinstance(dim, bool) or dim <= 0:
+        raise ValueError(f"dim must be a positive int, got {dim!r}")
 
     return (
-        f"SELECT *, array_distance(embedding, $query) AS distance\n"
+        f"SELECT *, array_distance(embedding, $query::FLOAT[{dim}]) AS distance\n"
         f"FROM {table}\n"
-        f"ORDER BY array_distance(embedding, $query)\n"
+        f"ORDER BY array_distance(embedding, $query::FLOAT[{dim}])\n"
         f"LIMIT {k};"
     )
 
