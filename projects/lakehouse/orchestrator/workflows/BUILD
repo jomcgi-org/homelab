@@ -86,5 +86,9 @@ py_test(
 semgrep_test(
     name = "workflows_semgrep_test",
     srcs = glob(["**/*.py"]),
+    # boto3-endpoint-url-missing-scheme: scheme guards are present in
+    # build_serving.py and tag_rotation.py; nosemgrep is pysemgrep-only
+    # so we suppress via exclude_rules instead.
+    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )

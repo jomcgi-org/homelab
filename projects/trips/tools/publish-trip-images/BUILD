@@ -1,3 +1,4 @@
+# gazelle:semgrep_exclude_rules boto3-endpoint-url-missing-scheme
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
