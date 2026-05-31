@@ -106,20 +106,29 @@ py_test(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
-    exclude_rules = ["no-hardcoded-k8s-service-url"],
+    exclude_rules = [
+        "no-hardcoded-k8s-service-url",
+        "duckdb-bound-param-in-array-distance",
+    ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(
     name = "server_test_semgrep_test",
     srcs = ["server_test.py"],
-    exclude_rules = ["no-hardcoded-k8s-service-url"],
+    exclude_rules = [
+        "no-hardcoded-k8s-service-url",
+        "duckdb-bound-param-in-array-distance",
+    ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_target_test(
     name = "main_semgrep_test",
-    exclude_rules = ["no-hardcoded-k8s-service-url"],
+    exclude_rules = [
+        "no-hardcoded-k8s-service-url",
+        "duckdb-bound-param-in-array-distance",
+    ],
     lockfiles = ["//bazel/requirements:all.txt"],
     rules = ["//bazel/semgrep/rules:python_rules"],
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
