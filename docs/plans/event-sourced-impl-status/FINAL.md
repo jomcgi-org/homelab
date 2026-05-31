@@ -57,7 +57,7 @@ Iceberg on SeaweedFS  s3://warehouse/  (note_events / gap_events tables)
 s3://warehouse/serving/notes-vN.duckdb  (DuckDB + VSS HNSW, state=building)
    │  events.serving.artifact-ready  →  TagRotationWorkflow (5min grace, keep-last-24)
    ▼
-Quack pods (2×, in-RAM .duckdb, ATTACH OR REPLACE hot-swap)  →  Cloudflare CDN  →  query
+Quack pods (2×, in-RAM .duckdb, ATTACH OR REPLACE hot-swap)  →  in-cluster SSR callers (direct Service DNS, no public domain)
 ```
 
 - **Code home:** standalone `projects/lakehouse/` project (gate-ratified Option A) —
@@ -203,23 +203,25 @@ constant, so the optimiser rewrites `ORDER BY array_distance(...) LIMIT k` into 
 O(rows), the gap widens with corpus growth, so ~10 ms is a floor on the win, not a
 ceiling.
 
-**End-to-end (Quack HTTP `/search`):** on the **deployed post-fix image** (#2437),
-an authenticated `/search` (k=10, 1024-dim) returns HTTP 200 with 10 correctly-
-shaped `note_events` rows from the current artifact — the inlined-literal HNSW path
-is confirmed working in production. A clean end-to-end **latency** number was **not
-captured**: the CDN path (`quack.jomcgi.dev`) wasn't routing, and the only available
-route was `kubectl port-forward` over the (chronically flapping) remote API tunnel,
-whose ~0.8–2 s round-trip is pure transport and swamps the query — not representative
-of in-cluster latency. The representative figure is the engine-level **~10 ms** row
-above (the shipped query plan); a true in-cluster `/search` (engine + intra-mesh HTTP)
-is single-digit-to-low-tens of ms. For reference, the pre-fix image measured **~84 ms
-p50** end-to-end on the brute-force path.
+**End-to-end (Quack HTTP `/search`, in-cluster):** the read path is accessed
+**in-cluster only** — SSR callers hit the quack Service directly over cluster DNS
+(`lakehouse-quack.lakehouse.svc.cluster.local:8080`); there is **no public domain**
+(`cfIngress` is disabled). Measured from a one-off pod in the `lakehouse` namespace
+hitting the Service directly (k=10, 1024-dim, deployed post-fix image): HTTP 200,
+10 correct `note_events` rows, **~15 ms warm** (steady-state 14.5–16.2 ms; the
+first call is ~0.7 s cold while the connection opens and DuckDB faults the artifact
+pages / HNSW index into cache). That ~15 ms = the engine-level **~10 ms** HNSW row
+above + ~5 ms HTTP/serialization — the operative SSR-path latency (keep-alive
+connections + a hot artifact; the cold hit only recurs right after a hot-swap). For
+reference, the pre-fix image measured **~84 ms p50** on the brute-force path.
 
-**Takeaway:** point and aggregate reads are already single-digit-millisecond; the
-vector path is the one that matters for scale, and the HNSW fix moves it from a
-linear scan to an index scan. To capture a representative end-to-end `/search`
-latency, measure in-cluster (a sidecar/pod curl or the CDN once it's routing), not
-through a laptop port-forward.
+> Note: a `kubectl port-forward` from a workstation measured ~0.8–2 s for the same
+> call — that figure is ~60× inflated by API-server-proxy + remote-tunnel transport
+> and is **not** representative. Latency must be measured in-cluster, on the SSR path.
+
+**Takeaway:** point and aggregate reads are already single-digit-millisecond, and
+the vector path — the one that matters for scale — is ~15 ms in-cluster now that the
+HNSW fix moved it from a linear scan to an index scan.
 
 ---
 

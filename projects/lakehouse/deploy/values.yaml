@@ -15,10 +15,14 @@ worker:
 quack:
   image:
     pullPolicy: Always
-  # Front the read path with Cloudflare CDN once the public hostname is live.
+  # No public ingress: the read path is accessed IN-CLUSTER ONLY — SSR callers
+  # (e.g. the monolith) hit the quack Service directly over cluster DNS
+  # (lakehouse-quack.lakehouse.svc.cluster.local:8080). We deliberately do NOT
+  # expose quack via the public quack.jomcgi.dev domain, so cfIngress stays at the
+  # chart default (disabled) and no Gateway HTTPRoute is rendered. The in-cluster
+  # Service is independent of cfIngress, so this does not affect SSR access.
   cfIngress:
-    enabled: true
-    hostname: quack.jomcgi.dev
+    enabled: false
   queryToken:
     # MANUAL PREREQUISITE: 1Password item with a QUACK_QUERY_TOKEN field.
     onepasswordItemPath: vaults/k8s-homelab/items/lakehouse-quack-query-token
