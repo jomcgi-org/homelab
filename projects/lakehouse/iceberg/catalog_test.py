@@ -121,11 +121,11 @@ def test_sqlite_fallback_when_no_database_url():
 def test_scheme_less_endpoint_gets_http_prefix():
     """A scheme-less endpoint (the chart's shared host:port) is prefixed with
     http:// — pyiceberg hands it to pyarrow which would otherwise default to
-    https and fail the TLS handshake against plaintext SeaweedFS."""
-    cfg = catalog_config(
-        env={"SEAWEEDFS_S3_ENDPOINT": "seaweedfs-s3.seaweedfs.svc.cluster.local:8333"}
-    )
-    assert cfg["s3.endpoint"] == "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+    https and fail the TLS handshake against plaintext SeaweedFS. (A generic
+    host:port is used here rather than the real in-cluster service name so the
+    no-hardcoded-k8s-service-url lint stays happy.)"""
+    cfg = catalog_config(env={"SEAWEEDFS_S3_ENDPOINT": "s3-gateway:8333"})
+    assert cfg["s3.endpoint"] == "http://s3-gateway:8333"
 
 
 def test_explicit_scheme_endpoint_is_preserved():
