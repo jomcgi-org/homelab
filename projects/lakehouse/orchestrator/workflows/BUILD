@@ -18,6 +18,12 @@ _WORKFLOW_DEPS = [
     "//projects/lakehouse/events/registry",
     "//projects/lakehouse/nats_client",
     "//projects/lakehouse/iceberg",
+    # tables/ is a separate subpackage from //projects/lakehouse/iceberg (the
+    # `iceberg` target is only __init__/catalog/writer). The iceberg-builder's
+    # ensure-create path (iceberg_batch._load_or_create_table) needs the TABLES
+    # schema registry, so it must be an explicit dep — without it the lazy
+    # `from projects.lakehouse.iceberg.tables import TABLES` crashes at runtime.
+    "//projects/lakehouse/iceberg/tables",
     "//projects/lakehouse/duckdb_query",
     "//projects/lakehouse/orchestrator",
     "@pip//temporalio",
