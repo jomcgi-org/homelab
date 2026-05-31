@@ -8,9 +8,7 @@ from cluster import summarize
 
 
 def _ts(**kw) -> str:
-    return (datetime.now(timezone.utc) - timedelta(**kw)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    return (datetime.now(timezone.utc) - timedelta(**kw)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class TestAge:
@@ -29,12 +27,20 @@ class TestAge:
 class TestResourceRow:
     def test_pod_row_reports_ready_and_restarts(self):
         obj = {
-            "metadata": {"name": "p1", "namespace": "ns", "creationTimestamp": _ts(minutes=1)},
+            "metadata": {
+                "name": "p1",
+                "namespace": "ns",
+                "creationTimestamp": _ts(minutes=1),
+            },
             "status": {
                 "phase": "Running",
                 "containerStatuses": [
                     {"ready": True, "restartCount": 0, "state": {"running": {}}},
-                    {"ready": False, "restartCount": 3, "state": {"waiting": {"reason": "CrashLoopBackOff"}}},
+                    {
+                        "ready": False,
+                        "restartCount": 3,
+                        "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                    },
                 ],
             },
         }
@@ -55,7 +61,10 @@ class TestResourceRow:
     def test_application_sync_health(self):
         obj = {
             "metadata": {"name": "a1"},
-            "status": {"sync": {"status": "OutOfSync"}, "health": {"status": "Degraded"}},
+            "status": {
+                "sync": {"status": "OutOfSync"},
+                "health": {"status": "Degraded"},
+            },
         }
         row = summarize.resource_row("applications", obj)
         assert row["sync"] == "OutOfSync"
@@ -68,7 +77,9 @@ class TestUnhealthy:
         assert not summarize._row_unhealthy("pods", row)
 
     def test_crashloop_pod_is_unhealthy(self):
-        assert summarize._row_unhealthy("pods", {"phase": "Running", "reason": "CrashLoopBackOff"})
+        assert summarize._row_unhealthy(
+            "pods", {"phase": "Running", "reason": "CrashLoopBackOff"}
+        )
 
     def test_partial_deployment_is_unhealthy(self):
         assert summarize._row_unhealthy("deployments", {"ready": "1/3"})
@@ -83,8 +94,16 @@ class TestBuildHealth:
     def test_only_unhealthy_returned(self):
         resources = {
             "deployments": [
-                {"metadata": {"name": "ok"}, "spec": {"replicas": 1}, "status": {"readyReplicas": 1}},
-                {"metadata": {"name": "bad"}, "spec": {"replicas": 2}, "status": {"readyReplicas": 0}},
+                {
+                    "metadata": {"name": "ok"},
+                    "spec": {"replicas": 1},
+                    "status": {"readyReplicas": 1},
+                },
+                {
+                    "metadata": {"name": "bad"},
+                    "spec": {"replicas": 2},
+                    "status": {"readyReplicas": 0},
+                },
             ]
         }
         out = summarize.build_health(resources)
@@ -94,7 +113,17 @@ class TestBuildHealth:
         assert names == ["bad"]
 
     def test_all_healthy(self):
-        resources = {"pods": [{"metadata": {"name": "p"}, "status": {"phase": "Running", "containerStatuses": [{"ready": True, "restartCount": 0}]}}]}
+        resources = {
+            "pods": [
+                {
+                    "metadata": {"name": "p"},
+                    "status": {
+                        "phase": "Running",
+                        "containerStatuses": [{"ready": True, "restartCount": 0}],
+                    },
+                }
+            ]
+        }
         out = summarize.build_health(resources)
         assert out["healthy"] is True
         assert out["unhealthy"] == {}
@@ -128,8 +157,16 @@ class TestDedupeEvents:
 
     def test_distinct_messages_not_merged(self):
         events = [
-            {"involvedObject": {"kind": "Pod", "name": "p"}, "reason": "A", "message": "x"},
-            {"involvedObject": {"kind": "Pod", "name": "p"}, "reason": "B", "message": "y"},
+            {
+                "involvedObject": {"kind": "Pod", "name": "p"},
+                "reason": "A",
+                "message": "x",
+            },
+            {
+                "involvedObject": {"kind": "Pod", "name": "p"},
+                "reason": "B",
+                "message": "y",
+            },
         ]
         assert len(summarize.dedupe_events(events)) == 2
 

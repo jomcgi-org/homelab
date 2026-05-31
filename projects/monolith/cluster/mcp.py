@@ -126,7 +126,11 @@ async def k8s_get_pod_logs(
     k8s = KubernetesClient()
     try:
         text = await k8s.get_pod_logs(
-            namespace, pod, container=container, tail_lines=tail_lines, previous=previous
+            namespace,
+            pod,
+            container=container,
+            tail_lines=tail_lines,
+            previous=previous,
         )
     except Exception as exc:
         return {"error": f"log fetch failed: {exc}"}
