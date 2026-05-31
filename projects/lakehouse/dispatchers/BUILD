@@ -87,6 +87,7 @@ py_test(
     deps = [
         ":dispatchers",
         "//projects/lakehouse/events",
+        "//projects/lakehouse/orchestrator",
         "@pip//pytest",
         "@pip//temporalio",
     ],
