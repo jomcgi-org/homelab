@@ -22,7 +22,7 @@ NATS JetStream  ->  Temporal workflows  ->  Iceberg on SeaweedFS  ->  DuckDB / Q
 | `iceberg/`          | PyIceberg writer helpers; per-domain `tables/`                         | 2         |
 | `duckdb_query/`     | DuckDB + iceberg-extension query helpers                               | 2         |
 | `dispatchers/`      | NATS → Temporal workflow dispatchers                                   | 4         |
-| `image/`            | apko worker image (`python -m projects.lakehouse.orchestrator.worker`) | 3         |
+| `image/`            | apko worker image (`python -m projects.lakehouse.orchestrator.workflows.run`) | 3         |
 | `quack-server/`     | apko DuckDB/Quack serving image                                        | 3         |
 | `chart/`, `deploy/` | Path-based Helm chart + ArgoCD Application                             | 4         |
 
