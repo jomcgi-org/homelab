@@ -9,18 +9,26 @@ load("//bazel/helm:defs.bzl", "helm_chart")
 # tell gazelle to leave them alone.
 #
 # Helm chart for the event-sourced lakehouse worker/quack/dispatcher Deployments
-# + KEDA scalers (ADRs agents/015, platform/004). AUTHOR-ONLY this wavefront:
-# CI-validated via helm_template_test / semgrep_manifest_test (see
-# ../deploy:lakehouse) but NOT published or wired into ArgoCD yet.
+# + KEDA scalers (ADRs agents/015, platform/004). Published as an OCI chart and
+# wired into ArgoCD (../deploy:lakehouse); CI-validated via helm_template_test /
+# semgrep_manifest_test.
 #
-# No `images=` pinning here: the dispatchers image is a sibling W4 unit not yet
-# built in this branch, and helm_images_values requires every referenced
-# image .info target to exist. The orchestrator adds image pinning when it wires
-# the chart (worker -> //projects/lakehouse/image:image.info, quack ->
-# //projects/lakehouse/quack-server:image.info, dispatchers -> its target).
+# `images=` + `publish=True` make CI (a) deep-merge each image's CI-stamped tag
+# into the packaged chart's values.yaml at build time (helm_images_values — the
+# OCI chart ships digest-pinned; never hand-edit `@sha256:` into values) and
+# (b) push the chart to ghcr.io/jomcgi/homelab/charts by its Chart.yaml version.
+# All three image `.info` targets now exist (worker / quack-server / dispatchers).
+# NOTE: ../deploy/values.yaml must NOT set `image.tag` or the git overlay clobbers
+# the pin (Helm valueFiles are last-wins over the packaged base).
 helm_chart(
     name = "chart",
+    images = {
+        "worker.image": "//projects/lakehouse/image:image.info",
+        "quack.image": "//projects/lakehouse/quack-server:image.info",
+        "dispatchers.image": "//projects/lakehouse/dispatchers:image.info",
+    },
     lint = False,
+    publish = True,
     # //projects/lakehouse:__subpackages__ so the separate deploy/ package's
     # argocd_app (which references //projects/lakehouse/chart:chart) can see the
     # chart filegroup; //overlays for the historical overlay rendering.

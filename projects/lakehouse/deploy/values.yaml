@@ -1,21 +1,19 @@
-# Environment-specific overrides for the lakehouse chart (layered on top of
-# projects/lakehouse/chart/values.yaml). AUTHOR-ONLY this wavefront: the chart
-# is CI-validated but NOT wired into ArgoCD; the orchestrator enables it after
-# live Wavefront-1 verification. The 1Password itemPaths below are MANUAL
+# Environment-specific overrides for the lakehouse chart, layered on top of the
+# OCI chart's packaged values.yaml. The 1Password itemPaths below are MANUAL
 # PREREQUISITES -- the items must exist and be populated before the housekeeping
 # worker can read PG and before the Quack /search token is enforced.
 
-# Pin the worker/quack/dispatcher images to the live tag. The Bazel image
-# pipeline manages digest pinning at build time; leave repository defaults.
+# Image tags are deliberately NOT set here. The OCI chart is digest-pinned at
+# build time (helm_images_values bakes the CI-stamped tag into the packaged
+# values.yaml), and this overlay is applied AFTER that base (Helm valueFiles are
+# last-wins), so a `tag:` here would silently un-pin the images. Only pullPolicy
+# is overridden — Always re-pulls defensively on restart, harmless now that the
+# pinned tag is immutable.
 worker:
   image:
-    tag: main
-    # `main` is mutable (re-pushed each merge) and this path-based chart isn't
-    # digest-pinned, so Always ensures restarted pods pull CI rebuilds.
     pullPolicy: Always
 quack:
   image:
-    tag: main
     pullPolicy: Always
   # Front the read path with Cloudflare CDN once the public hostname is live.
   cfIngress:
@@ -26,7 +24,6 @@ quack:
     onepasswordItemPath: vaults/k8s-homelab/items/lakehouse-quack-query-token
 dispatchers:
   image:
-    tag: main
     pullPolicy: Always
 
 # PG backfill credential is cloned by Kyverno (clone-monolith-pg-app) from

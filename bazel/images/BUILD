@@ -51,6 +51,7 @@ multirun(
         "//projects/grimoire/frontend:image.push",
         "//projects/grimoire/ws-gateway:image.push",
         "//projects/hikes/update_forecast:update_image.push",
+        "//projects/lakehouse/chart:chart.push",
         "//projects/lakehouse/dispatchers:image.push",
         "//projects/lakehouse/image:image.push",
         "//projects/lakehouse/quack-server:image.push",
