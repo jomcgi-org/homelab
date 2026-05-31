@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -78,4 +79,68 @@ async def test_run_worker_uses_injected_client_and_registrations(monkeypatch) ->
     assert kwargs["task_queue"] == "housekeeping"
     assert kwargs["workflows"] == [_WorkflowA]
     assert kwargs["activities"] == [_activity_b]
+    mock_worker.run.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# seed_schedules — Temporal Schedule registration on boot
+#
+# Driven via asyncio.run (not @pytest.mark.asyncio) so these execute even
+# without the pytest-asyncio plugin, which the rest of this file's async tests
+# rely on (and which is not yet wired into the lakehouse test harness).
+# --------------------------------------------------------------------------- #
+
+
+def _patch_worker(monkeypatch):
+    """Patch get_client + Worker so run_worker drives without a real Temporal."""
+    mock_client = MagicMock(name="client")
+    monkeypatch.setattr(
+        worker_module, "get_client", AsyncMock(return_value=mock_client)
+    )
+    mock_worker = MagicMock(name="worker")
+    mock_worker.run = AsyncMock()
+    monkeypatch.setattr(
+        worker_module.temporalio.worker,
+        "Worker",
+        MagicMock(return_value=mock_worker),
+    )
+    return mock_client, mock_worker
+
+
+def test_run_worker_seeds_schedules_when_requested(monkeypatch) -> None:
+    mock_client, mock_worker = _patch_worker(monkeypatch)
+    mock_register = AsyncMock()
+    monkeypatch.setattr(worker_module, "register_schedules", mock_register)
+
+    asyncio.run(run_worker("gap-drain", seed_schedules=True))
+
+    # Schedules registered against the same client the worker uses, before run().
+    mock_register.assert_awaited_once_with(mock_client)
+    mock_worker.run.assert_awaited_once()
+
+
+def test_run_worker_does_not_seed_schedules_by_default(monkeypatch) -> None:
+    _patch_worker(monkeypatch)
+    mock_register = AsyncMock()
+    monkeypatch.setattr(worker_module, "register_schedules", mock_register)
+
+    asyncio.run(run_worker("gap-drain"))
+
+    # Tests / non-entrypoint callers must not touch the cluster's schedules.
+    mock_register.assert_not_awaited()
+
+
+def test_run_worker_survives_schedule_registration_failure(monkeypatch) -> None:
+    _, mock_worker = _patch_worker(monkeypatch)
+    # Registration is best-effort: a Temporal hiccup at boot must NOT stop the
+    # worker from serving its queue (the alternative — crash-looping the whole
+    # pool because a schedule couldn't be (re)created — is strictly worse).
+    monkeypatch.setattr(
+        worker_module,
+        "register_schedules",
+        AsyncMock(side_effect=RuntimeError("temporal unavailable")),
+    )
+
+    asyncio.run(run_worker("gap-drain", seed_schedules=True))  # must not raise
+
     mock_worker.run.assert_awaited_once()

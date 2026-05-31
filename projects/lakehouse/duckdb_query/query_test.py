@@ -98,29 +98,46 @@ def test_attach_or_replace_sql_formats_local_path():
 
 
 def test_vector_search_sql_formats_with_k():
-    sql = vector_search_sql("notes.chunks", 10)
+    sql = vector_search_sql("notes.chunks", 10, [0.1, 0.2, 0.3])
 
     assert "FROM notes.chunks" in sql
-    # $query is cast to the embedding column's fixed-size FLOAT[N] type so
-    # array_distance has a matching overload (default dim 1024).
-    assert "array_distance(embedding, $query::FLOAT[1024])" in sql
-    assert "ORDER BY array_distance(embedding, $query::FLOAT[1024])" in sql
+    # The query vector is INLINED as a FLOAT[N] literal (N = its length), not
+    # bound as $query. This is load-bearing: DuckDB's VSS optimiser only rewrites
+    # the ORDER BY ... LIMIT into an HNSW_INDEX_SCAN when the vector is a plan-time
+    # constant, so a bound param would silently fall back to a full scan.
+    assert "array_distance(embedding, [0.1, 0.2, 0.3]::FLOAT[3])" in sql
+    assert "ORDER BY array_distance(embedding, [0.1, 0.2, 0.3]::FLOAT[3])" in sql
     assert "LIMIT 10;" in sql
 
 
-def test_vector_search_sql_dim_is_overridable():
-    assert "$query::FLOAT[384]" in vector_search_sql("t", 5, dim=384)
+def test_vector_search_sql_inlines_no_bound_parameter():
+    # Regression guard for the HNSW fix: the bound `$query` placeholder must never
+    # reappear — its presence is exactly what defeated the index (75ms -> 10ms).
+    sql = vector_search_sql("notes.chunks", 10, [0.1, 0.2, 0.3])
+    assert "$query" not in sql
+
+
+def test_vector_search_sql_cast_dim_matches_vector_length():
+    # The ::FLOAT[N] cast tracks the actual vector length, not a fixed constant,
+    # so it always matches the indexed embedding column's fixed-size type.
+    assert "::FLOAT[4]" in vector_search_sql("t", 5, [0.1, 0.2, 0.3, 0.4])
+    assert "::FLOAT[2]" in vector_search_sql("t", 5, [0.1, 0.2])
 
 
 def test_vector_search_sql_distinct_k_values():
-    assert "LIMIT 1;" in vector_search_sql("t", 1)
-    assert "LIMIT 256;" in vector_search_sql("t", 256)
+    assert "LIMIT 1;" in vector_search_sql("t", 1, [0.1, 0.2])
+    assert "LIMIT 256;" in vector_search_sql("t", 256, [0.1, 0.2])
 
 
 @pytest.mark.parametrize("bad_k", [0, -1, 2.5, "5", True, None])
 def test_vector_search_sql_rejects_non_positive_int_k(bad_k):
     with pytest.raises(ValueError):
-        vector_search_sql("notes.chunks", bad_k)
+        vector_search_sql("notes.chunks", bad_k, [0.1, 0.2])
+
+
+def test_vector_search_sql_rejects_empty_vector():
+    with pytest.raises(ValueError):
+        vector_search_sql("notes.chunks", 10, [])
 
 
 # --------------------------------------------------------------------------- #
