@@ -6,35 +6,37 @@ schema), `platform/004` (Iceberg + Quack). This was built **purely additively** 
 no existing service modified, broken, or deleted; migration/cutover deliberately
 out of scope.
 
-**Status as of 2026-05-31 (live run):** Wavefronts 0–4 **deployed** to the
-`lakehouse` namespace and the pipeline **proven end-to-end at the data layer** —
-a vector search over the freshly-built serving artifact returns a correctly-
-backfilled `_processed` note (3431 chunk rows / 990 notes / 1024-dim embeddings;
+**Status as of 2026-06-01 (deployed + verified):** Wavefronts 0–4 are **deployed
+and serving in production**, and the pipeline is **autonomous** — the Temporal
+schedules drive backfill→Iceberg→serving-artifact→hot-swap on cadence with no
+manual triggers. A vector search over the serving artifact returns correctly-
+backfilled `_processed` notes (3431 chunk rows / 990 notes / 1024-dim embeddings;
 see §Live-run validation). Running the pipeline for the first time surfaced ~15
-stacked integration bugs (minimal-image + SeaweedFS + DuckDB/pyiceberg), all
-fixed additively in PRs #2421–#2433. The Quack _HTTP_ `/search` path is now
-**confirmed** (returns backfilled `_processed` notes) and a **retrieval benchmark
-is recorded** (§Retrieval benchmark). Three serving-path defects found during the
-run — the HNSW index never engaging, only one Quack replica hot-swapping, and the
-Temporal schedules never registering — are **fixed in PR #2435** (merged, CI green);
-**deploying that fix pends a Quack/worker rollout** (lakehouse has no Image Updater /
-digest pin yet — the "wire pinning" follow-up). PG-cred delivery moved from
-1Password to a **Kyverno clone** of `monolith-pg-app`
-(no manual prereqs); the Iceberg catalog moved from pod-local SQLite to a
-**shared PostgreSQL** `lakehouse` DB. See §Live-run validation + §Consolidated deviations.
+stacked integration bugs (minimal-image + SeaweedFS + DuckDB/pyiceberg), all fixed
+additively in PRs #2421–#2433. Three serving-path defects found during the run —
+the HNSW index never engaging, only one Quack replica hot-swapping, and the
+Temporal schedules never registering — were **fixed in PR #2435**; the chart was
+then wired for real deployment in **PR #2437** (OCI publish + `helm_images_values`
+digest-pin, replacing the inert path-based `:main` source). All three fixes are
+now **deployed and verified live** (§Deployment + live verification): pods run the
+pinned post-fix image, both Quack replicas hot-swap in lockstep, and the four
+schedules are firing. PG-cred delivery moved from 1Password to a **Kyverno clone**
+of `monolith-pg-app` (no manual prereqs); the Iceberg catalog moved from pod-local
+SQLite to a **shared PostgreSQL** `lakehouse` DB. See §Live-run validation +
+§Deployment + live verification + §Consolidated deviations.
 
 ---
 
 ## Status by wavefront
 
-| Wavefront                  | Units                                                                                                                                             | PRs         | State                                                            |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------- |
-| **0 — discover**           | WAVEFRONT-0-discover                                                                                                                              | #2385       | ✅ merged                                                        |
-| **1 — infra**              | INFRA-TEMPORAL, INFRA-KEDA, INFRA-SEAWEEDFS (warehouse bucket), INFRA-NATS-STREAMS (nack + 4 Stream CRs), INFRA-CNPG-DBS, DOCS-EVENT-BUS + wiring | #2386–#2392 | ✅ merged; **not yet verified live**                             |
-| **2 — libraries**          | LIB-EVENTS, LIB-NATS, LIB-TEMPORAL, LIB-ICEBERG, LIB-DUCKDB-QUERY (+ LIB-SCAFFOLD)                                                                | #2393–#2398 | ✅ merged, CI-green                                              |
-| **3 — workflows + images** | WF-GAP-DRAIN, WF-BACKFILL, WF-ICEBERG-BATCH, WF-BUILD-SERVING, WF-TAG-ROTATION, WF-SCHEDULES, IMG-WORKER, IMG-QUACK-SERVER (+ W3-PREP)            | #2399–#2404 | ✅ merged; both images pushed to GHCR                            |
-| **4 — deployments**        | DEPLOY-{GAP-DRAIN,ICEBERG-BUILDER,HOUSEKEEPING}-WORKER, DEPLOY-QUACK-SERVER, SVC-DISPATCHERS, INFRA-SEAWEEDFS-LIFECYCLE                           | #2406–#2408 | ✅ merged, **AUTHOR-ONLY / inert** (chart not wired into ArgoCD) |
-| **5 — glue + seed**        | GLUE-MONOLITH-STARTUP, GLUE-NEW-API-ENDPOINTS, SEED-BACKFILL, FINAL-AGGREGATOR                                                                    | —           | ⏳ FINAL ✅ (this doc); glue + seed **pending tunnel**           |
+| Wavefront                  | Units                                                                                                                                             | PRs                | State                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------ |
+| **0 — discover**           | WAVEFRONT-0-discover                                                                                                                              | #2385              | ✅ merged                                                                                              |
+| **1 — infra**              | INFRA-TEMPORAL, INFRA-KEDA, INFRA-SEAWEEDFS (warehouse bucket), INFRA-NATS-STREAMS (nack + 4 Stream CRs), INFRA-CNPG-DBS, DOCS-EVENT-BUS + wiring | #2386–#2392        | ✅ merged; **not yet verified live**                                                                   |
+| **2 — libraries**          | LIB-EVENTS, LIB-NATS, LIB-TEMPORAL, LIB-ICEBERG, LIB-DUCKDB-QUERY (+ LIB-SCAFFOLD)                                                                | #2393–#2398        | ✅ merged, CI-green                                                                                    |
+| **3 — workflows + images** | WF-GAP-DRAIN, WF-BACKFILL, WF-ICEBERG-BATCH, WF-BUILD-SERVING, WF-TAG-ROTATION, WF-SCHEDULES, IMG-WORKER, IMG-QUACK-SERVER (+ W3-PREP)            | #2399–#2404        | ✅ merged; both images pushed to GHCR                                                                  |
+| **4 — deployments**        | DEPLOY-{GAP-DRAIN,ICEBERG-BUILDER,HOUSEKEEPING}-WORKER, DEPLOY-QUACK-SERVER, SVC-DISPATCHERS, INFRA-SEAWEEDFS-LIFECYCLE                           | #2406–#2408, #2437 | ✅ **deployed + verified live** (OCI chart + digest-pin #2437; pods on pinned image, schedules firing) |
+| **5 — glue + seed**        | GLUE-MONOLITH-STARTUP, GLUE-NEW-API-ENDPOINTS, SEED-BACKFILL, FINAL-AGGREGATOR                                                                    | —                  | ⏳ FINAL ✅ (this doc); glue + seed **pending tunnel**                                                 |
 
 Each row links to its per-unit note in this directory for the full ship/deviation log.
 
@@ -112,24 +114,65 @@ search returns backfilled `_processed` notes (e.g. `gate-composition-avoids-cont
 `_processed/gate-composition-avoids-context-bloat.md`). Quack hot-swapped to the
 artifact (`/healthz` reports the version).
 
-**Remaining:**
+**Status of the post-run work (all done):**
 
 1. Quack **HTTP `/search`** end-to-end — **confirmed**: an authenticated `/search`
-   returned backfilled `_processed` notes from the hot-swapped artifact.
+   returns backfilled `_processed` notes from the hot-swapped artifact.
 2. **Retrieval benchmark** — recorded below (see "Retrieval benchmark").
-3. **Serving-path reliability** — three defects found during the run are **fixed in
-   PR #2435** (merged, CI green): the `/search` vector query bound `$query` as a
-   parameter so DuckDB's VSS optimiser never engaged the HNSW index (full scan);
-   all Quack replicas shared one JetStream durable so only **one** pod hot-swapped
-   each new artifact (the rest served a stale snapshot); and the Temporal schedules
-   were defined but never registered. **Deploy of #2435 pends a Quack/worker rollout**
-   — lakehouse has no ArgoCD Image Updater and no digest pin yet, and the pods track
-   `:main`, so the merge alone doesn't roll them (the "wire pinning" follow-up). At
-   time of writing `temporal schedule list` is still empty (pre-fix image running),
-   which is the baseline the fix is expected to flip.
-4. Follow-ups: fix the KEDA `ScaledJob`-CRD gap; wire `helm_images_values`
-   digest-pinning + OCI chart (so `:main` rolls automatically); add `pytest-asyncio`
-   (async tests silently skipped); W5 monolith glue.
+3. **Serving-path reliability** — three defects found during the run were **fixed in
+   PR #2435** (the `/search` vector query bound `$query` so DuckDB's VSS optimiser
+   never engaged the HNSW index → full scan; all Quack replicas shared one JetStream
+   durable so only **one** pod hot-swapped each artifact; and the Temporal schedules
+   were defined but never registered) and **deployed via PR #2437** (OCI chart +
+   `helm_images_values` digest-pin, replacing the inert path-based `:main` source so
+   ArgoCD actually rolls new images). **All three are verified live** — see
+   §Deployment + live verification.
+4. Remaining follow-ups: fix the KEDA `ScaledJob`-CRD gap (the app's only `Degraded`
+   cause); add `pytest-asyncio` (async tests silently skipped); W5 monolith glue.
+   (The "wire pinning" follow-up is **done** — #2437.)
+
+---
+
+## Deployment + live verification (2026-06-01)
+
+PR **#2435** fixed the three serving-path defects but did not deploy: lakehouse
+tracked the floating `:main` tag via a path-based ArgoCD source with no Image
+Updater and no digest pin, and ArgoCD syncs on _manifest_ changes — a code-only
+merge left the rendered manifest unchanged, so nothing rolled. PR **#2437** wired
+the monolith/ships pattern: `helm_chart(images=…, publish=True)` (CI deep-merges
+each image's CI-stamped tag into the packaged `values.yaml` via `helm_images_values`
+and pushes the chart to `ghcr.io/jomcgi/homelab/charts`), and `application.yaml`
+switched from a path-based `source` to OCI `sources` pulling `lakehouse` by version
+(`targetRevision: 0.2.0`) + a git `$values` overlay. The `deploy/values.yaml`
+`image.tag: main` overrides were dropped (Helm valueFiles are last-wins, so a `tag:`
+there would clobber the packaged pin).
+
+**One first-publish gotcha:** GHCR creates a new package **private** by default, so
+the first `charts/lakehouse` push was private and ArgoCD's anonymous `helm pull
+oci://…` got `401 unauthorized` (sync `Unknown`/`Degraded`). Fix: make the chart
+package **public** (matching `charts/monolith` and the already-public lakehouse
+_image_ packages) — GHCR has no REST endpoint for this, so it's a package-settings
+UI change.
+
+**Verified live (all pods on pinned `quack-server / worker / dispatchers:2026.05.31.22.42.56-5f9f418`, app `Synced`):**
+
+1. **Deploy / digest-pin** — every lakehouse pod rolled off the pre-fix `:main`
+   ReplicaSet onto the pinned immutable CI-stamped tag (commit `5f9f418`). Pulling
+   the chart by version is what made the merge actually roll the pods.
+2. **Temporal schedules register + fire** — `temporal schedule list` went from
+   **empty** to the four schedules, all **firing on cadence** (`iceberg-batch-commit`
+   and `gap-drain-sweep` showed recent `LastRunTime`s; `build-serving-artifact` emits
+   a fresh artifact every ~15 min). The pipeline is autonomous — no manual triggers.
+3. **Fan-out hot-swap** — **both** Quack replicas (`…-2bf6k`, `…-lzphs`) logged the
+   **identical** artifact sequence and both `/healthz` report the same latest
+   `artifact_version` (`1780269300`). Pre-fix, the shared durable was a queue group
+   and only one pod swapped; the per-pod durable now broadcasts to every replica.
+4. **HNSW `/search`** — on the deployed image, an authenticated `/search` (k=10)
+   returns HTTP 200 with 10 correct `note_events` rows from the current artifact
+   (the inlined-literal HNSW path; see §Retrieval benchmark for the latency note).
+
+Only remaining `Degraded` signal is the pre-existing missing KEDA `ScaledJob` CRD —
+unrelated to this work.
 
 ---
 
@@ -160,18 +203,23 @@ constant, so the optimiser rewrites `ORDER BY array_distance(...) LIMIT k` into 
 O(rows), the gap widens with corpus growth, so ~10 ms is a floor on the win, not a
 ceiling.
 
-**End-to-end (Quack HTTP `/search`):** **~84 ms p50 on the pre-fix image** — that
-image predates #2435, so it exercises the brute-force path; the bulk of the time is
-the engine-level full scan plus HTTP/auth overhead. The post-fix path (HNSW engaged)
-has not been re-measured end-to-end because the running pods still serve the old
-`:main` (no Image Updater / digest pin — the "wire pinning" follow-up). Given the
-engine-level row above is exactly the shipped query plan, post-fix `/search` should
-land near HTTP/auth overhead + ~10 ms.
+**End-to-end (Quack HTTP `/search`):** on the **deployed post-fix image** (#2437),
+an authenticated `/search` (k=10, 1024-dim) returns HTTP 200 with 10 correctly-
+shaped `note_events` rows from the current artifact — the inlined-literal HNSW path
+is confirmed working in production. A clean end-to-end **latency** number was **not
+captured**: the CDN path (`quack.jomcgi.dev`) wasn't routing, and the only available
+route was `kubectl port-forward` over the (chronically flapping) remote API tunnel,
+whose ~0.8–2 s round-trip is pure transport and swamps the query — not representative
+of in-cluster latency. The representative figure is the engine-level **~10 ms** row
+above (the shipped query plan); a true in-cluster `/search` (engine + intra-mesh HTTP)
+is single-digit-to-low-tens of ms. For reference, the pre-fix image measured **~84 ms
+p50** end-to-end on the brute-force path.
 
 **Takeaway:** point and aggregate reads are already single-digit-millisecond; the
 vector path is the one that matters for scale, and the HNSW fix moves it from a
-linear scan to an index scan. Re-run end-to-end once #2435's images roll out to
-confirm the projected `/search` latency.
+linear scan to an index scan. To capture a representative end-to-end `/search`
+latency, measure in-cluster (a sidecar/pod curl or the CDN once it's routing), not
+through a laptop port-forward.
 
 ---
 
@@ -215,10 +263,11 @@ via NIM; SearXNG/web-tool MCP wiring.
    Running. **KEDA operator is CrashLoopBackOff** on a missing `ScaledJob` CRD
    (pre-existing platform install gap, unrelated to this additive work) — ScaledObjects
    exist but don't scale; documented follow-up.
-3. **Backfill E2E → queryable backfilled note** — ✅ **proven at the data layer**: the
-   serving artifact (built by the pipeline from the replayed `_processed` notes)
-   returns a correct `_processed` note via VSS. 🟡 the literal _CDN→Quack HTTP_ hop
-   pending a Quack redeploy of the merged `/search` fixes (#2432/#2433) + tunnel.
+3. **Backfill E2E → queryable backfilled note** — ✅ **proven end-to-end**: the
+   pipeline (now autonomous, schedule-driven) builds the serving artifact from the
+   replayed `_processed` notes, both Quack replicas hot-swap to it, and an
+   authenticated HTTP `/search` returns correct `note_events` rows via the HNSW
+   index on the deployed post-fix image (§Deployment + live verification).
 4. **Existing services untouched** — ✅ verified: only additive `projects/lakehouse/`
    - platform infra + a NEW `lakehouse` PG database; `agent_platform/orchestrator`,
      `cluster_agents`, the monolith scheduler, and `knowledge.notes/chunks` are read-only
