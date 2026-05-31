@@ -282,7 +282,7 @@ def _s3_client():
     # plaintext HTTP, so prefix http:// when absent.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    return boto3.client(
+    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
