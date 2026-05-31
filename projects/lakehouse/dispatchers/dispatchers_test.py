@@ -375,7 +375,9 @@ def test_artifact_ready_logs_path_fallback(caplog):
         producer="lakehouse.build_serving",
         payload={"path": "/data/serving/v6.duckdb", "version": "v6"},
     )
-    with caplog.at_level(logging.INFO, logger="projects.lakehouse.dispatchers.artifact_ready"):
+    with caplog.at_level(
+        logging.INFO, logger="projects.lakehouse.dispatchers.artifact_ready"
+    ):
         asyncio.run(artifact_ready.handle_artifact_ready(envelope, client))
 
     assert "/data/serving/v6.duckdb" in caplog.text
@@ -395,7 +397,9 @@ def test_artifact_ready_logs_empty_payload(caplog):
         producer="lakehouse.build_serving",
         payload={},
     )
-    with caplog.at_level(logging.INFO, logger="projects.lakehouse.dispatchers.artifact_ready"):
+    with caplog.at_level(
+        logging.INFO, logger="projects.lakehouse.dispatchers.artifact_ready"
+    ):
         asyncio.run(artifact_ready.handle_artifact_ready(envelope, client))
 
     assert "artifact-empty" in caplog.text
