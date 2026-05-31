@@ -12,10 +12,14 @@ a vector search over the freshly-built serving artifact returns a correctly-
 backfilled `_processed` note (3431 chunk rows / 990 notes / 1024-dim embeddings;
 see §Live-run validation). Running the pipeline for the first time surfaced ~15
 stacked integration bugs (minimal-image + SeaweedFS + DuckDB/pyiceberg), all
-fixed additively in PRs #2421–#2433. **Remaining:** the Quack _HTTP_ `/search`
-confirmation (its `pytz`/cast fixes merged; pending a Quack redeploy) and a
-retrieval benchmark — both gated only on the chronically-flapping kube tunnel.
-PG-cred delivery moved from 1Password to a **Kyverno clone** of `monolith-pg-app`
+fixed additively in PRs #2421–#2433. The Quack _HTTP_ `/search` path is now
+**confirmed** (returns backfilled `_processed` notes) and a **retrieval benchmark
+is recorded** (§Retrieval benchmark). Three serving-path defects found during the
+run — the HNSW index never engaging, only one Quack replica hot-swapping, and the
+Temporal schedules never registering — are **fixed in PR #2435** (merged, CI green);
+**deploying that fix pends a Quack/worker rollout** (lakehouse has no Image Updater /
+digest pin yet — the "wire pinning" follow-up). PG-cred delivery moved from
+1Password to a **Kyverno clone** of `monolith-pg-app`
 (no manual prereqs); the Iceberg catalog moved from pod-local SQLite to a
 **shared PostgreSQL** `lakehouse` DB. See §Live-run validation + §Consolidated deviations.
 
@@ -94,7 +98,9 @@ bug; each was root-caused from cluster logs and fixed **additively**:
 Plus runtime workarounds (not code): backfill run with `batch_size=10` (default 50
 exceeds Temporal's 2 MiB activity-payload limit — embeddings); workflows started
 **manually** via `temporal-admintools` because the Temporal **schedules were never
-registered** (follow-up); `IcebergBatchCommitWorkflow` run on the **`housekeeping`
+registered** — now fixed in **PR #2435**, which idempotently seeds the four
+schedules from the worker entrypoint on boot (deploy of the fix pends a worker
+rollout — see below); `IcebergBatchCommitWorkflow` run on the **`housekeeping`
 queue** because the **KEDA iceberg-builder scaler isn't firing** (its operator is
 crash-looping on a missing `ScaledJob` CRD — pre-existing platform issue; follow-up).
 
@@ -106,15 +112,66 @@ search returns backfilled `_processed` notes (e.g. `gate-composition-avoids-cont
 `_processed/gate-composition-avoids-context-bloat.md`). Quack hot-swapped to the
 artifact (`/healthz` reports the version).
 
-**Remaining (gated only on the flapping kube tunnel):**
+**Remaining:**
 
-1. Quack **HTTP `/search`** end-to-end confirmation — the cast (#2432) + `pytz`
-   (#2433) fixes are merged; needs a Quack redeploy + re-published `artifact-ready`.
-2. **Retrieval benchmark** (vector / item / aggregate; DuckDB-direct + Quack-HTTP;
-   p50/p95) — to be recorded here.
-3. Follow-ups: register Temporal schedules; fix the KEDA `ScaledJob`-CRD gap;
-   wire `helm_images_values` digest-pinning + OCI chart (lakehouse tracks `:main`);
-   add `pytest-asyncio` (async tests silently skipped); W5 monolith glue.
+1. Quack **HTTP `/search`** end-to-end — **confirmed**: an authenticated `/search`
+   returned backfilled `_processed` notes from the hot-swapped artifact.
+2. **Retrieval benchmark** — recorded below (see "Retrieval benchmark").
+3. **Serving-path reliability** — three defects found during the run are **fixed in
+   PR #2435** (merged, CI green): the `/search` vector query bound `$query` as a
+   parameter so DuckDB's VSS optimiser never engaged the HNSW index (full scan);
+   all Quack replicas shared one JetStream durable so only **one** pod hot-swapped
+   each new artifact (the rest served a stale snapshot); and the Temporal schedules
+   were defined but never registered. **Deploy of #2435 pends a Quack/worker rollout**
+   — lakehouse has no ArgoCD Image Updater and no digest pin yet, and the pods track
+   `:main`, so the merge alone doesn't roll them (the "wire pinning" follow-up). At
+   time of writing `temporal schedule list` is still empty (pre-fix image running),
+   which is the baseline the fix is expected to flip.
+4. Follow-ups: fix the KEDA `ScaledJob`-CRD gap; wire `helm_images_values`
+   digest-pinning + OCI chart (so `:main` rolls automatically); add `pytest-asyncio`
+   (async tests silently skipped); W5 monolith glue.
+
+---
+
+## Retrieval benchmark (2026-05-31)
+
+Measured against the live serving artifact (`s3://warehouse/serving/notes-vN.duckdb`
+— **3431 chunk rows / 990 notes / 1024-dim** embeddings) to characterise the read
+path. Two layers: **DuckDB engine-level** (queries run directly on the attached
+artifact) and **end-to-end** through Quack's HTTP `/search` (HTTP → bearer auth →
+DuckDB → JSON). Figures are p50 over repeated single-query runs (no separate p95
+harness was run; treat as representative medians, not a load test).
+
+**DuckDB engine-level:**
+
+| Query                            | Plan                                    | p50     |
+| -------------------------------- | --------------------------------------- | ------- |
+| Vector kNN (`k=10`, l2sq)        | full scan — **bound** `$query` param    | ~76 ms  |
+| Vector kNN (`k=10`, l2sq)        | **`HNSW_INDEX_SCAN`** — inlined literal | ~10 ms  |
+| Item lookup (by `note_id`)       | point lookup                            | ~1.7 ms |
+| Aggregate (`COUNT` / `GROUP BY`) | grouped scan                            | ~0.4 ms |
+
+The two vector rows are the **same query under the two code paths**. A bound query
+vector is opaque to DuckDB's VSS optimiser, so it falls back to a full
+`array_distance` scan (O(rows)); an inlined `FLOAT[N]` literal is a plan-time
+constant, so the optimiser rewrites `ORDER BY array_distance(...) LIMIT k` into an
+`HNSW_INDEX_SCAN`. The ~7.5× gap on a 3.4k-vector corpus is why PR #2435 switched
+`vector_search_sql` to inline the literal — and because the brute-force path is
+O(rows), the gap widens with corpus growth, so ~10 ms is a floor on the win, not a
+ceiling.
+
+**End-to-end (Quack HTTP `/search`):** **~84 ms p50 on the pre-fix image** — that
+image predates #2435, so it exercises the brute-force path; the bulk of the time is
+the engine-level full scan plus HTTP/auth overhead. The post-fix path (HNSW engaged)
+has not been re-measured end-to-end because the running pods still serve the old
+`:main` (no Image Updater / digest pin — the "wire pinning" follow-up). Given the
+engine-level row above is exactly the shipped query plan, post-fix `/search` should
+land near HTTP/auth overhead + ~10 ms.
+
+**Takeaway:** point and aggregate reads are already single-digit-millisecond; the
+vector path is the one that matters for scale, and the HNSW fix moves it from a
+linear scan to an index scan. Re-run end-to-end once #2435's images roll out to
+confirm the projected `/search` latency.
 
 ---
 
