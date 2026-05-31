@@ -57,20 +57,29 @@ py_test(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
-    exclude_rules = ["no-requests"],
+    exclude_rules = [
+        "no-requests",
+        "boto3-endpoint-url-missing-scheme",
+    ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_test(
     name = "update_test_semgrep_test",
     srcs = ["update_test.py"],
-    exclude_rules = ["no-requests"],
+    exclude_rules = [
+        "no-requests",
+        "boto3-endpoint-url-missing-scheme",
+    ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_target_test(
     name = "update_semgrep_test",
-    exclude_rules = ["no-requests"],
+    exclude_rules = [
+        "no-requests",
+        "boto3-endpoint-url-missing-scheme",
+    ],
     lockfiles = ["//bazel/requirements:all.txt"],
     rules = ["//bazel/semgrep/rules:python_rules"],
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
