@@ -97,6 +97,9 @@ def _s3_client():
     from botocore.config import Config
 
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", DEFAULT_S3_ENDPOINT)
+    # boto3 requires a scheme on endpoint_url; prefix http:// when absent.
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = "http://" + endpoint
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
