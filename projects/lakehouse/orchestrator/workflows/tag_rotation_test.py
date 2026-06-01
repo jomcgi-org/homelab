@@ -159,3 +159,73 @@ async def test_rotate_tags_promote_only_no_others() -> None:
     assert result.demoted == {}
     assert result.cleaned == []
     assert s3.states["serving/notes-v1.duckdb"] == "current"
+
+
+# --------------------------------------------------------------------------- #
+# _s3_client() scheme-guard (lines 99-102)
+# --------------------------------------------------------------------------- #
+
+
+def _fake_boto3_capturing(created: dict):
+    """Return a fake boto3 module whose .client() records call kwargs in ``created``."""
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.client.side_effect = lambda svc, **kw: (
+        created.update({"service": svc, **kw}) or MagicMock()
+    )
+    return fake
+
+
+def test_s3_client_schemeless_endpoint_prefixes_http() -> None:
+    """A scheme-less endpoint (e.g. ``minio:9000``) must get ``http://`` prepended.
+
+    The chart injects host:port without a scheme (shared with DuckDB's httpfs);
+    boto3 raises "Invalid endpoint" when no scheme is present.
+    """
+    import os
+
+    created: dict = {}
+    with (
+        patch.dict(os.environ, {"SEAWEEDFS_S3_ENDPOINT": "minio:9000"}, clear=False),
+        patch.dict("sys.modules", {"boto3": _fake_boto3_capturing(created)}),
+    ):
+        mod._s3_client()
+
+    assert created["endpoint_url"] == "http://minio:9000"
+
+
+def test_s3_client_http_endpoint_passes_through_unchanged() -> None:
+    """An existing ``http://`` endpoint must reach boto3 without modification."""
+    import os
+
+    created: dict = {}
+    with (
+        patch.dict(
+            os.environ,
+            {"SEAWEEDFS_S3_ENDPOINT": "http://seaweedfs:8333"},
+            clear=False,
+        ),
+        patch.dict("sys.modules", {"boto3": _fake_boto3_capturing(created)}),
+    ):
+        mod._s3_client()
+
+    assert created["endpoint_url"] == "http://seaweedfs:8333"
+
+
+def test_s3_client_https_endpoint_passes_through_unchanged() -> None:
+    """An existing ``https://`` endpoint must reach boto3 without modification."""
+    import os
+
+    created: dict = {}
+    with (
+        patch.dict(
+            os.environ,
+            {"SEAWEEDFS_S3_ENDPOINT": "https://s3.example.com"},
+            clear=False,
+        ),
+        patch.dict("sys.modules", {"boto3": _fake_boto3_capturing(created)}),
+    ):
+        mod._s3_client()
+
+    assert created["endpoint_url"] == "https://s3.example.com"

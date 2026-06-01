@@ -225,3 +225,25 @@ def test_s3_client_prefixes_http_for_scheme_less_endpoint() -> None:
         mod._s3_client()
 
     assert created["endpoint_url"] == "http://sw-gateway:8333"
+
+
+def test_s3_client_https_endpoint_passes_through_unchanged() -> None:
+    """An existing ``https://`` endpoint must reach boto3 without modification."""
+    created = {}
+
+    fake_boto3 = MagicMock()
+    fake_boto3.client.side_effect = lambda service, **kw: (
+        created.update(kw) or MagicMock()
+    )
+
+    with (
+        patch.dict(
+            "os.environ",
+            {"SEAWEEDFS_S3_ENDPOINT": "https://s3.example.com"},
+            clear=False,
+        ),
+        patch.dict("sys.modules", {"boto3": fake_boto3}),
+    ):
+        mod._s3_client()
+
+    assert created["endpoint_url"] == "https://s3.example.com"
