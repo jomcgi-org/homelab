@@ -17,10 +17,6 @@ rules:
       and make the code harder to audit.
     languages: [python]
     severity: WARNING
-    paths:
-      exclude:
-        - "*_test.py"
-        - "**/tests/**"
     metadata:
       category: maintainability
       subcategory: imports
