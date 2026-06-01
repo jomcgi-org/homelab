@@ -21,6 +21,7 @@ py_library(
         "build_serving.py",
         "gap_drain_sweep.py",
         "iceberg_batch.py",
+        "note_export.py",
         "tag_rotation.py",
     ],
     visibility = ["//:__subpackages__"],
@@ -56,6 +57,12 @@ semgrep_test(
 semgrep_test(
     name = "iceberg_batch_semgrep_test",
     srcs = ["iceberg_batch.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "note_export_semgrep_test",
+    srcs = ["note_export.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
