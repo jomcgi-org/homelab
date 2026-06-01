@@ -10,6 +10,7 @@ constant instead.
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -183,8 +184,6 @@ def test_s3_client_schemeless_endpoint_prefixes_http() -> None:
     The chart injects host:port without a scheme (shared with DuckDB's httpfs);
     boto3 raises "Invalid endpoint" when no scheme is present.
     """
-    import os
-
     created: dict = {}
     with (
         patch.dict(os.environ, {"SEAWEEDFS_S3_ENDPOINT": "minio:9000"}, clear=False),
@@ -197,8 +196,6 @@ def test_s3_client_schemeless_endpoint_prefixes_http() -> None:
 
 def test_s3_client_http_endpoint_passes_through_unchanged() -> None:
     """An existing ``http://`` endpoint must reach boto3 without modification."""
-    import os
-
     created: dict = {}
     with (
         patch.dict(
@@ -215,8 +212,6 @@ def test_s3_client_http_endpoint_passes_through_unchanged() -> None:
 
 def test_s3_client_https_endpoint_passes_through_unchanged() -> None:
     """An existing ``https://`` endpoint must reach boto3 without modification."""
-    import os
-
     created: dict = {}
     with (
         patch.dict(
