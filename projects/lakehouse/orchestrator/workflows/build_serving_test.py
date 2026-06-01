@@ -9,9 +9,9 @@ shape, the HNSW index build, the ``state=building`` tag on upload, and the
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import temporalio.workflow
 
 from projects.lakehouse.orchestrator.workflows import build_serving as mod
@@ -58,10 +58,20 @@ def test_build_chunks_sql_applies_current_version_filter() -> None:
     # Latest-version fold: MAX(event_version) per note_id, joined back.
     assert "MAX(event_version)" in sql
     assert "GROUP BY note_id" in sql
-    # Drops tombstoned (deleted) notes — stale-vector mitigation.
+    # Idempotent to duplicate delivery: one row per (note_id, event_version,
+    # chunk_index), so a re-appended event (NATS redelivery / export re-scan /
+    # bootstrap re-run) can't double-index a chunk.
+    assert "ROW_NUMBER() OVER" in sql
+    assert "PARTITION BY c.note_id, c.event_version, c.chunk_index" in sql
+    # Drops tombstoned (deleted) notes — stale-vector mitigation. Note-level
+    # NOT IN so a deleted note is dropped even on a version tie, not just the
+    # tombstone row.
     assert "event_type <> 'tombstoned'" in sql
-    # Drops metadata-only rows with no vector.
+    assert "note_id NOT IN (SELECT note_id FROM deduped WHERE event_type" in sql
+    # Drops metadata-only rows with no vector, AND wrong-width vectors that would
+    # crash the fixed-size CAST and abort the whole build.
     assert "embedding IS NOT NULL" in sql
+    assert "len(embedding) = 1024" in sql
     # Reads the Iceberg snapshot, not a raw parquet path.
     assert "iceberg_scan('s3://warehouse/knowledge/note_events')" in sql
     # embedding is cast from variable FLOAT[] to fixed FLOAT[N] so the HNSW
@@ -81,8 +91,10 @@ def test_build_hnsw_sql_indexes_embedding() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.asyncio
-async def test_build_artifact_builds_indexes_tags_and_publishes() -> None:
+def test_build_artifact_builds_indexes_tags_and_publishes() -> None:
+    # Driven via asyncio.run (not @pytest.mark.asyncio) so it actually executes —
+    # the lakehouse test harness has no pytest-asyncio wired, so a marked async
+    # test would be collected but never awaited (pass-without-running).
     con = MagicMock()
     # rows_indexed query result
     con.execute.return_value.fetchone.return_value = (42,)
@@ -125,7 +137,7 @@ async def test_build_artifact_builds_indexes_tags_and_publishes() -> None:
         ),
         patch("builtins.open", fake_open),
     ):
-        result = await mod.build_artifact(123)
+        result = asyncio.run(mod.build_artifact(123))
 
     assert result.version == 123
     assert result.artifact_path == "s3://warehouse/serving/notes-v123.duckdb"

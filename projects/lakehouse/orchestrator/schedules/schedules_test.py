@@ -30,6 +30,7 @@ _EXPECTED = {
         TaskQueue.HOUSEKEEPING.value,
     ),
     "tag-rotation": ("TagRotationWorkflow", TaskQueue.HOUSEKEEPING.value),
+    "note-export": ("ExportNoteChangesWorkflow", TaskQueue.HOUSEKEEPING.value),
 }
 
 
@@ -41,7 +42,7 @@ def test_all_schedules_returns_list() -> None:
     assert isinstance(sched.all_schedules(), list)
 
 
-def test_discovers_all_four_schedules() -> None:
+def test_discovers_all_schedules() -> None:
     found = _by_id()
     assert set(found) == set(_EXPECTED)
     # No duplicate schedule IDs across modules.
@@ -77,6 +78,15 @@ def test_cron_schedules_use_expected_expressions() -> None:
         "*/15 * * * *"
     ]
     assert found["tag-rotation"].schedule.spec.cron_expressions == ["*/15 * * * *"]
+    assert found["note-export"].schedule.spec.cron_expressions == ["17 4 * * *"]
+
+
+def test_note_export_uses_skip_overlap() -> None:
+    # The incremental export advances a watermark; overlapping runs could double-
+    # emit or race the advance. overlap=SKIP guarantees runs never interleave.
+    policy = _by_id()["note-export"].schedule.policy
+    assert policy is not None
+    assert policy.overlap == temporalio.client.ScheduleOverlapPolicy.SKIP
 
 
 def test_iceberg_batch_uses_interval_spec() -> None:
@@ -157,16 +167,31 @@ def test_tag_rotation_module_constants() -> None:
     assert tag_rotation.CRON == "*/15 * * * *"
 
 
+def test_note_export_module_constants() -> None:
+    from projects.lakehouse.orchestrator.schedules import note_export
+
+    assert note_export.WORKFLOW_TYPE == "ExportNoteChangesWorkflow"
+    assert note_export.SCHEDULE_ID == "note-export"
+    assert note_export.CRON == "17 4 * * *"
+
+
 def test_each_module_exports_exactly_one_schedule() -> None:
     """Each schedule module exports a SCHEDULES list with exactly one entry."""
     from projects.lakehouse.orchestrator.schedules import (
         build_serving,
         gap_drain_sweep,
         iceberg_batch,
+        note_export,
         tag_rotation,
     )
 
-    for mod in (build_serving, gap_drain_sweep, iceberg_batch, tag_rotation):
+    for mod in (
+        build_serving,
+        gap_drain_sweep,
+        iceberg_batch,
+        note_export,
+        tag_rotation,
+    ):
         mod_schedules = getattr(mod, "SCHEDULES", None)
         assert mod_schedules is not None, f"{mod.__name__} missing SCHEDULES"
         assert len(mod_schedules) == 1, (

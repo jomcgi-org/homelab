@@ -121,8 +121,18 @@ def _artifact_s3_uri(version: int) -> str:
 #
 # Built as a CTE chain so it reads as the fold it is:
 #   latest   -> the MAX(event_version) per note_id
-#   live     -> rows at that latest version whose latest event isn't tombstoned
-#   indexed  -> live rows that actually carry an embedding
+#   current  -> rows at that latest version
+#   deduped  -> ONE row per (note_id, event_version, chunk_index)
+#   (final)  -> deduped rows that aren't tombstoned and carry an embedding
+#
+# The dedup step is load-bearing: note_events is one row per chunk and is an
+# append-only, at-least-once log (NATS redelivery, the incremental export's
+# watermark re-scan margin, and re-runs of the bootstrap can all re-append the
+# SAME (note_id, event_version) more than once). Without deduping, every
+# duplicated chunk row would survive the MAX(event_version) join and be indexed
+# twice — duplicate vectors in the HNSW index and duplicate `/search` hits. We
+# keep the most-recently-emitted copy (occurred_at, then event_id as a stable
+# tiebreak) so the fold is idempotent to any duplicate delivery.
 _BUILD_CHUNKS_SQL = """
 CREATE TABLE {schema}.{table} AS
 WITH latest AS (
@@ -136,11 +146,33 @@ current_rows AS (
     JOIN latest l
       ON e.note_id = l.note_id
      AND e.event_version = l.max_version
+),
+deduped AS (
+    SELECT * EXCLUDE (_rn) FROM (
+        SELECT c.*,
+               ROW_NUMBER() OVER (
+                   PARTITION BY c.note_id, c.event_version, c.chunk_index
+                   ORDER BY c.occurred_at DESC, c.event_id DESC
+               ) AS _rn
+        FROM current_rows c
+    )
+    WHERE _rn = 1
 )
 SELECT * EXCLUDE (embedding), CAST(embedding AS FLOAT[{embedding_dim}]) AS embedding
-FROM current_rows
+FROM deduped
 WHERE event_type <> 'tombstoned'
-  AND embedding IS NOT NULL;
+  -- Drop the whole note if its latest revision includes a tombstone — even on an
+  -- (epoch-millis) version TIE between the delete and the prior content. This is
+  -- note-level, so it doesn't rely on the tombstone version strictly exceeding
+  -- the content version (the chunk rows live in different ROW_NUMBER partitions
+  -- from the chunk_index-NULL tombstone row, so the per-row filter alone can't
+  -- catch them on a tie).
+  AND note_id NOT IN (SELECT note_id FROM deduped WHERE event_type = 'tombstoned')
+  -- Only index rows carrying a full-width vector. A null or empty-list embedding
+  -- (e.g. a source chunk with no embedding) would otherwise reach the fixed-size
+  -- CAST AS FLOAT[N] and abort the ENTIRE build, not just that row.
+  AND embedding IS NOT NULL
+  AND len(embedding) = {embedding_dim};
 """
 
 # Build the HNSW index over the indexed chunks. array_distance is the metric
@@ -282,7 +314,11 @@ def _s3_client():
     # plaintext HTTP, so prefix http:// when absent.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    return boto3.client(
+    # Scheme is guaranteed by the guard above; the Bazel semgrep_target_test
+    # already excludes boto3-endpoint-url-missing-scheme (workflows/BUILD), and
+    # the inline nosemgrep below clears the pre-commit hook (which doesn't read
+    # BUILD exclude_rules). Bare nosemgrep: this line has no other rule matches.
+    return boto3.client(  # nosemgrep
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
