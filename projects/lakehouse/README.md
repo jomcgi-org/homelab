@@ -24,7 +24,7 @@ NATS JetStream  ->  Temporal workflows  ->  Iceberg on SeaweedFS  ->  DuckDB / Q
 | `dispatchers/`      | NATS → Temporal workflow dispatchers                                   | 4         |
 | `image/`            | apko worker image (`python -m projects.lakehouse.orchestrator.workflows.run`) | 3         |
 | `quack-server/`     | apko DuckDB/Quack serving image                                        | 3         |
-| `chart/`, `deploy/` | Path-based Helm chart + ArgoCD Application                             | 4         |
+| `chart/`, `deploy/` | OCI-versioned Helm chart + ArgoCD Application                          | 4         |
 
 ## Conventions
 
@@ -33,8 +33,12 @@ NATS JetStream  ->  Temporal workflows  ->  Iceberg on SeaweedFS  ->  DuckDB / Q
 - **Additive only.** Nothing here reads or writes the existing
   `knowledge.notes`/`knowledge.chunks` tables except the backfill, which reads
   them **read-only via raw SQL** (no monolith model import).
-- **Deploy** is path-based (`targetRevision: HEAD`), so changes auto-merge
-  without an OCI version bump — unlike the monolith chart.
+- **Deploy** uses OCI-based versioned deployment: the chart is pulled from
+  `ghcr.io/jomcgi/homelab/charts` at the semver `targetRevision` in
+  `deploy/application.yaml` (currently `0.2.3`). A `$values` git source
+  (`targetRevision: HEAD`) overlays environment-specific values from this repo,
+  but the chart itself is version-pinned — a `Chart.yaml` bump (kept in sync by
+  the `chart-version-bot`) is required to roll new images.
 
 ## Status
 
