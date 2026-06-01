@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import pytest
+
 import temporalio.workflow
 
 import projects.lakehouse.orchestrator.workflows.export_note_changes as enc
@@ -133,6 +135,40 @@ def _chunk_row(note_fk, idx, embedding=None):
 
 
 # --- URL helpers ----------------------------------------------------------
+
+
+def test_knowledge_db_url_missing_raises_runtime_error():
+    """Missing DATABASE_URL must raise RuntimeError (not KeyError or AttributeError)."""
+    with patch.dict(enc.os.environ, {}, clear=True):
+        with pytest.raises(RuntimeError, match="DATABASE_URL"):
+            enc._resolve_knowledge_db_url()
+
+
+def test_knowledge_db_url_blank_raises_runtime_error():
+    """A blank (whitespace-only) DATABASE_URL must also raise RuntimeError."""
+    with patch.dict(enc.os.environ, {"DATABASE_URL": "   "}, clear=True):
+        with pytest.raises(RuntimeError, match="DATABASE_URL"):
+            enc._resolve_knowledge_db_url()
+
+
+def test_knowledge_db_url_normalizes_psycopg_dialect():
+    """``postgresql+psycopg://`` dialect must be normalised to ``postgresql://``."""
+    with patch.dict(
+        enc.os.environ,
+        {"DATABASE_URL": "postgresql+psycopg://app:pw@host:5432/monolith"},
+        clear=True,
+    ):
+        assert (
+            enc._resolve_knowledge_db_url()
+            == "postgresql://app:pw@host:5432/monolith"
+        )
+
+
+def test_knowledge_db_url_plain_postgresql_passes_through():
+    """A ``postgresql://`` URL must pass through unchanged."""
+    url = "postgresql://app:pw@host:5432/monolith"
+    with patch.dict(enc.os.environ, {"DATABASE_URL": url}, clear=True):
+        assert enc._resolve_knowledge_db_url() == url
 
 
 def test_lakehouse_db_url_swaps_db_and_normalizes_dialect():
