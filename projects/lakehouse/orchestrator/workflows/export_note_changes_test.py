@@ -159,8 +159,7 @@ def test_knowledge_db_url_normalizes_psycopg_dialect():
         clear=True,
     ):
         assert (
-            enc._resolve_knowledge_db_url()
-            == "postgresql://app:pw@host:5432/monolith"
+            enc._resolve_knowledge_db_url() == "postgresql://app:pw@host:5432/monolith"
         )
 
 
