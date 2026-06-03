@@ -2,7 +2,7 @@ apiVersion: v2
 name: inference
 description: A Helm chart for LLM inference (llama.cpp and vLLM backends)
 type: application
-version: 2.5.2
+version: 2.5.3
 appVersion: "b5270"
 keywords:
   - llm

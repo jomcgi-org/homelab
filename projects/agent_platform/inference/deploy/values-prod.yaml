@@ -11,8 +11,9 @@ image:
 imagePullSecret:
   enabled: true
 
-# Official Qwen3.6 chat template from Qwen/Qwen3.6-27B tokenizer_config.json.
-# Required because the quantized model (lorbus AutoRound) strips it.
+# Official Qwen3.6 chat template (qwen3_coder <function=...> tool-call format),
+# shared across the Qwen3.6 family — verified identical for Qwen3.6-35B-A3B.
+# Required because the AutoRound INT4 quant strips the template from the repo.
 server:
   chatTemplate: |
     {%- set image_count = namespace(value=0) %}
@@ -172,11 +173,23 @@ server:
 
 modelVolume:
   enabled: true
-  reference: "ghcr.io/jomcgi/models/qwen/qwen3.6-27b:lorbus-qwen3.6-27b-int4-autoround"
+  # Qwen3.6-35B-A3B MoE (~3B active) replacing the 27B hybrid (~27B active): at our
+  # batch=1 workload (Discord/summarize) decode is bandwidth-bound on active params,
+  # so this is a large per-call latency win. int4-mixed AutoRound keeps the router/
+  # gate + embeddings at higher precision (better MoE quality) with experts at INT4.
+  # Pushed to ghcr out-of-band via `hf2oci copy Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound
+  # -r ghcr.io/jomcgi/models`, so this references the resolved ghcr ref directly
+  # (matching the prior 27B convention).
+  reference: "ghcr.io/jomcgi/models/qwen/qwen3.6-35b-a3b:intel-qwen3.6-35b-a3b-int4-mixed-autoround"
   mountPath: "/model-image"
 
 vllm:
-  maxModelLen: 49152
+  # 32768 (was 49152): 35B-A3B int4-mixed weights are ~21-22GB resident (MoE keeps
+  # all experts loaded; mixed precision adds ~2GB over plain INT4), leaving thin KV
+  # headroom on a 24GB card. If load OOMs, add --enforce-eager (frees ~1-2GB of
+  # CUDA-graph capture) before lowering ctx further; raise back toward 49152 only
+  # after confirming KV headroom in the vLLM startup logs.
+  maxModelLen: 32768
   gpuMemoryUtilization: 0.95
   dtype: "auto"
   extraArgs:
