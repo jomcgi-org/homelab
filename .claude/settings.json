@@ -158,6 +158,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-chart-version-targetrevision-sync.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-bare-nosemgrep.sh",
+            "timeout": 10
           }
         ]
       }
