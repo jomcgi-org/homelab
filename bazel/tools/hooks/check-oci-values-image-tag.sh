@@ -22,7 +22,7 @@ if [[ -z "$FILE_PATH" ]]; then
 	exit 0
 fi
 
-if [[ "$FILE_PATH" != */projects/*/deploy/values.yaml ]]; then
+if [[ "$FILE_PATH" != */projects/*/deploy/values*.yaml ]]; then
 	exit 0
 fi
 
