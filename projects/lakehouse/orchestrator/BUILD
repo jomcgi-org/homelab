@@ -59,10 +59,7 @@ py_test(
 py_test(
     name = "worker_test",
     srcs = ["worker_test.py"],
-    deps = [
-        ":orchestrator",
-        "@pip//pytest",
-    ],
+    deps = [":orchestrator"],
 )
 
 semgrep_target_test(
