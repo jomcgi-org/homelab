@@ -16,7 +16,7 @@ set -euo pipefail
 
 INPUT=$(cat)
 
-# Only trigger on projects/*/deploy/values.yaml edits
+# Only trigger on projects/*/deploy/values*.yaml edits
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 if [[ -z "$FILE_PATH" ]]; then
 	exit 0
@@ -27,7 +27,7 @@ if [[ "$FILE_PATH" != */projects/*/deploy/values*.yaml ]]; then
 fi
 
 # Derive the service root: projects/<service>
-# FILE_PATH looks like .../projects/<service>/deploy/values.yaml
+# FILE_PATH looks like .../projects/<service>/deploy/values*.yaml
 DEPLOY_DIR=$(dirname "$FILE_PATH")
 SERVICE_DIR=$(dirname "$DEPLOY_DIR")
 CHART_BUILD="$SERVICE_DIR/chart/BUILD"
