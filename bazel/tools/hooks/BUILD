@@ -81,3 +81,9 @@ sh_test(
     srcs = ["check-oci-values-image-tag_test.sh"],
     data = [":check-oci-values-image-tag.sh"],
 )
+
+sh_test(
+    name = "check_bare_nosemgrep_test",
+    srcs = ["check-bare-nosemgrep_test.sh"],
+    data = [":check-bare-nosemgrep.sh"],
+)
