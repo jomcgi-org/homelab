@@ -130,8 +130,13 @@ def test_rotate_tags_full_state_machine() -> None:
 
 
 def test_rotate_tags_keep_last_n_sweeps_excess() -> None:
-    # 26 building artifacts; keep 24, the 2 oldest get force-stale'd.
-    states = {f"serving/notes-v{n}.duckdb": "previous" for n in range(1, 27)}
+    # 26 total artifacts; keep 24, the 2 oldest (v1, v2) are force-stale'd.
+    # v1 and v2 are "building" (stuck failed builds that bypassed the normal
+    # demotion chain) — step 1 only demotes current/previous, so they survive
+    # with "building" state and step 3's keep-last-N sweep can force-stale them.
+    states = {f"serving/notes-v{n}.duckdb": "previous" for n in range(3, 26)}
+    states["serving/notes-v1.duckdb"] = "building"  # old stuck build
+    states["serving/notes-v2.duckdb"] = "building"  # old stuck build
     states["serving/notes-v26.duckdb"] = "building"  # newest is the promote target
     s3 = _FakeS3(states)
 
