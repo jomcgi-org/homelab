@@ -10,11 +10,11 @@ constant instead.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import timedelta
 from unittest.mock import patch
 
-import pytest
 import temporalio.workflow
 
 from projects.lakehouse.orchestrator.workflows import tag_rotation as mod
@@ -104,8 +104,7 @@ class _FakeS3:
         self.tag_writes.append((Key, value))
 
 
-@pytest.mark.asyncio
-async def test_rotate_tags_full_state_machine() -> None:
+def test_rotate_tags_full_state_machine() -> None:
     # Existing: v1=current, v2=previous, v3=stale; new build v4=building.
     s3 = _FakeS3(
         {
@@ -116,7 +115,7 @@ async def test_rotate_tags_full_state_machine() -> None:
         }
     )
     with patch.object(mod, "_s3_client", return_value=s3):
-        result = await mod.rotate_tags("serving/notes-v4.duckdb")
+        result = asyncio.run(mod.rotate_tags("serving/notes-v4.duckdb"))
 
     # Demotions: current->previous, previous->stale; stale stays stale.
     assert result.demoted["serving/notes-v1.duckdb"] == "previous"
@@ -130,15 +129,14 @@ async def test_rotate_tags_full_state_machine() -> None:
     assert currents == ["serving/notes-v4.duckdb"]
 
 
-@pytest.mark.asyncio
-async def test_rotate_tags_keep_last_n_sweeps_excess() -> None:
+def test_rotate_tags_keep_last_n_sweeps_excess() -> None:
     # 26 building artifacts; keep 24, the 2 oldest get force-stale'd.
     states = {f"serving/notes-v{n}.duckdb": "previous" for n in range(1, 27)}
     states["serving/notes-v26.duckdb"] = "building"  # newest is the promote target
     s3 = _FakeS3(states)
 
     with patch.object(mod, "_s3_client", return_value=s3):
-        result = await mod.rotate_tags("serving/notes-v26.duckdb")
+        result = asyncio.run(mod.rotate_tags("serving/notes-v26.duckdb"))
 
     # v1 and v2 (oldest two) cleaned to stale by the retention sweep.
     assert set(result.cleaned) == {
@@ -151,11 +149,10 @@ async def test_rotate_tags_keep_last_n_sweeps_excess() -> None:
     assert s3.states["serving/notes-v26.duckdb"] == "current"
 
 
-@pytest.mark.asyncio
-async def test_rotate_tags_promote_only_no_others() -> None:
+def test_rotate_tags_promote_only_no_others() -> None:
     s3 = _FakeS3({"serving/notes-v1.duckdb": "building"})
     with patch.object(mod, "_s3_client", return_value=s3):
-        result = await mod.rotate_tags("serving/notes-v1.duckdb")
+        result = asyncio.run(mod.rotate_tags("serving/notes-v1.duckdb"))
     assert result.promoted == "serving/notes-v1.duckdb"
     assert result.demoted == {}
     assert result.cleaned == []
