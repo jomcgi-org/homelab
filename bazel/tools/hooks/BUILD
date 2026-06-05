@@ -69,3 +69,15 @@ sh_test(
     srcs = ["check-sveltekit-duplicate-api-base_test.sh"],
     data = [":check-sveltekit-duplicate-api-base.sh"],
 )
+
+sh_test(
+    name = "check_chart_version_targetrevision_sync_test",
+    srcs = ["check-chart-version-targetrevision-sync_test.sh"],
+    data = [":check-chart-version-targetrevision-sync.sh"],
+)
+
+sh_test(
+    name = "check_oci_values_image_tag_test",
+    srcs = ["check-oci-values-image-tag_test.sh"],
+    data = [":check-oci-values-image-tag.sh"],
+)
