@@ -224,7 +224,7 @@ image:
 # 1. OCI chart + image.tag in Write content → warns
 run_test "write_oci_with_image_tag_warns" \
 	"$(make_write_json "$OCI_VALUES_PATH" "$WITH_TAG")" \
-	0 "WARNING.*un-pins"
+	0 "WARNING.*OCI-pinned"
 
 # 2. OCI chart + no image.tag in Write content → silent
 run_test "write_oci_without_image_tag_silent" \
