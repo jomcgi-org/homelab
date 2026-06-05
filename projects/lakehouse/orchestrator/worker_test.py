@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest  # noqa: F401  (required by the py_test pytest_main wrapper)
+
 from projects.lakehouse.orchestrator import TaskQueue
 from projects.lakehouse.orchestrator import worker as worker_module
 from projects.lakehouse.orchestrator.worker import discover_workflows, run_worker
