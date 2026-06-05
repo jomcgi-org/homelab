@@ -43,7 +43,7 @@ fi
 # Extract the new version from the content being written.
 # For Edit, new_string may be just the changed snippet (e.g. the version line).
 # For Write, it's the full file.
-NEW_VERSION=$(echo "$NEW_CONTENT" | grep -E '^version:' | head -1 | awk '{print $2}' | tr -d '"'"'"' || true)
+NEW_VERSION=$(echo "$NEW_CONTENT" | grep -E '^version:' | head -1 | awk '{print $2}' | tr -d "\"'" || true)
 if [[ -z "$NEW_VERSION" ]]; then
 	# version: line not in this edit — nothing to check
 	exit 0
@@ -61,7 +61,7 @@ if [[ ! -f "$APP_YAML" ]]; then
 fi
 
 # Read targetRevision from the application.yaml
-TARGET_REVISION=$(grep -E 'targetRevision:' "$APP_YAML" | head -1 | awk '{print $2}' | tr -d '"'"'"' || true)
+TARGET_REVISION=$(grep -E 'targetRevision:' "$APP_YAML" | head -1 | awk '{print $2}' | tr -d "\"'" || true)
 if [[ -z "$TARGET_REVISION" ]]; then
 	exit 0
 fi
