@@ -9,6 +9,7 @@ because it downloads a server binary.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -192,14 +193,13 @@ def patched_deps():
         }
 
 
-@pytest.mark.asyncio
-async def test_drain_groups_by_table_and_acks_after_commit(patched_deps) -> None:
+def test_drain_groups_by_table_and_acks_after_commit(patched_deps) -> None:
     note_msg = _msg(_note_envelope("n1", 1))
     gap_msg = _msg(_gap_envelope("g1", 1))
     note_msg2 = _msg(_note_envelope("n2", 1))
     patched_deps["sub"].fetch.return_value = [note_msg, gap_msg, note_msg2]
 
-    result = await mod.drain_and_commit()
+    result = asyncio.run(mod.drain_and_commit())
 
     # Two note rows -> note_events; one gap row -> gap_events.
     assert result.committed_by_table == {"note_events": 2, "gap_events": 1}
@@ -217,8 +217,7 @@ async def test_drain_groups_by_table_and_acks_after_commit(patched_deps) -> None
     patched_deps["nats_client"].close.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_drain_skips_unmapped_entity_and_does_not_ack_it(patched_deps) -> None:
+def test_drain_skips_unmapped_entity_and_does_not_ack_it(patched_deps) -> None:
     unknown = build_envelope(
         entity_type="edge",  # has a publish subject but NO Iceberg table here
         entity_id="e1",
@@ -231,7 +230,7 @@ async def test_drain_skips_unmapped_entity_and_does_not_ack_it(patched_deps) -> 
     note_msg = _msg(_note_envelope("n1", 1))
     patched_deps["sub"].fetch.return_value = [edge_msg, note_msg]
 
-    result = await mod.drain_and_commit()
+    result = asyncio.run(mod.drain_and_commit())
 
     assert result.skipped_unmapped == 1
     assert result.committed_by_table == {"note_events": 1}
@@ -240,10 +239,9 @@ async def test_drain_skips_unmapped_entity_and_does_not_ack_it(patched_deps) -> 
     note_msg.ack.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_drain_empty_fetch_returns_empty(patched_deps) -> None:
+def test_drain_empty_fetch_returns_empty(patched_deps) -> None:
     patched_deps["sub"].fetch.return_value = []
-    result = await mod.drain_and_commit()
+    result = asyncio.run(mod.drain_and_commit())
     assert result.empty is True
 
 
@@ -287,19 +285,17 @@ def test_load_or_create_table_creates_when_missing() -> None:
     assert kwargs["schema"] is TABLES["note_events"]
 
 
-@pytest.mark.asyncio
-async def test_drain_timeout_returns_empty(patched_deps) -> None:
+def test_drain_timeout_returns_empty(patched_deps) -> None:
     import nats.errors
 
     patched_deps["sub"].fetch.side_effect = nats.errors.TimeoutError()
-    result = await mod.drain_and_commit()
+    result = asyncio.run(mod.drain_and_commit())
     assert result.empty is True
     # Still closes the connection on the idle path.
     patched_deps["nats_client"].close.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_drain_does_not_ack_when_commit_fails(patched_deps) -> None:
+def test_drain_does_not_ack_when_commit_fails(patched_deps) -> None:
     # If the Iceberg append raises, the messages for that table must NOT be acked.
     note_msg = _msg(_note_envelope("n1", 1))
     patched_deps["sub"].fetch.return_value = [note_msg]
@@ -309,7 +305,7 @@ async def test_drain_does_not_ack_when_commit_fails(patched_deps) -> None:
         side_effect=RuntimeError("commit boom"),
     ):
         with pytest.raises(RuntimeError, match="commit boom"):
-            await mod.drain_and_commit()
+            asyncio.run(mod.drain_and_commit())
 
     note_msg.ack.assert_not_awaited()
     # Connection still closed (finally block) so the consumer isn't leaked.
