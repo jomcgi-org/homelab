@@ -305,12 +305,13 @@ run_test "tag_in_second_image_block_warns" \
 
 # 15. Empty content (no new_string / content) → skip
 run_test "empty_content_skipped" \
-	"$(python3 - "$OCI_VALUES_PATH" <<'PY'
+	"$(
+		python3 - "$OCI_VALUES_PATH" <<'PY'
 import json, sys
 fp = sys.argv[1]
 print(json.dumps({"tool_name": "Write", "tool_input": {"file_path": fp, "content": ""}}))
 PY
-)" \
+	)" \
 	0 ""
 
 # ---------------------------------------------------------------------------
