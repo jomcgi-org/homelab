@@ -112,6 +112,15 @@ chat:
       embedColor: "0x2ECC71"
       intervalHours: 1
       roastChance: 0.1
+    - name: "loom"
+      channelId: "1512815661531795618"
+      githubRepo: "rsJames-ttrpg/loom"
+      prompt: "professional"
+      embedTitle: "Loom"
+      embedColor: "0x2ECC71"
+      intervalHours: 1
+      commitFilter: "^(feat)(\\(.+?\\))?!?:\\s"
+      roastChance: 0.1
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
