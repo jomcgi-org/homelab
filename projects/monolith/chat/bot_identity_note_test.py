@@ -110,9 +110,7 @@ async def _run_bot(bot: ChatBot, msg: MagicMock, mock_store) -> str:
         patch("chat.bot.Session") as mock_session_cls,
         patch("chat.bot.MessageStore", return_value=mock_store),
     ):
-        mock_session_cls.return_value.__enter__ = MagicMock(
-            return_value=MagicMock()
-        )
+        mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
         await bot.on_message(msg)
 
@@ -196,7 +194,7 @@ class TestIdentityNoteFullFormat:
 
         expected_note = (
             f'[Your identity here: you are "{display_name}" '
-            f"(Discord user ID {user_id}). Any \"<@{user_id}>\" "
+            f'(Discord user ID {user_id}). Any "<@{user_id}>" '
             "mention, or a reply to one of your own messages, in this "
             "conversation is someone talking to or about YOU \u2014 not a "
             "third party to look up.]"
@@ -214,7 +212,7 @@ class TestIdentityNoteFullFormat:
 
         expected_note = (
             f'[Your identity here: you are "{display_name}" '
-            f"(Discord user ID {user_id}). Any \"<@{user_id}>\" "
+            f'(Discord user ID {user_id}). Any "<@{user_id}>" '
             "mention, or a reply to one of your own messages, in this "
             "conversation is someone talking to or about YOU \u2014 not a "
             "third party to look up.]"
