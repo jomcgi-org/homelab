@@ -114,7 +114,7 @@ chat:
       roastChance: 0.1
     - name: "loom"
       channelId: "1512815661531795618"
-      githubRepo: "rsJames-ttrpg/loom"
+      githubRepo: "weave-hand/loom"
       prompt: "professional"
       embedTitle: "Loom"
       embedColor: "0x2ECC71"
