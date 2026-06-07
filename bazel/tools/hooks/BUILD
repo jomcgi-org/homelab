@@ -87,3 +87,9 @@ sh_test(
     srcs = ["check-bare-nosemgrep_test.sh"],
     data = [":check-bare-nosemgrep.sh"],
 )
+
+sh_test(
+    name = "check_asyncio_mark_build_dep_test",
+    srcs = ["check-asyncio-mark-build-dep_test.sh"],
+    data = [":check-asyncio-mark-build-dep.sh"],
+)
