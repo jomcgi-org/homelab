@@ -17,6 +17,22 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt()
         assert "Search before you respond" in prompt
 
+    def test_states_own_name(self):
+        """System prompt tells the model its name is Qwen3.6."""
+        prompt = build_system_prompt()
+        assert "Qwen3.6" in prompt
+
+    def test_explains_self_mention_recognition(self):
+        """System prompt explains that its own <@id> mention means itself."""
+        prompt = build_system_prompt()
+        assert "mention" in prompt.lower()
+        assert "they mean YOU" in prompt
+
+    def test_warns_against_third_party_local_model_advice(self):
+        """System prompt tells the model not to disown being a local model."""
+        prompt = build_system_prompt()
+        assert "local models" in prompt
+
 
 class TestFormatContextMessages:
     def test_formats_user_message(self):

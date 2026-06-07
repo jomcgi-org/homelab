@@ -334,8 +334,20 @@ class ChatBot(discord.Client):
                 + format_context_messages(recent, attachments_by_msg)
             )
 
+            # Tell the model its own live Discord identity so it recognizes
+            # mentions of itself. The numeric user ID isn't known when the
+            # agent is constructed (before the gateway connects), so it has to
+            # be injected per request here.
+            identity_note = (
+                f'[Your identity here: you are "{self.user.display_name}" '
+                f'(Discord user ID {self.user.id}). Any "<@{self.user.id}>" '
+                "mention, or a reply to one of your own messages, in this "
+                "conversation is someone talking to or about YOU — not a "
+                "third party to look up.]"
+            )
+
             user_prompt = (
-                f"{context}\n\nCurrent message from "
+                f"{identity_note}\n\n{context}\n\nCurrent message from "
                 f"{message.author.display_name}: {message.content}"
             )
 
