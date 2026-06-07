@@ -209,4 +209,37 @@ class TestNoSummariesGracefulSkip:
         prompt_arg = bot.agent.run_stream_events.call_args[0][0]
         assert "[Channel context:" not in prompt_arg
         assert "[People in this conversation:" not in prompt_arg
-        assert prompt_arg.startswith("Recent conversation:")
+        # The identity note is always injected first, then the conversation.
+        assert prompt_arg.startswith("[Your identity here:")
+        assert "Recent conversation:" in prompt_arg
+
+
+class TestIdentityInjection:
+    @pytest.mark.asyncio
+    async def test_bot_identity_appears_in_prompt(self):
+        """The bot's live display name and user ID are injected into the prompt."""
+        bot = _make_bot()
+        bot_user = bot.user
+        msg = _make_message(content="who are you", mentions=[bot_user])
+
+        mock_store = _make_store()
+
+        events = [_text_delta("I'm Qwen3.6.")]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(msg)
+
+        prompt_arg = bot.agent.run_stream_events.call_args[0][0]
+        # _make_bot sets user id 999 / display name "BotUser".
+        assert '"BotUser"' in prompt_arg
+        assert "Discord user ID 999" in prompt_arg
+        assert "<@999>" in prompt_arg
