@@ -119,7 +119,7 @@ chat:
       embedTitle: "Loom"
       embedColor: "0x2ECC71"
       intervalHours: 1
-      commitFilter: "^(feat)(\\(.+?\\))?!?:\\s"
+      # No commitFilter: small 2-person repo, so report every commit (all types)
       roastChance: 0.1
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
