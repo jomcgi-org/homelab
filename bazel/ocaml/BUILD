@@ -24,10 +24,20 @@ toolchain(
 
 bzl_library(
     name = "defs",
-    srcs = [
-        "defs.bzl",
-        "rules.bzl",
-        "toolchain.bzl",
-    ],
+    srcs = ["defs.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":rules"],
+)
+
+bzl_library(
+    name = "rules",
+    srcs = ["rules.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":toolchain"],
+)
+
+bzl_library(
+    name = "toolchain",
+    srcs = ["toolchain.bzl"],
     visibility = ["//visibility:public"],
 )
