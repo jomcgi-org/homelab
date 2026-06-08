@@ -1,13 +1,15 @@
 #!/bin/sh
-# Whole-library OCaml compile/link driver, run inside the pinned OCaml container.
+# Whole-library OCaml compile/link driver, using a hermetic Debian OCaml sysroot
+# staged as action inputs. Recovers compile order with `ocamldep -sort`, compiles
+# each module's .mli before its .ml, then archives the .cmx into a native .cmxa
+# (library mode) or links a native executable (binary mode).
 #
-# Recovers compile order with `ocamldep -sort`, compiles each module's .mli
-# before its .ml, then either archives the .cmx into a .cmxa (library mode) or
-# links a native executable (binary mode). See bazel/ocaml/rules.bzl for why this
-# is one whole-library action rather than per-module.
+# The compiler binaries come from the sysroot ($SYSROOT); native code generation
+# and the final link use the execution host's as/gcc/ld (the same C toolchain the
+# repo's C/C++ builds use). The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-MODE="" NAME="" OPAM_ROOT="" USE_FIND="1"
+MODE="" NAME="" SYSROOT="" USE_FIND="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CMXAS="" CFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
@@ -15,7 +17,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--mode) MODE="$2" && shift 2 ;;
 	--name) NAME="$2" && shift 2 ;;
-	--opam-root) OPAM_ROOT="$2" && shift 2 ;;
+	--sysroot) SYSROOT="$2" && shift 2 ;;
 	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
 	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
 	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
@@ -30,57 +32,62 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# --- Bring the opam switch toolchain onto PATH inside the container ----------
-export OPAMROOTISOK=1 OPAMYES=1
-if [ -n "$OPAM_ROOT" ]; then
-	export OPAMROOT="$OPAM_ROOT"
-	for d in "$OPAMROOT"/default/bin "$OPAMROOT"/*/bin; do
-		[ -d "$d" ] && PATH="$d:$PATH"
+# Sysroot path is relative to the action's exec root; make it absolute so the
+# compiler still resolves it after we cd around.
+case "$SYSROOT" in
+/*) S="$SYSROOT" ;;
+*) S="$(pwd)/$SYSROOT" ;;
+esac
+
+# --- Relocate the OCaml toolchain -------------------------------------------
+# The Debian ocamlopt has multiarch-prefixed C tool names baked in
+# (x86_64-linux-gnu-{as,gcc,ld,ar,ranlib}, PATH-searched). Shim them to the
+# universal host tools so native codegen/link works on any executor without
+# bundling binutils/gcc.
+SHIM="$(mktemp -d)"
+make_shim() {
+	pn="$1"
+	shift
+	for c in "$@"; do
+		if command -v "$c" >/dev/null 2>&1; then
+			printf '#!/bin/sh\nexec %s "$@"\n' "$c" >"$SHIM/$pn"
+			chmod +x "$SHIM/$pn"
+			return 0
+		fi
 	done
-	export PATH
-	if command -v opam >/dev/null 2>&1; then
-		eval "$(opam env --root="$OPAMROOT" --set-root 2>/dev/null)" || true
-	fi
-fi
-
-# Diagnostic probe: proves in the action log which image actually ran and
-# whether the opam switch is present (i.e. whether container-image was honored).
-echo "ocaml_compile: probe os=$(. /etc/os-release 2>/dev/null && echo "${ID:-?}-${VERSION_ID:-?}") opamroot=$OPAM_ROOT exists=$([ -d "$OPAM_ROOT" ] && echo yes || echo no) user=$(id -un 2>/dev/null || echo '?')" >&2
-
-# --- Resolve tools. Prefer ocamlfind; fall back to raw compiler + stdlib map --
-OCAMLOPT="ocamlopt"
-FIND=""
-if [ "$USE_FIND" = "1" ] && command -v ocamlfind >/dev/null 2>&1; then
-	FIND="ocamlfind"
-	OCAMLOPT="ocamlfind ocamlopt"
-fi
-command -v ocamlopt >/dev/null 2>&1 || {
-	echo "ocaml_compile: ocamlopt not found on PATH ($PATH)" >&2
-	exit 3
+	echo "ocaml_compile: WARNING no host tool for $pn (tried: $*)" >&2
 }
-echo "ocaml_compile: mode=$MODE find=${FIND:-none} ocamlopt=$(command -v ocamlopt)" >&2
+make_shim x86_64-linux-gnu-as as
+make_shim x86_64-linux-gnu-gcc cc gcc
+make_shim x86_64-linux-gnu-ld ld
+make_shim x86_64-linux-gnu-ar ar
+make_shim x86_64-linux-gnu-ranlib ranlib
 
-# --- Build include + opam package flags -------------------------------------
+export OCAMLLIB="$S/usr/lib/ocaml"
+export CAML_LD_LIBRARY_PATH="$S/usr/lib/ocaml/stublibs${CAML_LD_LIBRARY_PATH:+:$CAML_LD_LIBRARY_PATH}"
+export PATH="$SHIM:$S/usr/bin:$PATH"
+
+OCAMLOPT="$S/usr/bin/ocamlopt.opt"
+OCAMLDEP="$S/usr/bin/ocamldep.opt"
+
+echo "ocaml_compile: mode=$MODE sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
+
+# Resolve opam (findlib) packages. ocamlfind is available in the sysroot but
+# disabled by default; the toy's opam_deps (unix/str/threads) ship with the
+# stdlib and link directly from OCAMLLIB by their archive name.
+FIND=""
+if [ "$USE_FIND" = "1" ] && [ -x "$S/usr/bin/ocamlfind" ]; then
+	FIND="$S/usr/bin/ocamlfind"
+fi
+
 INCFLAGS=""
 for d in $INCLUDES; do INCFLAGS="$INCFLAGS -I $d"; done
 
-PKG_COMMA=""
+PKG_COMMA="" PKG_LINK=""
 for p in $OPAM_PKGS; do
 	if [ -z "$PKG_COMMA" ]; then PKG_COMMA="$p"; else PKG_COMMA="$PKG_COMMA,$p"; fi
+	PKG_LINK="$PKG_LINK $p.cmxa"
 done
-PKG_COMPILE="" PKG_LINK=""
-if [ -n "$FIND" ]; then
-	if [ -n "$PKG_COMMA" ]; then
-		PKG_COMPILE="-package $PKG_COMMA"
-		PKG_LINK="-package $PKG_COMMA -linkpkg"
-	fi
-else
-	# No findlib: resolve stdlib-shipped packages via `-I +pkg pkg.cmxa`.
-	for p in $OPAM_PKGS; do
-		PKG_COMPILE="$PKG_COMPILE -I +$p"
-		PKG_LINK="$PKG_LINK -I +$p $p.cmxa"
-	done
-fi
 
 # --- Stage sources into a writable work dir ---------------------------------
 if [ "$MODE" = "library" ]; then
@@ -97,7 +104,7 @@ MLB=""
 for s in $SRCS; do
 	case "$s" in *.ml) MLB="$MLB $(basename "$s")" ;; esac
 done
-ORDER="$(cd "$WORK" && ocamldep -sort $MLB)"
+ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $MLB)"
 echo "ocaml_compile: compile order: $ORDER" >&2
 
 # --- Compile each module (.mli before .ml) ----------------------------------
@@ -105,18 +112,18 @@ CMX_LIST=""
 for ml in $ORDER; do
 	base="${ml%.ml}"
 	if [ -f "$WORK/$base.mli" ]; then
-		$OCAMLOPT $CFLAGS $PKG_COMPILE $INCFLAGS -c "$WORK/$base.mli"
+		"$OCAMLOPT" $CFLAGS $INCFLAGS -c "$WORK/$base.mli"
 	fi
-	$OCAMLOPT $CFLAGS $PKG_COMPILE $INCFLAGS -c "$WORK/$ml"
+	"$OCAMLOPT" $CFLAGS $INCFLAGS -c "$WORK/$ml"
 	CMX_LIST="$CMX_LIST $WORK/$base.cmx"
 done
 
 # --- Produce the output -----------------------------------------------------
 if [ "$MODE" = "library" ]; then
 	# ocamlopt -o NAME.cmxa also writes NAME.a alongside it.
-	$OCAMLOPT -a -o "$CMXA_OUT" $CMX_LIST
+	"$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST
 	[ "$A_OUT" = "${CMXA_OUT%.cmxa}.a" ] || cp "${CMXA_OUT%.cmxa}.a" "$A_OUT"
 else
-	# Link order: stdlib/opam archives, then deps (postorder), then own modules.
-	$OCAMLOPT $CFLAGS $PKG_LINK $INCFLAGS $CMXAS $CMX_LIST -o "$EXE_OUT"
+	# Link order: stdlib opam archives, then deps (postorder), then own modules.
+	"$OCAMLOPT" $CFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST -o "$EXE_OUT"
 fi

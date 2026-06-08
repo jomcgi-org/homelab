@@ -49,9 +49,12 @@ bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
 use_repo(buildbuddy, "buildbuddy_toolchain")
 
-# OCaml ruleset (bazel/ocaml) — thin native rules driving `ocamlfind ocamlopt`.
-# The compiler runs inside a digest-pinned OCaml container on RBE (see
-# bazel/ocaml/toolchain.bzl); this toolchain carries only tool configuration.
+# OCaml ruleset (bazel/ocaml) — thin native rules driving ocamlopt over a
+# hermetic Debian OCaml sysroot (fetched + extracted below). The sysroot is
+# staged as action inputs; native linking uses the executor's C toolchain.
+ocaml_sysroot_ext = use_extension("//bazel/ocaml/toolchain:repositories.bzl", "ocaml_sysroot")
+use_repo(ocaml_sysroot_ext, "ocaml_sysroot")
+
 register_toolchains("//bazel/ocaml:ocaml_toolchain")
 
 multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")

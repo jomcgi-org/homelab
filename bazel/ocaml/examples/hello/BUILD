@@ -1,7 +1,6 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library")
-load("//bazel/ocaml:toolchain.bzl", "EXEC_PROPERTIES")
 
 # Three modules with a real inter-module dependency (greeting -> message), so
 # `ocamldep -sort` has ordering work to do.
@@ -34,12 +33,11 @@ build_test(
     targets = [":hello"],
 )
 
-# Runtime verification: execute the binary inside the OCaml container and check
-# its output.
+# Runtime verification: execute the native binary and check its output. The
+# binary links the host's glibc, so it runs anywhere the build action ran.
 sh_test(
     name = "hello_run_test",
     srcs = ["run_hello_test.sh"],
     args = ["$(rootpath :hello)"],
     data = [":hello"],
-    exec_properties = EXEC_PROPERTIES,
 )
