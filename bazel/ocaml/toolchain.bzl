@@ -24,15 +24,21 @@ image is the same idea with far less moving infrastructure — documented in
 bazel/ocaml/README.md.
 """
 
-# Digest-pinned public OCaml image (debian-12-ocaml-5.3, multi-arch index).
-# Pinned by digest so the toolchain is reproducible; bump deliberately.
-OCAML_IMAGE = "docker://ocaml/opam@sha256:97a21a819648875667315f235f68652766b7839290a274bfaa1305127c58e5ae"
+# Digest-pinned public OCaml image (ocaml/opam debian-12-ocaml-5.3).
+#
+# Pinned to the single-arch linux/amd64 *manifest* digest, NOT the multi-arch
+# index digest: BuildBuddy's OCI image puller resolves a concrete manifest, and
+# an index-by-digest silently falls back to the default executor image (which
+# has no OCaml). The shared RBE pool is linux/amd64, so this is the right arch.
+OCAML_IMAGE = "docker://ocaml/opam@sha256:d1c94e81c7c386354308d0070152af37f05fc52fd21b243fd349fdb921e35128"
 
 # Execution properties attached to every ocaml build/test action. BuildBuddy RBE
-# runs the action inside OCAML_IMAGE. dockerUser=root sidesteps exec-root
-# permission friction; the driver sets OPAMROOTISOK so opam tolerates root.
+# runs the action inside OCAML_IMAGE under OCI isolation. dockerUser=root
+# sidesteps exec-root permission friction; the driver sets OPAMROOTISOK so opam
+# tolerates root.
 EXEC_PROPERTIES = {
     "container-image": OCAML_IMAGE,
+    "workload-isolation-type": "oci",
     "OSFamily": "linux",
     "dockerUser": "root",
 }

@@ -43,6 +43,10 @@ if [ -n "$OPAM_ROOT" ]; then
 	fi
 fi
 
+# Diagnostic probe: proves in the action log which image actually ran and
+# whether the opam switch is present (i.e. whether container-image was honored).
+echo "ocaml_compile: probe os=$(. /etc/os-release 2>/dev/null && echo "${ID:-?}-${VERSION_ID:-?}") opamroot=$OPAM_ROOT exists=$([ -d "$OPAM_ROOT" ] && echo yes || echo no) user=$(id -un 2>/dev/null || echo '?')" >&2
+
 # --- Resolve tools. Prefer ocamlfind; fall back to raw compiler + stdlib map --
 OCAMLOPT="ocamlopt"
 FIND=""
