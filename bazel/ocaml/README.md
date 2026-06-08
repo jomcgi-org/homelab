@@ -21,7 +21,7 @@ load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary")
   opam/findlib package names in link order.
 
 `deps` are other `ocaml_library` targets. `opam_deps` are findlib package names
-(e.g. `unix`, `str`) resolved via `ocamlfind` when present.
+(e.g. `unix`, `str`) — in this toy they resolve to stdlib-shipped archives.
 
 ## Dependency inference (the learning bit)
 
@@ -39,64 +39,77 @@ per module; that's the next step, intentionally out of scope here.
 
 ## Toolchain: how `ocamlopt` runs on RBE
 
-The important design question for this repo. CI runs build actions on
-BuildBuddy's **stock RBE executor**, which has no OCaml. Two ways to fix that
-were considered:
+This was the hard design question, and the answer changed once contact with the
+infrastructure was made.
 
-- **(a)** a custom RBE executor image with `opam` + `ocaml` + the `opam_deps`
-  preinstalled, or
-- **(b)** a hermetic toolchain Bazel fetches and relocates (obazl territory).
+CI runs build actions on BuildBuddy RBE, whose stock executor has no OCaml. The
+**first attempt** attached a digest-pinned `ocaml/opam` image to each action via
+the BuildBuddy `container-image` execution property. That **did not work**: a
+probe in the driver proved the actions kept landing on the default executor
+(`os=ubuntu-24.04`, no `ocamlopt`) — this RBE does not honor a per-action custom
+container image. No target in the repo had ever used one; there was no precedent
+because it isn't supported here.
 
-We use a pragmatic variant of **(a)**: a **digest-pinned public OCaml image**
-(`ocaml/opam`, pinned by `sha256` in `toolchain.bzl`) attached to every ocaml
-target's actions via the BuildBuddy `container-image` execution property
-(`EXEC_PROPERTIES`). The build action therefore executes *inside* an environment
-that already has `ocamlopt`/`ocamldep`/`gcc` on `PATH`. This is hermetic
-(reproducible by digest) and needs no custom image build or registry push — so
-it goes green on a PR branch with no extra credentials.
+So the compiler has to **travel with the action as hermetic inputs**:
 
-`OcamlToolchainInfo` (the Bazel toolchain) carries the *tool configuration*
-(opam root, whether to prefer `ocamlfind`, extra flags); swapping the image or
-switch is a one-line change in `toolchain.bzl`.
+1. `toolchain/repositories.bzl` is a module extension that downloads pinned
+   **Debian bullseye** OCaml `.deb`s (`debs.bzl`, from the permanent
+   `archive.debian.org` mirror) and extracts them — with a stdlib-only Python
+   `ar`/`tar` extractor, no `dpkg` needed — into `@ocaml_sysroot//:sysroot`.
+2. Every ocaml action stages that sysroot as inputs. The driver relocates the
+   compiler with a single `OCAMLLIB` override and calls `ocamlopt.opt` /
+   `ocamldep.opt` from the sysroot.
+3. **Native code generation and the final link use the execution host's
+   `as`/`gcc`/`ld`** — the same C toolchain the repo's C/C++ builds already rely
+   on. So no C toolchain is bundled.
 
-Why not fetch + extract the compiler into the Bazel sandbox (option b)? Wolfi
-ships `ocaml`/`ocamlfind` apks, but they're built against a newer glibc than the
-stock executor — running them hermetically means bundling the whole C toolchain
-(gcc + binutils + glibc + glibc-dev + closure) and running both compilation and
-the produced binaries under the extracted loader. That's a large, fragile build
-for no extra benefit over a digest-pinned image. It's the documented "fully
-self-hosted" alternative if we ever want zero dependency on a public registry.
+Two properties make this robust regardless of where BuildBuddy schedules the
+action:
+
+- **Old glibc.** Bullseye binaries need `glibc >= 2.29`, so they run
+  forward-compatibly on both the RBE executor and the workflow runner.
+- **Host-linked output.** Binaries link the host's glibc, so they run wherever
+  the build action ran (the `hello_run_test` executes the binary directly).
+
+`OcamlToolchainInfo` (the Bazel toolchain) carries the sysroot files plus tool
+configuration (whether to prefer `ocamlfind`, extra flags). `ocamlfind` is
+present in the sysroot; it's left off by default because the toy's `opam_deps`
+are stdlib libraries that link by archive name without it.
 
 ### Productionization path
 
-The cleanest long-term shape is a **custom GHCR image** with the compiler and
-the project's real `opam_deps` preinstalled (built + pushed by a workflow like
-`update-semgrep-pro.yaml`), referenced by digest in `EXEC_PROPERTIES`. At that
-point `opam_deps` resolve as genuine preinstalled findlib packages and the
-vendoring below is no longer needed.
+The cleanest long-term shape is a **custom RBE executor image** (or a
+self-hosted executor) with the compiler and the project's real `opam_deps`
+preinstalled, so the sysroot need not be staged per action. That requires
+control over the executor image this repo's BuildBuddy plan doesn't currently
+expose. A Gazelle/`ocamldep` BUILD generator (per-module targets, real
+incrementality) is the other obvious next step.
 
 ## The external opam dependency
 
 The toy's external dependency is [`fmt`](https://erratique.ch/software/fmt)
 0.11.0, **vendored from source** under `third_party/fmt/` and compiled by our own
-`ocaml_library`. `fmt`'s core module is pure OCaml (no C stubs), so it builds
-standalone against the stdlib — no `opam install` step anywhere. `examples/hello`
-also wires the `unix` findlib package through `opam_deps` to exercise that path.
+`ocaml_library`. `fmt`'s core module is pure OCaml (no C stubs) and only needs
+the stdlib, so it builds standalone — no `opam install` step anywhere.
+`examples/hello` also wires the `unix` library through `opam_deps`.
 
 The `opentelemetry` SDK span demo (the stretch goal) is intentionally dropped:
-its transitive deps (protobuf etc.) make it heavy for a from-source toy. Revisit
-once the productionized preinstalled-image path above exists.
+its transitive deps (protobuf etc.) make it heavy for a from-source toy.
 
 ## Layout
 
 ```
 bazel/ocaml/
-  defs.bzl              # public: ocaml_library, ocaml_binary, OcamlInfo
-  rules.bzl             # rule impls + OcamlInfo provider
-  toolchain.bzl         # OcamlToolchainInfo, ocaml_toolchain, pinned image
+  defs.bzl                 # public: ocaml_library, ocaml_binary, OcamlInfo
+  rules.bzl                # rule impls + OcamlInfo provider
+  toolchain.bzl            # OcamlToolchainInfo, ocaml_toolchain rule
+  toolchain/
+    debs.bzl               # pinned Debian OCaml .deb URLs + checksums
+    repositories.bzl       # module extension: fetch + extract -> @ocaml_sysroot
+    extract_debs.py        # stdlib-only .deb (ar + tar.xz) extractor
   driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
-  third_party/fmt/      # vendored fmt 0.11.0 (ISC)
-  examples/hello/       # message -> greeting -> main, links fmt + unix
+  third_party/fmt/         # vendored fmt 0.11.0 (ISC)
+  examples/hello/          # message -> greeting -> main, links fmt + unix
 ```
 
 ## Verify

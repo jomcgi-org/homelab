@@ -4,20 +4,18 @@ Design (a deliberate toy, see bazel/ocaml/README.md):
 
   * One whole-library compile action. The driver runs `ocamldep -sort` over the
     library's sources to recover compile order, compiles each module's .mli
-    before its .ml, then archives the .cmx in order into a .cmxa. This trades
-    fine-grained per-module incrementality for simplicity — fine for a toy. The
-    "real" version is a Gazelle/ocamldep BUILD generator emitting one target per
-    module (called out as the next step in the README).
+    before its .ml, then archives the .cmx in order into a native .cmxa. This
+    trades fine-grained per-module incrementality for simplicity — fine for a
+    toy. The "real" version is a Gazelle/ocamldep BUILD generator emitting one
+    target per module (the next step, called out in the README).
 
-  * Compilation runs inside a digest-pinned OCaml container on RBE
-    (toolchain.bzl EXEC_PROPERTIES); the rules themselves ship no compiler.
+  * The compiler is a hermetic sysroot (toolchain.bzl) staged as action inputs;
+    native linking uses the execution host's gcc/as/ld.
 
   * OcamlInfo carries the compiled output dir (cmi/cmx/.o), the .cmxa archive +
-    its .a, transitive include dirs, and transitive opam (findlib) package names
+    its .a, transitive include dirs, and transitive opam/findlib package names
     in link order.
 """
-
-load(":toolchain.bzl", "EXEC_PROPERTIES")
 
 OcamlInfo = provider(
     doc = "Outputs and transitive link information for an OCaml library.",
@@ -53,11 +51,19 @@ def _collect(ctx):
         opam = depset(transitive = opam),
     )
 
-def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs):
+def _sysroot_root(sysroot_files):
+    """Exec-root-relative path to the sysroot, derived from ocamlopt.opt."""
+    needle = "/usr/bin/ocamlopt.opt"
+    for f in sysroot_files.to_list():
+        if f.path.endswith(needle):
+            return f.path[:-len(needle)]
+    fail("ocamlopt.opt not found in OCaml sysroot")
+
+def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs):
     args = ctx.actions.args()
     args.add("--mode", mode)
     args.add("--name", ctx.label.name)
-    args.add("--opam-root", tc.opam_root)
+    args.add("--sysroot", sysroot)
     args.add("--use-ocamlfind", "1" if tc.use_ocamlfind else "0")
     for f in tc.extra_compile_flags:
         args.add("--compile-flag", f)
@@ -72,15 +78,13 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs):
 def _ocaml_library_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
+    sysroot = _sysroot_root(tc.sysroot_files)
 
     objs_dir = ctx.actions.declare_directory(ctx.label.name + "_objs")
     cmxa = ctx.actions.declare_file(ctx.label.name + ".cmxa")
     a_lib = ctx.actions.declare_file(ctx.label.name + ".a")
 
-    include_dirs = dep.includes.to_list()
-    opam_pkgs = dep.opam.to_list()
-
-    args = _driver_args(ctx, tc, "library", include_dirs, opam_pkgs, ctx.files.srcs)
+    args = _driver_args(ctx, tc, sysroot, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs)
     args.add("--objs-out", objs_dir.path)
     args.add("--cmxa-out", cmxa.path)
     args.add("--a-out", a_lib.path)
@@ -88,7 +92,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs, transitive = [dep.includes, dep.cmxa, dep.a]),
+        inputs = depset(ctx.files.srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -111,22 +115,19 @@ def _ocaml_library_impl(ctx):
 def _ocaml_binary_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
+    sysroot = _sysroot_root(tc.sysroot_files)
 
     exe = ctx.actions.declare_file(ctx.label.name)
 
-    include_dirs = dep.includes.to_list()
-    cmxa_list = dep.cmxa.to_list()  # postorder: dependencies before dependents
-    opam_pkgs = dep.opam.to_list()
-
-    args = _driver_args(ctx, tc, "binary", include_dirs, opam_pkgs, ctx.files.srcs)
+    args = _driver_args(ctx, tc, sysroot, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs)
     args.add("--exe-out", exe.path)
-    for c in cmxa_list:
+    for c in dep.cmxa.to_list():  # postorder: dependencies before dependents
         args.add("--cmxa", c.path)
 
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs, transitive = [dep.includes, dep.cmxa, dep.a]),
+        inputs = depset(ctx.files.srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -149,7 +150,7 @@ _COMMON_ATTRS = {
         doc = "Other ocaml_library targets.",
     ),
     "opam_deps": attr.string_list(
-        doc = "findlib/opam package names (e.g. \"unix\", \"str\"). Resolved via ocamlfind when available.",
+        doc = "findlib/opam package names (e.g. \"unix\", \"str\") shipped with the stdlib.",
     ),
     "_driver": attr.label(
         default = "//bazel/ocaml/driver:ocaml_compile",
@@ -158,41 +159,17 @@ _COMMON_ATTRS = {
     ),
 }
 
-_ocaml_library = rule(
+ocaml_library = rule(
     implementation = _ocaml_library_impl,
     attrs = _COMMON_ATTRS,
     toolchains = [_TOOLCHAIN_TYPE],
+    doc = "Compile a set of .ml/.mli modules into a native .cmxa archive.",
 )
 
-_ocaml_binary = rule(
+ocaml_binary = rule(
     implementation = _ocaml_binary_impl,
     attrs = _COMMON_ATTRS,
     toolchains = [_TOOLCHAIN_TYPE],
     executable = True,
+    doc = "Compile + link a runnable native OCaml executable.",
 )
-
-def ocaml_library(name, srcs, deps = [], opam_deps = [], **kwargs):
-    """Compile a set of .ml/.mli modules into a native .cmxa archive.
-
-    The macro attaches the OCaml container image (toolchain.bzl EXEC_PROPERTIES)
-    so the compile action runs on RBE in an environment with ocamlopt on PATH.
-    """
-    _ocaml_library(
-        name = name,
-        srcs = srcs,
-        deps = deps,
-        opam_deps = opam_deps,
-        exec_properties = EXEC_PROPERTIES,
-        **kwargs
-    )
-
-def ocaml_binary(name, srcs, deps = [], opam_deps = [], **kwargs):
-    """Compile + link a runnable native OCaml executable."""
-    _ocaml_binary(
-        name = name,
-        srcs = srcs,
-        deps = deps,
-        opam_deps = opam_deps,
-        exec_properties = EXEC_PROPERTIES,
-        **kwargs
-    )
