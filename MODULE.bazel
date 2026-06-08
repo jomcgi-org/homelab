@@ -49,6 +49,11 @@ bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
 use_repo(buildbuddy, "buildbuddy_toolchain")
 
+# OCaml ruleset (bazel/ocaml) — thin native rules driving `ocamlfind ocamlopt`.
+# The compiler runs inside a digest-pinned OCaml container on RBE (see
+# bazel/ocaml/toolchain.bzl); this toolchain carries only tool configuration.
+register_toolchains("//bazel/ocaml:ocaml_toolchain")
+
 multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")
 multitool.hub(lockfile = "//bazel/tools:tools.lock.json")
 use_repo(
