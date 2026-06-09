@@ -51,13 +51,9 @@ def _collect(ctx):
         opam = depset(transitive = opam),
     )
 
-def _sysroot_root(sysroot_files):
-    """Exec-root-relative path to the sysroot, derived from ocamlopt.opt."""
-    needle = "/bin/ocamlopt.opt"
-    for f in sysroot_files.to_list():
-        if f.path.endswith(needle):
-            return f.path[:-len(needle)]
-    fail("ocamlopt.opt not found in OCaml sysroot")
+def _sysroot_root(tc):
+    """Exec-root-relative path to the sysroot (the TreeArtifact dir holding bin/, lib/ocaml/)."""
+    return tc.sysroot_dir.path
 
 def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs, c_srcs):
     args = ctx.actions.args()
@@ -80,7 +76,7 @@ def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs, c_srcs):
 def _ocaml_library_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
-    sysroot = _sysroot_root(tc.sysroot_files)
+    sysroot = _sysroot_root(tc)
 
     objs_dir = ctx.actions.declare_directory(ctx.label.name + "_objs")
     cmxa = ctx.actions.declare_file(ctx.label.name + ".cmxa")
@@ -117,7 +113,7 @@ def _ocaml_library_impl(ctx):
 def _ocaml_binary_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
-    sysroot = _sysroot_root(tc.sysroot_files)
+    sysroot = _sysroot_root(tc)
 
     exe = ctx.actions.declare_file(ctx.label.name)
 

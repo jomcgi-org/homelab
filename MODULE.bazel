@@ -50,10 +50,11 @@ buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbudd
 use_repo(buildbuddy, "buildbuddy_toolchain")
 
 # OCaml ruleset (bazel/ocaml) — thin native rules driving ocamlopt over a
-# hermetic Debian OCaml sysroot (fetched + extracted below). The sysroot is
-# staged as action inputs; native linking uses the executor's C toolchain.
-ocaml_sysroot_ext = use_extension("//bazel/ocaml/toolchain:repositories.bzl", "ocaml_sysroot")
-use_repo(ocaml_sysroot_ext, "ocaml_sysroot")
+# hermetic OCaml sysroot. The extension fetches the Semgrep OCaml fork *source*;
+# //bazel/ocaml/toolchain:ocaml_compiler builds it as an RBE action (so binaries
+# link the executor's glibc) into a sysroot staged as action inputs.
+ocaml_source_ext = use_extension("//bazel/ocaml/toolchain:repositories.bzl", "ocaml_source")
+use_repo(ocaml_source_ext, "ocaml_source")
 
 register_toolchains("//bazel/ocaml:ocaml_toolchain")
 

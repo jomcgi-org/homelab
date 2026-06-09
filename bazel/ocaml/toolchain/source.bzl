@@ -1,7 +1,7 @@
 """Pinned source for the hermetic OCaml compiler — Semgrep's OCaml fork.
 
-The compiler is built from source (see repositories.bzl) rather than fetched as
-Debian debs, for two reasons:
+The compiler source is cloned (repositories.bzl) and built from source by an RBE
+action (compiler.bzl) rather than fetched as Debian debs, for two reasons:
 
   1. It matches **Semgrep CE**, which pins `ocaml >= 5.3.0` via the custom variant
      `git+https://github.com/semgrep/ocaml.git` branch `5.3.0-semgrep`. That
