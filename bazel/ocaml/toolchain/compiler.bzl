@@ -26,6 +26,7 @@ log() {{ tail -80 "$1" >&2; }}
 ./configure --prefix="$WORK/_install" > _cfg.log 2>&1 || {{ log _cfg.log; exit 1; }}
 make -j"$(nproc)" > _make.log 2>&1 || {{ log _make.log; exit 1; }}
 make install > _inst.log 2>&1 || {{ log _inst.log; exit 1; }}
+mkdir -p "{out}"
 cp -RL "$WORK/_install/." "{out}/"
 test -x "{out}/bin/ocamlopt.opt"
 test -f "{out}/lib/ocaml/compiler-libs/ocamlcommon.cmxa"
