@@ -40,7 +40,8 @@
       "Bash(wc:*)",
       "Bash(column:*)",
       "WebFetch(domain:*)",
-      "Bash(bb:*)"
+      "Bash(bb:*)",
+      "mcp__buildbuddy"
     ],
     "additionalDirectories": ["/tmp/claude-worktrees"]
   },
