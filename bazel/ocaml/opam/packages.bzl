@@ -1,15 +1,15 @@
 """Pinned opam packages built from source via their own dune metadata.
 
-Each entry is a release-asset tarball (URL + sha256, like toolchain/debs.bzl) --
+Each entry is a release-asset tarball (URL + sha256) --
 the dune-release `.tbz` assets are checksum-stable, unlike GitHub's
 auto-generated `/archive/` tarballs. The @ocaml_<repo> repository rule fetches
 and extracts the tarball, then runs dune2bazel.py over `<src_dir>/dune` to
 generate the ocaml_library BUILD.
 
-re 1.11.0 is the newest ocaml-re that compiles on our bullseye OCaml 4.11.1: it
-is pure OCaml, depends only on `seq` (which lives in the 4.11 stdlib), and uses
-no ppx or C stubs. re 1.12.0+ call `List.equal` (OCaml >= 4.12), so they are out
-of reach until the toolchain's compiler is bumped.
+re is pinned at 1.11.0: pure OCaml, depends only on `seq`, no ppx or C stubs.
+The pin originally came from the bullseye 4.11.1 toolchain (1.12.0+ call
+`List.equal`, OCaml >= 4.12); the toolchain now builds OCaml 5.3.0, so a bump to
+a modern tag is a trivial follow-up.
 """
 
 OPAM_PACKAGES = [

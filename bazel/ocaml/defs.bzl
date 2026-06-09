@@ -2,7 +2,8 @@
 
     load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary")
 
-See README.md for the toolchain design (digest-pinned OCaml container on RBE).
+See README.md for the toolchain design (Semgrep's OCaml 5.3 fork, built from
+source into a relocatable sysroot staged as action inputs).
 """
 
 load(

@@ -41,44 +41,26 @@ case "$SYSROOT" in
 esac
 
 # --- Relocate the OCaml toolchain -------------------------------------------
-# The Debian ocamlopt has multiarch-prefixed C tool names baked in
-# (x86_64-linux-gnu-{as,gcc,ld,ar,ranlib}, PATH-searched). Shim them to the
-# universal host tools so native codegen/link works on any executor without
-# bundling binutils/gcc.
-SHIM="$(mktemp -d)"
-make_shim() {
-	pn="$1"
-	shift
-	for c in "$@"; do
-		if command -v "$c" >/dev/null 2>&1; then
-			printf '#!/bin/sh\nexec %s "$@"\n' "$c" >"$SHIM/$pn"
-			chmod +x "$SHIM/$pn"
-			return 0
-		fi
-	done
-	echo "ocaml_compile: WARNING no host tool for $pn (tried: $*)" >&2
-}
-make_shim x86_64-linux-gnu-as as
-make_shim x86_64-linux-gnu-gcc cc gcc
-make_shim x86_64-linux-gnu-ld ld
-make_shim x86_64-linux-gnu-ar ar
-make_shim x86_64-linux-gnu-ranlib ranlib
+# The compiler is built from source (semgrep/ocaml 5.3.0) with a baked-in
+# --prefix; relocate it to wherever Bazel staged the sysroot via OCAMLLIB. The
+# build configures plain `as`/`gcc` for native code generation and the final
+# link, so those resolve from the execution host's PATH (the same C toolchain
+# the repo's C/C++ builds use) — nothing is bundled.
+export OCAMLLIB="$S/lib/ocaml"
+export CAML_LD_LIBRARY_PATH="$S/lib/ocaml/stublibs${CAML_LD_LIBRARY_PATH:+:$CAML_LD_LIBRARY_PATH}"
+export PATH="$S/bin:$PATH"
 
-export OCAMLLIB="$S/usr/lib/ocaml"
-export CAML_LD_LIBRARY_PATH="$S/usr/lib/ocaml/stublibs${CAML_LD_LIBRARY_PATH:+:$CAML_LD_LIBRARY_PATH}"
-export PATH="$SHIM:$S/usr/bin:$PATH"
-
-OCAMLOPT="$S/usr/bin/ocamlopt.opt"
-OCAMLDEP="$S/usr/bin/ocamldep.opt"
+OCAMLOPT="$S/bin/ocamlopt.opt"
+OCAMLDEP="$S/bin/ocamldep.opt"
 
 echo "ocaml_compile: mode=$MODE sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
 
-# Resolve opam (findlib) packages. ocamlfind is available in the sysroot but
-# disabled by default; the toy's opam_deps (unix/str/threads) ship with the
-# stdlib and link directly from OCAMLLIB by their archive name.
+# Resolve opam (findlib) packages. ocamlfind is not part of the compiler; the
+# toy's opam_deps (unix/str/threads) ship with the stdlib and link directly from
+# OCAMLLIB by their archive name.
 FIND=""
-if [ "$USE_FIND" = "1" ] && [ -x "$S/usr/bin/ocamlfind" ]; then
-	FIND="$S/usr/bin/ocamlfind"
+if [ "$USE_FIND" = "1" ] && [ -x "$S/bin/ocamlfind" ]; then
+	FIND="$S/bin/ocamlfind"
 fi
 
 INCFLAGS=""
