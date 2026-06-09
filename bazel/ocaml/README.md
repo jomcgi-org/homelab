@@ -59,19 +59,25 @@ probe in the driver proved the actions kept landing on the default executor
 container image. No target in the repo had ever used one; there was no precedent
 because it isn't supported here.
 
-So the compiler has to **travel with the action as hermetic inputs**:
+So the compiler is **built from source as a Bazel action and travels with the
+ocaml actions as hermetic inputs**:
 
-1. `toolchain/repositories.bzl` is a module extension that **builds the compiler
-   from source**: it clones the pinned **Semgrep OCaml fork** (`source.bzl` —
-   `github.com/semgrep/ocaml` branch `5.3.0-semgrep`, stock 5.3.0 + a thin patch
-   set) and runs `./configure && make && make install` into
-   `@ocaml_sysroot//:sysroot`.
-2. Every ocaml action stages that sysroot as inputs. The driver relocates the
+1. `toolchain/repositories.bzl` is a module extension that clones the pinned
+   **Semgrep OCaml fork** (`source.bzl` — `github.com/semgrep/ocaml` branch
+   `5.3.0-semgrep`, stock 5.3.0 + a thin patch set) and exposes its tree as
+   `@ocaml_source//:srcs`. It does **not** build.
+2. `toolchain/compiler.bzl`'s `ocaml_compiler` rule runs `./configure && make &&
+   make install` as a **build action on the RBE executor**, producing the sysroot
+   as a TreeArtifact. Building where the compiler will *run* is what makes it
+   portable: a from-source build in the repository rule links the *workflow
+   runner's* glibc, which is newer than the executor's and fails at action time
+   with `GLIBC_2.38 not found`. The action is cached in the RBE action cache, so
+   the compiler builds once.
+3. Every ocaml action stages that sysroot as inputs; the driver relocates the
    compiler with a single `OCAMLLIB` override and calls `ocamlopt.opt` /
-   `ocamldep.opt` from the sysroot's `bin/`.
-3. **Native code generation and the final link use the execution host's
-   `as`/`gcc`/`ld`** — the same C toolchain the repo's C/C++ builds already rely
-   on (the build configures plain `as`/`gcc`). So no C toolchain is bundled.
+   `ocamldep.opt` from the sysroot's `bin/`. **Native code generation and the
+   final link use the execution host's `as`/`gcc`/`ld`** — the same C toolchain
+   the repo's C/C++ builds already rely on. So no C toolchain is bundled.
 
 **Why from source, not Debian debs?** Two reasons (see `source.bzl`):
 
@@ -90,12 +96,12 @@ carries the sysroot files plus tool configuration (`use_ocamlfind`, extra flags)
 
 ### Productionization path
 
-The first clean build of the compiler is slow (~minutes); Bazel caches the
-repository output. The planned follow-up is **Option B**: build the compiler once
-and pin a *relocatable prebuilt tarball* (URL + sha256), so fetches are seconds —
-useful if BuildBuddy CI runners don't persist the repo cache. A custom RBE
-executor image with the compiler preinstalled, and a Gazelle/`ocamldep` BUILD
-generator (per-module targets, real incrementality), remain the longer-term
+The first compiler build is slow (~minutes); the RBE action cache makes it a
+once-per-source-change cost. If that proves too slow, the follow-up is to build
+the compiler once and pin a *relocatable prebuilt tarball* (URL + sha256) built
+against an old glibc, so fetches are seconds. A custom RBE executor image with the
+compiler preinstalled, and a Gazelle/`ocamldep` BUILD generator (per-module
+targets, real incrementality), remain the longer-term
 shapes. See `docs/plans/2026-06-09-ocaml-semgrep-toolchain-opam-ppx.md`.
 
 ## The external opam dependency
@@ -154,7 +160,8 @@ bazel/ocaml/
   toolchain.bzl            # OcamlToolchainInfo, ocaml_toolchain rule
   toolchain/
     source.bzl             # pinned Semgrep OCaml fork (git url + commit)
-    repositories.bzl       # module extension: build from source -> @ocaml_sysroot
+    repositories.bzl       # module extension: clone source -> @ocaml_source
+    compiler.bzl           # ocaml_compiler rule: build the compiler on RBE -> sysroot
   driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
   opam/                    # fetch + dune->BUILD generation for real opam deps
     packages.bzl           # pinned opam package tarballs (URL + sha256)
