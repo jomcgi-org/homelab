@@ -59,7 +59,7 @@ def _sysroot_root(sysroot_files):
             return f.path[:-len(needle)]
     fail("ocamlopt.opt not found in OCaml sysroot")
 
-def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs):
+def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs, c_srcs):
     args = ctx.actions.args()
     args.add("--mode", mode)
     args.add("--name", ctx.label.name)
@@ -73,6 +73,8 @@ def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs):
         args.add("--opam-pkg", p)
     for s in srcs:
         args.add("--src", s.path)
+    for c in c_srcs:
+        args.add("--c-src", c.path)
     return args
 
 def _ocaml_library_impl(ctx):
@@ -84,7 +86,7 @@ def _ocaml_library_impl(ctx):
     cmxa = ctx.actions.declare_file(ctx.label.name + ".cmxa")
     a_lib = ctx.actions.declare_file(ctx.label.name + ".a")
 
-    args = _driver_args(ctx, tc, sysroot, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs)
+    args = _driver_args(ctx, tc, sysroot, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
     args.add("--objs-out", objs_dir.path)
     args.add("--cmxa-out", cmxa.path)
     args.add("--a-out", a_lib.path)
@@ -92,7 +94,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -119,7 +121,7 @@ def _ocaml_binary_impl(ctx):
 
     exe = ctx.actions.declare_file(ctx.label.name)
 
-    args = _driver_args(ctx, tc, sysroot, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs)
+    args = _driver_args(ctx, tc, sysroot, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
     args.add("--exe-out", exe.path)
     for c in dep.cmxa.to_list():  # postorder: dependencies before dependents
         args.add("--cmxa", c.path)
@@ -127,7 +129,7 @@ def _ocaml_binary_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -144,6 +146,12 @@ _COMMON_ATTRS = {
         allow_files = [".ml", ".mli"],
         mandatory = True,
         doc = ".ml/.mli sources; compile order is recovered automatically via ocamldep -sort.",
+    ),
+    "c_srcs": attr.label_list(
+        allow_files = [".c"],
+        doc = "C stub sources (dune `foreign_stubs`/`c_names`). Compiled with ocamlopt " +
+              "(which supplies the caml/*.h headers) and folded into the library's .a, so " +
+              "binaries that link this library pull in the stubs automatically.",
     ),
     "deps": attr.label_list(
         providers = [OcamlInfo],
