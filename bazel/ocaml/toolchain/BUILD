@@ -18,13 +18,13 @@ bzl_library(
 )
 
 bzl_library(
-    name = "source",
-    srcs = ["source.bzl"],
+    name = "compiler",
+    srcs = ["compiler.bzl"],
     visibility = ["//visibility:public"],
 )
 
 bzl_library(
-    name = "compiler",
-    srcs = ["compiler.bzl"],
+    name = "source",
+    srcs = ["source.bzl"],
     visibility = ["//visibility:public"],
 )
