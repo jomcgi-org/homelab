@@ -1,15 +1,17 @@
 #!/bin/sh
-# Whole-library OCaml compile/link driver, using a hermetic Debian OCaml sysroot
-# staged as action inputs. Recovers compile order with `ocamldep -sort`, compiles
-# each module's .mli before its .ml, then archives the .cmx into a native .cmxa
-# (library mode) or links a native executable (binary mode).
+# Whole-library OCaml compile/link driver. The compiler is supplied as a single
+# tar (the OCaml 5.3 `make install` prefix, built by //bazel/ocaml/toolchain:
+# ocaml_compiler); the driver extracts it to a temp sysroot ($S). It recovers
+# compile order with `ocamldep -sort`, compiles each module's .mli before its .ml,
+# then archives the .cmx into a native .cmxa (library mode) or links a native
+# executable (binary mode).
 #
-# The compiler binaries come from the sysroot ($SYSROOT); native code generation
+# The compiler binaries come from the extracted sysroot; native code generation
 # and the final link use the execution host's as/gcc/ld (the same C toolchain the
 # repo's C/C++ builds use). The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-MODE="" NAME="" SYSROOT="" USE_FIND="0"
+MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CMXAS="" CFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
@@ -17,7 +19,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--mode) MODE="$2" && shift 2 ;;
 	--name) NAME="$2" && shift 2 ;;
-	--sysroot) SYSROOT="$2" && shift 2 ;;
+	--sysroot-tar) SYSROOT_TAR="$2" && shift 2 ;;
 	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
 	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
 	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
@@ -33,12 +35,16 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# Sysroot path is relative to the action's exec root; make it absolute so the
-# compiler still resolves it after we cd around.
-case "$SYSROOT" in
-/*) S="$SYSROOT" ;;
-*) S="$(pwd)/$SYSROOT" ;;
+# The sysroot tar is staged at an exec-root-relative path; make it absolute, then
+# extract it to a fresh sysroot dir ($S) with the bin/ + lib/ocaml/ layout. A tar
+# (single File artifact) survives RBE staging whole and preserves the +x bit,
+# unlike a TreeArtifact of the install.
+case "$SYSROOT_TAR" in
+/*) TAR="$SYSROOT_TAR" ;;
+*) TAR="$(pwd)/$SYSROOT_TAR" ;;
 esac
+S="$(mktemp -d)"
+tar -xf "$TAR" -C "$S"
 
 # --- Relocate the OCaml toolchain -------------------------------------------
 # The compiler is built from source (semgrep/ocaml 5.3.0) with a baked-in

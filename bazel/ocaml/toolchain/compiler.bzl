@@ -5,46 +5,47 @@ actions run on), so the resulting binaries link the executor's glibc and run
 there — fixing the `GLIBC_2.38 not found` mismatch you get when the compiler is
 built in a repository rule on the newer workflow runner.
 
-Output is a single TreeArtifact (`sysroot/`) holding the `make install` prefix
-(`bin/`, `lib/ocaml/`, including `compiler-libs`). It is staged as inputs to every
-ocaml action and relocated via OCAMLLIB. The build is hermetic (source is the only
-input; `gcc`/`make` come from the executor, like the repo's C/C++ builds) and is
-cached in the RBE action cache, so the compiler builds once and is reused.
+Output is a single **tar** of the `make install` prefix (`bin/`, `lib/ocaml/`,
+including `compiler-libs`), not a TreeArtifact: a TreeArtifact of the install does
+not survive RBE staging intact (the bin tools come up missing in consuming
+actions). A single File artifact always materializes whole and tar preserves the
+executable bit, so the driver extracts it per action. The build is hermetic
+(source is the only input; `gcc`/`make` come from the executor, like the repo's
+C/C++ builds) and is cached in the RBE action cache, so the compiler builds once.
 """
 
 def _ocaml_compiler_impl(ctx):
-    sysroot = ctx.actions.declare_directory(ctx.label.name + "_sysroot")
+    sysroot_tar = ctx.actions.declare_file(ctx.label.name + "_sysroot.tar")
     src_root = ctx.file.configure.dirname
 
     command = """
 set -eu
 WORK="$(mktemp -d)"
-cp -RL "{src_root}/." "$WORK/"
-cd "$WORK"
+cp -RL "{src_root}/." "$WORK/src"
+cd "$WORK/src"
 chmod +x configure
 log() {{ tail -80 "$1" >&2; }}
 ./configure --prefix="$WORK/_install" > _cfg.log 2>&1 || {{ log _cfg.log; exit 1; }}
 make -j"$(nproc)" > _make.log 2>&1 || {{ log _make.log; exit 1; }}
 make install > _inst.log 2>&1 || {{ log _inst.log; exit 1; }}
-mkdir -p "{out}"
-cp -RL "$WORK/_install/." "{out}/"
-test -x "{out}/bin/ocamlopt.opt"
-test -f "{out}/lib/ocaml/compiler-libs/ocamlcommon.cmxa"
+test -x "$WORK/_install/bin/ocamlopt.opt"
+test -f "$WORK/_install/lib/ocaml/compiler-libs/ocamlcommon.cmxa"
+tar -cf "{out}" -C "$WORK/_install" .
 """.format(
         src_root = src_root,
-        out = sysroot.path,
+        out = sysroot_tar.path,
     )
 
     ctx.actions.run_shell(
         inputs = ctx.files.srcs,
-        outputs = [sysroot],
+        outputs = [sysroot_tar],
         command = command,
         use_default_shell_env = True,
         mnemonic = "OcamlCompilerBuild",
         progress_message = "Building OCaml compiler from source (%{label})",
     )
 
-    return [DefaultInfo(files = depset([sysroot]))]
+    return [DefaultInfo(files = depset([sysroot_tar]))]
 
 ocaml_compiler = rule(
     implementation = _ocaml_compiler_impl,
@@ -60,5 +61,5 @@ ocaml_compiler = rule(
             doc = "The source tree's ./configure script — its dir is the build root.",
         ),
     },
-    doc = "Builds the OCaml compiler from source into a relocatable sysroot TreeArtifact.",
+    doc = "Builds the OCaml compiler from source into a relocatable sysroot tar.",
 )

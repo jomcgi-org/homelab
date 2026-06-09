@@ -2,7 +2,7 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load(":compiler.bzl", "ocaml_compiler")
 
 # Builds the pinned Semgrep OCaml fork from source as an RBE action (so it links
-# the executor's glibc). Output is a sysroot TreeArtifact the toolchain stages.
+# the executor's glibc). Output is a sysroot tar the toolchain stages + extracts.
 ocaml_compiler(
     name = "ocaml_compiler",
     srcs = "@ocaml_source//:srcs",

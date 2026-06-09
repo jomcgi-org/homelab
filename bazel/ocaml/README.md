@@ -67,15 +67,18 @@ ocaml actions as hermetic inputs**:
    `5.3.0-semgrep`, stock 5.3.0 + a thin patch set) and exposes its tree as
    `@ocaml_source//:srcs`. It does **not** build.
 2. `toolchain/compiler.bzl`'s `ocaml_compiler` rule runs `./configure && make &&
-   make install` as a **build action on the RBE executor**, producing the sysroot
-   as a TreeArtifact. Building where the compiler will *run* is what makes it
-   portable: a from-source build in the repository rule links the *workflow
-   runner's* glibc, which is newer than the executor's and fails at action time
-   with `GLIBC_2.38 not found`. The action is cached in the RBE action cache, so
-   the compiler builds once.
-3. Every ocaml action stages that sysroot as inputs; the driver relocates the
-   compiler with a single `OCAMLLIB` override and calls `ocamlopt.opt` /
-   `ocamldep.opt` from the sysroot's `bin/`. **Native code generation and the
+   make install` as a **build action on the RBE executor**, packaging the install
+   prefix as a single **tar** (`bin/`, `lib/ocaml/`). Building where the compiler
+   will *run* is what makes it portable: a from-source build in the repository rule
+   links the *workflow runner's* glibc, which is newer than the executor's and
+   fails at action time with `GLIBC_2.38 not found`. The action is cached in the
+   RBE action cache, so the compiler builds once. (A tar, not a TreeArtifact of the
+   install: a directory artifact does not survive RBE staging intact — the bin
+   tools come up missing — whereas a single File always materializes whole and tar
+   preserves the executable bit.)
+3. Every ocaml action stages that tar as input; the driver extracts it to a temp
+   sysroot, relocates the compiler with a single `OCAMLLIB` override, and calls
+   `ocamlopt.opt` / `ocamldep.opt` from `bin/`. **Native code generation and the
    final link use the execution host's `as`/`gcc`/`ld`** — the same C toolchain
    the repo's C/C++ builds already rely on. So no C toolchain is bundled.
 
