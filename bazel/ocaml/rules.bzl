@@ -51,15 +51,11 @@ def _collect(ctx):
         opam = depset(transitive = opam),
     )
 
-def _sysroot_root(tc):
-    """Exec-root-relative path to the sysroot (the TreeArtifact dir holding bin/, lib/ocaml/)."""
-    return tc.sysroot_dir.path
-
-def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs, c_srcs):
+def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs):
     args = ctx.actions.args()
     args.add("--mode", mode)
     args.add("--name", ctx.label.name)
-    args.add("--sysroot", sysroot)
+    args.add("--sysroot-tar", tc.sysroot_tar.path)
     args.add("--use-ocamlfind", "1" if tc.use_ocamlfind else "0")
     for f in tc.extra_compile_flags:
         args.add("--compile-flag", f)
@@ -76,13 +72,12 @@ def _driver_args(ctx, tc, sysroot, mode, include_dirs, opam_pkgs, srcs, c_srcs):
 def _ocaml_library_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
-    sysroot = _sysroot_root(tc)
 
     objs_dir = ctx.actions.declare_directory(ctx.label.name + "_objs")
     cmxa = ctx.actions.declare_file(ctx.label.name + ".cmxa")
     a_lib = ctx.actions.declare_file(ctx.label.name + ".a")
 
-    args = _driver_args(ctx, tc, sysroot, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
+    args = _driver_args(ctx, tc, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
     args.add("--objs-out", objs_dir.path)
     args.add("--cmxa-out", cmxa.path)
     args.add("--a-out", a_lib.path)
@@ -113,11 +108,10 @@ def _ocaml_library_impl(ctx):
 def _ocaml_binary_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
-    sysroot = _sysroot_root(tc)
 
     exe = ctx.actions.declare_file(ctx.label.name)
 
-    args = _driver_args(ctx, tc, sysroot, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
+    args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
     args.add("--exe-out", exe.path)
     for c in dep.cmxa.to_list():  # postorder: dependencies before dependents
         args.add("--cmxa", c.path)
