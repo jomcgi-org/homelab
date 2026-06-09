@@ -1,6 +1,5 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library")
+load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_test")
 
 # Three modules with a real inter-module dependency (greeting -> message), so
 # `ocamldep -sort` has ordering work to do.
@@ -26,18 +25,21 @@ ocaml_binary(
     ],
 )
 
-# Primary green-CI signal: the whole pipeline (ocamldep sort, per-module
-# compile, archive, link) builds on RBE.
+# Idiomatic OCaml test: a native executable that exits non-zero on failure.
+# `bazel test //...` runs it directly — no wrapper. Picked up by the global
+# test-all with no extra wiring.
+ocaml_test(
+    name = "greeting_test",
+    srcs = ["test_greeting.ml"],
+    deps = [
+        ":hello_lib",
+        "//bazel/ocaml/third_party/fmt",
+    ],
+)
+
+# Also assert the runnable binary itself links (covers the unix opam_deps path
+# that the library test doesn't exercise).
 build_test(
     name = "hello_build_test",
     targets = [":hello"],
-)
-
-# Runtime verification: execute the native binary and check its output. The
-# binary links the host's glibc, so it runs anywhere the build action ran.
-sh_test(
-    name = "hello_run_test",
-    srcs = ["run_hello_test.sh"],
-    args = ["$(rootpath :hello)"],
-    data = [":hello"],
 )

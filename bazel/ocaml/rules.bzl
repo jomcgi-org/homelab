@@ -173,3 +173,15 @@ ocaml_binary = rule(
     executable = True,
     doc = "Compile + link a runnable native OCaml executable.",
 )
+
+# An OCaml test is just a native executable that exits 0 on success and non-zero
+# on failure (the same convention as Dune's `(test)` stanza). The linked binary
+# *is* the test runner, so `bazel test //...` runs it directly and the exit code
+# is the verdict — no wrapper script. Shares the binary implementation.
+ocaml_test = rule(
+    implementation = _ocaml_binary_impl,
+    attrs = _COMMON_ATTRS,
+    toolchains = [_TOOLCHAIN_TYPE],
+    test = True,
+    doc = "Compile + link a native OCaml test executable (exit 0 = pass).",
+)

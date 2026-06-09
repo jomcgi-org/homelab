@@ -16,6 +16,11 @@ load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary")
   compiles a set of modules into a native `.cmxa` archive.
 - **`ocaml_binary(name, srcs, deps, opam_deps)`** — compiles + links a runnable
   native executable.
+- **`ocaml_test(name, srcs, deps, opam_deps)`** — a native test executable that
+  exits 0 on success, non-zero on failure (the same convention as Dune's
+  `(test)` stanza). The binary *is* the test runner, so `bazel test //...` runs
+  it directly — no wrapper script — and it joins the global test-all with no
+  extra wiring.
 - **`OcamlInfo`** provider carrying the compiled output dir (`cmi`/`cmx`/`.o`),
   the `.cmxa` archive (+ its `.a`), transitive include dirs, and transitive
   opam/findlib package names in link order.
@@ -109,7 +114,7 @@ bazel/ocaml/
     extract_debs.py        # stdlib-only .deb (ar + tar.xz) extractor
   driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
   third_party/fmt/         # vendored fmt 0.11.0 (ISC)
-  examples/hello/          # message -> greeting -> main, links fmt + unix
+  examples/hello/          # message -> greeting -> main; greeting_test (ocaml_test)
 ```
 
 ## Verify
