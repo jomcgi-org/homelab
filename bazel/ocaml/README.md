@@ -101,6 +101,41 @@ the stdlib, so it builds standalone — no `opam install` step anywhere.
 The `opentelemetry` SDK span demo (the stretch goal) is intentionally dropped:
 its transitive deps (protobuf etc.) make it heavy for a from-source toy.
 
+## Real opam deps, built from their own dune file
+
+The next step past a hand-vendored dep: take a *real* opam library and build it
+from source **driven by its own `dune` metadata** — because an opam package
+*is* a dune project, translating its dune file is how you resolve it.
+
+[`re`](https://github.com/ocaml/ocaml-re) (ocaml-re) 1.11.0 is wired in this
+way (`examples/regex` depends on it):
+
+1. **Fetch.** `opam/packages.bzl` pins re's checksum-stable dune-release tarball
+   (`re-1.11.0.tbz` + sha256). The `opam/extension.bzl` module extension
+   downloads and extracts it into `@ocaml_re`.
+2. **Translate.** The repository rule runs `opam/dune2bazel.py` over the
+   package's real `lib/dune` (`(library (name re) (libraries seq))`) and emits
+   the `ocaml_library` BUILD — no hand-written target. The generator maps
+   `(libraries …)` to `opam_deps`, dropping stdlib-shipped packages (`seq` lives
+   in `stdlib.cmxa`), and **rejects loudly** any dune feature we don't model yet
+   (ppx `preprocess`, C `foreign_stubs`, module filtering, multiple stanzas) —
+   that rejection marks exactly where real opam resolution would have to begin.
+3. **Build.** Our existing `ocaml_library` compiles the whole library flat.
+   re's modules already reference each other by flat names (`Cset.`, `Automata.`)
+   and `re.ml` is itself the namespace module (`include Core; module Pcre = Pcre`
+   …), so the flat compile reproduces the public `Re.*` API without replicating
+   dune's `Re__`-prefixed wrapping.
+
+**Version ceiling.** re 1.11.0 is the newest tag that compiles on the toolchain's
+bullseye OCaml 4.11.1; 1.12.0+ call `List.equal` (OCaml ≥ 4.12). Bumping the
+sysroot compiler lifts this.
+
+**Module-name caveat.** re ships internal `Fmt` and `Str` modules. Because the
+flat compile doesn't namespace-prefix them, a binary must not link both `re` and
+the vendored `fmt` (duplicate `Fmt`) — `examples/regex` depends on re alone.
+This is the collision that dune's library wrapping exists to prevent, and the
+natural pressure toward the per-module/wrapped Gazelle generator below.
+
 ## Layout
 
 ```
@@ -113,8 +148,14 @@ bazel/ocaml/
     repositories.bzl       # module extension: fetch + extract -> @ocaml_sysroot
     extract_debs.py        # stdlib-only .deb (ar + tar.xz) extractor
   driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
+  opam/                    # fetch + dune->BUILD generation for real opam deps
+    packages.bzl           # pinned opam package tarballs (URL + sha256)
+    extension.bzl          # module extension: fetch + generate -> @ocaml_<pkg>
+    dune2bazel.py          # stdlib-only dune (library) -> ocaml_library generator
   third_party/fmt/         # vendored fmt 0.11.0 (ISC)
+  third_party/re/          # alias -> @ocaml_re (re 1.11.0, fetched + dune-built)
   examples/hello/          # message -> greeting -> main; greeting_test (ocaml_test)
+  examples/regex/          # depends on the fetched `re` opam lib; regex_test
 ```
 
 ## Verify
