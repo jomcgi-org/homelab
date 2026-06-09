@@ -53,7 +53,7 @@ def _collect(ctx):
 
 def _sysroot_root(sysroot_files):
     """Exec-root-relative path to the sysroot, derived from ocamlopt.opt."""
-    needle = "/usr/bin/ocamlopt.opt"
+    needle = "/bin/ocamlopt.opt"
     for f in sysroot_files.to_list():
         if f.path.endswith(needle):
             return f.path[:-len(needle)]

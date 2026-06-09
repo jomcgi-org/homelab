@@ -1,12 +1,13 @@
 """OCaml toolchain — Bazel toolchain mechanism for the bazel/ocaml ruleset.
 
 The compiler is supplied as a *hermetic sysroot staged into the action* (see
-toolchain/repositories.bzl): the pinned Debian OCaml debs are extracted into
-`@ocaml_sysroot//:sysroot` and fed to every ocaml action as inputs. The compiler
-binaries are old-glibc (Debian bullseye) so they run forward-compatibly wherever
-BuildBuddy schedules the action; relocation is a single OCAMLLIB override. Native
+toolchain/repositories.bzl): the pinned Semgrep OCaml fork (5.3.0) is built from
+source into `@ocaml_sysroot//:sysroot` and fed to every ocaml action as inputs.
+Relocation to wherever Bazel stages it is a single OCAMLLIB override. Native
 linking uses the execution host's gcc/as/ld (the same C toolchain the repo's
-C/C++ builds use) — so no C toolchain is bundled.
+C/C++ builds use) — so no C toolchain is bundled. Building from source (rather
+than fetching debs) matches Semgrep's compiler and ships compiler-libs, which
+unblocks ppx.
 
 Why not a container image? BuildBuddy's RBE here does not honor the per-action
 `container-image` execution property (verified: actions land on the default

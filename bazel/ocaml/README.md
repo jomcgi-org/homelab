@@ -61,38 +61,42 @@ because it isn't supported here.
 
 So the compiler has to **travel with the action as hermetic inputs**:
 
-1. `toolchain/repositories.bzl` is a module extension that downloads pinned
-   **Debian bullseye** OCaml `.deb`s (`debs.bzl`, from the permanent
-   `archive.debian.org` mirror) and extracts them — with a stdlib-only Python
-   `ar`/`tar` extractor, no `dpkg` needed — into `@ocaml_sysroot//:sysroot`.
+1. `toolchain/repositories.bzl` is a module extension that **builds the compiler
+   from source**: it clones the pinned **Semgrep OCaml fork** (`source.bzl` —
+   `github.com/semgrep/ocaml` branch `5.3.0-semgrep`, stock 5.3.0 + a thin patch
+   set) and runs `./configure && make && make install` into
+   `@ocaml_sysroot//:sysroot`.
 2. Every ocaml action stages that sysroot as inputs. The driver relocates the
    compiler with a single `OCAMLLIB` override and calls `ocamlopt.opt` /
-   `ocamldep.opt` from the sysroot.
+   `ocamldep.opt` from the sysroot's `bin/`.
 3. **Native code generation and the final link use the execution host's
    `as`/`gcc`/`ld`** — the same C toolchain the repo's C/C++ builds already rely
-   on. So no C toolchain is bundled.
+   on (the build configures plain `as`/`gcc`). So no C toolchain is bundled.
 
-Two properties make this robust regardless of where BuildBuddy schedules the
-action:
+**Why from source, not Debian debs?** Two reasons (see `source.bzl`):
 
-- **Old glibc.** Bullseye binaries need `glibc >= 2.29`, so they run
-  forward-compatibly on both the RBE executor and the workflow runner.
-- **Host-linked output.** Binaries link the host's glibc, so they run wherever
-  the build action ran (the `hello_run_test` executes the binary directly).
+- **Matches Semgrep.** Semgrep CE pins `ocaml >= 5.3.0` via this exact fork.
+  Building Semgrep with the ruleset is the end goal, so the toolchain targets
+  Semgrep's compiler. (The previous toolchain fetched Debian **bullseye** 4.11.1
+  debs, which kept hitting version ceilings — e.g. `re` ≥1.12 needs 4.12's
+  `List.equal`.)
+- **Ships `compiler-libs`.** A from-source `make install` includes
+  `compiler-libs` (`ast_mapper`, `ocamlcommon.cmxa`), which the stripped Debian
+  packages omitted — this is what **unblocks ppx**.
 
-`OcamlToolchainInfo` (the Bazel toolchain) carries the sysroot files plus tool
-configuration (whether to prefer `ocamlfind`, extra flags). `ocamlfind` is
-present in the sysroot; it's left off by default because the toy's `opam_deps`
-are stdlib libraries that link by archive name without it.
+Binaries link the execution host's glibc, so they run wherever the action ran
+(`hello`'s `build_test` links it). `OcamlToolchainInfo` (the Bazel toolchain)
+carries the sysroot files plus tool configuration (`use_ocamlfind`, extra flags).
 
 ### Productionization path
 
-The cleanest long-term shape is a **custom RBE executor image** (or a
-self-hosted executor) with the compiler and the project's real `opam_deps`
-preinstalled, so the sysroot need not be staged per action. That requires
-control over the executor image this repo's BuildBuddy plan doesn't currently
-expose. A Gazelle/`ocamldep` BUILD generator (per-module targets, real
-incrementality) is the other obvious next step.
+The first clean build of the compiler is slow (~minutes); Bazel caches the
+repository output. The planned follow-up is **Option B**: build the compiler once
+and pin a *relocatable prebuilt tarball* (URL + sha256), so fetches are seconds —
+useful if BuildBuddy CI runners don't persist the repo cache. A custom RBE
+executor image with the compiler preinstalled, and a Gazelle/`ocamldep` BUILD
+generator (per-module targets, real incrementality), remain the longer-term
+shapes. See `docs/plans/2026-06-09-ocaml-semgrep-toolchain-opam-ppx.md`.
 
 ## The external opam dependency
 
@@ -130,9 +134,10 @@ way (`examples/regex` depends on it):
    …), so the flat compile reproduces the public `Re.*` API without replicating
    dune's `Re__`-prefixed wrapping.
 
-**Version ceiling.** re 1.11.0 is the newest tag that compiles on the toolchain's
-bullseye OCaml 4.11.1; 1.12.0+ call `List.equal` (OCaml ≥ 4.12). Bumping the
-sysroot compiler lifts this.
+**Version note.** re is pinned at 1.11.0. That pin originally came from a
+*ceiling*: 1.12.0+ call `List.equal` (OCaml ≥ 4.12) and the toolchain was bullseye
+4.11.1. The toolchain now builds OCaml 5.3.0 from source, so that ceiling is
+lifted — bumping `re` to a modern tag is a trivial follow-up.
 
 **Module-name caveat.** re ships internal `Fmt` and `Str` modules. Because the
 flat compile doesn't namespace-prefix them, a binary must not link both `re` and
@@ -148,9 +153,8 @@ bazel/ocaml/
   rules.bzl                # rule impls + OcamlInfo provider
   toolchain.bzl            # OcamlToolchainInfo, ocaml_toolchain rule
   toolchain/
-    debs.bzl               # pinned Debian OCaml .deb URLs + checksums
-    repositories.bzl       # module extension: fetch + extract -> @ocaml_sysroot
-    extract_debs.py        # stdlib-only .deb (ar + tar.xz) extractor
+    source.bzl             # pinned Semgrep OCaml fork (git url + commit)
+    repositories.bzl       # module extension: build from source -> @ocaml_sysroot
   driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
   opam/                    # fetch + dune->BUILD generation for real opam deps
     packages.bzl           # pinned opam package tarballs (URL + sha256)
