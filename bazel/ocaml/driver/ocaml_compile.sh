@@ -137,7 +137,11 @@ if [ "$MODE" = "library" ]; then
 	[ "$A_OUT" = "${CMXA_OUT%.cmxa}.a" ] || cp "${CMXA_OUT%.cmxa}.a" "$A_OUT"
 	# Fold C stub objects into the library archive (the .a ocamlopt auto-finds
 	# next to the .cmxa), so binaries linking this library resolve the externals.
-	[ -n "$STUB_OBJS" ] && ar r "${CMXA_OUT%.cmxa}.a" $STUB_OBJS
+	# Use an explicit if (not `test && ar`): with no c_srcs the && list would
+	# return non-zero and trip `set -e`.
+	if [ -n "$STUB_OBJS" ]; then
+		ar r "${CMXA_OUT%.cmxa}.a" $STUB_OBJS
+	fi
 else
 	# Link order: stdlib opam archives, then deps (postorder), own modules, then
 	# any C stub objects compiled for this binary directly.
