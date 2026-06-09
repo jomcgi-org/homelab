@@ -12,8 +12,12 @@ competitor.
 load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary")
 ```
 
-- **`ocaml_library(name, srcs=[.ml/.mli], deps=[...], opam_deps=[...])`** —
-  compiles a set of modules into a native `.cmxa` archive.
+- **`ocaml_library(name, srcs=[.ml/.mli], c_srcs=[.c], deps=[...], opam_deps=[...])`** —
+  compiles a set of modules into a native `.cmxa` archive. `c_srcs` are C stubs
+  (dune's `foreign_stubs`/`c_names`): each `.c` is compiled by `ocamlopt` (which
+  supplies the `caml/*.h` headers, using the execution host's C compiler) and
+  folded into the library's `.a`, so binaries linking the library resolve the
+  `external` primitives with no extra wiring. See `examples/c_stubs`.
 - **`ocaml_binary(name, srcs, deps, opam_deps)`** — compiles + links a runnable
   native executable.
 - **`ocaml_test(name, srcs, deps, opam_deps)`** — a native test executable that
@@ -156,6 +160,7 @@ bazel/ocaml/
   third_party/re/          # alias -> @ocaml_re (re 1.11.0, fetched + dune-built)
   examples/hello/          # message -> greeting -> main; greeting_test (ocaml_test)
   examples/regex/          # depends on the fetched `re` opam lib; regex_test
+  examples/c_stubs/        # ocaml_library with a C stub (c_srcs); counter_test
 ```
 
 ## Verify

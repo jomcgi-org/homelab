@@ -10,7 +10,7 @@
 set -eu
 
 MODE="" NAME="" SYSROOT="" USE_FIND="0"
-INCLUDES="" OPAM_PKGS="" SRCS="" CMXAS="" CFLAGS=""
+INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CMXAS="" CFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
 while [ $# -gt 0 ]; do
@@ -23,6 +23,7 @@ while [ $# -gt 0 ]; do
 	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
 	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
 	--src) SRCS="$SRCS $2" && shift 2 ;;
+	--c-src) CSRCS="$CSRCS $2" && shift 2 ;;
 	--cmxa) CMXAS="$CMXAS $2" && shift 2 ;;
 	--objs-out) OBJS_OUT="$2" && shift 2 ;;
 	--cmxa-out) CMXA_OUT="$2" && shift 2 ;;
@@ -118,12 +119,27 @@ for ml in $ORDER; do
 	CMX_LIST="$CMX_LIST $WORK/$base.cmx"
 done
 
+# --- Compile C stub sources (if any) ----------------------------------------
+# ocamlopt compiles .c directly (it supplies caml/*.h) using the execution
+# host's C compiler; the .o lands next to the source in $WORK.
+STUB_OBJS=""
+for c in $CSRCS; do
+	cb="$(basename "$c")"
+	cp "$c" "$WORK/$cb"
+	(cd "$WORK" && "$OCAMLOPT" -c "$cb")
+	STUB_OBJS="$STUB_OBJS $WORK/${cb%.c}.o"
+done
+
 # --- Produce the output -----------------------------------------------------
 if [ "$MODE" = "library" ]; then
 	# ocamlopt -o NAME.cmxa also writes NAME.a alongside it.
 	"$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST
 	[ "$A_OUT" = "${CMXA_OUT%.cmxa}.a" ] || cp "${CMXA_OUT%.cmxa}.a" "$A_OUT"
+	# Fold C stub objects into the library archive (the .a ocamlopt auto-finds
+	# next to the .cmxa), so binaries linking this library resolve the externals.
+	[ -n "$STUB_OBJS" ] && ar r "${CMXA_OUT%.cmxa}.a" $STUB_OBJS
 else
-	# Link order: stdlib opam archives, then deps (postorder), then own modules.
-	"$OCAMLOPT" $CFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST -o "$EXE_OUT"
+	# Link order: stdlib opam archives, then deps (postorder), own modules, then
+	# any C stub objects compiled for this binary directly.
+	"$OCAMLOPT" $CFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS -o "$EXE_OUT"
 fi
