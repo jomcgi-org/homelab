@@ -20,6 +20,9 @@ def _ocaml_compiler_impl(ctx):
 
     command = """
 set -eu
+# Absolute output path BEFORE we cd into the build dir (the path is exec-root
+# relative; Bazel has already created its parent directory).
+OUT="$(pwd)/{out}"
 WORK="$(mktemp -d)"
 cp -RL "{src_root}/." "$WORK/src"
 cd "$WORK/src"
@@ -30,7 +33,7 @@ make -j"$(nproc)" > _make.log 2>&1 || {{ log _make.log; exit 1; }}
 make install > _inst.log 2>&1 || {{ log _inst.log; exit 1; }}
 test -x "$WORK/_install/bin/ocamlopt.opt"
 test -f "$WORK/_install/lib/ocaml/compiler-libs/ocamlcommon.cmxa"
-tar -cf "{out}" -C "$WORK/_install" .
+tar -cf "$OUT" -C "$WORK/_install" .
 """.format(
         src_root = src_root,
         out = sysroot_tar.path,
