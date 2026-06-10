@@ -18,7 +18,6 @@ const BODY = `# Joe McGinley
 
 - [CV](${PUBLIC_BASE}/cv): full work history and project case studies
 - [Notes](${PUBLIC_BASE}/notes): public knowledge graph
-- [Homelab / SLOs](${PUBLIC_BASE}/slos): live system topology and reliability targets
 - [Home](${PUBLIC_BASE}/): overview and homelab status
 
 ## Elsewhere

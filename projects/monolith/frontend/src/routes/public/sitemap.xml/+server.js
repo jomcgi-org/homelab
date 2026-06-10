@@ -7,7 +7,6 @@ const PAGES = [
   { path: "/", priority: "1.0" },
   { path: "/cv", priority: "0.9" },
   { path: "/notes", priority: "0.7" },
-  { path: "/slos", priority: "0.5" },
 ];
 
 export function GET() {
