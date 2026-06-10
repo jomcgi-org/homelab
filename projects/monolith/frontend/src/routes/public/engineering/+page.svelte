@@ -1,8 +1,13 @@
 <script>
   import { onMount } from "svelte";
-  import { Footer, Sticker, Marquee } from "$lib/public/components";
+  import { Footer, Marquee } from "$lib/public/components";
   import { intro, marqueeItems, categories, projects } from "./engineering-data.js";
   import { diagrams } from "./diagrams/index.js";
+
+  // The systems count drives both the meta line and the first stat cell,
+  // derived from the roster so it can never drift from the real number.
+  const metaLine = `${projects.length} systems · ${intro.metaTail}`;
+  const stats = [{ value: String(projects.length), label: "systems" }, ...intro.stats];
 
   // Stable two-digit section numbers derived from roster order. The repo
   // link is split out from the rest: it moves onto the section heading
@@ -18,8 +23,6 @@
       extraLinks: links.filter((l) => l !== repo),
     };
   });
-
-  const stickerColors = ["var(--accent)", "var(--blue)", "var(--coral)"];
 
   // Scroll-triggered reveals, mirroring the CV page's IntersectionObserver.
   onMount(() => {
@@ -52,20 +55,23 @@
 <div class="eng page">
   <!-- ═══ Hero ═══ -->
   <header class="hero">
-    <div class="wrap hero-content">
-      <p class="eyebrow">{intro.eyebrow}</p>
-      <h1 class="display eng-title">{intro.title}</h1>
-      <div class="hero-stickers">
-        {#each intro.stickers as s, i}
-          <Sticker color={stickerColors[i % stickerColors.length]} rotate={i % 2 ? 3 : -3}>
-            {s}
-          </Sticker>
+    <div class="wrap hero-grid">
+      <div class="hero-lead">
+        <h1 class="display eng-title">{intro.title}</h1>
+        <p class="meta-line mono">{metaLine}</p>
+        <p class="lede">{intro.lede}</p>
+        <a class="btn source-btn" href={intro.source.href} target="_blank" rel="noreferrer">
+          {intro.source.label}
+        </a>
+      </div>
+      <div class="hero-stats" aria-hidden="true">
+        {#each stats as s}
+          <div class="stat" class:accent={s.accent}>
+            <span class="stat-val" class:small={s.small}>{s.value}</span>
+            <span class="stat-label mono">{s.label}</span>
+          </div>
         {/each}
       </div>
-      <p class="lede">{intro.lede}</p>
-      <a class="btn source-btn" href={intro.source.href} target="_blank" rel="noreferrer">
-        {intro.source.label}
-      </a>
     </div>
   </header>
 
@@ -87,7 +93,7 @@
         </div>
         <h2 class="expo-title">{p.title}</h2>
         <p class="expo-liner">{p.oneLiner}</p>
-        <span class="expo-more mono">Deep dive ↓</span>
+        <span class="expo-more mono">Deep dive →</span>
       </a>
     {/each}
   </section>
@@ -160,33 +166,95 @@
 
 <style>
   /* ═══ Hero ═══ */
+  /* Two columns: lead on the left, a stat block on the right so the
+     upper-right of the fold has a job instead of reading as empty cream.
+     Tightened vertical rhythm pulls the expo grid closer to the fold. */
   .hero {
-    padding: 72px 0 56px;
+    padding: 52px 0 44px;
     border-bottom: 2px solid var(--ink);
     background: var(--cream);
   }
 
-  .hero-content {
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.25fr 1fr;
+    gap: 48px;
+    align-items: center;
+  }
+
+  .hero-lead {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 18px;
+    gap: 16px;
   }
 
   .eng-title {
-    font-size: clamp(56px, 10vw, 120px);
+    font-size: clamp(56px, 8vw, 92px);
   }
 
-  .hero-stickers {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
+  /* Calm monospace meta line in place of the rotated sticker cluster, so
+     it doesn't compete with the yellow ticker for the same register. */
+  .meta-line {
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
   }
 
   .lede {
     max-width: 560px;
     font-size: 18px;
     color: var(--ink-2);
+  }
+
+  .hero-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .stat {
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-hard-sm);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .stat.accent {
+    background: var(--accent);
+  }
+
+  .stat-val {
+    font-family: var(--serif);
+    font-size: 40px;
+    line-height: 1;
+  }
+
+  .stat-val.small {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.45;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+
+  @media (max-width: 720px) {
+    .hero-grid {
+      grid-template-columns: 1fr;
+      gap: 28px;
+    }
   }
 
   /* Paper fill so the source link reads as a button instead of ghosting
@@ -225,6 +293,13 @@
     flex-shrink: 0;
   }
 
+  /* Maturity (PRE-ALPHA) is a different axis from category, so it gets a
+     distinct treatment: a solid yellow fill rather than the outlined
+     category pill, so the two never read as the same kind of label. */
+  .tag-status {
+    background: var(--accent);
+  }
+
   /* ═══ Expo grid ═══ */
   .expo {
     display: grid;
@@ -239,6 +314,17 @@
     flex-direction: column;
     gap: 8px;
     padding: 18px;
+    text-decoration: none;
+  }
+
+  /* Override card-hard's default lift with a press: on hover the whole
+     card (it is the anchor) pushes down-right into its own shadow, which
+     collapses. The hard-shadow style makes this read as a physical click
+     target. */
+  .expo-card:hover,
+  .expo-card:focus-visible {
+    transform: translate(4px, 4px);
+    box-shadow: none;
   }
 
   .expo-card-top {
