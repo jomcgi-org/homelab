@@ -165,6 +165,8 @@ bazel/ocaml/
     source.bzl             # pinned Semgrep OCaml fork (git url + commit)
     repositories.bzl       # module extension: clone source -> @ocaml_source
     compiler.bzl           # ocaml_compiler rule: build the compiler on RBE -> sysroot
+    arches.bzl             # OCAML_ARCHES registry: one entry per target arch (ADR 006)
+  platforms/BUILD          # per-arch platforms (from arches.bzl) + executor probe
   driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
   opam/                    # fetch + dune->BUILD generation for real opam deps
     packages.bzl           # pinned opam package tarballs (URL + sha256)
@@ -175,6 +177,7 @@ bazel/ocaml/
   examples/hello/          # message -> greeting -> main; greeting_test (ocaml_test)
   examples/regex/          # depends on the fetched `re` opam lib; regex_test
   examples/c_stubs/        # ocaml_library with a C stub (c_srcs); counter_test
+  examples/toycaml/        # tOyCaml: an engine-shaped demonstrator (ADR 005)
 ```
 
 ## Verify
