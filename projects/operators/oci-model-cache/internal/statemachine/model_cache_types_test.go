@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -437,7 +437,7 @@ var _ = Describe("ModelCacheUnknown", func() {
 		s := ModelCacheUnknown{resource: mc}
 		err := s.Validate()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("observedPhase is required for observedPhase state"))
+		Expect(err.Error()).To(Equal("observedPhase is required for Unknown state"))
 	})
 
 	It("Validate succeeds when ObservedPhase is non-empty", func() {
