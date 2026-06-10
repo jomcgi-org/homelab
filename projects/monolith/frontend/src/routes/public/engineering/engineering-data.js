@@ -3,14 +3,24 @@
 // at migration time (2026-06). When a system changes, edit it here.
 
 export const intro = {
-  eyebrow: "Field Notes",
   title: "Engineering",
-  lede: "Deep dives into systems running on a bare-metal K3s cluster I operate at home, deployed with GitOps. Each one covers the motivation and the execution.",
-  stickers: ["11 Systems", "Bare Metal", "GitOps"],
+  // Short monospace meta line under the title (replaces the rotated
+  // sticker cluster, which competed with the ticker). The system count is
+  // derived from projects.length on the page, so it never drifts.
+  metaTail: "bare metal K3s · GitOps end to end",
+  lede: "Deep dives into the systems on a bare-metal K3s cluster at home, deployed end-to-end with GitOps. Each covers why it exists and how it's built.",
   source: {
     label: "github/jomcgi/homelab",
     href: "https://github.com/jomcgi/homelab",
   },
+  // Hero stat cells (right column). The systems count is prepended on the
+  // page from projects.length; these three are curated. Update on a major
+  // roster or live-site change.
+  stats: [
+    { value: "3", label: "live sites", accent: true },
+    { value: "Go · Rust · Python", label: "languages", small: true },
+    { value: "Bare-metal K3s", label: "GitOps", small: true },
+  ],
 };
 
 export const marqueeItems = [
@@ -42,7 +52,7 @@ export const projects = [
     category: "agents",
     title: "Agent Platform",
     oneLiner:
-      "Autonomous Claude and Goose agents in sandboxed Kubernetes pods, dispatched over NATS, every tool call governed by an MCP gateway.",
+      "Autonomous Claude and Goose agents in sandboxed Kubernetes pods, dispatched over NATS. Every tool call governed by an MCP gateway.",
     motivation:
       "I wanted agents that do real platform work: triage alerts, fix failing PRs, keep docs fresh. That means handing an LLM tools with blast radius, so the platform is built around containment. Every agent runs in its own sandbox pod, and every tool call passes through a gateway that knows who is asking.",
     facts: [
@@ -79,7 +89,7 @@ export const projects = [
     category: "agents",
     title: "Knowledge Graph",
     oneLiner:
-      "An LLM pipeline that decomposes my notes into structured facts, embeds them, and serves semantic search to agents and to this site.",
+      "An LLM pipeline that decomposes my notes into structured facts, embeds them, and serves semantic search, both to my agents and to this site's search bar.",
     motivation:
       "Notes are only useful if they come back at the right moment. The knowledge pipeline turns markdown into a queryable graph: an on-cluster LLM decomposes each note into atomic facts, critiques its own extraction, and stores embeddings for semantic recall.",
     facts: [
