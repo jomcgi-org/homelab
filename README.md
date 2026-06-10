@@ -8,6 +8,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**Agent platform**](projects/agent_platform/) — AI agents in sandboxed Kubernetes pods with RBAC-scoped tool access over NATS JetStream. [Architecture](docs/agents.md).
 - [**Discord bot**](projects/monolith/chat/) — LLM-powered chat with vision, web search, and knowledge graph context.
 - [**OCI Model Cache**](projects/operators/oci-model-cache/) — Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
+- [**Sextant**](projects/sextant/) — Code generator that turns YAML state-machine specs into type-safe Go for operators: invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
 - [**Build system**](bazel/) — Custom Bazel rules for Helm, Semgrep SAST, and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
 
 ## Applications
