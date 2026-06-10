@@ -29,8 +29,8 @@ if [[ -z "$NEW_CONTENT" ]]; then
 fi
 
 # Check for the em-dash character (U+2014, UTF-8: 0xE2 0x80 0x94)
-if echo "$NEW_CONTENT" | grep -qP '\x{2014}' 2>/dev/null || \
-   echo "$NEW_CONTENT" | grep -qF $'\xe2\x80\x94'; then
+if echo "$NEW_CONTENT" | grep -qP '\x{2014}' 2>/dev/null ||
+	echo "$NEW_CONTENT" | grep -qF $'\xe2\x80\x94'; then
 	FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 	cat >&2 <<-'EOF'
 		WARNING: Em-dash (U+2014) found in content being written.
