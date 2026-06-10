@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -140,8 +140,9 @@ var _ = Describe("ResolveResult", func() {
 				"format",
 			),
 			Entry("all fields missing",
+				// Generated checks run in alphabetical field order
 				ResolveResult{},
-				"resolvedRef",
+				"format",
 			),
 		)
 
@@ -199,8 +200,9 @@ var _ = Describe("ErrorInfo", func() {
 				"errorMessage",
 			),
 			Entry("both missing",
+				// Generated checks run in alphabetical field order
 				ErrorInfo{},
-				"lastState",
+				"errorMessage",
 			),
 		)
 	})
