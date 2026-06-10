@@ -76,6 +76,52 @@ def should_respond(message: discord.Message, bot_user: discord.User) -> bool:
     return False
 
 
+def format_subject_note(message: discord.Message, bot_user_id: int) -> str:
+    """State who the current message is about, from Discord's structured data.
+
+    Without this, the model has to infer the subject of a "who is this / what
+    are your notes on them" question by scanning the rendered conversation
+    history, where every past message still carries raw ``<@id>`` tokens. It
+    can grab a stale id from an earlier message instead of the person actually
+    being addressed. The triggering message's own @-mentions, and the author
+    of any message it is a reply to, are the authoritative targets, so we name
+    them explicitly with their numeric ids. Returns "" for plain chat with no
+    such target (the note is only added when there is something to resolve).
+    """
+    lines: list[str] = []
+
+    mentioned = [m for m in getattr(message, "mentions", []) if m.id != bot_user_id]
+    if mentioned:
+        lines.append(
+            "  - directly @-mentions: "
+            + ", ".join(f"{m.display_name} (Discord user ID {m.id})" for m in mentioned)
+        )
+
+    ref = getattr(message, "reference", None)
+    resolved = getattr(ref, "resolved", None) if ref is not None else None
+    if (
+        resolved is not None
+        and not isinstance(resolved, discord.DeletedReferencedMessage)
+        and getattr(resolved, "author", None) is not None
+        and resolved.author.id != bot_user_id
+    ):
+        author = resolved.author
+        lines.append(
+            "  - is a reply to a message from: "
+            f"{author.display_name} (Discord user ID {author.id})"
+        )
+
+    if not lines:
+        return ""
+
+    return (
+        "\n[Who this message is about. If it asks who someone is, or for your "
+        "notes or summary about a person, resolve it to these Discord user ids, "
+        "not to any mention that only appears in the conversation history "
+        "above:\n" + "\n".join(lines) + "]"
+    )
+
+
 async def download_image_attachments(
     attachments: list[discord.Attachment],
     vision_client: VisionClient,
@@ -346,9 +392,15 @@ class ChatBot(discord.Client):
                 "third party to look up.]"
             )
 
+            # Authoritative subject resolved from Discord's structured mention
+            # and reply data, so the model targets the right person rather than
+            # a stale "<@id>" scraped from the history above.
+            subject_note = format_subject_note(message, self.user.id)
+
             user_prompt = (
                 f"{identity_note}\n\n{context}\n\nCurrent message from "
                 f"{message.author.display_name}: {message.content}"
+                f"{subject_note}"
             )
 
             # Include current message images in prompt
