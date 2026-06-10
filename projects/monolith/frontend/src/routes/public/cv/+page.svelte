@@ -101,7 +101,9 @@
   <div class="band-head">
     <span class="band-num mono">{num}</span>
     <span class="band-title mono">{title}</span>
-    <span class="band-meta mono">{meta}</span>
+    {#if meta}
+      <span class="band-meta mono">{meta}</span>
+    {/if}
   </div>
 {/snippet}
 
@@ -160,7 +162,7 @@
   <!-- ═══ Work experience (paper) ═══ -->
   <section class="band band--paper reveal">
     <div class="wrap-narrow">
-      {@render bandHead("01", "Work Experience", `${jobs.length} Roles`)}
+      {@render bandHead("01", "Work Experience")}
       <div class="jobs">
         {#each jobs as job}
           <article class="job">
@@ -225,7 +227,7 @@
   <!-- ═══ Technical expertise (paper) ═══ -->
   <section class="band band--paper reveal">
     <div class="wrap-narrow">
-      {@render bandHead("03", "Technical Expertise", `${skills.length} Domains`)}
+      {@render bandHead("03", "Technical Expertise")}
       <div class="skills">
         {#each skills as cat}
           <div class="skill-cat">
