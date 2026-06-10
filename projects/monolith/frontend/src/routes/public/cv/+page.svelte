@@ -17,8 +17,11 @@
 
   // Minimal inline-markdown tokenizer. The CV bullets carry just two markdown
   // constructs from cv.md — **emphasis** and [text](url) — so a focused
-  // tokenizer beats pulling in a full markdown dependency. Emphasis renders as
-  // a coral-underlined metric; links render as inline anchors.
+  // tokenizer beats pulling in a full markdown dependency. Emphasis splits two
+  // ways: a digit-bearing token mid-sentence is a metric (the only coral on
+  // the page); everything else — including the lead-in phrase that opens a
+  // bullet — renders as a plain bold run-in heading. Links render as inline
+  // anchors.
   function tokenize(text) {
     const tokens = [];
     const re = /\*\*(.+?)\*\*|\[(.+?)\]\((.+?)\)/g;
@@ -29,7 +32,8 @@
         tokens.push({ type: "text", text: text.slice(last, m.index) });
       }
       if (m[1] !== undefined) {
-        tokens.push({ type: "em", text: m[1] });
+        const isMetric = /\d/.test(m[1]) && m.index > 0;
+        tokens.push({ type: isMetric ? "em" : "lead", text: m[1] });
       } else {
         tokens.push({ type: "link", text: m[2], href: m[3] });
       }
@@ -85,6 +89,7 @@
 {#snippet inline(text)}
   {#each tokenize(text) as tok}
     {#if tok.type === "em"}<span class="metric">{tok.text}</span
+      >{:else if tok.type === "lead"}<span class="lead">{tok.text}</span
       >{:else if tok.type === "link"}<a
         class="inline-link"
         href={tok.href}
@@ -464,7 +469,6 @@
     line-height: 1.55;
     color: var(--ink-2);
     margin: 0 0 18px 23px;
-    max-width: 72ch;
   }
   .highlight {
     margin: 0 0 22px 23px;
@@ -498,7 +502,6 @@
     line-height: 1.45;
     color: var(--ink);
     margin: 0 0 8px;
-    max-width: 72ch;
   }
   .highlight-intro {
     font-family: var(--sans);
@@ -506,7 +509,6 @@
     line-height: 1.55;
     color: var(--ink-3);
     margin: 0 0 12px;
-    max-width: 72ch;
   }
   .highlight .bullets {
     margin-left: 0;
@@ -523,7 +525,6 @@
     font-size: 15px;
     line-height: 1.55;
     color: var(--ink-2);
-    max-width: 72ch;
     margin-top: 8px;
   }
 
@@ -534,7 +535,6 @@
     line-height: 1.55;
     color: var(--ink-2);
     margin: 0 0 20px;
-    max-width: 72ch;
   }
   .section-aside {
     margin-top: 24px;
@@ -571,6 +571,13 @@
     color: var(--ink);
     font-size: 15px;
     font-weight: 700;
+  }
+
+  /* Bullet lead-ins are run-in headings: bold ink, no marker. Coral is
+     reserved for .metric below, so the eye can find the numbers. */
+  .lead {
+    font-weight: 700;
+    color: var(--ink);
   }
 
   /* Metrics are the ONLY coral on the page — coral means "this is the number
