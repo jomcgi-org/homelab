@@ -18,6 +18,12 @@ bzl_library(
 )
 
 bzl_library(
+    name = "arches",
+    srcs = ["arches.bzl"],
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
     name = "compiler",
     srcs = ["compiler.bzl"],
     visibility = ["//visibility:public"],
