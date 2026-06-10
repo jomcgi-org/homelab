@@ -1,8 +1,10 @@
 # ADR 004: Scale the custom OCaml ruleset toward Semgrep Pro
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Accepted (superseded in part)
 **Created:** 2026-06-10
+**Superseded in part by:** ADR 007 -- Open Question 3 (first-party BUILD
+generation) is now decided rather than deferred.
 
 ---
 
@@ -177,8 +179,12 @@ compiler plugin); they enter the build only through the pinned lockfile.
 2. Whether `ocamlfind` ever enters the picture, or archive paths are always
    resolved structurally from package metadata. The toolchain's `use_ocamlfind`
    flag is currently dead code.
-3. At what scale per-library actions stop being acceptable and a per-module
-   (Gazelle-style) generator pays for itself.
+3. ~~At what scale per-library actions stop being acceptable and a per-module
+   (Gazelle-style) generator pays for itself.~~ **Decided by ADR 007:**
+   first-party BUILD *generation* (Gazelle) is required at the engine's scale
+   and is now a committed workstream. This settles BUILD generation only --
+   per-library action granularity still stands (see the decision table); the
+   generator may emit per-module targets later, gated on cache-hit data.
 
 ## References
 
