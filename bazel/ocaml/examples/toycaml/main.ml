@@ -4,16 +4,16 @@
    lives in the toycaml_lib library. *)
 
 let run pattern_src target_src =
-  let pattern = Parse.parse pattern_src in
-  let target = Parse.parse target_src in
-  Printf.printf "pattern: %s\n" (Ast.to_string pattern);
-  Printf.printf "target:  %s\n" (Ast.to_string target);
-  match Matcher.match_expr ~pattern ~target with
+  let pattern = Tc_parse.parse pattern_src in
+  let target = Tc_parse.parse target_src in
+  Printf.printf "pattern: %s\n" (Tc_ast.to_string pattern);
+  Printf.printf "target:  %s\n" (Tc_ast.to_string target);
+  match Tc_matcher.match_expr ~pattern ~target with
   | None -> print_endline "no match"
   | Some bindings ->
       print_endline "match!";
       List.iter
-        (fun (k, v) -> Printf.printf "  %s = %s\n" k (Ast.to_string v))
+        (fun (k, v) -> Printf.printf "  %s = %s\n" k (Tc_ast.to_string v))
         (List.rev bindings)
 
 let () =

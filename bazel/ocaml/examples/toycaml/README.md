@@ -17,12 +17,12 @@ drive out are recorded in the ADRs:
 
 | File | Role | Build feature exercised |
 |------|------|-------------------------|
-| `ast.ml/.mli` | generic AST node type | multi-module library, `.mli` interfaces |
-| `pattern.ml/.mli` | a pattern is code with metavariables | intra-library dep on `Ast` |
-| `lexer.ml/.mli` | hand-written tokenizer | uses the fetched-from-source `re` opam lib |
-| `parse.ml/.mli` | recursive-descent parser | inter-module compile ordering (`ocamldep -sort`) |
-| `matcher.ml/.mli` | structural match + metavar binding | the heart; uses the C stub for interning |
-| `intern.ml/.mli` + `intern_stubs.c` | FNV-1a string hash in C | `c_srcs` (C foreign stub) |
+| `tc_ast.ml/.mli` | generic AST node type | multi-module library, `.mli` interfaces |
+| `tc_pattern.ml/.mli` | a pattern is code with metavariables | intra-library dep on `Tc_ast` |
+| `tc_lexer.ml/.mli` | hand-written tokenizer | uses the fetched-from-source `re` opam lib |
+| `tc_parse.ml/.mli` | recursive-descent parser | inter-module compile ordering (`ocamldep -sort`) |
+| `tc_matcher.ml/.mli` | structural match + metavar binding | inter-library dep on `:toycaml_intern` |
+| `tc_intern.ml/.mli` + `intern_stubs.c` | FNV-1a string hash in C | `c_srcs` (C foreign stub) |
 | `main.ml` | CLI entry point | `ocaml_binary` + `build_test` |
 | `matcher_test.ml` | end-to-end checks | `ocaml_test` (exit 0 = pass) |
 

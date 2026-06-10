@@ -1,7 +1,7 @@
-(* See parse.mli. Tokenize with Lexer, then consume tokens left to right. *)
+(* See tc_parse.mli. Tokenize with Tc_lexer, then consume tokens left to right. *)
 
-let parse (s : string) : Ast.expr =
-  let toks = ref (Lexer.tokenize s) in
+let parse (s : string) : Tc_ast.expr =
+  let toks = ref (Tc_lexer.tokenize s) in
   let peek () = match !toks with t :: _ -> Some t | [] -> None in
   let advance () =
     match !toks with
@@ -15,27 +15,27 @@ let parse (s : string) : Ast.expr =
   in
   let rec expr () =
     match peek () with
-    | Some (Lexer.INT n) ->
+    | Some (Tc_lexer.INT n) ->
         advance ();
-        Ast.Int n
-    | Some (Lexer.IDENT name) -> (
+        Tc_ast.Int n
+    | Some (Tc_lexer.IDENT name) -> (
         advance ();
         match peek () with
-        | Some Lexer.LPAREN ->
+        | Some Tc_lexer.LPAREN ->
             advance ();
             let a = args () in
-            expect Lexer.RPAREN;
-            Ast.Call (name, a)
-        | _ -> Ast.Var name)
+            expect Tc_lexer.RPAREN;
+            Tc_ast.Call (name, a)
+        | _ -> Tc_ast.Var name)
     | _ -> failwith "toycaml: expected an expression"
   and args () =
     match peek () with
-    | Some Lexer.RPAREN -> []
+    | Some Tc_lexer.RPAREN -> []
     | _ ->
         let first = expr () in
         let rec rest acc =
           match peek () with
-          | Some Lexer.COMMA ->
+          | Some Tc_lexer.COMMA ->
               advance ();
               let e = expr () in
               rest (e :: acc)
