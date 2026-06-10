@@ -82,6 +82,43 @@ class TestGetUserSummary:
         assert result is None
 
 
+class TestGetUserSummaryByUserId:
+    def test_returns_summary_for_known_user_id(self, store, session):
+        """get_user_summary_by_user_id resolves by the stable user_id."""
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="98146497454960640",
+                username="𝔲𝔤𝔩𝔶𝔟𝔬𝔶",
+                summary="uglyboy critiques tech ecosystems.",
+                last_message_id=1,
+            )
+        )
+        session.commit()
+        result = store.get_user_summary_by_user_id("ch1", "98146497454960640")
+        assert result is not None
+        assert result.username == "𝔲𝔤𝔩𝔶𝔟𝔬𝔶"
+        assert "critiques" in result.summary
+
+    def test_returns_none_for_unknown_user_id(self, store):
+        """get_user_summary_by_user_id returns None when the id is absent."""
+        assert store.get_user_summary_by_user_id("ch1", "404") is None
+
+    def test_scoped_to_channel(self, store, session):
+        """get_user_summary_by_user_id only matches within the given channel."""
+        session.add(
+            UserChannelSummary(
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                summary="Alice summary.",
+                last_message_id=1,
+            )
+        )
+        session.commit()
+        assert store.get_user_summary_by_user_id("ch2", "u1") is None
+
+
 class TestListUserSummaries:
     def test_returns_all_summaries_for_channel(self, store, session):
         """list_user_summaries returns all summaries in the channel."""

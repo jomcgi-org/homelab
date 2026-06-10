@@ -217,6 +217,23 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
     ) -> str:
         """Get user activity summaries. Call with no username to list all available users. Call with a username to get their full summary."""
         deps = ctx.deps
+        # Discord @-mentions arrive as {'type': 'user_id', 'id': '...'} rather
+        # than a name string. Resolve them by the stable user_id — mirroring
+        # search_history — so a mention reaches the summary keyed on that ID
+        # instead of falling through to the "list everyone" branch.
+        if isinstance(username, dict) and username.get("type") == "user_id":
+            raw_id = username.get("id")
+            if raw_id is not None:
+                summary = deps.store.get_user_summary_by_user_id(
+                    deps.channel_id, str(raw_id)
+                )
+                if not summary:
+                    return f"No summary available for user {raw_id}."
+                return (
+                    f"Summary for {summary.username} "
+                    f"(updated {summary.updated_at.strftime('%Y-%m-%d')}):\n"
+                    f"{summary.summary}"
+                )
         username = _coerce_username(username)
         if not username:
             summaries = deps.store.list_user_summaries(deps.channel_id)

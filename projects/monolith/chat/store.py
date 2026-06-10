@@ -242,6 +242,23 @@ class MessageStore:
         )
         return self.session.exec(stmt).first()
 
+    def get_user_summary_by_user_id(
+        self, channel_id: str, user_id: str
+    ) -> UserChannelSummary | None:
+        """Return the rolling summary for a user_id in a channel, or None.
+
+        Looks up by the stable Discord user_id rather than the mutable display
+        name. This is the canonical key — the table's unique constraint is on
+        (channel_id, user_id) — and it survives nickname changes and exotic
+        display names (e.g. Unicode "fraktur" nicks that never equal their
+        ASCII spelling).
+        """
+        stmt = select(UserChannelSummary).where(
+            UserChannelSummary.channel_id == channel_id,
+            UserChannelSummary.user_id == user_id,
+        )
+        return self.session.exec(stmt).first()
+
     def upsert_summary(
         self,
         channel_id: str,
