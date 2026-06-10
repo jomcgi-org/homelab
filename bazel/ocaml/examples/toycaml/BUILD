@@ -10,6 +10,12 @@ load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_test")
 # corpus for the OCaml BUILD generator decided in
 # docs/decisions/tooling/007-ocaml-build-file-generation-gazelle.md -- the
 # generator must reproduce them from the sources alone.
+#
+# Module files are tc_-prefixed deliberately. The ruleset has no library
+# wrapping yet (ADR 004 Phase 2), and `re` -- built unwrapped -- exposes flat
+# `Ast`/`Fmt`/`Str` units; an unprefixed `Ast` here would collide with re's at
+# link. Manual prefixing is the stand-in for dune-style wrapping, and tOyCaml
+# hitting this is exactly why wrapping is on the roadmap.
 
 # A small, hot helper pushed into C (FNV-1a string hash), bound via `external`.
 # Mirrors the lone first-party C foreign-stub such an engine keeps. Exercises the
@@ -17,8 +23,8 @@ load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_test")
 ocaml_library(
     name = "toycaml_intern",
     srcs = [
-        "intern.ml",
-        "intern.mli",
+        "tc_intern.ml",
+        "tc_intern.mli",
     ],
     c_srcs = ["intern_stubs.c"],
     visibility = ["//visibility:public"],
@@ -29,21 +35,20 @@ ocaml_library(
 # library compile with real inter-module ordering (ocamldep -sort), .mli
 # interfaces, an inter-library dep (:toycaml_intern), and a real fetched-from-
 # source opam dependency (`re`, used to validate identifier tokens). Depends on
-# `re` alone -- not the vendored `fmt` -- because re ships an internal `Fmt`
-# module that would collide at link until library wrapping lands.
+# `re` alone -- not the vendored `fmt` -- to avoid re's internal `Fmt` unit.
 ocaml_library(
     name = "toycaml_lib",
     srcs = [
-        "ast.ml",
-        "ast.mli",
-        "lexer.ml",
-        "lexer.mli",
-        "matcher.ml",
-        "matcher.mli",
-        "parse.ml",
-        "parse.mli",
-        "pattern.ml",
-        "pattern.mli",
+        "tc_ast.ml",
+        "tc_ast.mli",
+        "tc_lexer.ml",
+        "tc_lexer.mli",
+        "tc_matcher.ml",
+        "tc_matcher.mli",
+        "tc_parse.ml",
+        "tc_parse.mli",
+        "tc_pattern.ml",
+        "tc_pattern.mli",
     ],
     visibility = ["//visibility:public"],
     deps = [

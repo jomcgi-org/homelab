@@ -35,7 +35,13 @@ let tokenize (s : string) : token list =
           incr j
         done;
         let tok = String.sub s i (!j - i) in
-        go !j (INT (int_of_string tok) :: acc))
+        let value =
+          try int_of_string tok
+          with Failure _ ->
+            failwith
+              (Printf.sprintf "toycaml: integer literal %S overflows int" tok)
+        in
+        go !j (INT value :: acc))
       else if is_ident_char c then (
         let j = ref i in
         while !j < n && is_ident_char s.[!j] do

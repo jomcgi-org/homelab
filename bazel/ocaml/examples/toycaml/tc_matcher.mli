@@ -4,6 +4,6 @@
    metavariable-consistency rule). This is the heart of the demonstrator -- the
    piece that most directly mirrors a matching engine. *)
 
-type bindings = (string * Ast.expr) list
+type bindings = (string * Tc_ast.expr) list
 
-val match_expr : pattern:Ast.expr -> target:Ast.expr -> bindings option
+val match_expr : pattern:Tc_ast.expr -> target:Tc_ast.expr -> bindings option

@@ -49,12 +49,12 @@ of opam packages and dozens of grammars" -- the same mechanisms at volume.
 
 | tOyCaml component | Engine shape it stands in for | Ruleset feature exercised |
 | --- | --- | --- |
-| `ast.ml/.mli` | a generic AST node type | multi-module library + `.mli` |
-| `pattern.ml/.mli` | "a pattern is code with metavariables" | intra-library dep |
-| `lexer.ml/.mli` | the lexing stage | the fetched-from-source `re` opam dep |
-| `parse.ml/.mli` | the parsing stage | inter-module ordering (`ocamldep -sort`) |
-| `matcher.ml/.mli` | the matching engine core | the heart; calls the C stub |
-| `intern_stubs.c` | the lone first-party C foreign-stub | `c_srcs` |
+| `tc_ast.ml/.mli` | a generic AST node type | multi-module library + `.mli` |
+| `tc_pattern.ml/.mli` | "a pattern is code with metavariables" | intra-library dep |
+| `tc_lexer.ml/.mli` | the lexing stage | the fetched-from-source `re` opam dep |
+| `tc_parse.ml/.mli` | the parsing stage | inter-module ordering (`ocamldep -sort`) |
+| `tc_matcher.ml/.mli` | the matching engine core | inter-library dep on `:toycaml_intern` |
+| `tc_intern.ml/.mli` + `intern_stubs.c` | the lone first-party C foreign-stub | `c_srcs` |
 | `main.ml` | the CLI entry point | `ocaml_binary` + `build_test` |
 | `matcher_test.ml` | engine tests | `ocaml_test` |
 
