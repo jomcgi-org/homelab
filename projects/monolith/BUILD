@@ -1440,6 +1440,20 @@ py_test(
 )
 
 py_test(
+    name = "chat_bot_subject_note_test",
+    srcs = ["chat/bot_subject_note_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pydantic_ai_slim",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_bot_attachment_download_test",
     srcs = ["chat/bot_attachment_download_test.py"],
     imports = ["."],
