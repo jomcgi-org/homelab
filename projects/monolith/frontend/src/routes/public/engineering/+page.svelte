@@ -281,6 +281,24 @@
       flex-direction: column;
       gap: 4px;
       align-items: flex-end;
+      /* Chrome is invisible while collapsed; on expand the rail becomes a
+         single hard-shadowed paper panel (the site's card language) so
+         titles sit on one coherent surface instead of per-item chips
+         that read as ragged blobs wherever they cross page content. */
+      padding: 10px 12px;
+      border: 2px solid transparent;
+      border-radius: var(--radius);
+      transition:
+        background 140ms ease,
+        border-color 140ms ease,
+        box-shadow 140ms ease;
+    }
+
+    .rail:hover,
+    .rail:focus-within {
+      background: var(--paper);
+      border-color: var(--ink);
+      box-shadow: var(--shadow-hard);
     }
   }
 
@@ -323,19 +341,13 @@
       opacity 140ms ease;
   }
 
-  /* Expanded state: titles slide out leftward; links pick up the page
-     background so they stay legible where the rail overlaps content. */
+  /* Expanded state: titles slide out leftward inside the panel. Wide
+     enough for the longest title (Bazel: One Way to Build Everything)
+     without clipping. */
   .rail:hover .rail-title,
   .rail:focus-within .rail-title {
-    /* Wide enough for the longest title (Bazel: One Way to Build
-       Everything) without clipping. */
     max-width: 320px;
     opacity: 1;
-  }
-
-  .rail:hover .rail-link,
-  .rail:focus-within .rail-link {
-    background: var(--cream);
   }
 
   /* ═══ Tags (shared by index + dive headers) ═══ */
