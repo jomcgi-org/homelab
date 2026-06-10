@@ -137,7 +137,15 @@ class TestParse:
         assert parse(toks) == [[("atom", "a"), ("atom", "b")]]
 
     def test_nested_list(self):
-        toks = ["(", ("atom", "library"), "(", ("atom", "name"), ("atom", "re"), ")", ")"]
+        toks = [
+            "(",
+            ("atom", "library"),
+            "(",
+            ("atom", "name"),
+            ("atom", "re"),
+            ")",
+            ")",
+        ]
         result = parse(toks)
         assert result == [[("atom", "library"), [("atom", "name"), ("atom", "re")]]]
 
@@ -319,7 +327,7 @@ class TestGenLibrary:
         assert out.endswith("\n")
 
     def test_no_name_field_exits(self):
-        stanza = self._stanza("(library (synopsis \"A lib\"))")
+        stanza = self._stanza('(library (synopsis "A lib"))')
         with pytest.raises(SystemExit):
             gen_library(stanza, "src", "root")
 
