@@ -128,7 +128,7 @@ def _ocaml_binary_impl(ctx):
     return [DefaultInfo(
         files = depset([exe]),
         executable = exe,
-        runfiles = ctx.runfiles(files = [exe]),
+        runfiles = ctx.runfiles(files = [exe] + ctx.files.data),
     )]
 
 _COMMON_ATTRS = {
@@ -149,6 +149,10 @@ _COMMON_ATTRS = {
     ),
     "opam_deps": attr.string_list(
         doc = "findlib/opam package names (e.g. \"unix\", \"str\") shipped with the stdlib.",
+    ),
+    "data": attr.label_list(
+        allow_files = True,
+        doc = "Runtime files made available in the runfiles tree (test corpora etc.).",
     ),
     "_driver": attr.label(
         default = "//bazel/ocaml/driver:ocaml_compile",
