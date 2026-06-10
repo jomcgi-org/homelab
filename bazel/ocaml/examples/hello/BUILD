@@ -31,6 +31,7 @@ ocaml_binary(
 ocaml_test(
     name = "greeting_test",
     srcs = ["test_greeting.ml"],
+    data = ["testdata/expected.txt"],
     deps = [
         ":hello_lib",
         "//bazel/ocaml/third_party/fmt",
