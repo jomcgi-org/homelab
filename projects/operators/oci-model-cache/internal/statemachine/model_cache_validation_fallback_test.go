@@ -141,9 +141,10 @@ func TestErrorInfo_Validate_ErrorOrdering(t *testing.T) {
 			wantSubstring: "errorMessage",
 		},
 		{
-			name:          "both missing: LastState error returned first",
+			// Generated checks run in alphabetical field order
+			name:          "both missing: ErrorMessage error returned first",
 			info:          ErrorInfo{},
-			wantSubstring: "lastState",
+			wantSubstring: "errorMessage",
 		},
 	}
 
@@ -190,23 +191,25 @@ func TestUnknown_RetryBackoff_Is30Seconds(t *testing.T) {
 
 // --- ResolveResult.Validate() error ordering when all fields absent ---
 
-// TestResolveResult_Validate_AllFieldsAbsent_FirstErrorIsResolvedRef verifies
+// TestResolveResult_Validate_AllFieldsAbsent_FirstErrorIsFormat verifies
 // that when ALL required fields are absent simultaneously, Validate() returns
-// the "resolvedRef is required" error first — not resolvedRevision or format.
+// the "format is required" error first — generated checks run in alphabetical
+// field order, and digest is optional at group level.
 // This documents the "first error wins" contract so it cannot silently change.
-func TestResolveResult_Validate_AllFieldsAbsent_FirstErrorIsResolvedRef(t *testing.T) {
+func TestResolveResult_Validate_AllFieldsAbsent_FirstErrorIsFormat(t *testing.T) {
 	rr := ResolveResult{} // all zero values
 	err := rr.Validate()
 	if err == nil {
 		t.Fatal("expected a validation error for an empty ResolveResult, got nil")
 	}
-	if !containsSubstring(err.Error(), "resolvedRef") {
-		t.Errorf("expected error to mention %q first, got: %v", "resolvedRef", err)
+	if !containsSubstring(err.Error(), "format") {
+		t.Errorf("expected error to mention %q first, got: %v", "format", err)
 	}
 }
 
 // TestResolveResult_Validate_Ordering verifies the documented field-check order:
-// resolvedRef → resolvedRevision → format (first missing field is reported).
+// format → resolvedRef → resolvedRevision (alphabetical; first missing field
+// is reported, digest is optional at group level).
 func TestResolveResult_Validate_Ordering(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -232,22 +235,22 @@ func TestResolveResult_Validate_Ordering(t *testing.T) {
 			wantSubstring: "format",
 		},
 		{
-			// all absent → first check (resolvedRef) wins
-			name:          "all fields absent reports resolvedRef first",
+			// all absent → first check (format) wins
+			name:          "all fields absent reports format first",
 			r:             ResolveResult{},
-			wantSubstring: "resolvedRef",
+			wantSubstring: "format",
 		},
 		{
-			// resolvedRef + resolvedRevision absent → resolvedRef is checked first
+			// resolvedRef + resolvedRevision absent → resolvedRef is checked next after format
 			name:          "resolvedRef and resolvedRevision absent reports resolvedRef",
 			r:             ResolveResult{Format: "gguf"},
 			wantSubstring: "resolvedRef",
 		},
 		{
-			// resolvedRevision + format absent → resolvedRevision is second check
-			name:          "resolvedRevision and format absent reports resolvedRevision",
+			// resolvedRevision + format absent → format is checked first
+			name:          "resolvedRevision and format absent reports format",
 			r:             ResolveResult{ResolvedRef: "ghcr.io/jomcgi/models/llama:main"},
-			wantSubstring: "resolvedRevision",
+			wantSubstring: "format",
 		},
 	}
 

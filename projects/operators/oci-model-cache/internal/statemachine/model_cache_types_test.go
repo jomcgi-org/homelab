@@ -63,15 +63,15 @@ func validRR() ResolveResult {
 // =============================================================================
 
 var _ = Describe("ResolveResult Validate", func() {
-	It("returns resolvedRef error first when all fields are empty", func() {
+	It("returns format error first when all fields are empty (alphabetical check order)", func() {
 		rr := ResolveResult{}
 		err := rr.Validate()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("resolvedRef is required"))
+		Expect(err.Error()).To(Equal("format is required"))
 	})
 
-	It("returns resolvedRevision error when only ResolvedRef is set", func() {
-		rr := ResolveResult{ResolvedRef: "ghcr.io/jomcgi/models/llama:main"}
+	It("returns resolvedRevision error when ResolvedRef and Format are set", func() {
+		rr := ResolveResult{ResolvedRef: "ghcr.io/jomcgi/models/llama:main", Format: "gguf"}
 		err := rr.Validate()
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(Equal("resolvedRevision is required"))
@@ -141,11 +141,11 @@ var _ = Describe("SyncJob Validate", func() {
 // =============================================================================
 
 var _ = Describe("ErrorInfo Validate", func() {
-	It("returns lastState error first when both fields are empty", func() {
+	It("returns errorMessage error first when both fields are empty (alphabetical check order)", func() {
 		ei := ErrorInfo{}
 		err := ei.Validate()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("lastState is required"))
+		Expect(err.Error()).To(Equal("errorMessage is required"))
 	})
 
 	It("returns errorMessage error when only ErrorMessage is missing", func() {
@@ -341,22 +341,25 @@ var _ = Describe("ModelCacheReady Validate", func() {
 		Expect(err.Error()).To(Equal("digest is required for Ready state"))
 	})
 
-	It("Validate fails when ResolveResult base fields fail (ResolvedRef check fires first)", func() {
-		// Empty ResolveResult → ResolvedRef error fires before Digest check
+	It("Validate fails when ResolveResult base fields fail (Format check fires first)", func() {
+		// Empty ResolveResult → format error (alphabetical check order)
+		// fires before the Digest check
 		s := ModelCacheReady{resource: mc}
 		err := s.Validate()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("resolvedRef is required"))
+		Expect(err.Error()).To(Equal("format is required"))
 	})
 
 	It("Validate error ordering: ResolveResult fields checked before Digest", func() {
-		// ResolvedRef present, ResolvedRevision missing → resolvedRevision error
-		// (not digest error, proving base validation runs first)
+		// ResolvedRef and Format present, ResolvedRevision missing →
+		// resolvedRevision error (not digest error, proving base group
+		// validation runs before the state-scoped digest requirement)
 		s := ModelCacheReady{
 			resource: mc,
 			ResolveResult: ResolveResult{
 				ResolvedRef: "ghcr.io/jomcgi/models/llama:main",
-				// ResolvedRevision, Format, Digest all missing
+				Format:      "gguf",
+				// ResolvedRevision and Digest missing
 			},
 		}
 		err := s.Validate()

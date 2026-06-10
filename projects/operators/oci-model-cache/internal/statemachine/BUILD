@@ -32,7 +32,7 @@ go_test(
     srcs = [
         "model_cache_accessors_test.go",
         "model_cache_calculator_test.go",
-        "model_cache_coverage_test.go",
+        "model_cache_validation_fallback_test.go",
         "model_cache_drift_test.go",
         "model_cache_gaps_test.go",
         "model_cache_metrics_test.go",
