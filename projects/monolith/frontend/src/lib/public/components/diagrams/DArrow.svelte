@@ -16,15 +16,25 @@
 </span>
 
 <style>
+  /* The arrowhead (svg) is the alignment anchor: it is vertically
+     centred against the box row, and the label is absolutely positioned
+     ABOVE it. Stacking the label in normal flow (the old approach) shifted
+     a labelled arrow's head lower than an unlabelled one, so heads landed
+     at different heights within the same diagram. Anchoring on the svg
+     keeps every arrowhead on the box centre line, labelled or not. */
   .darrow {
+    position: relative;
     display: inline-flex;
-    flex-direction: column;
     align-items: center;
-    gap: 2px;
     flex-shrink: 0;
   }
 
   .darrow-label {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 2px;
     font-size: 9px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -36,10 +46,16 @@
     .darrow svg {
       transform: rotate(90deg);
     }
+    /* Stacked layout: the label sits to the side of the rotated arrow
+       rather than floating above it. */
     .darrow {
       align-self: center;
-      flex-direction: row;
       gap: 6px;
+    }
+    .darrow-label {
+      position: static;
+      transform: none;
+      margin-bottom: 0;
     }
   }
 </style>

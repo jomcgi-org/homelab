@@ -4,11 +4,20 @@
   import { intro, marqueeItems, categories, projects } from "./engineering-data.js";
   import { diagrams } from "./diagrams/index.js";
 
-  // Stable two-digit section numbers derived from roster order.
-  const numbered = projects.map((p, i) => ({
-    ...p,
-    num: String(i + 1).padStart(2, "0"),
-  }));
+  // Stable two-digit section numbers derived from roster order. The repo
+  // link is split out from the rest: it moves onto the section heading
+  // (so the title itself is the link to the source), leaving only genuine
+  // live destinations (trips.jomcgi.dev, /notes, ...) as bottom buttons.
+  const numbered = projects.map((p, i) => {
+    const links = p.links ?? [];
+    const repo = links.find((l) => l.href.includes("github.com"));
+    return {
+      ...p,
+      num: String(i + 1).padStart(2, "0"),
+      repoHref: repo ? repo.href : null,
+      extraLinks: links.filter((l) => l !== repo),
+    };
+  });
 
   const stickerColors = ["var(--accent)", "var(--blue)", "var(--coral)"];
 
@@ -54,7 +63,7 @@
         {/each}
       </div>
       <p class="lede">{intro.lede}</p>
-      <a class="btn btn-secondary" href={intro.source.href} target="_blank" rel="noreferrer">
+      <a class="btn source-btn" href={intro.source.href} target="_blank" rel="noreferrer">
         {intro.source.label}
       </a>
     </div>
@@ -68,11 +77,12 @@
       <a class="card-hard expo-card reveal" class:d1={i % 3 === 1} class:d2={i % 3 === 2} href={`#${p.id}`}>
         <div class="expo-card-top">
           <span class="expo-num mono">{p.num}</span>
-          <span class="expo-tag mono" style:background={categories[p.category].color}>
+          <span class="tag mono">
+            <span class="tag-dot" style:background={categories[p.category].color}></span>
             {categories[p.category].label}
           </span>
           {#if p.status}
-            <span class="expo-tag mono expo-status">{p.status}</span>
+            <span class="tag mono tag-status">{p.status}</span>
           {/if}
         </div>
         <h2 class="expo-title">{p.title}</h2>
@@ -89,16 +99,25 @@
       <section class="dive reveal" id={p.id} aria-labelledby={`${p.id}-h`}>
         <div class="dive-head">
           <span class="dive-num mono">{p.num}</span>
-          <h2 class="dive-title" id={`${p.id}-h`}>{p.title}</h2>
-          <span class="dive-tag mono" style:background={categories[p.category].color}>
+          <h2 class="dive-title" id={`${p.id}-h`}>
+            {#if p.repoHref}
+              <a class="title-link" href={p.repoHref} target="_blank" rel="noreferrer">
+                {p.title}<span class="title-arrow" aria-hidden="true">↗</span>
+              </a>
+            {:else}
+              {p.title}
+            {/if}
+          </h2>
+          <span class="tag mono">
+            <span class="tag-dot" style:background={categories[p.category].color}></span>
             {categories[p.category].label}
           </span>
           {#if p.status}
-            <span class="dive-tag mono dive-status">{p.status}</span>
+            <span class="tag mono tag-status">{p.status}</span>
           {/if}
         </div>
 
-        <div class="motivation">
+        <div class="motivation" style:border-left-color={categories[p.category].color}>
           <span class="motivation-label mono">Motivation</span>
           <p>{p.motivation}</p>
         </div>
@@ -118,11 +137,11 @@
           <pre class="snippet mono"><code>{p.snippet.code}</code></pre>
         {/if}
 
-        {#if p.links?.length}
+        {#if p.extraLinks.length}
           <div class="dive-links">
-            {#each p.links as l}
+            {#each p.extraLinks as l}
               <a
-                class="btn btn-secondary"
+                class="btn source-btn"
                 href={l.href}
                 target={l.href.startsWith("/") ? undefined : "_blank"}
                 rel={l.href.startsWith("/") ? undefined : "noreferrer"}
@@ -170,26 +189,63 @@
     color: var(--ink-2);
   }
 
+  /* Paper fill so the source link reads as a button instead of ghosting
+     into the cream background as a bare outline. Reused by the live-site
+     buttons in the deep dives. */
+  .source-btn {
+    background: var(--paper);
+  }
+
+  /* ═══ Tags (shared by cards + dive headers) ═══ */
+  /* Outline + colored dot rather than a saturated fill: keeps the
+     category colour-coding as a single small cue and drops the block of
+     colour that dominated the index (and fixed the low-contrast dark
+     operators tag, since text is always ink on white). */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .tag-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    border: 1.5px solid var(--ink);
+    flex-shrink: 0;
+  }
+
   /* ═══ Expo grid ═══ */
   .expo {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 24px;
-    padding-top: 56px;
-    padding-bottom: 56px;
+    gap: 18px;
+    padding-top: 44px;
+    padding-bottom: 44px;
   }
 
   .expo-card {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 20px;
+    gap: 8px;
+    padding: 18px;
   }
 
   .expo-card-top {
     display: flex;
     align-items: center;
     gap: 8px;
+    margin-bottom: 2px;
   }
 
   .expo-num {
@@ -198,29 +254,16 @@
     margin-right: auto;
   }
 
-  .expo-tag {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    border: 2px solid var(--ink);
-    padding: 3px 8px;
-    border-radius: 4px;
-  }
-
-  .expo-status {
-    background: var(--paper);
-  }
-
   .expo-title {
     font-family: var(--serif);
     font-weight: 400;
-    font-size: 26px;
+    font-size: 23px;
     line-height: 1.05;
   }
 
   .expo-liner {
     font-size: 14px;
+    line-height: 1.45;
     color: var(--ink-2);
     flex-grow: 1;
   }
@@ -230,6 +273,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
+    margin-top: 4px;
   }
 
   /* ═══ Deep dives ═══ */
@@ -268,26 +312,48 @@
     line-height: 1;
   }
 
-  .dive-tag {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    border: 2px solid var(--ink);
-    padding: 3px 8px;
-    border-radius: 4px;
+  /* The heading itself is the repo link. Plain until hover, then a
+     hard underline + the arrow nudges, so it reads as text first and a
+     link on intent. */
+  .title-link {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    transition: border-color 140ms ease;
+  }
+
+  .title-link:hover {
+    border-bottom-color: var(--ink);
+  }
+
+  .title-arrow {
+    font-family: var(--mono);
+    font-size: 0.5em;
+    vertical-align: super;
+    margin-left: 4px;
+    color: var(--ink-3);
+    transition: transform 140ms ease;
+    display: inline-block;
+  }
+
+  .title-link:hover .title-arrow {
+    transform: translate(2px, -2px);
+    color: var(--ink);
+  }
+
+  .dive-head .tag {
     align-self: center;
   }
 
-  .dive-status {
-    background: var(--paper);
-  }
-
+  /* Paper card with a thick category-coloured left rule, replacing the
+     solid ink block (eleven dark slabs down the page read as heavy). The
+     left rule keeps one calm thread of the category colour. */
   .motivation {
-    background: var(--ink);
-    color: var(--cream);
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-left-width: 6px;
     border-radius: var(--radius);
-    padding: 18px 20px;
+    padding: 16px 20px;
     box-shadow: var(--shadow-hard-sm);
   }
 
@@ -296,13 +362,14 @@
     font-size: 10px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    opacity: 0.7;
+    color: var(--ink-3);
     margin-bottom: 6px;
   }
 
   .motivation p {
     font-size: 15px;
     line-height: 1.55;
+    color: var(--ink-2);
   }
 
   .facts {
@@ -321,7 +388,10 @@
     letter-spacing: 0.04em;
     border-bottom: 1px solid var(--rule);
     border-right: 2px solid var(--ink);
-    background: var(--cream);
+    /* No fill: the old cream fill matched the page background and read as
+       a punched-out hole. The bold mono weight and the vertical ink rule
+       carry the key/value separation instead. */
+    background: var(--paper);
   }
 
   .facts dd {

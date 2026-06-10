@@ -20,6 +20,10 @@
   --green: #4ade80;
   --bg: var(--cream);
   --bg-elev: #ebe4d4;
+  /* Single calm tint for "external / third-party" diagram nodes. A cool
+     blue-grey reads as "outside the cluster" against the warm cream stack
+     without the saturation of the accent palette. */
+  --diagram-external: #d6e3ee;
 
   /* ── Typography ──────────────────────────── */
   --serif: "Instrument Serif", Georgia, serif;

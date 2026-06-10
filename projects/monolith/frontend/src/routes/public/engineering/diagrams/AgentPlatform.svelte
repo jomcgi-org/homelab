@@ -16,7 +16,7 @@
   <DArrow label="dispatch" />
   <DGroup label="Sandbox pod" stack>
     <DBox role="process" sub="Claude / Goose">Agent</DBox>
-    <DBox role="external" sub="isolated">Workspace</DBox>
+    <DBox role="output" sub="isolated">Workspace</DBox>
   </DGroup>
   <DArrow label="tool calls" />
   <DBox role="store" sub="MCP gateway, RBAC">Context Forge</DBox>

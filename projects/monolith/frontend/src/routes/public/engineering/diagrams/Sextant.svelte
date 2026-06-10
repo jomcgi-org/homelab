@@ -19,5 +19,5 @@
     <DBox role="output">status.go</DBox>
   </DGroup>
   <DArrow label="drift guard" />
-  <DBox role="external">CI regen check</DBox>
+  <DBox role="output">CI regen check</DBox>
 </Diagram>
