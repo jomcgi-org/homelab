@@ -34,7 +34,7 @@ export const jobs = [
     blurb:
       "AWS / EKS / Kubernetes platform across 25 clusters for an AppSec SaaS serving large enterprise customers.",
     bullets: [
-      "Run scan execution on Argo Workflows at scale: long-lived, latency-critical workloads held inside the control plane's etcd and apiserver limits.",
+      "Run scan execution on Argo Workflows at scale: long-lived, latency-critical workloads kept within the control plane's etcd and apiserver limits.",
       "Migrated the org's ingress off deprecated ingress-nginx to Envoy Gateway on the Kubernetes Gateway API, with Cilium as the eBPF CNI and Linkerd as the L7 mesh.",
       "Built per-customer infrastructure cost attribution: usage metered at the kernel with eBPF, reconciled to the AWS bill.",
     ],
@@ -44,24 +44,24 @@ export const jobs = [
     title: "Senior Software Engineer / SSE2",
     dates: "Oct 2022 – May 2025",
     blurb:
-      "Pharma R&D SaaS. Three years removing complexity for other engineers — making the hard infra path the easy one, with business value as the byproduct. Promoted to SSE2 within 12 months.",
+      "Pharma R&D SaaS. Spent three years making the hard infrastructure path the easy one for other engineers. Promoted to SSE2 within 12 months.",
     highlights: [
       {
         title: "Event-Driven Data Platform",
-        kicker: "Weeks to minutes, $644 → $69 per 2.5M docs",
+        kicker: "From weeks to minutes; $644 down to $69 per 2.5M docs",
         intro:
-          "BenchSci turns 25M+ scientific papers into structured biomedical knowledge via NER, LLM extraction, and knowledge-graph linking. Document processing was a weekly batch with pipeline-granularity caching: freshness capped what product could ship, and unchanged work was reprocessed every cycle.",
+          "BenchSci turns 25M+ scientific papers into structured biomedical knowledge through NER, LLM extraction, and knowledge-graph linking. Document processing was a weekly batch with pipeline-granularity caching: data freshness capped what the product team could ship, and unchanged work was reprocessed every cycle.",
         bullets: [
-          "**Rebuilt it event-driven on GKE** — per-document events, per-document caching, scale-to-zero; only changed docs reprocess. Processing collapsed weeks → minutes, cost dropped **$644 → $69 per 2.5M docs (−89%)**, scaling to 100K+ concurrent documents with the full 25M+ corpus reprocessable on demand.",
-          "**Made it the path of least resistance** — for the ML researchers who used it, adoption was a decorator and a Python function; the framework owned deployment, event semantics, the message log, and live data testing. **~200 engineers adopted it** as the data platform's canonical foundation.",
+          "**Rebuilt it event-driven on GKE**: per-document events, per-document caching, scale-to-zero, so only changed documents reprocess. Processing went from weeks to minutes, cost dropped **from $644 to $69 per 2.5M docs (−89%)**, and the platform scaled to 100K+ concurrent documents with the full 25M+ corpus reprocessable on demand.",
+          "**Made it the path of least resistance**: for the ML researchers using it, adoption was a decorator and a Python function. The framework owned deployment, event semantics, the message log, and live data testing. **~200 engineers adopted it** as the data platform's foundation.",
         ],
       },
       {
         title: "Also at BenchSci",
         bullets: [
-          "**OpenTelemetry org-wide adoption** — every team was rolling their own logs, metrics, and tracing. I drove the company-wide OTel rollout: logs, metrics, and traces out of the box, one standard, one place to look. Incident **time-to-identify (TTI) dropped from 94 to 23 minutes (−75%)**; false-alert volume down 15%.",
-          "**GPU inference at cloud-quota limits** — ran in-pod L4 inference for ~50 in-house ML models (paper extraction, entity enrichment, vision ML) inside the same event-driven pipeline, autoscaling across regions against a **~25K L4-GPU quota** — bursting onto spot capacity when available — with each document's work colocated in-region to avoid cross-region transfer.",
-          "**RCA squad lead** — post-incident process was bespoke per team. I authored the company RCA playbook and led a cross-functional squad through it. **40% time-to-resolution reduction**; recurring SLA violations eliminated.",
+          "**OpenTelemetry org-wide adoption**: every team was rolling their own logs, metrics, and tracing. I drove a company-wide OTel rollout that gave every service all three by default. Incident **time-to-identify dropped from 94 to 23 minutes (−75%)** and false-alert volume fell 15%.",
+          "**GPU inference at cloud-quota limits**: ran in-pod L4 inference for ~50 in-house ML models (paper extraction, entity enrichment, vision ML) inside the same event-driven pipeline, autoscaling across regions against a **~25K L4-GPU quota** and bursting onto spot capacity when available. Each document's work stayed in one region to avoid cross-region transfer.",
+          "**RCA squad lead**: the post-incident process was bespoke per team. I wrote the company RCA playbook and led a cross-functional squad through it. **Time-to-resolution fell 40%** and the recurring SLA violations stopped.",
         ],
       },
     ],
@@ -78,7 +78,7 @@ export const jobs = [
     title: "Senior Platform Engineer",
     dates: "Sep 2021 – May 2022",
     blurb:
-      "DBT / BigQuery modernization for a UK home-warranty business; ER model optimization; resilience work on a legacy platform.",
+      "dbt / BigQuery modernization for a UK home-warranty business; ER model optimization; resilience work on a legacy platform.",
   },
   {
     company: "AXA",
@@ -92,27 +92,27 @@ export const jobs = [
     title: "Platform Engineer",
     dates: "Feb 2020 – Jan 2021",
     blurb:
-      "Led an on-prem → GCP migration; mentored junior engineers. Role eliminated in COVID restructuring.",
+      "Led an on-prem to GCP migration; mentored junior engineers. Role eliminated in COVID restructuring.",
   },
 ];
 
 export const earlierCareer =
-  "**Chubb (2018–2020)** — account servicing for multinational corporate insurance. Automated the majority of regional account-servicing admin and won two UK-wide hackathons (incl. an ML fraud classifier taken to production) — the start of the pivot into engineering.";
+  "**Chubb (2018–2020)**: account servicing for multinational corporate insurance. Automated most of the region's account-servicing admin and won two UK-wide hackathons, including an ML fraud classifier taken to production. That work started the pivot into engineering.";
 
 export const personalIntro =
-  "All of this runs on a bare-metal K3s cluster I operate at home, GitOps-deployed. Source: [github.com/jomcgi/homelab](https://github.com/jomcgi/homelab).";
+  "All of this runs on a bare-metal K3s cluster I operate at home, deployed with GitOps. Source: [github.com/jomcgi/homelab](https://github.com/jomcgi/homelab).";
 
 export const projects = [
-  "**OCI Model Cache Operator** ([projects/operators/oci-model-cache](https://github.com/jomcgi/homelab/tree/main/projects/operators/oci-model-cache)) — Go operator + ModelCache CRD + admission webhook that streams HuggingFace models into an OCI registry and rewrites pod volume refs at admission, so pods mount models like container images. Sealed-interface Go state machines make invalid phase transitions a compile error.",
-  "**Self-hosted agent platform** ([projects/agent_platform](https://github.com/jomcgi/homelab/tree/main/projects/agent_platform)) — vLLM inference, an MCP gateway, a sandboxed-execution orchestrator, and scheduled Claude routines running autonomous platform maintenance over a Postgres + pgvector knowledge graph.",
-  "**Platform plumbing** — four custom Bazel rulesets (notably rules_helm, and a rules_semgrep that extracts the scan engine from its PyPI wheels for hermetic **30s-vs-2min** diff scans); Argo CD GitOps; Envoy Gateway / Gateway API ingress behind a Cloudflare Tunnel (no open ports); Linkerd, Kyverno, 1Password Operator, self-hosted SigNoz.",
+  "**OCI Model Cache Operator** ([projects/operators/oci-model-cache](https://github.com/jomcgi/homelab/tree/main/projects/operators/oci-model-cache)): a Go operator that streams HuggingFace models into an OCI registry and rewrites pod volumes at admission, so pods mount models like container images. Sealed-interface state machines make invalid phase transitions a compile error.",
+  "**Self-hosted agent platform** ([projects/agent_platform](https://github.com/jomcgi/homelab/tree/main/projects/agent_platform)): vLLM inference, an MCP gateway, a sandboxed-execution orchestrator, and scheduled Claude routines running autonomous platform maintenance over a Postgres + pgvector knowledge graph.",
+  "**Platform plumbing**: four custom Bazel rulesets, notably rules_helm and a rules_semgrep that extracts the scan engine from its PyPI wheels and cuts hermetic diff scans **from 2 minutes to 30 seconds**; Argo CD GitOps; Envoy Gateway / Gateway API ingress behind a Cloudflare Tunnel (no open ports); Linkerd, Kyverno, 1Password Operator, self-hosted SigNoz.",
 ];
 
 export const collabAside =
-  "Separately, a collaborative project (not part of the homelab):";
+  "Separately, a collaborative project (in progress, private for now):";
 
 export const collabProjects = [
-  '**loom** (in progress, with a collaborator under the weave-hand org — repo currently private, to be open-sourced) — a data platform built on one bet: **operating a governed, typed-object platform should scale sub-linearly with your data and your org** — a new dataset, domain, or transform adds no new system to run. Built clean-sheet in **Rust**, treating data governance as a safety property: an LLM-assisted STPA hazard analysis where "unsafe" means a governance violation, not a crash.',
+  "**loom**: a **Rust** data platform built on one bet: **it should scale sub-linearly with your data and your org**. A new dataset, domain, or transform adds no new system to run.",
 ];
 
 export const skills = [
