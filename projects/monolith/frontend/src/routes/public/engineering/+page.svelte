@@ -327,8 +327,15 @@
     align-items: center;
     gap: 8px;
     padding: 2px 6px;
+    /* Transparent border reserves the space so the hover chip's ink
+       border doesn't shift the row. */
+    border: 2px solid transparent;
     border-radius: 4px;
     text-decoration: none;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      box-shadow 120ms ease;
   }
 
   .rail-num {
@@ -346,13 +353,30 @@
     font-weight: 700;
   }
 
-  .rail-link:hover .rail-num {
-    opacity: 0.7;
-  }
-
   .rail-link[aria-current="true"] .rail-title {
     color: var(--ink);
     font-weight: 700;
+  }
+
+  /* Hover/focus chip: blue fill, ink border, hard shadow, the sticker
+     treatment. Declared after the aria-current rules so the ink text
+     wins over the coral marker while the pointer is on the row. */
+  .rail-link:hover,
+  .rail-link:focus-visible {
+    background: var(--blue);
+    border-color: var(--ink);
+    box-shadow: var(--shadow-hard-sm);
+  }
+
+  .rail-link:hover .rail-num,
+  .rail-link:focus-visible .rail-num {
+    opacity: 1;
+    color: var(--ink);
+  }
+
+  .rail-link:hover .rail-title,
+  .rail-link:focus-visible .rail-title {
+    color: var(--ink);
   }
 
   .rail-title {
