@@ -25,7 +25,7 @@
   .marquee {
     background: var(--accent);
     color: var(--ink);
-    border-bottom: 1.5px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
     overflow: hidden;
     font-family: var(--mono);
     font-size: 13px;

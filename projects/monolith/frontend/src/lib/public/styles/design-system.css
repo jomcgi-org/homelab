@@ -27,15 +27,14 @@
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* ── Spacing / Radius ────────────────────── */
-  --radius: 14px;
-  --radius-lg: 22px;
+  --radius: 8px;
+  --radius-lg: 12px;
 
   /* ── Shadows ─────────────────────────────── */
-  --shadow-sm: 0 1px 0 rgba(10, 10, 10, 0.06), 0 1px 2px rgba(10, 10, 10, 0.04);
-  --shadow-md:
-    0 4px 14px rgba(10, 10, 10, 0.06), 0 1px 2px rgba(10, 10, 10, 0.04);
-  --shadow-lg:
-    0 20px 50px -18px rgba(10, 10, 10, 0.25), 0 4px 14px rgba(10, 10, 10, 0.06);
+  /* Hard offsets only — soft blurred shadows break the flat ink language. */
+  --shadow-hard-sm: 2px 2px 0 var(--ink);
+  --shadow-hard: 4px 4px 0 var(--ink);
+  --shadow-hard-lg: 6px 6px 0 var(--ink);
 }
 
 /* ── Reset ──────────────────────────────── */
@@ -151,16 +150,17 @@ ul {
 /* ── Cards (hard shadow) ───────────────── */
 .card-hard {
   background: var(--paper);
-  border: 1.5px solid var(--ink);
+  border: 2px solid var(--ink);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-hard);
   transition:
     transform 180ms ease,
     box-shadow 180ms ease;
 }
 
 .card-hard:hover {
-  transform: translate(-4px, -4px);
-  box-shadow: 4px 4px 0 var(--ink);
+  transform: translate(-2px, -2px);
+  box-shadow: var(--shadow-hard-lg);
 }
 
 /* ── Ticker / Marquee ──────────────────── */

@@ -135,10 +135,10 @@
   >
 
   <div class="wrap hero-content">
-    <h1 class="hero-headline">ten years ago i was underwriting policies<br />and winning insurance hackathons.<br />now i'm building production grade infra<br />for weekend side quests and keeping<br /><a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.</h1>
+    <h1 class="hero-headline">ten years ago i was underwriting policies and winning insurance hackathons. now i'm building <span class="hl hl-yellow">production grade infra</span> for weekend side quests and keeping <a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.</h1>
     <div class="hero-cta-row">
       <a href="#homelab" class="btn btn-primary">SEE MY HOMELAB <span class="btn-arr">→</span></a>
-      <a href="#homelab" class="btn btn-secondary">TALK TO MY NOTES</a>
+      <a href="/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
     </div>
     <Sticker color="var(--coral)" rotate={-5} class="sticker-hero">← BUILT THIS SITE TOO</Sticker>
   </div>
@@ -162,14 +162,15 @@
   <svg class="deco deco-bio-circle" width="24" height="24" viewBox="0 0 24 24"
     ><circle cx="12" cy="12" r="10" fill="none" stroke="var(--ink)" stroke-width="2" /></svg
   >
-  <Sticker color="var(--paper)" rotate={-3} class="sticker-bio">A LITTLE ABOUT ME</Sticker>
-
   <div class="wrap bio-content">
-    <p class="bio-sub">
-      I'm Joe, from Scotland, living in Vancouver.<br />
-      Monorepo enthusiast. Lover of <a href="https://brutalistwebsites.com/" class="bio-link">brutalist websites</a>.<br />
-      Care<em>mad</em> about developer experience.
-    </p>
+    <div class="bio-left">
+      <Sticker color="var(--paper)" rotate={-3} class="sticker-bio">A LITTLE ABOUT ME</Sticker>
+      <p class="bio-sub">
+        I'm Joe, from Scotland, living in Vancouver.<br />
+        Monorepo enthusiast. Lover of <a href="https://brutalistwebsites.com/" class="bio-link">brutalist websites</a>.<br />
+        Care<em>mad</em> about developer experience.
+      </p>
+    </div>
     <h2 class="bio-headline">Boring infrastructure<br />is a feature.</h2>
   </div>
 </section>
@@ -196,7 +197,7 @@
     padding: 88px 0 96px;
     position: relative;
     overflow: hidden;
-    border-bottom: 1px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
   }
 
   .hero-content {
@@ -207,12 +208,17 @@
 
   .hero-headline {
     font-family: var(--mono);
-    font-weight: 400;
+    font-weight: 700;
     font-size: clamp(20px, 2.6vw, 38px);
-    line-height: 1.45;
+    line-height: 1.4;
     letter-spacing: -0.01em;
     margin: 0 0 44px;
+    max-width: 46ch;
+    text-wrap: balance;
     color: var(--ink);
+    /* .hl's ::before sits at z-index -1 — isolate so it stays above the
+       section background instead of vanishing behind it. */
+    isolation: isolate;
   }
 
   .hero-mono {
@@ -321,7 +327,7 @@
   /* ── Bio panel ───────────────────────────── */
   .bio-panel {
     background: var(--accent);
-    border-bottom: 1px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
     padding: 56px 0;
     position: relative;
     overflow: hidden;
@@ -362,19 +368,14 @@
     text-decoration-color: var(--coral);
   }
 
-  :global(.sticker-bio) {
-    position: absolute;
-    top: 40px;
-    left: 6%;
+  .bio-left {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 22px;
   }
 
   /* ── Responsive ──────────────────────────── */
-  @media (max-width: 1900px) {
-    :global(.sticker-bio) {
-      display: none !important;
-    }
-  }
-
   @media (max-width: 1100px) {
     .bio-content {
       grid-template-columns: 1fr;
@@ -396,8 +397,23 @@
     :global(.sticker-hero) {
       display: none !important;
     }
+    /* Keep one signature shape per band on mobile so the shape language
+       survives small screens; the rest would collide with text. */
     .deco {
       display: none;
+    }
+    .deco-star {
+      display: block;
+      width: 34px;
+      height: 34px;
+      top: 10px;
+      right: 12px;
+    }
+    .deco-bio-squiggle {
+      display: block;
+      width: 56px;
+      top: 14px;
+      right: 14px;
     }
   }
 </style>
