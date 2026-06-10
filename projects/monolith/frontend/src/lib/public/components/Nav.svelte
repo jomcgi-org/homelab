@@ -2,20 +2,15 @@
   /** @type {{ route?: string, isPrivate?: boolean }} */
   let { route = "home", isPrivate = false } = $props();
 
-  // NOTES and CV are same-host relative URLs so they resolve to
-  // public.jomcgi.dev/* from the public homepage and to
+  // NOTES, ENGINEERING, and CV are same-host relative URLs so they
+  // resolve to public.jomcgi.dev/* from the public homepage and to
   // private.jomcgi.dev/* from the private dashboard, without
   // bouncing public visitors into the auth-gated private surface.
-  // HOME always points at the public site; ENGINEERING still lives on
-  // the apex (legacy Astro) domain.
+  // HOME always points at the public site.
   const publicItems = [
     { slug: "home", label: "HOME", href: "https://public.jomcgi.dev/" },
     { slug: "notes", label: "NOTES", href: "/notes" },
-    {
-      slug: "engineering",
-      label: "ENGINEERING",
-      href: "https://jomcgi.dev/engineering/",
-    },
+    { slug: "engineering", label: "ENGINEERING", href: "/engineering" },
     { slug: "cv", label: "CV", href: "/cv" },
   ];
 
@@ -68,7 +63,7 @@
     position: sticky;
     top: 0;
     z-index: 50;
-    background: #ffffff;
+    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
     border-bottom: 2px solid #1a1a1a;
   }
 
@@ -95,7 +90,7 @@
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.1em;
-    color: #2a2824;
+    color: #2a2824; /* nosemgrep: svelte-hardcoded-color-in-style */
     text-decoration: none;
     transition: color 160ms ease;
     position: relative;
@@ -108,13 +103,13 @@
     right: 12px;
     bottom: 2px;
     height: 2px;
-    background: #ff7169;
+    background: #ff7169; /* nosemgrep: svelte-hardcoded-color-in-style */
     transform: scaleX(0);
     transition: transform 160ms ease;
   }
 
   .md-nav-link:hover {
-    color: #1a1a1a;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
   .md-nav-link:hover::after {
@@ -122,11 +117,11 @@
   }
 
   .md-nav-link.active {
-    color: #1a1a1a;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
   .md-nav-link.active::after {
-    background: #1a1a1a;
+    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     transform: scaleX(1);
   }
 

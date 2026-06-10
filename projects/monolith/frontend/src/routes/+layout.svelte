@@ -12,6 +12,7 @@
   // internally, but $page.url reflects the *browser* URL. So:
   // - /review (private host) → "review"
   // - /notes (any host) → "notes"
+  // - /engineering (any host) → "engineering"
   // - /cv (any host) → "cv"
   // - any other URL on public.jomcgi.dev → "home"
   // - everything else → no active state
@@ -20,6 +21,9 @@
     const path = $page.url.pathname;
     if (path === "/review" || path.startsWith("/review/")) return "review";
     if (path === "/notes" || path.startsWith("/notes/")) return "notes";
+    if (path === "/engineering" || path.startsWith("/engineering/")) {
+      return "engineering";
+    }
     if (path === "/cv" || path.startsWith("/cv/")) return "cv";
     if (host.startsWith("public.")) return "home";
     return "";
