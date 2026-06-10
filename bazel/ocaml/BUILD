@@ -7,9 +7,9 @@ toolchain_type(
     visibility = ["//visibility:public"],
 )
 
-# Tool configuration (opam root, ocamlfind preference, extra flags). The actual
-# compiler is supplied by the pinned container image (see toolchain.bzl), not by
-# this target.
+# Tool configuration (ocamlfind preference, extra flags). The compiler is the
+# hermetic sysroot tar built by //bazel/ocaml/toolchain:ocaml_compiler and
+# staged into every action (see toolchain.bzl).
 ocaml_toolchain(
     name = "ocaml_tools",
     visibility = ["//visibility:public"],
