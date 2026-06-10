@@ -17,5 +17,5 @@
   <DBox role="store" sub="S3 object storage">DuckLake tables</DBox>
   <DBox role="store" sub="queue, catalog, ontology, ACL, lineage">Postgres control plane</DBox>
   <DArrow label="speaks" />
-  <DBox role="external" sub="DuckDB-compatible">Quack protocol</DBox>
+  <DBox role="output" sub="DuckDB-compatible">Quack protocol</DBox>
 </Diagram>
