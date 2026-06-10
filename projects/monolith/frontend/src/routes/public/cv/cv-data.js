@@ -52,7 +52,7 @@ export const jobs = [
         intro:
           "BenchSci turns 25M+ scientific papers into structured biomedical knowledge via NER, LLM extraction, and knowledge-graph linking. Document processing was a weekly batch with pipeline-granularity caching: freshness capped what product could ship, and unchanged work was reprocessed every cycle.",
         bullets: [
-          "**Rebuilt it event-driven on GKE** — per-document events, per-document caching, scale-to-zero; only changed docs reprocess. Processing collapsed weeks → minutes, cost dropped **$644 → $69 per 2.5M docs (−89%)**, scaling to **100K+ concurrent documents** with the full **25M+ corpus** reprocessable on demand.",
+          "**Rebuilt it event-driven on GKE** — per-document events, per-document caching, scale-to-zero; only changed docs reprocess. Processing collapsed weeks → minutes, cost dropped **$644 → $69 per 2.5M docs (−89%)**, scaling to 100K+ concurrent documents with the full 25M+ corpus reprocessable on demand.",
           "**Made it the path of least resistance** — for the ML researchers who used it, adoption was a decorator and a Python function; the framework owned deployment, event semantics, the message log, and live data testing. **~200 engineers adopted it** as the data platform's canonical foundation.",
         ],
       },
@@ -60,7 +60,7 @@ export const jobs = [
         title: "Also at BenchSci",
         bullets: [
           "**OpenTelemetry org-wide adoption** — every team was rolling their own logs, metrics, and tracing. I drove the company-wide OTel rollout: logs, metrics, and traces out of the box, one standard, one place to look. Incident **time-to-identify (TTI) dropped from 94 to 23 minutes (−75%)**; false-alert volume down 15%.",
-          "**GPU inference at cloud-quota limits** — ran in-pod L4 inference for **~50 in-house ML models** (paper extraction, entity enrichment, vision ML) inside the same event-driven pipeline, autoscaling across regions against a **~25K L4-GPU quota** — bursting onto spot capacity when available — with each document's work colocated in-region to avoid cross-region transfer.",
+          "**GPU inference at cloud-quota limits** — ran in-pod L4 inference for ~50 in-house ML models (paper extraction, entity enrichment, vision ML) inside the same event-driven pipeline, autoscaling across regions against a **~25K L4-GPU quota** — bursting onto spot capacity when available — with each document's work colocated in-region to avoid cross-region transfer.",
           "**RCA squad lead** — post-incident process was bespoke per team. I authored the company RCA playbook and led a cross-functional squad through it. **40% time-to-resolution reduction**; recurring SLA violations eliminated.",
         ],
       },

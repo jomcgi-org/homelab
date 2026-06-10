@@ -13,7 +13,7 @@
 
 <span
   class="sticker {className}"
-  style:background={color}
+  style:background-color={color}
   style:transform="rotate({rotate}deg)"
 >
   {@render children()}
@@ -29,7 +29,13 @@
     text-transform: uppercase;
     padding: 8px 14px;
     border: 2px solid var(--ink);
-    box-shadow: 3px 3px 0 var(--ink);
+    /* The fill must not paint under the border: on a rotated element the
+       border's outer antialiasing blends with the fill, leaving a colored
+       hairline between border and shadow. drop-shadow (vs box-shadow) traces
+       the rotated silhouette exactly, so the shadow meets the border with no
+       seam or stepped corner. */
+    background-clip: padding-box;
+    filter: drop-shadow(3px 3px 0 var(--ink));
     white-space: nowrap;
     color: var(--ink);
   }
