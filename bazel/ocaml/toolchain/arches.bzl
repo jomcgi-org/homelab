@@ -20,11 +20,11 @@ toolchains stable labels to reference.
 # Fields:
 #   name    : the `platform` target name under //bazel/ocaml/platforms
 #   os, cpu : @platforms constraint labels
-#   bb_arch : the BuildBuddy `Arch` execution property for pool routing. Carried
-#             as an exec_property so it travels with the platform, but inert until
-#             a per-arch toolchain selects the platform; the exact key is confirmed
-#             against the executor via //bazel/ocaml/platforms:executor_arch_probe
-#             before Phase 7 wires toolchain registration (ADR 006).
+#   bb_arch : the BuildBuddy `Arch` execution property for pool routing. Applied
+#             at per-arch toolchain registration (Phase 7, ADR 006), NOT on the
+#             platform target -- the exact key is confirmed against the executor
+#             via //bazel/ocaml/platforms:executor_arch_probe first, so an
+#             unverified property can never reach an executor.
 #   enabled : whether Phase 7 should register a toolchain for this arch yet.
 OCAML_ARCHES = [
     struct(
@@ -44,11 +44,19 @@ OCAML_ARCHES = [
 ]
 
 def declare_ocaml_platforms():
-    """Declare one inert `platform` target per entry in OCAML_ARCHES."""
+    """Declare one inert `platform` target per entry in OCAML_ARCHES.
+
+    Platforms carry constraint_values only -- matching the repo's existing
+    pattern in bazel/tools/platforms. The BuildBuddy `Arch` routing property
+    (arch.bb_arch) is intentionally NOT emitted on the platform: it is applied
+    at per-arch toolchain registration in Phase 7 (ADR 006), once the executor
+    probe has confirmed the exact key. Baking an unverified exec_property onto a
+    selectable platform could mis-route or break actions the moment something
+    selects it via --platforms.
+    """
     for arch in OCAML_ARCHES:
         native.platform(
             name = arch.name,
             constraint_values = [arch.os, arch.cpu],
-            exec_properties = {"Arch": arch.bb_arch},
             visibility = ["//visibility:public"],
         )

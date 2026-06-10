@@ -32,10 +32,15 @@ live per-arch toolchain registration until a pool is verified**.
   (`name`, `os`/`cpu` constraints, `bb_arch` BuildBuddy routing property,
   `enabled`). Adding an arch is appending one struct.
 - A macro declares one `platform` target per arch under
-  `//bazel/ocaml/platforms`. Platform targets are **inert** -- they affect
-  nothing until a build selects them via `--platforms` or a toolchain's
-  `exec_compatible_with`/`target_compatible_with` -- so declaring both arches now
-  is free and gives stable labels to reference.
+  `//bazel/ocaml/platforms`, carrying `constraint_values` only (matching the
+  repo's existing `bazel/tools/platforms` pattern). Platform targets are
+  **inert** -- they affect nothing until a build selects them via `--platforms`
+  or a toolchain's `exec_compatible_with`/`target_compatible_with` -- so
+  declaring both arches now is free and gives stable labels to reference. The
+  BuildBuddy `Arch` routing property is held in the registry (`bb_arch`) and
+  applied at toolchain registration in Phase 7, **not** baked onto the platform
+  target, so an unverified property can never reach an executor before the probe
+  confirms the key.
 - Per-arch **toolchain registration** is gated by `enabled` and is the Phase-7
   work; it is **not wired in this change**. The live toolchain registration in
   `bazel/ocaml/BUILD` is unchanged (x86_64, exactly as today), so this change
