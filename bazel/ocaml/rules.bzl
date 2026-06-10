@@ -150,16 +150,19 @@ _COMMON_ATTRS = {
     "opam_deps": attr.string_list(
         doc = "findlib/opam package names (e.g. \"unix\", \"str\") shipped with the stdlib.",
     ),
-    "data": attr.label_list(
-        allow_files = True,
-        doc = "Runtime files made available in the runfiles tree (test corpora etc.).",
-    ),
     "_driver": attr.label(
         default = "//bazel/ocaml/driver:ocaml_compile",
         executable = True,
         cfg = "exec",
     ),
 }
+
+# Runnable rules (binary/test) additionally take `data`; ocaml_library does not,
+# since its implementation has no runfiles to put them in.
+_RUNNABLE_ATTRS = dict(_COMMON_ATTRS, data = attr.label_list(
+    allow_files = True,
+    doc = "Runtime files made available in the runfiles tree (test corpora etc.).",
+))
 
 ocaml_library = rule(
     implementation = _ocaml_library_impl,
@@ -170,7 +173,7 @@ ocaml_library = rule(
 
 ocaml_binary = rule(
     implementation = _ocaml_binary_impl,
-    attrs = _COMMON_ATTRS,
+    attrs = _RUNNABLE_ATTRS,
     toolchains = [_TOOLCHAIN_TYPE],
     executable = True,
     doc = "Compile + link a runnable native OCaml executable.",
@@ -182,7 +185,7 @@ ocaml_binary = rule(
 # is the verdict — no wrapper script. Shares the binary implementation.
 ocaml_test = rule(
     implementation = _ocaml_binary_impl,
-    attrs = _COMMON_ATTRS,
+    attrs = _RUNNABLE_ATTRS,
     toolchains = [_TOOLCHAIN_TYPE],
     test = True,
     doc = "Compile + link a native OCaml test executable (exit 0 = pass).",

@@ -26,7 +26,7 @@ ocaml_binary(
 )
 
 # Idiomatic OCaml test: a native executable that exits non-zero on failure.
-# `bazel test //...` runs it directly — no wrapper. Picked up by the global
+# `bazel test //...` runs it directly (no wrapper). Picked up by the global
 # test-all with no extra wiring.
 ocaml_test(
     name = "greeting_test",
