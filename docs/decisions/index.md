@@ -63,8 +63,9 @@ ADRs document significant architectural decisions and their context.
 
 ## Tooling
 
-| ADR                                                                           | Decision                                                                      |
-| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| [001 - OCI Tool Distribution](tooling/001-oci-tool-distribution.md)           | Multi-arch OCI image for developer tools, eliminating local Bazel             |
-| [002 - Service Deployment Tooling](tooling/002-service-deployment-tooling.md) | Copier template to scaffold new services, eliminating per-service boilerplate |
-| [003 - Spec-First CLI and Skills](tooling/003-spec-first-cli-and-skills.md)   | OpenAPI as source of truth; CLI commands and Claude skills are derived        |
+| ADR                                                                           | Decision                                                                                |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [001 - OCI Tool Distribution](tooling/001-oci-tool-distribution.md)           | Multi-arch OCI image for developer tools, eliminating local Bazel                       |
+| [002 - Service Deployment Tooling](tooling/002-service-deployment-tooling.md) | Copier template to scaffold new services, eliminating per-service boilerplate           |
+| [003 - Spec-First CLI and Skills](tooling/003-spec-first-cli-and-skills.md)   | OpenAPI as source of truth; CLI commands and Claude skills are derived                  |
+| [004 - OCaml Rules for Semgrep](tooling/004-ocaml-rules-for-semgrep.md)       | Scale the custom bazel/ocaml ruleset (not obazl); ppx first, per-arch native toolchains |
