@@ -26,6 +26,12 @@
   // Active section for the desktop scroll-spy rail.
   let activeId = $state("");
 
+  // Rail anchor: vertical center of the viewport band BELOW the sticky
+  // nav and the yellow ticker, so the rail never overlaps the ticker.
+  // Recomputed on scroll; once the ticker leaves the viewport the band is
+  // the full viewport under the nav and the rail sits at true center.
+  let railY = $state(0);
+
   onMount(() => {
     // Scroll-triggered reveals, mirroring the CV page's IntersectionObserver.
     const reveal = new IntersectionObserver(
@@ -58,9 +64,23 @@
       spy.observe(el);
     }
 
+    const nav = document.querySelector(".md-nav");
+    const marquee = document.querySelector(".marquee");
+    const updateRail = () => {
+      const navBottom = nav ? nav.getBoundingClientRect().bottom : 0;
+      const marqueeBottom = marquee ? marquee.getBoundingClientRect().bottom : 0;
+      const top = Math.max(0, navBottom, marqueeBottom);
+      railY = top + (window.innerHeight - top) / 2;
+    };
+    updateRail();
+    window.addEventListener("scroll", updateRail, { passive: true });
+    window.addEventListener("resize", updateRail, { passive: true });
+
     return () => {
       reveal.disconnect();
       spy.disconnect();
+      window.removeEventListener("scroll", updateRail);
+      window.removeEventListener("resize", updateRail);
     };
   });
 </script>
@@ -105,7 +125,7 @@
   </nav>
 
   <!-- ═══ Scroll-spy rail (desktop) ═══ -->
-  <nav class="rail mono" aria-label="Sections">
+  <nav class="rail mono" aria-label="Sections" style:top={railY ? `${railY}px` : null}>
     {#each numbered as p}
       <a
         class="rail-link"
@@ -318,12 +338,21 @@
     transition: opacity 140ms ease;
   }
 
+  /* Coral is the site's existing "active" accent (the nav underline), so
+     the rail's current-section marker joins that thread. */
   .rail-link[aria-current="true"] .rail-num {
     opacity: 1;
+    color: var(--coral);
+    font-weight: 700;
   }
 
   .rail-link:hover .rail-num {
     opacity: 0.7;
+  }
+
+  .rail-link[aria-current="true"] .rail-title {
+    color: var(--ink);
+    font-weight: 700;
   }
 
   .rail-title {
