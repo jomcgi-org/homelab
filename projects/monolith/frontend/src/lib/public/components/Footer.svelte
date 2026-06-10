@@ -46,7 +46,7 @@
 
 <style>
   .footer {
-    background: #fff;
+    background: var(--paper);
     border-top: 2px solid var(--ink);
     padding: 80px 0 60px;
     position: relative;
@@ -56,6 +56,9 @@
   .footer-content {
     max-width: 900px;
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
   }
 
   .footer-headline {
@@ -77,11 +80,12 @@
   }
 
 
+  /* Off-axis on purpose: the sticker hangs left of the centered headline. */
   :global(.footer-sticker) {
     display: inline-block;
     font-size: 14px;
     margin-bottom: 24px;
-    margin-right: 680px;
+    align-self: flex-start;
   }
 
   .deco {
@@ -107,7 +111,7 @@
 
   @media (max-width: 768px) {
     :global(.footer-sticker) {
-      margin-right: 0;
+      align-self: center;
     }
     .footer {
       text-align: center;
@@ -117,6 +121,13 @@
     }
     .deco {
       display: none;
+    }
+    .deco-star {
+      display: block;
+      width: 40px;
+      height: 40px;
+      top: 16px;
+      right: 16px;
     }
   }
 </style>

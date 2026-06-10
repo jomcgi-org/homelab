@@ -142,7 +142,7 @@
     groupLabel: "var(--ink)",
     edge: "var(--ink)",
     arrow: "var(--ink)",
-    groupFill: "none",
+    groupFill: "var(--paper)",
     selectedFill: "var(--accent)",
   };
 </script>
@@ -151,7 +151,17 @@
 
 <section class="topology-section" id="homelab">
   <div class="topology-wrap" class:split={!!focusedNode}>
-    <h2 class="topology-title">Homelab</h2>
+    <div class="topology-head">
+      <div>
+        <p class="eyebrow">Live from the cluster · click a node</p>
+        <h2 class="topology-title">Homelab</h2>
+      </div>
+      <div class="topology-legend mono" aria-label="Node status legend">
+        <span class="legend-item"><i class="legend-dot legend-ok"></i>Healthy</span>
+        <span class="legend-item"><i class="legend-dot legend-warn"></i>Warning</span>
+        <span class="legend-item"><i class="legend-dot legend-bad"></i>Degraded</span>
+      </div>
+    </div>
 
     <div class="topology-body" class:split-body={!!focusedNode}>
       <div class="dag-pane">
@@ -203,6 +213,15 @@
     padding: 0 32px;
   }
 
+  .topology-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
   .topology-title {
     font-family: var(--mono);
     font-size: clamp(22px, 2.4vw, 32px);
@@ -210,7 +229,47 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--ink);
-    margin: 0 0 12px;
+    margin: 4px 0 0;
+  }
+
+  .topology-legend {
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    box-shadow: var(--shadow-hard-sm);
+    padding: 8px 12px;
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .legend-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    border: 1.5px solid var(--ink);
+    display: inline-block;
+  }
+
+  .legend-ok {
+    background: var(--green);
+  }
+
+  .legend-warn {
+    background: var(--accent);
+  }
+
+  .legend-bad {
+    background: var(--coral);
   }
 
   .topology-empty {

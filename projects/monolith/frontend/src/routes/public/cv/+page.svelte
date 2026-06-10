@@ -1,7 +1,19 @@
 <script>
   import { onMount } from "svelte";
   import { Footer, Sticker, Marquee } from "$lib/public/components";
-  import { contact, name, summary, jobs, projects, skills } from "./cv-data.js";
+  import {
+    contact,
+    name,
+    tagline,
+    summary,
+    jobs,
+    earlierCareer,
+    personalIntro,
+    projects,
+    collabAside,
+    collabProjects,
+    skills,
+  } from "./cv-data.js";
 
   // Minimal inline-markdown tokenizer. The CV bullets carry just two markdown
   // constructs from cv.md — **emphasis** and [text](url) — so a focused
@@ -33,9 +45,9 @@
   // chip grid of section 03). Keeping these distinct avoids showing the same
   // list twice; the marquee is a signature, the chips are the reference.
   const MARQUEE_ITEMS = [
-    "Senior Platform Engineer",
-    "Reliability",
-    "Observability",
+    "Senior Platform Engineer @ Semgrep",
+    "AWS / EKS",
+    "eBPF & Cilium",
     "Distributed Systems",
     "OpenTelemetry Contributor",
     "K3S Homelab",
@@ -66,7 +78,7 @@
   <title>Joe McGinley — CV</title>
   <meta
     name="description"
-    content="Joe McGinley — Senior Platform Engineer. GCP · Kubernetes · Go · Python · Reliability & Observability."
+    content="Joe McGinley — Senior Platform Engineer @ Semgrep. AWS · EKS · Kubernetes · eBPF · Reliability & Observability."
   />
 </svelte:head>
 
@@ -118,7 +130,7 @@
     <div class="wrap-narrow hero-content">
       <p class="eyebrow">Curriculum Vitae</p>
       <h1 class="cv-name display">{name}</h1>
-      <p class="cv-tagline mono">Senior Platform Engineer · GCP · Kubernetes · Reliability</p>
+      <p class="cv-tagline mono">{tagline}</p>
       <div class="cv-contacts">
         <a class="btn btn-primary" href={`mailto:${contact.email}`}>{contact.email}</a>
         <a class="btn btn-secondary" href={contact.linkedin.href} target="_blank" rel="noreferrer"
@@ -156,13 +168,40 @@
               </div>
               <span class="job-dates mono">{job.dates}</span>
             </div>
-            <ul class="bullets">
-              {#each job.bullets as bullet}
-                <li>{@render inline(bullet)}</li>
+            {#if job.blurb}
+              <p class="job-blurb">{@render inline(job.blurb)}</p>
+            {/if}
+            {#if job.bullets}
+              <ul class="bullets">
+                {#each job.bullets as bullet}
+                  <li>{@render inline(bullet)}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if job.highlights}
+              {#each job.highlights as highlight}
+                <div class="highlight">
+                  <h4 class="highlight-title mono">{highlight.title}</h4>
+                  {#if highlight.kicker}
+                    <p class="highlight-kicker">{highlight.kicker}</p>
+                  {/if}
+                  {#if highlight.intro}
+                    <p class="highlight-intro">{@render inline(highlight.intro)}</p>
+                  {/if}
+                  <ul class="bullets">
+                    {#each highlight.bullets as bullet}
+                      <li>{@render inline(bullet)}</li>
+                    {/each}
+                  </ul>
+                </div>
               {/each}
-            </ul>
+            {/if}
           </article>
         {/each}
+      </div>
+      <div class="earlier">
+        <p class="eyebrow">Earlier Career</p>
+        <p class="earlier-text">{@render inline(earlierCareer)}</p>
       </div>
     </div>
   </section>
@@ -170,9 +209,16 @@
   <!-- ═══ Personal projects (cream) ═══ -->
   <section class="band band--cream reveal">
     <div class="wrap-narrow">
-      {@render bandHead("02", "Personal Projects", "Homelab")}
+      {@render bandHead("02", "Personal Engineering", "Homelab")}
+      <p class="section-intro">{@render inline(personalIntro)}</p>
       <ul class="bullets bullets--lg">
         {#each projects as project}
+          <li>{@render inline(project)}</li>
+        {/each}
+      </ul>
+      <p class="section-intro section-aside">{collabAside}</p>
+      <ul class="bullets bullets--lg">
+        {#each collabProjects as project}
           <li>{@render inline(project)}</li>
         {/each}
       </ul>
@@ -409,6 +455,90 @@
     padding: 7px 12px;
     border: 2px solid var(--ink);
     box-shadow: 3px 3px 0 var(--ink);
+  }
+
+  /* ── Role blurb + named project subsections ─ */
+  .job-blurb {
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    margin: 0 0 18px 23px;
+    max-width: 72ch;
+  }
+  .highlight {
+    margin: 0 0 22px 23px;
+  }
+  .highlight:last-child {
+    margin-bottom: 0;
+  }
+  .highlight-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin-bottom: 6px;
+  }
+  .highlight-title::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    background: var(--accent);
+    border: 2px solid var(--ink);
+    flex-shrink: 0;
+  }
+  .highlight-kicker {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--ink);
+    margin: 0 0 8px;
+    max-width: 72ch;
+  }
+  .highlight-intro {
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--ink-3);
+    margin: 0 0 12px;
+    max-width: 72ch;
+  }
+  .highlight .bullets {
+    margin-left: 0;
+  }
+
+  /* ── Earlier career footnote ──────────────── */
+  .earlier {
+    margin-top: 28px;
+    padding-top: 22px;
+    border-top: 2px solid var(--rule);
+  }
+  .earlier-text {
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    max-width: 72ch;
+    margin-top: 8px;
+  }
+
+  /* ── Section intro / aside lines ──────────── */
+  .section-intro {
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    margin: 0 0 20px;
+    max-width: 72ch;
+  }
+  .section-aside {
+    margin-top: 24px;
+    color: var(--ink-3);
   }
 
   /* ── Bullets ──────────────────────────────── */

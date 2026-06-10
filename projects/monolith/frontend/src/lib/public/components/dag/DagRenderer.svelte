@@ -165,9 +165,17 @@
     {@const gy = grp.bounds.minY}
     {@const gw = grp.bounds.maxX - grp.bounds.minX}
     {@const gh = grp.bounds.maxY - grp.bounds.minY}
-    {@const sw = isSelected ? 2.5 : 1.5}
+    {@const sw = isSelected ? 3 : 2}
     {@const isActive = active === grp.id}
     <g class="dag-group" style:opacity={hi ? 1 : 0.15} style:transition="opacity 0.4s ease">
+      <!-- Base fill lifts groups off the cream background -->
+      {#if c.groupFill !== "none"}
+        <rect
+          x={gx} y={gy}
+          width={gw} height={gh}
+          fill={c.groupFill}
+        />
+      {/if}
       <!-- Group fill on hover/select -->
       {#if isActive}
         <rect
@@ -217,13 +225,13 @@
         x1={e.p1.x} y1={e.p1.y}
         x2={e.p2.x} y2={e.p2.y}
         stroke={c.edge}
-        stroke-width="1.5"
+        stroke-width="2"
       />
       {#if e.fwdArrow}
-        <path d={e.fwdArrow} fill="none" stroke={c.arrow} stroke-width="1.5" />
+        <path d={e.fwdArrow} fill="none" stroke={c.arrow} stroke-width="2" />
       {/if}
       {#if e.revArrow}
-        <path d={e.revArrow} fill="none" stroke={c.arrow} stroke-width="1.5" />
+        <path d={e.revArrow} fill="none" stroke={c.arrow} stroke-width="2" />
       {/if}
     </g>
   {/each}
@@ -242,6 +250,12 @@
         : "var(--green, #4ade80)"}
     {#if pos}
       <g class="dag-node" style:opacity={hi ? 1 : 0.15} style:transition="opacity 0.4s ease">
+        <!-- Hard offset shadow — the sticker motif carried into the DAG -->
+        <rect
+          x={pos.x - w / 2 + 3} y={pos.y - h / 2 + 3}
+          width={w} height={h}
+          fill={c.ink}
+        />
         <rect
           x={pos.x - w / 2} y={pos.y - h / 2}
           width={w} height={h}
