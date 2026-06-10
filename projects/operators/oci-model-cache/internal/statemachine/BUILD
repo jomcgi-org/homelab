@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "statemachine",
     srcs = [
+        "doc.go",
         "model_cache_calculator.go",
         "model_cache_metrics.go",
         "model_cache_observability.go",
@@ -32,6 +33,7 @@ go_test(
         "model_cache_accessors_test.go",
         "model_cache_calculator_test.go",
         "model_cache_coverage_test.go",
+        "model_cache_drift_test.go",
         "model_cache_gaps_test.go",
         "model_cache_metrics_test.go",
         "model_cache_missing_test.go",
@@ -45,8 +47,21 @@ go_test(
         "statemachine_test.go",
     ],
     embed = [":statemachine"],
+    embedsrcs = [
+        "model_cache_calculator.go",
+        "model_cache_metrics.go",
+        "model_cache_observability.go",
+        "model_cache_phases.go",
+        "model_cache_status.go",
+        "model_cache_transitions.go",
+        "model_cache_types.go",
+        "model_cache_visit.go",
+        "modelcache.sextant.yaml",
+    ],
     deps = [
         "//projects/operators/oci-model-cache/api/v1alpha1",
+        "//projects/sextant/pkg/codegen",
+        "//projects/sextant/pkg/schema",
         "@com_github_go_logr_logr//:logr",
         "@com_github_go_logr_logr//testr",
         "@com_github_onsi_ginkgo_v2//:ginkgo",

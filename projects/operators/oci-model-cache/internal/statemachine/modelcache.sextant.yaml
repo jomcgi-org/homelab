@@ -1,4 +1,4 @@
-apiVersion: controlflow.io/v1alpha1
+apiVersion: sextant.jomcgi.dev/v1alpha1
 kind: StateMachine
 
 metadata:
@@ -13,7 +13,8 @@ status:
 fieldGroups:
   resolveResult:
     resolvedRef: string
-    digest: string
+    # Only known after push; Ready validates it via `requires`.
+    digest: string?
     resolvedRevision: string
     format: string
     fileCount: int
@@ -40,6 +41,7 @@ states:
   - name: Ready
     requeue: 6h
     fieldGroups: [resolveResult]
+    requires: [digest]
 
   - name: Failed
     error: true
@@ -108,13 +110,9 @@ guards:
     description: "Can retry if failure is not permanent"
     condition: "!s.Permanent"
 
-errorHandling:
-  maxRetries: 5
-  backoff:
-    base: 30s
-    multiplier: 2
-    max: 5m
-    jitter: 0.1
+# No errorHandling block: retries are guard-driven (see `retryable`), so
+# RetryBackoff follows each state's requeue interval instead of retry-count
+# exponential backoff. The reconciler decides via the Permanent flag.
 
 specChangeHandling:
   enabled: true
