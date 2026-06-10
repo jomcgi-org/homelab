@@ -387,7 +387,9 @@ func (g *Generator) buildTemplateData(sm *schema.StateMachine) *TemplateData {
 		}
 
 		for _, p := range t.Params {
-			td.Params = append(td.Params, FieldData{Name: p.Name, Type: p.Type})
+			// newFieldData strips a "?" suffix so an optional group field
+			// used as a param still yields a valid Go type in the signature.
+			td.Params = append(td.Params, newFieldData(p.Name, p.Type))
 		}
 
 		data.Transitions = append(data.Transitions, td)
