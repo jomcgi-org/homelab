@@ -12,7 +12,7 @@ Multi-phase pipeline: light pollution atlas + OSM road data to identify dark zon
 | ----------- | ----------- |
 | **backend** | Pipeline that combines light pollution data, OSM roads, and weather forecasts (`weather.py` handles met.no forecast API calls). Also contains `api.py`, a stdlib Python HTTP server (`/health`, `/api/locations`, `/api/best`) that was used during development; the deployed API uses NGINX instead (see `chart/templates/deployment-api.yaml`) |
 | **tests**   | Additional unit tests for the backend pipeline (separate from tests co-located in `backend/`) |
-| **chart**   | Helm chart with CronJob and optional NGINX API server templates (controlled by `api.enabled` flag) |
+| **chart**   | Helm chart with CronJob, optional NGINX API server templates (controlled by `api.enabled` flag), and optional test data ConfigMap (controlled by `testData.enabled` flag) |
 | **deploy**  | ArgoCD Application, kustomization, and cluster-specific values (enables API server via `api.enabled: true`) |
 
 ## Documentation
