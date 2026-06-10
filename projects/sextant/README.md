@@ -10,6 +10,19 @@ sextant-generated state machine — its spec is
 and the generated package is drift-checked in CI, so the committed code can
 never silently diverge from the spec.
 
+```mermaid
+flowchart LR
+    spec["modelcache.sextant.yaml<br/>(declarative spec)"]
+    gen["sextant generate"]
+    out["8 generated .go files<br/>states · transitions · calculator<br/>SSA · metrics · OTel"]
+    op["operator reconciler<br/>(handwritten)"]
+    drift["CI drift test<br/>regenerate + byte-compare"]
+
+    spec --> gen --> out --> op
+    drift -. "fails on any diff,<br/>either direction" .-> out
+    spec -.-> drift
+```
+
 ## Why
 
 Operator reconcilers degrade into phase-string soup: `if status.Phase ==
@@ -117,6 +130,24 @@ transitions:
 guards:
   retryable:
     condition: "!s.Permanent"
+```
+
+The full ModelCache machine renders like this — and this exact diagram is
+also emitted by the generator into the generated Go (`embedDiagram: true`),
+so the docs in the code can't go stale either:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Resolving: Resolved
+    Pending --> Ready: CacheHit
+    Resolving --> Syncing: JobCreated
+    Syncing --> Ready: SyncComplete
+    Pending --> Failed: MarkFailed
+    Resolving --> Failed: MarkFailed
+    Syncing --> Failed: MarkFailed
+    Failed --> Pending: Retry [retryable]
+    Ready --> Pending: Resync
 ```
 
 Semantics worth knowing:
