@@ -32,12 +32,14 @@ OcamlToolchainInfo = provider(
 
 def _ocaml_toolchain_impl(ctx):
     sysroot_files = ctx.files.sysroot
-    if not sysroot_files:
-        fail("ocaml_toolchain: sysroot produced no files")
+    tars = [f for f in sysroot_files if f.extension == "tar"]
+    if len(tars) != 1:
+        fail("ocaml_toolchain: expected exactly one .tar in sysroot, got %s" %
+             [f.short_path for f in sysroot_files])
     return [platform_common.ToolchainInfo(
         ocaml = OcamlToolchainInfo(
             sysroot_files = depset(sysroot_files),
-            sysroot_tar = sysroot_files[0],
+            sysroot_tar = tars[0],
             use_ocamlfind = ctx.attr.use_ocamlfind,
             extra_compile_flags = ctx.attr.extra_compile_flags,
         ),
