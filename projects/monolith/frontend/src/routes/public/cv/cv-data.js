@@ -1,4 +1,4 @@
-// CV content — transcribed from the canonical public CV maintained in the
+// CV content, transcribed from the canonical public CV maintained in the
 // private cv repo (public/cv.md there; only the public/ variant is ever
 // mirrored here). Bullet strings keep the markdown inline syntax (**bold**,
 // [text](url)); the page renders them via the tiny tokenizer in +page.svelte
@@ -106,7 +106,7 @@ export const projects = [
   "**OCI Model Cache Operator** ([projects/operators/oci-model-cache](https://github.com/jomcgi/homelab/tree/main/projects/operators/oci-model-cache)): a Go operator that streams HuggingFace models into an OCI registry and rewrites pod volumes at admission, so pods mount models like container images. Sealed-interface state machines make invalid phase transitions a compile error.",
   "**Self-hosted agent platform** ([projects/agent_platform](https://github.com/jomcgi/homelab/tree/main/projects/agent_platform)): vLLM inference, an MCP gateway, a sandboxed-execution orchestrator, and scheduled Claude routines running autonomous platform maintenance over a Postgres + pgvector knowledge graph.",
   "**Platform plumbing**: four custom Bazel rulesets, notably rules_helm and a rules_semgrep that extracts the scan engine from its PyPI wheels and cuts hermetic diff scans **from 2 minutes to 30 seconds**; Argo CD GitOps; Envoy Gateway / Gateway API ingress behind a Cloudflare Tunnel (no open ports); Linkerd, Kyverno, 1Password Operator, self-hosted SigNoz.",
-  "**loom**: an open-source take on **Palantir Foundry** — a typed-object data platform with built-in lineage and governance, on a **Rust** + DataFusion + DuckLake core. Postgres is the only stateful coordinator, so a new dataset, domain, or transform adds **no new system to run**.",
+  "**loom**: an open-source take on **Palantir Foundry**, a typed-object data platform with built-in lineage and governance, on a **Rust** + DataFusion + DuckLake core. Postgres is the only stateful coordinator, so a new dataset, domain, or transform adds **no new system to run**.",
 ];
 
 export const skills = [
