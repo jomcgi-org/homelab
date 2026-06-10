@@ -1,13 +1,8 @@
 <script>
   import { onMount } from "svelte";
-  import { Footer, Marquee } from "$lib/public/components";
+  import { Footer, Sticker, Marquee } from "$lib/public/components";
   import { intro, marqueeItems, categories, projects } from "./engineering-data.js";
   import { diagrams } from "./diagrams/index.js";
-
-  // The systems count drives both the meta line and the first stat cell,
-  // derived from the roster so it can never drift from the real number.
-  const metaLine = `${projects.length} systems · ${intro.metaTail}`;
-  const stats = [{ value: String(projects.length), label: "systems" }, ...intro.stats];
 
   // Stable two-digit section numbers derived from roster order. The repo
   // link is split out from the rest: it moves onto the section heading
@@ -24,23 +19,49 @@
     };
   });
 
-  // Scroll-triggered reveals, mirroring the CV page's IntersectionObserver.
+  // The count sticker is derived from the roster so it can never drift.
+  const stickers = [`${projects.length} Systems`, ...intro.stickers];
+  const stickerColors = ["var(--accent)", "var(--blue)", "var(--coral)"];
+
+  // Active section for the desktop scroll-spy rail.
+  let activeId = $state("");
+
   onMount(() => {
-    const observer = new IntersectionObserver(
+    // Scroll-triggered reveals, mirroring the CV page's IntersectionObserver.
+    const reveal = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
           if (e.isIntersecting) {
             e.target.classList.add("in");
-            observer.unobserve(e.target);
+            reveal.unobserve(e.target);
           }
         }
       },
       { threshold: 0.12 },
     );
     for (const el of document.querySelectorAll(".reveal")) {
-      observer.observe(el);
+      reveal.observe(el);
     }
-    return () => observer.disconnect();
+
+    // Scroll-spy: the rootMargin biases the active band to the top third
+    // of the viewport, so a section counts as active while its content
+    // occupies the band between 20% and 40% from the top.
+    const spy = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) activeId = e.target.id;
+        }
+      },
+      { rootMargin: "-20% 0px -60% 0px" },
+    );
+    for (const el of document.querySelectorAll("section.dive[id]")) {
+      spy.observe(el);
+    }
+
+    return () => {
+      reveal.disconnect();
+      spy.disconnect();
+    };
   });
 </script>
 
@@ -55,48 +76,47 @@
 <div class="eng page">
   <!-- ═══ Hero ═══ -->
   <header class="hero">
-    <div class="wrap hero-grid">
-      <div class="hero-lead">
-        <h1 class="display eng-title">{intro.title}</h1>
-        <p class="meta-line mono">{metaLine}</p>
-        <p class="lede">{intro.lede}</p>
-        <a class="btn source-btn" href={intro.source.href} target="_blank" rel="noreferrer">
-          {intro.source.label}
+    <div class="wrap hero-content">
+      <h1 class="display eng-title">{intro.title}</h1>
+      <div class="hero-stickers">
+        {#each stickers as s, i}
+          <Sticker color={stickerColors[i % stickerColors.length]} rotate={i % 2 ? 3 : -3}>
+            {s}
+          </Sticker>
+        {/each}
+        <a class="sticker-link" href={intro.source.href} target="_blank" rel="noreferrer">
+          <Sticker color="var(--paper)" rotate={2}>{intro.source.label}</Sticker>
         </a>
       </div>
-      <div class="hero-stats" aria-hidden="true">
-        {#each stats as s}
-          <div class="stat" class:accent={s.accent}>
-            <span class="stat-val" class:small={s.small}>{s.value}</span>
-            <span class="stat-label mono">{s.label}</span>
-          </div>
-        {/each}
-      </div>
+      <p class="lede">{intro.lede}</p>
     </div>
   </header>
 
   <Marquee items={marqueeItems} />
 
-  <!-- ═══ Expo grid ═══ -->
-  <section class="wrap expo" aria-label="Project index">
-    {#each numbered as p, i}
-      <a class="card-hard expo-card reveal" class:d1={i % 3 === 1} class:d2={i % 3 === 2} href={`#${p.id}`}>
-        <div class="expo-card-top">
-          <span class="expo-num mono">{p.num}</span>
-          <span class="tag mono">
-            <span class="tag-dot" style:background={categories[p.category].color}></span>
-            {categories[p.category].label}
-          </span>
-          {#if p.status}
-            <span class="tag mono tag-status">{p.status}</span>
-          {/if}
-        </div>
-        <h2 class="expo-title">{p.title}</h2>
-        <p class="expo-liner">{p.oneLiner}</p>
-        <span class="expo-more mono">Deep dive →</span>
+  <!-- ═══ Numbered index (mobile) ═══ -->
+  <nav class="wrap toc mono" aria-label="Section index">
+    {#each numbered as p}
+      <a class="toc-item" href={`#${p.id}`}>
+        <span class="toc-num">{p.num}</span>
+        <span>{p.title}</span>
       </a>
     {/each}
-  </section>
+  </nav>
+
+  <!-- ═══ Scroll-spy rail (desktop) ═══ -->
+  <nav class="rail mono" aria-label="Sections">
+    {#each numbered as p}
+      <a
+        class="rail-link"
+        href={`#${p.id}`}
+        aria-current={activeId === p.id ? "true" : undefined}
+      >
+        <span class="rail-title">{p.title}</span>
+        <span class="rail-num">{p.num}</span>
+      </a>
+    {/each}
+  </nav>
 
   <!-- ═══ Deep dives ═══ -->
   <div class="wrap dives">
@@ -166,40 +186,38 @@
 
 <style>
   /* ═══ Hero ═══ */
-  /* Two columns: lead on the left, a stat block on the right so the
-     upper-right of the fold has a job instead of reading as empty cream.
-     Tightened vertical rhythm pulls the expo grid closer to the fold. */
   .hero {
-    padding: 52px 0 44px;
+    padding: 48px 0 40px;
     border-bottom: 2px solid var(--ink);
     background: var(--cream);
   }
 
-  .hero-grid {
-    display: grid;
-    grid-template-columns: 1.25fr 1fr;
-    gap: 48px;
-    align-items: center;
-  }
-
-  .hero-lead {
+  .hero-content {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 16px;
+    gap: 18px;
   }
 
   .eng-title {
-    font-size: clamp(56px, 8vw, 92px);
+    font-size: clamp(52px, 7.5vw, 88px);
   }
 
-  /* Calm monospace meta line in place of the rotated sticker cluster, so
-     it doesn't compete with the yellow ticker for the same register. */
-  .meta-line {
-    font-size: 13px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-3);
+  .hero-stickers {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .sticker-link {
+    text-decoration: none;
+    transition: transform 120ms ease;
+    display: inline-block;
+  }
+
+  .sticker-link:hover {
+    transform: translate(-2px, -2px);
   }
 
   .lede {
@@ -208,67 +226,121 @@
     color: var(--ink-2);
   }
 
-  .hero-stats {
+  /* ═══ Numbered index (mobile only) ═══ */
+  .toc {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 14px;
+    gap: 10px 24px;
+    padding-top: 28px;
+    padding-bottom: 8px;
   }
 
-  .stat {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-hard-sm);
-    padding: 16px;
+  .toc-item {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+    text-decoration: none;
   }
 
-  .stat.accent {
-    background: var(--accent);
+  .toc-item:hover {
+    color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 
-  .stat-val {
-    font-family: var(--serif);
-    font-size: 40px;
-    line-height: 1;
-  }
-
-  .stat-val.small {
-    font-family: var(--mono);
-    font-size: 15px;
-    font-weight: 700;
-    line-height: 1.45;
-  }
-
-  .stat-label {
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+  .toc-num {
     color: var(--ink-3);
-    margin-top: 2px;
+    flex-shrink: 0;
   }
 
-  @media (max-width: 720px) {
-    .hero-grid {
-      grid-template-columns: 1fr;
-      gap: 28px;
+  @media (min-width: 1024px) {
+    .toc {
+      display: none;
     }
   }
 
-  /* Paper fill so the source link reads as a button instead of ghosting
-     into the cream background as a bare outline. Reused by the live-site
-     buttons in the deep dives. */
-  .source-btn {
-    background: var(--paper);
+  /* ═══ Scroll-spy rail (desktop only) ═══ */
+  /* Fixed to the right edge, numbers matching the section headings' mono
+     treatment. Hover or keyboard focus expands the rail leftward to show
+     titles; the active section's number runs at full opacity. */
+  .rail {
+    display: none;
   }
 
-  /* ═══ Tags (shared by cards + dive headers) ═══ */
-  /* Outline + colored dot rather than a saturated fill: keeps the
-     category colour-coding as a single small cue and drops the block of
-     colour that dominated the index (and fixed the low-contrast dark
-     operators tag, since text is always ink on white). */
+  @media (min-width: 1024px) {
+    .rail {
+      position: fixed;
+      right: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      align-items: flex-end;
+    }
+  }
+
+  .rail-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-decoration: none;
+  }
+
+  .rail-num {
+    font-size: 13px;
+    color: var(--ink);
+    opacity: 0.25;
+    transition: opacity 140ms ease;
+  }
+
+  .rail-link[aria-current="true"] .rail-num {
+    opacity: 1;
+  }
+
+  .rail-link:hover .rail-num {
+    opacity: 0.7;
+  }
+
+  .rail-title {
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    transition:
+      max-width 180ms ease,
+      opacity 140ms ease;
+  }
+
+  /* Expanded state: titles slide out leftward; links pick up the page
+     background so they stay legible where the rail overlaps content. */
+  .rail:hover .rail-title,
+  .rail:focus-within .rail-title {
+    /* Wide enough for the longest title (Bazel: One Way to Build
+       Everything) without clipping. */
+    max-width: 320px;
+    opacity: 1;
+  }
+
+  .rail:hover .rail-link,
+  .rail:focus-within .rail-link {
+    background: var(--cream);
+  }
+
+  /* ═══ Tags (shared by index + dive headers) ═══ */
+  /* Outline + colored dot: the category colour is a single small cue
+     rather than a saturated block. */
   .tag {
     display: inline-flex;
     align-items: center;
@@ -294,72 +366,16 @@
   }
 
   /* Maturity (PRE-ALPHA) is a different axis from category, so it gets a
-     distinct treatment: a solid yellow fill rather than the outlined
-     category pill, so the two never read as the same kind of label. */
+     distinct treatment: a solid yellow sticker fill rather than the
+     outlined category pill. */
   .tag-status {
     background: var(--accent);
   }
 
-  /* ═══ Expo grid ═══ */
-  .expo {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 18px;
-    padding-top: 44px;
-    padding-bottom: 44px;
-  }
-
-  .expo-card {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 18px;
-    text-decoration: none;
-  }
-
-  /* Override card-hard's default lift with a press: on hover the whole
-     card (it is the anchor) pushes down-right into its own shadow, which
-     collapses. The hard-shadow style makes this read as a physical click
-     target. */
-  .expo-card:hover,
-  .expo-card:focus-visible {
-    transform: translate(4px, 4px);
-    box-shadow: none;
-  }
-
-  .expo-card-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 2px;
-  }
-
-  .expo-num {
-    font-size: 12px;
-    color: var(--ink-3);
-    margin-right: auto;
-  }
-
-  .expo-title {
-    font-family: var(--serif);
-    font-weight: 400;
-    font-size: 23px;
-    line-height: 1.05;
-  }
-
-  .expo-liner {
-    font-size: 14px;
-    line-height: 1.45;
-    color: var(--ink-2);
-    flex-grow: 1;
-  }
-
-  .expo-more {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-top: 4px;
+  /* Paper fill so live-destination buttons read as buttons instead of
+     ghosting into the cream background as bare outlines. */
+  .source-btn {
+    background: var(--paper);
   }
 
   /* ═══ Deep dives ═══ */
@@ -367,6 +383,7 @@
     display: flex;
     flex-direction: column;
     gap: 72px;
+    padding-top: 48px;
     padding-bottom: 96px;
   }
 
@@ -474,7 +491,7 @@
     letter-spacing: 0.04em;
     border-bottom: 1px solid var(--rule);
     border-right: 2px solid var(--ink);
-    /* No fill: the old cream fill matched the page background and read as
+    /* No fill: a cream fill here matches the page background and reads as
        a punched-out hole. The bold mono weight and the vertical ink rule
        carry the key/value separation instead. */
     background: var(--paper);
@@ -522,6 +539,7 @@
     }
     .dives {
       gap: 56px;
+      padding-top: 36px;
     }
   }
 </style>
