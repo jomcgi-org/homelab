@@ -5,6 +5,7 @@ import {
   categories,
   projects,
 } from "./engineering-data.js";
+import { diagramIds } from "./diagrams/registry-ids.js";
 
 describe("engineering-data", () => {
   it("has hero content", () => {
@@ -39,6 +40,12 @@ describe("engineering-data", () => {
   it("project ids are unique (they become DOM anchors)", () => {
     const ids = projects.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("every project has a diagram registered", () => {
+    for (const p of projects) {
+      expect(diagramIds, `missing diagram for ${p.id}`).toContain(p.id);
+    }
   });
 
   it("copy contains no em-dashes", () => {
