@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { Footer, Sticker, Marquee } from "$lib/public/components";
+  import { Footer, Sticker, Marquee, Seo } from "$lib/public/components";
   import {
     contact,
     name,
@@ -76,13 +76,12 @@
   });
 </script>
 
-<svelte:head>
-  <title>Joe McGinley — CV</title>
-  <meta
-    name="description"
-    content="Joe McGinley — Senior Platform Engineer @ Semgrep. AWS · EKS · Kubernetes · eBPF · Reliability & Observability."
-  />
-</svelte:head>
+<Seo
+  title="Joe McGinley · CV"
+  description="Joe McGinley, Senior Platform Engineer @ Semgrep. AWS · EKS · Kubernetes · eBPF · Reliability & Observability."
+  path="/cv"
+  type="profile"
+/>
 
 {#snippet inline(text)}
   {#each tokenize(text) as tok}

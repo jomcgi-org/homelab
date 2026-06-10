@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { Sticker, Marquee, Footer } from "$lib/public/components";
+  import { Sticker, Marquee, Footer, Seo } from "$lib/public/components";
   import HomepageTopology from "./HomepageTopology.svelte";
 
   let { data } = $props();
@@ -80,13 +80,11 @@
   });
 </script>
 
-<svelte:head>
-  <title>jomcgi</title>
-  <meta
-    name="description"
-    content="Platform Engineer @ Semgrep. Observability obsessed. Caremad about developer experience."
-  />
-</svelte:head>
+<Seo
+  title="Joe McGinley · Senior Platform Engineer"
+  description="Platform Engineer @ Semgrep. Observability obsessed. Caremad about developer experience."
+  path="/"
+/>
 
 <!-- Nav is rendered by the root +layout.svelte (shared 1:1 across tiers). -->
 

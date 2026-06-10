@@ -1,9 +1,13 @@
 <script>
   import "$lib/public/styles/design-system.css";
+  import { personLdScript } from "$lib/public/seo.js";
   let { children } = $props();
 </script>
 
 <svelte:head>
+  <!-- Site-wide machine-readable identity (schema.org Person). Lives in the
+       layout so every public crawl entry point carries the same typed identity. -->
+  {@html personLdScript}
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
