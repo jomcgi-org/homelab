@@ -1,0 +1,7 @@
+*.cmi
+*.cmx
+*.cmo
+*.cma
+*.cmxa
+*.o
+*.a
