@@ -40,6 +40,12 @@
     text-transform: uppercase;
     color: var(--ink-3);
     white-space: nowrap;
+    /* Opaque chip matching the diagram panel surface, so a label that is
+       wider than its arrow masks the dashed group border it overlaps
+       instead of visually clipping into it. */
+    background: var(--paper);
+    padding: 0 4px;
+    border-radius: 3px;
   }
 
   @media (max-width: 720px) {

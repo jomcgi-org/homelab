@@ -4,23 +4,15 @@
 
 export const intro = {
   title: "Engineering",
-  // Short monospace meta line under the title (replaces the rotated
-  // sticker cluster, which competed with the ticker). The system count is
-  // derived from projects.length on the page, so it never drifts.
-  metaTail: "bare metal K3s · GitOps end to end",
+  // Wonky sticker row under the headline. The systems-count sticker is
+  // prepended on the page from projects.length so it never drifts; the
+  // GitHub sticker is built from `source` below.
+  stickers: ["Bare Metal K3s", "GitOps"],
   lede: "Deep dives into the systems on a bare-metal K3s cluster at home, deployed end-to-end with GitOps. Each covers why it exists and how it's built.",
   source: {
-    label: "github/jomcgi/homelab",
+    label: "GitHub ↗",
     href: "https://github.com/jomcgi/homelab",
   },
-  // Hero stat cells (right column). The systems count is prepended on the
-  // page from projects.length; these three are curated. Update on a major
-  // roster or live-site change.
-  stats: [
-    { value: "3", label: "live sites", accent: true },
-    { value: "Go · Rust · Python", label: "languages", small: true },
-    { value: "Bare-metal K3s", label: "GitOps", small: true },
-  ],
 };
 
 export const marqueeItems = [
