@@ -22,10 +22,10 @@ go_test(
     name = "codegen_test",
     srcs = [
         "builddata_test.go",
-        "generator_output_files_test.go",
-        "generator_spec_options_test.go",
         "generator_helpers_test.go",
         "generator_new_test.go",
+        "generator_output_files_test.go",
+        "generator_spec_options_test.go",
         "generator_test.go",
     ],
     embed = [":codegen"],

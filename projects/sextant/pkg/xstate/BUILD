@@ -14,10 +14,10 @@ go_library(
 go_test(
     name = "xstate_test",
     srcs = [
-        "convert_missing_state_test.go",
         "convert_extra_test.go",
-        "convert_robustness_test.go",
         "convert_helpers_test.go",
+        "convert_missing_state_test.go",
+        "convert_robustness_test.go",
         "convert_test.go",
         "types_test.go",
     ],
