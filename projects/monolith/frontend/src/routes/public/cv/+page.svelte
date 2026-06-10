@@ -10,8 +10,6 @@
     earlierCareer,
     personalIntro,
     projects,
-    collabAside,
-    collabProjects,
     skills,
   } from "./cv-data.js";
 
@@ -218,12 +216,6 @@
       <p class="section-intro">{@render inline(personalIntro)}</p>
       <ul class="bullets bullets--lg">
         {#each projects as project}
-          <li>{@render inline(project)}</li>
-        {/each}
-      </ul>
-      <p class="section-intro section-aside">{collabAside}</p>
-      <ul class="bullets bullets--lg">
-        {#each collabProjects as project}
           <li>{@render inline(project)}</li>
         {/each}
       </ul>
@@ -535,10 +527,6 @@
     line-height: 1.55;
     color: var(--ink-2);
     margin: 0 0 20px;
-  }
-  .section-aside {
-    margin-top: 24px;
-    color: var(--ink-3);
   }
 
   /* ── Bullets ──────────────────────────────── */
