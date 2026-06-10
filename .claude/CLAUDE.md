@@ -32,6 +32,10 @@ Skip this for: one-line config fixes, typo corrections, mechanical renames, or w
 
 Output shape: "Option A (simplest): …; Option B: … — recommend A unless you want flexibility for X." Then pause.
 
+## Writing Style
+
+**Never use em-dashes (—) in anything you write**: site copy, CV content, docs, ADRs, commit messages, PR bodies, code comments. Use a comma, colon, parentheses, or split the sentence. Existing em-dashes in old files are grandfathered (don't churn files just to strip them), but never add new ones.
+
 ## Essential Commands
 
 ```bash
