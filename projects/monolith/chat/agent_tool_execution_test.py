@@ -5,6 +5,7 @@ using pydantic_ai's FunctionModel, which lets us control what the LLM
 "requests" and then verify what the tool returns.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -153,7 +154,6 @@ class TestSearchHistoryWithResults:
     @pytest.mark.asyncio
     async def test_returns_formatted_messages_when_results_exist(self):
         """search_history returns formatted context when store returns messages."""
-        from datetime import datetime, timezone
 
         from chat.models import Message
 
@@ -299,7 +299,6 @@ class TestGetUserSummaryListMode:
     @pytest.mark.asyncio
     async def test_returns_user_list_when_no_username(self):
         """get_user_summary returns a list of users when called with no username."""
-        from datetime import datetime, timezone
 
         from chat.models import UserChannelSummary
 
@@ -516,7 +515,6 @@ class TestGetUserSummaryFound:
     @pytest.mark.asyncio
     async def test_returns_formatted_summary_when_found(self):
         """get_user_summary returns a formatted string with username and summary text."""
-        from datetime import datetime, timezone
 
         from chat.models import UserChannelSummary
 
@@ -571,7 +569,6 @@ class TestGetUserSummaryFound:
     @pytest.mark.asyncio
     async def test_get_user_summary_called_with_channel_and_username(self):
         """get_user_summary passes channel_id and username to store.get_user_summary."""
-        from datetime import datetime, timezone
 
         from chat.models import UserChannelSummary
 
@@ -598,3 +595,113 @@ class TestGetUserSummaryFound:
         )
 
         store.get_user_summary.assert_called_once_with("my-chan", "alice")
+
+
+# ---------------------------------------------------------------------------
+# get_user_summary — Discord @-mention dict resolves by user_id
+# ---------------------------------------------------------------------------
+
+
+class TestGetUserSummaryMention:
+    @pytest.mark.asyncio
+    async def test_mention_dict_resolves_summary_by_user_id(self):
+        """A {'type': 'user_id'} mention is looked up by user_id, not username."""
+
+        from chat.models import UserChannelSummary
+
+        embed_client = AsyncMock()
+        store = MagicMock()
+
+        summary_obj = UserChannelSummary(
+            channel_id="ch1",
+            user_id="98146497454960640",
+            username="𝔲𝔤𝔩𝔶𝔟𝔬𝔶",
+            summary="uglyboy critiques tech ecosystems through cynical pragmatism.",
+            last_message_id=10,
+            updated_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        )
+        store.get_user_summary_by_user_id.return_value = summary_obj
+
+        deps = _make_deps(store, embed_client)
+        agent = create_agent(base_url="http://fake:8080")
+
+        tool_return_captured = []
+
+        def model_func(messages, info):  # type: ignore[type-arg]
+            for msg in messages:
+                if hasattr(msg, "parts"):
+                    for part in msg.parts:
+                        if isinstance(part, ToolReturnPart):
+                            tool_return_captured.append(part.content)
+                            return ModelResponse(parts=[TextPart("done")])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="get_user_summary",
+                        args={
+                            "username": {
+                                "type": "user_id",
+                                "id": "98146497454960640",
+                            }
+                        },
+                        tool_call_id="call-1",
+                    )
+                ]
+            )
+
+        await agent.run(
+            "what do your notes say about @uglyboy",
+            model=FunctionModel(model_func),
+            deps=deps,
+        )
+
+        # Resolved by the stable id, never by the mutable display name.
+        store.get_user_summary_by_user_id.assert_called_once_with(
+            "ch1", "98146497454960640"
+        )
+        store.get_user_summary.assert_not_called()
+        store.list_user_summaries.assert_not_called()
+        assert len(tool_return_captured) == 1
+        result = tool_return_captured[0]
+        assert "critiques tech ecosystems" in result
+        assert "𝔲𝔤𝔩𝔶𝔟𝔬𝔶" in result
+
+    @pytest.mark.asyncio
+    async def test_mention_dict_reports_no_summary_when_absent(self):
+        """An unknown mentioned user_id returns a 'no summary' message, not a list."""
+        embed_client = AsyncMock()
+        store = MagicMock()
+        store.get_user_summary_by_user_id.return_value = None
+
+        deps = _make_deps(store, embed_client)
+        agent = create_agent(base_url="http://fake:8080")
+
+        tool_return_captured = []
+
+        def model_func(messages, info):  # type: ignore[type-arg]
+            for msg in messages:
+                if hasattr(msg, "parts"):
+                    for part in msg.parts:
+                        if isinstance(part, ToolReturnPart):
+                            tool_return_captured.append(part.content)
+                            return ModelResponse(parts=[TextPart("done")])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="get_user_summary",
+                        args={"username": {"type": "user_id", "id": "404"}},
+                        tool_call_id="call-1",
+                    )
+                ]
+            )
+
+        await agent.run(
+            "what about @nobody",
+            model=FunctionModel(model_func),
+            deps=deps,
+        )
+
+        store.get_user_summary_by_user_id.assert_called_once_with("ch1", "404")
+        store.list_user_summaries.assert_not_called()
+        assert len(tool_return_captured) == 1
+        assert "404" in tool_return_captured[0]
