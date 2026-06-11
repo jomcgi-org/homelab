@@ -57,6 +57,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -70,14 +71,15 @@ def _lifespan_patches_no_discord():
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("ships.on_startup_jobs"),
     ]
 
 
 def _capture_sweep_coro():
-    """Capture the _lock_sweep_loop coroutine (task 3) without closing it.
+    """Capture the _lock_sweep_loop coroutine (task 4) without closing it.
 
     Task order when DISCORD_BOT_TOKEN is set:
-      1=bot, 2=scheduler, 3=sweep
+      1=bot, 2=scheduler, 3=ships ingest, 4=sweep
     """
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
@@ -89,7 +91,7 @@ def _capture_sweep_coro():
     def capture_create_task(coro, **kwargs):
         task_counter[0] += 1
         t = MagicMock()
-        if task_counter[0] == 3:
+        if task_counter[0] == 4:
             coros.append(coro)  # preserve — do NOT close
         else:
             if hasattr(coro, "close"):
@@ -125,7 +127,7 @@ class TestSweepTaskRegistration:
     async def test_sweep_task_registers_done_callback_with_log_task_exception(self):
         """When DISCORD_BOT_TOKEN is set, sweep_task.add_done_callback(_log_task_exception) is called.
 
-        Task order: 1=bot, 2=scheduler, 3=sweep.
+        Task order: 1=bot, 2=scheduler, 3=ships ingest, 4=sweep.
         """
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
@@ -137,7 +139,7 @@ class TestSweepTaskRegistration:
             if hasattr(coro, "close"):
                 coro.close()
             task_counter[0] += 1
-            if task_counter[0] == 3:
+            if task_counter[0] == 4:
                 return sweep_task_mock
             return MagicMock()
 
@@ -152,6 +154,7 @@ class TestSweepTaskRegistration:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -180,6 +183,7 @@ class TestSweepTaskRegistration:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
             patch("app.main.logger") as mock_logger,
         ):
             async with lifespan(app):
@@ -215,13 +219,14 @@ class TestSweepTaskRegistration:
             patches[1],
             patches[2],
             patches[3],
+            patches[4],
             patch("app.main.logger") as mock_logger,
         ):
             async with lifespan(app):
                 pass
 
-        # Only 1 task should be created (scheduler)
-        assert len(tasks_created) == 1
+        # 2 tasks should be created (scheduler + ships ingest)
+        assert len(tasks_created) == 2
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 
@@ -256,6 +261,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -310,6 +316,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -362,6 +369,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -418,6 +426,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -482,6 +491,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -540,6 +550,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -598,6 +609,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -659,6 +671,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -717,6 +730,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
@@ -772,6 +786,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass

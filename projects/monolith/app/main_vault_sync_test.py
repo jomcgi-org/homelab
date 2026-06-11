@@ -21,6 +21,7 @@ async def test_lifespan_calls_clone_vault():
         patch("app.db.get_engine"),
         patch("knowledge.service.on_startup"),
         patch("home.on_startup_jobs"),
+        patch("ships.on_startup_jobs"),
     ):
         from app.main import lifespan, app
 

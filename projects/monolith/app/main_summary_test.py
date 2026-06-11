@@ -53,6 +53,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -66,6 +67,7 @@ def _lifespan_patches_no_discord():
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -94,6 +96,7 @@ class TestChatStartupHook:
             patch("app.db.get_engine", return_value=MagicMock()),
             patch("sqlmodel.Session", return_value=mock_session),
             patch("home.on_startup_jobs"),
+            patch("ships.on_startup_jobs"),
             patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
             patch("chat.summarizer.on_startup", mock_chat_startup),
             patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
@@ -132,17 +135,20 @@ class TestChatStartupHook:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass
 
-        assert len(task_mocks) == 3
-        # Tasks: 0=bot, 1=scheduler, 2=sweep — all should have done callbacks
+        assert len(task_mocks) == 4
+        # Tasks: 0=bot, 1=scheduler, 2=ships ingest, 3=sweep, all have done callbacks
         bot_task = task_mocks[0]
         scheduler_task = task_mocks[1]
-        sweep_task = task_mocks[2]
+        ships_task = task_mocks[2]
+        sweep_task = task_mocks[3]
         bot_task.add_done_callback.assert_called_once_with(_log_task_exception)
         scheduler_task.add_done_callback.assert_called_once_with(_log_task_exception)
+        ships_task.add_done_callback.assert_called_once_with(_log_task_exception)
         sweep_task.add_done_callback.assert_called_once_with(_log_task_exception)
 
 
@@ -174,6 +180,7 @@ class TestSummaryLoopLogging:
             patch("app.db.get_engine", return_value=MagicMock()),
             patch("sqlmodel.Session", return_value=mock_session),
             patch("home.on_startup_jobs"),
+            patch("ships.on_startup_jobs"),
             patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
         ):
             async with lifespan(app):

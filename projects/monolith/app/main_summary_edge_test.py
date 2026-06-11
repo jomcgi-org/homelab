@@ -34,6 +34,7 @@ def _lifespan_patches_no_discord():
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -67,6 +68,7 @@ class TestLifespanShutdownBackfillDone:
             patches[1],
             patches[2],
             patches[3],
+            patches[4],
         ):
             async with lifespan(app):
                 # Inject the already-done backfill task during the lifespan body
@@ -99,6 +101,7 @@ class TestLifespanShutdownBackfillDone:
             patches[1],
             patches[2],
             patches[3],
+            patches[4],
         ):
             async with lifespan(app):
                 app.state.backfill_task = backfill_mock

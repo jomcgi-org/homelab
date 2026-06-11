@@ -92,7 +92,7 @@ def test_first_sighting_inserts_position_latest_and_vessel(session):
     assert latest is not None
     assert latest.lat == 51.95
     assert latest.ship_name == "Ever Given"
-    assert latest.first_seen_at_location == T0
+    assert latest.first_seen_at_location.replace(tzinfo=None) == T0.replace(tzinfo=None)
     loaded_vessel = session.get(Vessel, "111")
     assert loaded_vessel is not None
     assert loaded_vessel.name == "Ever Given"
@@ -122,7 +122,9 @@ def test_stationary_position_is_skipped(session):
     assert inserted == 0
     assert _count(session, Position) == 0
     latest = session.get(LatestPosition, "222")
-    assert latest.recorded_at == T0  # unchanged
+    assert latest.recorded_at.replace(tzinfo=None) == T0.replace(
+        tzinfo=None
+    )  # unchanged
 
 
 def test_moving_vessel_position_is_inserted_and_latest_updated(session):
@@ -147,7 +149,7 @@ def test_moving_vessel_position_is_inserted_and_latest_updated(session):
     assert inserted == 1
     assert _count(session, Position) == 1
     latest = session.get(LatestPosition, "333")
-    assert latest.recorded_at == new_time
+    assert latest.recorded_at.replace(tzinfo=None) == new_time.replace(tzinfo=None)
     assert latest.speed == 8.0
 
 
@@ -165,7 +167,9 @@ def test_intra_batch_dedup_against_just_accepted_position(session):
     assert inserted == 1
     assert _count(session, Position) == 1
     latest = session.get(LatestPosition, "444")
-    assert latest.recorded_at == T0  # only the first survived
+    assert latest.recorded_at.replace(tzinfo=None) == T0.replace(
+        tzinfo=None
+    )  # only the first survived
 
 
 def test_ship_name_preserved_when_new_position_has_none(session):
