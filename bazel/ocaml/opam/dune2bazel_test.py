@@ -1,26 +1,32 @@
 """Tests for bazel/ocaml/opam/dune2bazel.py.
 
 Covers tokenize(), parse(), _field(), _resolve_libraries(), gen_library(),
-and main() -- including error/edge-case paths that call sys.exit().
+gen_dune_dir(), and main() -- including error/edge-case paths that call
+sys.exit().
 """
 
 from __future__ import annotations
-
-import sys
-import tempfile
-import textwrap
-from pathlib import Path
 
 import pytest
 
 from bazel.ocaml.opam.dune2bazel import (
     _field,
     _resolve_libraries,
+    gen_dune_dir,
     gen_library,
     main,
     parse,
     tokenize,
 )
+
+# A representative lib_map (lock.json libs tables composed into labels).
+LIB_MAP = {
+    "re": "@ocaml_re//:re",
+    "sexplib0": "@ocaml_sexplib0//:sexplib0",
+    "stdlib-shims": "@ocaml_stdlib_shims//:stdlib_shims",
+    "ppxlib": "@ocaml_ppxlib//:ppxlib",
+    "ppxlib.metaquot": "@ocaml_ppxlib//:ppxlib_metaquot",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -233,46 +239,57 @@ class TestResolveLibraries:
         return [("atom", n) for n in names]
 
     def test_empty_list(self):
-        assert _resolve_libraries([]) == []
+        assert _resolve_libraries([], LIB_MAP) == ([], [])
 
     def test_stdlib_no_archive_seq_skipped(self):
-        assert _resolve_libraries(self._atoms("seq")) == []
+        assert _resolve_libraries(self._atoms("seq"), LIB_MAP) == ([], [])
 
     def test_stdlib_no_archive_bytes_skipped(self):
-        assert _resolve_libraries(self._atoms("bytes")) == []
-
-    def test_stdlib_no_archive_result_skipped(self):
-        assert _resolve_libraries(self._atoms("result")) == []
-
-    def test_stdlib_no_archive_stdlib_skipped(self):
-        assert _resolve_libraries(self._atoms("stdlib")) == []
+        assert _resolve_libraries(self._atoms("bytes"), LIB_MAP) == ([], [])
 
     def test_stdlib_archive_unix(self):
-        assert _resolve_libraries(self._atoms("unix")) == ["unix"]
+        assert _resolve_libraries(self._atoms("unix"), LIB_MAP) == (["unix"], [])
 
     def test_stdlib_archive_str(self):
-        assert _resolve_libraries(self._atoms("str")) == ["str"]
+        assert _resolve_libraries(self._atoms("str"), LIB_MAP) == (["str"], [])
 
-    def test_stdlib_archive_threads(self):
-        assert _resolve_libraries(self._atoms("threads")) == ["threads"]
+    def test_compiler_libs_common(self):
+        opam, deps = _resolve_libraries(self._atoms("compiler-libs.common"), LIB_MAP)
+        assert opam == ["compiler-libs.common"]
+        assert deps == []
 
-    def test_stdlib_archive_dynlink(self):
-        assert _resolve_libraries(self._atoms("dynlink")) == ["dynlink"]
+    def test_lock_package_resolves_to_label(self):
+        opam, deps = _resolve_libraries(self._atoms("sexplib0"), LIB_MAP)
+        assert opam == []
+        assert deps == ["@ocaml_sexplib0//:sexplib0"]
 
-    def test_stdlib_archive_bigarray(self):
-        assert _resolve_libraries(self._atoms("bigarray")) == ["bigarray"]
+    def test_dotted_sublibrary_resolves(self):
+        _, deps = _resolve_libraries(self._atoms("ppxlib.metaquot"), LIB_MAP)
+        assert deps == ["@ocaml_ppxlib//:ppxlib_metaquot"]
 
-    def test_mix_no_archive_and_archive(self):
-        libs = self._atoms("seq", "unix", "bytes", "str")
-        assert _resolve_libraries(libs) == ["unix", "str"]
+    def test_mix_everything(self):
+        libs = self._atoms("seq", "unix", "sexplib0", "compiler-libs.common")
+        opam, deps = _resolve_libraries(libs, LIB_MAP)
+        assert opam == ["unix", "compiler-libs.common"]
+        assert deps == ["@ocaml_sexplib0//:sexplib0"]
 
-    def test_unsupported_package_exits(self):
+    def test_re_export_collapses_to_dep(self):
+        libs = parse(tokenize("((re_export ppxlib) sexplib0)"))[0]
+        opam, deps = _resolve_libraries(libs, LIB_MAP)
+        assert deps == ["@ocaml_ppxlib//:ppxlib", "@ocaml_sexplib0//:sexplib0"]
+
+    def test_select_form_exits(self):
+        libs = parse(tokenize("((select x from (a -> b)))"))[0]
         with pytest.raises(SystemExit):
-            _resolve_libraries(self._atoms("re"))
+            _resolve_libraries(libs, LIB_MAP)
 
-    def test_unsupported_package_after_stdlib_exits(self):
+    def test_unknown_package_exits(self):
         with pytest.raises(SystemExit):
-            _resolve_libraries(self._atoms("unix", "zarith"))
+            _resolve_libraries(self._atoms("zarith"), LIB_MAP)
+
+    def test_unknown_package_after_stdlib_exits(self):
+        with pytest.raises(SystemExit):
+            _resolve_libraries(self._atoms("unix", "zarith"), LIB_MAP)
 
 
 # ---------------------------------------------------------------------------
@@ -286,93 +303,188 @@ class TestGenLibrary:
 
     def test_minimal_no_opam_deps(self):
         stanza = self._stanza("(library (name mylib))")
-        out = gen_library(stanza, "src", "my_root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert 'name = "mylib"' in out
-        assert 'srcs = glob(["src/*.ml", "src/*.mli"])' in out
-        assert 'load("@my_root//bazel/ocaml:defs.bzl", "ocaml_library")' in out
+        assert '"src/*.ml"' in out and '"src/*.mli"' in out
         assert 'visibility = ["//visibility:public"]' in out
         assert "opam_deps" not in out
         assert "ocaml_library(" in out
 
-    def test_header_comment_present(self):
-        stanza = self._stanza("(library (name mylib))")
-        out = gen_library(stanza, "src", "root")
-        assert "# GENERATED by bazel/ocaml/opam/dune2bazel.py" in out
-        assert "do not edit" in out
-
     def test_with_opam_deps(self):
         stanza = self._stanza("(library (name re) (libraries unix str))")
-        out = gen_library(stanza, "lib", "my_root")
+        out = gen_library(stanza, "lib", LIB_MAP)
         assert 'opam_deps = ["unix", "str"]' in out
 
     def test_with_seq_only_no_opam_deps(self):
         stanza = self._stanza("(library (name mylib) (libraries seq bytes))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert "opam_deps" not in out
+
+    def test_lock_dep_emitted_as_label(self):
+        stanza = self._stanza("(library (name mylib) (libraries sexplib0))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'deps = ["@ocaml_sexplib0//:sexplib0"]' in out
 
     def test_src_dir_in_glob(self):
         stanza = self._stanza("(library (name mylib))")
-        out = gen_library(stanza, "mysrc", "root")
+        out = gen_library(stanza, "mysrc", LIB_MAP)
         assert '"mysrc/*.ml"' in out
         assert '"mysrc/*.mli"' in out
 
-    def test_root_module_in_load(self):
-        stanza = self._stanza("(library (name mylib))")
-        out = gen_library(stanza, "src", "custom_root")
-        assert '"@custom_root//bazel/ocaml:defs.bzl"' in out
-
     def test_ends_with_newline(self):
         stanza = self._stanza("(library (name mylib))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert out.endswith("\n")
 
     def test_no_name_field_exits(self):
         stanza = self._stanza('(library (synopsis "A lib"))')
         with pytest.raises(SystemExit):
-            gen_library(stanza, "src", "root")
+            gen_library(stanza, "src", LIB_MAP)
 
     def test_unsupported_field_exits(self):
-        # 'preprocess' is not in _SUPPORTED_LIBRARY_FIELDS
-        stanza = self._stanza("(library (name mylib) (preprocess (pps ppx_sexp_conv)))")
+        # 'foreign_stubs' is not in _SUPPORTED_LIBRARY_FIELDS
+        stanza = self._stanza("(library (name mylib) (foreign_stubs (language c)))")
         with pytest.raises(SystemExit):
-            gen_library(stanza, "src", "root")
+            gen_library(stanza, "src", LIB_MAP)
 
     def test_public_name_field_accepted(self):
         stanza = self._stanza("(library (name mylib) (public_name my.lib))")
-        out = gen_library(stanza, "src", "root")
-        # Should not exit; public_name is in _SUPPORTED_LIBRARY_FIELDS
+        out = gen_library(stanza, "src", LIB_MAP)
         assert 'name = "mylib"' in out
 
     def test_synopsis_field_accepted(self):
         stanza = self._stanza('(library (name mylib) (synopsis "A nice lib"))')
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert 'name = "mylib"' in out
 
     def test_single_opam_dep(self):
         stanza = self._stanza("(library (name mylib) (libraries unix))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert 'opam_deps = ["unix"]' in out
 
     def test_multiple_opam_deps_order_preserved(self):
         stanza = self._stanza("(library (name mylib) (libraries unix str dynlink))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert '"unix", "str", "dynlink"' in out
 
     def test_wrapped_default_true(self):
         # Dune's default is wrapped; no (wrapped ...) field means wrapped.
         stanza = self._stanza("(library (name mylib))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert "wrapped = True," in out
 
     def test_wrapped_false_omitted(self):
         stanza = self._stanza("(library (name mylib) (wrapped false))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert "wrapped" not in out
 
     def test_wrapped_true_explicit(self):
         stanza = self._stanza("(library (name mylib) (wrapped true))")
-        out = gen_library(stanza, "src", "root")
+        out = gen_library(stanza, "src", LIB_MAP)
         assert "wrapped = True," in out
+
+    def test_no_preprocessing_accepted(self):
+        stanza = self._stanza("(library (name mylib) (preprocess no_preprocessing))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert "preprocess" not in out
+
+    def test_pps_generates_ppx_target(self):
+        stanza = self._stanza("(library (name mylib) (preprocess (pps ppxlib.metaquot)))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'name = "mylib_ppx"' in out
+        assert "ocaml_ppx(" in out
+        assert '"@ocaml_ppxlib//:ppxlib_metaquot",' in out
+        assert 'preprocess = ":mylib_ppx",' in out
+
+    def test_pps_unknown_rewriter_exits(self):
+        stanza = self._stanza("(library (name mylib) (preprocess (pps nope)))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_pps_with_flag_args_exits(self):
+        stanza = self._stanza(
+            "(library (name mylib) (preprocess (pps ppxlib.metaquot -keep-w32)))"
+        )
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_preprocess_action_form_exits(self):
+        stanza = self._stanza(
+            "(library (name mylib) (preprocess (action (run pp.exe %{input-file}))))"
+        )
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_kind_ppx_deriver_accepted(self):
+        stanza = self._stanza("(library (name mylib) (kind ppx_deriver))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'name = "mylib"' in out
+
+    def test_kind_unknown_exits(self):
+        stanza = self._stanza("(library (name mylib) (kind c_stubs))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_flags_standard_dropped(self):
+        stanza = self._stanza("(library (name mylib) (flags :standard -safe-string))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'ocamlopt_flags = ["-safe-string"]' in out
+
+    def test_ocamlopt_flags(self):
+        stanza = self._stanza("(library (name mylib) (ocamlopt_flags :standard -O3))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'ocamlopt_flags = ["-O3"]' in out
+
+    def test_flags_subtraction_form_exits(self):
+        stanza = self._stanza("(library (name mylib) (flags (:standard \\ -w)))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+
+# ---------------------------------------------------------------------------
+# gen_dune_dir
+# ---------------------------------------------------------------------------
+
+
+class TestGenDuneDir:
+    def _write(self, tmp_path, text):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "dune").write_text(text)
+        return str(d / "dune")
+
+    def test_single_library(self, tmp_path):
+        path = self._write(tmp_path, "(library (name a))\n")
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'name = "a"' in out
+
+    def test_multiple_libraries(self, tmp_path):
+        path = self._write(tmp_path, "(library (name a))\n(library (name b))\n")
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'name = "a"' in out
+        assert 'name = "b"' in out
+
+    def test_inert_stanza_skipped(self, tmp_path):
+        path = self._write(tmp_path, "(env (dev (flags -w +a)))\n(library (name a))\n")
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'name = "a"' in out
+
+    def test_rule_stanza_exits(self, tmp_path):
+        path = self._write(
+            tmp_path, "(library (name a))\n(rule (targets x.ml) (action (run gen)))\n"
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_executable_stanza_exits(self, tmp_path):
+        path = self._write(tmp_path, "(executable (name main))\n")
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_no_library_stanza_exits(self, tmp_path):
+        path = self._write(tmp_path, "(env (dev))\n")
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
 
 
 # ---------------------------------------------------------------------------
@@ -381,48 +493,59 @@ class TestGenLibrary:
 
 
 class TestMain:
-    def test_wrong_argc_too_few(self):
-        with pytest.raises(SystemExit):
-            main(["dune2bazel.py"])
+    def _pkg(self, tmp_path, text, sub="src"):
+        d = tmp_path / sub
+        d.mkdir()
+        (d / "dune").write_text(text)
+        return tmp_path
 
-    def test_wrong_argc_too_many(self):
+    def test_missing_dune_dir_arg_exits(self):
         with pytest.raises(SystemExit):
-            main(["dune2bazel.py", "a", "b", "c", "d"])
+            main(["dune2bazel.py", "--root", "homelab"])
 
-    def test_wrong_argc_exactly_two_args(self):
-        with pytest.raises(SystemExit):
-            main(["dune2bazel.py", "file", "src"])
-
-    def test_reads_dune_file_and_emits_build(self, tmp_path, capsys):
-        dune = tmp_path / "dune"
-        dune.write_text("(library (name re))\n")
-        main(["dune2bazel.py", str(dune), "lib", "my_root"])
+    def test_reads_dune_file_and_emits_build(self, tmp_path, capsys, monkeypatch):
+        pkg = self._pkg(tmp_path, "(library (name re))\n")
+        monkeypatch.chdir(pkg)
+        main(["dune2bazel.py", "--root", "my_root", "--dune-dir", "src"])
         captured = capsys.readouterr()
         assert 'name = "re"' in captured.out
-        assert 'load("@my_root//bazel/ocaml:defs.bzl", "ocaml_library")' in captured.out
+        assert 'load("@my_root//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_ppx")' in captured.out
+        assert "# GENERATED by bazel/ocaml/opam/dune2bazel.py" in captured.out
 
-    def test_dune_file_with_opam_deps(self, tmp_path, capsys):
-        dune = tmp_path / "dune"
-        dune.write_text("(library (name mylib) (libraries unix))\n")
-        main(["dune2bazel.py", str(dune), "src", "root"])
+    def test_lib_map_resolution(self, tmp_path, capsys, monkeypatch):
+        pkg = self._pkg(tmp_path, "(library (name mylib) (libraries sexplib0))\n")
+        monkeypatch.chdir(pkg)
+        main(
+            [
+                "dune2bazel.py",
+                "--root",
+                "homelab",
+                "--lib-map-json",
+                '{"sexplib0": "@ocaml_sexplib0//:sexplib0"}',
+                "--dune-dir",
+                "src",
+            ]
+        )
         captured = capsys.readouterr()
-        assert 'opam_deps = ["unix"]' in captured.out
+        assert 'deps = ["@ocaml_sexplib0//:sexplib0"]' in captured.out
 
-    def test_no_library_stanza_exits(self, tmp_path):
-        dune = tmp_path / "dune"
-        dune.write_text("(executable (name main))\n")
-        with pytest.raises(SystemExit):
-            main(["dune2bazel.py", str(dune), "src", "root"])
-
-    def test_multiple_library_stanzas_exits(self, tmp_path):
-        dune = tmp_path / "dune"
-        dune.write_text("(library (name a))\n(library (name b))\n")
-        with pytest.raises(SystemExit):
-            main(["dune2bazel.py", str(dune), "src", "root"])
-
-    def test_src_dir_passed_through(self, tmp_path, capsys):
-        dune = tmp_path / "dune"
-        dune.write_text("(library (name mylib))\n")
-        main(["dune2bazel.py", str(dune), "custom_src", "root"])
+    def test_multiple_dune_dirs(self, tmp_path, capsys, monkeypatch):
+        a = tmp_path / "a"
+        a.mkdir()
+        (a / "dune").write_text("(library (name liba))\n")
+        b = tmp_path / "b"
+        b.mkdir()
+        (b / "dune").write_text("(library (name libb))\n")
+        monkeypatch.chdir(tmp_path)
+        main(["dune2bazel.py", "--root", "homelab", "--dune-dir", "a", "--dune-dir", "b"])
         captured = capsys.readouterr()
-        assert '"custom_src/*.ml"' in captured.out
+        assert 'name = "liba"' in captured.out
+        assert 'name = "libb"' in captured.out
+        # One load header for the whole BUILD, not one per dune dir.
+        assert captured.out.count("load(") == 1
+
+    def test_unknown_library_exits(self, tmp_path, monkeypatch):
+        pkg = self._pkg(tmp_path, "(library (name mylib) (libraries zarith))\n")
+        monkeypatch.chdir(pkg)
+        with pytest.raises(SystemExit):
+            main(["dune2bazel.py", "--root", "homelab", "--dune-dir", "src"])
