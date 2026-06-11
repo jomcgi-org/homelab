@@ -505,6 +505,38 @@ class TestGenDuneDir:
         with pytest.raises(SystemExit):
             gen_dune_dir(path, "src", LIB_MAP)
 
+    def test_ocamllex_stanza_inert(self, tmp_path):
+        # (ocamllex M) is informational: the .mll is globbed into the library.
+        path = self._write(tmp_path, "(library (name a))\n(ocamllex Lexer)\n")
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'name = "a"' in out
+        assert "menhir" not in out
+
+    def test_menhir_stanza_attaches_to_library(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(ocamllex Lexer)\n"
+            "(menhir (modules Parser) (flags --unused-tokens --explain))\n",
+        )
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'menhir = ["Parser"]' in out
+        assert 'menhir_flags = ["--unused-tokens", "--explain"]' in out
+        assert 'menhir_tool = "@ocaml_menhir//:menhir"' in out
+
+    def test_menhir_without_library_exits(self, tmp_path):
+        path = self._write(tmp_path, "(menhir (modules Parser))\n")
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_menhir_with_multiple_libraries_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n(library (name b))\n(menhir (modules Parser))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
 
 # ---------------------------------------------------------------------------
 # main
