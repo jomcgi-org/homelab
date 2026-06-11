@@ -47,16 +47,17 @@ def _collect_cc(ctx):
     Archives/headers/includes/linkflags all propagate transitively through
     OcamlInfo so a binary several deps away still links the C libraries.
     """
-    inc = []          # str include dirs (direct + transitive)
-    hdr = []          # depset[File]
-    arch = []         # depset[File]
-    flags = []        # str link flags
+    inc = []  # str include dirs (direct + transitive)
+    hdr = []  # depset[File]
+    arch = []  # depset[File]
+    flags = []  # str link flags
     direct_arch = []
     for dep in getattr(ctx.attr, "cc_deps", []):
         cc = dep[CcInfo]
         cctx = cc.compilation_context
         inc += cctx.includes.to_list() + cctx.quote_includes.to_list() + cctx.system_includes.to_list()
         hdr.append(cctx.headers)
+
         # Header dirnames make `#include "foo.h"` resolve without the cc_library
         # having to declare `includes`; over-inclusion is harmless.
         inc += [h.dirname for h in cctx.headers.to_list()]
