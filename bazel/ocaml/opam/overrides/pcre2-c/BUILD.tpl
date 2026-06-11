@@ -63,6 +63,12 @@ cc_library(
         "config.h",
     ] + glob(["src/*.h"]),
     hdrs = [":pcre2_h"],
+    # pcre2_jit_compile.c textually #includes these siblings (outside the
+    # SUPPORT_JIT guard), so they must stage without being compiled standalone.
+    textual_hdrs = [
+        "src/pcre2_jit_match.c",
+        "src/pcre2_jit_misc.c",
+    ],
     copts = [
         "-DHAVE_CONFIG_H",
         "-DPCRE2_CODE_UNIT_WIDTH=8",
