@@ -157,14 +157,19 @@ and produces `@<repo>` with a BUILD that is either:
 - **an override** — `opam/overrides/<name>/BUILD.tpl`, hand-written for
   packages whose dune trees bootstrap themselves with codegen the translator
   does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
-  ppx_deriving, menhir, camlp-streams, yojson, atd). Overrides still build
-  everything from the fetched source with our rules; each one documents
+  ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2). Overrides still
+  build everything from the fetched source with our rules; each one documents
   exactly why it exists. menhir is the notable one: it self-bootstraps, so the
   override builds **stage1** (its bootstrap parser comes from ocamlyacc, which
   the sysroot ships) -- a fully functional generator without needing an
   existing menhir. The atd override builds the atdgen code generator (the JSON
   codegen Semgrep leans on) out of the ahrefs/atd monorepo, via the same
   ocamllex + menhir support.
+
+Vendored **C libraries** ride the same lock (entries with `"opam": false`):
+the PCRE2 C source and the tree-sitter runtime + per-language grammars are
+cc_libraries that OCaml bindings consume through `cc_deps`, replacing the
+opam `conf-*` system-library probes with hermetic from-source builds.
 
 The ladder that proves it (`examples/opam_ladder`, all from-source on RBE):
 
@@ -212,6 +217,8 @@ bazel/ocaml/
   examples/atdgen/         # from-source atdgen over an ATD spec; JSON roundtrip
   examples/cc_probe/       # cc_library build_test (C toolchain on RBE)
   examples/cc_deps/        # cc_library linked into an OCaml C stub via cc_deps
+  examples/pcre2/          # pcre2-ocaml against the vendored PCRE2 C library
+  examples/treesitter/     # tree-sitter runtime + json grammar parse e2e
   examples/toycaml/        # tOyCaml: an engine-shaped demonstrator (ADR 005)
 ```
 
