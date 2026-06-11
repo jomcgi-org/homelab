@@ -155,6 +155,29 @@
       }
     },
     {
+      "name": "pcre2-c",
+      "version": "10.44",
+      "repo": "ocaml_pcre2_c",
+      "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz",
+      "sha256": "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b",
+      "strip_prefix": "pcre2-10.44",
+      "type": "tar.gz",
+      "override": true,
+      "opam": false,
+      "libs": {}
+    },
+    {
+      "name": "pcre2",
+      "version": "8.0.4",
+      "repo": "ocaml_pcre2",
+      "url": "https://github.com/camlp5/pcre2-ocaml/archive/refs/tags/8.0.4.tar.gz",
+      "sha256": "bbe76e8ecd9ccccfa631dbd21d6a801d23bd6fa982aae6839bb3fb7829a8cea1",
+      "strip_prefix": "pcre2-ocaml-8.0.4",
+      "type": "tar.gz",
+      "override": true,
+      "libs": { "pcre2": "pcre2" }
+    },
+    {
       "name": "menhir",
       "version": "20240715",
       "repo": "ocaml_menhir",

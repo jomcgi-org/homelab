@@ -94,6 +94,12 @@ def main():
 
     if args.verify:
         for pkg in packages:
+            # Vendored non-opam sources (e.g. the PCRE2 C library) have no
+            # opam-repository entry to resolve against; their pin is the
+            # upstream release tarball, checked into the lock directly.
+            if pkg.get("opam", True) is False:
+                print(f"skip {pkg['name']} (vendored, not an opam package)")
+                continue
             url, sha256 = resolve(pkg["name"], pkg["version"])
             for field, got, want in (
                 ("url", pkg["url"], url),
