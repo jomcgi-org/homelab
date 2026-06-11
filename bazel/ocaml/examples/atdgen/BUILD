@@ -25,10 +25,10 @@ genrule(
 ocaml_library(
     name = "point",
     srcs = [
-        "point_t.ml",
-        "point_t.mli",
         "point_j.ml",
         "point_j.mli",
+        "point_t.ml",
+        "point_t.mli",
     ],
     deps = [
         "@ocaml_atd//:atdgen_runtime",
