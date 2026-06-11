@@ -341,6 +341,17 @@ class TestGenLibrary:
         with pytest.raises(SystemExit):
             gen_library(stanza, "src", LIB_MAP)
 
+    def test_name_falls_back_to_public_name(self):
+        # Dune derives the internal name from public_name when name is omitted.
+        stanza = self._stanza("(library (public_name glob))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'name = "glob"' in out
+
+    def test_dotted_public_name_without_name_exits(self):
+        stanza = self._stanza("(library (public_name my.lib))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
     def test_unsupported_field_exits(self):
         # 'foreign_stubs' is not in _SUPPORTED_LIBRARY_FIELDS
         stanza = self._stanza("(library (name mylib) (foreign_stubs (language c)))")
@@ -436,6 +447,12 @@ class TestGenLibrary:
         stanza = self._stanza("(library (name mylib) (ocamlopt_flags :standard -O3))")
         out = gen_library(stanza, "src", LIB_MAP)
         assert 'ocamlopt_flags = ["-O3"]' in out
+
+    def test_flags_standard_list_additive(self):
+        # (flags (:standard -open Foo)) is additive, same as the flat form.
+        stanza = self._stanza("(library (name mylib) (flags (:standard -open Foo)))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'ocamlopt_flags = ["-open", "Foo"]' in out
 
     def test_flags_subtraction_form_exits(self):
         stanza = self._stanza("(library (name mylib) (flags (:standard \\ -w)))")
