@@ -16,18 +16,23 @@ spec:
     {{- end }}
   postgresql:
     parameters:
-      shared_buffers: "64MB"
-      effective_cache_size: "128MB"
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
     extensions:
       - name: vector
         image:
           reference: {{ .Values.postgres.pgvector.image }}
+  # Hosts five databases (monolith, temporal, temporal_visibility,
+  # lakehouse, postgres); Temporal is connection-heavy. The prior 256Mi
+  # limit OOMKilled the instance 359 times. 1Gi limit with shared_buffers
+  # at 256MB (25% of limit) gives headroom for the working set plus
+  # per-connection work_mem.
   resources:
     requests:
-      memory: "128Mi"
-      cpu: "10m"
+      memory: "512Mi"
+      cpu: "50m"
     limits:
-      memory: "256Mi"
+      memory: "1Gi"
   bootstrap:
     initdb:
       database: monolith
