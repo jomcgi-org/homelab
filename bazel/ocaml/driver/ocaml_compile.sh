@@ -196,7 +196,7 @@ if [ -n "$PP_TOOL" ]; then
 	done
 	for f in "$WORK"/*.ml "$WORK"/*.mli; do
 		[ -e "$f" ] || continue
-		"$PP_TOOL" $SUBST_ARGS "$f" > "$f.pp"
+		"$PP_TOOL" $SUBST_ARGS "$f" >"$f.pp"
 		mv "$f.pp" "$f"
 	done
 fi
@@ -231,14 +231,17 @@ echo "ocaml_compile: compile order: $ORDER" >&2
 # source named exactly <lib>.ml) keeps its name. ocamldep ran on the original
 # names above (members reference each other by plain name); the rename happens
 # after sorting, preserving the sorted order.
-capitalize() { _h=$(printf %.1s "$1" | tr '[:lower:]' '[:upper:]'); printf '%s%s' "$_h" "${1#?}"; }
+capitalize() {
+	_h=$(printf %.1s "$1" | tr '[:lower:]' '[:upper:]')
+	printf '%s%s' "$_h" "${1#?}"
+}
 
 CMX_LIST=""
 OPENFLAG=""
 if [ "$WRAPPED" = "1" ]; then
 	ALIAS_MOD="${NAME}__"
 	ALIAS_ML="$WORK/$ALIAS_MOD.ml"
-	: > "$ALIAS_ML"
+	: >"$ALIAS_ML"
 	SEEN=" "
 	RENAMED_ORDER=""
 	for f in $ORDER; do
@@ -254,7 +257,7 @@ if [ "$WRAPPED" = "1" ]; then
 		case "$SEEN" in
 		*" $base "*) ;;
 		*)
-			echo "module $Mod = $(capitalize "${NAME}__$Mod")" >> "$ALIAS_ML"
+			echo "module $Mod = $(capitalize "${NAME}__$Mod")" >>"$ALIAS_ML"
 			SEEN="$SEEN$base "
 			;;
 		esac
