@@ -455,11 +455,10 @@
   </div>
 
   {#if selected}
-    <aside class="panel card-hard">
+    <aside class="panel">
       <button class="panel-close" onclick={closePanel} aria-label="Close vessel panel"
         >&times;</button
       >
-      <p class="eyebrow">Vessel</p>
       <h2 class="panel-name">
         {selected.name || selected.ship_name || `MMSI ${selected.mmsi}`}
       </h2>
@@ -676,6 +675,8 @@
     opacity: 0.4;
   }
 
+  /* Hard rectangle to match the chip + legend (no card-hard: that rounds the
+     corners and lifts on hover, which read as interactive on a display panel). */
   .panel {
     position: absolute;
     top: 16px;
@@ -684,6 +685,7 @@
     max-width: calc(100% - 32px);
     padding: 18px;
     background: var(--paper);
+    border: 2px solid var(--ink);
   }
 
   .panel-close {
