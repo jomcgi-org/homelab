@@ -21,7 +21,7 @@ def _opam_dune_repo_impl(ctx):
         url = ctx.attr.url,
         sha256 = ctx.attr.sha256,
         stripPrefix = ctx.attr.strip_prefix,
-        type = "tar.bz2",
+        type = ctx.attr.archive_type,
     )
 
     dune_file = ctx.attr.src_dir + "/dune"
@@ -44,6 +44,7 @@ _opam_dune_repo = repository_rule(
         "url": attr.string(mandatory = True),
         "sha256": attr.string(mandatory = True),
         "strip_prefix": attr.string(mandatory = True),
+        "archive_type": attr.string(default = "tar.bz2", doc = "Archive type for download_and_extract (dune-release assets are .tbz; GitHub tag tarballs are tar.gz)."),
         "src_dir": attr.string(mandatory = True, doc = "Subdir holding the library's dune file + sources."),
     },
     doc = "Fetch an opam package tarball and generate its BUILD from its dune file.",
@@ -56,6 +57,7 @@ def _extension_impl(_mctx):
             url = pkg["url"],
             sha256 = pkg["sha256"],
             strip_prefix = pkg["strip_prefix"],
+            archive_type = pkg.get("type", "tar.bz2"),
             src_dir = pkg["src_dir"],
         )
 

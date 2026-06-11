@@ -28,7 +28,7 @@ import sys
 _STDLIB_NO_ARCHIVE = {"seq", "bytes", "result", "stdlib"}
 _STDLIB_ARCHIVE = {"unix", "str", "threads", "dynlink", "bigarray"}
 
-_SUPPORTED_LIBRARY_FIELDS = {"name", "public_name", "synopsis", "libraries"}
+_SUPPORTED_LIBRARY_FIELDS = {"name", "public_name", "synopsis", "libraries", "wrapped"}
 
 
 def tokenize(text):
@@ -143,6 +143,14 @@ def gen_library(stanza, src_dir, root_module):
         sys.exit("dune2bazel: (library) has no (name ...)")
     name = _atom(name_field[0])
 
+    # Dune's default is wrapped; only an explicit (wrapped false) opts out.
+    # Wrapping namespaces member modules as <Lib>__<Module>, which is what
+    # keeps third-party internal module names (re's Fmt/Str) from colliding.
+    wrapped_field = _field(stanza, "wrapped")
+    wrapped = True
+    if wrapped_field and _atom(wrapped_field[0]) == "false":
+        wrapped = False
+
     opam_deps = _resolve_libraries(_field(stanza, "libraries") or [])
 
     lines = [
@@ -154,6 +162,8 @@ def gen_library(stanza, src_dir, root_module):
         '    name = "%s",' % name,
         '    srcs = glob(["%s/*.ml", "%s/*.mli"]),' % (src_dir, src_dir),
     ]
+    if wrapped:
+        lines.append("    wrapped = True,")
     if opam_deps:
         lines.append("    opam_deps = [%s]," % ", ".join('"%s"' % d for d in opam_deps))
     lines += [

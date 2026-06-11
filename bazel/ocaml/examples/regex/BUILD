@@ -2,13 +2,17 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_test")
 
 # Demonstrates depending on a real external opam library (`re`) that our rules
-# fetched and built from its own dune file. Depends on re alone (not the vendored
-# fmt) because re ships an internal `Fmt` module that would collide at link.
+# fetched and built from its own dune file. Links the vendored fmt alongside it:
+# re's internal `Fmt` module is wrapped as Re__Fmt, so the old collision that
+# once forced "re alone" is gone (see examples/wrapped for the minimal case).
 ocaml_binary(
     name = "regex_demo",
     srcs = ["regex_demo.ml"],
     visibility = ["//visibility:public"],
-    deps = ["//bazel/ocaml/third_party/re"],
+    deps = [
+        "//bazel/ocaml/third_party/fmt",
+        "//bazel/ocaml/third_party/re",
+    ],
 )
 
 build_test(
