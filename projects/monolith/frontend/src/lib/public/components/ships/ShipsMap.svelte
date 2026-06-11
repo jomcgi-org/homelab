@@ -43,15 +43,28 @@
   let track = $state(null); // { mmsi, count, track } or null
   let trackLoading = $state(false);
 
+  // Vessel-type palette. A vibrant MotherDuck-flavored set used for both the
+  // map markers and the legend boxes. Kept local (not the global --blue/--teal
+  // tokens) so the map pops without churning the site's restrained palette: the
+  // muddy --teal/--ink-3 read as dull behind the basemap's grayscale filter.
+  const VESSEL_COLORS = {
+    passenger: "#3b8ef5", // azure
+    cargo: "#14c4a9", // aqua-mint (distinct from the green Special)
+    tanker: "#ff564a", // coral-red
+    hsc: "#ffcb1f", // golden
+    special: "#35cb5b", // spring green
+    unknown: "#404a5c", // clean slate (was a muddy brown-gray)
+  };
+
   // Vessel-type filter. Each legend box toggles whether that ITU band shows on
   // the map; toggling sets a MapLibre layer filter on the `icon` property.
   const LEGEND = [
-    { key: "passenger", label: "Passenger", icon: "ship-passenger", color: "var(--blue)" },
-    { key: "cargo", label: "Cargo", icon: "ship-cargo", color: "var(--teal)" },
-    { key: "tanker", label: "Tanker", icon: "ship-tanker", color: "var(--coral)" },
-    { key: "hsc", label: "High-speed", icon: "ship-hsc", color: "var(--accent)" },
-    { key: "special", label: "Special", icon: "ship-special", color: "var(--green)" },
-    { key: "unknown", label: "Other", icon: "ship-unknown", color: "var(--ink-3)" },
+    { key: "passenger", label: "Passenger", icon: "ship-passenger", color: VESSEL_COLORS.passenger },
+    { key: "cargo", label: "Cargo", icon: "ship-cargo", color: VESSEL_COLORS.cargo },
+    { key: "tanker", label: "Tanker", icon: "ship-tanker", color: VESSEL_COLORS.tanker },
+    { key: "hsc", label: "High-speed", icon: "ship-hsc", color: VESSEL_COLORS.hsc },
+    { key: "special", label: "Special", icon: "ship-special", color: VESSEL_COLORS.special },
+    { key: "unknown", label: "Other", icon: "ship-unknown", color: VESSEL_COLORS.unknown },
   ];
   let active = $state(new Set(LEGEND.map((l) => l.key))); // all on by default
 
@@ -78,19 +91,13 @@
     return { type: "FeatureCollection", features: [] };
   }
 
-  // Resolve palette from the design tokens so colors stay single-sourced in
-  // design-system.css rather than duplicated as hex literals here.
+  // Marker fills come from VESSEL_COLORS (vibrant, single-sourced with the
+  // legend); only the ink stroke is pulled from the design tokens.
   function palette() {
     const s = getComputedStyle(document.documentElement);
-    const g = (name) => s.getPropertyValue(name).trim();
     return {
-      passenger: g("--blue"),
-      cargo: g("--teal"),
-      tanker: g("--coral"),
-      hsc: g("--accent"),
-      special: g("--green"),
-      unknown: g("--ink-3"),
-      ink: g("--ink"),
+      ...VESSEL_COLORS,
+      ink: s.getPropertyValue("--ink").trim(),
     };
   }
 
