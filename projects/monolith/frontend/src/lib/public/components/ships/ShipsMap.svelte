@@ -127,8 +127,16 @@
       const ctx = canvas.getContext("2d");
       ctx.scale(px / 20, px / 20); // path authored in a 20x20 viewBox
       const path = new Path2D("M10 1 L17 18 L10 14 L3 18 Z");
+      // The basemap canvas wears a `grayscale(0.4)` CSS filter to warm the
+      // tiles toward the cream palette (see <style>). The vessel symbols now
+      // render inside that same canvas, so they get desaturated too. Boost the
+      // fill's saturation here so that after the canvas filter the markers land
+      // back at the legend's vividness. Applied to the fill only; the ink
+      // outline is reset to no filter so it stays dark.
+      ctx.filter = "saturate(1.75) brightness(1.04)";
       ctx.fillStyle = fill;
       ctx.fill(path);
+      ctx.filter = "none";
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
       ctx.strokeStyle = p.ink;
