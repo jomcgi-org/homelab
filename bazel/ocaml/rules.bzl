@@ -17,6 +17,9 @@ Design (a deliberate toy, see bazel/ocaml/README.md):
     in link order.
 """
 
+# rules_cc 0.2+ removed CcInfo from the builtin globals; load it explicitly.
+load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+
 OcamlInfo = provider(
     doc = "Outputs and transitive link information for an OCaml library.",
     fields = {
