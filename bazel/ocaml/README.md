@@ -14,10 +14,14 @@ pinned opam universe, and the ppxlib driver model are in.
 load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary", "ocaml_test", "ocaml_ppx")
 ```
 
-- **`ocaml_library(name, srcs, deps, opam_deps, wrapped, preprocess, ...)`** —
+- **`ocaml_library(name, srcs, deps, opam_deps, wrapped, preprocess, cc_deps, ...)`** —
   compiles a set of modules into a native `.cmxa` archive. `srcs` may include
   `.mll`/`.mly` (run through the sysroot's ocamllex/ocamlyacc first) and
   `c_srcs` C stubs (compiled by `ocamlopt`, folded into the library's `.a`).
+  `cc_deps` are `cc_library` targets whose headers the C stubs `#include` and
+  whose static archives binaries link (the path to pcre2 / tree-sitter); the
+  header dir reaches the stub compile via `-ccopt -I` and the archives propagate
+  transitively to the final link.
 - **`ocaml_binary(name, srcs, deps, opam_deps, data)`** — compiles + links a
   runnable native executable.
 - **`ocaml_test(...)`** — a native test executable that exits 0 on success
@@ -206,6 +210,8 @@ bazel/ocaml/
   examples/ppx/            # ocaml_ppx + preprocess: [@@deriving show] e2e
   examples/lexparse/       # ocamllex + menhir (--infer) calculator; lexparse_test
   examples/atdgen/         # from-source atdgen over an ATD spec; JSON roundtrip
+  examples/cc_probe/       # cc_library build_test (C toolchain on RBE)
+  examples/cc_deps/        # cc_library linked into an OCaml C stub via cc_deps
   examples/toycaml/        # tOyCaml: an engine-shaped demonstrator (ADR 005)
 ```
 
