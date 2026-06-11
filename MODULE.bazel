@@ -43,6 +43,7 @@ bazel_dep(name = "rules_apko", version = "1.5.30")
 bazel_dep(name = "rules_multirun", version = "0.13.0")
 bazel_dep(name = "tar.bzl", version = "0.6.0")
 bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_cc", version = "0.1.1")
 bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 
 # BuildBuddy RBE toolchain for remote build execution (80 cores on free tier)
