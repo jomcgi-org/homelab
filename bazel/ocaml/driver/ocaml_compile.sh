@@ -11,7 +11,7 @@
 # repo's C/C++ builds use). The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0"
+MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CMXAS="" CFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
@@ -21,6 +21,7 @@ while [ $# -gt 0 ]; do
 	--name) NAME="$2" && shift 2 ;;
 	--sysroot-tar) SYSROOT_TAR="$2" && shift 2 ;;
 	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
+	--wrapped) WRAPPED="$2" && shift 2 ;;
 	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
 	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
 	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
@@ -96,14 +97,49 @@ done
 ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $MLB)"
 echo "ocaml_compile: compile order: $ORDER" >&2
 
-# --- Compile each module (.mli before .ml) ----------------------------------
+# --- Wrapping (dune scheme) --------------------------------------------------
+# Members become <lib>__<Module>; a generated alias module <lib>__.ml maps
+# plain names; everything compiles with -open <Lib>__. The main module (a
+# source named exactly <lib>.ml) keeps its name. ocamldep ran on the original
+# names above (members reference each other by plain name); the rename happens
+# after sorting, preserving the sorted order.
+capitalize() { _h=$(printf %.1s "$1" | tr '[:lower:]' '[:upper:]'); printf '%s%s' "$_h" "${1#?}"; }
+
 CMX_LIST=""
+OPENFLAG=""
+if [ "$WRAPPED" = "1" ]; then
+	ALIAS_MOD="${NAME}__"
+	ALIAS_ML="$WORK/$ALIAS_MOD.ml"
+	: > "$ALIAS_ML"
+	RENAMED_ORDER=""
+	for ml in $ORDER; do
+		base="${ml%.ml}"
+		if [ "$base" = "$NAME" ]; then
+			RENAMED_ORDER="$RENAMED_ORDER $ml"
+			continue
+		fi
+		Mod="$(capitalize "$base")"
+		mv "$WORK/$ml" "$WORK/${NAME}__$Mod.ml"
+		[ -f "$WORK/$base.mli" ] && mv "$WORK/$base.mli" "$WORK/${NAME}__$Mod.mli"
+		echo "module $Mod = $(capitalize "${NAME}__$Mod")" >> "$ALIAS_ML"
+		RENAMED_ORDER="$RENAMED_ORDER ${NAME}__$Mod.ml"
+	done
+	ORDER="$RENAMED_ORDER"
+	# -no-alias-deps: the alias module references member cmis that do not exist
+	# yet; -w -49 silences the missing-cmi warning that would otherwise error.
+	"$OCAMLOPT" $CFLAGS $INCFLAGS -no-alias-deps -w -49 -c "$ALIAS_ML"
+	CMX_LIST="$WORK/$ALIAS_MOD.cmx"
+	OPENFLAG="-open $(capitalize "$ALIAS_MOD")"
+fi
+
+# --- Compile each module (.mli before .ml) ----------------------------------
+# -no-alias-deps is harmless when unwrapped (OPENFLAG empty, no alias module).
 for ml in $ORDER; do
 	base="${ml%.ml}"
 	if [ -f "$WORK/$base.mli" ]; then
-		"$OCAMLOPT" $CFLAGS $INCFLAGS -c "$WORK/$base.mli"
+		"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$base.mli"
 	fi
-	"$OCAMLOPT" $CFLAGS $INCFLAGS -c "$WORK/$ml"
+	"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$ml"
 	CMX_LIST="$CMX_LIST $WORK/$base.cmx"
 done
 
