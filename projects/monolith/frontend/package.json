@@ -20,6 +20,7 @@
     "@opentelemetry/resources": "^1.30.0",
     "@opentelemetry/sdk-trace-web": "^1.30.0",
     "@opentelemetry/semantic-conventions": "^1.28.0",
+    "maplibre-gl": "^5.24.0",
     "marked": "^18.0.0",
     "roughjs": "^4.6.6"
   },

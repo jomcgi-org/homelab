@@ -39,6 +39,8 @@ js_library(
         ":node_modules/@dagrejs/dagre",
         # Runtime markdown rendering
         ":node_modules/marked",
+        # WebGL basemap for the /app/ships live vessel map
+        ":node_modules/maplibre-gl",
         # OpenTelemetry browser tracing
         ":node_modules/@opentelemetry/api",
         ":node_modules/@opentelemetry/sdk-trace-web",
