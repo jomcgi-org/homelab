@@ -25,5 +25,13 @@ build_test(
         "@ocaml_menhir//:menhirLib",
         "@ocaml_menhir//:menhirSdk",
         "@ocaml_menhir//:menhir",
+        "@ocaml_easy_format//:easy_format",
+        "@ocaml_camlp_streams//:camlp_streams",
+        "@ocaml_biniou//:biniou",
+        "@ocaml_yojson//:yojson",
+        "@ocaml_atd//:atd",
+        "@ocaml_atd//:atdgen_runtime",
+        "@ocaml_atd//:atdgen_emit",
+        "@ocaml_atd//:atdgen",
     ],
 )
