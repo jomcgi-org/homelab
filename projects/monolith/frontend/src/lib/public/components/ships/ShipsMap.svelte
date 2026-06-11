@@ -15,15 +15,29 @@
   // the map, so clamp the extrapolation window.
   const MAX_DR_SECONDS = 300;
 
+  // Vessels render as a GPU symbol layer (not DOM markers): the points are
+  // composited with the basemap on the GPU, so they move in lockstep during
+  // pan/zoom instead of trailing a frame behind. Dead-reckoning rebuilds the
+  // source on a throttled cadence rather than per-frame.
+  const SOURCE_ID = "vessels";
+  const LAYER_ID = "vessels";
+  const DR_INTERVAL_MS = 250; // ~4 Hz; ships move ~10 m/s, so this is smooth
+
   let maplibregl; // loaded lazily in onMount (browser-only module)
   let mapContainer; // bound <div>
   let map = null;
   let pal = null; // design-token palette, resolved once the map is up
   let rafId = null;
+  let lastDrMs = 0;
   let didFit = false;
+  let layerReady = false;
 
-  // mmsi -> { marker, el, onClick, fixLat, fixLon, fixTimeMs, speed, course }
-  const markers = new Map();
+  // mmsi -> { row, fixLat, fixLon, fixTimeMs, speed, course, rotation, icon }
+  // `row` is the original snapshot object, kept for the detail panel.
+  const fleet = new Map();
+
+  let selectedMmsi = null; // string mmsi of the highlighted vessel
+  let hoveredMmsi = null; // string mmsi under the cursor
 
   let selected = $state(null); // selected vessel object (snapshot row)
   let track = $state(null); // { mmsi, count, track } or null
@@ -49,15 +63,15 @@
     };
   }
 
-  // ITU AIS ship_type bands mapped onto the palette.
-  function shipBandColor(type, p) {
-    if (type == null) return p.unknown;
-    if (type >= 60 && type <= 69) return p.passenger;
-    if (type >= 70 && type <= 79) return p.cargo;
-    if (type >= 80 && type <= 89) return p.tanker;
-    if (type >= 40 && type <= 49) return p.hsc;
-    if (type >= 50 && type <= 59) return p.special;
-    return p.unknown;
+  // ITU AIS ship_type bands mapped onto the icon ids registered below.
+  function iconFor(type) {
+    if (type == null) return "ship-unknown";
+    if (type >= 60 && type <= 69) return "ship-passenger";
+    if (type >= 70 && type <= 79) return "ship-cargo";
+    if (type >= 80 && type <= 89) return "ship-tanker";
+    if (type >= 40 && type <= 49) return "ship-hsc";
+    if (type >= 50 && type <= 59) return "ship-special";
+    return "ship-unknown";
   }
 
   function shipTypeLabel(type) {
@@ -90,71 +104,98 @@
     return v.heading ?? v.course ?? 0;
   }
 
-  function makeMarkerEl() {
-    const el = document.createElement("div");
-    el.className = "ship-marker";
-    // fill = currentColor (set per-vessel via el.style.color); stroke pulls
-    // the ink token straight from the cascade so it is not hardcoded here.
-    el.innerHTML =
-      '<svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true">' +
-      '<path d="M10 1 L17 18 L10 14 L3 18 Z" fill="currentColor" ' +
-      'style="stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round;" />' +
-      "</svg>";
-    return el;
+  // Rasterize the ship arrow once per palette color into a canvas image and
+  // register it with the map. Per-color icons let a single data-driven
+  // `icon-image` expression pick the right tint with no SDF machinery.
+  function registerIcons(p) {
+    const colors = {
+      "ship-passenger": p.passenger,
+      "ship-cargo": p.cargo,
+      "ship-tanker": p.tanker,
+      "ship-hsc": p.hsc,
+      "ship-special": p.special,
+      "ship-unknown": p.unknown,
+    };
+    const ratio = 2; // render @2x for crisp icons on HiDPI displays
+    const box = 22; // logical icon size in px
+    const px = box * ratio;
+    for (const [id, fill] of Object.entries(colors)) {
+      if (map.hasImage(id)) continue;
+      const canvas = document.createElement("canvas");
+      canvas.width = px;
+      canvas.height = px;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(px / 20, px / 20); // path authored in a 20x20 viewBox
+      const path = new Path2D("M10 1 L17 18 L10 14 L3 18 Z");
+      ctx.fillStyle = fill;
+      ctx.fill(path);
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = p.ink;
+      ctx.stroke(path);
+      map.addImage(id, ctx.getImageData(0, 0, px, px), { pixelRatio: ratio });
+    }
   }
 
-  function syncMarkers() {
-    if (!map || !maplibregl) return;
-    if (!pal) pal = palette();
+  // Build the FeatureCollection from current fleet state, dead-reckoning each
+  // vessel forward from its last fix. selection/hover ride along as feature
+  // properties (not feature-state, which setData would clear).
+  function buildFeatures() {
+    const now = Date.now();
+    const features = [];
+    for (const [id, e] of fleet) {
+      const elapsed = Math.min((now - e.fixTimeMs) / 1000, MAX_DR_SECONDS);
+      const pos = deadReckon(
+        { lat: e.fixLat, lon: e.fixLon, speed: e.speed, course: e.course },
+        elapsed,
+      );
+      features.push({
+        type: "Feature",
+        id,
+        geometry: { type: "Point", coordinates: [pos.lon, pos.lat] },
+        properties: {
+          mmsi: id,
+          icon: e.icon,
+          rotation: e.rotation,
+          sel: id === selectedMmsi,
+          hov: id === hoveredMmsi,
+        },
+      });
+    }
+    return { type: "FeatureCollection", features };
+  }
+
+  function pushData() {
+    const src = map?.getSource(SOURCE_ID);
+    if (src) src.setData(buildFeatures());
+  }
+
+  // Reset fleet state to snapshot truth whenever a new snapshot arrives, then
+  // repaint. `vessels` is a fresh array on every invalidateAll.
+  function syncVessels() {
+    if (!map || !layerReady) return;
 
     const seen = new Set();
     for (const v of vessels) {
       if (v.lat == null || v.lon == null) continue;
       const id = String(v.mmsi);
       seen.add(id);
-      const color = shipBandColor(v.ship_type, pal);
-      const rot = rotationOf(v);
-
-      let entry = markers.get(id);
-      if (!entry) {
-        const el = makeMarkerEl();
-        const marker = new maplibregl.Marker({
-          element: el,
-          rotation: rot,
-          rotationAlignment: "map",
-        })
-          .setLngLat([v.lon, v.lat])
-          .addTo(map);
-        entry = { marker, el, onClick: null };
-        markers.set(id, entry);
-      } else {
-        entry.marker.setRotation(rot);
-      }
-      entry.el.style.color = color;
-
-      // Rebind the click handler so it always closes over the latest row.
-      if (entry.onClick) entry.el.removeEventListener("click", entry.onClick);
-      entry.onClick = (e) => {
-        e.stopPropagation();
-        selectVessel(v);
-      };
-      entry.el.addEventListener("click", entry.onClick);
-
-      // Reset the dead-reckoning fix to snapshot truth.
-      entry.fixLat = v.lat;
-      entry.fixLon = v.lon;
-      entry.fixTimeMs = fixTimeMs(v);
-      entry.speed = v.speed;
-      entry.course = v.course;
+      fleet.set(id, {
+        row: v,
+        fixLat: v.lat,
+        fixLon: v.lon,
+        fixTimeMs: fixTimeMs(v),
+        speed: v.speed,
+        course: v.course,
+        rotation: rotationOf(v),
+        icon: iconFor(v.ship_type),
+      });
+    }
+    for (const id of fleet.keys()) {
+      if (!seen.has(id)) fleet.delete(id);
     }
 
-    // Drop vessels that fell out of the snapshot.
-    for (const [id, entry] of markers) {
-      if (seen.has(id)) continue;
-      if (entry.onClick) entry.el.removeEventListener("click", entry.onClick);
-      entry.marker.remove();
-      markers.delete(id);
-    }
+    pushData();
 
     if (!didFit && seen.size > 0) {
       const b = new maplibregl.LngLatBounds();
@@ -171,24 +212,15 @@
     }
   }
 
+  // Throttled dead-reckoning: rebuild the source ~4x/sec. During pan/zoom the
+  // points already track the basemap on the GPU, so this only animates the
+  // slow drift between snapshots.
   function startLoop() {
     const step = () => {
       const now = Date.now();
-      for (const entry of markers.values()) {
-        const elapsed = Math.min(
-          (now - entry.fixTimeMs) / 1000,
-          MAX_DR_SECONDS,
-        );
-        const pos = deadReckon(
-          {
-            lat: entry.fixLat,
-            lon: entry.fixLon,
-            speed: entry.speed,
-            course: entry.course,
-          },
-          elapsed,
-        );
-        entry.marker.setLngLat([pos.lon, pos.lat]);
+      if (now - lastDrMs >= DR_INTERVAL_MS) {
+        lastDrMs = now;
+        pushData();
       }
       rafId = requestAnimationFrame(step);
     };
@@ -210,14 +242,14 @@
 
   async function selectVessel(v) {
     selected = v;
+    selectedMmsi = String(v.mmsi);
+    pushData(); // highlight immediately, don't wait for the next DR tick
     track = null;
     trackLoading = true;
     try {
       // Same-origin site route, proxied to /api/ships/track/{mmsi} server-side
       // by +server.js. The browser never touches the private API surface.
-      const res = await fetch(
-        `/app/ships/track/${encodeURIComponent(v.mmsi)}`,
-      );
+      const res = await fetch(`/app/ships/track/${encodeURIComponent(v.mmsi)}`);
       if (res.ok) {
         const body = await res.json();
         track = body;
@@ -232,24 +264,17 @@
 
   function closePanel() {
     selected = null;
+    selectedMmsi = null;
     track = null;
+    pushData();
     const src = map?.getSource("ship-track");
     if (src) src.setData(emptyFC());
   }
 
-  // Highlight the selected marker. Re-runs when `selected` changes.
-  $effect(() => {
-    const id = selected ? String(selected.mmsi) : null;
-    for (const [mmsi, entry] of markers) {
-      entry.el.classList.toggle("is-selected", mmsi === id);
-    }
-  });
-
-  // Reset markers to snapshot truth whenever a new snapshot arrives. `vessels`
-  // is a fresh array on every invalidateAll, so this fires on each live update.
+  // Reset to snapshot truth whenever a new snapshot arrives.
   $effect(() => {
     void vessels;
-    if (map) syncMarkers();
+    if (map && layerReady) syncVessels();
   });
 
   onMount(() => {
@@ -274,6 +299,8 @@
 
       map.on("load", () => {
         pal = palette();
+        registerIcons(pal);
+
         map.addSource("ship-track", { type: "geojson", data: emptyFC() });
         map.addLayer({
           id: "ship-track-line",
@@ -286,19 +313,65 @@
             "line-dasharray": [1.5, 1],
           },
         });
-        syncMarkers();
+
+        map.addSource(SOURCE_ID, { type: "geojson", data: emptyFC() });
+        map.addLayer({
+          id: LAYER_ID,
+          type: "symbol",
+          source: SOURCE_ID,
+          layout: {
+            "icon-image": ["get", "icon"],
+            "icon-rotate": ["get", "rotation"],
+            "icon-rotation-alignment": "map",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            // Grow the selected vessel, then the hovered one.
+            "icon-size": [
+              "case",
+              ["get", "sel"],
+              1.5,
+              ["get", "hov"],
+              1.25,
+              1.0,
+            ],
+          },
+        });
+        layerReady = true;
+
+        map.on("click", LAYER_ID, (e) => {
+          const f = e.features?.[0];
+          if (!f) return;
+          const entry = fleet.get(String(f.id));
+          if (entry) selectVessel(entry.row);
+        });
+        map.on("mouseenter", LAYER_ID, () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mousemove", LAYER_ID, (e) => {
+          const id = e.features?.[0] ? String(e.features[0].id) : null;
+          if (id !== hoveredMmsi) {
+            hoveredMmsi = id;
+            pushData();
+          }
+        });
+        map.on("mouseleave", LAYER_ID, () => {
+          map.getCanvas().style.cursor = "";
+          if (hoveredMmsi !== null) {
+            hoveredMmsi = null;
+            pushData();
+          }
+        });
+
+        syncVessels();
         startLoop();
       });
 
       cleanup = () => {
         if (rafId) cancelAnimationFrame(rafId);
-        for (const entry of markers.values()) {
-          if (entry.onClick) entry.el.removeEventListener("click", entry.onClick);
-          entry.marker.remove();
-        }
-        markers.clear();
+        fleet.clear();
         map?.remove();
         map = null;
+        layerReady = false;
       };
     })();
 
@@ -383,21 +456,6 @@
     border: 2px solid var(--ink);
     border-radius: 0;
     box-shadow: var(--shadow-hard-sm);
-  }
-
-  :global(.ship-marker) {
-    cursor: pointer;
-    line-height: 0;
-    filter: drop-shadow(1px 1px 0 var(--ink));
-    transition: transform 120ms ease;
-  }
-
-  :global(.ship-marker:hover) {
-    transform: scale(1.25);
-  }
-
-  :global(.ship-marker.is-selected) {
-    transform: scale(1.5);
   }
 
   .map-chip {
@@ -578,9 +636,6 @@
   @media (prefers-reduced-motion: reduce) {
     .chip-dot {
       animation: none;
-    }
-    :global(.ship-marker) {
-      transition: none;
     }
   }
 </style>
