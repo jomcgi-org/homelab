@@ -24,6 +24,22 @@ from ships.ais import PriorPosition, should_insert_position
 from ships.models import LatestPosition, Position, Vessel
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Coerce a datetime to tz-aware UTC.
+
+    Postgres returns tz-aware datetimes, but SQLite (used in unit tests) returns
+    naive ones even though we always write tz-aware UTC. Treat naive values as
+    UTC so the dedup time math (new.recorded_at minus prior.recorded_at) never
+    mixes aware and naive operands (which would raise TypeError and wrongly
+    force an insert).
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) -> int:
     """Dedup + write one AIS batch. Returns count of position rows inserted.
 
@@ -48,8 +64,8 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
                 lat=row.lat,
                 lon=row.lon,
                 speed=row.speed,
-                recorded_at=row.recorded_at,
-                first_seen_at_location=row.first_seen_at_location,
+                recorded_at=_as_utc(row.recorded_at),
+                first_seen_at_location=_as_utc(row.first_seen_at_location),
             )
 
     history: list[Position] = []
@@ -173,7 +189,9 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
         if v.get("draught") is not None:
             existing.draught = v.get("draught")
         existing.updated_at = datetime.now(timezone.utc)
-        session.add(existing)
+        # No session.add(existing) needed: rows fetched via session.get are
+        # already tracked, so attribute mutations flush on commit. (Adding in a
+        # loop also trips the session-add-in-loop semgrep rule.)
 
     if new_vessels:
         session.add_all(new_vessels)

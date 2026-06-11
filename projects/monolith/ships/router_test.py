@@ -139,6 +139,11 @@ class TestSnapshot:
 
 
 def _seed_track(session: Session) -> None:
+    # Seed relative to now: the /track since= filter is computed from
+    # datetime.now(), so fixed past timestamps would fall outside any recent
+    # window once the calendar advances. base, base-1h, base-2h lets since=90m
+    # select exactly the first two.
+    base = datetime.now(timezone.utc)
     for i in range(3):
         session.add(
             Position(
@@ -149,7 +154,7 @@ def _seed_track(session: Session) -> None:
                 course=10.0 * i,
                 heading=i,
                 nav_status=0,
-                recorded_at=T0 - timedelta(hours=i),
+                recorded_at=base - timedelta(hours=i),
             )
         )
     session.commit()
