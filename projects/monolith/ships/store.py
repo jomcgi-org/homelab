@@ -123,6 +123,7 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
 
     # Upsert vessel metadata. Coalesce nullable fields against the existing row
     # when the new value is falsy (mirror the old COALESCE(excluded.x, vessels.x)).
+    new_vessels: list[Vessel] = []
     for v in vessels:
         mmsi = v.get("mmsi")
         if not mmsi:
@@ -130,7 +131,7 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
 
         existing = session.get(Vessel, mmsi)
         if existing is None:
-            session.add(
+            new_vessels.append(
                 Vessel(
                     mmsi=mmsi,
                     imo=v.get("imo") or None,
@@ -173,6 +174,9 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
             existing.draught = v.get("draught")
         existing.updated_at = datetime.now(timezone.utc)
         session.add(existing)
+
+    if new_vessels:
+        session.add_all(new_vessels)
 
     session.commit()
     return len(history)

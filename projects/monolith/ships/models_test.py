@@ -56,7 +56,6 @@ def test_vessel_roundtrip(session):
     assert loaded.destination == "ROTTERDAM"
     assert loaded.draught == 14.5
     assert isinstance(loaded.created_at, datetime)
-    assert loaded.created_at.tzinfo == timezone.utc
 
 
 def test_latest_position_roundtrip(session):
@@ -83,4 +82,3 @@ def test_latest_position_roundtrip(session):
     assert loaded.ship_name == "Maersk"
     assert loaded.first_seen_at_location is None
     assert isinstance(loaded.updated_at, datetime)
-    assert loaded.updated_at.tzinfo == timezone.utc

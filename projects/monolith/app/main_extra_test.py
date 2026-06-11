@@ -41,6 +41,7 @@ def _lifespan_patches_no_discord():
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -57,6 +58,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -85,6 +87,7 @@ class TestLifespanBotCloseException:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             with pytest.raises(RuntimeError, match="Discord connection lost"):
                 async with lifespan(app):
@@ -92,7 +95,7 @@ class TestLifespanBotCloseException:
 
     @pytest.mark.asyncio
     async def test_bot_close_exception_does_not_prevent_task_creation(self):
-        """Even when bot.close() will later raise, all 3 tasks are still created at startup."""
+        """Even when bot.close() will later raise, all 4 tasks are still created at startup."""
         tasks, capture = _make_task_capturer()
 
         mock_bot = MagicMock()
@@ -109,6 +112,7 @@ class TestLifespanBotCloseException:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             try:
                 async with lifespan(app):
@@ -116,8 +120,8 @@ class TestLifespanBotCloseException:
             except RuntimeError:
                 pass  # expected
 
-        # bot + scheduler + sweep = 3 tasks must have been created
-        assert len(tasks) == 3
+        # bot + scheduler + ships ingest + sweep = 4 tasks must have been created
+        assert len(tasks) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,7 @@ class TestLifespanRunSchedulerLoopException:
             patch("app.db.get_engine", return_value=MagicMock()),
             patch("sqlmodel.Session", return_value=mock_session),
             patch("home.on_startup_jobs"),
+            patch("ships.on_startup_jobs"),
             patch(
                 "shared.scheduler.run_scheduler_loop",
                 new=failing_run_scheduler_loop,
@@ -172,6 +177,7 @@ class TestLifespanRunSchedulerLoopException:
             patch("app.db.get_engine", return_value=MagicMock()),
             patch("sqlmodel.Session", return_value=mock_session),
             patch("home.on_startup_jobs"),
+            patch("ships.on_startup_jobs"),
             patch(
                 "shared.scheduler.run_scheduler_loop",
                 new=failing_run_scheduler_loop,
@@ -211,6 +217,7 @@ class TestLifespanBotStartException:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 started = True
@@ -237,6 +244,7 @@ class TestLifespanBotStartException:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 pass

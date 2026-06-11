@@ -57,6 +57,7 @@ def _lifespan_patches_no_discord():
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -73,6 +74,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -146,6 +148,7 @@ class TestLifespanAppStateBotAssignment:
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             async with lifespan(app):
                 # During the lifespan body, app.state.bot must be the created bot
@@ -175,6 +178,7 @@ class TestLifespanAppStateBotAssignment:
             patches[1],
             patches[2],
             patches[3],
+            patches[4],
         ):
             async with lifespan(app):
                 assert app.state.bot is None, (
@@ -203,6 +207,7 @@ class TestLifespanAppStateBotAssignment:
             patches[1],
             patches[2],
             patches[3],
+            patches[4],
         ):
             async with lifespan(app):
                 assert hasattr(app.state, "backfill_task"), (

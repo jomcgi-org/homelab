@@ -15,6 +15,7 @@ This module is split into:
     in prod / CI-against-Postgres, never in the SQLite unit tests.
 """
 
+import asyncio
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -109,21 +110,32 @@ def drop_partition_sql(day: date) -> str:
     return f"DROP TABLE IF EXISTS ships.{partition_name(day)}"
 
 
+def _run_partition_maintenance() -> None:
+    """Synchronous partition DDL, run off the event loop via asyncio.to_thread."""
+    from app.db import get_engine
+
+    today = datetime.now(timezone.utc).date()
+    with Session(get_engine()) as session:
+        try:
+            for day in partitions_to_create(today, PARTITION_AHEAD_DAYS):
+                session.execute(text(create_partition_sql(day)))
+            for day in partitions_to_drop(today, RETENTION_DAYS, DROP_SCAN_DAYS):
+                session.execute(text(drop_partition_sql(day)))
+            session.commit()
+            logger.info(
+                "ships partition maintenance ok (retention=%dd)", RETENTION_DAYS
+            )
+        except Exception:
+            logger.exception("ships partition maintenance failed")
+            session.rollback()
+
+
 async def partition_maintenance_handler(session: Session) -> datetime | None:
     """Create daily partitions ahead and drop partitions past retention.
 
-    Drop-partition retention keeps zero vacuum churn on the shared Postgres.
-    This is a scheduled job: it logs and swallows errors, never raising.
+    Delegates the synchronous DDL to a worker thread so it never blocks the
+    event loop (mirrors the ingest flush pattern). The scheduler passes a
+    session, but the DDL uses its own session inside the thread.
     """
-    today = datetime.now(timezone.utc).date()
-    try:
-        for day in partitions_to_create(today, PARTITION_AHEAD_DAYS):
-            session.execute(text(create_partition_sql(day)))
-        for day in partitions_to_drop(today, RETENTION_DAYS, DROP_SCAN_DAYS):
-            session.execute(text(drop_partition_sql(day)))
-        session.commit()
-        logger.info("ships partition maintenance ok (retention=%dd)", RETENTION_DAYS)
-    except Exception:
-        logger.exception("ships partition maintenance failed")
-        session.rollback()
+    await asyncio.to_thread(_run_partition_maintenance)
     return None

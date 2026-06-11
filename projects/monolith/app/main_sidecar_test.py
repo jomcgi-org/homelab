@@ -63,6 +63,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -76,6 +77,7 @@ def _lifespan_patches_no_discord():
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("ships.on_startup_jobs"),
     ]
 
 
@@ -428,6 +430,7 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
         patches[4],
         patches[5],
         patches[6],
+        patches[7],
     ):
         async with lifespan(app):
             pass
@@ -469,11 +472,12 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
         patches[1],
         patches[2],
         patches[3],
+        patches[4],
     ):
         async with lifespan(app):
             pass
 
-    # Only scheduler — no bot task
-    assert len(created_tasks) == 1, (
-        f"Expected 1 task without a bot token, got {len(created_tasks)}"
+    # Scheduler + ships ingest task (no bot task)
+    assert len(created_tasks) == 2, (
+        f"Expected 2 tasks without a bot token, got {len(created_tasks)}"
     )
