@@ -358,6 +358,22 @@ class TestGenLibrary:
         out = gen_library(stanza, "src", "root")
         assert '"unix", "str", "dynlink"' in out
 
+    def test_wrapped_default_true(self):
+        # Dune's default is wrapped; no (wrapped ...) field means wrapped.
+        stanza = self._stanza("(library (name mylib))")
+        out = gen_library(stanza, "src", "root")
+        assert "wrapped = True," in out
+
+    def test_wrapped_false_omitted(self):
+        stanza = self._stanza("(library (name mylib) (wrapped false))")
+        out = gen_library(stanza, "src", "root")
+        assert "wrapped" not in out
+
+    def test_wrapped_true_explicit(self):
+        stanza = self._stanza("(library (name mylib) (wrapped true))")
+        out = gen_library(stanza, "src", "root")
+        assert "wrapped = True," in out
+
 
 # ---------------------------------------------------------------------------
 # main

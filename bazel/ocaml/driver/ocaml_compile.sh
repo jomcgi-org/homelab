@@ -89,12 +89,16 @@ mkdir -p "$WORK"
 for s in $SRCS; do cp "$s" "$WORK/$(basename "$s")"; done
 INCFLAGS="-I $WORK $INCFLAGS"
 
-# --- Recover compile order over the .ml sources -----------------------------
-MLB=""
+# --- Recover compile order over the sources ---------------------------------
+# Sort .ml AND .mli together: an interface may depend on a module whose
+# implementation sorts late (re's category.mli references Fmt), so interface
+# compile order is a property of the full file graph, not the .ml-only graph.
+# ocamldep -sort emits one topological file order with x.mli before x.ml.
+ALLB=""
 for s in $SRCS; do
-	case "$s" in *.ml) MLB="$MLB $(basename "$s")" ;; esac
+	case "$s" in *.ml | *.mli) ALLB="$ALLB $(basename "$s")" ;; esac
 done
-ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $MLB)"
+ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $ALLB)"
 echo "ocaml_compile: compile order: $ORDER" >&2
 
 # --- Wrapping (dune scheme) --------------------------------------------------
@@ -111,18 +115,26 @@ if [ "$WRAPPED" = "1" ]; then
 	ALIAS_MOD="${NAME}__"
 	ALIAS_ML="$WORK/$ALIAS_MOD.ml"
 	: > "$ALIAS_ML"
+	SEEN=" "
 	RENAMED_ORDER=""
-	for ml in $ORDER; do
-		base="${ml%.ml}"
+	for f in $ORDER; do
+		base="${f%.*}"
+		ext="${f##*.}"
 		if [ "$base" = "$NAME" ]; then
-			RENAMED_ORDER="$RENAMED_ORDER $ml"
+			RENAMED_ORDER="$RENAMED_ORDER $f"
 			continue
 		fi
 		Mod="$(capitalize "$base")"
-		mv "$WORK/$ml" "$WORK/${NAME}__$Mod.ml"
-		[ -f "$WORK/$base.mli" ] && mv "$WORK/$base.mli" "$WORK/${NAME}__$Mod.mli"
-		echo "module $Mod = $(capitalize "${NAME}__$Mod")" >> "$ALIAS_ML"
-		RENAMED_ORDER="$RENAMED_ORDER ${NAME}__$Mod.ml"
+		mv "$WORK/$f" "$WORK/${NAME}__$Mod.$ext"
+		# One alias line per module (a unit's .mli and .ml both pass here).
+		case "$SEEN" in
+		*" $base "*) ;;
+		*)
+			echo "module $Mod = $(capitalize "${NAME}__$Mod")" >> "$ALIAS_ML"
+			SEEN="$SEEN$base "
+			;;
+		esac
+		RENAMED_ORDER="$RENAMED_ORDER ${NAME}__$Mod.$ext"
 	done
 	ORDER="$RENAMED_ORDER"
 	# -no-alias-deps: the alias module references member cmis that do not exist
@@ -132,15 +144,13 @@ if [ "$WRAPPED" = "1" ]; then
 	OPENFLAG="-open $(capitalize "$ALIAS_MOD")"
 fi
 
-# --- Compile each module (.mli before .ml) ----------------------------------
+# --- Compile each file in sorted order ---------------------------------------
 # -no-alias-deps is harmless when unwrapped (OPENFLAG empty, no alias module).
-for ml in $ORDER; do
-	base="${ml%.ml}"
-	if [ -f "$WORK/$base.mli" ]; then
-		"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$base.mli"
-	fi
-	"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$ml"
-	CMX_LIST="$CMX_LIST $WORK/$base.cmx"
+for f in $ORDER; do
+	"$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"
+	case "$f" in
+	*.ml) CMX_LIST="$CMX_LIST $WORK/${f%.ml}.cmx" ;;
+	esac
 done
 
 # --- Compile C stub sources (if any) ----------------------------------------
