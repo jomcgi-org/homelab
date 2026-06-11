@@ -74,6 +74,8 @@ use_repo(
     "ocaml_cppo",
     "ocaml_easy_format",
     "ocaml_menhir",
+    "ocaml_pcre2",
+    "ocaml_pcre2_c",
     "ocaml_ppx_derivers",
     "ocaml_ppx_deriving",
     "ocaml_ppxlib",
