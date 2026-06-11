@@ -43,6 +43,37 @@
   let track = $state(null); // { mmsi, count, track } or null
   let trackLoading = $state(false);
 
+  // Vessel-type filter. Each legend box toggles whether that ITU band shows on
+  // the map; toggling sets a MapLibre layer filter on the `icon` property.
+  const LEGEND = [
+    { key: "passenger", label: "Passenger", icon: "ship-passenger", color: "var(--blue)" },
+    { key: "cargo", label: "Cargo", icon: "ship-cargo", color: "var(--teal)" },
+    { key: "tanker", label: "Tanker", icon: "ship-tanker", color: "var(--coral)" },
+    { key: "hsc", label: "High-speed", icon: "ship-hsc", color: "var(--accent)" },
+    { key: "special", label: "Special", icon: "ship-special", color: "var(--green)" },
+    { key: "unknown", label: "Other", icon: "ship-unknown", color: "var(--ink-3)" },
+  ];
+  let active = $state(new Set(LEGEND.map((l) => l.key))); // all on by default
+
+  function applyFilter() {
+    if (!map || !layerReady) return;
+    if (active.size === LEGEND.length) {
+      map.setFilter(LAYER_ID, null); // everything visible: no filter
+      return;
+    }
+    const icons = LEGEND.filter((l) => active.has(l.key)).map((l) => l.icon);
+    map.setFilter(LAYER_ID, ["in", ["get", "icon"], ["literal", icons]]);
+  }
+
+  function toggleType(key) {
+    // Reassign (not mutate) so the $state Set re-renders the legend.
+    const next = new Set(active);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    active = next;
+    applyFilter();
+  }
+
   function emptyFC() {
     return { type: "FeatureCollection", features: [] };
   }
@@ -345,6 +376,7 @@
           },
         });
         layerReady = true;
+        applyFilter(); // honor any pre-toggled legend state
 
         map.on("click", LAYER_ID, (e) => {
           const f = e.features?.[0];
@@ -404,16 +436,22 @@
     <span class="chip-dot" aria-hidden="true"></span>
   </nav>
 
-  <div class="legend card-hard">
+  <div class="legend">
     <p class="eyebrow legend-title">Vessel type</p>
-    <ul class="legend-list">
-      <li><span class="sw sw-passenger"></span>Passenger</li>
-      <li><span class="sw sw-cargo"></span>Cargo</li>
-      <li><span class="sw sw-tanker"></span>Tanker</li>
-      <li><span class="sw sw-hsc"></span>High-speed</li>
-      <li><span class="sw sw-special"></span>Special</li>
-      <li><span class="sw sw-unknown"></span>Other</li>
-    </ul>
+    <div class="legend-grid">
+      {#each LEGEND as item (item.key)}
+        <button
+          type="button"
+          class="legend-item"
+          class:is-off={!active.has(item.key)}
+          style="background: {item.color}"
+          aria-pressed={active.has(item.key)}
+          onclick={() => toggleType(item.key)}
+        >
+          <span class="legend-label">{item.label}</span>
+        </button>
+      {/each}
+    </div>
   </div>
 
   {#if selected}
@@ -464,29 +502,39 @@
     filter: grayscale(0.4) sepia(0.12) brightness(1.02) contrast(0.96);
   }
 
+  /* Drop the group container entirely so each +/- button is its own square
+     that lifts off, rather than a button recessing into a bordered box. */
   .map :global(.maplibregl-ctrl-group) {
-    border: 2px solid var(--ink);
+    border: none;
     border-radius: 0;
-    /* No shadow on the group; each button lifts and casts its own shadow on
-       hover (see below), so the controls feel pressable rather than static. */
+    background: transparent;
+    box-shadow: none;
+    overflow: visible; /* don't clip the lifted button's shadow */
   }
 
   .map :global(.maplibregl-ctrl-group button) {
+    border: 2px solid var(--ink);
+    background: var(--paper);
     transition:
       transform 110ms ease,
       box-shadow 110ms ease;
   }
 
-  .map :global(.maplibregl-ctrl-group button:hover) {
-    transform: translate(-1px, -1px);
-    box-shadow: var(--shadow-hard-sm);
-    position: relative;
-    z-index: 1; /* lift the shadow above the adjacent button */
+  /* maplibre stacks the +/- buttons flush; separate them so each lifts alone. */
+  .map :global(.maplibregl-ctrl-group button + button) {
+    margin-top: 6px;
   }
 
+  /* Lift off and KEEP the shadow on hover/press/focus, like the homepage
+     buttons. No collapse-to-flat on :active (that read as "falling in"). */
+  .map :global(.maplibregl-ctrl-group button:hover),
+  .map :global(.maplibregl-ctrl-group button:focus-visible),
   .map :global(.maplibregl-ctrl-group button:active) {
-    transform: translate(0, 0);
-    box-shadow: none; /* pressed back down */
+    transform: translate(-2px, -2px);
+    box-shadow: 2px 2px 0 var(--ink);
+    background: var(--paper);
+    position: relative;
+    z-index: 1;
   }
 
   .map-chip {
@@ -513,7 +561,11 @@
     color: var(--ink);
     text-decoration: underline;
     text-decoration-color: var(--blue);
-    text-decoration-thickness: 1.5px;
+    /* 2px (even at 2x DPR) + skip-ink: none renders a clean continuous rule;
+       1.5px left a faint lighter streak and skip-ink notched the underline
+       around the "." and the arrow. */
+    text-decoration-thickness: 2px;
+    text-decoration-skip-ink: none;
     text-underline-offset: 2px;
     padding: 0 2px;
     -webkit-box-decoration-break: clone;
@@ -529,10 +581,13 @@
     text-decoration-color: var(--ink);
   }
 
+  /* inline-block keeps the underline from running under the arrow glyph. */
   .chip-home-arrow {
-    margin-left: 1px;
+    display: inline-block;
+    margin-left: 2px;
     font-size: 0.85em;
-    vertical-align: 0.08em;
+    vertical-align: 0.05em;
+    text-decoration: none;
   }
 
   .chip-sep {
@@ -558,57 +613,67 @@
     }
   }
 
+  /* Hard rectangle (no card-hard: that rounds the corners and lifts on hover,
+     which read as "clickable" on a non-interactive panel). */
   .legend {
     position: absolute;
     bottom: 16px;
     left: 16px;
-    padding: 12px 14px;
+    padding: 12px;
     background: var(--paper);
+    border: 2px solid var(--ink);
   }
 
   .legend-title {
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
 
-  .legend-list {
+  .legend-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 4px 14px;
+    gap: 8px;
+  }
+
+  /* Each box is a filter toggle: the box fill is the vessel-type color, with
+     the label on a paper inset so it stays legible on any fill. Clicking
+     toggles that type on the map. */
+  .legend-item {
+    display: flex;
+    padding: 4px;
+    border: 2px solid var(--ink);
+    cursor: pointer;
+    transition:
+      transform 110ms ease,
+      box-shadow 110ms ease,
+      opacity 110ms ease;
+  }
+
+  .legend-label {
+    width: 100%;
+    padding: 3px 7px;
+    background: var(--paper);
+    border: 1px solid var(--ink);
     font-family: var(--mono);
     font-size: 11px;
-    letter-spacing: 0.04em;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--ink);
   }
 
-  .legend-list li {
-    display: flex;
-    align-items: center;
-    gap: 7px;
+  .legend-item:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 2px 2px 0 var(--ink);
   }
 
-  .sw {
-    width: 11px;
-    height: 11px;
-    border: 1.5px solid var(--ink);
-    flex: none;
+  /* Stay lifted while pressed (no "fall in"); the shadow just tucks in a hair. */
+  .legend-item:active {
+    transform: translate(-1px, -1px);
+    box-shadow: 1px 1px 0 var(--ink);
   }
 
-  .sw-passenger {
-    background: var(--blue);
-  }
-  .sw-cargo {
-    background: var(--teal);
-  }
-  .sw-tanker {
-    background: var(--coral);
-  }
-  .sw-hsc {
-    background: var(--accent);
-  }
-  .sw-special {
-    background: var(--green);
-  }
-  .sw-unknown {
-    background: var(--ink-3);
+  /* Filtered-out types dim but stay clickable to re-enable. */
+  .legend-item.is-off {
+    opacity: 0.4;
   }
 
   .panel {
@@ -697,6 +762,9 @@
       animation: none;
     }
     .map :global(.maplibregl-ctrl-group button) {
+      transition: none;
+    }
+    .legend-item {
       transition: none;
     }
   }
