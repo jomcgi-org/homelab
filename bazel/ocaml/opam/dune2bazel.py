@@ -184,17 +184,17 @@ def _resolve_flags(stanza):
             continue
         for item in field:
             if isinstance(item, list):
-                # (:standard ...) modifiers (\ subtraction etc.) are not modeled.
-                inner = [
-                    x
-                    for x in item
-                    if not (isinstance(x, tuple) and x[1] == ":standard")
-                ]
-                if inner:
-                    sys.exit(
-                        "dune2bazel: unsupported (%s ...) form %r (only plain "
-                        "flags and bare :standard are modeled)." % (key, item)
-                    )
+                # (:standard extra...) is additive, same as the flat form.
+                # Subtraction (\) and other set operators are not modeled.
+                for x in item:
+                    if isinstance(x, list) or _atom(x) == "\\":
+                        sys.exit(
+                            "dune2bazel: unsupported (%s ...) form %r (only "
+                            "plain flags and additive :standard are modeled)."
+                            % (key, item)
+                        )
+                    if _atom(x) != ":standard":
+                        flags.append(_atom(x))
                 continue
             flag = _atom(item)
             if flag == ":standard":
@@ -267,10 +267,17 @@ def gen_library(stanza, src_dir, lib_map):
                 "opam/overrides/ BUILD." % key
             )
 
-    name_field = _field(stanza, "name")
+    # Dune derives the internal name from public_name when (name ...) is
+    # omitted; that is only valid when the public name has no dots.
+    name_field = _field(stanza, "name") or _field(stanza, "public_name")
     if not name_field:
-        sys.exit("dune2bazel: (library) has no (name ...)")
+        sys.exit("dune2bazel: (library) has neither (name ...) nor (public_name ...)")
     name = _atom(name_field[0])
+    if "." in name:
+        sys.exit(
+            "dune2bazel: (library) has no (name ...) and public_name %r is "
+            "dotted; dune would reject this too." % name
+        )
 
     kind_field = _field(stanza, "kind")
     if kind_field:
