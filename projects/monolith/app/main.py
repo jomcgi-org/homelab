@@ -104,6 +104,16 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(run_scheduler_loop())
     scheduler_task.add_done_callback(_log_task_exception)
 
+    # Start the supervised AISStream ingest listener. It reconnects forever and
+    # never raises out (only CancelledError on shutdown), so it can never crash
+    # the app. Disabled automatically when AISSTREAM_API_KEY is unset.
+    from ships.ingest import ais_stream_loop
+
+    app.state.ships_stop = asyncio.Event()
+    app.state.ships_task = asyncio.create_task(ais_stream_loop(app.state.ships_stop))
+    app.state.ships_task.add_done_callback(_log_task_exception)
+    logger.info("Ships AISStream ingest started")
+
     # Lock sweep stays in-memory (30s, bot-coupled, already multi-pod safe via SKIP LOCKED)
     sweep_task = None
     if discord_token and bot:
@@ -166,6 +176,15 @@ async def lifespan(app: FastAPI):
     if bot_task:
         bot_task.cancel()
     scheduler_task.cancel()
+
+    # Stop the ships ingest loop: signal it, cancel, and await it, swallowing
+    # the CancelledError it re-raises on clean shutdown.
+    app.state.ships_stop.set()
+    app.state.ships_task.cancel()
+    try:
+        await app.state.ships_task
+    except asyncio.CancelledError:
+        pass
 
     # Best-effort vault backup — preserve any uncommitted changes before the pod dies.
     try:
