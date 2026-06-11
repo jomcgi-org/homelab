@@ -138,7 +138,10 @@ ul {
 }
 
 .btn-secondary {
-  background: transparent;
+  /* White fill, not transparent: on the cream page a transparent button
+     reads as "cream on cream" and disappears. Paper lifts it off the
+     background while keeping the flat-ink border language. */
+  background: var(--paper);
 }
 
 .btn:hover {
