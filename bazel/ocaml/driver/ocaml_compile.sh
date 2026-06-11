@@ -1,18 +1,21 @@
 #!/bin/sh
 # Whole-library OCaml compile/link driver. The compiler is supplied as a single
 # tar (the OCaml 5.3 `make install` prefix, built by //bazel/ocaml/toolchain:
-# ocaml_compiler); the driver extracts it to a temp sysroot ($S). It recovers
-# compile order with `ocamldep -sort`, compiles each module's .mli before its .ml,
-# then archives the .cmx into a native .cmxa (library mode) or links a native
-# executable (binary mode).
+# ocaml_compiler); the driver extracts it to a temp sysroot ($S). It stages the
+# sources into a work dir, runs the source-generation pipeline (ocamlyacc,
+# ocamllex, cppo, a generic per-file preprocessor, a ppx driver), recovers
+# compile order with `ocamldep -sort`, optionally applies dune-style module
+# wrapping, then archives the .cmx into a native .cmxa (library mode) or links
+# a native executable (binary mode).
 #
 # The compiler binaries come from the extracted sysroot; native code generation
 # and the final link use the execution host's as/gcc/ld (the same C toolchain the
 # repo's C/C++ builds use). The sysroot's OCaml is relocated via OCAMLLIB.
 set -eu
 
-MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0"
+MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CMXAS="" CFLAGS=""
+PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
 while [ $# -gt 0 ]; do
@@ -22,12 +25,17 @@ while [ $# -gt 0 ]; do
 	--sysroot-tar) SYSROOT_TAR="$2" && shift 2 ;;
 	--use-ocamlfind) USE_FIND="$2" && shift 2 ;;
 	--wrapped) WRAPPED="$2" && shift 2 ;;
+	--linkall) LINKALL="$2" && shift 2 ;;
 	--compile-flag) CFLAGS="$CFLAGS $2" && shift 2 ;;
 	--include) INCLUDES="$INCLUDES $2" && shift 2 ;;
 	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
 	--src) SRCS="$SRCS $2" && shift 2 ;;
 	--c-src) CSRCS="$CSRCS $2" && shift 2 ;;
 	--cmxa) CMXAS="$CMXAS $2" && shift 2 ;;
+	--pp-tool) PP_TOOL="$2" && shift 2 ;;
+	--pp-arg) PP_ARGS="$PP_ARGS $2" && shift 2 ;;
+	--cppo-tool) CPPO_TOOL="$2" && shift 2 ;;
+	--ppx) PPX="$2" && shift 2 ;;
 	--objs-out) OBJS_OUT="$2" && shift 2 ;;
 	--cmxa-out) CMXA_OUT="$2" && shift 2 ;;
 	--a-out) A_OUT="$2" && shift 2 ;;
@@ -36,16 +44,27 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# The sysroot tar is staged at an exec-root-relative path; make it absolute, then
-# extract it to a fresh sysroot dir ($S) with the bin/ + lib/ocaml/ layout. A tar
-# (single File artifact) survives RBE staging whole and preserves the +x bit,
-# unlike a TreeArtifact of the install.
-case "$SYSROOT_TAR" in
-/*) TAR="$SYSROOT_TAR" ;;
-*) TAR="$(pwd)/$SYSROOT_TAR" ;;
-esac
+# Inputs are staged at exec-root-relative paths; later steps cd around, so
+# resolve anything we execute or read from another directory to an absolute path.
+abspath() {
+	case "$1" in
+	/*) printf '%s' "$1" ;;
+	*) printf '%s/%s' "$(pwd)" "$1" ;;
+	esac
+}
+
+# The sysroot tar is extracted to a fresh sysroot dir ($S) with the bin/ +
+# lib/ocaml/ layout. A tar (single File artifact) survives RBE staging whole and
+# preserves the +x bit, unlike a TreeArtifact of the install.
+TAR="$(abspath "$SYSROOT_TAR")"
 S="$(mktemp -d)"
+TMP_WORK=""
+trap 'rm -rf "$S" $TMP_WORK' EXIT
 tar -xf "$TAR" -C "$S"
+
+[ -n "$PP_TOOL" ] && PP_TOOL="$(abspath "$PP_TOOL")"
+[ -n "$CPPO_TOOL" ] && CPPO_TOOL="$(abspath "$CPPO_TOOL")"
+[ -n "$PPX" ] && PPX="$(abspath "$PPX")"
 
 # --- Relocate the OCaml toolchain -------------------------------------------
 # The compiler is built from source (semgrep/ocaml 5.3.0) with a baked-in
@@ -59,45 +78,150 @@ export PATH="$S/bin:$PATH"
 
 OCAMLOPT="$S/bin/ocamlopt.opt"
 OCAMLDEP="$S/bin/ocamldep.opt"
+OCAMLLEX="$S/bin/ocamllex"
+OCAMLYACC="$S/bin/ocamlyacc"
 
 echo "ocaml_compile: mode=$MODE sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
 
-# Resolve opam (findlib) packages. ocamlfind is not part of the compiler; the
-# toy's opam_deps (unix/str/threads) ship with the stdlib and link directly from
-# OCAMLLIB by their archive name.
+# Version tokens for preprocessor arg substitution (see --pp-arg below).
+# %OCAML_VERSION% is the numeric version (5.3.0); %OCAML_AST_VERSION% is
+# ppxlib's astlib token (503), with the 5.0 -> 414 quirk from
+# astlib/config/gen.ml (the AST did not change between 4.14 and 5.0).
+# The semgrep fork reports "5.3.0+semgrep-fork@<sha>"; strip everything from
+# the first non-numeric character so cppo and version compares stay parseable.
+OCAML_VERSION="$("$OCAMLOPT" -version | sed 's/[^0-9.].*//')"
+_maj="${OCAML_VERSION%%.*}"
+_rest="${OCAML_VERSION#*.}"
+_min="${_rest%%.*}"
+if [ "$_maj" = "5" ] && [ "$_min" = "0" ]; then
+	OCAML_AST_VERSION="414"
+else
+	OCAML_AST_VERSION="$(printf '%d%02d' "$_maj" "$_min")"
+fi
+
+# Resolve opam (findlib) packages against the sysroot. Plain names are
+# stdlib-shipped archives (unix, str, threads...); since OCaml 5 those live in
+# lib/ocaml/<pkg>/ subdirs, hence the guarded -I +<pkg>. Dotted compiler-libs
+# names map onto the archives a from-source `make install` ships under
+# +compiler-libs (this is what lets ocaml-compiler-libs and astlib build).
 FIND=""
 if [ "$USE_FIND" = "1" ] && [ -x "$S/bin/ocamlfind" ]; then
 	FIND="$S/bin/ocamlfind"
 fi
 
+PKG_INC="" PKG_LINK=""
+add_pkg_link() {
+	case " $PKG_LINK " in
+	*" $1 "*) ;;
+	*) PKG_LINK="$PKG_LINK $1" ;;
+	esac
+}
+for p in $OPAM_PKGS; do
+	case "$p" in
+	compiler-libs.common)
+		PKG_INC="$PKG_INC -I +compiler-libs"
+		add_pkg_link ocamlcommon.cmxa
+		;;
+	compiler-libs.bytecomp)
+		PKG_INC="$PKG_INC -I +compiler-libs"
+		add_pkg_link ocamlcommon.cmxa
+		add_pkg_link ocamlbytecomp.cmxa
+		;;
+	compiler-libs.optcomp)
+		PKG_INC="$PKG_INC -I +compiler-libs"
+		add_pkg_link ocamlcommon.cmxa
+		add_pkg_link ocamloptcomp.cmxa
+		;;
+	compiler-libs*)
+		echo "ocaml_compile: unsupported compiler-libs sublibrary: $p" >&2
+		exit 2
+		;;
+	*)
+		if [ -d "$OCAMLLIB/$p" ]; then
+			PKG_INC="$PKG_INC -I +$p"
+		fi
+		add_pkg_link "$p.cmxa"
+		;;
+	esac
+done
+
 INCFLAGS=""
 for d in $INCLUDES; do INCFLAGS="$INCFLAGS -I $d"; done
-
-PKG_COMMA="" PKG_LINK=""
-for p in $OPAM_PKGS; do
-	if [ -z "$PKG_COMMA" ]; then PKG_COMMA="$p"; else PKG_COMMA="$PKG_COMMA,$p"; fi
-	PKG_LINK="$PKG_LINK $p.cmxa"
-done
+INCFLAGS="$INCFLAGS$PKG_INC"
 
 # --- Stage sources into a writable work dir ---------------------------------
 if [ "$MODE" = "library" ]; then
 	WORK="$OBJS_OUT"
 else
 	WORK="$(mktemp -d)"
+	TMP_WORK="$WORK"
 fi
 mkdir -p "$WORK"
 for s in $SRCS; do cp "$s" "$WORK/$(basename "$s")"; done
 INCFLAGS="-I $WORK $INCFLAGS"
+
+# --- Source generation pipeline ----------------------------------------------
+# Mirrors the dune stanzas the opam universe needs, in dune's order:
+#   .mly  -> ocamlyacc        (dune `(ocamlyacc x)`)
+#   .mll  -> ocamllex         (dune `(ocamllex x)`)
+#   x.cppo.ml{,i} -> x.ml{,i} (the cppo `(rule ...)` convention)
+#   --pp-tool                 (dune `(preprocess (action (run tool args file)))`,
+#                              output on stdout; args may use %OCAML_VERSION% /
+#                              %OCAML_AST_VERSION%)
+#   --ppx                     (a ppxlib standalone driver; rewrites in place)
+for f in "$WORK"/*.mly; do
+	[ -e "$f" ] || continue
+	(cd "$WORK" && "$OCAMLYACC" "$(basename "$f")")
+	rm "$f"
+done
+for f in "$WORK"/*.mll; do
+	[ -e "$f" ] || continue
+	(cd "$WORK" && "$OCAMLLEX" -q "$(basename "$f")")
+	rm "$f"
+done
+if [ -n "$CPPO_TOOL" ]; then
+	for f in "$WORK"/*.cppo.ml "$WORK"/*.cppo.mli; do
+		[ -e "$f" ] || continue
+		ext="${f##*.}"
+		out="${f%.cppo.$ext}.$ext"
+		"$CPPO_TOOL" -V "OCAML:$OCAML_VERSION" "$f" -o "$out"
+		rm "$f"
+	done
+fi
+if [ -n "$PP_TOOL" ]; then
+	SUBST_ARGS=""
+	for a in $PP_ARGS; do
+		a="$(printf '%s' "$a" | sed "s/%OCAML_VERSION%/$OCAML_VERSION/g; s/%OCAML_AST_VERSION%/$OCAML_AST_VERSION/g")"
+		SUBST_ARGS="$SUBST_ARGS $a"
+	done
+	for f in "$WORK"/*.ml "$WORK"/*.mli; do
+		[ -e "$f" ] || continue
+		"$PP_TOOL" $SUBST_ARGS "$f" > "$f.pp"
+		mv "$f.pp" "$f"
+	done
+fi
+if [ -n "$PPX" ]; then
+	# ppx output is source-compatible OCaml; rewriting in place keeps file/unit
+	# names stable so wrapping and ocamldep are untouched downstream.
+	for f in "$WORK"/*.ml; do
+		[ -e "$f" ] || continue
+		"$PPX" --impl "$f" -o "$f.pp"
+		mv "$f.pp" "$f"
+	done
+	for f in "$WORK"/*.mli; do
+		[ -e "$f" ] || continue
+		"$PPX" --intf "$f" -o "$f.pp"
+		mv "$f.pp" "$f"
+	done
+fi
 
 # --- Recover compile order over the sources ---------------------------------
 # Sort .ml AND .mli together: an interface may depend on a module whose
 # implementation sorts late (re's category.mli references Fmt), so interface
 # compile order is a property of the full file graph, not the .ml-only graph.
 # ocamldep -sort emits one topological file order with x.mli before x.ml.
-ALLB=""
-for s in $SRCS; do
-	case "$s" in *.ml | *.mli) ALLB="$ALLB $(basename "$s")" ;; esac
-done
+# The list comes from $WORK (not $SRCS) so generated sources are included.
+ALLB="$(cd "$WORK" && ls -- *.ml *.mli 2>/dev/null || true)"
 ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $ALLB)"
 echo "ocaml_compile: compile order: $ORDER" >&2
 
@@ -178,6 +302,10 @@ if [ "$MODE" = "library" ]; then
 	fi
 else
 	# Link order: stdlib opam archives, then deps (postorder), own modules, then
-	# any C stub objects compiled for this binary directly.
-	"$OCAMLOPT" $CFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS -o "$EXE_OUT"
+	# any C stub objects compiled for this binary directly. -linkall keeps
+	# units nothing references: ppx rewriters register themselves with ppxlib
+	# at module init, so a driver's rewriters are exactly such units.
+	LINKFLAGS=""
+	[ "$LINKALL" = "1" ] && LINKFLAGS="-linkall"
+	"$OCAMLOPT" $CFLAGS $LINKFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS -o "$EXE_OUT"
 fi
