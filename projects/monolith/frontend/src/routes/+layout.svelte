@@ -7,6 +7,14 @@
 
   let isPrivate = $derived($page.url.hostname.startsWith("private."));
 
+  // Apps under /app/* are full-screen experiences (e.g. the live ships map)
+  // that render their own chrome, so the site nav is suppressed for them. The
+  // hooks.js reroute keeps the browser path un-prefixed, but match the
+  // /public|/private prefixes too in case a route is hit directly.
+  let hideNav = $derived(
+    /^\/(public\/|private\/)?app\//.test($page.url.pathname),
+  );
+
   // Active-state derivation. The hooks.js reroute remaps
   // public.jomcgi.dev/* → /public/* and private.jomcgi.dev/* → /private/*
   // internally, but $page.url reflects the *browser* URL. So:
@@ -30,6 +38,8 @@
   });
 </script>
 
-<Nav route={activeRoute} {isPrivate} />
+{#if !hideNav}
+  <Nav route={activeRoute} {isPrivate} />
+{/if}
 
 {@render children()}
