@@ -53,7 +53,7 @@
     tanker: "#ff564a", // coral-red
     hsc: "#ffcb1f", // golden
     special: "#35cb5b", // spring green
-    unknown: "#404a5c", // clean slate (was a muddy brown-gray)
+    unknown: "#8b6fe8", // periwinkle violet (completes the spectrum)
   };
 
   // Vessel-type filter. Each legend box toggles whether that ITU band shows on
@@ -216,6 +216,25 @@
     if (src) src.setData(buildFeatures());
   }
 
+  // AIS sentinels: lat 91 / lon 181 mean "position not available"; (0, 0) is
+  // null island. Drop these so they neither plot nor blow out the bounds.
+  function validLatLon(lat, lon) {
+    if (lat == null || lon == null) return false;
+    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return false;
+    if (lat === 0 && lon === 0) return false;
+    return true;
+  }
+
+  // Linear-interpolated quantile over a pre-sorted array.
+  function quantile(sorted, q) {
+    const pos = (sorted.length - 1) * q;
+    const base = Math.floor(pos);
+    const next = sorted[base + 1];
+    return next === undefined
+      ? sorted[base]
+      : sorted[base] + (pos - base) * (next - sorted[base]);
+  }
+
   // Reset fleet state to snapshot truth whenever a new snapshot arrives, then
   // repaint. `vessels` is a fresh array on every invalidateAll.
   function syncVessels() {
@@ -223,7 +242,7 @@
 
     const seen = new Set();
     for (const v of vessels) {
-      if (v.lat == null || v.lon == null) continue;
+      if (!validLatLon(v.lat, v.lon)) continue;
       const id = String(v.mmsi);
       seen.add(id);
       fleet.set(id, {
@@ -244,14 +263,23 @@
     pushData();
 
     if (!didFit && seen.size > 0) {
-      const b = new maplibregl.LngLatBounds();
-      let any = false;
+      const lats = [];
+      const lons = [];
       for (const v of vessels) {
-        if (v.lat == null || v.lon == null) continue;
-        b.extend([v.lon, v.lat]);
-        any = true;
+        if (!validLatLon(v.lat, v.lon)) continue;
+        lats.push(v.lat);
+        lons.push(v.lon);
       }
-      if (any) {
+      if (lats.length) {
+        lats.sort((a, b) => a - b);
+        lons.sort((a, b) => a - b);
+        // Frame the 1st-99th percentile so a few outliers (a vessel reporting
+        // a far-off position) can't blow out the zoom to the whole globe.
+        const q = 0.01;
+        const b = new maplibregl.LngLatBounds(
+          [quantile(lons, q), quantile(lats, q)],
+          [quantile(lons, 1 - q), quantile(lats, 1 - q)],
+        );
         map.fitBounds(b, { padding: 64, maxZoom: 9, duration: 0 });
         didFit = true;
       }
