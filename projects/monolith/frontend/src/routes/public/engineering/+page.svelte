@@ -161,6 +161,18 @@
           {#if p.status}
             <span class="tag mono tag-status">{p.status}</span>
           {/if}
+          {#each p.extraLinks as l}
+            <a
+              class="tag mono tag-live"
+              href={l.href}
+              target={l.href.startsWith("/") ? undefined : "_blank"}
+              rel={l.href.startsWith("/") ? undefined : "noreferrer"}
+              aria-label={l.label}
+              title={l.label}
+            >
+              Live ↗
+            </a>
+          {/each}
         </div>
 
         <div class="motivation" style:border-left-color={categories[p.category].color}>
@@ -181,21 +193,6 @@
 
         {#if p.snippet}
           <pre class="snippet mono"><code>{p.snippet.code}</code></pre>
-        {/if}
-
-        {#if p.extraLinks.length}
-          <div class="dive-links">
-            {#each p.extraLinks as l}
-              <a
-                class="btn source-btn"
-                href={l.href}
-                target={l.href.startsWith("/") ? undefined : "_blank"}
-                rel={l.href.startsWith("/") ? undefined : "noreferrer"}
-              >
-                {l.label}
-              </a>
-            {/each}
-          </div>
         {/if}
       </section>
     {/each}
@@ -437,10 +434,19 @@
     background: var(--accent);
   }
 
-  /* Paper fill so live-destination buttons read as buttons instead of
-     ghosting into the cream background as bare outlines. */
-  .source-btn {
-    background: var(--paper);
+  /* Live destination chip: the heading owns the source link, this chip
+     owns the running product (trips.jomcgi.dev, ships.jomcgi.dev, the
+     notes view). Green = online; full label in title/aria-label. */
+  .tag-live {
+    background: var(--green);
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .tag-live:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: var(--shadow-hard-sm);
   }
 
   /* ═══ Deep dives ═══ */
@@ -582,12 +588,6 @@
     padding: 16px 18px;
     font-size: 13px;
     overflow-x: auto;
-  }
-
-  .dive-links {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
   }
 
   @media (max-width: 720px) {
