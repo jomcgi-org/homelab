@@ -2036,6 +2036,16 @@ py_test(
 )
 
 py_test(
+    name = "ships_ais_test",
+    srcs = ["ships/ais_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_gap_model_test",
     srcs = ["knowledge/gap_model_test.py"],
     imports = ["."],
