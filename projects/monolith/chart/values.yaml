@@ -110,6 +110,16 @@ gardener:
   onepassword:
     itemPath: ""
 
+# Marine / AIS ship tracking: streams vessel positions from AISStream.io.
+# Reuses the existing 1Password "marine" vault item (shared with the legacy
+# standalone ships app) so the secret keeps materializing after that app is
+# decommissioned.
+marine:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/marine"
+  boundingBox: "[[[46.876152, -129.552155], [51.413769, -121.213531]]]"
+
 cfIngress:
   private:
     enabled: true
