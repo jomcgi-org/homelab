@@ -254,7 +254,23 @@ def _resolve_preprocess(stanza, name, lib_map):
     )
 
 
-def gen_library(stanza, src_dir, lib_map):
+def _parse_menhir(stanza):
+    """Translate a (menhir (modules ...) (flags ...)) stanza."""
+    modules_field = _field(stanza, "modules")
+    if not modules_field:
+        sys.exit("dune2bazel: (menhir ...) without (modules ...)")
+    modules = [_atom(m) for m in modules_field]
+    flags = []
+    flags_field = _field(stanza, "flags")
+    if flags_field:
+        for item in flags_field:
+            if isinstance(item, list):
+                sys.exit("dune2bazel: unsupported (menhir (flags ...)) form %r" % (item,))
+            flags.append(_atom(item))
+    return modules, flags
+
+
+def gen_library(stanza, src_dir, lib_map, menhir_modules=None, menhir_flags=None):
     for item in stanza[1:]:
         if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
             sys.exit("dune2bazel: unexpected item in (library): %r" % (item,))
@@ -313,6 +329,13 @@ def gen_library(stanza, src_dir, lib_map):
         lines.append(
             "    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags)
         )
+    if menhir_modules:
+        lines.append("    menhir = [%s]," % ", ".join('"%s"' % m for m in menhir_modules))
+        if menhir_flags:
+            lines.append(
+                "    menhir_flags = [%s]," % ", ".join('"%s"' % f for f in menhir_flags)
+            )
+        lines.append('    menhir_tool = "@ocaml_menhir//:menhir",')
     if deps:
         lines.append("    deps = [%s]," % ", ".join('"%s"' % d for d in sorted(deps)))
     if opam_deps:
@@ -329,26 +352,46 @@ def gen_dune_dir(dune_path, src_dir, lib_map):
     with open(dune_path, "r") as f:
         stanzas = parse(tokenize(f.read()))
 
-    out = []
-    saw_library = False
+    # ocamllex/menhir stanzas live alongside the library in the same dune file.
+    # ocamllex modules are picked up by the library's *.mll glob, so the stanza
+    # is informational. menhir modules attach to the library as a `menhir` attr.
+    libraries = []
+    menhir_modules = []
+    menhir_flags = []
     for s in stanzas:
         if not (isinstance(s, list) and s and isinstance(s[0], tuple)):
             sys.exit("dune2bazel: unexpected top-level item: %r" % (s,))
         head = _atom(s[0])
         if head == "library":
-            saw_library = True
-            out.append(gen_library(s, src_dir, lib_map))
+            libraries.append(s)
+        elif head == "ocamllex":
+            continue  # the .mll is globbed into the library's srcs
+        elif head == "menhir":
+            mods, flags = _parse_menhir(s)
+            menhir_modules += mods
+            menhir_flags += flags
         elif head in _INERT_STANZAS:
             continue
         else:
             sys.exit(
-                "dune2bazel: unsupported stanza (%s ...) in %s. Codegen "
-                "(rule/ocamllex/menhir) and executable stanzas are not "
-                "translated; packages that need them get an opam/overrides/ "
-                "BUILD." % (head, dune_path)
+                "dune2bazel: unsupported stanza (%s ...) in %s. Generic (rule) "
+                "codegen and executable stanzas are not translated; packages "
+                "that need them get an opam/overrides/ BUILD." % (head, dune_path)
             )
-    if not saw_library:
+    if not libraries:
         sys.exit("dune2bazel: no (library) stanza in %s" % dune_path)
+    if menhir_modules and len(libraries) != 1:
+        sys.exit(
+            "dune2bazel: a (menhir ...) stanza needs exactly one (library) in "
+            "%s to attach to, found %d." % (dune_path, len(libraries))
+        )
+
+    out = []
+    for i, lib in enumerate(libraries):
+        if menhir_modules and i == 0:
+            out.append(gen_library(lib, src_dir, lib_map, menhir_modules, menhir_flags))
+        else:
+            out.append(gen_library(lib, src_dir, lib_map))
     return "".join(out)
 
 

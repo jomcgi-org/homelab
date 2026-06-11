@@ -22,5 +22,8 @@ build_test(
         "@ocaml_ppx_deriving//:ppx_deriving_runtime",
         "@ocaml_ppx_deriving//:ppx_deriving_api",
         "@ocaml_ppx_deriving//:ppx_deriving_show",
+        "@ocaml_menhir//:menhirLib",
+        "@ocaml_menhir//:menhirSdk",
+        "@ocaml_menhir//:menhir",
     ],
 )
