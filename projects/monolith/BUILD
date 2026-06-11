@@ -8,6 +8,7 @@
 # gazelle:exclude home
 # gazelle:exclude scheduler
 # gazelle:exclude shared
+# gazelle:exclude ships
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
@@ -39,6 +40,7 @@ py_venv_binary(
             "home/**/*.py",
             "scheduler/**/*.py",
             "shared/**/*.py",
+            "ships/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -92,6 +94,7 @@ py_library(
             "home/**/*.py",
             "scheduler/**/*.py",
             "shared/**/*.py",
+            "ships/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -2017,6 +2020,17 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "ships_models_test",
+    srcs = ["ships/models_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
         "@pip//sqlmodel",
     ],
 )
