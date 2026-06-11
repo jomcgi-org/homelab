@@ -3,9 +3,9 @@
 // `PUBLIC_BASE` is the canonical absolute origin for the public site. It is
 // hardcoded (matching Nav.svelte's convention) rather than derived from the
 // request so canonical/OG/sitemap URLs stay stable regardless of which host
-// the gateway routes through. When the public content moves to the apex
-// (jomcgi.dev), change this one constant.
-export const PUBLIC_BASE = "https://public.jomcgi.dev";
+// the gateway routes through. The public content lives on the apex; change
+// this one constant if it ever moves again.
+export const PUBLIC_BASE = "https://jomcgi.dev";
 
 // Schema.org Person: the highest-leverage structured data for a job search.
 // It lets an LLM answer "who is Joe McGinley" from a typed entity (jobTitle,

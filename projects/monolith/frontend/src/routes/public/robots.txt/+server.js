@@ -1,6 +1,6 @@
 import { PUBLIC_BASE } from "$lib/public/seo.js";
 
-// Served to crawlers at https://public.jomcgi.dev/robots.txt — the gateway
+// Served to crawlers at https://jomcgi.dev/robots.txt. The reroute hook
 // rewrites that host path to /public/robots.txt, which resolves here. A plain
 // file in static/ would serve at /robots.txt and never be hit by the rewrite.
 //
