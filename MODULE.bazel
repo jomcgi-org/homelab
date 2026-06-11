@@ -66,8 +66,12 @@ register_toolchains("//bazel/ocaml:ocaml_toolchain")
 ocaml_opam_ext = use_extension("//bazel/ocaml/opam:extension.bzl", "ocaml_opam")
 use_repo(
     ocaml_opam_ext,
+    "ocaml_atd",
+    "ocaml_biniou",
+    "ocaml_camlp_streams",
     "ocaml_compiler_libs_pkg",
     "ocaml_cppo",
+    "ocaml_easy_format",
     "ocaml_menhir",
     "ocaml_ppx_derivers",
     "ocaml_ppx_deriving",
@@ -75,6 +79,7 @@ use_repo(
     "ocaml_re",
     "ocaml_sexplib0",
     "ocaml_stdlib_shims",
+    "ocaml_yojson",
 )
 
 multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")

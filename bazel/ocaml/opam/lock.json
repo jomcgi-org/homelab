@@ -101,6 +101,60 @@
       }
     },
     {
+      "name": "easy-format",
+      "version": "1.3.4",
+      "repo": "ocaml_easy_format",
+      "url": "https://github.com/ocaml-community/easy-format/releases/download/1.3.4/easy-format-1.3.4.tbz",
+      "sha256": "1dbf051e9f68574dde6e2e254a66b9c524ca425e80b36e99af96ed964ab610c3",
+      "strip_prefix": "easy-format-1.3.4",
+      "src_dirs": ["src"],
+      "libs": { "easy-format": "easy_format" }
+    },
+    {
+      "name": "camlp-streams",
+      "version": "5.0.1",
+      "repo": "ocaml_camlp_streams",
+      "url": "https://github.com/ocaml/camlp-streams/archive/v5.0.1.tar.gz",
+      "sha256": "ad71f62406e9bb4e7fb5d4593ede2af6c68f8b0d96f25574446e142c3eb0d9a4",
+      "strip_prefix": "camlp-streams-5.0.1",
+      "type": "tar.gz",
+      "override": true,
+      "libs": { "camlp-streams": "camlp_streams" }
+    },
+    {
+      "name": "biniou",
+      "version": "1.2.2",
+      "repo": "ocaml_biniou",
+      "url": "https://github.com/mjambon/biniou/releases/download/1.2.2/biniou-1.2.2.tbz",
+      "sha256": "8bf3ff17cd0ecb2d6b6d1d94cb08ef089d44caef96e9bae6be6839d428fa318f",
+      "strip_prefix": "biniou-1.2.2",
+      "src_dirs": ["src"],
+      "libs": { "biniou": "biniou" }
+    },
+    {
+      "name": "yojson",
+      "version": "2.2.2",
+      "repo": "ocaml_yojson",
+      "url": "https://github.com/ocaml-community/yojson/releases/download/2.2.2/yojson-2.2.2.tbz",
+      "sha256": "9abfad8c9a79d4723ad2f6448e669c1e68dbfc87cc54a1b7c064b0c90912c595",
+      "strip_prefix": "yojson-2.2.2",
+      "override": true,
+      "libs": { "yojson": "yojson" }
+    },
+    {
+      "name": "atd",
+      "version": "2.16.0",
+      "repo": "ocaml_atd",
+      "url": "https://github.com/ahrefs/atd/releases/download/2.16.0/atd-2.16.0.tbz",
+      "sha256": "59e6b445620241cbd6901a842b336683afb0eb125b3adbfee28bd94cd54e0def",
+      "strip_prefix": "atd-2.16.0",
+      "override": true,
+      "libs": {
+        "atd": "atd",
+        "atdgen-runtime": "atdgen_runtime"
+      }
+    },
+    {
       "name": "menhir",
       "version": "20240715",
       "repo": "ocaml_menhir",

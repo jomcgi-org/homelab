@@ -1,0 +1,7 @@
+(* An ATD type spec. atdgen turns this into OCaml type definitions (-t) and
+   JSON serializers (-j), the codegen Semgrep uses for its config/rule types. *)
+type point = {
+  x : int;
+  y : int;
+  ~label <ocaml default="\"origin\""> : string;
+}
