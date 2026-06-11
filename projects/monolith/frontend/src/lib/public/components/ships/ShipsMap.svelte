@@ -393,12 +393,14 @@
 <div class="map-wrap">
   <div class="map" bind:this={mapContainer}></div>
 
-  <div class="map-chip">
-    <span class="chip-name">Ships</span>
+  <nav class="map-chip" aria-label="Breadcrumb">
+    <a class="chip-home" href="https://jomcgi.dev/">jomcgi.dev</a>
+    <span class="chip-sep">/</span>
+    <span class="chip-name">ships</span>
     <span class="chip-sep">/</span>
     <span class="chip-live">live</span>
     <span class="chip-dot" aria-hidden="true"></span>
-  </div>
+  </nav>
 
   <div class="legend card-hard">
     <p class="eyebrow legend-title">Vessel type</p>
@@ -482,6 +484,17 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
+  }
+
+  .chip-home {
+    color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1.5px;
+  }
+
+  .chip-home:hover {
+    color: var(--coral);
   }
 
   .chip-sep {
