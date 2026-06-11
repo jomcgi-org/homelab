@@ -19,6 +19,8 @@ ocaml_library(
     ]),
     menhir = ["parser"],
     menhir_tool = "@ocaml_menhir//:menhir",
+    # Dune's default is wrapped; the atd library is consumed as Atd.<Module>.
+    wrapped = True,
     opam_deps = ["unix"],
     deps = [
         "@ocaml_easy_format//:easy_format",
@@ -35,6 +37,7 @@ ocaml_library(
         "atdgen-runtime/src/*.ml",
         "atdgen-runtime/src/*.mli",
     ]),
+    wrapped = True,
     deps = [
         "@ocaml_biniou//:biniou",
         "@ocaml_yojson//:yojson",
@@ -50,6 +53,7 @@ ocaml_library(
         "atdgen/src/*.mli",
         "atdgen/src/*.mll",
     ]),
+    wrapped = True,
     deps = [
         ":atd",
         "@ocaml_biniou//:biniou",
