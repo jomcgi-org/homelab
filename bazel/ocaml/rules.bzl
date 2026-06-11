@@ -27,10 +27,55 @@ OcamlInfo = provider(
         "transitive_cmxa": "depset (postorder: deps before dependents) of .cmxa for link order.",
         "transitive_a": "depset of .a artifacts that must be staged when linking.",
         "transitive_opam": "depset of findlib/opam package names required transitively.",
+        "transitive_cc_archives": "depset[File] of external C static archives (from cc_deps) linked into binaries.",
+        "transitive_cc_headers": "depset[File] of cc_deps headers staged when compiling C stubs.",
+        "transitive_cc_includes": "depset[str] of -I dirs exported by cc_deps for C stub compilation.",
+        "transitive_cc_linkflags": "depset[str] of user link flags (e.g. -lpcre2-8) from cc_deps.",
     },
 )
 
 _TOOLCHAIN_TYPE = "//bazel/ocaml:toolchain_type"
+
+def _collect_cc(ctx):
+    """Gather C headers/includes/archives/linkflags from cc_deps + transitively.
+
+    cc_deps (cc_library targets) supply the headers an ocaml_library's C stubs
+    #include and the static archives a binary linking the library must pull in.
+    Archives/headers/includes/linkflags all propagate transitively through
+    OcamlInfo so a binary several deps away still links the C libraries.
+    """
+    inc = []          # str include dirs (direct + transitive)
+    hdr = []          # depset[File]
+    arch = []         # depset[File]
+    flags = []        # str link flags
+    direct_arch = []
+    for dep in getattr(ctx.attr, "cc_deps", []):
+        cc = dep[CcInfo]
+        cctx = cc.compilation_context
+        inc += cctx.includes.to_list() + cctx.quote_includes.to_list() + cctx.system_includes.to_list()
+        hdr.append(cctx.headers)
+        # Header dirnames make `#include "foo.h"` resolve without the cc_library
+        # having to declare `includes`; over-inclusion is harmless.
+        inc += [h.dirname for h in cctx.headers.to_list()]
+        for li in cc.linking_context.linker_inputs.to_list():
+            for lib in li.libraries:
+                a = lib.static_library or lib.pic_static_library
+                if a:
+                    direct_arch.append(a)
+            flags += li.user_link_flags
+    arch.append(depset(direct_arch))
+    for dep in ctx.attr.deps + getattr(ctx.attr, "preprocess_runtime_deps", []):
+        info = dep[OcamlInfo]
+        arch.append(info.transitive_cc_archives)
+        hdr.append(info.transitive_cc_headers)
+        inc += info.transitive_cc_includes.to_list()
+        flags += info.transitive_cc_linkflags.to_list()
+    return struct(
+        includes = depset(inc),
+        headers = depset(transitive = hdr),
+        archives = depset(transitive = arch, order = "topological"),
+        linkflags = depset(flags),
+    )
 
 def _collect(ctx):
     """Gather transitive include dirs, cmxa, .a and opam packages from deps.
@@ -65,12 +110,22 @@ def _tool_files(ctx):
             files.append(tool)
     return files
 
-def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs):
+def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None):
     args = ctx.actions.args()
     args.add("--mode", mode)
     args.add("--name", ctx.label.name)
     args.add("--sysroot-tar", tc.sysroot_tar.path)
     args.add("--use-ocamlfind", "1" if tc.use_ocamlfind else "0")
+
+    # C library integration (cc_deps): include dirs for the stub compile,
+    # static archives + link flags for the final binary link.
+    if cc:
+        for d in cc.includes.to_list():
+            args.add("--cc-include", d)
+        for a in cc.archives.to_list():
+            args.add("--cc-archive", a.path)
+        for fl in cc.linkflags.to_list():
+            args.add("--cc-linkflag", fl)
 
     # Wrapping is a library concept; binary/test rules have no `wrapped` attr
     # and always pass 0. getattr keeps this helper shared across the rules.
@@ -109,12 +164,13 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs):
 def _ocaml_library_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
+    cc = _collect_cc(ctx)
 
     objs_dir = ctx.actions.declare_directory(ctx.label.name + "_objs")
     cmxa = ctx.actions.declare_file(ctx.label.name + ".cmxa")
     a_lib = ctx.actions.declare_file(ctx.label.name + ".a")
 
-    args = _driver_args(ctx, tc, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
+    args = _driver_args(ctx, tc, "library", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs, cc = cc)
     args.add("--objs-out", objs_dir.path)
     args.add("--cmxa-out", cmxa.path)
     args.add("--a-out", a_lib.path)
@@ -122,7 +178,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -136,6 +192,10 @@ def _ocaml_library_impl(ctx):
         transitive_cmxa = depset([cmxa], transitive = [dep.cmxa], order = "postorder"),
         transitive_a = depset([a_lib], transitive = [dep.a]),
         transitive_opam = depset(ctx.attr.opam_deps, transitive = [dep.opam]),
+        transitive_cc_archives = cc.archives,
+        transitive_cc_headers = cc.headers,
+        transitive_cc_includes = cc.includes,
+        transitive_cc_linkflags = cc.linkflags,
     )
     return [
         info,
@@ -145,10 +205,11 @@ def _ocaml_library_impl(ctx):
 def _ocaml_binary_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
+    cc = _collect_cc(ctx)
 
     exe = ctx.actions.declare_file(ctx.label.name)
 
-    args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs)
+    args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), ctx.files.srcs, ctx.files.c_srcs, cc = cc)
     args.add("--exe-out", exe.path)
     for c in dep.cmxa.to_list():  # postorder: dependencies before dependents
         args.add("--cmxa", c.path)
@@ -156,7 +217,7 @@ def _ocaml_binary_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -179,7 +240,15 @@ _COMMON_ATTRS = {
         allow_files = [".c"],
         doc = "C stub sources (dune `foreign_stubs`/`c_names`). Compiled with ocamlopt " +
               "(which supplies the caml/*.h headers) and folded into the library's .a, so " +
-              "binaries that link this library pull in the stubs automatically.",
+              "binaries that link this library pull in the stubs automatically. C stubs that " +
+              "#include a third-party header (pcre2.h, tree_sitter/api.h) get that header's " +
+              "dir and the static archive through `cc_deps`.",
+    ),
+    "cc_deps": attr.label_list(
+        providers = [CcInfo],
+        doc = "cc_library targets whose headers this library's C stubs #include and whose " +
+              "static archives binaries linking this library must pull in (dune's " +
+              "`foreign_archives` / `c_library_flags`). Propagated transitively.",
     ),
     "deps": attr.label_list(
         providers = [OcamlInfo],

@@ -17,6 +17,7 @@ MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX=""
 MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
+CC_INCLUDES="" CC_ARCHIVES="" CC_LINKFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
 while [ $# -gt 0 ]; do
@@ -40,6 +41,9 @@ while [ $# -gt 0 ]; do
 	--menhir-tool) MENHIR_TOOL="$2" && shift 2 ;;
 	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" && shift 2 ;;
 	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" && shift 2 ;;
+	--cc-include) CC_INCLUDES="$CC_INCLUDES $2" && shift 2 ;;
+	--cc-archive) CC_ARCHIVES="$CC_ARCHIVES $2" && shift 2 ;;
+	--cc-linkflag) CC_LINKFLAGS="$CC_LINKFLAGS $2" && shift 2 ;;
 	--objs-out) OBJS_OUT="$2" && shift 2 ;;
 	--cmxa-out) CMXA_OUT="$2" && shift 2 ;;
 	--a-out) A_OUT="$2" && shift 2 ;;
@@ -70,6 +74,15 @@ tar -xf "$TAR" -C "$S"
 [ -n "$CPPO_TOOL" ] && CPPO_TOOL="$(abspath "$CPPO_TOOL")"
 [ -n "$PPX" ] && PPX="$(abspath "$PPX")"
 [ -n "$MENHIR_TOOL" ] && MENHIR_TOOL="$(abspath "$MENHIR_TOOL")"
+
+# C library integration (cc_deps): absolute -I for the stub compile (which cds
+# into the work dir) and absolute archive paths for the final link.
+CCOPT_INC=""
+for d in $CC_INCLUDES; do CCOPT_INC="$CCOPT_INC -ccopt -I$(abspath "$d")"; done
+CC_ARCH_ABS=""
+for a in $CC_ARCHIVES; do CC_ARCH_ABS="$CC_ARCH_ABS $(abspath "$a")"; done
+CC_CCLIB=""
+for fl in $CC_LINKFLAGS; do CC_CCLIB="$CC_CCLIB -cclib $fl"; done
 
 # --- Relocate the OCaml toolchain -------------------------------------------
 # The compiler is built from source (semgrep/ocaml 5.3.0) with a baked-in
@@ -352,7 +365,8 @@ STUB_OBJS=""
 for c in $CSRCS; do
 	cb="$(basename "$c")"
 	cp "$c" "$WORK/$cb"
-	(cd "$WORK" && "$OCAMLOPT" -c "$cb")
+	# -ccopt -I<dir> lets a stub #include a cc_deps header (pcre2.h etc.).
+	(cd "$WORK" && "$OCAMLOPT" $CCOPT_INC -c "$cb")
 	STUB_OBJS="$STUB_OBJS $WORK/${cb%.c}.o"
 done
 
@@ -372,8 +386,10 @@ else
 	# Link order: stdlib opam archives, then deps (postorder), own modules, then
 	# any C stub objects compiled for this binary directly. -linkall keeps
 	# units nothing references: ppx rewriters register themselves with ppxlib
-	# at module init, so a driver's rewriters are exactly such units.
+	# at module init, so a driver's rewriters are exactly such units. The
+	# external C archives (cc_deps) and their link flags come last, after the
+	# stub objects that reference their symbols (static link resolves L-to-R).
 	LINKFLAGS=""
 	[ "$LINKALL" = "1" ] && LINKFLAGS="-linkall"
-	"$OCAMLOPT" $CFLAGS $LINKFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS -o "$EXE_OUT"
+	"$OCAMLOPT" $CFLAGS $LINKFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS $CC_ARCH_ABS $CC_CCLIB -o "$EXE_OUT"
 fi
