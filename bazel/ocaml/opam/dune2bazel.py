@@ -265,7 +265,9 @@ def _parse_menhir(stanza):
     if flags_field:
         for item in flags_field:
             if isinstance(item, list):
-                sys.exit("dune2bazel: unsupported (menhir (flags ...)) form %r" % (item,))
+                sys.exit(
+                    "dune2bazel: unsupported (menhir (flags ...)) form %r" % (item,)
+                )
             flags.append(_atom(item))
     return modules, flags
 
@@ -330,7 +332,9 @@ def gen_library(stanza, src_dir, lib_map, menhir_modules=None, menhir_flags=None
             "    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags)
         )
     if menhir_modules:
-        lines.append("    menhir = [%s]," % ", ".join('"%s"' % m for m in menhir_modules))
+        lines.append(
+            "    menhir = [%s]," % ", ".join('"%s"' % m for m in menhir_modules)
+        )
         if menhir_flags:
             lines.append(
                 "    menhir_flags = [%s]," % ", ".join('"%s"' % f for f in menhir_flags)
