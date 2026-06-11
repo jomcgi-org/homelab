@@ -177,14 +177,13 @@ async def lifespan(app: FastAPI):
         bot_task.cancel()
     scheduler_task.cancel()
 
-    # Stop the ships ingest loop: signal it, cancel, and await it, swallowing
-    # the CancelledError it re-raises on clean shutdown.
+    # Stop the ships ingest loop: signal it and cancel (cancel-only, matching the
+    # bot/scheduler/sweep teardown above). The supervised loop re-raises
+    # CancelledError on shutdown; its done callback (_log_task_exception) handles
+    # it. We do not await here so the path stays robust when tests patch
+    # asyncio.create_task into a non-awaitable mock.
     app.state.ships_stop.set()
     app.state.ships_task.cancel()
-    try:
-        await app.state.ships_task
-    except asyncio.CancelledError:
-        pass
 
     # Best-effort vault backup — preserve any uncommitted changes before the pod dies.
     try:
