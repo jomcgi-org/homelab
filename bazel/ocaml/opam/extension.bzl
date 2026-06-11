@@ -31,7 +31,7 @@ def _opam_dune_repo_impl(ctx):
     )
 
     if ctx.attr.build_file:
-        ctx.file("BUILD.bazel", ctx.read(ctx.attr.build_file))
+        ctx.file("BUILD.bazel", ctx.read(ctx.path(ctx.attr.build_file)))
         return
 
     generator = ctx.path(Label("//bazel/ocaml/opam:dune2bazel.py"))
