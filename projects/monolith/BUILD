@@ -2071,6 +2071,19 @@ py_test(
 )
 
 py_test(
+    name = "ships_router_test",
+    srcs = ["ships/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_gap_model_test",
     srcs = ["knowledge/gap_model_test.py"],
     imports = ["."],
