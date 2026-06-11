@@ -153,11 +153,14 @@ and produces `@<repo>` with a BUILD that is either:
 - **an override** — `opam/overrides/<name>/BUILD.tpl`, hand-written for
   packages whose dune trees bootstrap themselves with codegen the translator
   does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
-  ppx_deriving, menhir). Overrides still build everything from the fetched
-  source with our rules; each one documents exactly why it exists. menhir is
-  the notable one: it self-bootstraps, so the override builds **stage1** (its
-  bootstrap parser comes from ocamlyacc, which the sysroot ships) -- a fully
-  functional generator without needing an existing menhir.
+  ppx_deriving, menhir, camlp-streams, yojson, atd). Overrides still build
+  everything from the fetched source with our rules; each one documents
+  exactly why it exists. menhir is the notable one: it self-bootstraps, so the
+  override builds **stage1** (its bootstrap parser comes from ocamlyacc, which
+  the sysroot ships) -- a fully functional generator without needing an
+  existing menhir. The atd override builds the atdgen code generator (the JSON
+  codegen Semgrep leans on) out of the ahrefs/atd monorepo, via the same
+  ocamllex + menhir support.
 
 The ladder that proves it (`examples/opam_ladder`, all from-source on RBE):
 
@@ -199,9 +202,10 @@ bazel/ocaml/
   examples/wrapped/        # colliding Util modules + a no-main wrapped lib
   examples/regex/          # re + fmt linked together (the collision wrapping fixes)
   examples/c_stubs/        # ocaml_library with a C stub (c_srcs); counter_test
-  examples/opam_ladder/    # build_test over the whole pinned ladder (incl. menhir)
+  examples/opam_ladder/    # build_test over the whole pinned ladder (ppx + menhir + atd)
   examples/ppx/            # ocaml_ppx + preprocess: [@@deriving show] e2e
   examples/lexparse/       # ocamllex + menhir (--infer) calculator; lexparse_test
+  examples/atdgen/         # from-source atdgen over an ATD spec; JSON roundtrip
   examples/toycaml/        # tOyCaml: an engine-shaped demonstrator (ADR 005)
 ```
 
