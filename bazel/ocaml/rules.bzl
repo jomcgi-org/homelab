@@ -282,6 +282,7 @@ def _ocaml_ppx_impl(ctx):
     exe = ctx.actions.declare_file(ctx.label.name)
     args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), [main], [])
     args.add("--exe-out", exe.path)
+
     # -linkall: rewriters register themselves with ppxlib at module init; the
     # generated main references none of them, so a normal link would drop them.
     args.add("--linkall", "1")

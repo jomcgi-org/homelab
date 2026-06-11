@@ -185,7 +185,11 @@ def _resolve_flags(stanza):
         for item in field:
             if isinstance(item, list):
                 # (:standard ...) modifiers (\ subtraction etc.) are not modeled.
-                inner = [x for x in item if not (isinstance(x, tuple) and x[1] == ":standard")]
+                inner = [
+                    x
+                    for x in item
+                    if not (isinstance(x, tuple) and x[1] == ":standard")
+                ]
                 if inner:
                     sys.exit(
                         "dune2bazel: unsupported (%s ...) form %r (only plain "
@@ -204,9 +208,19 @@ def _resolve_preprocess(stanza, name, lib_map):
     field = _field(stanza, "preprocess")
     if field is None:
         return [], None
-    if len(field) == 1 and isinstance(field[0], tuple) and field[0][1] == "no_preprocessing":
+    if (
+        len(field) == 1
+        and isinstance(field[0], tuple)
+        and field[0][1] == "no_preprocessing"
+    ):
         return [], None
-    if len(field) == 1 and isinstance(field[0], list) and field[0] and isinstance(field[0][0], tuple) and field[0][0][1] == "pps":
+    if (
+        len(field) == 1
+        and isinstance(field[0], list)
+        and field[0]
+        and isinstance(field[0][0], tuple)
+        and field[0][0][1] == "pps"
+    ):
         rewriters = []
         for item in field[0][1:]:
             pps_name = _atom(item)
@@ -289,7 +303,9 @@ def gen_library(stanza, src_dir, lib_map):
     if preprocess:
         lines.append('    preprocess = "%s",' % preprocess)
     if flags:
-        lines.append("    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags))
+        lines.append(
+            "    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags)
+        )
     if deps:
         lines.append("    deps = [%s]," % ", ".join('"%s"' % d for d in sorted(deps)))
     if opam_deps:

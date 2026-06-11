@@ -22,7 +22,7 @@
       "strip_prefix": "ocaml-re-1.13.2",
       "type": "tar.gz",
       "src_dirs": ["lib"],
-      "libs": {"re": "re"}
+      "libs": { "re": "re" }
     },
     {
       "name": "sexplib0",
@@ -33,7 +33,7 @@
       "strip_prefix": "sexplib0-0.17.0",
       "type": "tar.gz",
       "src_dirs": ["src"],
-      "libs": {"sexplib0": "sexplib0"}
+      "libs": { "sexplib0": "sexplib0" }
     },
     {
       "name": "ppx_derivers",
@@ -44,7 +44,7 @@
       "strip_prefix": "ppx_derivers-1.2.1",
       "type": "tar.gz",
       "src_dirs": ["src"],
-      "libs": {"ppx_derivers": "ppx_derivers"}
+      "libs": { "ppx_derivers": "ppx_derivers" }
     },
     {
       "name": "stdlib-shims",
@@ -54,7 +54,7 @@
       "sha256": "babf72d3917b86f707885f0c5528e36c63fccb698f4b46cf2bab5c7ccdd6d84a",
       "strip_prefix": "stdlib-shims-0.3.0",
       "override": true,
-      "libs": {"stdlib-shims": "stdlib_shims"}
+      "libs": { "stdlib-shims": "stdlib_shims" }
     },
     {
       "name": "ocaml-compiler-libs",

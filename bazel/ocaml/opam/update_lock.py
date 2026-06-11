@@ -74,7 +74,9 @@ def guess_fields(name, version, url):
     tail = url.rsplit("/", 1)[-1]
     strip = re.sub(r"\.(tar\.gz|tar\.bz2|tbz|tgz)$", "", tail)
     # GitHub /archive/ tarballs unpack as <repo>-<tag-without-v>.
-    m = re.match(r"https://github\.com/[^/]+/([^/]+)/archive/(?:refs/tags/)?(.+?)\.tar", url)
+    m = re.match(
+        r"https://github\.com/[^/]+/([^/]+)/archive/(?:refs/tags/)?(.+?)\.tar", url
+    )
     if m:
         strip = f"{m.group(1)}-{m.group(2).lstrip('v')}"
     return repo, strip, archive_type
@@ -93,7 +95,10 @@ def main():
     if args.verify:
         for pkg in packages:
             url, sha256 = resolve(pkg["name"], pkg["version"])
-            for field, got, want in (("url", pkg["url"], url), ("sha256", pkg["sha256"], sha256)):
+            for field, got, want in (
+                ("url", pkg["url"], url),
+                ("sha256", pkg["sha256"], sha256),
+            ):
                 if got != want:
                     sys.exit(
                         f"update_lock: {pkg['name']} {field} drift:\n"
