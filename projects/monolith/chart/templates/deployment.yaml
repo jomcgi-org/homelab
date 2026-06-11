@@ -66,6 +66,15 @@ spec:
                   name: {{ include "monolith.fullname" . }}-clickhouse
                   key: PASSWORD
             {{- end }}
+            {{- if .Values.marine.enabled }}
+            - name: AISSTREAM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-marine
+                  key: ais-stream-api-key
+            - name: BOUNDING_BOX
+              value: {{ .Values.marine.boundingBox | quote }}
+            {{- end }}
             - name: FRONTEND_HEALTH_URL
               value: "http://localhost:3000/"
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
