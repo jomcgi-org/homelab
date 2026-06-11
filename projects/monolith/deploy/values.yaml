@@ -30,7 +30,7 @@ cfIngress:
   public:
     enabled: true
     tier: public
-    hostname: public.jomcgi.dev
+    hostname: jomcgi.dev
     servicePort: 3000
     gateway:
       name: cloudflare-ingress

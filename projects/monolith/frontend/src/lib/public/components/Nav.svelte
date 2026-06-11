@@ -3,12 +3,12 @@
   let { route = "home", isPrivate = false } = $props();
 
   // NOTES, ENGINEERING, and CV are same-host relative URLs so they
-  // resolve to public.jomcgi.dev/* from the public homepage and to
+  // resolve to jomcgi.dev/* from the public homepage and to
   // private.jomcgi.dev/* from the private dashboard, without
   // bouncing public visitors into the auth-gated private surface.
   // HOME always points at the public site.
   const publicItems = [
-    { slug: "home", label: "HOME", href: "https://public.jomcgi.dev/" },
+    { slug: "home", label: "HOME", href: "https://jomcgi.dev/" },
     { slug: "notes", label: "NOTES", href: "/notes" },
     { slug: "engineering", label: "ENGINEERING", href: "/engineering" },
     { slug: "cv", label: "CV", href: "/cv" },
