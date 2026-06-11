@@ -57,6 +57,10 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs):
     args.add("--name", ctx.label.name)
     args.add("--sysroot-tar", tc.sysroot_tar.path)
     args.add("--use-ocamlfind", "1" if tc.use_ocamlfind else "0")
+
+    # Wrapping is a library concept; binary/test rules have no `wrapped` attr
+    # and always pass 0. getattr keeps this helper shared across the rules.
+    args.add("--wrapped", "1" if getattr(ctx.attr, "wrapped", False) else "0")
     for f in tc.extra_compile_flags:
         args.add("--compile-flag", f)
     for d in include_dirs:
@@ -164,9 +168,18 @@ _RUNNABLE_ATTRS = dict(_COMMON_ATTRS, data = attr.label_list(
     doc = "Runtime files made available in the runfiles tree (test corpora etc.).",
 ))
 
+# Library-only attrs: wrapping is meaningless for binaries/tests (their modules
+# are not a consumable namespace), so only ocaml_library carries it.
+_LIBRARY_ATTRS = dict(_COMMON_ATTRS, wrapped = attr.bool(
+    default = False,
+    doc = "Dune-style wrapping: members compile as <Lib>__<Module> behind a " +
+          "generated alias module, with -open <Lib>__. Matches dune's default " +
+          "(wrapped true). Our first-party default is False (Semgrep house style).",
+))
+
 ocaml_library = rule(
     implementation = _ocaml_library_impl,
-    attrs = _COMMON_ATTRS,
+    attrs = _LIBRARY_ATTRS,
     toolchains = [_TOOLCHAIN_TYPE],
     doc = "Compile a set of .ml/.mli modules into a native .cmxa archive.",
 )
