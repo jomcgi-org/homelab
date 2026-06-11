@@ -1,34 +1,65 @@
 #!/usr/bin/env python3
-"""Translate a package's own Dune `(library ...)` stanza into a Bazel BUILD.
+"""Translate a package's Dune `(library ...)` stanzas into a Bazel BUILD.
 
 Run by the @ocaml_* repository rules (bazel/ocaml/opam/extension.bzl) via the
 host python3 during repo fetch -- NOT a Bazel py_binary. It reads the fetched
-opam package's real `dune` file and emits a BUILD that drives our //bazel/ocaml
+opam package's real `dune` files and emits a BUILD that drives our //bazel/ocaml
 rules, so the dependency builds from its own dune metadata instead of a
-hand-transcribed target. This is the "have Bazel handle dune semantics" step:
-opam packages are themselves dune projects, so translating their dune file *is*
-resolving the dependency from source.
+hand-transcribed target. Opam packages are themselves dune projects, so
+translating their dune files *is* resolving the dependency from source.
 
-Scope (deliberately a toy -- see bazel/ocaml/README.md): the single `(library)`
-stanza fields that re 1.11.0 actually uses (name / public_name / synopsis /
-libraries). Anything that changes build semantics we do not yet model -- module
-filtering, ppx `preprocess`, `foreign_stubs`/C, more than one stanza -- is
-rejected loudly rather than silently mishandled. That rejection is the precise
-marker of where real opam resolution would have to begin.
+Modeled today: multiple `(library)` stanzas across multiple dune dirs;
+`wrapped` (dune defaults to wrapped); `(libraries ...)` resolving to stdlib
+archives, compiler-libs sublibraries, `re_export`, and other locked packages
+via the lib_map; `(preprocess no_preprocessing)` and `(preprocess (pps ...))`
+(the latter generates an ocaml_ppx driver target); `(kind ppx_rewriter |
+ppx_deriver)`; `flags`/`ocamlopt_flags` (minus :standard).
 
-Usage: dune2bazel.py <dune-file> <src-subdir> <root-module-name>
-Emits the BUILD file contents to stdout.
+Anything else that changes build semantics -- module filtering, C stubs,
+`(rule)` codegen, instrumentation -- is rejected loudly rather than silently
+mishandled. That rejection is the precise marker of where translation work (or
+an opam/overrides/ BUILD) has to begin.
 """
 
+import argparse
+import json
 import sys
 
 # findlib packages that ship with the OCaml stdlib. "seq" lives inside
 # stdlib.cmxa (no separate archive, so no opam_dep needed); unix/str/threads &c
-# are separate stdlib archives our rules link by name via opam_deps.
+# are separate stdlib archives our rules link by name via opam_deps, and
+# compiler-libs sublibraries resolve against the sysroot's +compiler-libs.
 _STDLIB_NO_ARCHIVE = {"seq", "bytes", "result", "stdlib"}
 _STDLIB_ARCHIVE = {"unix", "str", "threads", "dynlink", "bigarray"}
+_COMPILER_LIBS = {
+    "compiler-libs.common",
+    "compiler-libs.bytecomp",
+    "compiler-libs.optcomp",
+}
 
-_SUPPORTED_LIBRARY_FIELDS = {"name", "public_name", "synopsis", "libraries", "wrapped"}
+_SUPPORTED_LIBRARY_FIELDS = {
+    "name",
+    "public_name",
+    "synopsis",
+    "libraries",
+    "wrapped",
+    "preprocess",
+    "kind",
+    "flags",
+    "ocamlopt_flags",
+}
+
+# Non-library stanzas that provably do not affect how the library compiles.
+_INERT_STANZAS = {
+    "documentation",
+    "env",
+    "dirs",
+    "data_only_dirs",
+    "vendored_dirs",
+    "ocamlformat",
+}
+
+_SUPPORTED_KINDS = {"normal", "ppx_rewriter", "ppx_deriver"}
 
 
 def tokenize(text):
@@ -108,40 +139,130 @@ def _field(stanza, key):
     return None
 
 
-def _resolve_libraries(libs):
-    """Map dune (libraries ...) names to ocaml_library opam_deps."""
+def _resolve_libraries(libs, lib_map):
+    """Map dune (libraries ...) names to (opam_deps, dep labels)."""
     opam_deps = []
+    deps = []
     for lib in libs:
+        if isinstance(lib, list):
+            # (re_export x) re-exports x to the consumer's consumers; our
+            # transitive provider model already propagates everything, so it
+            # collapses to a plain dependency.
+            if lib and isinstance(lib[0], tuple) and lib[0][1] == "re_export":
+                sub_opam, sub_deps = _resolve_libraries(lib[1:], lib_map)
+                opam_deps += sub_opam
+                deps += sub_deps
+                continue
+            sys.exit(
+                "dune2bazel: unsupported (libraries ...) form %r (select/clause "
+                "expressions are not modeled)." % (lib,)
+            )
         pkg = _atom(lib)
         if pkg in _STDLIB_NO_ARCHIVE:
             continue
-        if pkg in _STDLIB_ARCHIVE:
+        if pkg in _STDLIB_ARCHIVE or pkg in _COMPILER_LIBS:
             opam_deps.append(pkg)
             continue
+        if pkg in lib_map:
+            deps.append(lib_map[pkg])
+            continue
         sys.exit(
-            "dune2bazel: (libraries %s) is not a stdlib-shipped findlib package. "
-            "Real opam dependency resolution is not yet implemented; only stdlib "
-            "packages resolve today (see bazel/ocaml/README.md)." % pkg
+            "dune2bazel: (libraries %s) is neither a stdlib/compiler-libs "
+            "package nor a library declared in bazel/ocaml/opam/lock.json "
+            "(libs tables). Add the providing package to the lock, or extend "
+            "its libs map." % pkg
         )
-    return opam_deps
+    return opam_deps, deps
 
 
-def gen_library(stanza, src_dir, root_module):
+def _resolve_flags(stanza):
+    """Collect (flags ...) + (ocamlopt_flags ...), dropping :standard."""
+    flags = []
+    for key in ("flags", "ocamlopt_flags"):
+        field = _field(stanza, key)
+        if field is None:
+            continue
+        for item in field:
+            if isinstance(item, list):
+                # (:standard ...) modifiers (\ subtraction etc.) are not modeled.
+                inner = [x for x in item if not (isinstance(x, tuple) and x[1] == ":standard")]
+                if inner:
+                    sys.exit(
+                        "dune2bazel: unsupported (%s ...) form %r (only plain "
+                        "flags and bare :standard are modeled)." % (key, item)
+                    )
+                continue
+            flag = _atom(item)
+            if flag == ":standard":
+                continue
+            flags.append(flag)
+    return flags
+
+
+def _resolve_preprocess(stanza, name, lib_map):
+    """Translate (preprocess ...). Returns (ppx_target_lines, preprocess_attr)."""
+    field = _field(stanza, "preprocess")
+    if field is None:
+        return [], None
+    if len(field) == 1 and isinstance(field[0], tuple) and field[0][1] == "no_preprocessing":
+        return [], None
+    if len(field) == 1 and isinstance(field[0], list) and field[0] and isinstance(field[0][0], tuple) and field[0][0][1] == "pps":
+        rewriters = []
+        for item in field[0][1:]:
+            pps_name = _atom(item)
+            if pps_name.startswith("-"):
+                sys.exit(
+                    "dune2bazel: (pps ... %s) rewriter arguments are not "
+                    "modeled yet." % pps_name
+                )
+            if pps_name not in lib_map:
+                sys.exit(
+                    "dune2bazel: (pps %s) does not name a library declared in "
+                    "bazel/ocaml/opam/lock.json (libs tables)." % pps_name
+                )
+            rewriters.append(lib_map[pps_name])
+        ppx_name = name + "_ppx"
+        lines = [
+            "",
+            "# ppx driver for (preprocess (pps ...)); rewriters register with",
+            "# ppxlib at module-init, so linking them composes the driver.",
+            "ocaml_ppx(",
+            '    name = "%s",' % ppx_name,
+            "    deps = [",
+        ]
+        lines += ['        "%s",' % r for r in rewriters]
+        lines += ["    ],", ")"]
+        return lines, ":" + ppx_name
+    sys.exit(
+        "dune2bazel: unsupported (preprocess ...) form %r. Modeled: "
+        "no_preprocessing and (pps ...); per_module/action forms need an "
+        "opam/overrides/ BUILD." % (field,)
+    )
+
+
+def gen_library(stanza, src_dir, lib_map):
     for item in stanza[1:]:
         if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
             sys.exit("dune2bazel: unexpected item in (library): %r" % (item,))
         key = item[0][1]
         if key not in _SUPPORTED_LIBRARY_FIELDS:
             sys.exit(
-                "dune2bazel: unsupported (library) field %r. This toy translates "
-                "only pure-OCaml libraries; %r implies a dune feature (ppx, C "
-                "stubs, module filtering) we do not model yet." % (key, key)
+                "dune2bazel: unsupported (library) field %r. This field implies "
+                "a dune feature (C stubs, module filtering, codegen, ...) we do "
+                "not model yet; extend the translator or add an "
+                "opam/overrides/ BUILD." % key
             )
 
     name_field = _field(stanza, "name")
     if not name_field:
         sys.exit("dune2bazel: (library) has no (name ...)")
     name = _atom(name_field[0])
+
+    kind_field = _field(stanza, "kind")
+    if kind_field:
+        kind = _atom(kind_field[0])
+        if kind not in _SUPPORTED_KINDS:
+            sys.exit("dune2bazel: unsupported (kind %s)" % kind)
 
     # Dune's default is wrapped; only an explicit (wrapped false) opts out.
     # Wrapping namespaces member modules as <Lib>__<Module>, which is what
@@ -151,47 +272,87 @@ def gen_library(stanza, src_dir, root_module):
     if wrapped_field and _atom(wrapped_field[0]) == "false":
         wrapped = False
 
-    opam_deps = _resolve_libraries(_field(stanza, "libraries") or [])
+    opam_deps, deps = _resolve_libraries(_field(stanza, "libraries") or [], lib_map)
+    flags = _resolve_flags(stanza)
+    ppx_lines, preprocess = _resolve_preprocess(stanza, name, lib_map)
 
-    lines = [
-        "# GENERATED by bazel/ocaml/opam/dune2bazel.py from this package's own",
-        "# dune file -- do not edit. Re-fetch the repo to regenerate.",
-        'load("@%s//bazel/ocaml:defs.bzl", "ocaml_library")' % root_module,
+    lines = list(ppx_lines)
+    lines += [
         "",
         "ocaml_library(",
         '    name = "%s",' % name,
-        '    srcs = glob(["%s/*.ml", "%s/*.mli"]),' % (src_dir, src_dir),
+        '    srcs = glob(["%s/*.ml", "%s/*.mli", "%s/*.mll", "%s/*.mly"], allow_empty = True),'
+        % (src_dir, src_dir, src_dir, src_dir),
     ]
     if wrapped:
         lines.append("    wrapped = True,")
+    if preprocess:
+        lines.append('    preprocess = "%s",' % preprocess)
+    if flags:
+        lines.append("    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags))
+    if deps:
+        lines.append("    deps = [%s]," % ", ".join('"%s"' % d for d in sorted(deps)))
     if opam_deps:
         lines.append("    opam_deps = [%s]," % ", ".join('"%s"' % d for d in opam_deps))
     lines += [
         '    visibility = ["//visibility:public"],',
         ")",
-        "",
     ]
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
+
+
+def gen_dune_dir(dune_path, src_dir, lib_map):
+    """Translate every (library) stanza of one dune file; returns target text."""
+    with open(dune_path, "r") as f:
+        stanzas = parse(tokenize(f.read()))
+
+    out = []
+    saw_library = False
+    for s in stanzas:
+        if not (isinstance(s, list) and s and isinstance(s[0], tuple)):
+            sys.exit("dune2bazel: unexpected top-level item: %r" % (s,))
+        head = _atom(s[0])
+        if head == "library":
+            saw_library = True
+            out.append(gen_library(s, src_dir, lib_map))
+        elif head in _INERT_STANZAS:
+            continue
+        else:
+            sys.exit(
+                "dune2bazel: unsupported stanza (%s ...) in %s. Codegen "
+                "(rule/ocamllex/menhir) and executable stanzas are not "
+                "translated; packages that need them get an opam/overrides/ "
+                "BUILD." % (head, dune_path)
+            )
+    if not saw_library:
+        sys.exit("dune2bazel: no (library) stanza in %s" % dune_path)
+    return "".join(out)
+
+
+_HEADER = """\
+# GENERATED by bazel/ocaml/opam/dune2bazel.py from this package's own
+# dune metadata -- do not edit. Re-fetch the repo to regenerate.
+load("@%s//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_ppx")
+"""
 
 
 def main(argv):
-    if len(argv) != 4:
-        sys.exit("usage: dune2bazel.py <dune-file> <src-subdir> <root-module-name>")
-    dune_file, src_dir, root_module = argv[1], argv[2], argv[3]
+    ap = argparse.ArgumentParser(prog="dune2bazel.py")
+    ap.add_argument("--root", required=True, help="root Bazel module name")
+    ap.add_argument("--lib-map-json", default="{}", help="findlib name -> Bazel label")
+    ap.add_argument(
+        "--dune-dir",
+        action="append",
+        required=True,
+        help="package-relative dir containing a dune file (repeatable)",
+    )
+    args = ap.parse_args(argv[1:])
 
-    with open(dune_file, "r") as f:
-        stanzas = parse(tokenize(f.read()))
-
-    libraries = [
-        s for s in stanzas if isinstance(s, list) and s and _atom(s[0]) == "library"
-    ]
-    if len(libraries) != 1:
-        sys.exit(
-            "dune2bazel: expected exactly one (library) stanza, found %d. Multiple "
-            "or non-library stanzas are out of scope for this toy." % len(libraries)
-        )
-
-    sys.stdout.write(gen_library(libraries[0], src_dir, root_module))
+    lib_map = json.loads(args.lib_map_json)
+    out = [_HEADER % args.root]
+    for d in args.dune_dir:
+        out.append(gen_dune_dir("%s/dune" % d, d, lib_map))
+    sys.stdout.write("".join(out))
 
 
 if __name__ == "__main__":

@@ -59,10 +59,22 @@ use_repo(ocaml_source_ext, "ocaml_source")
 register_toolchains("//bazel/ocaml:ocaml_toolchain")
 
 # OCaml opam dependencies built from source via their own dune metadata: the
-# extension fetches each pinned package tarball and generates its BUILD by
-# translating the dune file (bazel/ocaml/opam/dune2bazel.py) into our ocaml rules.
+# extension reads the pinned universe from bazel/ocaml/opam/lock.json, fetches
+# each package tarball, and generates its BUILD by translating its dune files
+# (bazel/ocaml/opam/dune2bazel.py) -- or installs a hand-written override from
+# bazel/ocaml/opam/overrides/ for packages whose dune trees need codegen.
 ocaml_opam_ext = use_extension("//bazel/ocaml/opam:extension.bzl", "ocaml_opam")
-use_repo(ocaml_opam_ext, "ocaml_re")
+use_repo(
+    ocaml_opam_ext,
+    "ocaml_compiler_libs_pkg",
+    "ocaml_cppo",
+    "ocaml_ppx_deriving",
+    "ocaml_ppx_derivers",
+    "ocaml_ppxlib",
+    "ocaml_re",
+    "ocaml_sexplib0",
+    "ocaml_stdlib_shims",
+)
 
 multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")
 multitool.hub(lockfile = "//bazel/tools:tools.lock.json")

@@ -1,0 +1,118 @@
+{
+  "comment": [
+    "Pinned opam universe for bazel/ocaml. Maintained by update_lock.py; the",
+    "url/sha256 pins mirror each package's opam-repository metadata (the same",
+    "artifact `opam install` would fetch). Fields:",
+    "  repo:      the @<repo> Bazel repository name",
+    "  src_dirs:  dune directories dune2bazel translates (ignored if override)",
+    "  override:  hand-written BUILD in opam/overrides/<name>/BUILD.tpl, used",
+    "             when the package's dune tree needs codegen or compiler",
+    "             introspection the translator does not model",
+    "  libs:      findlib name -> target name within the repo; composes the",
+    "             lib_map dune2bazel uses to resolve (libraries ...) entries",
+    "  type:      archive type for download_and_extract (default tar.bz2)"
+  ],
+  "packages": [
+    {
+      "name": "re",
+      "version": "1.13.2",
+      "repo": "ocaml_re",
+      "url": "https://github.com/ocaml/ocaml-re/archive/refs/tags/1.13.2.tar.gz",
+      "sha256": "2e37b01b9bda0e39f0fd3913c0ec81237ed2d04c6bbe23f48b102de83ba47454",
+      "strip_prefix": "ocaml-re-1.13.2",
+      "type": "tar.gz",
+      "src_dirs": ["lib"],
+      "libs": {"re": "re"}
+    },
+    {
+      "name": "sexplib0",
+      "version": "v0.17.0",
+      "repo": "ocaml_sexplib0",
+      "url": "https://github.com/janestreet/sexplib0/archive/refs/tags/v0.17.0.tar.gz",
+      "sha256": "5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b",
+      "strip_prefix": "sexplib0-0.17.0",
+      "type": "tar.gz",
+      "src_dirs": ["src"],
+      "libs": {"sexplib0": "sexplib0"}
+    },
+    {
+      "name": "ppx_derivers",
+      "version": "1.2.1",
+      "repo": "ocaml_ppx_derivers",
+      "url": "https://github.com/ocaml-ppx/ppx_derivers/archive/1.2.1.tar.gz",
+      "sha256": "b6595ee187dea792b31fc54a0e1524ab1e48bc6068d3066c45215a138cc73b95",
+      "strip_prefix": "ppx_derivers-1.2.1",
+      "type": "tar.gz",
+      "src_dirs": ["src"],
+      "libs": {"ppx_derivers": "ppx_derivers"}
+    },
+    {
+      "name": "stdlib-shims",
+      "version": "0.3.0",
+      "repo": "ocaml_stdlib_shims",
+      "url": "https://github.com/ocaml/stdlib-shims/releases/download/0.3.0/stdlib-shims-0.3.0.tbz",
+      "sha256": "babf72d3917b86f707885f0c5528e36c63fccb698f4b46cf2bab5c7ccdd6d84a",
+      "strip_prefix": "stdlib-shims-0.3.0",
+      "override": true,
+      "libs": {"stdlib-shims": "stdlib_shims"}
+    },
+    {
+      "name": "ocaml-compiler-libs",
+      "version": "v0.17.0",
+      "repo": "ocaml_compiler_libs_pkg",
+      "url": "https://github.com/janestreet/ocaml-compiler-libs/archive/refs/tags/v0.17.0.tar.gz",
+      "sha256": "9b9644d7351db699e57ddba7c767bb4153e6e988ccf45ead2fb238a3bd75cdc7",
+      "strip_prefix": "ocaml-compiler-libs-0.17.0",
+      "type": "tar.gz",
+      "override": true,
+      "libs": {
+        "ocaml-compiler-libs.common": "ocaml_common",
+        "ocaml-compiler-libs.shadow": "ocaml_shadow"
+      }
+    },
+    {
+      "name": "cppo",
+      "version": "1.8.0",
+      "repo": "ocaml_cppo",
+      "url": "https://github.com/ocaml-community/cppo/archive/v1.8.0.tar.gz",
+      "sha256": "6e62a8ee0217c9cc38d5860110eb18eb8d89c05c420353d298e1431fe8bac00f",
+      "strip_prefix": "cppo-1.8.0",
+      "type": "tar.gz",
+      "override": true,
+      "libs": {}
+    },
+    {
+      "name": "ppxlib",
+      "version": "0.36.0",
+      "repo": "ocaml_ppxlib",
+      "url": "https://github.com/ocaml-ppx/ppxlib/releases/download/0.36.0/ppxlib-0.36.0.tbz",
+      "sha256": "5aba1bce14c53108614130110c843d004bf93bd2cf3a0778fd7086b85390a434",
+      "strip_prefix": "ppxlib-0.36.0",
+      "override": true,
+      "libs": {
+        "ppxlib": "ppxlib",
+        "ppxlib.ast": "ppxlib_ast",
+        "ppxlib.astlib": "astlib",
+        "ppxlib.stdppx": "stdppx",
+        "ppxlib.traverse_builtins": "ppxlib_traverse_builtins",
+        "ppxlib.print_diff": "ppxlib_print_diff",
+        "ppxlib.metaquot": "ppxlib_metaquot",
+        "ppxlib.metaquot_lifters": "ppxlib_metaquot_lifters"
+      }
+    },
+    {
+      "name": "ppx_deriving",
+      "version": "6.1.0",
+      "repo": "ocaml_ppx_deriving",
+      "url": "https://github.com/ocaml-ppx/ppx_deriving/releases/download/v6.1.0/ppx_deriving-6.1.0.tbz",
+      "sha256": "747a5688ea630f77a50b0e90254ac6f8a66bdd4974b2e87376341427807d4b56",
+      "strip_prefix": "ppx_deriving-6.1.0",
+      "override": true,
+      "libs": {
+        "ppx_deriving.api": "ppx_deriving_api",
+        "ppx_deriving.runtime": "ppx_deriving_runtime",
+        "ppx_deriving.show": "ppx_deriving_show"
+      }
+    }
+  ]
+}
