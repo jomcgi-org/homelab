@@ -82,6 +82,8 @@ use_repo(
     "ocaml_re",
     "ocaml_sexplib0",
     "ocaml_stdlib_shims",
+    "ocaml_tree_sitter_c",
+    "ocaml_tree_sitter_json",
     "ocaml_yojson",
 )
 
