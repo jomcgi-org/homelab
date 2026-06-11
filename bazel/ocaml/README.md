@@ -1,50 +1,79 @@
-# rules_ocaml — thin native OCaml rules
+# rules_ocaml — native OCaml rules for building Semgrep
 
 The fifth custom Bazel ruleset in this repo (alongside `bazel/helm`,
-`bazel/semgrep`, `bazel/wrangler`, `bazel/vitepress`). It builds OCaml the way
-the homelab needs for one specific reason: **OCaml fluency to support Semgrep**,
-whose engine is written in OCaml. The goal here is a working toy, not a Dune
-competitor.
+`bazel/semgrep`, `bazel/wrangler`, `bazel/vitepress`). It exists for one
+reason: **building Semgrep (whose engine is OCaml) with Bazel on this repo's
+infrastructure** (ADR tooling/004). It started as a deliberate toy; the
+scaling plan (`docs/plans/2026-06-10-ocaml-rules-semgrep-scale.md`) is turning
+it into a ruleset with real dune/opam semantics: dune-style module wrapping, a
+pinned opam universe, and the ppxlib driver model are in.
 
 ## What it provides
 
 ```starlark
-load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary")
+load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary", "ocaml_test", "ocaml_ppx")
 ```
 
-- **`ocaml_library(name, srcs=[.ml/.mli], c_srcs=[.c], deps=[...], opam_deps=[...])`** —
-  compiles a set of modules into a native `.cmxa` archive. `c_srcs` are C stubs
-  (dune's `foreign_stubs`/`c_names`): each `.c` is compiled by `ocamlopt` (which
-  supplies the `caml/*.h` headers, using the execution host's C compiler) and
-  folded into the library's `.a`, so binaries linking the library resolve the
-  `external` primitives with no extra wiring. See `examples/c_stubs`.
-- **`ocaml_binary(name, srcs, deps, opam_deps)`** — compiles + links a runnable
-  native executable.
-- **`ocaml_test(name, srcs, deps, opam_deps)`** — a native test executable that
-  exits 0 on success, non-zero on failure (the same convention as Dune's
-  `(test)` stanza). The binary *is* the test runner, so `bazel test //...` runs
-  it directly — no wrapper script — and it joins the global test-all with no
-  extra wiring.
+- **`ocaml_library(name, srcs, deps, opam_deps, wrapped, preprocess, ...)`** —
+  compiles a set of modules into a native `.cmxa` archive. `srcs` may include
+  `.mll`/`.mly` (run through the sysroot's ocamllex/ocamlyacc first) and
+  `c_srcs` C stubs (compiled by `ocamlopt`, folded into the library's `.a`).
+- **`ocaml_binary(name, srcs, deps, opam_deps, data)`** — compiles + links a
+  runnable native executable.
+- **`ocaml_test(...)`** — a native test executable that exits 0 on success
+  (Dune's `(test)` convention). The binary *is* the test runner.
+- **`ocaml_ppx(name, deps)`** — links a **ppxlib standalone driver** from ppx
+  rewriter libraries. The generated main is `Ppxlib.Driver.standalone ()`;
+  rewriters register themselves at module-init, so the driver links with
+  `-linkall` (a normal link would drop the unreferenced rewriter units).
+  Consume it via the `preprocess` attr; runtime libraries the rewritten code
+  needs go in `preprocess_runtime_deps` (e.g. `ppx_deriving.runtime`).
 - **`OcamlInfo`** provider carrying the compiled output dir (`cmi`/`cmx`/`.o`),
   the `.cmxa` archive (+ its `.a`), transitive include dirs, and transitive
   opam/findlib package names in link order.
 
-`deps` are other `ocaml_library` targets. `opam_deps` are findlib package names
-(e.g. `unix`, `str`) — in this toy they resolve to stdlib-shipped archives.
+`deps` are other `ocaml_library` targets. `opam_deps` are findlib names
+resolved against the sysroot: stdlib archives (`unix`, `str`, ...; the driver
+adds `-I +<pkg>` for OCaml 5's subdir layout) and the compiler-libs
+sublibraries (`compiler-libs.common` / `.bytecomp` / `.optcomp`).
 
-## Dependency inference (the learning bit)
+## Module wrapping (dune scheme)
 
-You do **not** hand-order modules. The compile action runs
-[`ocamldep -sort`](https://ocaml.org/manual/ocamldep.html) over the library's
-sources to recover compile order, compiles each module's `.mli` before its
-`.ml`, then archives the `.cmx` in that order (`ocamlopt -a -o lib.cmxa`). The
-toy example (`examples/hello`) has `greeting.ml -> message.ml` so the sort
-actually does work.
+`wrapped = True` reproduces dune's default namespacing exactly:
 
-This is **one whole-library compile action** (`driver/ocaml_compile.sh`). It
-trades fine-grained per-module incrementality for simplicity — fine for a toy.
-The "real" version is a Gazelle/`ocamldep` BUILD generator that emits one target
-per module; that's the next step, intentionally out of scope here.
+1. Member `cset.ml` of library `re` compiles as unit `Re__Cset` (the driver
+   renames the staged file; ocamlopt derives unit names from file names).
+2. A generated alias module `re__.ml` maps `module Cset = Re__Cset` for every
+   member, compiled first with `-no-alias-deps -w -49`.
+3. Every member compiles with `-open Re__`, so plain references (`Cset.union`)
+   resolve through the alias.
+4. A source named exactly like the library (`re.ml`) stays the main module.
+
+`ocamldep -sort` runs over the **original** names — including `.mli` files,
+since interface compile order depends on the full file graph — and the rename
+happens after sorting. First-party code defaults to `wrapped = False`
+(Semgrep's house style is `(wrapped false)`); third-party opam libraries get
+dune's default. This is what lets `re` (which ships internal `Fmt`/`Str`
+modules) link next to the vendored `fmt`: see `examples/wrapped` for the
+minimal two-`Util` collision case and `examples/regex` for the real one.
+
+## The compile driver pipeline
+
+One whole-library compile action (`driver/ocaml_compile.sh`), with dune's
+source-generation stages in dune's order:
+
+1. `.mly` → ocamlyacc, `.mll` → ocamllex (tools from the sysroot)
+2. `x.cppo.ml{,i}` → `x.ml{,i}` via the `cppo` attr (`-V OCAML:<version>`)
+3. `pp`/`pp_args`: a per-file preprocessor (dune's
+   `(preprocess (action (run tool args %{input-file})))`); args may use
+   `%OCAML_VERSION%` / `%OCAML_AST_VERSION%`, substituted from the sysroot
+   compiler (the AST token is ppxlib's, with the 5.0→414 quirk)
+4. `preprocess`: an `ocaml_ppx` driver rewriting every source in place
+5. `ocamldep -sort` over `.ml`+`.mli`, wrapping, compile, archive/link
+
+Per-library actions trade per-module incrementality for simplicity; ADR 004
+keeps that choice, and ADR 007 commits to Gazelle-generated first-party BUILDs
+(a later workstream).
 
 ## Toolchain: how `ocamlopt` runs on RBE
 
@@ -85,80 +114,62 @@ ocaml actions as hermetic inputs**:
 **Why from source, not Debian debs?** Two reasons (see `source.bzl`):
 
 - **Matches Semgrep.** Semgrep CE pins `ocaml >= 5.3.0` via this exact fork.
-  Building Semgrep with the ruleset is the end goal, so the toolchain targets
-  Semgrep's compiler. (The previous toolchain fetched Debian **bullseye** 4.11.1
-  debs, which kept hitting version ceilings — e.g. `re` ≥1.12 needs 4.12's
-  `List.equal`.)
 - **Ships `compiler-libs`.** A from-source `make install` includes
-  `compiler-libs` (`ast_mapper`, `ocamlcommon.cmxa`), which the stripped Debian
-  packages omitted — this is what **unblocks ppx**.
+  `compiler-libs` (`ocamlcommon.cmxa`, the `.cma` archives the
+  ocaml-compiler-libs generators introspect), which the stripped Debian
+  packages omitted — this is what unblocked ppx.
 
-Binaries link the execution host's glibc, so they run wherever the action ran
-(`hello`'s `build_test` links it). `OcamlToolchainInfo` (the Bazel toolchain)
-carries the sysroot files plus tool configuration (`use_ocamlfind`, extra flags).
+Binaries link the execution host's glibc, so they run wherever the action ran.
+`OcamlToolchainInfo` (the Bazel toolchain) carries the sysroot files plus tool
+configuration (`use_ocamlfind`, extra flags). Multi-arch follows ADR 006: a
+data-driven arch registry (`toolchain/arches.bzl`) + per-arch platforms
+(`platforms/BUILD`), with per-arch toolchain registration gated on verifying
+the BuildBuddy arm64 pool (the executor probe ships already).
 
-### Productionization path
+## The opam universe: lock.json
 
-The first compiler build is slow (~minutes); the RBE action cache makes it a
-once-per-source-change cost. If that proves too slow, the follow-up is to build
-the compiler once and pin a *relocatable prebuilt tarball* (URL + sha256) built
-against an old glibc, so fetches are seconds. A custom RBE executor image with the
-compiler preinstalled, and a Gazelle/`ocamldep` BUILD generator (per-module
-targets, real incrementality), remain the longer-term
-shapes. See `docs/plans/2026-06-09-ocaml-semgrep-toolchain-opam-ppx.md`.
+`opam/lock.json` is the pinned package set; every entry's url/sha256 mirrors
+the package's opam-repository metadata (the artifact `opam install` would
+fetch, hash-verified). `opam/update_lock.py` maintains it from a workstation
+(`--add NAME==VERSION`, `--verify`) — never in the build.
 
-## The external opam dependency
+For each entry the module extension (`opam/extension.bzl`) fetches the tarball
+and produces `@<repo>` with a BUILD that is either:
 
-The toy's external dependency is [`fmt`](https://erratique.ch/software/fmt)
-0.11.0, **vendored from source** under `third_party/fmt/` and compiled by our own
-`ocaml_library`. `fmt`'s core module is pure OCaml (no C stubs) and only needs
-the stdlib, so it builds standalone — no `opam install` step anywhere.
-`examples/hello` also wires the `unix` library through `opam_deps`.
+- **translated** — `opam/dune2bazel.py` over the package's own dune files
+  (re, sexplib0, ppx_derivers today). The translator models: multiple
+  `(library)` stanzas, `wrapped`, `(libraries ...)` resolution (stdlib,
+  compiler-libs, `re_export`, and other locked packages via the **lib_map**
+  composed from lock entries' `libs` tables), `(preprocess no_preprocessing |
+  (pps ...))` — pps emits an `ocaml_ppx` target — `(kind ...)`, and
+  `flags`/`ocamlopt_flags`. Anything else **rejects loudly**: silent
+  mistranslation is the only unacceptable failure mode, and every rejection
+  names where work must land.
+- **an override** — `opam/overrides/<name>/BUILD.tpl`, hand-written for
+  packages whose dune trees bootstrap themselves with codegen the translator
+  does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
+  ppx_deriving). Overrides still build everything from the fetched source
+  with our rules; each one documents exactly why it exists.
 
-The `opentelemetry` SDK span demo (the stretch goal) is intentionally dropped:
-its transitive deps (protobuf etc.) make it heavy for a from-source toy.
+The ladder that proves it (`examples/opam_ladder`, all from-source on RBE):
 
-## Real opam deps, built from their own dune file
-
-The next step past a hand-vendored dep: take a *real* opam library and build it
-from source **driven by its own `dune` metadata** — because an opam package
-*is* a dune project, translating its dune file is how you resolve it.
-
-[`re`](https://github.com/ocaml/ocaml-re) (ocaml-re) 1.11.0 is wired in this
-way (`examples/regex` depends on it):
-
-1. **Fetch.** `opam/packages.bzl` pins re's checksum-stable dune-release tarball
-   (`re-1.11.0.tbz` + sha256). The `opam/extension.bzl` module extension
-   downloads and extracts it into `@ocaml_re`.
-2. **Translate.** The repository rule runs `opam/dune2bazel.py` over the
-   package's real `lib/dune` (`(library (name re) (libraries seq))`) and emits
-   the `ocaml_library` BUILD — no hand-written target. The generator maps
-   `(libraries …)` to `opam_deps`, dropping stdlib-shipped packages (`seq` lives
-   in `stdlib.cmxa`), and **rejects loudly** any dune feature we don't model yet
-   (ppx `preprocess`, C `foreign_stubs`, module filtering, multiple stanzas) —
-   that rejection marks exactly where real opam resolution would have to begin.
-3. **Build.** Our existing `ocaml_library` compiles the whole library flat.
-   re's modules already reference each other by flat names (`Cset.`, `Automata.`)
-   and `re.ml` is itself the namespace module (`include Core; module Pcre = Pcre`
-   …), so the flat compile reproduces the public `Re.*` API without replicating
-   dune's `Re__`-prefixed wrapping.
-
-**Version note.** re is pinned at 1.11.0. That pin originally came from a
-*ceiling*: 1.12.0+ call `List.equal` (OCaml ≥ 4.12) and the toolchain was bullseye
-4.11.1. The toolchain now builds OCaml 5.3.0 from source, so that ceiling is
-lifted — bumping `re` to a modern tag is a trivial follow-up.
-
-**Module-name caveat.** re ships internal `Fmt` and `Str` modules. Because the
-flat compile doesn't namespace-prefix them, a binary must not link both `re` and
-the vendored `fmt` (duplicate `Fmt`) — `examples/regex` depends on re alone.
-This is the collision that dune's library wrapping exists to prevent, and the
-natural pressure toward the per-module/wrapped Gazelle generator below.
+```
+sexplib0   stdlib-shims   ppx_derivers      cppo (ocamllex+ocamlyacc tool)
+     \          |          /
+      ocaml-compiler-libs (generators run against the sysroot tar)
+                |
+        ppxlib 0.36.0 (astlib per-version AST, codegen, metaquot)
+                |
+        ppx_deriving 6.1.0 (cppo + metaquot-preprocessed api/show)
+                |
+        examples/ppx: [@@deriving show] end to end
+```
 
 ## Layout
 
 ```
 bazel/ocaml/
-  defs.bzl                 # public: ocaml_library, ocaml_binary, OcamlInfo
+  defs.bzl                 # public: ocaml_library/binary/test/ppx, OcamlInfo
   rules.bzl                # rule impls + OcamlInfo provider
   toolchain.bzl            # OcamlToolchainInfo, ocaml_toolchain rule
   toolchain/
@@ -167,23 +178,28 @@ bazel/ocaml/
     compiler.bzl           # ocaml_compiler rule: build the compiler on RBE -> sysroot
     arches.bzl             # OCAML_ARCHES registry: one entry per target arch (ADR 006)
   platforms/BUILD          # per-arch platforms (from arches.bzl) + executor probe
-  driver/ocaml_compile.sh  # ocamldep -sort + per-module compile + archive/link
-  opam/                    # fetch + dune->BUILD generation for real opam deps
-    packages.bzl           # pinned opam package tarballs (URL + sha256)
-    extension.bzl          # module extension: fetch + generate -> @ocaml_<pkg>
-    dune2bazel.py          # stdlib-only dune (library) -> ocaml_library generator
+  driver/ocaml_compile.sh  # staging + codegen pipeline + ocamldep -sort + compile/link
+  opam/
+    lock.json              # pinned opam universe (urls + sha256, libs tables)
+    update_lock.py         # workstation tool maintaining lock.json
+    extension.bzl          # module extension: fetch + translate/override -> @ocaml_<pkg>
+    dune2bazel.py          # dune (library) stanzas -> ocaml_library/ocaml_ppx targets
+    overrides/<name>/      # hand-written BUILDs for self-bootstrapping packages
   third_party/fmt/         # vendored fmt 0.11.0 (ISC)
-  third_party/re/          # alias -> @ocaml_re (re 1.11.0, fetched + dune-built)
-  examples/hello/          # message -> greeting -> main; greeting_test (ocaml_test)
-  examples/regex/          # depends on the fetched `re` opam lib; regex_test
+  third_party/re/          # alias -> @ocaml_re (re 1.13.2, fetched + dune-built, wrapped)
+  examples/hello/          # message -> greeting -> main; greeting_test (+ data file)
+  examples/wrapped/        # two wrapped libs with colliding Util modules link
+  examples/regex/          # re + fmt linked together (the collision wrapping fixes)
   examples/c_stubs/        # ocaml_library with a C stub (c_srcs); counter_test
+  examples/opam_ladder/    # build_test over the whole pinned ladder
+  examples/ppx/            # ocaml_ppx + preprocess: [@@deriving show] e2e
   examples/toycaml/        # tOyCaml: an engine-shaped demonstrator (ADR 005)
 ```
 
 ## Verify
 
 ```bash
-bazel test //bazel/ocaml/...        # build_test + run test, on BuildBuddy RBE
+bazel test //bazel/ocaml/...        # build_test + run tests, on BuildBuddy RBE
 ```
 
 There is no local test loop in this repo — push the branch and watch CI.
