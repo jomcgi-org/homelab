@@ -11,10 +11,12 @@ load(
     _OcamlInfo = "OcamlInfo",
     _ocaml_binary = "ocaml_binary",
     _ocaml_library = "ocaml_library",
+    _ocaml_ppx = "ocaml_ppx",
     _ocaml_test = "ocaml_test",
 )
 
 ocaml_library = _ocaml_library
 ocaml_binary = _ocaml_binary
 ocaml_test = _ocaml_test
+ocaml_ppx = _ocaml_ppx
 OcamlInfo = _OcamlInfo

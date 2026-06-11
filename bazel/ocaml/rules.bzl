@@ -33,12 +33,17 @@ OcamlInfo = provider(
 _TOOLCHAIN_TYPE = "//bazel/ocaml:toolchain_type"
 
 def _collect(ctx):
-    """Gather transitive include dirs, cmxa, .a and opam packages from deps."""
+    """Gather transitive include dirs, cmxa, .a and opam packages from deps.
+
+    preprocess_runtime_deps (libraries the rewriter's generated code needs,
+    e.g. ppx_deriving.runtime) are merged into the same walk: they must be
+    compiled against and linked exactly like ordinary deps.
+    """
     inc = []
     cmxa = []
     a = []
     opam = [depset(ctx.attr.opam_deps)]
-    for dep in ctx.attr.deps:
+    for dep in ctx.attr.deps + getattr(ctx.attr, "preprocess_runtime_deps", []):
         info = dep[OcamlInfo]
         inc.append(info.transitive_includes)
         cmxa.append(info.transitive_cmxa)
@@ -51,6 +56,15 @@ def _collect(ctx):
         opam = depset(transitive = opam),
     )
 
+def _tool_files(ctx):
+    """Extra executables (preprocessors) that must stage as action inputs."""
+    files = []
+    for attr in ("pp", "cppo", "preprocess"):
+        tool = getattr(ctx.executable, attr, None)
+        if tool:
+            files.append(tool)
+    return files
+
 def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs):
     args = ctx.actions.args()
     args.add("--mode", mode)
@@ -61,6 +75,19 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs):
     # Wrapping is a library concept; binary/test rules have no `wrapped` attr
     # and always pass 0. getattr keeps this helper shared across the rules.
     args.add("--wrapped", "1" if getattr(ctx.attr, "wrapped", False) else "0")
+
+    for f in getattr(ctx.attr, "ocamlopt_flags", []):
+        args.add("--compile-flag", f)
+
+    # Source-generation pipeline tools (all optional, exec-config executables).
+    if getattr(ctx.attr, "pp", None):
+        args.add("--pp-tool", ctx.executable.pp.path)
+        for a in ctx.attr.pp_args:
+            args.add("--pp-arg", a)
+    if getattr(ctx.attr, "cppo", None):
+        args.add("--cppo-tool", ctx.executable.cppo.path)
+    if getattr(ctx.attr, "preprocess", None):
+        args.add("--ppx", ctx.executable.preprocess.path)
     for f in tc.extra_compile_flags:
         args.add("--compile-flag", f)
     for d in include_dirs:
@@ -89,7 +116,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -123,7 +150,7 @@ def _ocaml_binary_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs, transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -137,9 +164,10 @@ def _ocaml_binary_impl(ctx):
 
 _COMMON_ATTRS = {
     "srcs": attr.label_list(
-        allow_files = [".ml", ".mli"],
+        allow_files = [".ml", ".mli", ".mll", ".mly"],
         mandatory = True,
-        doc = ".ml/.mli sources; compile order is recovered automatically via ocamldep -sort.",
+        doc = ".ml/.mli sources; .mll/.mly are run through ocamllex/ocamlyacc first. " +
+              "Compile order is recovered automatically via ocamldep -sort.",
     ),
     "c_srcs": attr.label_list(
         allow_files = [".c"],
@@ -152,7 +180,40 @@ _COMMON_ATTRS = {
         doc = "Other ocaml_library targets.",
     ),
     "opam_deps": attr.string_list(
-        doc = "findlib/opam package names (e.g. \"unix\", \"str\") shipped with the stdlib.",
+        doc = "findlib/opam package names resolved against the sysroot: stdlib-shipped " +
+              "archives (\"unix\", \"str\") and the compiler-libs sublibraries " +
+              "(\"compiler-libs.common\", \"compiler-libs.bytecomp\", \"compiler-libs.optcomp\").",
+    ),
+    "ocamlopt_flags": attr.string_list(
+        doc = "Extra ocamlopt flags for this target's compiles (dune `(flags ...)` / " +
+              "`(ocamlopt_flags ...)`, minus :standard).",
+    ),
+    "pp": attr.label(
+        executable = True,
+        cfg = "exec",
+        doc = "Per-file preprocessor run over every staged .ml/.mli, output on stdout " +
+              "(dune `(preprocess (action (run tool args %{input-file})))`).",
+    ),
+    "pp_args": attr.string_list(
+        doc = "Arguments passed to `pp` before the input file. %OCAML_VERSION% and " +
+              "%OCAML_AST_VERSION% are substituted by the driver from the sysroot compiler.",
+    ),
+    "cppo": attr.label(
+        executable = True,
+        cfg = "exec",
+        doc = "cppo binary applied to staged x.cppo.ml{,i} sources, producing x.ml{,i} " +
+              "(the cppo `(rule ...)` convention; -V OCAML:<version> is supplied).",
+    ),
+    "preprocess": attr.label(
+        executable = True,
+        cfg = "exec",
+        doc = "An ocaml_ppx standalone driver run over every source before compilation " +
+              "(dune `(preprocess (pps ...))`).",
+    ),
+    "preprocess_runtime_deps": attr.label_list(
+        providers = [OcamlInfo],
+        doc = "Runtime libraries the rewriter's output requires (e.g. ppx_deriving.runtime); " +
+              "merged into deps.",
     ),
     "_driver": attr.label(
         default = "//bazel/ocaml/driver:ocaml_compile",
@@ -202,4 +263,49 @@ ocaml_test = rule(
     toolchains = [_TOOLCHAIN_TYPE],
     test = True,
     doc = "Compile + link a native OCaml test executable (exit 0 = pass).",
+)
+
+def _ocaml_ppx_impl(ctx):
+    """Link a ppxlib standalone driver from rewriter libraries.
+
+    The whole main is `Ppxlib.Driver.standalone ()`; the rewriters in `deps`
+    register themselves at module-init time, so linking them in is all the
+    composition there is. The driver executable runs at build time, hence
+    consumers reference it with cfg = "exec" (the `preprocess` attr).
+    """
+    tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
+    dep = _collect(ctx)
+
+    main = ctx.actions.declare_file(ctx.label.name + "_driver_main.ml")
+    ctx.actions.write(main, "let () = Ppxlib.Driver.standalone ()\n")
+
+    exe = ctx.actions.declare_file(ctx.label.name)
+    args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), [main], [])
+    args.add("--exe-out", exe.path)
+    # -linkall: rewriters register themselves with ppxlib at module init; the
+    # generated main references none of them, so a normal link would drop them.
+    args.add("--linkall", "1")
+    for c in dep.cmxa.to_list():  # postorder: dependencies before dependents
+        args.add("--cmxa", c.path)
+
+    ctx.actions.run(
+        executable = ctx.executable._driver,
+        arguments = [args],
+        inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        outputs = [exe],
+        mnemonic = "OcamlPpxDriver",
+        progress_message = "Linking ppx driver %{label}",
+    )
+    return [DefaultInfo(files = depset([exe]), executable = exe)]
+
+# ocaml_ppx takes no srcs (the main is generated) and no preprocessors of its
+# own; everything else mirrors the common attr set.
+_PPX_ATTRS = {k: v for k, v in _COMMON_ATTRS.items() if k in ("deps", "opam_deps", "ocamlopt_flags", "_driver")}
+
+ocaml_ppx = rule(
+    implementation = _ocaml_ppx_impl,
+    attrs = _PPX_ATTRS,
+    toolchains = [_TOOLCHAIN_TYPE],
+    executable = True,
+    doc = "Links a ppxlib standalone driver executable from ppx rewriter libraries.",
 )
