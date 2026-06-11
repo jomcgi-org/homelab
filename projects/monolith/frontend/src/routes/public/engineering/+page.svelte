@@ -487,17 +487,28 @@
   }
 
   /* The heading itself is the repo link. Plain until hover, then a
-     hard underline + the arrow nudges, so it reads as text first and a
-     link on intent. */
+     highlighter swipe wipes in behind the text and the arrow nudges, so
+     it reads as text first and a link on intent. The band is a
+     background (not a border), so it sits behind the glyphs and never
+     floats below the serif descenders the way the old underline did. */
   .title-link {
     color: inherit;
     text-decoration: none;
-    border-bottom: 2px solid transparent;
-    transition: border-color 140ms ease;
+    background-image: linear-gradient(var(--accent), var(--accent));
+    background-repeat: no-repeat;
+    background-position: 0 78%;
+    background-size: 0% 0.4em;
+    transition: background-size 220ms ease;
   }
 
   .title-link:hover {
-    border-bottom-color: var(--ink);
+    background-size: 100% 0.4em;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .title-link {
+      transition: none;
+    }
   }
 
   .title-arrow {
