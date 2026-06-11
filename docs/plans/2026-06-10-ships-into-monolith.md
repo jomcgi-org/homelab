@@ -568,7 +568,7 @@ git commit -am "feat(monolith): wire AISStream secret and bump chart for ships"
 
 ```javascript
 // /app/ships snapshot: 120s fresh · 10m SWR · 1d SIE. Mirrors _SNAPSHOT_CACHE_CONTROL
-// in projects/monolith/ships/router.py — keep in sync.
+// in projects/monolith/ships/router.py, keep in sync.
 export const SHIPS_SNAPSHOT_CACHE_CONTROL = `public, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400`;
 ```
 
