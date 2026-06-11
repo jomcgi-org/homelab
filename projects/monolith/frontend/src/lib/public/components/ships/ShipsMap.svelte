@@ -394,7 +394,9 @@
   <div class="map" bind:this={mapContainer}></div>
 
   <nav class="map-chip" aria-label="Breadcrumb">
-    <a class="chip-home" href="https://jomcgi.dev/">jomcgi.dev</a>
+    <a class="chip-home" href="https://jomcgi.dev/"
+      >jomcgi.dev<span class="chip-home-arrow" aria-hidden="true">↗</span></a
+    >
     <span class="chip-sep">/</span>
     <span class="chip-name">ships</span>
     <span class="chip-sep">/</span>
@@ -465,7 +467,26 @@
   .map :global(.maplibregl-ctrl-group) {
     border: 2px solid var(--ink);
     border-radius: 0;
+    /* No shadow on the group; each button lifts and casts its own shadow on
+       hover (see below), so the controls feel pressable rather than static. */
+  }
+
+  .map :global(.maplibregl-ctrl-group button) {
+    transition:
+      transform 110ms ease,
+      box-shadow 110ms ease;
+  }
+
+  .map :global(.maplibregl-ctrl-group button:hover) {
+    transform: translate(-1px, -1px);
     box-shadow: var(--shadow-hard-sm);
+    position: relative;
+    z-index: 1; /* lift the shadow above the adjacent button */
+  }
+
+  .map :global(.maplibregl-ctrl-group button:active) {
+    transform: translate(0, 0);
+    box-shadow: none; /* pressed back down */
   }
 
   .map-chip {
@@ -478,7 +499,6 @@
     padding: 8px 12px;
     background: var(--paper);
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard);
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
@@ -486,15 +506,33 @@
     text-transform: uppercase;
   }
 
+  /* The home crumb is a real link out to the apex: underlined by default with
+     a small click-through arrow, and on hover/focus it gets the CV's
+     highlighter-marker treatment (bold + accent swipe) to read as "selected". */
   .chip-home {
     color: var(--ink);
     text-decoration: underline;
-    text-underline-offset: 2px;
+    text-decoration-color: var(--blue);
     text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
+    padding: 0 2px;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    transition:
+      background 140ms ease,
+      text-decoration-color 140ms ease;
   }
 
-  .chip-home:hover {
-    color: var(--coral);
+  .chip-home:hover,
+  .chip-home:focus-visible {
+    background: linear-gradient(transparent 56%, var(--accent) 56%);
+    text-decoration-color: var(--ink);
+  }
+
+  .chip-home-arrow {
+    margin-left: 1px;
+    font-size: 0.85em;
+    vertical-align: 0.08em;
   }
 
   .chip-sep {
@@ -657,6 +695,9 @@
   @media (prefers-reduced-motion: reduce) {
     .chip-dot {
       animation: none;
+    }
+    .map :global(.maplibregl-ctrl-group button) {
+      transition: none;
     }
   }
 </style>

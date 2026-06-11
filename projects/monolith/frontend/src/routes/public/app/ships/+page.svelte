@@ -37,7 +37,12 @@
      block. */
   .ships-page {
     position: relative;
-    height: calc(100vh - 48px);
+    /* No site nav on /app/* routes, so the map owns the whole viewport.
+       100dvh tracks the dynamic viewport (mobile browser chrome) so the
+       bottom-anchored legend never falls off-screen. 100vh is the fallback. */
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
     background: var(--cream);
     color: var(--ink);
   }
