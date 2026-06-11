@@ -226,11 +226,15 @@ ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $ALLB)"
 echo "ocaml_compile: compile order: $ORDER" >&2
 
 # --- Wrapping (dune scheme) --------------------------------------------------
-# Members become <lib>__<Module>; a generated alias module <lib>__.ml maps
-# plain names; everything compiles with -open <Lib>__. The main module (a
-# source named exactly <lib>.ml) keeps its name. ocamldep ran on the original
-# names above (members reference each other by plain name); the rename happens
-# after sorting, preserving the sorted order.
+# Members become <lib>__<Module> behind a generated alias module; everything
+# compiles with -open <alias>. Two cases, matching dune:
+#   * the library provides a main module named exactly <lib>.ml: it becomes the
+#     public module <Lib>, and the alias is the internal <Lib>__ (members open
+#     that; the main module re-exports what it wants).
+#   * no such main module: the alias module *is* the public wrapper <Lib>
+#     (dune generates it), so consumers see <Lib>.<Member>.
+# ocamldep ran on the original names above (members reference each other by
+# plain name); the rename happens after sorting, preserving the sorted order.
 capitalize() {
 	_h=$(printf %.1s "$1" | tr '[:lower:]' '[:upper:]')
 	printf '%s%s' "$_h" "${1#?}"
@@ -239,7 +243,17 @@ capitalize() {
 CMX_LIST=""
 OPENFLAG=""
 if [ "$WRAPPED" = "1" ]; then
-	ALIAS_MOD="${NAME}__"
+	# Does the library ship a main module named exactly like the lib?
+	HAS_MAIN=0
+	for f in $ORDER; do
+		[ "${f%.*}" = "$NAME" ] && HAS_MAIN=1
+	done
+	if [ "$HAS_MAIN" = "1" ]; then
+		ALIAS_MOD="${NAME}__"
+	else
+		# The alias module is the public wrapper itself.
+		ALIAS_MOD="$NAME"
+	fi
 	ALIAS_ML="$WORK/$ALIAS_MOD.ml"
 	: >"$ALIAS_ML"
 	SEEN=" "
