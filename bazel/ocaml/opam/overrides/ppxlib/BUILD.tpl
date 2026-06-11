@@ -30,7 +30,7 @@ ocaml_binary(
 
 ocaml_library(
     name = "supported_version",
-    srcs = glob(["ast/supported_version/*.ml", "ast/supported_version/*.mli"]),
+    srcs = glob(["ast/supported_version/*.ml", "ast/supported_version/*.mli"], allow_empty = True),
     wrapped = True,
 )
 
@@ -53,7 +53,7 @@ ocaml_binary(
 
 ocaml_library(
     name = "astlib",
-    srcs = glob(["astlib/*.ml", "astlib/*.mli"]),
+    srcs = glob(["astlib/*.ml", "astlib/*.mli"], allow_empty = True),
     ocamlopt_flags = [
         "-w",
         "-9",
@@ -68,7 +68,7 @@ ocaml_library(
 
 ocaml_library(
     name = "ppxlib_ast",
-    srcs = glob(["ast/*.ml", "ast/*.mli"]),
+    srcs = glob(["ast/*.ml", "ast/*.mli"], allow_empty = True),
     ocamlopt_flags = [
         "-safe-string",
         "-w",
@@ -88,7 +88,7 @@ ocaml_library(
 
 ocaml_library(
     name = "stdppx",
-    srcs = glob(["stdppx/*.ml", "stdppx/*.mli"]),
+    srcs = glob(["stdppx/*.ml", "stdppx/*.mli"], allow_empty = True),
     ocamlopt_flags = ["-safe-string"],
     wrapped = True,
     deps = [
@@ -100,7 +100,7 @@ ocaml_library(
 
 ocaml_library(
     name = "ppxlib_traverse_builtins",
-    srcs = glob(["traverse_builtins/*.ml", "traverse_builtins/*.mli"]),
+    srcs = glob(["traverse_builtins/*.ml", "traverse_builtins/*.mli"], allow_empty = True),
     ocamlopt_flags = ["-safe-string"],
     wrapped = True,
     visibility = ["//visibility:public"],
@@ -108,7 +108,7 @@ ocaml_library(
 
 ocaml_library(
     name = "ppxlib_print_diff",
-    srcs = glob(["print-diff/*.ml", "print-diff/*.mli"]),
+    srcs = glob(["print-diff/*.ml", "print-diff/*.mli"], allow_empty = True),
     ocamlopt_flags = ["-safe-string"],
     wrapped = True,
     visibility = ["//visibility:public"],
@@ -168,7 +168,7 @@ genrule(
 
 ocaml_library(
     name = "ppxlib",
-    srcs = glob(["src/*.ml", "src/*.mli", "src/*.mll"]) + [
+    srcs = glob(["src/*.ml", "src/*.mli", "src/*.mll"], allow_empty = True) + [
         ":ast_builder_generated",
         ":ast_pattern_generated",
     ],
@@ -193,7 +193,7 @@ ocaml_library(
 
 ocaml_library(
     name = "ppxlib_metaquot_lifters",
-    srcs = glob(["metaquot_lifters/*.ml", "metaquot_lifters/*.mli"]),
+    srcs = glob(["metaquot_lifters/*.ml", "metaquot_lifters/*.mli"], allow_empty = True),
     ocamlopt_flags = ["-safe-string"],
     wrapped = True,
     deps = [
@@ -207,7 +207,7 @@ ocaml_library(
 
 ocaml_library(
     name = "ppxlib_metaquot",
-    srcs = glob(["metaquot/*.ml", "metaquot/*.mli"]),
+    srcs = glob(["metaquot/*.ml", "metaquot/*.mli"], allow_empty = True),
     ocamlopt_flags = ["-safe-string"],
     wrapped = True,
     deps = [

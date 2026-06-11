@@ -17,14 +17,14 @@ ocaml_ppx(
 
 ocaml_library(
     name = "ppx_deriving_runtime",
-    srcs = glob(["src/runtime/*.cppo.ml", "src/runtime/*.cppo.mli"]),
+    srcs = glob(["src/runtime/*.cppo.ml", "src/runtime/*.cppo.mli"], allow_empty = True),
     cppo = "@ocaml_cppo//:cppo",
     visibility = ["//visibility:public"],
 )
 
 ocaml_library(
     name = "ppx_deriving_api",
-    srcs = glob(["src/api/*.cppo.ml", "src/api/*.cppo.mli"]),
+    srcs = glob(["src/api/*.cppo.ml", "src/api/*.cppo.mli"], allow_empty = True),
     cppo = "@ocaml_cppo//:cppo",
     preprocess = ":metaquot_ppx",
     deps = [
@@ -37,7 +37,7 @@ ocaml_library(
 
 ocaml_library(
     name = "ppx_deriving_show",
-    srcs = glob(["src_plugins/show/*.ml", "src_plugins/show/*.mli"]),
+    srcs = glob(["src_plugins/show/*.ml", "src_plugins/show/*.mli"], allow_empty = True),
     preprocess = ":metaquot_ppx",
     deps = [
         ":ppx_deriving_api",

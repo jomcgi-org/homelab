@@ -11,7 +11,7 @@ load("@homelab//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library")
 # Parses .cma archives via the running compiler's compiler-libs.
 ocaml_library(
     name = "read_cma",
-    srcs = glob(["src/read_cma/*.ml", "src/read_cma/*.mli"]),
+    srcs = glob(["src/read_cma/*.ml", "src/read_cma/*.mli"], allow_empty = True),
     opam_deps = [
         "compiler-libs.common",
         "compiler-libs.bytecomp",
