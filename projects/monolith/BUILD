@@ -110,6 +110,7 @@ py_library(
     ),  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//certifi",
         "@pip//discord_py",
         "@pip//dulwich",
         "@pip//fastapi",
@@ -133,6 +134,7 @@ py_library(
         "@pip//trafilatura",
         "@pip//tzdata",
         "@pip//uvicorn",
+        "@pip//websockets",
         "@pip//youtube_transcript_api",
     ],
 )
@@ -2053,6 +2055,18 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "ships_ingest_test",
+    srcs = ["ships/ingest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//websockets",
     ],
 )
 
