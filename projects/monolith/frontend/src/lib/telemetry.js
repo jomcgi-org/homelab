@@ -34,8 +34,21 @@ export function initTelemetry() {
       instrumentations: [
         new DocumentLoadInstrumentation(),
         new FetchInstrumentation({
-          ignoreUrls: [/\/otel\//, /fonts\.googleapis/, /fonts\.gstatic/],
-          propagateTraceHeaderCorsUrls: [/.*/],
+          // Skip instrumenting third-party hosts that reject the CORS
+          // preflight: fonts, plus the OpenFreeMap tiles behind the
+          // /app/ships basemap (its OPTIONS returns 405).
+          ignoreUrls: [
+            /\/otel\//,
+            /fonts\.googleapis/,
+            /fonts\.gstatic/,
+            /tiles\.openfreemap\.org/,
+          ],
+          // Only continue traces into same-origin requests (the safe
+          // default). Propagating to every cross-origin host injects a
+          // `traceparent` header, which turns the request "non-simple" and
+          // forces a CORS preflight that third-party CDNs (OpenFreeMap,
+          // Google Fonts) answer with a non-2xx status, blocking the fetch.
+          propagateTraceHeaderCorsUrls: [],
         }),
       ],
     });
