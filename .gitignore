@@ -41,6 +41,8 @@ websites/hikes.jomcgi.dev/test-results/
 
 # Local logs
 logs/
+# ...but the opam override for the `logs` OCaml package is real source
+!bazel/ocaml/opam/overrides/logs/
 
 # Environment files (keep .env.example templates)
 .env
