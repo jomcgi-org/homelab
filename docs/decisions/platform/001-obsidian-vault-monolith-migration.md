@@ -1,7 +1,7 @@
 # ADR 001: Migrate Obsidian Vault into Monolith with TigerFS
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Superseded by [006 — Decommission Obsidian via a Postgres Interim](006-obsidian-decommission-postgres-interim.md)
 **Created:** 2026-04-06
 
 ---
