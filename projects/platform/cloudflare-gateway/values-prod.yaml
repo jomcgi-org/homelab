@@ -37,8 +37,6 @@ tunnel:
         service: http://trips-nginx.trips.svc.cluster.local:80
       - hostname: grimoire.jomcgi.dev
         service: http://grimoire-frontend.grimoire.svc.cluster.local:8080
-      - hostname: ships.jomcgi.dev
-        service: http://marine-frontend.marine.svc.cluster.local:80
       - hostname: api.jomcgi.dev
         service: http://api-gateway.api-gateway.svc.cluster.local:80
         originRequest:

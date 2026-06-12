@@ -9,6 +9,5 @@ resources:
   - ../../projects/monolith/deploy
   - ../../projects/operators/oci-model-cache/deploy
   - ../../projects/platform
-  - ../../projects/ships/deploy
   - ../../projects/stargazer/deploy
   - ../../projects/trips/deploy

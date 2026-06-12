@@ -314,7 +314,7 @@ export const projects = [
       },
     ],
     links: [
-      { label: "Live at ships.jomcgi.dev", href: "https://ships.jomcgi.dev" },
+      { label: "Live at jomcgi.dev/app/ships", href: "https://jomcgi.dev/app/ships" },
     ],
   },
   {

@@ -1,9 +1,0 @@
-{{- $env := concat (default list .Values.api.env) (list
-  (dict "name" "NATS_URL" "value" .Values.nats.url)
-  (dict "name" "CORS_ORIGINS" "value" .Values.api.cors.origins)
-  (dict "name" "DB_PATH" "value" (printf "%s/ships.db" .Values.api.persistence.mountPath))
-) }}
-{{- $_ := set .Values.api "env" $env }}
-{{- $annotations := dict "config.linkerd.io/opaque-ports" "4222" }}
-{{- $_ := set .Values.api "podAnnotations" (merge (default dict .Values.api.podAnnotations) $annotations) }}
-{{- include "homelab.statefulset" (dict "context" . "component" "api") }}

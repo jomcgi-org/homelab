@@ -42,7 +42,6 @@ This document provides an overview of all services running in the cluster.
 | Service             | Purpose                                          | Location                                                                     |
 | ------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
 | **Grimoire**        | D&D knowledge management with Redis              | [projects/grimoire](../projects/grimoire/)                                   |
-| **Marine**          | Real-time AIS vessel tracking (ships.jomcgi.dev) | [projects/ships](../projects/ships/)                                         |
 | **OCI Model Cache** | HuggingFace model caching operator               | [projects/operators/oci-model-cache](../projects/operators/oci-model-cache/) |
 | **Stargazer**       | Dark sky location finder with weather scoring    | [projects/stargazer](../projects/stargazer/)                                 |
 
@@ -53,7 +52,6 @@ This document provides an overview of all services running in the cluster.
 | **docs.jomcgi.dev**  | Architecture docs and ADRs (VitePress, Cloudflare Pages)     | [projects/websites/docs.jomcgi.dev](../projects/websites/docs.jomcgi.dev/)   |
 | **hikes.jomcgi.dev** | Hiking route finder (static, Cloudflare R2)                  | [projects/hikes/frontend](../projects/hikes/frontend/)                       |
 | **jomcgi.dev**       | Personal website (Astro, Cloudflare Pages)                   | [projects/websites/jomcgi.dev](../projects/websites/jomcgi.dev/)             |
-| **ships.jomcgi.dev** | Real-time vessel tracking UI (React/MapLibre)                | [projects/ships/frontend](../projects/ships/frontend/)                       |
 | **trips.jomcgi.dev** | Road trip tracker and photo viewer (Astro, Cloudflare Pages) | [projects/websites/trips.jomcgi.dev](../projects/websites/trips.jomcgi.dev/) |
 
 ## Service Details
