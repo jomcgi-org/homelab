@@ -9,6 +9,9 @@ dependencies:
   - name: longhorn
     version: 1.8.1
     repository: https://charts.longhorn.io
+  - name: cf-ingress
+    version: 0.1.0
+    repository: "file://../cf-ingress-library"
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"

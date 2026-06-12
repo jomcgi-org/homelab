@@ -60,7 +60,7 @@ for i in {1..10}; do
 done
 
 # Set environment variables for MCP server
-export SIGNOZ_URL="http://localhost:$LOCAL_PORT"
+export SIGNOZ_URL="http://localhost:$LOCAL_PORT/app/signoz"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 
 # SIGNOZ_API_KEY should be set in the environment or MCP client config

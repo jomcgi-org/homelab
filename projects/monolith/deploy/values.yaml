@@ -136,4 +136,4 @@ agent:
     allowedChannelIds:
       - "1501965852969402517"
   signoz:
-    url: "http://signoz.signoz.svc.cluster.local:8080"
+    url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"

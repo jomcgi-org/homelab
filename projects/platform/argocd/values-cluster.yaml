@@ -1,3 +1,16 @@
+# Path-based private ingress: https://private.jomcgi.dev/app/argocd
+# Replaces the static tunnel route at argocd.jomcgi.dev (kept during transition).
+cfIngress:
+  enabled: true
+  tier: trusted
+  hostname: private.jomcgi.dev
+  pathPrefix: /app/argocd
+  serviceName: argocd-server
+  servicePort: 80
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
+
 argo-cd:
   global:
     # Enable Prometheus scrape annotations on all ArgoCD metrics services
@@ -9,6 +22,10 @@ argo-cd:
     params:
       # Run server in insecure mode (behind Cloudflare Tunnel HTTPS termination)
       server.insecure: "true"
+      # UI is served from private.jomcgi.dev/app/argocd. The gateway strips
+      # the prefix before proxying, so only basehref is set (not rootpath):
+      # the API keeps serving at / for in-cluster clients like argocd-mcp.
+      server.basehref: "/app/argocd"
       otlp.address: "signoz-otel-collector.signoz.svc.cluster.local:4317"
   # Enable metrics endpoints for all ArgoCD components
   # These expose Prometheus metrics including argocd_app_info for health/sync status

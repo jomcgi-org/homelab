@@ -26,7 +26,7 @@ data:
         "environment": "production"
       },
       "annotations": {
-        "summary": "SigNoz at signoz.jomcgi.dev is unreachable",
+        "summary": "SigNoz at private.jomcgi.dev/app/signoz is unreachable",
         "description": "HTTP health check has failed 5 consecutive times over 10 minutes. This could indicate the service is down or Cloudflare auth is failing (3xx redirect)."
       },
       "condition": {
@@ -46,7 +46,7 @@ data:
                   }
                 ],
                 "filter": {
-                  "expression": "http.url = 'https://signoz.jomcgi.dev'"
+                  "expression": "http.url = 'https://private.jomcgi.dev/app/signoz'"
                 },
                 "groupBy": [],
                 "order": [],

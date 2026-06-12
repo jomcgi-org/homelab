@@ -18,7 +18,7 @@ imagePullSecret:
 # SigNoz API configuration
 signoz:
   # URL to SigNoz query-service (internal cluster DNS)
-  url: "http://signoz.signoz.svc.cluster.local:8080"
+  url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"
   # API key for authentication (optional, leave empty if not required)
   apiKey: ""
   # Secret containing API key (alternative to apiKey)

@@ -1,9 +1,12 @@
 dependencies:
 - name: signoz
   repository: https://charts.signoz.io
-  version: 0.113.0
+  version: 0.128.0
 - name: k8s-infra
   repository: https://charts.signoz.io
   version: 0.15.0
-digest: sha256:4af19c76413228bcc51c3c5316a7a411bbf1503027f67152c212cc4a7e5b7493
-generated: "2026-02-28T21:22:23.166062-08:00"
+- name: cf-ingress
+  repository: file://../cf-ingress-library
+  version: 0.1.0
+digest: sha256:e37f2e4019e985f4592f391a89ed2b46b2243ca5e53e625fa6a27340b70db0e9
+generated: "2026-06-12T19:32:07.40689512Z"

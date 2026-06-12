@@ -1,0 +1,23 @@
+{{- /*
+Path-based private ingress: https://private.jomcgi.dev/app/signoz
+
+No URLRewrite here on purpose: SigNoz derives its base path from
+signoz_global_external__url (values-prod.yaml) and expects the full
+/app/signoz prefix on every request, for assets and API routes alike.
+In-cluster clients must therefore also include the prefix, e.g.
+http://signoz.signoz.svc.cluster.local:8080/app/signoz/api/v1/rules.
+*/}}
+{{- if .Values.cfIngress.enabled }}
+{{- $routeParams := dict
+  "name" "signoz-private"
+  "tier" .Values.cfIngress.tier
+  "hostname" .Values.cfIngress.hostname
+  "pathPrefix" .Values.cfIngress.pathPrefix
+  "serviceName" .Values.cfIngress.serviceName
+  "servicePort" .Values.cfIngress.servicePort
+  "gateway" .Values.cfIngress.gateway
+}}
+{{- include "cf-ingress.httproute" $routeParams }}
+---
+{{- include "cf-ingress.security-policy" (dict "name" "signoz-private") }}
+{{- end }}

@@ -1,0 +1,4 @@
+# Path-based private ingress, disabled by default.
+# Cluster-specific config lives in values-prod.yaml.
+cfIngress:
+  enabled: false

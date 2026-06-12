@@ -1,3 +1,8 @@
+# Path-based private ingress, disabled by default.
+# Cluster-specific config lives in values-prod.yaml.
+cfIngress:
+  enabled: false
+
 k8s-infra:
   otelCollectorEndpoint: signoz-otel-collector.signoz.svc.cluster.local:4317
   presets:
