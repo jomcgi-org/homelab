@@ -457,17 +457,31 @@
         style: BASEMAP_STYLE,
         center: [0, 30],
         zoom: 1.4,
-        // Collapse the OSM/OpenMapTiles attribution into a compact "i" button
+        // Render the OSM/OpenMapTiles attribution as a compact "i" button
         // instead of letting the full credit line sprawl across the bottom of
-        // the map (especially cramped on mobile). compact:true keeps it closed
-        // by default at any viewport width; tapping the button still reveals
-        // the required credits.
+        // the map (especially cramped on mobile). MapLibre opens this expanded
+        // on first paint and only minimizes it once the user pans, so we also
+        // collapse it up front below; tapping the button still reveals the
+        // required credits.
         attributionControl: { compact: true },
       });
       map.addControl(
         new maplibregl.NavigationControl({ showCompass: false }),
         "bottom-right",
       );
+
+      // MapLibre's compact AttributionControl opens itself (a <details> with
+      // the `open` attribute + `maplibregl-compact-show` class) once the
+      // style's attributions populate, so it starts as a full-width credit bar
+      // and only shrinks to the "i" after the first pan. Collapse it up front by
+      // mirroring what MapLibre's own _updateCompactMinimize does on pan. A
+      // one-shot pass on `idle` (after the sources have loaded and it has opened
+      // itself) is enough; the button's own click still toggles it back open.
+      map.once("idle", () => {
+        const attrib = mapContainer.querySelector(".maplibregl-ctrl-attrib");
+        attrib?.removeAttribute("open");
+        attrib?.classList.remove("maplibregl-compact-show");
+      });
 
       map.on("load", () => {
         pal = palette();
