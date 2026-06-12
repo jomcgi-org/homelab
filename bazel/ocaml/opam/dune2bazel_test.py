@@ -434,9 +434,7 @@ class TestGenLibrary:
     def test_ppx_runtime_libraries_validated_and_dropped(self):
         # The field validates against the lock (runtime linkage stays on the
         # consumer) and emits nothing on the declaring library itself.
-        stanza = self._stanza(
-            "(library (name mylib) (ppx_runtime_libraries sexplib0))"
-        )
+        stanza = self._stanza("(library (name mylib) (ppx_runtime_libraries sexplib0))")
         out = gen_library(stanza, "src", LIB_MAP)
         assert "sexplib0" not in out
 
@@ -457,9 +455,7 @@ class TestGenLibrary:
             LIB_MAP,
             ppx_runtime_map={"ppxlib.metaquot": ["@ocaml_sexplib0//:sexplib0"]},
         )
-        assert (
-            'preprocess_runtime_deps = ["@ocaml_sexplib0//:sexplib0"],' in out
-        )
+        assert 'preprocess_runtime_deps = ["@ocaml_sexplib0//:sexplib0"],' in out
 
     def test_pps_generates_ppx_target(self):
         stanza = self._stanza(
