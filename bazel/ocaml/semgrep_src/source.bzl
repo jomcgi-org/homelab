@@ -46,5 +46,7 @@ OVERLAYS = [
     "libs/collections/dune",
     "libs/commons/dune",
     "libs/commons/Ord.ml",
+    "libs/commons/Common_metrics.ml",
+    "libs/commons/Tracing.ml",
     "libs/process_limits/dune",
 ]
