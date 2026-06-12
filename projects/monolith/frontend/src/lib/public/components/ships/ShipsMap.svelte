@@ -466,17 +466,31 @@
       );
 
       // MapLibre's compact AttributionControl opens itself (a <details> with
-      // the `open` attribute + `maplibregl-compact-show` class) once the
-      // style's attributions populate, so it starts as a full-width credit bar
-      // and only shrinks to the "i" after the first pan. Collapse it up front by
-      // mirroring what MapLibre's own _updateCompactMinimize does on pan. A
-      // one-shot pass on `idle` (after the sources have loaded and it has opened
-      // itself) is enough; the button's own click still toggles it back open.
-      map.once("idle", () => {
+      // the `open` attribute + `maplibregl-compact-show` class) every time the
+      // style's attributions (re)populate, so it keeps wanting to render as a
+      // full-width credit bar. The old fix stripped that once on `idle`, but a
+      // live ships map never reliably idles: vessel dead-reckoning rewrites the
+      // source ~4x/sec and tiles keep streaming, so on a real session `idle`
+      // may never fire and the bar is left expanded (and on narrow/edge layouts
+      // that wide bar is what spills past the corner). Collapse it on every
+      // attribution update instead, so it never paints expanded, and stop once
+      // the user taps the button open themselves (their click sets `open`,
+      // which we then leave alone so the required OSM credits stay readable).
+      let userOpenedAttrib = false;
+      const collapseAttrib = () => {
+        if (userOpenedAttrib) return;
         const attrib = mapContainer.querySelector(".maplibregl-ctrl-attrib");
         attrib?.removeAttribute("open");
         attrib?.classList.remove("maplibregl-compact-show");
+      };
+      mapContainer.addEventListener("click", (e) => {
+        if (e.target.closest(".maplibregl-ctrl-attrib-button")) {
+          userOpenedAttrib = true;
+        }
       });
+      map.on("styledata", collapseAttrib);
+      map.on("sourcedata", collapseAttrib);
+      collapseAttrib();
 
       map.on("load", () => {
         pal = palette();
@@ -684,13 +698,15 @@
      wasn't worth the muting, so the markers and heat ramp now sit on the full
      basemap. */
 
-  /* The bottom-right stack (zoom + the collapsed attribution "i") sits at the
-     map's bottom edge, where on phones the home-indicator safe area was
-     clipping the lowest control offscreen. Lift the whole corner above the
-     inset so nothing hides behind it. Falls back to 0 on devices without a
-     safe area. */
+  /* The bottom-right stack (zoom + the collapsed attribution "i") sits in the
+     map's corner, where a device safe area can clip the controls offscreen:
+     the home-indicator inset on the bottom, and on a notched device held in
+     landscape the rounded-corner/notch inset on the right. Inset the whole
+     corner past both so nothing hides behind them. Falls back to 0 on devices
+     without a safe area. */
   .map :global(.maplibregl-ctrl-bottom-right) {
     bottom: env(safe-area-inset-bottom, 0);
+    right: env(safe-area-inset-right, 0);
   }
 
   /* Drop the group container entirely so each +/- button is its own square
