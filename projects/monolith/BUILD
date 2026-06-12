@@ -2038,6 +2038,17 @@ py_test(
 )
 
 py_test(
+    name = "ships_heat_test",
+    srcs = ["ships/heat_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_ais_test",
     srcs = ["ships/ais_test.py"],
     imports = ["."],
