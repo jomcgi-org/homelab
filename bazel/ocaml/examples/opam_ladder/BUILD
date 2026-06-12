@@ -138,6 +138,10 @@ build_test(
         "@ocaml_opentelemetry//:opentelemetry_ambient_context_eio",
         "@semgrep_src//:telemetry",
         "@semgrep_src//:parallelism",
+        # Phase 8 ast_generic slice: visitors (translated; runtime + the
+        # ppx_deriver rewriter), the one new external the generic AST needs.
+        "@ocaml_visitors//:VisitorsRuntime",
+        "@ocaml_visitors//:ppx_deriving_visitors",
     ],
 )
 
@@ -165,5 +169,12 @@ build_test(
         "@semgrep_src//:gitignore",
         "@semgrep_src//:lib_parsing",
         "@semgrep_src//:lib_parsing_tree_sitter",
+        # Phase 8 source-to-generic-AST slice: the generic AST and the Go
+        # parser chain (all reach commons, hence the cc bucket; the grammar
+        # itself is a cc_library besides).
+        "@semgrep_src//:ast_generic",
+        "@semgrep_src//:parser_go_ast",
+        "@semgrep_src//:parser_go_tree_sitter",
+        "@semgrep_src//:parser_go_ast_generic",
     ],
 )

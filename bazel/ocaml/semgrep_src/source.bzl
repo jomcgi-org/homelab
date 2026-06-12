@@ -38,6 +38,10 @@ SEMGREP_SRC_DIRS = [
     "libs/gitignore",
     "libs/lib_parsing",
     "libs/lib_parsing_tree_sitter",
+    "src/ast_generic",
+    "languages/go/ast",
+    "languages/go/tree-sitter",
+    "languages/go/generic",
 ]
 
 SEMGREP_LIBS = {
@@ -54,6 +58,10 @@ SEMGREP_LIBS = {
     "gitignore": ":gitignore",
     "lib_parsing": ":lib_parsing",
     "lib_parsing_tree_sitter": ":lib_parsing_tree_sitter",
+    "ast_generic": ":ast_generic",
+    "parser_go.ast": ":parser_go_ast",
+    "parser_go.tree_sitter": ":parser_go_tree_sitter",
+    "parser_go.ast_generic": ":parser_go_ast_generic",
 }
 
 OVERLAYS = [
