@@ -96,13 +96,16 @@
 
   // Neo-brutalist stepped ramp, tuned to the distinct-mover counts measured on
   // live data (p50=1, p90=3, p99=10, max~22): quiet water -> busy lanes.
+  // Fully saturated plasma scale (vivid violet through magenta and rose to
+  // orange/red). Deliberately skips green and pale blue so even the quiet-water
+  // low end stays vibrant against the green-and-beige basemap when zoomed out.
   const HEAT_STOPS = [
-    { at: 1, color: "#6fc2ff", label: "1-2" },
-    { at: 3, color: "#14c4a9", label: "3-5" },
-    { at: 6, color: "#35cb5b", label: "6-9" },
-    { at: 10, color: "#ffcb1f", label: "10-14" },
-    { at: 15, color: "#ff564a", label: "15-19" },
-    { at: 20, color: "#b3261e", label: "20+" },
+    { at: 1, color: "#6a00f4", label: "1-2" }, // vivid violet
+    { at: 3, color: "#b5179e", label: "3-5" }, // magenta
+    { at: 6, color: "#e5006d", label: "6-9" }, // rose
+    { at: 10, color: "#ff5400", label: "10-14" }, // vivid orange
+    { at: 15, color: "#ff2d2d", label: "15-19" }, // red
+    { at: 20, color: "#c1121f", label: "20+" }, // deep red
   ];
   const HEAT_FILL_COLOR = [
     "step",
