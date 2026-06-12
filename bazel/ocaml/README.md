@@ -195,7 +195,10 @@ and produces `@<repo>` with a BUILD that is either:
 - **an override** — `opam/overrides/<name>/BUILD.tpl`, hand-written for
   packages whose dune trees bootstrap themselves with codegen the translator
   does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
-  ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2). Overrides still
+  ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2), and for packages
+  that are not dune projects at all, where there is nothing to translate
+  (cmdliner and logs build with b0/topkg; their flat module layouts make the
+  overrides one ocaml_library per findlib name). Overrides still
   build everything from the fetched source with our rules; each one documents
   exactly why it exists. menhir is the notable one: it self-bootstraps, so the
   override builds **stage1** (its bootstrap parser comes from ocamlyacc, which
