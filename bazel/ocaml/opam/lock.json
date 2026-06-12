@@ -1055,6 +1055,23 @@
       "libs": {
         "tree-sitter-lang.go": "tree_sitter_go"
       }
+    },
+    {
+      "name": "visitors",
+      "version": "20260520",
+      "repo": "ocaml_visitors",
+      "url": "https://gitlab.inria.fr/fpottier/visitors/-/archive/20260520/archive.tar.gz",
+      "sha256": "75183169b3503f1b2f99c61a542a359ccda34db9365514cf9222aee17b0f55fa",
+      "strip_prefix": "visitors-20260520-c7d9ed6b591d7291aa40021532a6d9030a2f0e5a",
+      "type": "tar.gz",
+      "src_dirs": ["runtime", "src"],
+      "libs": {
+        "visitors.runtime": "VisitorsRuntime",
+        "visitors.ppx": "ppx_deriving_visitors"
+      },
+      "ppx_runtime": {
+        "visitors.ppx": ["visitors.runtime"]
+      }
     }
   ]
 }

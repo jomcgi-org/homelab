@@ -18,7 +18,7 @@ load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary", "ocaml_test", "o
   compiles a set of modules into a native `.cmxa` archive. `srcs` may include
   `.mll`/`.mly` (run through the sysroot's ocamllex/ocamlyacc first) and
   `c_srcs` C stubs (compiled by `ocamlopt`, folded into the library's `.a`);
-  `c_headers` are the library's *own* headers, staged by basename next to the
+  `c_headers` are the library's _own_ headers, staged by basename next to the
   stubs (dune stages the whole library dir; `install_c_headers` names the
   public ones), never compiled.
   `cc_deps` are `cc_library` targets whose headers the C stubs `#include` and
@@ -28,7 +28,7 @@ load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary", "ocaml_test", "o
 - **`ocaml_binary(name, srcs, deps, opam_deps, data)`** — compiles + links a
   runnable native executable.
 - **`ocaml_test(...)`** — a native test executable that exits 0 on success
-  (Dune's `(test)` convention). The binary *is* the test runner.
+  (Dune's `(test)` convention). The binary _is_ the test runner.
 - **`ocaml_ppx(name, deps)`** — links a **ppxlib standalone driver** from ppx
   rewriter libraries. The generated main is `Ppxlib.Driver.standalone ()`;
   rewriters register themselves at module-init, so the driver links with
@@ -108,10 +108,10 @@ ocaml actions as hermetic inputs**:
    `5.3.0-semgrep`, stock 5.3.0 + a thin patch set) and exposes its tree as
    `@ocaml_source//:srcs`. It does **not** build.
 2. `toolchain/compiler.bzl`'s `ocaml_compiler` rule runs `./configure && make &&
-   make install` as a **build action on the RBE executor**, packaging the install
+make install` as a **build action on the RBE executor**, packaging the install
    prefix as a single **tar** (`bin/`, `lib/ocaml/`). Building where the compiler
-   will *run* is what makes it portable: a from-source build in the repository rule
-   links the *workflow runner's* glibc, which is newer than the executor's and
+   will _run_ is what makes it portable: a from-source build in the repository rule
+   links the _workflow runner's_ glibc, which is newer than the executor's and
    fails at action time with `GLIBC_2.38 not found`. The action is cached in the
    RBE action cache, so the compiler builds once. (A tar, not a TreeArtifact of the
    install: a directory artifact does not survive RBE staging intact — the bin
@@ -167,13 +167,13 @@ exceptions:
   toolchain in CI targets x86_64 only. The OCaml driver itself is unaffected
   (it uses the executor's own `gcc`/`as`/`ld`, which are native on each pool).
 - **Override genrules that stage the sysroot tar directly** (yojson's
-  ocamllex run, ocaml-compiler-libs' generators) reference the *unconstrained*
+  ocamllex run, ocaml-compiler-libs' generators) reference the _unconstrained_
   `toolchain:ocaml_compiler`: both that build action and genrules run on the
   default pool, so the binaries always match the executor, and their outputs
   are arch-independent `.ml` sources.
 
 Adding an arch remains one registry entry + one probe + one `register_toolchains`
-line. Cross-compiling linux arm64 *from* the amd64 pool is a contained
+line. Cross-compiling linux arm64 _from_ the amd64 pool is a contained
 post-OCaml-5.4 optimization (ADR 008), not wired today.
 
 ## The opam universe: lock.json
@@ -188,12 +188,12 @@ and produces `@<repo>` with a BUILD that is either:
 
 - **translated** — `opam/dune2bazel.py` over the package's own dune files
   (re, sexplib0, ppx_derivers, csexp, lwt's core, stringext, angstrom, uri,
-  ocamlgraph, ppxlib_jane, and the ppx_compare/ppx_sexp_conv/ppx_hash
-  trio today). The translator models:
+  ocamlgraph, ppxlib_jane, the ppx_compare/ppx_sexp_conv/ppx_hash
+  trio, and visitors today). The translator models:
   multiple `(library)` stanzas, `wrapped`, `(libraries ...)` resolution
   (stdlib, compiler-libs, `re_export`, and other locked packages via the
   **lib_map** composed from lock entries' `libs` tables), `(preprocess
-  no_preprocessing | future_syntax | (pps ...))` — future_syntax is the
+no_preprocessing | future_syntax | (pps ...))` — future_syntax is the
   identity on the 5.3 sysroot; pps emits an `ocaml_ppx` target and
   materializes the rewriters' `ppx_runtime_libraries` as
   `preprocess_runtime_deps` from the lock's `ppx_runtime` tables (dune's
@@ -228,7 +228,7 @@ and produces `@<repo>` with a BUILD that is either:
   codegen Semgrep leans on) out of the ahrefs/atd monorepo, via the same
   ocamllex + menhir support.
 - **a hybrid of both** -- lock entries with `"override_extra": true` get the
-  translated BUILD *plus* a hand-written fragment
+  translated BUILD _plus_ a hand-written fragment
   (`opam/overrides/<name>/BUILD.extra.tpl`) appended, for packages where
   dune2bazel models the main library but not a sublibrary. lwt is the case in
   point: core `lwt` stays translated, and the fragment adds `lwt.unix` -- its
@@ -307,6 +307,7 @@ bazel/ocaml/
   examples/cc_deps/        # cc_library linked into an OCaml C stub via cc_deps
   examples/pcre2/          # pcre2-ocaml against the vendored PCRE2 C library
   examples/treesitter/     # tree-sitter runtime + json grammar parse e2e
+  examples/go_generic/     # real Go source -> CST -> ast_go -> generic AST e2e
   examples/toycaml/        # tOyCaml: an engine-shaped demonstrator (ADR 005)
 ```
 
