@@ -49,4 +49,5 @@ OVERLAYS = [
     "libs/commons/Common_metrics.ml",
     "libs/commons/Tracing.ml",
     "libs/process_limits/dune",
+    "libs/process_limits/Logging.ml",
 ]
