@@ -47,6 +47,10 @@ _SUPPORTED_LIBRARY_FIELDS = {
     "kind",
     "flags",
     "ocamlopt_flags",
+    # Coverage instrumentation (e.g. (instrumentation (backend bisect_ppx)))
+    # is a no-op unless dune is invoked with --instrument-with; we never
+    # instrument, so the field is provably inert and safe to drop.
+    "instrumentation",
 }
 
 # Non-library stanzas that provably do not affect how the library compiles.
