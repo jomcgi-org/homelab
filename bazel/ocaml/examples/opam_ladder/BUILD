@@ -115,7 +115,7 @@ build_test(
         "@ocaml_testo//:testo",
         # Phase 8 wave A4: the eio half of the closure (commons references
         # Eio + Eio_unix; the io_uring backends stay unbuilt).
-        "@ocaml_eio//:eio_core",
+        "@ocaml_eio//:eio__core",
         "@ocaml_eio//:eio",
         "@ocaml_eio//:eio_utils",
         "@ocaml_eio//:eio_unix",
