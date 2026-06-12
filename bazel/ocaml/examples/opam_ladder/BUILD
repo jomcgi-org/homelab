@@ -38,5 +38,9 @@ build_test(
         "@ocaml_logs//:logs",
         "@ocaml_logs//:logs_fmt",
         "@ocaml_logs//:logs_cli",
+        # Phase 8 wave A: lwt core (translated) + its ocplib-endian deps.
+        "@ocaml_ocplib_endian//:ocplib_endian",
+        "@ocaml_ocplib_endian//:ocplib_endian_bigstring",
+        "@ocaml_lwt//:lwt",
     ],
 )

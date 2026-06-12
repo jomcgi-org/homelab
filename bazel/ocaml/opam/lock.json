@@ -21,7 +21,9 @@
       "sha256": "2e37b01b9bda0e39f0fd3913c0ec81237ed2d04c6bbe23f48b102de83ba47454",
       "strip_prefix": "ocaml-re-1.13.2",
       "type": "tar.gz",
-      "src_dirs": ["lib"],
+      "src_dirs": [
+        "lib"
+      ],
       "libs": {
         "re": "re"
       }
@@ -34,7 +36,9 @@
       "sha256": "5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b",
       "strip_prefix": "sexplib0-0.17.0",
       "type": "tar.gz",
-      "src_dirs": ["src"],
+      "src_dirs": [
+        "src"
+      ],
       "libs": {
         "sexplib0": "sexplib0"
       }
@@ -47,7 +51,9 @@
       "sha256": "b6595ee187dea792b31fc54a0e1524ab1e48bc6068d3066c45215a138cc73b95",
       "strip_prefix": "ppx_derivers-1.2.1",
       "type": "tar.gz",
-      "src_dirs": ["src"],
+      "src_dirs": [
+        "src"
+      ],
       "libs": {
         "ppx_derivers": "ppx_derivers"
       }
@@ -115,7 +121,9 @@
       "url": "https://github.com/ocaml-community/easy-format/releases/download/1.3.4/easy-format-1.3.4.tbz",
       "sha256": "1dbf051e9f68574dde6e2e254a66b9c524ca425e80b36e99af96ed964ab610c3",
       "strip_prefix": "easy-format-1.3.4",
-      "src_dirs": ["src"],
+      "src_dirs": [
+        "src"
+      ],
       "libs": {
         "easy-format": "easy_format"
       }
@@ -140,7 +148,9 @@
       "url": "https://github.com/mjambon/biniou/releases/download/1.2.2/biniou-1.2.2.tbz",
       "sha256": "8bf3ff17cd0ecb2d6b6d1d94cb08ef089d44caef96e9bae6be6839d428fa318f",
       "strip_prefix": "biniou-1.2.2",
-      "src_dirs": ["src"],
+      "src_dirs": [
+        "src"
+      ],
       "libs": {
         "biniou": "biniou"
       }
@@ -275,6 +285,35 @@
         "logs.cli": "logs_cli"
       },
       "override": true
+    },
+    {
+      "name": "ocplib-endian",
+      "version": "1.2",
+      "repo": "ocaml_ocplib_endian",
+      "url": "https://github.com/OCamlPro/ocplib-endian/archive/refs/tags/1.2.tar.gz",
+      "sha256": "97ae74e8aeead46a0475df14af637ce78e2372c07258619ad8967506f2d4b320",
+      "strip_prefix": "ocplib-endian-1.2",
+      "type": "tar.gz",
+      "libs": {
+        "ocplib-endian": "ocplib_endian",
+        "ocplib-endian.bigstring": "ocplib_endian_bigstring"
+      },
+      "override": true
+    },
+    {
+      "name": "lwt",
+      "version": "5.9.2",
+      "repo": "ocaml_lwt",
+      "url": "https://github.com/ocsigen/lwt/archive/refs/tags/5.9.2.tar.gz",
+      "sha256": "f4e59d62d8cb1eb119591c7c395fa6cc1c926711d87f93fd26d0004748880ce7",
+      "strip_prefix": "lwt-5.9.2",
+      "type": "tar.gz",
+      "src_dirs": [
+        "src/core"
+      ],
+      "libs": {
+        "lwt": "lwt"
+      }
     }
   ]
 }

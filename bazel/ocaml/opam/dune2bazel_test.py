@@ -394,6 +394,16 @@ class TestGenLibrary:
         out = gen_library(stanza, "src", LIB_MAP)
         assert "wrapped = True," in out
 
+    def test_instrumentation_inert(self):
+        # (instrumentation (backend bisect_ppx)) is a no-op unless dune runs
+        # with --instrument-with; we never instrument, so it must be dropped
+        # without rejecting the stanza (lwt's core library carries it).
+        stanza = self._stanza(
+            "(library (name mylib) (instrumentation (backend bisect_ppx)))"
+        )
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert "bisect" not in out
+
     def test_no_preprocessing_accepted(self):
         stanza = self._stanza("(library (name mylib) (preprocess no_preprocessing))")
         out = gen_library(stanza, "src", LIB_MAP)
