@@ -187,5 +187,16 @@ build_test(
         "@semgrep_src//:ppx_commons",
         "@semgrep_src//:ppx_telemetry",
         "@semgrep_src//:semgrep_configuring",
+        # Phase 8 semgrep_core closure frontier: src/core's own dependency
+        # set minus src/core itself (gated on yaml/ctypes, see
+        # semgrep_src/README.md). All reach commons, hence the cc bucket.
+        "@semgrep_src//:spacegrep",
+        "@semgrep_src//:parser_javascript_ast",
+        "@semgrep_src//:aliengrep",
+        "@semgrep_src//:semgrep_interfaces",
+        "@semgrep_src//:semgrep_core_rule",
+        "@semgrep_src//:semgrep_core_sca",
+        "@semgrep_src//:git_wrapper",
+        "@semgrep_src//:semgrep_core_target",
     ],
 )

@@ -14,11 +14,14 @@ tree-sitter grammars ride the opam lock as `"opam": false` entries instead
 SEMGREP_SRC_DIRS is the translated frontier: the dune dirs dune2bazel runs
 over at fetch time, growing bottom-up exactly like the opam universe.
 SEMGREP_LIBS maps each translated library's dune name to its target so
-later dirs can reference earlier ones. Internal ppx rewriters get TWO keys,
-the public name and the dune (name ...): upstream pps lines use them
-interchangeably (src/configuring says ppx_profiling, src/core says
-commons.ppx AND ppx_telemetry), and only dune's in-project resolution knows
-the internal names, so the map carries both. OVERLAYS lists tree paths
+later dirs can reference earlier ones. Libraries whose public name differs
+from their dune (name ...) get TWO keys: upstream uses them
+interchangeably -- pps lines name internal rewriters either way
+(src/configuring says ppx_profiling, src/core says commons.ppx AND
+ppx_telemetry), and src/core's (libraries ...) names semgrep_core_rule /
+semgrep_core_target while src/sca and src/target use the semgrep.* public
+names. Only dune's in-project resolution knows the internal names, so the
+map carries both. OVERLAYS lists tree paths
 replaced by overlays/<path> before translation; every overlay documents
 what it changes and why (the reject-loudly contract's "source patch"
 dispatch).
@@ -50,6 +53,23 @@ SEMGREP_SRC_DIRS = [
     "languages/go/ast",
     "languages/go/tree-sitter",
     "languages/go/generic",
+    # The semgrep_core closure frontier (src/core's own deps; src/core
+    # itself waits on yaml/ctypes, see README). spacegrep's root dune is
+    # (dirs ...)-only, so src/lib is listed directly; bin/test stay out.
+    "src/spacegrep/src/lib",
+    "languages/javascript/ast",
+    "src/aliengrep",
+    # At this pin a vendored tree (not a submodule); the atd-generated
+    # _t/_j sources are checked in, and its complete (modules ...) list
+    # validates-and-drops in the translator.
+    "cli/src/semgrep/semgrep_interfaces",
+    "src/rule",
+    "src/sca",
+    # src/target's Origin/Target reference Git_wrapper, the moment the old
+    # lib_parsing dispatch deferred to. Overlays keep ocaml-git out (see
+    # overlays/libs/git_wrapper/ and README).
+    "libs/git_wrapper",
+    "src/target",
 ]
 
 SEMGREP_LIBS = {
@@ -76,6 +96,22 @@ SEMGREP_LIBS = {
     "parser_go.ast": ":parser_go_ast",
     "parser_go.tree_sitter": ":parser_go_tree_sitter",
     "parser_go.ast_generic": ":parser_go_ast_generic",
+    "spacegrep": ":spacegrep",
+    "parser_javascript.ast": ":parser_javascript_ast",
+    "parser_javascript_ast": ":parser_javascript_ast",
+    "aliengrep": ":aliengrep",
+    "semgrep.interfaces": ":semgrep_interfaces",
+    "semgrep_interfaces": ":semgrep_interfaces",
+    "git_wrapper": ":git_wrapper",
+    # Non-rewriter libraries get both names too: src/core's stanza names
+    # semgrep_core_rule/semgrep_core_target by their dune (name ...) while
+    # src/sca and src/target use the semgrep.* public names.
+    "semgrep.rule": ":semgrep_core_rule",
+    "semgrep_core_rule": ":semgrep_core_rule",
+    "semgrep.sca": ":semgrep_core_sca",
+    "semgrep_core_sca": ":semgrep_core_sca",
+    "semgrep.target": ":semgrep_core_target",
+    "semgrep_core_target": ":semgrep_core_target",
 }
 
 OVERLAYS = [
@@ -87,4 +123,11 @@ OVERLAYS = [
     "libs/commons/Ord.ml",
     "libs/lib_parsing/dune",
     "libs/lib_parsing/Pos.ml",
+    "src/aliengrep/dune",
+    "src/sca/Dependency.ml",
+    "src/sca/Dependency.mli",
+    "libs/git_wrapper/dune",
+    "libs/git_wrapper/Git_wrapper.ml",
+    "libs/git_wrapper/Git_wrapper.mli",
+    "src/target/dune",
 ]

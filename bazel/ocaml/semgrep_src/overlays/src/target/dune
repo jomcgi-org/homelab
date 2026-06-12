@@ -1,0 +1,44 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; One difference from upstream, measured against the pinned sources
+; (ocamldep -modules over src/target): git_wrapper joins the libraries.
+; Origin.ml and Target.ml reference Git_wrapper (the Git_blob origin);
+; upstream reaches it transitively through lib_parsing, whose overlay
+; measured git_wrapper out of its own (unreferencing) dep set. Declaring
+; the dep where the reference actually lives is the measured-set rule.
+
+; Library defining mostly Target.ml and a few related modules.
+;
+; Note that the actual targeting code is in ../targeting/
+
+(library
+ (public_name semgrep.target)
+ (name semgrep_core_target)
+ (wrapped false)
+ (libraries
+   ; standard libraries
+   ; in libs/
+   commons
+   git_wrapper
+   ; in src/
+   ; We should not depend on any other semgrep libs
+   semgrep.sca ; for SCA_depencency.ml in Lockfile_xtarget.ml and more
+   semgrep.rule ; for semgrep_output_v1.atd core types like 'ecosystem'
+ )
+ (preprocess
+   (pps
+     ppx_profiling
+     ppx_deriving.eq
+     ppx_deriving.ord
+     ppx_deriving.show
+     ppx_hash
+     commons.ppx
+   )
+ )
+)
+
+; this is for a few files in this directory which contain multiple types
+; using the same field names
+(env
+  (_
+    (flags (:standard  -w -30))))
