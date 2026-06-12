@@ -19,6 +19,10 @@ cc_library(
     ] + glob(["lib/tree_sitter/*.h"]),
     copts = ["-w"],
     includes = ["lib"],
+    # The C++ scanner needs the C++ runtime at the final OCaml link
+    # (upstream's c_library_flags say -lstdc++); user link flags propagate
+    # through cc_deps to every consuming binary.
+    linkopts = ["-lstdc++"],
     visibility = ["//visibility:public"],
     deps = ["@ocaml_tree_sitter_c//:tree_sitter"],
 )
