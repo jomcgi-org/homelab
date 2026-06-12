@@ -1,0 +1,38 @@
+rules:
+  - id: cfingress-rewrite-needs-slash-redirect
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      cf-ingress.httproute is called with "rewritePrefix" "/" but this template
+      has no companion slash-redirect rule. Without the redirect, visiting the
+      bare path prefix (e.g. /app/myservice instead of /app/myservice/) causes
+      the browser URL to stay at /app/myservice, and any relative asset or API
+      URLs emitted by the UI resolve against /app/ (the parent) instead of
+      /app/myservice/. Add a RequestRedirect HTTPRoute for the bare prefix
+      (see longhorn/templates/httproute.yaml for the pattern), or suppress with
+      a nosemgrep comment if the service uses a basehref mechanism that makes
+      the redirect unnecessary (e.g. ArgoCD with server.basehref injects
+      <base href="..."> into index.html, so no redirect is needed).
+    metadata:
+      category: correctness
+      subcategory: helm
+      confidence: HIGH
+      likelihood: MEDIUM
+      impact: MEDIUM
+      technology: [helm, kubernetes, gateway-api]
+    paths:
+      include:
+        - "**/templates/httproute.yaml"
+    # languages: [generic] (spacegrep) is required here because Helm templates
+    # contain {{ }} directives that make them invalid YAML. The primary pattern
+    # anchors at "rewritePrefix" "/" and the trailing ... extends the match
+    # forward to the end of the file so pattern-not can find RequestRedirect
+    # anywhere after the rewritePrefix declaration.
+    patterns:
+      - pattern: |
+          "rewritePrefix" "/"
+          ...
+      - pattern-not: |
+          "rewritePrefix" "/"
+          ...
+          RequestRedirect

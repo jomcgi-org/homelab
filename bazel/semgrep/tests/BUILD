@@ -20,6 +20,7 @@ filegroup(
             "fixtures/no-discarded-json-marshal.yaml",
             "fixtures/no-session-in-to-thread.yaml",
             "fixtures/no-shared-preload-libraries-cnpg.yaml",
+            "fixtures/cfingress-rewrite-needs-slash-redirect.yaml",
             "fixtures/no-unquoted-helm-range-args.yaml",
             "fixtures/python-shadow-module-import.yaml",
             "fixtures/require-cnpg-cluster-resources.yaml",
@@ -151,6 +152,16 @@ filegroup(
 
 # Fixtures for kubernetes rules (require-readiness-probe, require-resource-limits, etc.).
 # Referenced by //bazel/semgrep/rules:kubernetes_rules_test.
+# Fixture for the cfingress-rewrite-needs-slash-redirect rule (languages: generic,
+# paths: **/templates/httproute.yaml). Excluded from yaml_fixtures because the rule
+# uses a forward-scanning pattern-not that requires the ok and bad cases to be ordered
+# carefully, and it targets template files rather than plain YAML.
+# Referenced by //bazel/semgrep/rules:cfingress_rewrite_needs_slash_redirect_test.
+filegroup(
+    name = "cfingress_rewrite_needs_slash_redirect_fixtures",
+    srcs = ["fixtures/cfingress-rewrite-needs-slash-redirect.yaml"],
+)
+
 # New rule fixtures should be added here as they are created.
 filegroup(
     name = "kubernetes_yaml_fixtures",
