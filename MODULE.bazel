@@ -161,6 +161,7 @@ use_repo(
     "ocaml_tsort",
     "ocaml_uri",
     "ocaml_uuidm",
+    "ocaml_visitors",
     "ocaml_yojson",
 )
 
