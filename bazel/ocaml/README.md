@@ -17,7 +17,10 @@ load("//bazel/ocaml:defs.bzl", "ocaml_library", "ocaml_binary", "ocaml_test", "o
 - **`ocaml_library(name, srcs, deps, opam_deps, wrapped, preprocess, cc_deps, ...)`** —
   compiles a set of modules into a native `.cmxa` archive. `srcs` may include
   `.mll`/`.mly` (run through the sysroot's ocamllex/ocamlyacc first) and
-  `c_srcs` C stubs (compiled by `ocamlopt`, folded into the library's `.a`).
+  `c_srcs` C stubs (compiled by `ocamlopt`, folded into the library's `.a`);
+  `c_headers` are the library's *own* headers, staged by basename next to the
+  stubs (dune stages the whole library dir; `install_c_headers` names the
+  public ones), never compiled.
   `cc_deps` are `cc_library` targets whose headers the C stubs `#include` and
   whose static archives binaries link (the path to pcre2 / tree-sitter); the
   header dir reaches the stub compile via `-ccopt -I` and the archives propagate
@@ -209,6 +212,18 @@ and produces `@<repo>` with a BUILD that is either:
   existing menhir. The atd override builds the atdgen code generator (the JSON
   codegen Semgrep leans on) out of the ahrefs/atd monorepo, via the same
   ocamllex + menhir support.
+- **a hybrid of both** -- lock entries with `"override_extra": true` get the
+  translated BUILD *plus* a hand-written fragment
+  (`opam/overrides/<name>/BUILD.extra.tpl`) appended, for packages where
+  dune2bazel models the main library but not a sublibrary. lwt is the case in
+  point: core `lwt` stays translated, and the fragment adds `lwt.unix` -- its
+  dune-configurator feature probe (`discover.exe`, built with our rules and
+  run in a genrule against the sysroot with libev pinned off; the genrule
+  hand-writes the `.dune/configurator.v2` csexp protocol dune normally
+  provides) and its 100+ `foreign_stubs` C files via `c_srcs`/`c_headers`.
+  The probe pulled `csexp` (translated) and `dune-configurator` (override:
+  `private_modules`, a bootstrap-computed flags include, and
+  `special_builtin_support`, all provably inert for our build) into the lock.
 
 Vendored **C libraries** ride the same lock (entries with `"opam": false`):
 the PCRE2 C source and the tree-sitter runtime + per-language grammars are

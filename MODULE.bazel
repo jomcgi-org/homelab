@@ -90,6 +90,8 @@ use_repo(
     "ocaml_cmdliner",
     "ocaml_compiler_libs_pkg",
     "ocaml_cppo",
+    "ocaml_csexp",
+    "ocaml_dune_configurator",
     "ocaml_easy_format",
     "ocaml_logs",
     "ocaml_lwt",

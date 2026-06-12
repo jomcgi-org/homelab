@@ -51,7 +51,17 @@ def _opam_dune_repo_impl(ctx):
     if result.return_code != 0:
         fail("dune2bazel failed for %s:\n%s%s" % (ctx.attr.name, result.stdout, result.stderr))
 
-    ctx.file("BUILD.bazel", result.stdout)
+    content = result.stdout
+
+    # A hybrid repo: dune2bazel translates the stanzas it models, and a
+    # hand-written fragment (overrides/<name>/BUILD.extra.tpl) appends targets
+    # for the package's sublibraries it does not (lwt.unix's discover +
+    # foreign_stubs machinery). The fragment must not re-load symbols the
+    # translated header already binds (ocaml_library, ocaml_ppx).
+    if ctx.attr.extra_build_file:
+        content += "\n" + ctx.read(ctx.path(ctx.attr.extra_build_file))
+
+    ctx.file("BUILD.bazel", content)
 
 _opam_dune_repo = repository_rule(
     implementation = _opam_dune_repo_impl,
@@ -62,6 +72,7 @@ _opam_dune_repo = repository_rule(
         "archive_type": attr.string(default = "tar.bz2", doc = "Archive type for download_and_extract (dune-release assets are .tbz; GitHub tag tarballs are tar.gz)."),
         "src_dirs": attr.string_list(doc = "Subdirs holding dune files + sources to translate."),
         "build_file": attr.label(allow_single_file = True, doc = "Hand-written override BUILD installed verbatim instead of translating."),
+        "extra_build_file": attr.label(allow_single_file = True, doc = "Hand-written BUILD fragment appended after the translated targets (sublibraries the translator does not model)."),
         "lib_map_json": attr.string(doc = "JSON object: findlib library name -> Bazel label, from lock.json libs tables."),
     },
     doc = "Fetch an opam package tarball and generate its BUILD from its dune metadata.",
@@ -85,6 +96,7 @@ def _extension_impl(mctx):
             archive_type = pkg.get("type", "tar.bz2"),
             src_dirs = pkg.get("src_dirs", []),
             build_file = Label("//bazel/ocaml/opam/overrides:%s/BUILD.tpl" % pkg["name"]) if pkg.get("override") else None,
+            extra_build_file = Label("//bazel/ocaml/opam/overrides:%s/BUILD.extra.tpl" % pkg["name"]) if pkg.get("override_extra") else None,
             lib_map_json = lib_map_json,
         )
 
