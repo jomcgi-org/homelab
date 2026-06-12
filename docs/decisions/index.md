@@ -46,6 +46,7 @@ ADRs document significant architectural decisions and their context.
 | [003 - CDN Cache Rule Scoped to `public.jomcgi.dev`](platform/003-cdn-cache-hostname-rule.md)                  | Scope CDN cache rule to public.jomcgi.dev (supersedes 002 partially)            |
 | [004 - Iceberg-on-SeaweedFS Lakehouse with Hot-Swap Quack Serving](platform/004-iceberg-lakehouse-hot-swap.md) | Event-sourced lakehouse; NATS → Iceberg → Quack hot-swap; partially evolves 001 |
 | [005 - Per-PR Preview Environments](platform/005-per-pr-preview-environments.md)                               | Ephemeral monolith previews: CoW Postgres clone, muted side effects, ApplicationSet PR generator |
+| [006 - Decommission Obsidian via a Postgres Interim](platform/006-obsidian-decommission-postgres-interim.md)   | Kill Obsidian now: note body authoritative in Postgres, web UI editor; interim ahead of 004 |
 
 ## Security
 
