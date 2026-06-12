@@ -11,9 +11,8 @@
 # The cinaps stanzas are dev-only consistency checks (their output is already
 # committed upstream) and are intentionally dropped.
 #
-# Sub-libraries not (yet) built: ppxlib_traverse (needs metaquot at its own
-# build time; add it when a consumer appears), bin/ and runner/ executables.
-load("@homelab//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library")
+# Sub-libraries not (yet) built: bin/ and runner/ executables.
+load("@homelab//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_ppx")
 
 # --- bootstrap: the per-version source preprocessors --------------------------
 # Two distinct tools named pp.exe upstream: astlib/pp keys on the short AST
@@ -217,4 +216,36 @@ ocaml_library(
         ":ppxlib_traverse_builtins",
     ],
     visibility = ["//visibility:public"],
+)
+
+# --- traverse: the [@@deriving traverse] classes -------------------------------
+# Its sources use [%expr ...] quotations, so it is the first in-repo library
+# preprocessed by its own sibling metaquot (upstream: (preprocess (pps
+# ppxlib_metaquot))). The consumer is ppx_sexp_conv's expander.
+
+ocaml_ppx(
+    name = "metaquot_driver",
+    deps = [":ppxlib_metaquot"],
+)
+
+ocaml_library(
+    name = "ppxlib_traverse",
+    srcs = glob(
+        [
+            "traverse/*.ml",
+            "traverse/*.mli",
+        ],
+        allow_empty = True,
+    ),
+    ocamlopt_flags = ["-safe-string"],
+    preprocess = ":metaquot_driver",
+    visibility = ["//visibility:public"],
+    wrapped = True,
+    deps = [
+        ":ppxlib",
+        ":ppxlib_ast",
+        ":ppxlib_traverse_builtins",
+        ":stdppx",
+        "@ocaml_stdlib_shims//:stdlib_shims",
+    ],
 )

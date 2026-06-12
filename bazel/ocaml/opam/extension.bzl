@@ -42,6 +42,8 @@ def _opam_dune_repo_impl(ctx):
         _ROOT_MODULE,
         "--lib-map-json",
         ctx.attr.lib_map_json,
+        "--ppx-runtime-map-json",
+        ctx.attr.ppx_runtime_map_json,
     ]
     for d in ctx.attr.src_dirs:
         if not ctx.path(d + "/dune").exists:
@@ -74,6 +76,7 @@ _opam_dune_repo = repository_rule(
         "build_file": attr.label(allow_single_file = True, doc = "Hand-written override BUILD installed verbatim instead of translating."),
         "extra_build_file": attr.label(allow_single_file = True, doc = "Hand-written BUILD fragment appended after the translated targets (sublibraries the translator does not model)."),
         "lib_map_json": attr.string(doc = "JSON object: findlib library name -> Bazel label, from lock.json libs tables."),
+        "ppx_runtime_map_json": attr.string(default = "{}", doc = "JSON object: pps rewriter name -> list of runtime dep Bazel labels, from lock.json ppx_runtime tables (dune's ppx_runtime_libraries propagation)."),
     },
     doc = "Fetch an opam package tarball and generate its BUILD from its dune metadata.",
 )
@@ -87,6 +90,20 @@ def _extension_impl(mctx):
             lib_map[findlib] = "@%s//:%s" % (pkg["repo"], target)
     lib_map_json = json.encode(lib_map)
 
+    # ppx_runtime tables: rewriter name -> the findlib names code rewritten by
+    # it links (dune's ppx_runtime_libraries). Resolved through lib_map here
+    # so the translator only sees labels; a missing name fails the fetch.
+    ppx_runtime_map = {}
+    for pkg in lock["packages"]:
+        for pps_name, runtime_names in pkg.get("ppx_runtime", {}).items():
+            labels = []
+            for rn in runtime_names:
+                if rn not in lib_map:
+                    fail("lock.json: ppx_runtime entry %s of %s names %s, which no libs table declares" % (pps_name, pkg["name"], rn))
+                labels.append(lib_map[rn])
+            ppx_runtime_map[pps_name] = labels
+    ppx_runtime_map_json = json.encode(ppx_runtime_map)
+
     for pkg in lock["packages"]:
         _opam_dune_repo(
             name = pkg["repo"],
@@ -98,6 +115,7 @@ def _extension_impl(mctx):
             build_file = Label("//bazel/ocaml/opam/overrides:%s/BUILD.tpl" % pkg["name"]) if pkg.get("override") else None,
             extra_build_file = Label("//bazel/ocaml/opam/overrides:%s/BUILD.extra.tpl" % pkg["name"]) if pkg.get("override_extra") else None,
             lib_map_json = lib_map_json,
+            ppx_runtime_map_json = ppx_runtime_map_json,
         )
 
 ocaml_opam = module_extension(implementation = _extension_impl)

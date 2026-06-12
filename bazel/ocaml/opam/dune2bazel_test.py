@@ -431,6 +431,36 @@ class TestGenLibrary:
         assert '"src/**/*.ml"' in out
         assert '"src/**/*.mly"' in out
 
+    def test_ppx_runtime_libraries_validated_and_dropped(self):
+        # The field validates against the lock (runtime linkage stays on the
+        # consumer) and emits nothing on the declaring library itself.
+        stanza = self._stanza(
+            "(library (name mylib) (ppx_runtime_libraries sexplib0))"
+        )
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert "sexplib0" not in out
+
+    def test_ppx_runtime_libraries_unknown_exits(self):
+        stanza = self._stanza("(library (name mylib) (ppx_runtime_libraries nope))")
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_pps_emits_preprocess_runtime_deps(self):
+        # Dune adds a rewriter's ppx_runtime_libraries to the consumer; the
+        # translator reproduces that from the lock's ppx_runtime tables.
+        stanza = self._stanza(
+            "(library (name mylib) (preprocess (pps ppxlib.metaquot)))"
+        )
+        out = gen_library(
+            stanza,
+            "src",
+            LIB_MAP,
+            ppx_runtime_map={"ppxlib.metaquot": ["@ocaml_sexplib0//:sexplib0"]},
+        )
+        assert (
+            'preprocess_runtime_deps = ["@ocaml_sexplib0//:sexplib0"],' in out
+        )
+
     def test_pps_generates_ppx_target(self):
         stanza = self._stanza(
             "(library (name mylib) (preprocess (pps ppxlib.metaquot)))"
