@@ -30,12 +30,15 @@ ocaml_library(
     visibility = ["//visibility:public"],
 )
 
-# Runtime support linked by atdgen-generated code.
+# Runtime support linked by atdgen-generated code. The *.mll glob covers
+# the ocamllex modules atd 3.x added (yojson_extra, yojson_lexer_utils;
+# Yojson_extra is what semgrep_interfaces' checked-in codegen calls).
 ocaml_library(
     name = "atdgen_runtime",
     srcs = glob([
         "atdgen-runtime/src/*.ml",
         "atdgen-runtime/src/*.mli",
+        "atdgen-runtime/src/*.mll",
     ]),
     wrapped = True,
     deps = [
