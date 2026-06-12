@@ -293,10 +293,51 @@ fi
 # Sort .ml AND .mli together: an interface may depend on a module whose
 # implementation sorts late (re's category.mli references Fmt), so interface
 # compile order is a property of the full file graph, not the .ml-only graph.
-# ocamldep -sort emits one topological file order with x.mli before x.ml.
 # The list comes from $WORK (not $SRCS) so generated sources are included.
+#
+# Not `ocamldep -sort`: it over-approximates references and treats a module
+# mentioning its own name as a dependency cycle (base's array.ml says
+# `Array.length` through an alias bound by `open! Import`; -sort dies with
+# "cycle in dependencies"). Dune drops self-edges when it resolves deps; do
+# the same here: take `ocamldep -modules`, map referenced module names onto
+# the staged files (both `foo.ml` and `Foo.ml` spellings exist in the wild),
+# skip self-references, order x.mli before x.ml, and tsort. Real cycles
+# still fail loudly (tsort reports them and exits non-zero).
 ALLB="$(cd "$WORK" && ls -- *.ml *.mli 2>/dev/null || true)"
-ORDER="$(cd "$WORK" && "$OCAMLDEP" -sort $ALLB)"
+DEPOUT="$(cd "$WORK" && "$OCAMLDEP" -modules $ALLB)"
+ORDER="$(
+	{
+		printf '%s\n' $ALLB
+		printf '===\n'
+		printf '%s\n' "$DEPOUT"
+	} | awk '
+		$0 == "===" { phase = 1; next }
+		phase == 0 { files[$0] = 1; next }
+		{
+			file = $1
+			sub(/:$/, "", file)
+			base = file
+			sub(/\.mli?$/, "", base)
+			unit = toupper(substr(base, 1, 1)) substr(base, 2)
+			# Declare the node (an identical pair is "node, no successor").
+			print file, file
+			# A unit with an interface compiles it before its implementation.
+			if (file == base ".ml" && (base ".mli") in files)
+				print base ".mli", file
+			for (i = 2; i <= NF; i++) {
+				m = $i
+				if (m == unit) continue
+				lc = tolower(substr(m, 1, 1)) substr(m, 2)
+				if ((lc ".mli") in files) print lc ".mli", file
+				if ((lc ".ml") in files) print lc ".ml", file
+				if (m != lc) {
+					if ((m ".mli") in files) print m ".mli", file
+					if ((m ".ml") in files) print m ".ml", file
+				}
+			}
+		}' | tsort
+)"
+ORDER="$(printf '%s\n' "$ORDER" | tr '\n' ' ')"
 echo "ocaml_compile: compile order: $ORDER" >&2
 
 # --- Wrapping (dune scheme) --------------------------------------------------
