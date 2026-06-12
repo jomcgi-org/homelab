@@ -8,9 +8,10 @@ browser is at a trailing-slash URL. The redirect route below handles the
 bare /app/longhorn case, which would otherwise resolve relative URLs
 against /app/ and fall through to the monolith catch-all.
 
-If anything still breaks (community reports on subpath setups are mixed),
-delete this file; the static tunnel route at longhorn.jomcgi.dev stays
-authoritative until this path is proven.
+This path is the authoritative route (verified working); the former
+longhorn.jomcgi.dev tunnel route was retired in PR #2534. If a future
+Longhorn upgrade breaks subpath asset/websocket handling, reverting this
+file plus the tunnel route is the fallback.
 */}}
 {{- if .Values.cfIngress.enabled }}
 {{- $routeParams := dict

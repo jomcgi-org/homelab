@@ -2,8 +2,8 @@
 # Wraps upstream chart configuration
 
 # Path-based private ingress: https://private.jomcgi.dev/app/longhorn
-# Experimental (see templates/httproute.yaml); longhorn.jomcgi.dev remains
-# the authoritative route until this is proven to work.
+# This is the authoritative route; the former longhorn.jomcgi.dev tunnel route
+# was retired in PR #2534. See templates/httproute.yaml for the prefix handling.
 cfIngress:
   enabled: true
   tier: trusted

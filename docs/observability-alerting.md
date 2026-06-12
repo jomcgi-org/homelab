@@ -140,7 +140,7 @@ Monitor service availability via the OTel httpcheck receiver. Pattern: `max(http
 | Service          | URL                                       | Location                                      |
 | ---------------- | ----------------------------------------- | --------------------------------------------- |
 | ArgoCD           | `https://private.jomcgi.dev/app/argocd/healthz` | `projects/platform/argocd/`                   |
-| Longhorn         | `https://longhorn.jomcgi.dev`             | `projects/platform/longhorn/`                 |
+| Longhorn         | `https://private.jomcgi.dev/app/longhorn/` | `projects/platform/longhorn/`                 |
 | SigNoz           | `https://private.jomcgi.dev/app/signoz`   | `projects/platform/signoz/`                   |
 | hikes.jomcgi.dev | `https://hikes.jomcgi.dev`                | `projects/platform/signoz/`                   |
 | jomcgi.dev       | `https://jomcgi.dev`                      | `projects/platform/signoz/`                   |

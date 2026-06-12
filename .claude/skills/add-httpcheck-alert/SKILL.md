@@ -222,7 +222,7 @@ Creates: `projects/todo/deploy/todo-httpcheck-alert.yaml`
 ### Example 2: Service with Custom Namespace
 
 ```
-/add-httpcheck-alert signoz https://signoz.jomcgi.dev signoz
+/add-httpcheck-alert signoz https://private.jomcgi.dev/app/signoz signoz
 ```
 
 Creates: `projects/signoz/deploy/signoz-httpcheck-alert.yaml`
