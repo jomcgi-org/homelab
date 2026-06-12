@@ -17,7 +17,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from app.db import get_session
-from ships.models import LatestPosition, Position, Vessel
+from ships.models import HeatCell, LatestPosition, Position, Vessel
 from ships.router import _parse_since, router
 
 T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
@@ -214,3 +214,31 @@ class TestParseSince:
         assert _parse_since("h") is None
         assert _parse_since("") is None
         assert _parse_since(None) is None
+
+
+def _seed_heat(session: Session) -> None:
+    session.add(HeatCell(lat_bin=9856, lon_bin=-16416, count=22))
+    session.add(HeatCell(lat_bin=9520, lon_bin=-16312, count=3))
+    session.commit()
+
+
+class TestHeat:
+    def test_returns_cells_and_steps(self, client, session):
+        _seed_heat(session)
+        r = client.get("/api/ships/heat")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 2
+        assert body["step_lat"] == 0.005
+        assert body["step_lon"] == 0.0075
+        # Compact [lat_bin, lon_bin, count] triples; client rebuilds polygons.
+        triples = {(c[0], c[1]): c[2] for c in body["cells"]}
+        assert triples[(9856, -16416)] == 22
+        assert triples[(9520, -16312)] == 3
+
+    def test_empty_when_no_rollup(self, client):
+        r = client.get("/api/ships/heat")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 0
+        assert body["cells"] == []

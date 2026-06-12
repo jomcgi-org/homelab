@@ -22,7 +22,9 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
 from app.db import get_session
-from ships.models import LatestPosition, Position, Vessel
+from ships.heat import LAT_STEP as HEAT_LAT_STEP
+from ships.heat import LON_STEP as HEAT_LON_STEP
+from ships.models import HeatCell, LatestPosition, Position, Vessel
 
 logger = logging.getLogger("ships")
 
@@ -38,6 +40,11 @@ _SNAPSHOT_CACHE_CONTROL = (
 # Mirrors SHIPS_TRACK_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
 _TRACK_CACHE_CONTROL = (
     "public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
+)
+# Heatmap rollup refreshes hourly, so 5 min fresh with a 1 h SWR window is plenty.
+# Mirrors SHIPS_HEAT_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
+_HEAT_CACHE_CONTROL = (
+    "public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=86400"
 )
 
 
@@ -186,3 +193,27 @@ def get_track(
 
     response.headers["Cache-Control"] = _TRACK_CACHE_CONTROL
     return {"mmsi": mmsi, "count": len(track), "track": track}
+
+
+@router.get("/heat")
+def get_heat(
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """Precomputed traffic-density grid for the /app/ships heatmap.
+
+    Returns the occupied ~500m cells as compact [lat_bin, lon_bin, count]
+    triples plus the cell steps; the client reconstructs each cell polygon as
+    [lat_bin*step_lat, lon_bin*step_lon] .. [+step]. SSR-only, CDN-cached. The
+    heavy aggregation runs hourly in ships.heat; this just reads the rollup.
+    """
+    rows = session.exec(select(HeatCell)).all()
+    cells = [[c.lat_bin, c.lon_bin, c.count] for c in rows]
+
+    response.headers["Cache-Control"] = _HEAT_CACHE_CONTROL
+    return {
+        "step_lat": HEAT_LAT_STEP,
+        "step_lon": HEAT_LON_STEP,
+        "count": len(cells),
+        "cells": cells,
+    }

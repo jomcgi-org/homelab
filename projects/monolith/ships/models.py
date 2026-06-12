@@ -68,3 +68,16 @@ class LatestPosition(
     recorded_at: datetime
     first_seen_at_location: datetime | None = Field(default=None)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class HeatCell(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    __tablename__ = "heat_cells"
+    __table_args__ = {"schema": "ships", "extend_existing": True}
+
+    # Precomputed traffic-density rollup: one row per occupied ~500m grid cell
+    # (floor(lat/step) x floor(lon/step)) holding the count of distinct moving
+    # vessels that used it. Rebuilt in full by ships.heat.heat_rollup_handler.
+    lat_bin: int = Field(primary_key=True)
+    lon_bin: int = Field(primary_key=True)
+    count: int
+    computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
