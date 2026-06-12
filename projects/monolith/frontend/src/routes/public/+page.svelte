@@ -164,9 +164,8 @@
     <div class="bio-left">
       <Sticker color="var(--paper)" rotate={-3} class="sticker-bio">A LITTLE ABOUT ME</Sticker>
       <p class="bio-sub">
-        I'm Joe, from Scotland, living in Vancouver.<br />
-        Monorepo enthusiast. Lover of <a href="https://brutalistwebsites.com/" class="bio-link">brutalist websites</a>.<br />
-        Care<em>mad</em> about developer experience.
+        Mostly I build infrastructure and abstractions so that other engineers don't have to think about it - Kubernetes, eBPF, and everything in between.<br />
+        Care<em>mad</em> about developer and user experience.
       </p>
     </div>
     <h2 class="bio-headline">Boring infrastructure<br />is a feature.</h2>
