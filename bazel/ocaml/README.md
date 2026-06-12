@@ -147,12 +147,16 @@ cross-compilation. The data-driven registry (`toolchain/arches.bzl`,
   sysroot is the same from-source action landing on BuildBuddy's cloud arm64
   pool (launched 2026-01, zero infra on our side);
 - a per-arch `(ocaml_toolchain, toolchain)` pair, exec- and target-constrained,
-  registered in `MODULE.bazel` ahead of the unconstrained fallback (which
-  preserves the original single-arch behavior for unmodeled platforms).
+  registered in `MODULE.bazel`. Deliberately **no unconstrained fallback**:
+  execution-platform priority dominates toolchain registration order, so a
+  fallback matching any target platform always wins from the default amd64
+  executor platform and hands aarch64 targets x86_64 binaries (this exact
+  failure shipped once as `Exec format error` in the arm64 shard).
 
 CI runs the example ladder twice: the full suite on the default amd64 platform,
-and an arm64 shard (`--platforms=//bazel/ocaml/platforms:linux_aarch64
---use_target_platform_for_tests`, see `buildbuddy.yaml`). Exec-config tools
+and an arm64 shard (`--platforms=//bazel/ocaml/platforms:linux_aarch64`, see
+`buildbuddy.yaml`; Bazel runs the test actions on an execution platform
+matching the target platform's constraints, i.e. the arm64 pool). Exec-config tools
 (ppx drivers, menhir, cppo) resolve per-arch automatically. Two deliberate
 exceptions:
 

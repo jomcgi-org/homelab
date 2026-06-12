@@ -94,12 +94,12 @@ actions:
           # targeting linux/arm64. Toolchain resolution routes ocaml actions to
           # the BuildBuddy cloud arm64 pool (the platform carries Arch: arm64);
           # the sysroot builds from source on that pool, no cross-compilation.
-          # --use_target_platform_for_tests runs the arm64 test binaries on the
-          # arm64 pool too. cc_library-dependent examples are tagged no-arm64
-          # until a C++ toolchain targeting aarch64 exists.
+          # Test actions run there too (Bazel selects a test execution platform
+          # matching the target platform's constraints). cc_library-dependent
+          # examples are tagged no-arm64 until a C++ toolchain targeting
+          # aarch64 exists.
           bazel test //bazel/ocaml/... --config=ci \
             --platforms=//bazel/ocaml/platforms:linux_aarch64 \
-            --use_target_platform_for_tests \
             --build_tests_only \
             --test_tag_filters=-external,-no-arm64
 
