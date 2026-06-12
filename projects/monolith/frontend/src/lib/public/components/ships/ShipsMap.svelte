@@ -361,14 +361,21 @@
       if (lats.length) {
         lats.sort((a, b) => a - b);
         lons.sort((a, b) => a - b);
-        // Frame the 1st-99th percentile so a few outliers (a vessel reporting
-        // a far-off position) can't blow out the zoom to the whole globe.
-        const q = 0.01;
+        // Frame the dense core of the fleet (5th-95th percentile) rather than
+        // its full spread: the AIS feed is regionally clustered, so a handful
+        // of near-outliers would otherwise pull the bounds wide and leave the
+        // screen mostly empty water. Trimming to the core lets the initial fit
+        // land on where the vessels actually are; the outliers still render as
+        // markers, reachable by panning/zooming out.
+        const q = 0.05;
         const b = new maplibregl.LngLatBounds(
           [quantile(lons, q), quantile(lats, q)],
           [quantile(lons, 1 - q), quantile(lats, 1 - q)],
         );
-        map.fitBounds(b, { padding: 64, maxZoom: 9, duration: 0 });
+        // maxZoom 12 (was 9) lets a tight cluster fill the viewport instead of
+        // being capped far out; fitBounds only reaches it when the core really
+        // is that small, so a wider fleet still frames naturally.
+        map.fitBounds(b, { padding: 48, maxZoom: 12, duration: 0 });
         didFit = true;
       }
     }
