@@ -2,7 +2,7 @@ apiVersion: v2
 name: cluster-agents
 description: Autonomous cluster monitoring agents
 type: application
-version: 0.6.35
+version: 0.7.0
 appVersion: "0.2.0"
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
