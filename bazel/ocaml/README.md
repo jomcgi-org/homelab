@@ -273,6 +273,11 @@ bazel/ocaml/
     arches.bzl             # OCAML_ARCHES registry: one entry per target arch (ADR 006)
   platforms/BUILD          # per-arch platforms (from arches.bzl) + executor probe
   driver/ocaml_compile.sh  # staging + codegen pipeline + ocamldep -sort + compile/link
+  semgrep_src/
+    source.bzl             # pinned Semgrep CE commit + translated frontier (wave D)
+    repositories.bzl       # module extension: clone + overlays + dune2bazel -> @semgrep_src
+    overlays/              # tree paths replaced before translation (each documents why)
+    README.md              # translated dirs + the libs/commons rejection dispatch
   opam/
     lock.json              # pinned opam universe (urls + sha256, libs tables)
     update_lock.py         # workstation tool maintaining lock.json

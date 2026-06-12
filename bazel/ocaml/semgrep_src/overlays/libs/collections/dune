@@ -1,0 +1,15 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; Upstream declares (inline_tests) and a pps block (ppx_deriving.show/.eq/
+; .ord, ppx_deriving_yojson, ppx_hash, ppx_sexp_conv, ppx_inline_test,
+; lwt_ppx). As of the pinned commit NO source in this library uses any of
+; them: no [@@deriving], no let%test, no let%lwt (the let%test stripping
+; decided for commons does not even arise here). The overlay drops the
+; whole block so the library translates as the plain unwrapped ocaml_library
+; it currently is; if upstream sources start deriving, translation will
+; fail loudly on the missing rewriter and this overlay gets revisited.
+
+(library
+ (public_name collections)
+ (wrapped false)
+ (libraries))

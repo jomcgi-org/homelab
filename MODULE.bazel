@@ -57,6 +57,9 @@ use_repo(buildbuddy, "buildbuddy_toolchain")
 ocaml_source_ext = use_extension("//bazel/ocaml/toolchain:repositories.bzl", "ocaml_source")
 use_repo(ocaml_source_ext, "ocaml_source")
 
+semgrep_src_ext = use_extension("//bazel/ocaml/semgrep_src:repositories.bzl", "semgrep_src")
+use_repo(semgrep_src_ext, "semgrep_src")
+
 # Per-arch OCaml toolchains (ADR 006), one per enabled arch in
 # bazel/ocaml/toolchain/arches.bzl (keep this list in sync when flipping an
 # arch). Constrained only, deliberately no unconstrained fallback: execution
