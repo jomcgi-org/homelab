@@ -1,6 +1,20 @@
 # Longhorn configuration overrides
 # Wraps upstream chart configuration
 
+# Path-based private ingress: https://private.jomcgi.dev/app/longhorn
+# Experimental (see templates/httproute.yaml); longhorn.jomcgi.dev remains
+# the authoritative route until this is proven to work.
+cfIngress:
+  enabled: true
+  tier: trusted
+  hostname: private.jomcgi.dev
+  pathPrefix: /app/longhorn
+  serviceName: longhorn-frontend
+  servicePort: 80
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
+
 longhorn:
   preUpgradeChecker:
     jobEnabled: false

@@ -1,0 +1,23 @@
+{{- /*
+Path-based private ingress: https://private.jomcgi.dev/app/longhorn
+
+Experimental: the Longhorn UI does not natively support a context path
+(longhorn/longhorn#1660), so Envoy strips the /app/longhorn prefix and the
+UI is served at /. If asset or websocket paths break, delete this route;
+the static tunnel route at longhorn.jomcgi.dev stays authoritative.
+*/}}
+{{- if .Values.cfIngress.enabled }}
+{{- $routeParams := dict
+  "name" "longhorn-private"
+  "tier" .Values.cfIngress.tier
+  "hostname" .Values.cfIngress.hostname
+  "pathPrefix" .Values.cfIngress.pathPrefix
+  "rewritePrefix" "/"
+  "serviceName" .Values.cfIngress.serviceName
+  "servicePort" .Values.cfIngress.servicePort
+  "gateway" .Values.cfIngress.gateway
+}}
+{{- include "cf-ingress.httproute" $routeParams }}
+---
+{{- include "cf-ingress.security-policy" (dict "name" "longhorn-private") }}
+{{- end }}

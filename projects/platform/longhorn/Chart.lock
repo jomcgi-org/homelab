@@ -2,5 +2,8 @@ dependencies:
 - name: longhorn
   repository: https://charts.longhorn.io
   version: 1.8.1
-digest: sha256:30efb7d38008c18b9f8f7bdaab0f176cf21a5098919527171b5f5573b657e9a7
-generated: "2025-10-29T21:54:00.393256-07:00"
+- name: cf-ingress
+  repository: file://../cf-ingress-library
+  version: 0.1.0
+digest: sha256:81b9823e071aeade6bc3d83e8078ad52a204e9f12ad73eed389e336cfecfe927
+generated: "2026-06-12T19:32:05.82040118Z"

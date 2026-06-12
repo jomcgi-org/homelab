@@ -2,6 +2,11 @@ globals:
   logging:
     format: json
 
+# Path-based private ingress, disabled by default.
+# Cluster-specific config lives in values-cluster.yaml.
+cfIngress:
+  enabled: false
+
 argo-cd:
   configs:
     cm:

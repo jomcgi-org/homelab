@@ -1,0 +1,23 @@
+{{- /*
+Path-based private ingress: https://private.jomcgi.dev/app/argocd
+
+Envoy strips the /app/argocd prefix (URLRewrite), so argocd-server keeps
+serving at /. The matching server.basehref in values-cluster.yaml makes the
+UI reference its assets under the prefix. In-cluster API clients
+(argocd-mcp, bots hitting argocd-server.argocd.svc) are unaffected.
+*/}}
+{{- if .Values.cfIngress.enabled }}
+{{- $routeParams := dict
+  "name" "argocd-private"
+  "tier" .Values.cfIngress.tier
+  "hostname" .Values.cfIngress.hostname
+  "pathPrefix" .Values.cfIngress.pathPrefix
+  "rewritePrefix" "/"
+  "serviceName" .Values.cfIngress.serviceName
+  "servicePort" .Values.cfIngress.servicePort
+  "gateway" .Values.cfIngress.gateway
+}}
+{{- include "cf-ingress.httproute" $routeParams }}
+---
+{{- include "cf-ingress.security-policy" (dict "name" "argocd-private") }}
+{{- end }}

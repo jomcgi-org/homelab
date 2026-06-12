@@ -1,3 +1,17 @@
+# Path-based private ingress: https://private.jomcgi.dev/app/signoz
+# The old signoz.jomcgi.dev hostname stops working once the base path below
+# is set, because SigNoz serves all routes under the prefix.
+cfIngress:
+  enabled: true
+  tier: trusted
+  hostname: private.jomcgi.dev
+  pathPrefix: /app/signoz
+  serviceName: signoz
+  servicePort: 8080
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
+
 # k8s-infra subchart configuration
 k8s-infra:
   presets:
@@ -77,8 +91,8 @@ k8s-infra:
         httpcheck/k8s-services:
           collection_interval: 120s
           targets:
-            # GitOps - ArgoCD
-            - endpoint: https://argocd.jomcgi.dev
+            # GitOps - ArgoCD (path-based; gateway strips the prefix)
+            - endpoint: https://private.jomcgi.dev/app/argocd/healthz
               method: GET
               headers:
                 CF-Access-Client-Id: "${env:CF_ACCESS_CLIENT_ID}"
@@ -89,8 +103,8 @@ k8s-infra:
               headers:
                 CF-Access-Client-Id: "${env:CF_ACCESS_CLIENT_ID}"
                 CF-Access-Client-Secret: "${env:CF_ACCESS_CLIENT_SECRET}"
-            # Observability - SigNoz
-            - endpoint: https://signoz.jomcgi.dev
+            # Observability - SigNoz (path-based; SigNoz serves under the prefix)
+            - endpoint: https://private.jomcgi.dev/app/signoz
               method: GET
               headers:
                 CF-Access-Client-Id: "${env:CF_ACCESS_CLIENT_ID}"
@@ -189,6 +203,12 @@ k8s-infra:
 # NOTE: k8s-infra is a sibling subchart (not nested inside signoz). Configure
 # the OTel agent/deployment resources and receivers under the top-level k8s-infra key above.
 signoz:
+  signoz:
+    env:
+      # Serve UI and API under /app/signoz (requires SigNoz >= v0.121).
+      # The gateway forwards the full path; the prefix must not be stripped.
+      # Health probes are exempt and stay on /api/v1/health at the root.
+      signoz_global_external__url: https://private.jomcgi.dev/app/signoz
   clickhouse:
     resources:
       requests:

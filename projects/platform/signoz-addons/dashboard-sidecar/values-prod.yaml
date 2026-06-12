@@ -7,7 +7,7 @@ imagePullSecret:
   enabled: true
 # SigNoz configuration - use cluster-internal DNS
 signoz:
-  url: "http://signoz.signoz.svc.cluster.local:8080"
+  url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"
   # API key for SigNoz authentication (from 1Password)
   apiKeySecret:
     enabled: true
