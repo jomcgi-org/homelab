@@ -14,9 +14,14 @@ tree-sitter grammars ride the opam lock as `"opam": false` entries instead
 SEMGREP_SRC_DIRS is the translated frontier: the dune dirs dune2bazel runs
 over at fetch time, growing bottom-up exactly like the opam universe.
 SEMGREP_LIBS maps each translated library's dune name to its target so
-later dirs can reference earlier ones. OVERLAYS lists tree paths replaced
-by overlays/<path> before translation; every overlay documents what it
-changes and why (the reject-loudly contract's "source patch" dispatch).
+later dirs can reference earlier ones. Internal ppx rewriters get TWO keys,
+the public name and the dune (name ...): upstream pps lines use them
+interchangeably (src/configuring says ppx_profiling, src/core says
+commons.ppx AND ppx_telemetry), and only dune's in-project resolution knows
+the internal names, so the map carries both. OVERLAYS lists tree paths
+replaced by overlays/<path> before translation; every overlay documents
+what it changes and why (the reject-loudly contract's "source patch"
+dispatch).
 """
 
 SEMGREP_GIT_URL = "https://github.com/semgrep/semgrep.git"
@@ -27,8 +32,10 @@ SEMGREP_COMMIT = "872766d4b93fc9d4b0e414c0afd9ed4e99171c6c"
 SEMGREP_SRC_DIRS = [
     "libs/collections",
     "libs/telemetry",
+    "libs/telemetry/ppx",
     "libs/parallelism",
     "libs/commons",
+    "libs/commons/ppx",
     "libs/process_limits",
     "libs/profiling",
     "libs/profiling/ppx",
@@ -39,6 +46,7 @@ SEMGREP_SRC_DIRS = [
     "libs/lib_parsing",
     "libs/lib_parsing_tree_sitter",
     "src/ast_generic",
+    "src/configuring",
     "languages/go/ast",
     "languages/go/tree-sitter",
     "languages/go/generic",
@@ -47,11 +55,16 @@ SEMGREP_SRC_DIRS = [
 SEMGREP_LIBS = {
     "collections": ":collections",
     "telemetry": ":telemetry",
+    "telemetry.ppx": ":ppx_telemetry",
+    "ppx_telemetry": ":ppx_telemetry",
     "parallelism": ":parallelism",
     "commons": ":commons",
+    "commons.ppx": ":ppx_commons",
+    "ppx_commons": ":ppx_commons",
     "process_limits": ":process_limits",
     "profiling": ":profiling",
     "profiling.ppx": ":ppx_profiling",
+    "ppx_profiling": ":ppx_profiling",
     "glob": ":glob",
     "commons2": ":commons2",
     "paths": ":paths",
@@ -59,6 +72,7 @@ SEMGREP_LIBS = {
     "lib_parsing": ":lib_parsing",
     "lib_parsing_tree_sitter": ":lib_parsing_tree_sitter",
     "ast_generic": ":ast_generic",
+    "semgrep.configuring": ":semgrep_configuring",
     "parser_go.ast": ":parser_go_ast",
     "parser_go.tree_sitter": ":parser_go_tree_sitter",
     "parser_go.ast_generic": ":parser_go_ast_generic",

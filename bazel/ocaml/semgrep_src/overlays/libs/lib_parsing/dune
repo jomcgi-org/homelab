@@ -7,9 +7,6 @@
 ;   * git_wrapper dropped: no source references Git_wrapper (it would pull
 ;     the ocaml-git closure, dispatched out of scope until a source names
 ;     it; see README).
-;   * the profiling rewriter is named by its public name profiling.ppx
-;     (upstream says ppx_profiling, the dune (name ...), which only dune's
-;     in-project resolution knows; the lib_map keys public names).
 
 (library
  (public_name lib_parsing)
@@ -26,7 +23,7 @@
  )
  (preprocess
    (pps
-     profiling.ppx
+     ppx_profiling
      ppx_deriving.show
      ppx_deriving.ord
      ppx_deriving.eq
