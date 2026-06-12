@@ -2,7 +2,7 @@
 # gazelle:exclude dune2bazel.py
 # gazelle:exclude dune2bazel_test.py
 # gazelle:exclude update_lock.py
-# gazelle:exclude test_update_lock.py
+# gazelle:exclude update_lock_test.py
 #
 # dune2bazel.py is run by the @ocaml_* repository rules (extension.bzl) via the
 # host python3 (ctx.execute), not as a Bazel py_binary, and update_lock.py is a
@@ -44,8 +44,8 @@ py_library(
 )
 
 py_test(
-    name = "test_update_lock",
-    srcs = ["test_update_lock.py"],
+    name = "update_lock_test",
+    srcs = ["update_lock_test.py"],
     deps = [
         ":update_lock_lib",
         "@pip//pytest",
