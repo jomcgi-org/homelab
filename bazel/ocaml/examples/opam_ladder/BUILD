@@ -33,5 +33,10 @@ build_test(
         "@ocaml_atd//:atdgen_runtime",
         "@ocaml_atd//:atdgen_emit",
         "@ocaml_atd//:atdgen",
+        # Phase 8 wave A: Semgrep direct deps (non-dune overrides).
+        "@ocaml_cmdliner//:cmdliner",
+        "@ocaml_logs//:logs",
+        "@ocaml_logs//:logs_fmt",
+        "@ocaml_logs//:logs_cli",
     ],
 )
