@@ -400,6 +400,22 @@ semgrep_test(
     tags = ["semgrep"],
 )
 
+# cfingress-rewrite-needs-slash-redirect uses languages: [generic] scoped to
+# **/templates/httproute.yaml. Wired to its own annotation fixture independently
+# of yaml_rules_test (which scans yaml_fixtures, excluding this fixture).
+filegroup(
+    name = "cfingress_rewrite_needs_slash_redirect_rule",
+    srcs = ["yaml/cfingress-rewrite-needs-slash-redirect.yaml"],
+)
+
+semgrep_test(
+    name = "cfingress_rewrite_needs_slash_redirect_test",
+    srcs = ["//bazel/semgrep/tests:cfingress_rewrite_needs_slash_redirect_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":cfingress_rewrite_needs_slash_redirect_rule"],
+    tags = ["semgrep"],
+)
+
 # css-import-after-rules uses languages: [generic] scoped to **/*.css.
 # Wired to its own .css annotation fixture independently of generic_rules_test
 # (which only scans no-stale-repo-paths fixtures).

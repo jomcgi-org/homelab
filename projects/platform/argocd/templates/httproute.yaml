@@ -24,6 +24,8 @@ updated to include /app/argocd.
   "servicePort" .Values.cfIngress.servicePort
   "gateway" .Values.cfIngress.gateway
 }}
+# nosemgrep: cfingress-rewrite-needs-slash-redirect
+{{- $_ := set $routeParams "rewritePrefix" "/" }}
 {{- include "cf-ingress.httproute" $routeParams }}
 ---
 {{- include "cf-ingress.security-policy" (dict "name" "argocd-private") }}
