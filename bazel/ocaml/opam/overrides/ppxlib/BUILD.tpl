@@ -225,6 +225,7 @@ ocaml_library(
 
 ocaml_ppx(
     name = "metaquot_driver",
+    visibility = ["//visibility:public"],
     deps = [":ppxlib_metaquot"],
 )
 
