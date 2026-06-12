@@ -68,12 +68,18 @@ cc_library(
     textual_hdrs = [
         "src/pcre2_jit_match.c",
         "src/pcre2_jit_misc.c",
+        # pcre2_tables.c textually #includes the Unicode property tables when
+        # SUPPORT_UNICODE is on.
+        "src/pcre2_ucptables.c",
     ],
     copts = [
         "-DHAVE_CONFIG_H",
         "-DPCRE2_CODE_UNIT_WIDTH=8",
         "-DPCRE2_STATIC",
         "-DHAVE_MEMMOVE",
+        # Semgrep's commons compiles its PCRE2 patterns with `UTF and UCP
+        # (Pcre2_.ml fails its module init without Unicode support).
+        "-DSUPPORT_UNICODE",
         "-w",
     ],
     # "." exports the generated config.h/pcre2.h (in the bin dir); "src" exports
