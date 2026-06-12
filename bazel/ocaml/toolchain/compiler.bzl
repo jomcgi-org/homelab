@@ -14,6 +14,8 @@ executable bit, so the driver extracts it per action. The build is hermetic
 C/C++ builds) and is cached in the RBE action cache, so the compiler builds once.
 """
 
+load(":arches.bzl", "OCAML_ARCHES")
+
 def _ocaml_compiler_impl(ctx):
     sysroot_tar = ctx.actions.declare_file(ctx.label.name + "_sysroot.tar")
     src_root = ctx.file.configure.dirname
@@ -66,3 +68,24 @@ ocaml_compiler = rule(
     },
     doc = "Builds the OCaml compiler from source into a relocatable sysroot tar.",
 )
+
+def declare_ocaml_sysroots():
+    """Declare one per-arch `ocaml_compiler` target per enabled OCAML_ARCHES entry.
+
+    Each target carries `exec_compatible_with` for its arch, so toolchain
+    resolution schedules the compiler build on that arch's executor pool (the
+    platform's `Arch` routing property does the rest). That is the whole
+    multi-arch story for the sysroot: the compiler is built on the executor it
+    will run on, so the arm64 sysroot is just the same action landing on the
+    arm64 pool -- no cross-compilation (ADR 006/008).
+    """
+    for arch in OCAML_ARCHES:
+        if not arch.enabled:
+            continue
+        ocaml_compiler(
+            name = "ocaml_compiler_" + arch.name,
+            srcs = "@ocaml_source//:srcs",
+            configure = "@ocaml_source//:configure",
+            exec_compatible_with = [arch.os, arch.cpu],
+            visibility = ["//visibility:public"],
+        )

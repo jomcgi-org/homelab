@@ -19,8 +19,11 @@ ocaml_library(
     cc_deps = [":adder_clib"],
 )
 
+# no-arm64: cc_library needs a C++ toolchain targeting aarch64; CI's RBE C++
+# toolchain is x86_64-only, so cc-dependent examples stay off the arm64 shard.
 ocaml_test(
     name = "adder_test",
     srcs = ["adder_test.ml"],
+    tags = ["no-arm64"],
     deps = [":adder"],
 )

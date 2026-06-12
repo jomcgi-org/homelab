@@ -1,5 +1,5 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load("//bazel/ocaml:toolchain.bzl", "ocaml_toolchain")
+load("//bazel/ocaml:toolchain.bzl", "declare_ocaml_toolchains", "ocaml_toolchain")
 
 # Toolchain type consumed by ocaml_library / ocaml_binary.
 toolchain_type(
@@ -7,9 +7,15 @@ toolchain_type(
     visibility = ["//visibility:public"],
 )
 
-# Tool configuration (ocamlfind preference, extra flags). The compiler is the
-# hermetic sysroot tar built by //bazel/ocaml/toolchain:ocaml_compiler and
-# staged into every action (see toolchain.bzl).
+# Per-arch toolchains (ADR 006): ocaml_toolchain_linux_x86_64 / _linux_aarch64,
+# generated from the OCAML_ARCHES registry. Each pins exec and target to its
+# arch and stages that arch's sysroot. Registered (constrained first) in
+# MODULE.bazel.
+declare_ocaml_toolchains()
+
+# Unconstrained fallback, registered last: preserves the original single-arch
+# behavior (default pool, x86_64 sysroot) for any platform the registry does
+# not model, e.g. a darwin host build outside CI.
 ocaml_toolchain(
     name = "ocaml_tools",
     visibility = ["//visibility:public"],
@@ -40,4 +46,5 @@ bzl_library(
     name = "toolchain",
     srcs = ["toolchain.bzl"],
     visibility = ["//visibility:public"],
+    deps = ["//bazel/ocaml/toolchain:arches"],
 )

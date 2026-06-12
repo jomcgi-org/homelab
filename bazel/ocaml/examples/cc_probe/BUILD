@@ -12,7 +12,10 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# no-arm64: cc_library needs a C++ toolchain targeting aarch64; CI's RBE C++
+# toolchain is x86_64-only, so cc-dependent examples stay off the arm64 shard.
 build_test(
     name = "answer_build_test",
+    tags = ["no-arm64"],
     targets = [":answer"],
 )

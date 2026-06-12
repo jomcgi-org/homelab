@@ -57,7 +57,22 @@ use_repo(buildbuddy, "buildbuddy_toolchain")
 ocaml_source_ext = use_extension("//bazel/ocaml/toolchain:repositories.bzl", "ocaml_source")
 use_repo(ocaml_source_ext, "ocaml_source")
 
-register_toolchains("//bazel/ocaml:ocaml_toolchain")
+# Per-arch OCaml toolchains (ADR 006): constrained registrations first, one per
+# enabled arch in bazel/ocaml/toolchain/arches.bzl (keep this list in sync when
+# flipping an arch), then the unconstrained fallback that preserves single-arch
+# behavior for platforms the registry does not model.
+register_toolchains(
+    "//bazel/ocaml:ocaml_toolchain_linux_x86_64",
+    "//bazel/ocaml:ocaml_toolchain_linux_aarch64",
+    "//bazel/ocaml:ocaml_toolchain",
+)
+
+# The arm64 platform must be a registered execution platform for toolchain
+# resolution to schedule ocaml actions on the arm64 pool. Flag-supplied
+# platforms (bazel/remote.bazelrc --extra_execution_platforms, the default
+# amd64 RBE platform) take precedence over this registration, so builds that
+# never select aarch64 are unaffected.
+register_execution_platforms("//bazel/ocaml/platforms:linux_aarch64")
 
 # OCaml opam dependencies built from source via their own dune metadata: the
 # extension reads the pinned universe from bazel/ocaml/opam/lock.json, fetches

@@ -130,10 +130,44 @@ ocaml actions as hermetic inputs**:
 
 Binaries link the execution host's glibc, so they run wherever the action ran.
 `OcamlToolchainInfo` (the Bazel toolchain) carries the sysroot files plus tool
-configuration (`use_ocamlfind`, extra flags). Multi-arch follows ADR 006: a
-data-driven arch registry (`toolchain/arches.bzl`) + per-arch platforms
-(`platforms/BUILD`), with per-arch toolchain registration gated on verifying
-the BuildBuddy arm64 pool (the executor probe ships already).
+configuration (`use_ocamlfind`, extra flags).
+
+## Multi-arch (linux x86_64 + arm64)
+
+Per ADR 006/008, multi-arch is per-arch **native** execution, never
+cross-compilation. The data-driven registry (`toolchain/arches.bzl`,
+`OCAML_ARCHES`) is the single source of truth; from it are generated:
+
+- a `platform` per arch under `//bazel/ocaml/platforms`, carrying the
+  BuildBuddy `Arch` routing property for enabled arches (the key was verified
+  empirically by `platforms:executor_arch_probe_arm64`, which re-asserts on
+  every CI run that `Arch: arm64` lands on an aarch64 executor);
+- a per-arch sysroot build (`toolchain:ocaml_compiler_<arch>`), exec-constrained
+  to its arch so the compiler builds **on the pool it targets** -- the arm64
+  sysroot is the same from-source action landing on BuildBuddy's cloud arm64
+  pool (launched 2026-01, zero infra on our side);
+- a per-arch `(ocaml_toolchain, toolchain)` pair, exec- and target-constrained,
+  registered in `MODULE.bazel` ahead of the unconstrained fallback (which
+  preserves the original single-arch behavior for unmodeled platforms).
+
+CI runs the example ladder twice: the full suite on the default amd64 platform,
+and an arm64 shard (`--platforms=//bazel/ocaml/platforms:linux_aarch64
+--use_target_platform_for_tests`, see `buildbuddy.yaml`). Exec-config tools
+(ppx drivers, menhir, cppo) resolve per-arch automatically. Two deliberate
+exceptions:
+
+- **cc_library-dependent examples are tagged `no-arm64`**: Bazel's C++
+  toolchain in CI targets x86_64 only. The OCaml driver itself is unaffected
+  (it uses the executor's own `gcc`/`as`/`ld`, which are native on each pool).
+- **Override genrules that stage the sysroot tar directly** (yojson's
+  ocamllex run, ocaml-compiler-libs' generators) reference the *unconstrained*
+  `toolchain:ocaml_compiler`: both that build action and genrules run on the
+  default pool, so the binaries always match the executor, and their outputs
+  are arch-independent `.ml` sources.
+
+Adding an arch remains one registry entry + one probe + one `register_toolchains`
+line. Cross-compiling linux arm64 *from* the amd64 pool is a contained
+post-OCaml-5.4 optimization (ADR 008), not wired today.
 
 ## The opam universe: lock.json
 
