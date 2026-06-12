@@ -944,9 +944,7 @@
       "sha256": "c135d0cdee8821038d8206771e1a89ffdd4c6693124dd380e5dab5e2d5071167",
       "strip_prefix": "ocaml-tsort-2.2.0",
       "type": "tar.gz",
-      "src_dirs": [
-        "src/lib"
-      ],
+      "src_dirs": ["src/lib"],
       "libs": {
         "tsort": "tsort"
       }
