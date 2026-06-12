@@ -164,5 +164,6 @@ build_test(
         "@semgrep_src//:paths",
         "@semgrep_src//:gitignore",
         "@semgrep_src//:lib_parsing",
+        "@semgrep_src//:lib_parsing_tree_sitter",
     ],
 )

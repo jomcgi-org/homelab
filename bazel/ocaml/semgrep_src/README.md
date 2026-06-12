@@ -23,6 +23,7 @@ model rejects loudly at fetch time.
 | `libs/paths`         | `:paths`          | translated as-is (profiling.ppx joins a generated driver)   |
 | `libs/gitignore`     | `:gitignore`      | translated as-is                                            |
 | `libs/lib_parsing`   | `:lib_parsing`    | dune overlay drops inline_tests + unreferenced git_wrapper; `Pos.ml` overlay strips the let%test blocks |
+| `libs/lib_parsing_tree_sitter` | `:lib_parsing_tree_sitter` | translated as-is (tree-sitter.run from the locked ocaml-tree-sitter-core); its lightest consumer's grammar, tree-sitter-go, is stamped from the languages/go submodule commit (examples/treesitter_go) |
 
 ## libs/commons rejection dispatch
 

@@ -156,6 +156,7 @@ use_repo(
     "ocaml_tree_sitter_bash",
     "ocaml_tree_sitter_c",
     "ocaml_tree_sitter_core",
+    "ocaml_tree_sitter_go",
     "ocaml_tree_sitter_json",
     "ocaml_tsort",
     "ocaml_uri",
