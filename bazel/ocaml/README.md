@@ -187,21 +187,29 @@ For each entry the module extension (`opam/extension.bzl`) fetches the tarball
 and produces `@<repo>` with a BUILD that is either:
 
 - **translated** — `opam/dune2bazel.py` over the package's own dune files
-  (re, sexplib0, ppx_derivers, lwt's core today). The translator models:
+  (re, sexplib0, ppx_derivers, csexp, lwt's core, stringext, angstrom, uri,
+  ocamlgraph today). The translator models:
   multiple `(library)` stanzas, `wrapped`, `(libraries ...)` resolution
   (stdlib, compiler-libs, `re_export`, and other locked packages via the
   **lib_map** composed from lock entries' `libs` tables), `(preprocess
-  no_preprocessing | (pps ...))` — pps emits an `ocaml_ppx` target —
-  `(kind ...)`, `flags`/`ocamlopt_flags`, and `(instrumentation ...)`
-  (provably inert: we never pass `--instrument-with`). Anything else
+  no_preprocessing | future_syntax | (pps ...))` — future_syntax is the
+  identity on the 5.3 sysroot, pps emits an `ocaml_ppx` target —
+  `(kind ...)`, `flags`/`ocamlopt_flags`, `(instrumentation ...)`
+  (provably inert: we never pass `--instrument-with`),
+  `(include_subdirs unqualified)` (recursive source glob; the driver's
+  stage-by-basename is exactly dune's flat namespace),
+  `(ocamllex ...)`/`(ocamlyacc ...)` stanzas, and
+  `modules_without_implementation` (inert: mli-only modules compile
+  naturally). Anything else
   **rejects loudly**: silent
   mistranslation is the only unacceptable failure mode, and every rejection
   names where work must land.
 - **an override** — `opam/overrides/<name>/BUILD.tpl`, hand-written for
   packages whose dune trees bootstrap themselves with codegen the translator
   does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
-  ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2, ocplib-endian),
-  and for packages
+  ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2, ocplib-endian,
+  bigstringaf -- whose configurator probe writes only C warning flags and is
+  provably droppable), and for packages
   that are not dune projects at all, where there is nothing to translate
   (cmdliner and logs build with b0/topkg; their flat module layouts make the
   overrides one ocaml_library per findlib name). Overrides still

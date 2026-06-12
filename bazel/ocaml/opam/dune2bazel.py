@@ -11,9 +11,15 @@ translating their dune files *is* resolving the dependency from source.
 Modeled today: multiple `(library)` stanzas across multiple dune dirs;
 `wrapped` (dune defaults to wrapped); `(libraries ...)` resolving to stdlib
 archives, compiler-libs sublibraries, `re_export`, and other locked packages
-via the lib_map; `(preprocess no_preprocessing)` and `(preprocess (pps ...))`
-(the latter generates an ocaml_ppx driver target); `(kind ppx_rewriter |
-ppx_deriver)`; `flags`/`ocamlopt_flags` (minus :standard).
+via the lib_map; `(preprocess no_preprocessing | future_syntax)` (the latter
+is the identity on our 5.3 sysroot) and `(preprocess (pps ...))`
+(which generates an ocaml_ppx driver target); `(kind ppx_rewriter |
+ppx_deriver)`; `flags`/`ocamlopt_flags` (minus :standard);
+`(include_subdirs unqualified)` (a recursive source glob -- the driver's
+stage-by-basename is exactly the flat namespace); `(ocamlyacc ...)` /
+`(ocamllex ...)` stanzas (the globbed .mly/.mll go through the driver's
+generation pipeline); `modules_without_implementation` (inert: mli-only
+modules compile naturally).
 
 Anything else that changes build semantics -- module filtering, C stubs,
 `(rule)` codegen, instrumentation -- is rejected loudly rather than silently
@@ -51,6 +57,11 @@ _SUPPORTED_LIBRARY_FIELDS = {
     # is a no-op unless dune is invoked with --instrument-with; we never
     # instrument, so the field is provably inert and safe to drop.
     "instrumentation",
+    # Declares which mli-only modules are intentional (dune's lint against
+    # forgotten .ml files). The driver compiles interface-only modules
+    # naturally (ocamldep -sort includes them; only .cmx are archived), so
+    # the declaration is provably inert.
+    "modules_without_implementation",
 }
 
 # Non-library stanzas that provably do not affect how the library compiles.
@@ -218,6 +229,16 @@ def _resolve_preprocess(stanza, name, lib_map):
         and field[0][1] == "no_preprocessing"
     ):
         return [], None
+    # future_syntax is dune's built-in shim that backports newer OCaml syntax
+    # to older compilers; on a compiler at least as new as the syntax it
+    # models it is the identity transform. The pinned sysroot is OCaml 5.3,
+    # newer than everything future_syntax covers, so it drops to a no-op.
+    if (
+        len(field) == 1
+        and isinstance(field[0], tuple)
+        and field[0][1] == "future_syntax"
+    ):
+        return [], None
     if (
         len(field) == 1
         and isinstance(field[0], list)
@@ -276,7 +297,9 @@ def _parse_menhir(stanza):
     return modules, flags
 
 
-def gen_library(stanza, src_dir, lib_map, menhir_modules=None, menhir_flags=None):
+def gen_library(
+    stanza, src_dir, lib_map, menhir_modules=None, menhir_flags=None, recursive=False
+):
     for item in stanza[1:]:
         if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
             sys.exit("dune2bazel: unexpected item in (library): %r" % (item,))
@@ -319,13 +342,17 @@ def gen_library(stanza, src_dir, lib_map, menhir_modules=None, menhir_flags=None
     flags = _resolve_flags(stanza)
     ppx_lines, preprocess = _resolve_preprocess(stanza, name, lib_map)
 
+    # (include_subdirs unqualified) pulls sources from subdirectories into the
+    # same flat module namespace; the driver stages every source by basename,
+    # which is exactly that semantic, so it maps onto a recursive glob.
+    pat = "%s/**/*" % src_dir if recursive else "%s/*" % src_dir
     lines = list(ppx_lines)
     lines += [
         "",
         "ocaml_library(",
         '    name = "%s",' % name,
-        '    srcs = glob(["%s/*.ml", "%s/*.mli", "%s/*.mll", "%s/*.mly"], allow_empty = True),'
-        % (src_dir, src_dir, src_dir, src_dir),
+        '    srcs = glob(["%s.ml", "%s.mli", "%s.mll", "%s.mly"], allow_empty = True),'
+        % (pat, pat, pat, pat),
     ]
     if wrapped:
         lines.append("    wrapped = True,")
@@ -366,14 +393,24 @@ def gen_dune_dir(dune_path, src_dir, lib_map):
     libraries = []
     menhir_modules = []
     menhir_flags = []
+    recursive = False
     for s in stanzas:
         if not (isinstance(s, list) and s and isinstance(s[0], tuple)):
             sys.exit("dune2bazel: unexpected top-level item: %r" % (s,))
         head = _atom(s[0])
         if head == "library":
             libraries.append(s)
-        elif head == "ocamllex":
-            continue  # the .mll is globbed into the library's srcs
+        elif head in ("ocamllex", "ocamlyacc"):
+            continue  # the .mll/.mly is globbed into the library's srcs
+        elif head == "include_subdirs":
+            mode = _atom(s[1])
+            if mode != "unqualified":
+                sys.exit(
+                    "dune2bazel: unsupported (include_subdirs %s) in %s; only "
+                    "unqualified (flat namespace, matching the driver's "
+                    "stage-by-basename) is modeled." % (mode, dune_path)
+                )
+            recursive = True
         elif head == "menhir":
             mods, flags = _parse_menhir(s)
             menhir_modules += mods
@@ -397,9 +434,18 @@ def gen_dune_dir(dune_path, src_dir, lib_map):
     out = []
     for i, lib in enumerate(libraries):
         if menhir_modules and i == 0:
-            out.append(gen_library(lib, src_dir, lib_map, menhir_modules, menhir_flags))
+            out.append(
+                gen_library(
+                    lib,
+                    src_dir,
+                    lib_map,
+                    menhir_modules,
+                    menhir_flags,
+                    recursive=recursive,
+                )
+            )
         else:
-            out.append(gen_library(lib, src_dir, lib_map))
+            out.append(gen_library(lib, src_dir, lib_map, recursive=recursive))
     return "".join(out)
 
 

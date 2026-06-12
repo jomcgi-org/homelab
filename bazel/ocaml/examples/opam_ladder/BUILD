@@ -47,5 +47,12 @@ build_test(
         "@ocaml_csexp//:csexp",
         "@ocaml_dune_configurator//:configurator",
         "@ocaml_lwt//:lwt_unix",
+        # Phase 8 wave A: the uri chain (translated; bigstringaf overridden for
+        # its C stub) and ocamlgraph (translated: include_subdirs + lex/yacc).
+        "@ocaml_stringext//:stringext",
+        "@ocaml_bigstringaf//:bigstringaf",
+        "@ocaml_angstrom//:angstrom",
+        "@ocaml_uri//:uri",
+        "@ocaml_ocamlgraph//:graph",
     ],
 )
