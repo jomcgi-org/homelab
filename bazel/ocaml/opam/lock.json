@@ -21,9 +21,7 @@
       "sha256": "2e37b01b9bda0e39f0fd3913c0ec81237ed2d04c6bbe23f48b102de83ba47454",
       "strip_prefix": "ocaml-re-1.13.2",
       "type": "tar.gz",
-      "src_dirs": [
-        "lib"
-      ],
+      "src_dirs": ["lib"],
       "libs": {
         "re": "re"
       }
@@ -36,9 +34,7 @@
       "sha256": "5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b",
       "strip_prefix": "sexplib0-0.17.0",
       "type": "tar.gz",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "sexplib0": "sexplib0"
       }
@@ -51,9 +47,7 @@
       "sha256": "b6595ee187dea792b31fc54a0e1524ab1e48bc6068d3066c45215a138cc73b95",
       "strip_prefix": "ppx_derivers-1.2.1",
       "type": "tar.gz",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "ppx_derivers": "ppx_derivers"
       }
@@ -122,9 +116,7 @@
       "url": "https://github.com/ocaml-community/easy-format/releases/download/1.3.4/easy-format-1.3.4.tbz",
       "sha256": "1dbf051e9f68574dde6e2e254a66b9c524ca425e80b36e99af96ed964ab610c3",
       "strip_prefix": "easy-format-1.3.4",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "easy-format": "easy_format"
       }
@@ -149,9 +141,7 @@
       "url": "https://github.com/mjambon/biniou/releases/download/1.2.2/biniou-1.2.2.tbz",
       "sha256": "8bf3ff17cd0ecb2d6b6d1d94cb08ef089d44caef96e9bae6be6839d428fa318f",
       "strip_prefix": "biniou-1.2.2",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "biniou": "biniou"
       }
@@ -261,15 +251,9 @@
         "ppx_deriving.ord": "ppx_deriving_ord"
       },
       "ppx_runtime": {
-        "ppx_deriving.show": [
-          "ppx_deriving.runtime"
-        ],
-        "ppx_deriving.eq": [
-          "ppx_deriving.runtime"
-        ],
-        "ppx_deriving.ord": [
-          "ppx_deriving.runtime"
-        ]
+        "ppx_deriving.show": ["ppx_deriving.runtime"],
+        "ppx_deriving.eq": ["ppx_deriving.runtime"],
+        "ppx_deriving.ord": ["ppx_deriving.runtime"]
       }
     },
     {
@@ -322,9 +306,7 @@
       "sha256": "f4e59d62d8cb1eb119591c7c395fa6cc1c926711d87f93fd26d0004748880ce7",
       "strip_prefix": "lwt-5.9.2",
       "type": "tar.gz",
-      "src_dirs": [
-        "src/core"
-      ],
+      "src_dirs": ["src/core"],
       "libs": {
         "lwt": "lwt",
         "lwt.unix": "lwt_unix"
@@ -339,9 +321,7 @@
       "sha256": "1a14dd04bb4379a41990248550628c77913a9c07f3c35c1370b6960e697787ff",
       "strip_prefix": "csexp-1.5.2",
       "type": "tar.bz2",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "csexp": "csexp"
       }
@@ -367,9 +347,7 @@
       "sha256": "db41f5d52e9eab17615f110b899dfeb27dd7e7f89cd35ae43827c5119db206ea",
       "strip_prefix": "stringext-1.6.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "lib"
-      ],
+      "src_dirs": ["lib"],
       "libs": {
         "stringext": "stringext"
       }
@@ -395,9 +373,7 @@
       "sha256": "143536fb4d049574c539b9990840615e078ed3dd94e1d24888293f68349a100b",
       "strip_prefix": "angstrom-0.16.1",
       "type": "tar.gz",
-      "src_dirs": [
-        "lib"
-      ],
+      "src_dirs": ["lib"],
       "libs": {
         "angstrom": "angstrom"
       }
@@ -410,9 +386,7 @@
       "sha256": "cdabaf6ef5cd2161e59cc7b74c6e4a68ecb80a9f4e96002e338e1b6bf17adec4",
       "strip_prefix": "uri-4.4.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "lib"
-      ],
+      "src_dirs": ["lib"],
       "libs": {
         "uri": "uri"
       }
@@ -425,9 +399,7 @@
       "sha256": "b0956210863cc24f480203ba3c2ef06dfae5579536a05744364e7de58822b230",
       "strip_prefix": "ocamlgraph-2.2.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "ocamlgraph": "graph"
       }
@@ -481,9 +453,7 @@
       "sha256": "10c4d1a162a8f51eecf35d68118a96aa5f375350ff3abb357b41968faa7b4ef3",
       "strip_prefix": "ppxlib_jane-0.17.4",
       "type": "tar.gz",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "ppxlib_jane": "ppxlib_jane"
       }
@@ -496,11 +466,7 @@
       "sha256": "f0b23eb78082ef4dc71a66939bbc63c6b0cc2cf6a4744a906b7a2c016cbe3098",
       "strip_prefix": "ppx_compare-0.17.0",
       "type": "tar.gz",
-      "src_dirs": [
-        "src",
-        "expander",
-        "runtime-lib"
-      ],
+      "src_dirs": ["src", "expander", "runtime-lib"],
       "libs": {
         "ppx_compare": "ppx_compare",
         "ppx_compare.expander": "ppx_compare_expander",
@@ -509,9 +475,7 @@
         "ppx_compare_lib": "ppx_compare_lib"
       },
       "ppx_runtime": {
-        "ppx_compare": [
-          "ppx_compare.runtime-lib"
-        ]
+        "ppx_compare": ["ppx_compare.runtime-lib"]
       }
     },
     {
@@ -522,11 +486,7 @@
       "sha256": "b850556d05203aa6d97fcbe4be75abc9679b161be059e474c0d934bc0e12fe86",
       "strip_prefix": "ppx_sexp_conv-0.17.1",
       "type": "tar.gz",
-      "src_dirs": [
-        "src",
-        "expander",
-        "runtime-lib"
-      ],
+      "src_dirs": ["src", "expander", "runtime-lib"],
       "libs": {
         "ppx_sexp_conv": "ppx_sexp_conv",
         "ppx_sexp_conv.expander": "ppx_sexp_conv_expander",
@@ -535,10 +495,7 @@
         "ppx_sexp_conv_lib": "ppx_sexp_conv_lib"
       },
       "ppx_runtime": {
-        "ppx_sexp_conv": [
-          "ppx_sexp_conv.runtime-lib",
-          "sexplib0"
-        ]
+        "ppx_sexp_conv": ["ppx_sexp_conv.runtime-lib", "sexplib0"]
       }
     },
     {
@@ -549,11 +506,7 @@
       "sha256": "8c8acae276a349d412eab9112cc3afa996d26ad4a01f2882121fc0adee0dd05e",
       "strip_prefix": "ppx_hash-0.17.0",
       "type": "tar.gz",
-      "src_dirs": [
-        "src",
-        "expander",
-        "runtime-lib/src"
-      ],
+      "src_dirs": ["src", "expander", "runtime-lib/src"],
       "libs": {
         "ppx_hash": "ppx_hash",
         "ppx_hash.expander": "ppx_hash_expander",
@@ -562,9 +515,7 @@
         "ppx_hash_lib": "ppx_hash_lib"
       },
       "ppx_runtime": {
-        "ppx_hash": [
-          "ppx_hash.runtime-lib"
-        ]
+        "ppx_hash": ["ppx_hash.runtime-lib"]
       }
     },
     {
@@ -668,9 +619,7 @@
       "sha256": "2e67eeca1b03049307a30831b5cd694bcb2d3e7f2a6b4fb597fbdb647351b4dc",
       "strip_prefix": "hex-1.5.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "lib"
-      ],
+      "src_dirs": ["lib"],
       "libs": {
         "hex": "hex"
       }
@@ -683,9 +632,7 @@
       "sha256": "0a3cc352da1ee47bedeb32266fe12a548ba545451441df4c9ae278047ff698b8",
       "strip_prefix": "semver-0.2.1",
       "type": "tar.bz2",
-      "src_dirs": [
-        "lib"
-      ],
+      "src_dirs": ["lib"],
       "libs": {
         "semver": "semver"
       }
@@ -698,9 +645,7 @@
       "sha256": "fa47379e78be5dbb3066cf96962d18a05d1defb4530588c14e5bc0289e0df520",
       "strip_prefix": "memtrace-0.2.3",
       "type": "tar.gz",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "memtrace": "memtrace"
       }
@@ -713,9 +658,7 @@
       "sha256": "295cff2c134b0385b13ba81d5005d9f841ba40d4a502aed10c997f239ef1147b",
       "strip_prefix": "optint-0.3.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "optint": "optint"
       }
@@ -728,9 +671,7 @@
       "sha256": "42005f533eabe74b1799ee32b8905654cd66a22bed4af2bd266b28d8462cd344",
       "strip_prefix": "psq-0.2.1",
       "type": "tar.bz2",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "psq": "psq"
       }
@@ -743,9 +684,7 @@
       "sha256": "b0200651e37eaa24f027177bc01e266db43da48aa18146973d1d18336c325d69",
       "strip_prefix": "lwt-dllist-1.1.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "lwt-dllist": "lwt_dllist"
       }
@@ -797,9 +736,7 @@
       "sha256": "da863b42b81235fdcf45eb32c04fb8bde22ff446a779cfb6f989730a35103160",
       "strip_prefix": "sexplib-0.17.0",
       "type": "tar.gz",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "sexplib": "sexplib"
       }
@@ -812,9 +749,7 @@
       "sha256": "a3d10edbc4f98d16357b644d550fd1c06f4d9aa4990ab8ee6da01276c24d55b5",
       "strip_prefix": "parsexp-0.17.0",
       "type": "tar.gz",
-      "src_dirs": [
-        "src"
-      ],
+      "src_dirs": ["src"],
       "libs": {
         "parsexp": "parsexp"
       }
@@ -926,10 +861,7 @@
       },
       "override": true,
       "ppx_runtime": {
-        "ppx_deriving_yojson": [
-          "ppx_deriving_yojson.runtime",
-          "yojson"
-        ]
+        "ppx_deriving_yojson": ["ppx_deriving_yojson.runtime", "yojson"]
       }
     },
     {
@@ -966,11 +898,7 @@
       "sha256": "0998766656d9a756f87c2f6c78b803d3a6e7c1230167c039f288226428cc3137",
       "strip_prefix": "testo-0.2.0",
       "type": "tar.bz2",
-      "src_dirs": [
-        "diff/lib",
-        "util/lib",
-        "core"
-      ],
+      "src_dirs": ["diff/lib", "util/lib", "core"],
       "libs": {
         "testo-diff": "testo_diff",
         "testo_diff": "testo_diff",
