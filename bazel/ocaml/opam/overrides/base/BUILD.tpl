@@ -75,6 +75,8 @@ ocaml_library(
 # Upstream: (run %{ocaml} select.ml -ocaml-version %{ocaml_version} -o ...).
 # The script branches only on the 5.0 floor, so the output is identical on
 # both arches and the unconstrained sysroot is the right tool source.
+# bin/ocaml is a bytecode executable whose shebang hardcodes the build-time
+# ocamlrun path; launching it through ocamlrun bypasses the stale shebang.
 genrule(
     name = "random_repr_ml",
     srcs = [
@@ -83,7 +85,7 @@ genrule(
     ],
     outs = ["random_repr.ml"],
     cmd = "T=$$(mktemp -d) && tar -xf $(location %s) -C $$T && " % _SYSROOT +
-          "OCAMLLIB=$$T/lib/ocaml $$T/bin/ocaml " +
+          "OCAMLLIB=$$T/lib/ocaml $$T/bin/ocamlrun $$T/bin/ocaml " +
           "$(location src/select-random-repr/select.ml) " +
           "-ocaml-version 5.3 -o $@",
 )
