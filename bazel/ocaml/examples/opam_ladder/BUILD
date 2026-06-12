@@ -42,5 +42,10 @@ build_test(
         "@ocaml_ocplib_endian//:ocplib_endian",
         "@ocaml_ocplib_endian//:ocplib_endian_bigstring",
         "@ocaml_lwt//:lwt",
+        # Phase 8 wave A: lwt.unix (hybrid repo: translated core + hand-written
+        # fragment) and the dune-configurator chain its discover probe needs.
+        "@ocaml_csexp//:csexp",
+        "@ocaml_dune_configurator//:configurator",
+        "@ocaml_lwt//:lwt_unix",
     ],
 )
