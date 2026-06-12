@@ -26,6 +26,8 @@ SEMGREP_COMMIT = "872766d4b93fc9d4b0e414c0afd9ed4e99171c6c"
 
 SEMGREP_SRC_DIRS = [
     "libs/collections",
+    "libs/telemetry",
+    "libs/parallelism",
     "libs/commons",
     "libs/process_limits",
     "libs/profiling",
@@ -35,6 +37,8 @@ SEMGREP_SRC_DIRS = [
 
 SEMGREP_LIBS = {
     "collections": ":collections",
+    "telemetry": ":telemetry",
+    "parallelism": ":parallelism",
     "commons": ":commons",
     "process_limits": ":process_limits",
     "profiling": ":profiling",
@@ -44,11 +48,9 @@ SEMGREP_LIBS = {
 
 OVERLAYS = [
     "libs/collections/dune",
+    "libs/telemetry/dune",
+    "libs/telemetry/Telemetry.ml",
+    "libs/parallelism/dune",
     "libs/commons/dune",
     "libs/commons/Ord.ml",
-    "libs/commons/Common_metrics.ml",
-    "libs/commons/Tracing.ml",
-    "libs/process_limits/dune",
-    "libs/process_limits/Logging.ml",
-    "libs/process_limits/Process_limit_metrics.ml",
 ]

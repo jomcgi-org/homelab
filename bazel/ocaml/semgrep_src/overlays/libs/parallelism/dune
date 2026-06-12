@@ -1,0 +1,23 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+; Upstream declares eio_main and eio.mock; no source references either
+; (ocamldep confirms: the one Eio_main mention is a doc-comment example in
+; Executor_pool.mli, and eio.mock serves only the tests/ subdir). Both
+; would pull the io_uring backend closure, which stays out of scope
+; (semgrep_src/README.md). Pruned to what the sources use; eio.unix is
+; added because Parallelism_config.ml names Eio_unix.Stdenv.base, which
+; upstream reaches transitively through eio_main.
+
+(library
+ (public_name parallelism)
+ (wrapped false)
+ (libraries
+   eio
+   eio.unix
+   logs
+ )
+ (preprocess
+   (pps
+     ppx_deriving.show
+   )
+ )
+)

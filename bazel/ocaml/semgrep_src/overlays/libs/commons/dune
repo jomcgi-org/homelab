@@ -11,10 +11,11 @@
 ;   * libraries pruned to the set some module actually references:
 ;     collections str unix fpath hex yojson fmt fmt.tty ANSITerminal logs
 ;     logs.fmt testo timedesc cmdliner bos re pcre pcre2 digestif.ocaml
-;     sexplib semver uri uuidm memtrace parmap eio eio.unix. Dropped:
+;     sexplib semver uri uuidm memtrace parmap eio eio.unix telemetry
+;     parallelism (Common_metrics meters through Ometrics and
+;     SharedCounterTable; UCmd spans through telemetry's Tracing). Dropped:
 ;     atdgen-runtime ocolor logs.threaded alcotest alcotest-lwt testo-lwt
-;     lwt memtrace? no -- memtrace stays -- telemetry parallelism eio_main
-;     ambient-context-lwt (unreferenced).
+;     lwt eio_main ambient-context-lwt (unreferenced).
 
 (library
  (public_name commons)
@@ -47,6 +48,8 @@
    parmap
    eio
    eio.unix
+   telemetry
+   parallelism
  )
  (preprocess
    (pps

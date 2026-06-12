@@ -245,6 +245,15 @@ the PCRE2 C source and the tree-sitter runtime + per-language grammars are
 cc_libraries that OCaml bindings consume through `cc_deps`, replacing the
 opam `conf-*` system-library probes with hermetic from-source builds.
 
+**Git pins** ride it too: packages semgrep pin-depends on a fork commit
+(the `opentelemetry` fork) lock the commit's archive tarball as url+sha256
+with `"opam": false` (no opam-repository metadata to verify against). The
+ambient-context override is the first **virtual library** dispatch: dune's
+`(virtual_modules ...)` + `(default_implementation ...)` are not modeled,
+so the override compiles the virtual module's interface together with the
+implementation Semgrep actually selects (the unix default) as one concrete
+library, per the plan's decision.
+
 The ladder that proves it (`examples/opam_ladder`, all from-source on RBE):
 
 ```
