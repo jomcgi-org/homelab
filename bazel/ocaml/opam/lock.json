@@ -21,8 +21,12 @@
       "sha256": "2e37b01b9bda0e39f0fd3913c0ec81237ed2d04c6bbe23f48b102de83ba47454",
       "strip_prefix": "ocaml-re-1.13.2",
       "type": "tar.gz",
-      "src_dirs": ["lib"],
-      "libs": { "re": "re" }
+      "src_dirs": [
+        "lib"
+      ],
+      "libs": {
+        "re": "re"
+      }
     },
     {
       "name": "sexplib0",
@@ -32,8 +36,12 @@
       "sha256": "5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b",
       "strip_prefix": "sexplib0-0.17.0",
       "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": { "sexplib0": "sexplib0" }
+      "src_dirs": [
+        "src"
+      ],
+      "libs": {
+        "sexplib0": "sexplib0"
+      }
     },
     {
       "name": "ppx_derivers",
@@ -43,8 +51,12 @@
       "sha256": "b6595ee187dea792b31fc54a0e1524ab1e48bc6068d3066c45215a138cc73b95",
       "strip_prefix": "ppx_derivers-1.2.1",
       "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": { "ppx_derivers": "ppx_derivers" }
+      "src_dirs": [
+        "src"
+      ],
+      "libs": {
+        "ppx_derivers": "ppx_derivers"
+      }
     },
     {
       "name": "stdlib-shims",
@@ -54,7 +66,9 @@
       "sha256": "babf72d3917b86f707885f0c5528e36c63fccb698f4b46cf2bab5c7ccdd6d84a",
       "strip_prefix": "stdlib-shims-0.3.0",
       "override": true,
-      "libs": { "stdlib-shims": "stdlib_shims" }
+      "libs": {
+        "stdlib-shims": "stdlib_shims"
+      }
     },
     {
       "name": "ocaml-compiler-libs",
@@ -107,8 +121,12 @@
       "url": "https://github.com/ocaml-community/easy-format/releases/download/1.3.4/easy-format-1.3.4.tbz",
       "sha256": "1dbf051e9f68574dde6e2e254a66b9c524ca425e80b36e99af96ed964ab610c3",
       "strip_prefix": "easy-format-1.3.4",
-      "src_dirs": ["src"],
-      "libs": { "easy-format": "easy_format" }
+      "src_dirs": [
+        "src"
+      ],
+      "libs": {
+        "easy-format": "easy_format"
+      }
     },
     {
       "name": "camlp-streams",
@@ -119,7 +137,9 @@
       "strip_prefix": "camlp-streams-5.0.1",
       "type": "tar.gz",
       "override": true,
-      "libs": { "camlp-streams": "camlp_streams" }
+      "libs": {
+        "camlp-streams": "camlp_streams"
+      }
     },
     {
       "name": "biniou",
@@ -128,8 +148,12 @@
       "url": "https://github.com/mjambon/biniou/releases/download/1.2.2/biniou-1.2.2.tbz",
       "sha256": "8bf3ff17cd0ecb2d6b6d1d94cb08ef089d44caef96e9bae6be6839d428fa318f",
       "strip_prefix": "biniou-1.2.2",
-      "src_dirs": ["src"],
-      "libs": { "biniou": "biniou" }
+      "src_dirs": [
+        "src"
+      ],
+      "libs": {
+        "biniou": "biniou"
+      }
     },
     {
       "name": "yojson",
@@ -139,7 +163,9 @@
       "sha256": "9abfad8c9a79d4723ad2f6448e669c1e68dbfc87cc54a1b7c064b0c90912c595",
       "strip_prefix": "yojson-2.2.2",
       "override": true,
-      "libs": { "yojson": "yojson" }
+      "libs": {
+        "yojson": "yojson"
+      }
     },
     {
       "name": "atd",
@@ -175,7 +201,9 @@
       "strip_prefix": "pcre2-ocaml-8.0.4",
       "type": "tar.gz",
       "override": true,
-      "libs": { "pcre2": "pcre2" }
+      "libs": {
+        "pcre2": "pcre2"
+      }
     },
     {
       "name": "tree-sitter",
@@ -228,6 +256,36 @@
         "ppx_deriving.api": "ppx_deriving_api",
         "ppx_deriving.runtime": "ppx_deriving_runtime",
         "ppx_deriving.show": "ppx_deriving_show"
+      }
+    },
+    {
+      "name": "cmdliner",
+      "version": "2.1.1",
+      "repo": "ocaml_cmdliner",
+      "url": "https://erratique.ch/software/cmdliner/releases/cmdliner-2.1.1.tbz",
+      "sha256": "05b938d1def4f54c478178f1982822834510431ed98f2ac67cb4d90aa120d6b6",
+      "strip_prefix": "cmdliner-2.1.1",
+      "type": "tar.bz2",
+      "src_dirs": [
+        "src"
+      ],
+      "libs": {
+        "cmdliner": "cmdliner"
+      }
+    },
+    {
+      "name": "logs",
+      "version": "0.10.0",
+      "repo": "ocaml_logs",
+      "url": "https://erratique.ch/software/logs/releases/logs-0.10.0.tbz",
+      "sha256": "760ec291c128d75b74826091337764f925b5ca414b02e2d336a0b37bf30df4ea",
+      "strip_prefix": "logs-0.10.0",
+      "type": "tar.bz2",
+      "src_dirs": [
+        "src"
+      ],
+      "libs": {
+        "logs": "logs"
       }
     }
   ]
