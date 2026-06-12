@@ -376,11 +376,16 @@ def _ocaml_ppx_impl(ctx):
     tc = ctx.toolchains[_TOOLCHAIN_TYPE].ocaml
     dep = _collect(ctx)
 
+    # Rewriter libraries can transitively reach C-stub libraries (semgrep's
+    # profiling.ppx depends on commons, which links pcre); the driver binary
+    # needs their archives exactly like ocaml_binary does.
+    cc = _collect_cc(ctx)
+
     main = ctx.actions.declare_file(ctx.label.name + "_driver_main.ml")
     ctx.actions.write(main, "let () = Ppxlib.Driver.standalone ()\n")
 
     exe = ctx.actions.declare_file(ctx.label.name)
-    args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), [main], [])
+    args = _driver_args(ctx, tc, "binary", dep.includes.to_list(), dep.opam.to_list(), [main], [], cc = cc)
     args.add("--exe-out", exe.path)
 
     # -linkall: rewriters register themselves with ppxlib at module init; the
@@ -392,7 +397,7 @@ def _ocaml_ppx_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, tc.sysroot_files]),
+        inputs = depset([main], transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
         outputs = [exe],
         mnemonic = "OcamlPpxDriver",
         progress_message = "Linking ppx driver %{label}",
