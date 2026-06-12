@@ -409,6 +409,28 @@ class TestGenLibrary:
         out = gen_library(stanza, "src", LIB_MAP)
         assert "preprocess" not in out
 
+    def test_future_syntax_accepted_as_noop(self):
+        # dune's built-in compat shim is the identity on a 5.3 sysroot
+        # (angstrom carries it).
+        stanza = self._stanza("(library (name mylib) (preprocess future_syntax))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert "preprocess" not in out
+
+    def test_modules_without_implementation_inert(self):
+        # mli-only modules compile naturally (ocamlgraph carries the field).
+        stanza = self._stanza(
+            "(library (name mylib) (modules_without_implementation sig sig_pack))"
+        )
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'name = "mylib"' in out
+        assert "sig_pack" not in out
+
+    def test_recursive_glob_for_include_subdirs(self):
+        stanza = self._stanza("(library (name mylib))")
+        out = gen_library(stanza, "src", LIB_MAP, recursive=True)
+        assert '"src/**/*.ml"' in out
+        assert '"src/**/*.mly"' in out
+
     def test_pps_generates_ppx_target(self):
         stanza = self._stanza(
             "(library (name mylib) (preprocess (pps ppxlib.metaquot)))"
@@ -521,6 +543,30 @@ class TestGenDuneDir:
         out = gen_dune_dir(path, "src", LIB_MAP)
         assert 'name = "a"' in out
         assert "menhir" not in out
+
+    def test_ocamlyacc_stanza_inert(self, tmp_path):
+        # (ocamlyacc M) is informational like ocamllex: the .mly is globbed in
+        # and the driver runs ocamlyacc on non-menhir grammars (ocamlgraph).
+        path = self._write(tmp_path, "(library (name a))\n(ocamlyacc Parser)\n")
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'name = "a"' in out
+        assert "menhir" not in out
+
+    def test_include_subdirs_unqualified_recursive_glob(self, tmp_path):
+        path = self._write(
+            tmp_path, "(include_subdirs unqualified)\n(library (name a))\n"
+        )
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert '"src/**/*.ml"' in out
+
+    def test_include_subdirs_qualified_exits(self, tmp_path):
+        # qualified gives each subdir its own module namespace, which the
+        # driver's flat stage-by-basename cannot express.
+        path = self._write(
+            tmp_path, "(include_subdirs qualified)\n(library (name a))\n"
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
 
     def test_menhir_stanza_attaches_to_library(self, tmp_path):
         path = self._write(
