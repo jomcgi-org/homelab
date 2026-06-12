@@ -11,8 +11,13 @@
   // that render their own chrome, so the site nav is suppressed for them. The
   // hooks.js reroute keeps the browser path un-prefixed, but match the
   // /public|/private prefixes too in case a route is hit directly.
+  //
+  // Error pages (notably the brutalist 404 in src/routes/+error.svelte) also
+  // suppress the nav: a not-found page renders its own "back home" affordance
+  // and the cross-tier nav would only clutter the dead-end.
   let hideNav = $derived(
-    /^\/(public\/|private\/)?app\//.test($page.url.pathname),
+    /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
+      $page.error != null,
   );
 
   // Active-state derivation. The hooks.js reroute remaps
