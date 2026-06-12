@@ -142,6 +142,11 @@ build_test(
         # ppx_deriver rewriter), the one new external the generic AST needs.
         "@ocaml_visitors//:VisitorsRuntime",
         "@ocaml_visitors//:ppx_deriving_visitors",
+        # Phase 8 semgrep-core closure: base64 (src/sca's one new external;
+        # override: the unsafe.ml copy-rule probe pins to unsafe_stable.ml
+        # on the 5.3 sysroot).
+        "@ocaml_base64//:base64",
+        "@ocaml_base64//:base64_rfc2045",
     ],
 )
 
@@ -176,5 +181,11 @@ build_test(
         "@semgrep_src//:parser_go_ast",
         "@semgrep_src//:parser_go_tree_sitter",
         "@semgrep_src//:parser_go_ast_generic",
+        # Phase 8 semgrep-core closure slice: the internal commons/telemetry
+        # rewriters (the profiling/ppx shape) and src/configuring, the first
+        # dir whose atdgen codegen rules are translated (not overridden).
+        "@semgrep_src//:ppx_commons",
+        "@semgrep_src//:ppx_telemetry",
+        "@semgrep_src//:semgrep_configuring",
     ],
 )
