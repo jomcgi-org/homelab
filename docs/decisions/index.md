@@ -45,6 +45,7 @@ ADRs document significant architectural decisions and their context.
 | [002 - CDN-Cached Data Fetching](platform/002-cdn-cached-data-fetching.md)                                     | Public JSON endpoints cache at the Cloudflare edge; clients poll cached         |
 | [003 - CDN Cache Rule Scoped to `public.jomcgi.dev`](platform/003-cdn-cache-hostname-rule.md)                  | Scope CDN cache rule to public.jomcgi.dev (supersedes 002 partially)            |
 | [004 - Iceberg-on-SeaweedFS Lakehouse with Hot-Swap Quack Serving](platform/004-iceberg-lakehouse-hot-swap.md) | Event-sourced lakehouse; NATS → Iceberg → Quack hot-swap; partially evolves 001 |
+| [005 - Per-PR Preview Environments](platform/005-per-pr-preview-environments.md)                               | Ephemeral monolith previews: CoW Postgres clone, muted side effects, ApplicationSet PR generator |
 
 ## Security
 
