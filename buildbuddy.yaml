@@ -90,6 +90,19 @@ actions:
           fi
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external
 
+          # OCaml multi-arch shard (ADR 006/008): the example/test ladder again,
+          # targeting linux/arm64. Toolchain resolution routes ocaml actions to
+          # the BuildBuddy cloud arm64 pool (the platform carries Arch: arm64);
+          # the sysroot builds from source on that pool, no cross-compilation.
+          # --use_target_platform_for_tests runs the arm64 test binaries on the
+          # arm64 pool too. cc_library-dependent examples are tagged no-arm64
+          # until a C++ toolchain targeting aarch64 exists.
+          bazel test //bazel/ocaml/... --config=ci \
+            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
+            --use_target_platform_for_tests \
+            --build_tests_only \
+            --test_tag_filters=-external,-no-arm64
+
   # Push images — runs in parallel with Test (no dependency).
   # PR images are tagged with the source branch name (not "main"),
   # so ArgoCD Image Updater ignores them. This ensures image builds are

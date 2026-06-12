@@ -20,6 +20,8 @@ OcamlToolchainInfo carries the sysroot files plus tool configuration consumed by
 the rule implementations.
 """
 
+load("//bazel/ocaml/toolchain:arches.bzl", "OCAML_ARCHES")
+
 OcamlToolchainInfo = provider(
     doc = "Hermetic OCaml compiler sysroot + tool configuration.",
     fields = {
@@ -58,3 +60,31 @@ ocaml_toolchain = rule(
     },
     doc = "Declares the OCaml toolchain. Register an instance with register_toolchains().",
 )
+
+def declare_ocaml_toolchains():
+    """Declare a constrained (ocaml_toolchain, toolchain) pair per enabled arch.
+
+    Each pair pins both target_compatible_with and exec_compatible_with to the
+    arch (no cross-compilation, per ADR 006/008: an OCaml build for an arch runs
+    *on* that arch), and its sysroot is the per-arch compiler build from
+    declare_ocaml_sysroots(). Registration order lives in MODULE.bazel:
+    constrained per-arch toolchains first, then the unconstrained fallback
+    (:ocaml_toolchain) that preserves the original single-arch behavior for any
+    platform the registry does not model.
+    """
+    for arch in OCAML_ARCHES:
+        if not arch.enabled:
+            continue
+        ocaml_toolchain(
+            name = "ocaml_tools_" + arch.name,
+            sysroot = "//bazel/ocaml/toolchain:ocaml_compiler_" + arch.name,
+            visibility = ["//visibility:public"],
+        )
+        native.toolchain(
+            name = "ocaml_toolchain_" + arch.name,
+            exec_compatible_with = [arch.os, arch.cpu],
+            target_compatible_with = [arch.os, arch.cpu],
+            toolchain = ":ocaml_tools_" + arch.name,
+            toolchain_type = ":toolchain_type",
+            visibility = ["//visibility:public"],
+        )
