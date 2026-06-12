@@ -241,16 +241,20 @@ if [ -n "$PP_TOOL" ]; then
 	done
 fi
 if [ -n "$PPX" ]; then
-	# ppx output is source-compatible OCaml; rewriting in place keeps file/unit
-	# names stable so wrapping and ocamldep are untouched downstream.
+	# Rewriting in place keeps file/unit names stable so wrapping and ocamldep
+	# are untouched downstream. --dump-ast emits the marshalled AST (the same
+	# thing dune passes between ppx and the compiler; ocamldep/ocamlopt sniff
+	# the magic): a text print + reparse roundtrip is NOT semantics-preserving
+	# -- ppxlib's printer drops `let x : t = e` constraints (pvb_constraint),
+	# which cost ppx_sexp_conv's expander its field disambiguation.
 	for f in "$WORK"/*.ml; do
 		[ -e "$f" ] || continue
-		"$PPX" --impl "$f" -o "$f.pp"
+		"$PPX" --impl "$f" --dump-ast -o "$f.pp"
 		mv "$f.pp" "$f"
 	done
 	for f in "$WORK"/*.mli; do
 		[ -e "$f" ] || continue
-		"$PPX" --intf "$f" -o "$f.pp"
+		"$PPX" --intf "$f" --dump-ast -o "$f.pp"
 		mv "$f.pp" "$f"
 	done
 fi
