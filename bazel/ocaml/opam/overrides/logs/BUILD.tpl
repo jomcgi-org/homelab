@@ -4,7 +4,7 @@
 # no dune files to translate. Each findlib sublibrary is a single module:
 #
 #   logs      -> Logs      (src/logs.ml, stdlib only)
-#   logs.fmt  -> Logs_fmt  (ANSI/level reporters over fmt; links the vendored fmt)
+#   logs.fmt  -> Logs_fmt  (ANSI/level reporters over the opam fmt)
 #   logs.cli  -> Logs_cli  (cmdliner term for --verbosity)
 #
 # logs.lwt / logs.browser / logs.threaded are deliberately not built (they need
@@ -29,7 +29,7 @@ ocaml_library(
     visibility = ["//visibility:public"],
     deps = [
         ":logs",
-        "@homelab//bazel/ocaml/third_party/fmt",
+        "@ocaml_fmt//:fmt",
     ],
 )
 
