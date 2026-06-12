@@ -1,5 +1,5 @@
 # Path-based private ingress: https://private.jomcgi.dev/app/argocd
-# Replaces the static tunnel route at argocd.jomcgi.dev (kept during transition).
+# Replaced the former argocd.jomcgi.dev tunnel route (retired in PR #2534).
 cfIngress:
   enabled: true
   tier: trusted

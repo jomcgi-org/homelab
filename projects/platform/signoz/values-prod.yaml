@@ -1,6 +1,6 @@
 # Path-based private ingress: https://private.jomcgi.dev/app/signoz
-# The old signoz.jomcgi.dev hostname stops working once the base path below
-# is set, because SigNoz serves all routes under the prefix.
+# SigNoz serves all routes under the base path below, so it cannot also serve
+# at a bare hostname; the former signoz.jomcgi.dev route was retired in PR #2534.
 cfIngress:
   enabled: true
   tier: trusted

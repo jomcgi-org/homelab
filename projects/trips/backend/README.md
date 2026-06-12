@@ -434,7 +434,7 @@ Instrumented with OpenTelemetry (auto-injected by Kyverno):
 - Elevation API calls
 - WebSocket connections
 
-View in SigNoz: https://signoz.jomcgi.dev
+View in SigNoz: https://private.jomcgi.dev/app/signoz
 
 ### Logs
 
