@@ -87,6 +87,11 @@ trivial `uname -m` on the existing executor.
 
 1. The exact BuildBuddy execution-property key(s) for arch routing (`Arch`, and
    any pool selector) -- resolved against executor docs + the probe at Phase 7.
+   **Update 2026-06-12:** pool availability is resolved. BuildBuddy launched
+   autoscaled cloud linux/arm64 executors on 2026-01-15 (`Arch: arm64`), so
+   Phase 7 needs no self-hosted pool; see
+   [ADR 008](008-cli-multiplatform-distribution.md) for the verified findings
+   and the extension of this model to CLI distribution (including darwin).
 2. Whether a production deployment would want additional arches beyond
    linux x86_64/aarch64 (the registry makes this a one-line answer when known).
 

@@ -69,3 +69,7 @@ ADRs document significant architectural decisions and their context.
 | [002 - Service Deployment Tooling](tooling/002-service-deployment-tooling.md) | Copier template to scaffold new services, eliminating per-service boilerplate           |
 | [003 - Spec-First CLI and Skills](tooling/003-spec-first-cli-and-skills.md)   | OpenAPI as source of truth; CLI commands and Claude skills are derived                  |
 | [004 - OCaml Rules for Semgrep](tooling/004-ocaml-rules-for-semgrep.md)       | Scale the custom bazel/ocaml ruleset (not obazl); ppx first, per-arch native toolchains |
+| [005 - tOyCaml Demonstrator](tooling/005-toycaml-demonstrator.md)             | Engine-shaped demonstrator exercising the ruleset before Semgrep lands                  |
+| [006 - Multi-arch OCaml Toolchains](tooling/006-extensible-multiarch-ocaml-toolchains.md) | Data-driven arch registry; per-arch toolchain registration gated on pool verification |
+| [007 - OCaml BUILD Generation](tooling/007-ocaml-build-file-generation-gazelle.md) | Gazelle-based BUILD file generation for OCaml sources                              |
+| [008 - CLI Multi-platform Distribution](tooling/008-cli-multiplatform-distribution.md) | One Bazel graph, native execution platforms (cloud arm64, self-hosted darwin); no cross-compilation, QEMU, or wasm |
