@@ -3,8 +3,11 @@ load(":compiler.bzl", "declare_ocaml_sysroots", "ocaml_compiler")
 
 # Builds the pinned Semgrep OCaml fork from source as an RBE action (so it links
 # the executor's glibc). Output is a sysroot tar the toolchain stages + extracts.
-# This unconstrained target backs the fallback toolchain (//bazel/ocaml:ocaml_tools)
-# and builds wherever the default executor pool runs.
+# This unconstrained target is NOT wired to any toolchain (only the per-arch
+# pairs below are registered); it exists for override genrules that stage the
+# tar directly (yojson, ocaml-compiler-libs). Both this build action and those
+# genrules run on the default executor pool, so the tar's binaries always match
+# the executor running them, in every target configuration.
 ocaml_compiler(
     name = "ocaml_compiler",
     srcs = "@ocaml_source//:srcs",

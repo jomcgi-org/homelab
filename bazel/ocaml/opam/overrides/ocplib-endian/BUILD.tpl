@@ -7,12 +7,14 @@
 # spelled out as genrules (the yojson override pattern) and each library
 # compiles exactly its generated module set.
 #
-# The -V OCAML version pin: upstream passes -V OCAML:%{ocaml_version}; every
-# conditional in this package discriminates OCaml 4.0x compatibility, so any
-# 5.x value selects the modern branch. Revisit when the sysroot pin moves.
 load("@homelab//bazel/ocaml:defs.bzl", "ocaml_library")
 
 _CPPO = "@ocaml_cppo//:cppo"
+
+# Upstream passes -V OCAML:%{ocaml_version}; every conditional in this package
+# discriminates OCaml 4.0x compatibility, so any 5.x value selects the modern
+# branch. One constant so a sysroot pin move is a single edit here.
+_OCAML_V = "-V OCAML:5.3.0"
 
 # common_401.ml is itself generated, then #included by the endian* modules.
 genrule(
@@ -27,7 +29,7 @@ genrule(
     outs = ["common_401.ml"],
     cmd = "W=$$(mktemp -d) && CP=$$(realpath $(location %s)) && " % _CPPO +
           "for f in $(SRCS); do cp $$f $$W/; done && " +
-          "(cd $$W && $$CP -V OCAML:5.3.0 common_401.cppo.ml -o common_401.ml) && " +
+          "(cd $$W && $$CP %s common_401.cppo.ml -o common_401.ml) && " % _OCAML_V +
           "cp $$W/common_401.ml $@",
     tools = [_CPPO],
 )
@@ -45,8 +47,8 @@ genrule(
         outs = ["%s.ml" % mod],
         cmd = "W=$$(mktemp -d) && CP=$$(realpath $(location %s)) && " % _CPPO +
               "for f in $(SRCS); do cp $$f $$W/; done && " +
-              ("(cd $$W && $$CP -V OCAML:5.3.0 {m}.cppo.ml -o {m}.ml) && " +
-               "cp $$W/{m}.ml $@").format(m = mod),
+              ("(cd $$W && $$CP {v} {m}.cppo.ml -o {m}.ml) && " +
+               "cp $$W/{m}.ml $@").format(m = mod, v = _OCAML_V),
         tools = [_CPPO],
     )
     for mod in [
@@ -63,8 +65,8 @@ genrule(
         outs = ["%s.mli" % mod],
         cmd = "W=$$(mktemp -d) && CP=$$(realpath $(location %s)) && " % _CPPO +
               "for f in $(SRCS); do cp $$f $$W/; done && " +
-              ("(cd $$W && $$CP -V OCAML:5.3.0 {m}.cppo.mli -o {m}.mli) && " +
-               "cp $$W/{m}.mli $@").format(m = mod),
+              ("(cd $$W && $$CP {v} {m}.cppo.mli -o {m}.mli) && " +
+               "cp $$W/{m}.mli $@").format(m = mod, v = _OCAML_V),
         tools = [_CPPO],
     )
     for mod in [
