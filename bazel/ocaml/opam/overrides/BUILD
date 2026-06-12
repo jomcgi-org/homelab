@@ -5,4 +5,7 @@
 #
 # Every override is a standing TODO: it documents exactly which dune features
 # the translator would need to learn to retire it.
-exports_files(glob(["*/BUILD.tpl", "*/BUILD.extra.tpl"]))
+exports_files(glob([
+    "*/BUILD.tpl",
+    "*/BUILD.extra.tpl",
+]))
