@@ -258,13 +258,14 @@
       const ctx = canvas.getContext("2d");
       ctx.scale(px / 20, px / 20); // path authored in a 20x20 viewBox
       const path = new Path2D("M10 1 L17 18 L10 14 L3 18 Z");
-      // The basemap canvas wears a `grayscale(0.4)` CSS filter to warm the
-      // tiles toward the cream palette (see <style>). The vessel symbols now
-      // render inside that same canvas, so they get desaturated too. Boost the
-      // fill's saturation here so that after the canvas filter the markers land
-      // back at the legend's vividness. Applied to the fill only; the ink
-      // outline is reset to no filter so it stays dark.
-      ctx.filter = "saturate(1.75) brightness(1.04)";
+      // The basemap canvas wears a light `grayscale(0.12)` CSS filter (see
+      // <style>). The vessel symbols render inside that same canvas, so they get
+      // desaturated a touch too. A small saturation bump lands the fill back at
+      // the legend's vividness after the canvas filter (the old 0.4 grayscale
+      // needed a much larger 1.75 boost; matching that here would over-saturate
+      // now that the tint is lighter). Applied to the fill only; the ink outline
+      // is reset to no filter so it stays dark.
+      ctx.filter = "saturate(1.15)";
       ctx.fillStyle = fill;
       ctx.fill(path);
       ctx.filter = "none";
@@ -683,19 +684,23 @@
     inset: 0;
   }
 
-  /* Push the basemap toward the warm cream/ink palette without restyling
-     every layer. Kept subtle so markers and chrome stay legible. */
+  /* Nudge the basemap toward the cream/ink palette with only a light touch of
+     grayscale: enough to keep it from fighting the marker + heat colors, but
+     not the heavy desaturation that left the vessels view looking dull next to
+     the vibrant heatmap. Both modes share this now (heat used to ease the tint
+     off on its own; vessels matches it). */
   .map :global(.maplibregl-canvas) {
-    filter: grayscale(0.4) sepia(0.12) brightness(1.02) contrast(0.96);
+    filter: grayscale(0.12) brightness(1.02) contrast(1.02);
     transition: filter 160ms ease;
   }
 
-  /* In heat mode the live markers are hidden, so the warm grayscale tint is
-     only muddying the density fill. Ease most of it off so the red ramp renders
-     near full saturation; a touch of grayscale still keeps the basemap from
-     fighting the heat colors. */
-  .heat-mode .map :global(.maplibregl-canvas) {
-    filter: grayscale(0.12) brightness(1.02) contrast(1.02);
+  /* The bottom-right stack (zoom + the collapsed attribution "i") sits at the
+     map's bottom edge, where on phones the home-indicator safe area was
+     clipping the lowest control offscreen. Lift the whole corner above the
+     inset so nothing hides behind it. Falls back to 0 on devices without a
+     safe area. */
+  .map :global(.maplibregl-ctrl-bottom-right) {
+    bottom: env(safe-area-inset-bottom, 0);
   }
 
   /* Drop the group container entirely so each +/- button is its own square
