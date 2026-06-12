@@ -746,9 +746,18 @@
 
   /* Compact attribution: a single square "i" toggle that matches the zoom
      controls stacked above it, rather than MapLibre's default round white pill.
-     The required OSM/OpenMapTiles credits expand on tap. */
+     The required OSM/OpenMapTiles credits expand on tap.
+
+     The "i" button is `position: absolute; top: 0` inside this container, so the
+     container has to stay tall enough to hold it: MapLibre's default min-height
+     does that, but a previous `min-height: 0` collapsed the box to ~4px and the
+     24px button then overflowed *below* it. Because this control is anchored to
+     the map's bottom edge, that overflow fell off the bottom of the viewport and
+     clipped the lower ~10px of the "i". Match the container to the button (24px,
+     vertical padding zeroed for a clean square) so the button is fully held. */
   .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
-    min-height: 0;
+    min-height: 24px;
+    padding-block: 0;
     background: transparent;
     box-shadow: none;
   }
