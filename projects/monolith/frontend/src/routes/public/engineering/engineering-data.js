@@ -314,7 +314,10 @@ export const projects = [
       },
     ],
     links: [
-      { label: "Live at jomcgi.dev/app/ships", href: "https://jomcgi.dev/app/ships" },
+      {
+        label: "Live at jomcgi.dev/app/ships",
+        href: "https://jomcgi.dev/app/ships",
+      },
     ],
   },
   {
