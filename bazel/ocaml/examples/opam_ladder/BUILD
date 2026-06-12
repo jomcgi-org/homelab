@@ -54,5 +54,8 @@ build_test(
         "@ocaml_angstrom//:angstrom",
         "@ocaml_uri//:uri",
         "@ocaml_ocamlgraph//:graph",
+        # Phase 8 wave A: parmap (override: configurator probe pinned for
+        # linux glibc, C stubs via c_srcs/c_headers).
+        "@ocaml_parmap//:parmap",
     ],
 )

@@ -395,6 +395,19 @@
       "libs": {
         "ocamlgraph": "graph"
       }
+    },
+    {
+      "name": "parmap",
+      "version": "1.2.5",
+      "repo": "ocaml_parmap",
+      "url": "https://github.com/rdicosmo/parmap/archive/refs/tags/1.2.5.tar.gz",
+      "sha256": "6709356e724436fba0b7a10f96f65a441c2b763832954707d5e30017e78fd285",
+      "strip_prefix": "parmap-1.2.5",
+      "type": "tar.gz",
+      "libs": {
+        "parmap": "parmap"
+      },
+      "override": true
     }
   ]
 }

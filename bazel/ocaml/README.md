@@ -208,8 +208,8 @@ and produces `@<repo>` with a BUILD that is either:
   packages whose dune trees bootstrap themselves with codegen the translator
   does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
   ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2, ocplib-endian,
-  bigstringaf -- whose configurator probe writes only C warning flags and is
-  provably droppable), and for packages
+  bigstringaf and parmap -- whose configurator probes are provably constant
+  here: warning flags only, and linux-glibc feature pins), and for packages
   that are not dune projects at all, where there is nothing to translate
   (cmdliner and logs build with b0/topkg; their flat module layouts make the
   overrides one ocaml_library per findlib name). Overrides still
