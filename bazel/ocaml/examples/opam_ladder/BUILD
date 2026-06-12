@@ -57,5 +57,10 @@ build_test(
         # Phase 8 wave A: parmap (override: configurator probe pinned for
         # linux glibc, C stubs via c_srcs/c_headers).
         "@ocaml_parmap//:parmap",
+        # Phase 8 wave B: the Jane Street shallow ladder, step 1.
+        "@ocaml_ocaml_intrinsics_kernel//:ocaml_intrinsics_kernel",
+        "@ocaml_base//:base_internalhash_types",
+        "@ocaml_base//:shadow_stdlib",
+        "@ocaml_base//:base",
     ],
 )
