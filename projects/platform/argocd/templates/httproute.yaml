@@ -1,10 +1,18 @@
 {{- /*
 Path-based private ingress: https://private.jomcgi.dev/app/argocd
 
-Envoy strips the /app/argocd prefix (URLRewrite), so argocd-server keeps
-serving at /. The matching server.basehref in values-cluster.yaml makes the
-UI reference its assets under the prefix. In-cluster API clients
-(argocd-mcp, bots hitting argocd-server.argocd.svc) are unaffected.
+The gateway forwards the full /app/argocd prefix intact (no URLRewrite):
+argocd-server runs with server.rootpath=/app/argocd (values-cluster.yaml),
+so it serves the UI, API, and websockets under the prefix and rewrites the
+index.html base href to /app/argocd/. basehref alone with a stripped prefix
+did not rewrite the base href in v3.x, leaving the UI blank.
+
+Trade-off: rootpath moves the API off / as well, so in-cluster clients must
+use the prefix (e.g. http://argocd-server.argocd.svc/app/argocd/api/...).
+The monolith reads ArgoCD via the Kubernetes API (Application CRs) and
+Image Updater runs in kubernetes application-API mode, so neither is
+affected; the runtime-registered argocd-mcp server needs its base URL
+updated to include /app/argocd.
 */}}
 {{- if .Values.cfIngress.enabled }}
 {{- $routeParams := dict
@@ -12,7 +20,6 @@ UI reference its assets under the prefix. In-cluster API clients
   "tier" .Values.cfIngress.tier
   "hostname" .Values.cfIngress.hostname
   "pathPrefix" .Values.cfIngress.pathPrefix
-  "rewritePrefix" "/"
   "serviceName" .Values.cfIngress.serviceName
   "servicePort" .Values.cfIngress.servicePort
   "gateway" .Values.cfIngress.gateway
