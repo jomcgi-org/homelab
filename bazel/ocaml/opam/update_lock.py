@@ -40,7 +40,10 @@ def fetch(url):
 
 def parse_url_section(opam_text):
     """Extract (src, {algo: digest}) from an opam file's url section."""
-    m = re.search(r"^url\s*\{(.*?)^\}", opam_text, re.S | re.M)
+    # Non-greedy to the first closing brace: the url section has no nested
+    # braces, and some packages (rresult, bos) close it on the checksum line
+    # rather than at line start.
+    m = re.search(r"^url\s*\{(.*?)\}", opam_text, re.S | re.M)
     if not m:
         sys.exit("update_lock: no url section in opam file")
     body = m.group(1)

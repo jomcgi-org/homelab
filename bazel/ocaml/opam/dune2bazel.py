@@ -65,6 +65,10 @@ _SUPPORTED_LIBRARY_FIELDS = {
     # naturally (ocamldep -sort includes them; only .cmx are archived), so
     # the declaration is provably inert.
     "modules_without_implementation",
+    # (lint (pps ...)) only runs under `dune lint`, which we never invoke;
+    # provably inert, same footing as instrumentation (sexplib/parsexp carry
+    # it).
+    "lint",
     # Names the libraries that code REWRITTEN by this ppx links at run time.
     # Our model keeps that on the consumer (the preprocess_runtime_deps attr,
     # the convention established with ppx_deriving.runtime), so the field
