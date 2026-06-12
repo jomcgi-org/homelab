@@ -1,8 +1,0 @@
-{{- if .Values.frontend.enabled }}
-{{- $_ := set .Values.frontend "env" (list
-  (dict "name" "PORT" "value" "3000")
-  (dict "name" "API_URL" "value" (printf "http://%s-api:%v" (include "homelab.fullname" .) (.Values.api.service.port | default 8000)))
-  (dict "name" "PUBLIC_DIR" "value" (default "/app/public/dist" .Values.frontend.publicDir))
-) }}
-{{- include "homelab.deployment" (dict "context" . "component" "frontend") }}
-{{- end }}

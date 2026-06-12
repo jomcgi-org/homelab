@@ -435,7 +435,7 @@
   }
 
   /* Live destination chip: the heading owns the source link, this chip
-     owns the running product (trips.jomcgi.dev, ships.jomcgi.dev, the
+     owns the running product (trips.jomcgi.dev, jomcgi.dev/app/ships, the
      notes view). Green = online; full label in title/aria-label. */
   .tag-live {
     background: var(--green);

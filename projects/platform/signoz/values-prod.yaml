@@ -119,13 +119,6 @@ k8s-infra:
             # Cluster agents (internal health check - no public domain)
             - endpoint: http://cluster-agents.cluster-agents.svc.cluster.local:8080/health
               method: GET
-            # Ships/Marine frontend
-            - endpoint: https://ships.jomcgi.dev
-              method: GET
-              headers:
-                CF-Access-Client-Id: "${env:CF_ACCESS_CLIENT_ID}"
-                CF-Access-Client-Secret: "${env:CF_ACCESS_CLIENT_SECRET}"
-
         # Linkerd proxy (data plane) metrics — scrapes port 4191 on every meshed pod.
         # Linkerd injects the linkerd.io/control-plane-ns label on all meshed pods,
         # so we use that as the selector instead of per-service annotations.

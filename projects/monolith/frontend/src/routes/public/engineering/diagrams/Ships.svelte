@@ -13,5 +13,5 @@
   <DArrow label="replay + subscribe" />
   <DBox role="process">ships-api</DBox>
   <DArrow />
-  <DBox role="output" sub="MapLibre">ships.jomcgi.dev</DBox>
+  <DBox role="output" sub="MapLibre">jomcgi.dev/app/ships</DBox>
 </Diagram>
