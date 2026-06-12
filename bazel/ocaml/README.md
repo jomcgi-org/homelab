@@ -209,7 +209,10 @@ and produces `@<repo>` with a BUILD that is either:
   does not model (stdlib-shims, ocaml-compiler-libs, cppo, ppxlib,
   ppx_deriving, menhir, camlp-streams, yojson, atd, pcre2, ocplib-endian,
   bigstringaf and parmap -- whose configurator probes are provably constant
-  here: warning flags only, and linux-glibc feature pins), and for packages
+  here: warning flags only, and linux-glibc feature pins -- plus
+  ocaml_intrinsics_kernel and base, the Jane Street ladder's foundation:
+  base's random_repr/shadow_stdlib codegen runs against the sysroot tar and
+  its mpopcnt probe pins to the portable fallback), and for packages
   that are not dune projects at all, where there is nothing to translate
   (cmdliner and logs build with b0/topkg; their flat module layouts make the
   overrides one ocaml_library per findlib name). Overrides still
