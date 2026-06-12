@@ -1,0 +1,30 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; One difference from upstream: `git` (ocaml-git) is dropped. Its closure
+; (carton, decompress, checkseum, ...) stays out of the lock; the
+; Git_wrapper.ml{,i} overlays replace the functor types with concrete
+; digestif-backed equivalents and fail loudly in the object-store walkers
+; (Digestif resolves transitively through commons, like upstream's own
+; Digestif.SHA1 reference). See semgrep_src/README.md.
+
+; wrapper library around the 'git' command-line tool
+(library
+  (public_name git_wrapper)
+  (name git_wrapper)
+  (wrapped false)
+  (libraries
+     fpath
+     bos
+     uuidm
+     timedesc
+
+     commons
+     paths
+  )
+  (preprocess (pps
+     ppx_deriving.show
+     ppx_deriving.eq
+     ppx_deriving.ord
+     ppx_sexp_conv
+))
+)

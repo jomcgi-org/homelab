@@ -31,6 +31,14 @@ model rejects loudly at fetch time.
 | `languages/go/ast`             | `:parser_go_ast`           | translated as-is (parser_go.ast)                                                                                                                                                                       |
 | `languages/go/tree-sitter`     | `:parser_go_tree_sitter`   | translated as-is (parser_go.tree_sitter); CST -> ast_go glue over the stamped grammar                                                                                                                  |
 | `languages/go/generic`         | `:parser_go_ast_generic`   | translated as-is (parser_go.ast_generic); ast_go -> AST_generic (examples/go_generic parses real Go source through the CST into the generic AST)                                                       |
+| `src/spacegrep/src/lib`        | `:spacegrep`               | translated as-is (wrapped; ocamllex Lexer). The spacegrep root dune is `(dirs ...)`-only, so src/lib is listed directly; bin/test stay out                                                             |
+| `languages/javascript/ast`     | `:parser_javascript_ast`   | translated as-is (parser_javascript.ast; the Ast_js.default_entity wart Rule.ml references)                                                                                                            |
+| `src/aliengrep`                | `:aliengrep`               | dune overlay drops unreferenced alcotest (the git_wrapper pattern; ocamldep confirms zero Alcotest references)                                                                                         |
+| `cli/src/semgrep/...`          | `:semgrep_interfaces`      | translated as-is once the translator validates-and-drops its complete `(modules ...)` list; at this pin a vendored tree (not a submodule) with the atd-generated `_t`/`_j` sources checked in          |
+| `src/rule`                     | `:semgrep_core_rule`       | translated as-is (semgrep.rule); its rule_schema_v2.atd has no `(rule)` stanza at this pin and no source references Rule_schema_v2_t, so the file is inert to the glob                                 |
+| `src/sca`                      | `:semgrep_core_sca`        | Dependency.ml{,i} overlays strip the unreferenced Alcotest.testable value (kind_testable), keeping alcotest out of the lock                                                                            |
+| `libs/git_wrapper`             | `:git_wrapper`             | dune overlay drops ocaml-git; Git_wrapper.ml{,i} overlays swap the functor types for concrete digestif-backed equivalents and fail loudly in the object-store walkers (dispatch below)                 |
+| `src/target`                   | `:semgrep_core_target`     | dune overlay adds git_wrapper (Origin/Target reference it; upstream reached it transitively through lib_parsing, whose overlay measured it out); the `(env ...)` block is inert                        |
 
 ## libs/commons rejection dispatch
 
@@ -154,37 +162,76 @@ feature and one resolution mechanism:
 | `base64` (src/sca's one new external)                          | lock, override: src/dune filters `(modules unsafe base64)` and copies unsafe.ml from a `%{read:...}` config probe, provably unsafe_stable.ml on the 5.3 sysroot (the parmap pattern)                                                                                                              |
 | `atdgen-runtime`, `commons`, `ppx_deriving_yojson`, ...        | in the lock / internal                                                                                                                                                                                                                                                                            |
 
-## yaml scoping (NOT landed)
+## semgrep_core closure frontier dispatch (spacegrep .. src/target)
 
-`src/core` names `yaml` (semgrep.opam floor >= 3.2.0). ocaml-yaml 3.2.0 is
-NOT the lwt.unix/parmap mold: it is a two-stage **ctypes stubgen** package.
-`yaml.c` builds the vendored libyaml C sources as a foreign_archive;
-`yaml.types`/`yaml.bindings` describe the FFI via ctypes; two `(executable)`
-stubgens generate C + ML (types/stubgen compiles its emitted C against the
-vendored headers + `%{ocaml_where}` and runs it; ffi/stubgen emits
-yaml_stubs.c and g.ml), with a `config/ctypes-cflags` probe in the middle.
-Dispatch when reached: lock `ctypes` + `integers` (+ their closure) first,
-then a yaml override that replicates both stubgen runs as genrules against
-the sysroot tar (compile-and-run on the executor, the lwt discover pattern,
-but heavier). Deferred until ctypes is scoped.
+The slice that carried the frontier to src/core's doorstep. Eight dirs
+landed (src/spacegrep/src/lib, languages/javascript/ast, src/aliengrep,
+cli/src/semgrep/semgrep_interfaces, src/rule, src/sca, libs/git_wrapper,
+src/target), one translator feature, and one resolution extension. No new
+lock entries:
+every external name (ANSITerminal, pcre, semver, base64, hex,
+atdgen-runtime, the deriving/hash/sexp/yojson rewriters) was already in,
+though two existing entries had to bump (next table).
+
+| piece                                            | dispatch                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `(modules ...)` (semgrep_interfaces)             | translator feature: a list that provably equals the dir's globbed module set (mli-only modules count; atdgen-rule outputs count) validates and drops -- the BUILD glob takes the whole dir anyway. Any mismatch is real module filtering and rejects loudly (base64's filtered list stays an override) |
+| `(libraries alcotest)` (aliengrep)               | overlay: drop. No aliengrep source references Alcotest (ocamldep re-measured at the pin); its tests subdir has its own dune. The git_wrapper pattern                                                                                                                                |
+| `Alcotest.testable` in src/sca (Dependency)      | overlay: strip kind_testable from Dependency.ml{,i}. Upstream compiles it because commons links alcotest transitively; our commons overlay measured alcotest out, and nothing in the tree references kind_testable (grep at the pin), so locking alcotest to link one dead value stays out of scope |
+| `semgrep_core_rule` / `semgrep_core_target` refs | SEMGREP_LIBS now keys non-rewriter libraries by BOTH names too: src/core's stanza uses the dune (name ...) while src/sca / src/target use the semgrep.* public names (the mechanism the atdgen-rule slice introduced for rewriters)                                                 |
+| `Cmdliner`, `Digestif` in spacegrep/rule sources | resolve transitively through commons (dune's implicit_transitive_deps; the provider model propagates includes), no stanza change needed                                                                                                                                             |
+| `Git_wrapper` in src/target (Origin, Target)     | the moment the lib_parsing dispatch deferred to: a translated dir finally names Git_wrapper. libs/git_wrapper translates with overlays instead of locking ocaml-git (`git >= 3.18.0` would pull carton, decompress, checkseum, ...): the dune drops `git`; `hash` keeps upstream's own equation (`Digestif.SHA1.t`, digestif already locked, reached transitively through commons exactly as upstream does); `commit`/`author` mirror ocaml-git 3.x's record shapes field for field so future consumers (src/reporting reads `(commit_author c).date`) stay source-compatible; `blob` is the raw contents (blob_digest computes the real `blob <len>\0` object id); the in-memory object-store walkers (`commit_blobs_by_date`, `commit_digest`) fail loudly at runtime, the Telemetry.ml dispatch. The git-CLI shell-out layer, which is all src/target reaches, is untouched. src/target's dune overlay then declares the dep where the references live (the measured-set rule; upstream got it transitively from lib_parsing) |
+| `rule_schema_v2.atd` in src/rule                 | inert: no `(rule)` stanza generates from it at this pin and no source references Rule_schema_v2_t (the env-stanza comment upstream is stale); the .atd never joins the source glob                                                                                                  |
+| `(env ...)` blocks (src/rule, src/target)        | inert today: the env stanza is dropped and warnings are not errors in our build                                                                                                                                                                                                     |
+| `Atdgen_runtime.Yojson_extra` (interfaces codegen) | lock bump: atd 2.16.0 -> 3.0.1. The checked-in `_j` codegen calls the 3.x runtime (semgrep-interfaces.opam floors atdgen >= 3.0.1; semgrep.opam >= 3.0.0); the override grows a `*.mll` glob for the runtime's new ocamllex modules, everything else transfers                      |
+| atdgen-runtime 3.0.1 floors `yojson >= 3.0.0`    | lock bump: yojson 2.2.2 -> 3.0.0. The lib/ tree and build structure are identical (the only dune delta drops the inert `(libraries seq)`); the mucppo override transfers unchanged. ppx_deriving_yojson 3.10.0's runtime floor is yojson >= 1.6.0, still satisfied                  |
+
+## yaml scoping (NOT landed; gates src/core)
+
+`src/core` names `yaml` (semgrep.opam floor >= 3.2.0); everything else in
+its stanza resolves today (visitors.ppx, commons.ppx, ppx_telemetry,
+sexplib, uri, uuidm, semgrep_core_rule, semgrep_core_target). ocaml-yaml
+3.2.0 is NOT the lwt.unix/parmap mold: it is a two-stage **ctypes stubgen**
+package. Lock `ctypes` + `integers` (+ whatever closure `--verify` pulls;
+yaml's opam also names dune-configurator and bos, both already locked)
+before touching yaml itself.
+
+Expected override shape (`opam/overrides/yaml/BUILD.tpl`), measured against
+the 3.2.0 tarball's dune files; the genrules follow the lwt.unix discover
+mold (stage the sysroot tar, run on the executor) but compile-and-run a
+generated C program instead of just running an OCaml probe:
+
+1. `vendor/` (`yaml.c`): the vendored libyaml C sources as `c_srcs` on an
+   ocaml_library (or a cc_library via cc_deps, the pcre2 pattern); upstream
+   compiles them with `-DHAVE_CONFIG_H` against its checked-in config.h and
+   archives via ocamlmklib (`foreign_archives yaml_c_stubs`).
+2. `config/ctypes-cflags`: dune-configurator probe; provably constant on
+   the linux sysroot (it emits include paths for ctypes' installed headers),
+   so the override pins its output the way parmap's probes are pinned.
+3. `yaml.bindings.types`, `yaml.bindings`: plain ocaml_libraries over
+   ctypes.stubs + ctypes (translate or hand-write; no codegen).
+4. types/stubgen, stage one (the compile-AND-RUN genrule): build
+   `ffi_types_stubgen.exe` (ocaml_binary over yaml.bindings.types), run it
+   to emit `ffi_ml_types_stubgen.c`, compile that C with the executor's cc
+   against `vendor/` headers + the pinned ctypes-cflags + the sysroot's
+   `lib/ocaml` (dune's `%{ocaml_where}`), run the resulting binary to emit
+   `g.ml` for `yaml.types`. One genrule, two process generations.
+5. ffi/stubgen, stage two: build `ffi_stubgen.exe` (over yaml.bindings +
+   yaml.types), run `-ml` -> `g.ml` and `-c` -> `yaml_stubs.c` for
+   `yaml.ffi` (whose dune carries `(modules g m)` -- complete once the
+   generated g.ml joins, so the translator feature covers it if translated;
+   the foreign_stubs C file keeps this an override regardless).
+6. `yaml` (lib/): plain library over yaml.ffi; `yaml.unix` stays unbuilt
+   (src/core names only `yaml`).
+
+Both stubgen binaries are exec-config tools running on the default pool, so
+the genrules reference the unconstrained `toolchain:ocaml_compiler` exactly
+like yojson's ocamllex run (see bazel/ocaml/README.md, multi-arch notes).
 
 ## Next slice dispatch (toward semgrep-core, NOT landed)
 
 The Go chain's consumer is `src/parsing` (Parse_target/Parse_pattern), whose
-dune names `semgrep_core` plus every other language parser. The remaining
-semgrep_core closure is `src/core` <- `src/rule` + `src/target` <- `src/sca`
-(+ `src/spacegrep`, `src/aliengrep`, `languages/javascript/ast`,
-semgrep-interfaces). dune2bazel over those dirs at the pinned commit, in
-dependency order (re-measured after the atdgen-rule slice):
-
-| dir / piece                                 | rejection / new name         | dispatch                                                                                                                                                                                                                                                            |
-| ------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/spacegrep/src/lib`                     | none                         | TRANSLATES as-is today (ocamllex Lexer + commons.ppx, both modeled now). The spacegrep root dune is `(dirs ...)`-only; list src/lib directly, bin/test subdirs stay out                                                                                             |
-| `languages/javascript/ast`                  | none                         | TRANSLATES as-is today (the Ast_js.default_entity wart Rule.ml references)                                                                                                                                                                                          |
-| `src/aliengrep`                             | `(libraries alcotest)`       | overlay: drop. No aliengrep source references Alcotest (its tests subdir has its own dune); the git_wrapper pattern. Locking alcotest just to link it stays out of scope                                                                                            |
-| `cli/src/semgrep/semgrep_interfaces`        | `(library) field 'modules'`  | internal entry, NOT a git pin: at this pin the dir is a vendored tree (no longer a submodule) with the atd-generated `_t/_j` sources checked in. One translator feature blocks: `(modules ...)` whose list provably equals the dir's module set (validate-and-drop) |
-| `src/sca`                                   | `(libraries semgrep.rule)`   | translates once src/rule lands (base64 + hex already in the lock)                                                                                                                                                                                                   |
-| `src/rule`                                  | `(libraries spacegrep)`      | translates once spacegrep/aliengrep/parser_javascript.ast/semgrep.interfaces land (semver, atdgen-runtime, configuring already in). No atd rules here: semgrep_output_v1 codegen ships checked in with semgrep_interfaces                                           |
-| `src/target`                                | `(libraries semgrep.sca)`    | translates once src/sca + src/rule land (commons.ppx + ppx_profiling pps resolve today)                                                                                                                                                                             |
-| `src/core`                                  | `(libraries yaml)`           | lock: yaml, after its own ctypes scoping (section above). Everything else in its stanza resolves today (visitors.ppx, commons.ppx, ppx_telemetry, sexplib, uri, uuidm)                                                                                              |
-| `src/core`, `src/target` `(env ...)` blocks | `(flags (:standard -w -30))` | inert today: the env stanza is dropped and warnings are not errors in our build                                                                                                                                                                                     |
+dune names `semgrep_core` plus every other language parser. With this
+slice's seven dirs in, the remaining semgrep_core closure is exactly
+`src/core` <- yaml (section above). After src/core: src/parsing and the
+per-language parser matrix, each its own scoping pass.
