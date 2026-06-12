@@ -14,7 +14,7 @@
 set -eu
 
 MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
-INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CMXAS="" CFLAGS=""
+INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX=""
 MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
 CC_INCLUDES="" CC_ARCHIVES="" CC_LINKFLAGS=""
@@ -33,6 +33,7 @@ while [ $# -gt 0 ]; do
 	--opam-pkg) OPAM_PKGS="$OPAM_PKGS $2" && shift 2 ;;
 	--src) SRCS="$SRCS $2" && shift 2 ;;
 	--c-src) CSRCS="$CSRCS $2" && shift 2 ;;
+	--c-header) CHDRS="$CHDRS $2" && shift 2 ;;
 	--cmxa) CMXAS="$CMXAS $2" && shift 2 ;;
 	--pp-tool) PP_TOOL="$2" && shift 2 ;;
 	--pp-arg) PP_ARGS="$PP_ARGS $2" && shift 2 ;;
@@ -373,6 +374,12 @@ done
 # --- Compile C stub sources (if any) ----------------------------------------
 # ocamlopt compiles .c directly (it supplies caml/*.h) using the execution
 # host's C compiler; the .o lands next to the source in $WORK.
+# c_headers are the library's own headers (dune stages everything in the
+# library dir; `install_c_headers` names the public ones): staged by basename
+# next to the stubs so `#include "x.h"` resolves, never compiled.
+for h in $CHDRS; do
+	cp "$h" "$WORK/$(basename "$h")"
+done
 STUB_OBJS=""
 for c in $CSRCS; do
 	cb="$(basename "$c")"

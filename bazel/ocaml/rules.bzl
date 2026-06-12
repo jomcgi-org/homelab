@@ -163,6 +163,8 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None
         args.add("--src", s.path)
     for c in c_srcs:
         args.add("--c-src", c.path)
+    for h in getattr(ctx.files, "c_headers", []):
+        args.add("--c-header", h.path)
     return args
 
 def _ocaml_library_impl(ctx):
@@ -182,7 +184,7 @@ def _ocaml_library_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
         outputs = [objs_dir, cmxa, a_lib],
         mnemonic = "OcamlLibrary",
         progress_message = "Compiling OCaml library %{label}",
@@ -221,7 +223,7 @@ def _ocaml_binary_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._driver,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
+        inputs = depset(ctx.files.srcs + ctx.files.c_srcs + ctx.files.c_headers + _tool_files(ctx), transitive = [dep.includes, dep.cmxa, dep.a, cc.headers, cc.archives, tc.sysroot_files]),
         outputs = [exe],
         mnemonic = "OcamlBinary",
         progress_message = "Linking OCaml binary %{label}",
@@ -247,6 +249,13 @@ _COMMON_ATTRS = {
               "binaries that link this library pull in the stubs automatically. C stubs that " +
               "#include a third-party header (pcre2.h, tree_sitter/api.h) get that header's " +
               "dir and the static archive through `cc_deps`.",
+    ),
+    "c_headers": attr.label_list(
+        allow_files = [".h"],
+        doc = "This library's own C headers, staged by basename next to the c_srcs for " +
+              "the stub compile (dune stages the whole library dir; `install_c_headers` " +
+              "names the public ones). Never compiled. Third-party headers come through " +
+              "`cc_deps` instead.",
     ),
     "cc_deps": attr.label_list(
         providers = [CcInfo],
