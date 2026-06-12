@@ -1086,6 +1086,46 @@
       "ppx_runtime": {
         "visitors.ppx": ["visitors.runtime"]
       }
+    },
+    {
+      "name": "integers",
+      "version": "0.8.0",
+      "repo": "ocaml_integers",
+      "url": "https://github.com/yallop/ocaml-integers/archive/0.8.0.tar.gz",
+      "sha256": "04a1a6d5cc1ecfd3f354a83caed27e59995bb26adec64d88193ccc36268929fa",
+      "strip_prefix": "ocaml-integers-0.8.0",
+      "type": "tar.gz",
+      "libs": {
+        "integers": "integers"
+      },
+      "override": true
+    },
+    {
+      "name": "ctypes",
+      "version": "0.24.0",
+      "repo": "ocaml_ctypes",
+      "url": "https://github.com/yallop/ocaml-ctypes/archive/refs/tags/0.24.0.tar.gz",
+      "sha256": "249c5604c8554659761a7282db4ad200aa8c0fdc408cdb53102bd70feeb51955",
+      "strip_prefix": "ocaml-ctypes-0.24.0",
+      "type": "tar.gz",
+      "libs": {
+        "ctypes": "ctypes",
+        "ctypes.stubs": "ctypes_stubs"
+      },
+      "override": true
+    },
+    {
+      "name": "yaml",
+      "version": "3.2.0",
+      "repo": "ocaml_yaml",
+      "url": "https://github.com/avsm/ocaml-yaml/releases/download/v3.2.0/yaml-3.2.0.tbz",
+      "sha256": "c50d2aca28b9f966792b71e1603351e5d24eda4dfd3e4453fbd50366a3a08227",
+      "strip_prefix": "yaml-3.2.0",
+      "type": "tar.bz2",
+      "libs": {
+        "yaml": "yaml"
+      },
+      "override": true
     }
   ]
 }

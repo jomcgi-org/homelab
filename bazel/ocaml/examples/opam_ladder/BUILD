@@ -147,6 +147,14 @@ build_test(
         # on the 5.3 sysroot).
         "@ocaml_base64//:base64",
         "@ocaml_base64//:base64_rfc2045",
+        # Phase 8 yaml slice: the ctypes closure src/core's yaml dep rides
+        # on. integers/ctypes use c_srcs (not cc_library), so they build on
+        # both arch shards; ctypes_primitives.ml comes from the real
+        # configurator probe run on the default pool (the lwt_features
+        # mold), identical output on both LP64 little-endian platforms.
+        "@ocaml_integers//:integers",
+        "@ocaml_ctypes//:ctypes",
+        "@ocaml_ctypes//:ctypes_stubs",
     ],
 )
 
@@ -198,5 +206,10 @@ build_test(
         "@semgrep_src//:semgrep_core_sca",
         "@semgrep_src//:git_wrapper",
         "@semgrep_src//:semgrep_core_target",
+        # Phase 8 yaml slice: ocaml-yaml links the vendored libyaml
+        # cc_library, hence the cc bucket; src/core (the closure this slice
+        # closes) reaches it AND commons' pcre.
+        "@ocaml_yaml//:yaml",
+        "@semgrep_src//:semgrep_core",
     ],
 )

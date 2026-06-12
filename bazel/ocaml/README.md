@@ -216,7 +216,12 @@ no_preprocessing | future_syntax | (pps ...))` — future_syntax is the
   here: warning flags only, and linux-glibc feature pins -- plus
   ocaml_intrinsics_kernel and base, the Jane Street ladder's foundation:
   base's random_repr/shadow_stdlib codegen runs against the sysroot tar and
-  its mpopcnt probe pins to the portable fallback), and for packages
+  its mpopcnt probe pins to the portable fallback; integers and ctypes,
+  whose `install_c_headers`/`c_names` spellings and configurator probe are
+  not modeled -- ctypes' probe runs in a genrule via the lwt discover mold;
+  and yaml, the first two-stage ctypes stubgen package, vendored libyaml as
+  a cc_library plus a compile-and-run stubgen genrule -- see
+  semgrep_src/README.md's yaml dispatch), and for packages
   that are not dune projects at all, where there is nothing to translate
   (cmdliner and logs build with b0/topkg; their flat module layouts make the
   overrides one ocaml_library per findlib name). Overrides still

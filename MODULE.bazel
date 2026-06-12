@@ -103,6 +103,7 @@ use_repo(
     "ocaml_cppo",
     "ocaml_csexp",
     "ocaml_cstruct",
+    "ocaml_ctypes",
     "ocaml_digestif",
     "ocaml_domain_local_await",
     "ocaml_dune_configurator",
@@ -113,6 +114,7 @@ use_repo(
     "ocaml_fpath",
     "ocaml_hex",
     "ocaml_hmap",
+    "ocaml_integers",
     "ocaml_logs",
     "ocaml_lwt",
     "ocaml_lwt_dllist",
@@ -163,6 +165,7 @@ use_repo(
     "ocaml_uri",
     "ocaml_uuidm",
     "ocaml_visitors",
+    "ocaml_yaml",
     "ocaml_yojson",
 )
 

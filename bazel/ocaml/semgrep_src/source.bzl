@@ -70,6 +70,11 @@ SEMGREP_SRC_DIRS = [
     # overlays/libs/git_wrapper/ and README).
     "libs/git_wrapper",
     "src/target",
+    # The semgrep_core closure closes: yaml (the one name that gated it)
+    # rides the lock via the two-stage ctypes stubgen override. The (env ...)
+    # block is inert; the tests/ subdir has its own dune and stays out via
+    # the non-recursive glob.
+    "src/core",
 ]
 
 SEMGREP_LIBS = {
@@ -112,6 +117,8 @@ SEMGREP_LIBS = {
     "semgrep_core_sca": ":semgrep_core_sca",
     "semgrep.target": ":semgrep_core_target",
     "semgrep_core_target": ":semgrep_core_target",
+    "semgrep.core": ":semgrep_core",
+    "semgrep_core": ":semgrep_core",
 }
 
 OVERLAYS = [

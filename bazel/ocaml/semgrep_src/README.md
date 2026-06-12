@@ -39,6 +39,7 @@ model rejects loudly at fetch time.
 | `src/sca`                      | `:semgrep_core_sca`        | Dependency.ml{,i} overlays strip the unreferenced Alcotest.testable value (kind_testable), keeping alcotest out of the lock                                                                            |
 | `libs/git_wrapper`             | `:git_wrapper`             | dune overlay drops ocaml-git; Git_wrapper.ml{,i} overlays swap the functor types for concrete digestif-backed equivalents and fail loudly in the object-store walkers (dispatch below)                 |
 | `src/target`                   | `:semgrep_core_target`     | dune overlay adds git_wrapper (Origin/Target reference it; upstream reached it transitively through lib_parsing, whose overlay measured it out); the `(env ...)` block is inert                        |
+| `src/core`                     | `:semgrep_core`            | translated as-is; the semgrep_core closure's keystone. yaml was the only name that gated it (dispatch below); the `(env ...)` -w 30 block is inert (warnings are not errors here); tests/ has its own dune and stays out via the non-recursive glob                                              |
 
 ## libs/commons rejection dispatch
 
@@ -186,52 +187,90 @@ though two existing entries had to bump (next table).
 | `Atdgen_runtime.Yojson_extra` (interfaces codegen) | lock bump: atd 2.16.0 -> 3.0.1. The checked-in `_j` codegen calls the 3.x runtime (semgrep-interfaces.opam floors atdgen >= 3.0.1; semgrep.opam >= 3.0.0); the override grows a `*.mll` glob for the runtime's new ocamllex modules, everything else transfers                      |
 | atdgen-runtime 3.0.1 floors `yojson >= 3.0.0`    | lock bump: yojson 2.2.2 -> 3.0.0. The lib/ tree and build structure are identical (the only dune delta drops the inert `(libraries seq)`); the mucppo override transfers unchanged. ppx_deriving_yojson 3.10.0's runtime floor is yojson >= 1.6.0, still satisfied                  |
 
-## yaml scoping (NOT landed; gates src/core)
+## yaml closure dispatch (the slice that closed semgrep_core)
 
-`src/core` names `yaml` (semgrep.opam floor >= 3.2.0); everything else in
-its stanza resolves today (visitors.ppx, commons.ppx, ppx_telemetry,
-sexplib, uri, uuidm, semgrep_core_rule, semgrep_core_target). ocaml-yaml
-3.2.0 is NOT the lwt.unix/parmap mold: it is a two-stage **ctypes stubgen**
-package. Lock `ctypes` + `integers` (+ whatever closure `--verify` pulls;
-yaml's opam also names dune-configurator and bos, both already locked)
-before touching yaml itself.
+`src/core` named `yaml` (semgrep.opam floor >= 3.2.0); everything else in
+its stanza already resolved. ocaml-yaml 3.2.0 is a two-stage **ctypes
+stubgen** package, landed as three lock entries:
 
-Expected override shape (`opam/overrides/yaml/BUILD.tpl`), measured against
-the 3.2.0 tarball's dune files; the genrules follow the lwt.unix discover
-mold (stage the sysroot tar, run on the executor) but compile-and-run a
-generated C program instead of just running an OCaml probe:
+| piece                                       | dispatch                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `integers` 0.8.0                            | lock, override: `(install_c_headers ...)` + `(c_names ...)` (the pre-foreign_stubs stub spelling) are not modeled; one flat library, the parmap c_srcs shape. integers.top (byte-only toplevel printers) stays unbuilt                                                                                            |
+| `ctypes` 0.24.0                             | lock, override: ctypes_primitives.ml comes from a dune-configurator probe and ocaml_integers.h from a `%{lib:integers:...}` copy rule. The probe RUNS in a genrule (the lwt.unix discover mold) instead of being pinned like parmap's: its output is ~130 generated lines, and it is provably identical on both platforms (linux x86_64/aarch64 are little-endian LP64; long double is 16/16 on both). ctypes.stubs is a plain second library; ctypes-foreign (libffi) and ctypes.top stay unbuilt |
+| ctypes' `bigarray` dep                      | inert: Bigarray is stdlib on OCaml 5.3, no archive or flag needed (verified in the harness)                                                                                                                                                                                                                       |
+| `bigarray-compat`                           | never materialized: ctypes 0.24.0 dropped it (the scoping pass predicted it "likely"); opam resolution for yaml 3.2.0 pulls exactly ctypes + integers                                                                                                                                                             |
+| `yaml` 3.2.0                                | lock, override: the six-piece dispatch below, landed as recorded                                                                                                                                                                                                                                                  |
 
-1. `vendor/` (`yaml.c`): the vendored libyaml C sources as `c_srcs` on an
-   ocaml_library (or a cc_library via cc_deps, the pcre2 pattern); upstream
-   compiles them with `-DHAVE_CONFIG_H` against its checked-in config.h and
-   archives via ocamlmklib (`foreign_archives yaml_c_stubs`).
-2. `config/ctypes-cflags`: dune-configurator probe; provably constant on
-   the linux sysroot (it emits include paths for ctypes' installed headers),
-   so the override pins its output the way parmap's probes are pinned.
+The yaml override (`opam/overrides/yaml/BUILD.tpl`), as landed:
+
+1. `vendor/` (`yaml.c`): the vendored libyaml C sources as a **cc_library**
+   via cc_deps (the pcre2-c pattern won over c_srcs: stage one needs the
+   header dir as a plain `-I`, and the stub compile needs `<yaml.h>` to
+   resolve through an exported include dir), compiled `-DHAVE_CONFIG_H`
+   against the checked-in config.h. dumper.c stays out, as upstream's dune
+   leaves it.
+2. `config/discover.ml`'s outputs are pinned (the parmap pattern):
+   `cflags` is ocamlopt_cflags ("-O2 -fno-strict-aliasing -fwrapv", inlined
+   into yaml_c's copts; the ppc64/msvc branches are dead) and
+   `ctypes-cflags` is -I<installed ctypes headers>, which here is the
+   staged `@ocaml_ctypes//:c_headers` filegroup.
 3. `yaml.bindings.types`, `yaml.bindings`: plain ocaml_libraries over
-   ctypes.stubs + ctypes (translate or hand-write; no codegen).
-4. types/stubgen, stage one (the compile-AND-RUN genrule): build
-   `ffi_types_stubgen.exe` (ocaml_binary over yaml.bindings.types), run it
-   to emit `ffi_ml_types_stubgen.c`, compile that C with the executor's cc
-   against `vendor/` headers + the pinned ctypes-cflags + the sysroot's
-   `lib/ocaml` (dune's `%{ocaml_where}`), run the resulting binary to emit
-   `g.ml` for `yaml.types`. One genrule, two process generations.
-5. ffi/stubgen, stage two: build `ffi_stubgen.exe` (over yaml.bindings +
-   yaml.types), run `-ml` -> `g.ml` and `-c` -> `yaml_stubs.c` for
-   `yaml.ffi` (whose dune carries `(modules g m)` -- complete once the
-   generated g.ml joins, so the translator feature covers it if translated;
-   the foreign_stubs C file keeps this an override regardless).
-6. `yaml` (lib/): plain library over yaml.ffi; `yaml.unix` stays unbuilt
-   (src/core names only `yaml`).
+   ctypes.stubs + ctypes (hand-written in the override; no codegen).
+4. types/stubgen, stage one (the compile-AND-RUN genrule): run
+   `ffi_types_stubgen.exe` to emit C, compile that C with the executor's
+   gcc against the staged ctypes headers + vendor/yaml.h + the sysroot's
+   `lib/ocaml` (dune's `%{ocaml_where}`), run the result to emit `g.ml`
+   for `yaml.types`. One genrule, two process generations.
+5. ffi/stubgen, stage two: `ffi_stubgen.exe -ml` -> `g.ml` and `-c` ->
+   `yaml_stubs.c` for `yaml.ffi` (pure prints, no C compile in the
+   genrule). The generated C quote-includes "ctypes_cstubs_internals.h"
+   (staged by basename via c_headers) and angle-includes `<yaml.h>`
+   (resolved through yaml_c's exported vendor/ dir).
+6. `yaml` (lib/): plain library over yaml.ffi; `yaml.unix` and `yaml-sexp`
+   stay unbuilt (src/core names only `yaml`).
 
-Both stubgen binaries are exec-config tools running on the default pool, so
-the genrules reference the unconstrained `toolchain:ocaml_compiler` exactly
-like yojson's ocamllex run (see bazel/ocaml/README.md, multi-arch notes).
+Both stubgen binaries are exec-config tools running on the default pool, and
+the stage-one genrule references the unconstrained `toolchain:ocaml_compiler`
+exactly like yojson's ocamllex run (see bazel/ocaml/README.md, multi-arch
+notes); g.ml's constants (libyaml struct sizes/offsets, enum values) agree
+between the two LP64 platforms. integers/ctypes use c_srcs, not cc_library,
+so they live in the both-arch `ladder_builds`; yaml's cc_library puts it
+(and src/core, which also reaches commons' pcre) in `ladder_builds_cc`.
 
-## Next slice dispatch (toward semgrep-core, NOT landed)
+The whole stack was pre-validated in the local harness: every override
+recipe replayed through the real driver (including both stubgen genrules),
+an e2e binary parsed and re-emitted YAML through the driver-built chain,
+and src/core compiled with its full composed ppx driver against it.
 
-The Go chain's consumer is `src/parsing` (Parse_target/Parse_pattern), whose
-dune names `semgrep_core` plus every other language parser. With this
-slice's seven dirs in, the remaining semgrep_core closure is exactly
-`src/core` <- yaml (section above). After src/core: src/parsing and the
-per-language parser matrix, each its own scoping pass.
+## src/parsing scoping (recorded, NOT landed)
+
+`src/parsing` (Parse_target/Parse_pattern; `semgrep.parsing`, dune name
+`semgrep_parsing`) is the next consumer: its stanza names `semgrep_core`
+plus essentially the whole parser matrix. Its two `Parsing_stats.atd`
+atdgen rule pairs match the translated rule shape, and its pps line
+(ppx_profiling, ppx_deriving.show, telemetry.ppx) already resolves. The
+`(libraries ...)` decompose as:
+
+| group                                                                                  | dispatch                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pcre`, `base`, `uri`                                                                  | in the lock                                                                                                                                                                                                                                                                                       |
+| `commons`, `git_wrapper`, `paths`, `lib_parsing`, `process_limits`, `spacegrep`, `parallelism`, `semgrep_core` | internal, translated                                                                                                                                                                                                                                                                              |
+| `parser_go.tree_sitter` / `.ast_generic`, `parser_javascript.ast`                      | internal, translated (the Go chain + JS AST)                                                                                                                                                                                                                                                      |
+| `fast_json` (libs/fast_json)                                                           | internal, new dir: lib_parsing + paths + yojson + ast_generic, pure, no pps surprises. Cheapest first landing                                                                                                                                                                                     |
+| `semgrep.typing` (src/typing)                                                          | internal, new dir: commons + lib_parsing + parallelism + semgrep_core + ppx_deriving.runtime. Cheap                                                                                                                                                                                               |
+| `parser_yaml.ast/.parser/.ast_generic` (languages/yaml/)                               | internal, new dirs: the first yaml-lock consumers outside src/core (parser names `yaml` directly)                                                                                                                                                                                                 |
+| `pfff_lang_GENERIC_analyze` (src/analyzing)                                            | internal, new dir: names `semgrep.il`, pulling src/il (its own scoping look)                                                                                                                                                                                                                      |
+| `semgrep.prefiltering` (src/prefiltering)                                              | internal, new dir: two more atdgen rule pairs (translated shape)                                                                                                                                                                                                                                  |
+| `semgrep_targeting` (src/targeting)                                                    | internal, new dir, the first NEW external since yaml: `ppx_blob` in pps (needs a lock entry) plus `(preprocessor_deps (file default.semgrepignore))`, which the translator does not model -- expect a translator feature or an override-style dispatch                                            |
+| `pfff-lang_GENERIC-naming` (src/naming)                                                | internal, new dir: commons + ast_generic + semgrep.core + semgrep.typing + parser_javascript.ast                                                                                                                                                                                                  |
+| `ojsonnet` (libs/ojsonnet)                                                             | internal, new dir: names `parser_jsonnet.tree_sitter`, so the jsonnet grammar must stamp into the lock first (the tree-sitter-go pattern)                                                                                                                                                         |
+| tree-sitter language chains (python, cpp, php, ocaml, typescript, scala, bash, dockerfile, java, jsonnet, terraform, ruby, ql, lisp) | each needs its grammar stamped from the submodule commit + the ast/tree-sitter/generic dirs translated; bash's grammar is already locked. scala's path is `recursive_descent` (plain OCaml, no grammar)                                                                                            |
+| direct-to-generic parsers (dart, cairo, solidity, csharp, rust, lua, kotlin, swift, julia, r, hack, fga, html, promql, protobuf, move_on_sui, move_on_aptos, circom) | `.ast_generic`-only names, but most wrap a tree-sitter CST under the hood -- scope each dir before assuming it is grammar-free                                                                                                                                                                    |
+| `parser_*.menhir` (go, ocaml, python, cpp, php, javascript, json)                      | the wrinkle: the legacy menhir parsers are named DIRECTLY in src/parsing's stanza, so "menhir parsers stay out" requires either landing them or measuring them out per dir. parser_json.menhir (which itself depends on parser_javascript.menhir) is the JSON path Parse_target actually uses, so the JSON menhir chain likely must land; the rest are overlay candidates after an ocamldep measurement |
+
+Suggested landing order: fast_json + typing (cheap, no new externals); the
+languages/yaml trio (validates the yaml lock from a second consumer);
+src/il + analyzing; prefiltering; targeting (ppx_blob lock +
+preprocessor_deps dispatch); naming; ojsonnet + the jsonnet grammar; then
+the per-language matrix in waves; the menhir question last, measured, with
+src/parsing itself closing the slice.
