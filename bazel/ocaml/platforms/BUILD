@@ -21,3 +21,23 @@ build_test(
     name = "executor_arch_probe_test",
     targets = [":executor_arch_probe"],
 )
+
+# Arm64-pool probe: the same `uname -m` probe, routed to BuildBuddy's cloud
+# linux/arm64 executor pool (launched 2026-01-15, ADR 008) via the `Arch`
+# execution property -- the bb_arch key held in arches.bzl. Unlike the neutral
+# probe above, this one asserts the answer: a mis-route to the default amd64
+# pool fails the build instead of silently building an x86_64 sysroot later.
+# Green here is the ADR 006 gate for flipping `enabled` on linux_aarch64.
+genrule(
+    name = "executor_arch_probe_arm64",
+    outs = ["executor_arch_arm64.txt"],
+    cmd = 'arch="$$(uname -m)"; echo "arm64-pool probe ran on: $$arch" >&2; ' +
+          'if [ "$$arch" != "aarch64" ]; then echo "expected aarch64: Arch=arm64 did not route to the arm64 pool" >&2; exit 1; fi; ' +
+          'echo "$$arch" > $@',
+    exec_properties = {"Arch": "arm64"},
+)
+
+build_test(
+    name = "executor_arch_probe_arm64_test",
+    targets = [":executor_arch_probe_arm64"],
+)
