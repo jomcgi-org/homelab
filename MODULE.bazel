@@ -268,7 +268,7 @@ rules_ts_ext = use_extension(
 rules_ts_ext.deps()
 use_repo(rules_ts_ext, "npm_typescript")
 
-# Node.js toolchain - required for production builds (ships_frontend vite build)
+# Node.js toolchain - required for production builds (monolith frontend vite build)
 # Toolchains are registered for all platforms to support cross-platform container builds
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
 node.toolchain(node_version = "20.19.0")
@@ -422,10 +422,6 @@ use_repo(postgres, "postgres_test")
 # Configure apko for container images
 apko = use_extension("@rules_apko//apko:extensions.bzl", "apko")
 apko.translate_lock(
-    name = "ships_frontend_lock",
-    lock = "//projects/ships/frontend:apko.lock.json",
-)
-apko.translate_lock(
     name = "grimoire_frontend_lock",
     lock = "//projects/grimoire/frontend:apko.lock.json",
 )
@@ -441,7 +437,7 @@ apko.translate_lock(
     name = "obsidian_image_lock",
     lock = "//projects/monolith/obsidian-image:apko.lock.json",
 )
-use_repo(apko, "goose_agent_lock", "grimoire_frontend_lock", "monolith_frontend_lock", "obsidian_image_lock", "ships_frontend_lock")
+use_repo(apko, "goose_agent_lock", "grimoire_frontend_lock", "monolith_frontend_lock", "obsidian_image_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
