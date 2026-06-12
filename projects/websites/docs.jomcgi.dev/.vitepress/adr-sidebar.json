@@ -120,6 +120,10 @@
       {
         "text": "004 - Iceberg-on-SeaweedFS Lakehouse with Hot-Swap Quack Serving",
         "link": "/docs/decisions/platform/004-iceberg-lakehouse-hot-swap"
+      },
+      {
+        "text": "005 - Per-PR Preview Environments",
+        "link": "/docs/decisions/platform/005-per-pr-preview-environments"
       }
     ]
   },
