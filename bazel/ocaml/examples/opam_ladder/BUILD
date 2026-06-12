@@ -73,5 +73,7 @@ build_test(
         "@ocaml_ppx_sexp_conv//:ppx_sexp_conv_lib",
         "@ocaml_ppx_hash//:ppx_hash",
         "@ocaml_ppx_hash//:ppx_hash_lib",
+        # Phase 8 wave D: first target out of the pinned Semgrep CE tree.
+        "@semgrep_src//:collections",
     ],
 )
