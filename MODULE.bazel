@@ -57,14 +57,16 @@ use_repo(buildbuddy, "buildbuddy_toolchain")
 ocaml_source_ext = use_extension("//bazel/ocaml/toolchain:repositories.bzl", "ocaml_source")
 use_repo(ocaml_source_ext, "ocaml_source")
 
-# Per-arch OCaml toolchains (ADR 006): constrained registrations first, one per
-# enabled arch in bazel/ocaml/toolchain/arches.bzl (keep this list in sync when
-# flipping an arch), then the unconstrained fallback that preserves single-arch
-# behavior for platforms the registry does not model.
+# Per-arch OCaml toolchains (ADR 006), one per enabled arch in
+# bazel/ocaml/toolchain/arches.bzl (keep this list in sync when flipping an
+# arch). Constrained only, deliberately no unconstrained fallback: execution
+# platform priority dominates toolchain registration order, so a fallback that
+# matches any target platform always wins from the default (amd64) executor
+# platform and silently produces foreign-arch binaries for aarch64 targets
+# (Exec format error at test time).
 register_toolchains(
     "//bazel/ocaml:ocaml_toolchain_linux_x86_64",
     "//bazel/ocaml:ocaml_toolchain_linux_aarch64",
-    "//bazel/ocaml:ocaml_toolchain",
 )
 
 # The arm64 platform must be a registered execution platform for toolchain

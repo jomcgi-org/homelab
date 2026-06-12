@@ -67,10 +67,12 @@ def declare_ocaml_toolchains():
     Each pair pins both target_compatible_with and exec_compatible_with to the
     arch (no cross-compilation, per ADR 006/008: an OCaml build for an arch runs
     *on* that arch), and its sysroot is the per-arch compiler build from
-    declare_ocaml_sysroots(). Registration order lives in MODULE.bazel:
-    constrained per-arch toolchains first, then the unconstrained fallback
-    (:ocaml_toolchain) that preserves the original single-arch behavior for any
-    platform the registry does not model.
+    declare_ocaml_sysroots(). Registration lives in MODULE.bazel, and only
+    these constrained pairs are registered: an unconstrained fallback would
+    match any target platform from the first (amd64) execution platform, which
+    outranks all later platforms in resolution, shadowing per-arch selection
+    and handing aarch64 targets x86_64 binaries (observed as Exec format error
+    in the arm64 CI shard).
     """
     for arch in OCAML_ARCHES:
         if not arch.enabled:
