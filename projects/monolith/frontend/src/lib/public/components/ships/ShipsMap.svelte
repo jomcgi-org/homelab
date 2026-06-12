@@ -99,13 +99,18 @@
   // Fully saturated plasma scale (vivid violet through magenta and rose to
   // orange/red). Deliberately skips green and pale blue so even the quiet-water
   // low end stays vibrant against the green-and-beige basemap when zoomed out.
+  // Brightness climbs monotonically to the top so the busiest lanes read as the
+  // BRIGHTEST red, not a dark maroon. The old ramp topped out at a deep #c1121f
+  // that was darker than the step below it, which (compounded by the basemap's
+  // grayscale CSS filter, see <style>) made busy water look muddy instead of
+  // hot. The high end is now a pure vivid red.
   const HEAT_STOPS = [
-    { at: 1, color: "#6a00f4", label: "1-2" }, // vivid violet
-    { at: 3, color: "#b5179e", label: "3-5" }, // magenta
-    { at: 6, color: "#e5006d", label: "6-9" }, // rose
-    { at: 10, color: "#ff5400", label: "10-14" }, // vivid orange
-    { at: 15, color: "#ff2d2d", label: "15-19" }, // red
-    { at: 20, color: "#c1121f", label: "20+" }, // deep red
+    { at: 1, color: "#7b2ff7", label: "1-2" }, // vivid violet
+    { at: 3, color: "#d61f9c", label: "3-5" }, // magenta
+    { at: 6, color: "#ff0a78", label: "6-9" }, // hot rose
+    { at: 10, color: "#ff6a00", label: "10-14" }, // vivid orange
+    { at: 15, color: "#ff2a1f", label: "15-19" }, // bright red
+    { at: 20, color: "#ff0019", label: "20+" }, // pure vivid red (hottest)
   ];
   const HEAT_FILL_COLOR = [
     "step",
@@ -474,7 +479,10 @@
           layout: { visibility: "none" },
           paint: {
             "fill-color": HEAT_FILL_COLOR,
-            "fill-opacity": 0.8,
+            // High opacity keeps the beige/green basemap from bleeding through
+            // and muting the ramp; the cells already sit on water/lanes so the
+            // map underneath stays readable at the edges.
+            "fill-opacity": 0.9,
             "fill-outline-color": "rgba(0, 0, 0, 0)",
           },
         });
@@ -561,7 +569,7 @@
   });
 </script>
 
-<div class="map-wrap">
+<div class="map-wrap" class:heat-mode={mode === "heat"} class:panel-open={selected}>
   <div class="map" bind:this={mapContainer}></div>
 
   <nav class="map-chip" aria-label="Breadcrumb">
@@ -660,6 +668,15 @@
      every layer. Kept subtle so markers and chrome stay legible. */
   .map :global(.maplibregl-canvas) {
     filter: grayscale(0.4) sepia(0.12) brightness(1.02) contrast(0.96);
+    transition: filter 160ms ease;
+  }
+
+  /* In heat mode the live markers are hidden, so the warm grayscale tint is
+     only muddying the density fill. Ease most of it off so the red ramp renders
+     near full saturation; a touch of grayscale still keeps the basemap from
+     fighting the heat colors. */
+  .heat-mode .map :global(.maplibregl-canvas) {
+    filter: grayscale(0.12) brightness(1.02) contrast(1.02);
   }
 
   /* Drop the group container entirely so each +/- button is its own square
@@ -969,15 +986,98 @@
   }
 
   @media (max-width: 640px) {
+    /* Tighten the breadcrumb so the enlarged mode toggle has room beside it. */
+    .map-chip {
+      top: 12px;
+      left: 12px;
+      gap: 6px;
+      padding: 7px 9px;
+      font-size: 11px;
+    }
+
+    /* The primary control on mobile: bigger buttons, bigger touch targets. */
+    .mode-toggle {
+      top: 12px;
+      right: 12px;
+      font-size: 13px;
+    }
+
+    .mode-toggle button {
+      padding: 12px 20px;
+    }
+
+    /* Filters stay on screen (desktop hid them) and grow into easy-to-tap
+       chips, anchored bottom-left clear of the zoom controls bottom-right. */
     .legend {
+      bottom: 12px;
+      left: 12px;
+      padding: 12px 14px;
+    }
+
+    .legend-grid {
+      gap: 10px;
+    }
+
+    .legend-label {
+      padding: 6px 9px;
+      font-size: 12px;
+    }
+
+    .heat-scale {
+      font-size: 12px;
+      gap: 8px 16px;
+    }
+
+    .heat-sw {
+      width: 15px;
+      height: 15px;
+    }
+
+    /* Reading a vessel takes over the lower screen, so drop the filters while
+       the sheet is up rather than stacking the two bottom panels. */
+    .panel-open .legend {
       display: none;
     }
+
+    /* Vessel info becomes a full-bleed bottom sheet that fills more of the
+       screen with larger, more legible type. */
     .panel {
       top: auto;
-      bottom: 16px;
-      left: 16px;
-      right: 16px;
+      bottom: 0;
+      left: 0;
+      right: 0;
       width: auto;
+      max-width: none;
+      max-height: 72vh;
+      overflow-y: auto;
+      padding: 22px 20px calc(22px + env(safe-area-inset-bottom));
+      border-width: 2px 0 0;
+    }
+
+    .panel-close {
+      top: 14px;
+      right: 16px;
+      font-size: 26px;
+    }
+
+    .panel-name {
+      font-size: 32px;
+    }
+
+    .panel-rows {
+      gap: 12px;
+    }
+
+    .panel-rows > div {
+      padding-bottom: 10px;
+    }
+
+    .panel-rows dt {
+      font-size: 11px;
+    }
+
+    .panel-rows dd {
+      font-size: 14px;
     }
   }
 
