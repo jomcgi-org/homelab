@@ -457,7 +457,12 @@
         style: BASEMAP_STYLE,
         center: [0, 30],
         zoom: 1.4,
-        attributionControl: true,
+        // Collapse the OSM/OpenMapTiles attribution into a compact "i" button
+        // instead of letting the full credit line sprawl across the bottom of
+        // the map (especially cramped on mobile). compact:true keeps it closed
+        // by default at any viewport width; tapping the button still reveals
+        // the required credits.
+        attributionControl: { compact: true },
       });
       map.addControl(
         new maplibregl.NavigationControl({ showCompass: false }),
@@ -578,7 +583,7 @@
     >
     <span class="chip-sep">/</span>
     <span class="chip-name">ships</span>
-    <span class="chip-sep">/</span>
+    <span class="chip-sep chip-sep-live">/</span>
     <span class="chip-live">live</span>
     <span class="chip-dot" aria-hidden="true"></span>
   </nav>
@@ -712,6 +717,34 @@
     background: var(--paper);
     position: relative;
     z-index: 1;
+  }
+
+  /* Compact attribution: a single square "i" toggle that matches the zoom
+     controls stacked above it, rather than MapLibre's default round white pill.
+     The required OSM/OpenMapTiles credits expand on tap. */
+  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
+    min-height: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .map :global(.maplibregl-ctrl-attrib-button) {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--ink);
+    border-radius: 0;
+    background-color: var(--paper);
+  }
+
+  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact-show) {
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-radius: 0;
+  }
+
+  .map :global(.maplibregl-ctrl-attrib-inner) {
+    font-family: var(--mono);
+    font-size: 10px;
   }
 
   .map-chip {
@@ -993,6 +1026,15 @@
       gap: 6px;
       padding: 7px 9px;
       font-size: 11px;
+    }
+
+    /* On a phone the chip and the (larger) mode toggle share the top row and
+       collide right where "live" meets "Vessels". Drop the redundant "/ live"
+       text: the pulsing green dot already signals live, and losing those
+       characters gives the toggle clear room beside the chip. */
+    .chip-sep-live,
+    .chip-live {
+      display: none;
     }
 
     /* The primary control on mobile: bigger buttons, bigger touch targets. */
