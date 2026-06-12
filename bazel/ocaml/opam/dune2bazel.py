@@ -36,6 +36,7 @@ work (or an opam/overrides/ BUILD) has to begin.
 
 import argparse
 import json
+import re
 import sys
 
 # findlib packages that ship with the OCaml stdlib. "seq" lives inside
@@ -403,6 +404,18 @@ def _parse_atdgen_rule(stanza, src_dir, dune_path):
                 "modeled." % (a, dune_path)
             )
 
+    # Every name and flag is embedded verbatim in a Starlark string holding a
+    # shell command; anything outside this charset (spaces, quotes,
+    # backslashes, shell metacharacters, which dune CAN carry via quoted
+    # atoms) would need escaping for both layers, so reject it instead.
+    for word in [atd] + targets + args:
+        if not re.fullmatch(r"[A-Za-z0-9._=-]+", word):
+            sys.exit(
+                "dune2bazel: %r in the (rule ...) in %s contains characters "
+                "outside [A-Za-z0-9._=-]; the genrule embedding does not "
+                "model escaping them." % (word, dune_path)
+            )
+
     name = "atdgen_" + targets[0].rsplit(".", 1)[0]
     atd_path = "%s/%s" % (src_dir, atd)
     cmd = (
@@ -623,30 +636,20 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
     if rule_lines:
         out.append("\n".join(rule_lines) + "\n")
     for i, lib in enumerate(libraries):
-        if menhir_modules and i == 0:
-            out.append(
-                gen_library(
-                    lib,
-                    src_dir,
-                    lib_map,
-                    menhir_modules,
-                    menhir_flags,
-                    recursive=recursive,
-                    ppx_runtime_map=ppx_runtime_map,
-                    extra_srcs=generated_srcs or None,
-                )
+        # menhir modules attach to the (single, enforced above) first library.
+        first = i == 0
+        out.append(
+            gen_library(
+                lib,
+                src_dir,
+                lib_map,
+                menhir_modules if first else None,
+                menhir_flags if first else None,
+                recursive=recursive,
+                ppx_runtime_map=ppx_runtime_map,
+                extra_srcs=generated_srcs or None,
             )
-        else:
-            out.append(
-                gen_library(
-                    lib,
-                    src_dir,
-                    lib_map,
-                    recursive=recursive,
-                    ppx_runtime_map=ppx_runtime_map,
-                    extra_srcs=generated_srcs or None,
-                )
-            )
+        )
     return "".join(out)
 
 

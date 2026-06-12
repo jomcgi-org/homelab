@@ -645,6 +645,19 @@ class TestGenDuneDir:
         with pytest.raises(SystemExit):
             gen_dune_dir(path, "src", LIB_MAP)
 
+    def test_atdgen_rule_unsafe_characters_exit(self, tmp_path):
+        # Names and flags embed verbatim in a Starlark string holding a shell
+        # command; dune CAN carry e.g. spaces via quoted atoms, and rather
+        # than escape for both layers the translator rejects.
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            '(rule (targets "X y_t.ml") (deps "X y.atd")\n'
+            " (action (run atdgen -t %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
     def test_atdgen_rule_other_dune_variable_exits(self, tmp_path):
         path = self._write(
             tmp_path,
