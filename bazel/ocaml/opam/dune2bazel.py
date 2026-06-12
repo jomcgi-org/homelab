@@ -22,12 +22,16 @@ generation pipeline); `modules_without_implementation` (inert: mli-only
 modules compile naturally); `ppx_runtime_libraries` (validated on the
 declaring library, materialized on (pps ...) consumers as
 preprocess_runtime_deps via the lock's ppx_runtime tables -- dune's
-propagation, reproduced data-driven).
+propagation, reproduced data-driven); and the atdgen codegen rule pair
+`(rule (targets X_t.ml X_t.mli) (deps X.atd) (action (run atdgen ... %{deps})))`
+(each rule becomes a genrule over the locked from-source atdgen, the shape
+the ocaml-tree-sitter-core override hand-writes; the generated sources join
+the library's srcs).
 
 Anything else that changes build semantics -- module filtering, C stubs,
-`(rule)` codegen, instrumentation -- is rejected loudly rather than silently
-mishandled. That rejection is the precise marker of where translation work (or
-an opam/overrides/ BUILD) has to begin.
+generic `(rule)` codegen, instrumentation -- is rejected loudly rather than
+silently mishandled. That rejection is the precise marker of where translation
+work (or an opam/overrides/ BUILD) has to begin.
 """
 
 import argparse
@@ -305,6 +309,127 @@ def _resolve_preprocess(stanza, name, lib_map, ppx_runtime_map):
     )
 
 
+# The atdgen binary built from the locked atd source (the same target the
+# ocaml-tree-sitter-core override's hand-written genrules use). The rule
+# translation below only accepts `(run atdgen ...)`, so this is the one tool.
+_ATDGEN_TOOL = "@ocaml_atd//:atdgen"
+
+_RULE_FIELDS = {"targets", "deps", "action"}
+
+
+def _parse_atdgen_rule(stanza, src_dir, dune_path):
+    """Translate dune's atdgen codegen rule into a genrule.
+
+    Models exactly the rule shape Semgrep's dune files (and the
+    ocaml-tree-sitter-core override) use:
+
+        (rule
+         (targets X_t.ml X_t.mli)
+         (deps    X.atd)
+         (action  (run atdgen <flags...> %{deps})))
+
+    and its -j sibling. atdgen derives output names from the input basename,
+    so each target must be `<atd stem>_*.ml{,i}`. Any other (rule ...) shape
+    still rejects loudly. Returns (genrule_lines, generated_filenames).
+    """
+    for item in stanza[1:]:
+        if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
+            sys.exit("dune2bazel: unexpected item in (rule): %r" % (item,))
+        if item[0][1] not in _RULE_FIELDS:
+            sys.exit(
+                "dune2bazel: unsupported (rule) field %r in %s; only the "
+                "atdgen targets/deps/action shape is modeled." % (item[0][1], dune_path)
+            )
+
+    targets_field = _field(stanza, "targets")
+    deps_field = _field(stanza, "deps")
+    action_field = _field(stanza, "action")
+    if not targets_field or not deps_field or not action_field:
+        sys.exit(
+            "dune2bazel: (rule ...) in %s needs (targets ...), (deps ...) "
+            "and (action ...); only the atdgen rule shape is modeled." % dune_path
+        )
+
+    if len(deps_field) != 1:
+        sys.exit(
+            "dune2bazel: (rule (deps ...)) in %s must name exactly one .atd "
+            "file, got %r." % (dune_path, deps_field)
+        )
+    atd = _atom(deps_field[0])
+    if not atd.endswith(".atd"):
+        sys.exit(
+            "dune2bazel: (rule (deps %s)) in %s is not an .atd file; only "
+            "the atdgen rule shape is modeled." % (atd, dune_path)
+        )
+    atd_stem = atd[: -len(".atd")]
+
+    targets = [_atom(t) for t in targets_field]
+    for t in targets:
+        if not (t.endswith(".ml") or t.endswith(".mli")):
+            sys.exit(
+                "dune2bazel: (rule (targets ... %s ...)) in %s is not an "
+                ".ml/.mli target." % (t, dune_path)
+            )
+        if not t.startswith(atd_stem + "_"):
+            sys.exit(
+                "dune2bazel: (rule) target %s in %s does not derive from "
+                "%s (atdgen names outputs from the input basename)."
+                % (t, dune_path, atd)
+            )
+
+    if not (len(action_field) == 1 and isinstance(action_field[0], list)):
+        sys.exit(
+            "dune2bazel: unsupported (rule (action ...)) form %r in %s."
+            % (action_field, dune_path)
+        )
+    run = action_field[0]
+    words = [_atom(w) for w in run]
+    if len(words) < 3 or words[0] != "run" or words[1] != "atdgen":
+        sys.exit(
+            "dune2bazel: (rule (action ...)) in %s must be (run atdgen ... "
+            "%%{deps}); got %r." % (dune_path, words)
+        )
+    if words[-1] != "%{deps}":
+        sys.exit(
+            "dune2bazel: (run atdgen ...) in %s must end with %%{deps}; "
+            "got %r." % (dune_path, words)
+        )
+    args = words[2:-1]
+    for a in args:
+        if "%{" in a:
+            sys.exit(
+                "dune2bazel: unsupported dune variable %r in (run atdgen ...) "
+                "in %s; only literal flags and a trailing %%{deps} are "
+                "modeled." % (a, dune_path)
+            )
+
+    name = "atdgen_" + targets[0].rsplit(".", 1)[0]
+    atd_path = "%s/%s" % (src_dir, atd)
+    cmd = (
+        "W=$$(mktemp -d) && AG=$$(realpath $(location %s)) && " % _ATDGEN_TOOL
+        + "cp $(location %s) $$W/%s && " % (atd_path, atd)
+        + "(cd $$W && $$AG %s %s) && " % (" ".join(args), atd)
+        + " && ".join("cp $$W/%s $(location %s)" % (t, t) for t in targets)
+    )
+    lines = [
+        "",
+        "# dune (rule (action (run atdgen ...))) over %s, translated to a" % atd_path,
+        "# genrule on the locked from-source atdgen.",
+        "genrule(",
+        '    name = "%s",' % name,
+        '    srcs = ["%s"],' % atd_path,
+        "    outs = [",
+    ]
+    lines += ['        "%s",' % t for t in targets]
+    lines += [
+        "    ],",
+        '    cmd = "%s",' % cmd.replace('"', '\\"'),
+        '    tools = ["%s"],' % _ATDGEN_TOOL,
+        ")",
+    ]
+    return lines, targets
+
+
 def _parse_menhir(stanza):
     """Translate a (menhir (modules ...) (flags ...)) stanza."""
     modules_field = _field(stanza, "modules")
@@ -331,6 +456,7 @@ def gen_library(
     menhir_flags=None,
     recursive=False,
     ppx_runtime_map=None,
+    extra_srcs=None,
 ):
     for item in stanza[1:]:
         if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
@@ -384,13 +510,19 @@ def gen_library(
     # same flat module namespace; the driver stages every source by basename,
     # which is exactly that semantic, so it maps onto a recursive glob.
     pat = "%s/**/*" % src_dir if recursive else "%s/*" % src_dir
+    # Sources generated by translated (rule ...) stanzas (atdgen codegen)
+    # join the glob, the same shape the ocaml-tree-sitter-core override
+    # hand-writes.
+    extra = ""
+    if extra_srcs:
+        extra = " + [%s]" % ", ".join('"%s"' % s for s in extra_srcs)
     lines = list(ppx_lines)
     lines += [
         "",
         "ocaml_library(",
         '    name = "%s",' % name,
-        '    srcs = glob(["%s.ml", "%s.mli", "%s.mll", "%s.mly"], allow_empty = True),'
-        % (pat, pat, pat, pat),
+        '    srcs = glob(["%s.ml", "%s.mli", "%s.mll", "%s.mly"], allow_empty = True)%s,'
+        % (pat, pat, pat, pat, extra),
     ]
     if wrapped:
         lines.append("    wrapped = True,")
@@ -436,6 +568,8 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
     libraries = []
     menhir_modules = []
     menhir_flags = []
+    rule_lines = []
+    generated_srcs = []
     recursive = False
     for s in stanzas:
         if not (isinstance(s, list) and s and isinstance(s[0], tuple)):
@@ -443,6 +577,10 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
         head = _atom(s[0])
         if head == "library":
             libraries.append(s)
+        elif head == "rule":
+            lines, gen = _parse_atdgen_rule(s, src_dir, dune_path)
+            rule_lines += lines
+            generated_srcs += gen
         elif head in ("ocamllex", "ocamlyacc"):
             continue  # the .mll/.mly is globbed into the library's srcs
         elif head == "include_subdirs":
@@ -473,8 +611,17 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
             "dune2bazel: a (menhir ...) stanza needs exactly one (library) in "
             "%s to attach to, found %d." % (dune_path, len(libraries))
         )
+    if generated_srcs and len(libraries) != 1:
+        # Without (modules ...) filtering there is no way to know which
+        # library the generated sources belong to.
+        sys.exit(
+            "dune2bazel: (rule ...) generated sources need exactly one "
+            "(library) in %s to attach to, found %d." % (dune_path, len(libraries))
+        )
 
     out = []
+    if rule_lines:
+        out.append("\n".join(rule_lines) + "\n")
     for i, lib in enumerate(libraries):
         if menhir_modules and i == 0:
             out.append(
@@ -486,6 +633,7 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
                     menhir_flags,
                     recursive=recursive,
                     ppx_runtime_map=ppx_runtime_map,
+                    extra_srcs=generated_srcs or None,
                 )
             )
         else:
@@ -496,6 +644,7 @@ def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
                     lib_map,
                     recursive=recursive,
                     ppx_runtime_map=ppx_runtime_map,
+                    extra_srcs=generated_srcs or None,
                 )
             )
     return "".join(out)

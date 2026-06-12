@@ -553,6 +553,127 @@ class TestGenDuneDir:
         with pytest.raises(SystemExit):
             gen_dune_dir(path, "src", LIB_MAP)
 
+    # The atdgen codegen rule pair (the one (rule ...) shape modeled; the
+    # exact stanzas src/configuring carries, recurring in src/rule and
+    # src/parsing).
+    ATDGEN_RULES = (
+        "(rule\n"
+        " (targets Rule_options_j.ml Rule_options_j.mli)\n"
+        " (deps    Rule_options.atd)\n"
+        " (action  (run atdgen -j -j-strict-fields %{deps})))\n"
+        "(rule\n"
+        " (targets Rule_options_t.ml Rule_options_t.mli)\n"
+        " (deps    Rule_options.atd)\n"
+        " (action  (run atdgen -deriving-conv show -t %{deps})))\n"
+    )
+
+    def test_atdgen_rule_pair_translates(self, tmp_path):
+        path = self._write(tmp_path, "(library (name a))\n" + self.ATDGEN_RULES)
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert 'name = "atdgen_Rule_options_j"' in out
+        assert 'name = "atdgen_Rule_options_t"' in out
+        assert 'srcs = ["src/Rule_options.atd"]' in out
+        assert 'tools = ["@ocaml_atd//:atdgen"]' in out
+        # The dune flags pass through verbatim, in a workdir cd'ed run.
+        assert "$$AG -j -j-strict-fields Rule_options.atd" in out
+        assert "$$AG -deriving-conv show -t Rule_options.atd" in out
+
+    def test_atdgen_outputs_join_library_srcs(self, tmp_path):
+        path = self._write(tmp_path, "(library (name a))\n" + self.ATDGEN_RULES)
+        out = gen_dune_dir(path, "src", LIB_MAP)
+        assert (
+            '+ ["Rule_options_j.ml", "Rule_options_j.mli", '
+            '"Rule_options_t.ml", "Rule_options_t.mli"],' in out
+        )
+
+    def test_atdgen_rule_non_atdgen_tool_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets X_t.ml) (deps X.atd) (action (run protoc %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_unknown_field_exits(self, tmp_path):
+        # (mode fallback) etc. change rule semantics; reject loudly.
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets X_t.ml) (deps X.atd) (mode fallback)\n"
+            " (action (run atdgen -t %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_non_atd_dep_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets X_t.ml) (deps X.proto) (action (run atdgen -t %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_multiple_deps_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets X_t.ml) (deps X.atd Y.atd)\n"
+            " (action (run atdgen -t %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_target_not_from_atd_stem_exits(self, tmp_path):
+        # atdgen derives output names from the input basename; a mismatched
+        # target means the copy step could never succeed.
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets Other_t.ml) (deps X.atd) (action (run atdgen -t %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_deps_not_last_arg_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets X_t.ml) (deps X.atd) (action (run atdgen %{deps} -t)))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_other_dune_variable_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n"
+            "(rule (targets X_t.ml) (deps X.atd)\n"
+            " (action (run atdgen -o %{targets} %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_with_multiple_libraries_exits(self, tmp_path):
+        # Without (modules ...) there is no way to know which library the
+        # generated sources belong to.
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n(library (name b))\n"
+            "(rule (targets X_t.ml) (deps X.atd) (action (run atdgen -t %{deps})))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
+    def test_atdgen_rule_without_action_exits(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "(library (name a))\n(rule (targets X_t.ml) (deps X.atd))\n",
+        )
+        with pytest.raises(SystemExit):
+            gen_dune_dir(path, "src", LIB_MAP)
+
     def test_executable_stanza_exits(self, tmp_path):
         path = self._write(tmp_path, "(executable (name main))\n")
         with pytest.raises(SystemExit):
