@@ -87,8 +87,14 @@ url {
 """
         src, checksums = parse_url_section(opam)
         assert src == "https://example.com/both-1.2.tar.gz"
-        assert checksums["sha256"] == "1111111111111111111111111111111111111111111111111111111111111111"
-        assert checksums["sha512"] == "2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+        assert (
+            checksums["sha256"]
+            == "1111111111111111111111111111111111111111111111111111111111111111"
+        )
+        assert (
+            checksums["sha512"]
+            == "2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+        )
 
     def test_both_checksums_md5_ignored(self):
         opam = """\
@@ -117,7 +123,10 @@ url { src: "https://example.com/rresult-0.7.0.tbz"
 """
         src, checksums = parse_url_section(opam)
         assert src == "https://example.com/rresult-0.7.0.tbz"
-        assert checksums["sha256"] == "cccccccccccccccccccccccccccccccccccccccccccccccccccc" + "cc" * 6
+        assert (
+            checksums["sha256"]
+            == "cccccccccccccccccccccccccccccccccccccccccccccccccccc" + "cc" * 6
+        )
 
     def test_src_and_checksum_all_on_one_line(self):
         opam = 'url { src: "https://example.com/pkg.tar.gz" checksum: "sha256=abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234" }\n'
@@ -191,7 +200,10 @@ url {
 """
         src, checksums = parse_url_section(opam)
         assert src == "https://erratique.ch/software/fmt/releases/fmt-0.9.0.tbz"
-        assert checksums["sha256"] == "5119d2babf3e3b41900c7f1e26b8e53e87f7c4c4e13dba26e4f15e97c75caecb"
+        assert (
+            checksums["sha256"]
+            == "5119d2babf3e3b41900c7f1e26b8e53e87f7c4c4e13dba26e4f15e97c75caecb"
+        )
 
     def test_realistic_github_release(self):
         # Modelled on a package using a GitHub releases tarball.
@@ -223,48 +235,68 @@ class TestGuessFields:
     # -- repo name derivation (hyphen to underscore) -------------------------
 
     def test_repo_name_plain(self):
-        repo, _, _ = guess_fields("fmt", "0.9.0", "https://example.com/fmt-0.9.0.tar.gz")
+        repo, _, _ = guess_fields(
+            "fmt", "0.9.0", "https://example.com/fmt-0.9.0.tar.gz"
+        )
         assert repo == "ocaml_fmt"
 
     def test_repo_name_hyphen_converted(self):
-        repo, _, _ = guess_fields("ocaml-re", "1.11.0", "https://example.com/ocaml-re-1.11.0.tar.gz")
+        repo, _, _ = guess_fields(
+            "ocaml-re", "1.11.0", "https://example.com/ocaml-re-1.11.0.tar.gz"
+        )
         assert repo == "ocaml_ocaml_re"
 
     def test_repo_name_multiple_hyphens(self):
-        repo, _, _ = guess_fields("ambient-context-eio", "0.1.0", "https://example.com/a.tar.gz")
+        repo, _, _ = guess_fields(
+            "ambient-context-eio", "0.1.0", "https://example.com/a.tar.gz"
+        )
         assert repo == "ocaml_ambient_context_eio"
 
     def test_repo_name_already_underscored(self):
-        repo, _, _ = guess_fields("ocaml_intrinsics_kernel", "0.2.1", "https://example.com/a.tar.gz")
+        repo, _, _ = guess_fields(
+            "ocaml_intrinsics_kernel", "0.2.1", "https://example.com/a.tar.gz"
+        )
         assert repo == "ocaml_ocaml_intrinsics_kernel"
 
     # -- archive type --------------------------------------------------------
 
     def test_tar_gz_type(self):
-        _, _, archive_type = guess_fields("pkg", "1.0", "https://example.com/pkg-1.0.tar.gz")
+        _, _, archive_type = guess_fields(
+            "pkg", "1.0", "https://example.com/pkg-1.0.tar.gz"
+        )
         assert archive_type == "tar.gz"
 
     def test_tgz_type(self):
-        _, _, archive_type = guess_fields("pkg", "1.0", "https://example.com/pkg-1.0.tgz")
+        _, _, archive_type = guess_fields(
+            "pkg", "1.0", "https://example.com/pkg-1.0.tgz"
+        )
         assert archive_type == "tar.gz"
 
     def test_tar_bz2_type(self):
-        _, _, archive_type = guess_fields("pkg", "1.0", "https://example.com/pkg-1.0.tar.bz2")
+        _, _, archive_type = guess_fields(
+            "pkg", "1.0", "https://example.com/pkg-1.0.tar.bz2"
+        )
         assert archive_type == "tar.bz2"
 
     def test_tbz_type(self):
         # .tbz is not tar.gz so falls through to tar.bz2
-        _, _, archive_type = guess_fields("fmt", "0.9.0", "https://erratique.ch/fmt-0.9.0.tbz")
+        _, _, archive_type = guess_fields(
+            "fmt", "0.9.0", "https://erratique.ch/fmt-0.9.0.tbz"
+        )
         assert archive_type == "tar.bz2"
 
     # -- strip_prefix for plain (non-GitHub) URLs ----------------------------
 
     def test_strip_prefix_tar_gz(self):
-        _, strip, _ = guess_fields("re", "1.11.0", "https://example.com/re-1.11.0.tar.gz")
+        _, strip, _ = guess_fields(
+            "re", "1.11.0", "https://example.com/re-1.11.0.tar.gz"
+        )
         assert strip == "re-1.11.0"
 
     def test_strip_prefix_tar_bz2(self):
-        _, strip, _ = guess_fields("fmt", "0.9.0", "https://erratique.ch/fmt-0.9.0.tar.bz2")
+        _, strip, _ = guess_fields(
+            "fmt", "0.9.0", "https://erratique.ch/fmt-0.9.0.tar.bz2"
+        )
         assert strip == "fmt-0.9.0"
 
     def test_strip_prefix_tgz(self):
