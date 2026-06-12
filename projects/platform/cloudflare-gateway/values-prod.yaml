@@ -27,12 +27,10 @@ tunnel:
 
   ingress:
     routes:
-      - hostname: argocd.jomcgi.dev
-        service: http://argocd-server.argocd.svc.cluster.local:80
-      - hostname: longhorn.jomcgi.dev
-        service: http://longhorn-frontend.longhorn.svc.cluster.local:80
-      - hostname: signoz.jomcgi.dev
-        service: http://signoz.signoz.svc.cluster.local:8080
+      # argocd, longhorn, and signoz retired: they now serve under
+      # private.jomcgi.dev/app/<app> via the cloudflare-ingress gateway
+      # (HTTPRoutes in each chart). Their old subdomains fall through to
+      # catchAll, which has no matching gateway route, so they stop resolving.
       - hostname: img.jomcgi.dev
         service: http://trips-nginx.trips.svc.cluster.local:80
       - hostname: grimoire.jomcgi.dev

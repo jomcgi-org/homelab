@@ -2,7 +2,7 @@ apiVersion: v2
 name: cloudflare-gateway
 description: Cloudflare ingress stack - Envoy Gateway control plane, Gateway API resources, and Cloudflare Tunnel
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "v1.3.2"
 
 dependencies:
