@@ -87,6 +87,91 @@
     applyFilter();
   }
 
+  // ── Traffic-density heatmap ────────────────────────────────────────────
+  // 'vessels' shows the live markers; 'heat' hides them and shows a GPU fill
+  // layer of ~500m cells coloured by how many distinct moving vessels used each
+  // over the last 7 days. The grid is fetched once, on the first toggle.
+  const HEAT_SOURCE = "heat-cells";
+  const HEAT_LAYER = "heat-fill";
+
+  // Neo-brutalist stepped ramp, tuned to the distinct-mover counts measured on
+  // live data (p50=1, p90=3, p99=10, max~22): quiet water -> busy lanes.
+  const HEAT_STOPS = [
+    { at: 1, color: "#6fc2ff", label: "1-2" },
+    { at: 3, color: "#14c4a9", label: "3-5" },
+    { at: 6, color: "#35cb5b", label: "6-9" },
+    { at: 10, color: "#ffcb1f", label: "10-14" },
+    { at: 15, color: "#ff564a", label: "15-19" },
+    { at: 20, color: "#b3261e", label: "20+" },
+  ];
+  const HEAT_FILL_COLOR = [
+    "step",
+    ["get", "count"],
+    HEAT_STOPS[0].color,
+    ...HEAT_STOPS.slice(1).flatMap((s) => [s.at, s.color]),
+  ];
+
+  let mode = $state("vessels"); // 'vessels' | 'heat'
+  let heatLoaded = false;
+
+  // Build square cell polygons from the compact API payload
+  // ({step_lat, step_lon, cells:[[lat_bin, lon_bin, count]]}).
+  function buildHeatFC(data) {
+    const sLat = data.step_lat;
+    const sLon = data.step_lon;
+    const features = (data.cells || []).map(([la, lo, c]) => {
+      const lat0 = la * sLat;
+      const lon0 = lo * sLon;
+      const lat1 = lat0 + sLat;
+      const lon1 = lon0 + sLon;
+      return {
+        type: "Feature",
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [lon0, lat0],
+              [lon1, lat0],
+              [lon1, lat1],
+              [lon0, lat1],
+              [lon0, lat0],
+            ],
+          ],
+        },
+        properties: { count: c },
+      };
+    });
+    return { type: "FeatureCollection", features };
+  }
+
+  async function loadHeat() {
+    if (heatLoaded) return;
+    try {
+      // Same-origin proxy to /api/ships/heat (see heat/+server.js).
+      const res = await fetch("/app/ships/heat");
+      if (!res.ok) return;
+      map.getSource(HEAT_SOURCE)?.setData(buildHeatFC(await res.json()));
+      heatLoaded = true;
+    } catch {
+      // Leave the grid empty on failure; the toggle still works.
+    }
+  }
+
+  function setMode(next) {
+    if (next === mode || !map || !layerReady) return;
+    mode = next;
+    const heat = next === "heat";
+    if (heat) loadHeat();
+    map.setLayoutProperty(HEAT_LAYER, "visibility", heat ? "visible" : "none");
+    map.setLayoutProperty(LAYER_ID, "visibility", heat ? "none" : "visible");
+    map.setLayoutProperty(
+      "ship-track-line",
+      "visibility",
+      heat ? "none" : "visible",
+    );
+    if (heat) closePanel(); // markers hidden, so drop any open vessel panel
+  }
+
   function emptyFC() {
     return { type: "FeatureCollection", features: [] };
   }
@@ -375,6 +460,22 @@
         pal = palette();
         registerIcons(pal);
 
+        // Traffic-density heatmap, hidden until toggled into Heat mode. Added
+        // first so it sits beneath the track + markers (the modes are mutually
+        // exclusive anyway, so it never actually overlaps them).
+        map.addSource(HEAT_SOURCE, { type: "geojson", data: emptyFC() });
+        map.addLayer({
+          id: HEAT_LAYER,
+          type: "fill",
+          source: HEAT_SOURCE,
+          layout: { visibility: "none" },
+          paint: {
+            "fill-color": HEAT_FILL_COLOR,
+            "fill-opacity": 0.8,
+            "fill-outline-color": "rgba(0, 0, 0, 0)",
+          },
+        });
+
         map.addSource("ship-track", { type: "geojson", data: emptyFC() });
         map.addLayer({
           id: "ship-track-line",
@@ -471,23 +572,45 @@
     <span class="chip-dot" aria-hidden="true"></span>
   </nav>
 
-  <div class="legend">
-    <p class="eyebrow legend-title">Vessel type</p>
-    <div class="legend-grid">
-      {#each LEGEND as item (item.key)}
-        <button
-          type="button"
-          class="legend-item"
-          class:is-off={!active.has(item.key)}
-          style="background: {item.color}"
-          aria-pressed={active.has(item.key)}
-          onclick={() => toggleType(item.key)}
-        >
-          <span class="legend-label">{item.label}</span>
-        </button>
-      {/each}
-    </div>
+  <div class="mode-toggle" role="group" aria-label="Map mode">
+    <button class:active={mode === "vessels"} onclick={() => setMode("vessels")}>
+      Vessels
+    </button>
+    <button class:active={mode === "heat"} onclick={() => setMode("heat")}>
+      Heat
+    </button>
   </div>
+
+  {#if mode === "vessels"}
+    <div class="legend">
+      <p class="eyebrow legend-title">Vessel type</p>
+      <div class="legend-grid">
+        {#each LEGEND as item (item.key)}
+          <button
+            type="button"
+            class="legend-item"
+            class:is-off={!active.has(item.key)}
+            style="background: {item.color}"
+            aria-pressed={active.has(item.key)}
+            onclick={() => toggleType(item.key)}
+          >
+            <span class="legend-label">{item.label}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {:else}
+    <div class="legend">
+      <p class="eyebrow legend-title">Vessels / cell · 7d</p>
+      <ul class="heat-scale">
+        {#each HEAT_STOPS as s (s.at)}
+          <li>
+            <span class="heat-sw" style="background: {s.color}"></span>{s.label}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
 
   {#if selected}
     <aside class="panel">
@@ -586,6 +709,66 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
+  }
+
+  /* Vessels/Heat switch, top-right. The detail panel is shifted below it. */
+  .mode-toggle {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    display: inline-flex;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .mode-toggle button {
+    padding: 8px 14px;
+    background: var(--paper);
+    border: none;
+    color: var(--ink);
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+
+  .mode-toggle button + button {
+    border-left: 2px solid var(--ink);
+  }
+
+  .mode-toggle button:hover {
+    background: var(--cream);
+  }
+
+  .mode-toggle button.active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .heat-scale {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .heat-scale li {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .heat-sw {
+    width: 13px;
+    height: 13px;
+    border: 1.5px solid var(--ink);
+    flex: none;
   }
 
   /* The home crumb is a real link out to the apex: underlined by default with
@@ -714,7 +897,8 @@
      corners and lifts on hover, which read as interactive on a display panel). */
   .panel {
     position: absolute;
-    top: 16px;
+    /* Clears the Vessels/Heat toggle (top-right). */
+    top: 64px;
     right: 16px;
     width: 280px;
     max-width: calc(100% - 32px);

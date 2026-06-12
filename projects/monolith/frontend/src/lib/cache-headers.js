@@ -19,3 +19,8 @@ export const SHIPS_SNAPSHOT_CACHE_CONTROL =
 // _TRACK_CACHE_CONTROL in projects/monolith/ships/router.py, keep in sync.
 export const SHIPS_TRACK_CACHE_CONTROL =
   "public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400";
+
+// /app/ships heat: traffic-density grid, rolled up hourly so 5 min fresh / 1 h
+// SWR. Mirrors _HEAT_CACHE_CONTROL in projects/monolith/ships/router.py, keep in sync.
+export const SHIPS_HEAT_CACHE_CONTROL =
+  "public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=86400";
