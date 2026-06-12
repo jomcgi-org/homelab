@@ -121,23 +121,23 @@ Breaking changes: add `!` after type/scope — `feat!: redesign auth token forma
 
 ## Cluster Investigation
 
-MCP tools (via Context Forge) and `kubectl` are both available for cluster reads. Use `ToolSearch` with `+kubernetes` or `+signoz` to load MCP tools. Tool names below are shortened — actual IDs have the `mcp__claude_ai_homelab__` prefix (e.g., `mcp__claude_ai_homelab__kubernetes-mcp-resources-list`). If a session only has the monolith MCP server registered (no kubernetes/signoz tools), fall back to `kubectl` directly rather than burning turns on `ToolSearch`. There is no ArgoCD MCP (Context Forge registers only the `GitHub` and `monolith` gateways as of 2026-06-12); read ArgoCD via `kubectl` against the `argoproj.io` CRs.
+**`kubectl` is the primary tool for cluster reads.** The kubernetes, ArgoCD, and SigNoz MCP servers are no longer registered — as of 2026-06-12 Context Forge serves only the `GitHub` and `monolith` gateways (confirmed by querying its Postgres). The MCP servers that ARE available:
+
+- **monolith** (`monolith-*` / `monolith-monolith-agent-*` tools) via Context Forge / the `claude_ai_homelab` remote server, prefixed `mcp__claude_ai_homelab__`.
+- **buildbuddy** (`mcp__buildbuddy__*`) via the project-scoped `.mcp.json` (needs `${BUILDBUDDY_API_KEY}`).
+
+For everything else, use `kubectl`. SigNoz observability (historical logs/traces/metrics) lives in the SigNoz UI at `private.jomcgi.dev/app/signoz`; a local-only `signoz-mcp-wrapper.sh` (kubectl port-forward + stdio MCP) can expose `signoz-*` tools if you run it manually, but nothing registers it by default. Don't burn turns on `ToolSearch +kubernetes`/`+argocd`/`+signoz` — those tools aren't there.
 
 **BuildBuddy MCP setup:** The repo includes a project-scoped `.mcp.json` that auto-registers the BuildBuddy MCP server (`https://jomcgi.buildbuddy.io/mcp`) using `${BUILDBUDDY_API_KEY}` from your shell env. Set that env var (e.g. in `~/.zshrc`) before starting a Claude Code session in this repo — without it, the `mcp__buildbuddy__*` tools won't load and there's no fallback path for inspecting CI runs.
 
 | Need                 | Tool                                                                                                                                                                                                        |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **K8s resources**    | `kubernetes-mcp-resources-list`, `kubernetes-mcp-resources-get`, `kubernetes-mcp-pods-list`                                                                                                                 |
-| **K8s logs**         | `kubernetes-mcp-pods-log` (recent), SigNoz tools (historical)                                                                                                                                               |
-| **K8s metrics**      | `kubernetes-mcp-pods-top`, `kubernetes-mcp-nodes-top`                                                                                                                                                       |
+| **K8s resources**    | `kubectl get`/`kubectl describe -n <ns>`                                                                                                                                                                    |
+| **K8s logs**         | `kubectl logs -n <ns>` (recent); SigNoz UI for historical                                                                                                                                                  |
+| **K8s metrics**      | `kubectl top pods -n <ns>`, `kubectl top nodes`                                                                                                                                                             |
 | **ArgoCD apps**      | `kubectl get applications -n argocd` (+ `-o yaml` for sync/health). No ArgoCD MCP exists; the UI is at `private.jomcgi.dev/app/argocd`.                                                                       |
 | **BuildBuddy CI**    | `mcp__buildbuddy__get_invocation` (selectors: `invocationId` or `commitSha`) → `get_target` → `get_action` → `get_log`. `get_file_range` reads byte ranges from CAS blob URIs in build events (16 MiB max). |
-| **Logs**             | `signoz-search-logs`, `signoz-search-logs-by-service`, `signoz-get-error-logs`                                                                                                                              |
-| **Traces**           | `signoz-search-traces-by-service`, `signoz-aggregate-traces`, `signoz-get-trace-details`                                                                                                                    |
-| **Metrics**          | `signoz-search-metric-by-text`, `signoz-list-metric-keys`                                                                                                                                                   |
-| **Services**         | `signoz-list-services`, `signoz-get-service-top-operations`                                                                                                                                                 |
-| **Dashboards**       | `signoz-list-dashboards`, `signoz-get-dashboard`                                                                                                                                                            |
-| **Alerts**           | `signoz-list-alerts`, `signoz-get-alert`, `signoz-get-alert-history`                                                                                                                                        |
+| **Observability** (logs/traces/metrics/dashboards/alerts) | SigNoz UI at `private.jomcgi.dev/app/signoz`. No MCP by default; running `projects/platform/signoz-addons/signoz-mcp-wrapper.sh` locally exposes `signoz-*` tools (search-logs, search-traces-by-service, list-dashboards, list-alerts, etc.). |
 | **Agent jobs**       | `monolith-monolith-agent-list-routine-jobs`, `monolith-monolith-agent-trigger-routine-job`, `monolith-monolith-agent-trigger-job`                                                                           |
 
 ## Kubernetes Operations (kubectl)
