@@ -87,8 +87,8 @@ register_execution_platforms("//bazel/ocaml/platforms:linux_aarch64")
 ocaml_opam_ext = use_extension("//bazel/ocaml/opam:extension.bzl", "ocaml_opam")
 use_repo(
     ocaml_opam_ext,
-    "ocaml_ambient_context",
     "ocaml_ANSITerminal",
+    "ocaml_ambient_context",
     "ocaml_angstrom",
     "ocaml_astring",
     "ocaml_atd",
