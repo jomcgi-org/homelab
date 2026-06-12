@@ -124,6 +124,10 @@
       {
         "text": "005 - Per-PR Preview Environments",
         "link": "/docs/decisions/platform/005-per-pr-preview-environments"
+      },
+      {
+        "text": "006 - Decommission Obsidian via a Postgres Interim",
+        "link": "/docs/decisions/platform/006-obsidian-decommission-postgres-interim"
       }
     ]
   },
