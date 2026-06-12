@@ -20,7 +20,7 @@ export const tagline =
   "Senior Platform Engineer @ Semgrep · AWS / EKS · Kubernetes · eBPF";
 
 export const summary =
-  "I run Kubernetes hands-on: from ingress to eBPF, controllers and all the CRDs in between. Caremad about developer & user experience.";
+  "Mostly I build infrastructure and abstractions so that other engineers don't have to think about it - Kubernetes, eBPF, and everything in between. Caremad about developer and user experience.";
 
 export const jobs = [
   // Current role stays deliberately scope-level: what the job is, not a
