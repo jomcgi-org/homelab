@@ -46,3 +46,28 @@ ocaml_library(
     opam_deps = ["compiler-libs.common"],
     visibility = ["//visibility:public"],
 )
+
+# eq and ord: the same shape as show (wave A4; commons derives eq/ord).
+ocaml_library(
+    name = "ppx_deriving_eq",
+    srcs = glob(["src_plugins/eq/*.ml", "src_plugins/eq/*.mli"], allow_empty = True),
+    preprocess = ":metaquot_ppx",
+    deps = [
+        ":ppx_deriving_api",
+        "@ocaml_ppxlib//:ppxlib",
+    ],
+    opam_deps = ["compiler-libs.common"],
+    visibility = ["//visibility:public"],
+)
+
+ocaml_library(
+    name = "ppx_deriving_ord",
+    srcs = glob(["src_plugins/ord/*.ml", "src_plugins/ord/*.mli"], allow_empty = True),
+    preprocess = ":metaquot_ppx",
+    deps = [
+        ":ppx_deriving_api",
+        "@ocaml_ppxlib//:ppxlib",
+    ],
+    opam_deps = ["compiler-libs.common"],
+    visibility = ["//visibility:public"],
+)
