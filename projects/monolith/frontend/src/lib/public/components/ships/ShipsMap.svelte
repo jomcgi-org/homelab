@@ -258,17 +258,11 @@
       const ctx = canvas.getContext("2d");
       ctx.scale(px / 20, px / 20); // path authored in a 20x20 viewBox
       const path = new Path2D("M10 1 L17 18 L10 14 L3 18 Z");
-      // The basemap canvas wears a light `grayscale(0.12)` CSS filter (see
-      // <style>). The vessel symbols render inside that same canvas, so they get
-      // desaturated a touch too. A small saturation bump lands the fill back at
-      // the legend's vividness after the canvas filter (the old 0.4 grayscale
-      // needed a much larger 1.75 boost; matching that here would over-saturate
-      // now that the tint is lighter). Applied to the fill only; the ink outline
-      // is reset to no filter so it stays dark.
-      ctx.filter = "saturate(1.15)";
+      // The basemap renders at native saturation (no canvas filter), so the
+      // fills are drawn at their true legend colors with no saturation
+      // compensation.
       ctx.fillStyle = fill;
       ctx.fill(path);
-      ctx.filter = "none";
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
       ctx.strokeStyle = p.ink;
@@ -684,15 +678,11 @@
     inset: 0;
   }
 
-  /* Nudge the basemap toward the cream/ink palette with only a light touch of
-     grayscale: enough to keep it from fighting the marker + heat colors, but
-     not the heavy desaturation that left the vessels view looking dull next to
-     the vibrant heatmap. Both modes share this now (heat used to ease the tint
-     off on its own; vessels matches it). */
-  .map :global(.maplibregl-canvas) {
-    filter: grayscale(0.12) brightness(1.02) contrast(1.02);
-    transition: filter 160ms ease;
-  }
+  /* No CSS filter on the basemap canvas: it renders at the OpenFreeMap style's
+     native colors. Earlier revisions desaturated it toward the cream palette,
+     but that read as dull next to the vibrant heatmap, and even a light tint
+     wasn't worth the muting, so the markers and heat ramp now sit on the full
+     basemap. */
 
   /* The bottom-right stack (zoom + the collapsed attribution "i") sits at the
      map's bottom edge, where on phones the home-indicator safe area was
