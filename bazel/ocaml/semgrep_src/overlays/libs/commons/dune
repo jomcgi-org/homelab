@@ -1,0 +1,61 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; Differences from upstream, each measured against the pinned sources
+; (ocamldep -modules over libs/commons; see semgrep_src/README.md):
+;   * (inline_tests) and ppx_inline_test dropped; the let%test blocks live
+;     only in Ord.ml, whose overlay strips them (decided in the plan).
+;   * lwt_ppx dropped: no source uses let%lwt (commons does not reference
+;     Lwt at all).
+;   * pyro-caml-ppx dropped: a semgrep git pin (Pyroscope profiling ppx),
+;     out of the phase's scope.
+;   * libraries pruned to the set some module actually references:
+;     collections str unix fpath hex yojson fmt fmt.tty ANSITerminal logs
+;     logs.fmt testo timedesc cmdliner bos re pcre pcre2 digestif.ocaml
+;     sexplib semver uri uuidm memtrace parmap eio eio.unix. Dropped:
+;     atdgen-runtime ocolor logs.threaded alcotest alcotest-lwt testo-lwt
+;     lwt memtrace? no -- memtrace stays -- telemetry parallelism eio_main
+;     ambient-context-lwt (unreferenced).
+
+(library
+ (public_name commons)
+ (wrapped false)
+ (libraries
+   collections
+   str
+   unix
+   fpath
+   hex
+   yojson
+   fmt
+   fmt.tty
+   ANSITerminal
+   logs
+   logs.fmt
+   testo
+   timedesc
+   cmdliner
+   bos
+   re
+   pcre
+   pcre2
+   digestif.ocaml
+   sexplib
+   semver
+   uri
+   uuidm
+   memtrace
+   parmap
+   eio
+   eio.unix
+ )
+ (preprocess
+   (pps
+     ppx_deriving.show
+     ppx_deriving.eq
+     ppx_deriving.ord
+     ppx_deriving_yojson
+     ppx_hash
+     ppx_sexp_conv
+   )
+ )
+)

@@ -24,8 +24,27 @@ SEMGREP_GIT_URL = "https://github.com/semgrep/semgrep.git"
 # Tip of `develop` on 2026-06-12.
 SEMGREP_COMMIT = "872766d4b93fc9d4b0e414c0afd9ed4e99171c6c"
 
-SEMGREP_SRC_DIRS = ["libs/collections"]
+SEMGREP_SRC_DIRS = [
+    "libs/collections",
+    "libs/commons",
+    "libs/process_limits",
+    "libs/profiling",
+    "libs/profiling/ppx",
+    "libs/glob",
+]
 
-SEMGREP_LIBS = {"collections": ":collections"}
+SEMGREP_LIBS = {
+    "collections": ":collections",
+    "commons": ":commons",
+    "process_limits": ":process_limits",
+    "profiling": ":profiling",
+    "profiling.ppx": ":ppx_profiling",
+    "glob": ":glob",
+}
 
-OVERLAYS = ["libs/collections/dune"]
+OVERLAYS = [
+    "libs/collections/dune",
+    "libs/commons/dune",
+    "libs/commons/Ord.ml",
+    "libs/process_limits/dune",
+]

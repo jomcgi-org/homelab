@@ -935,6 +935,21 @@
       "override": true,
       "opam": false,
       "libs": {}
+    },
+    {
+      "name": "tsort",
+      "version": "2.2.0",
+      "repo": "ocaml_tsort",
+      "url": "https://github.com/dmbaturin/ocaml-tsort/archive/refs/tags/2.2.0.tar.gz",
+      "sha256": "c135d0cdee8821038d8206771e1a89ffdd4c6693124dd380e5dab5e2d5071167",
+      "strip_prefix": "ocaml-tsort-2.2.0",
+      "type": "tar.gz",
+      "src_dirs": [
+        "src/lib"
+      ],
+      "libs": {
+        "tsort": "tsort"
+      }
     }
   ]
 }

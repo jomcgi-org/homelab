@@ -1,0 +1,13 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+; Upstream declares telemetry and parallelism, which no source in this
+; library references (ocamldep confirms); both would pull the opentelemetry
+; and eio_main closures. Pruned to what the sources use.
+
+(library
+ (public_name process_limits)
+ (wrapped false)
+ (libraries
+   unix
+   commons
+ )
+)

@@ -9,9 +9,14 @@ model rejects loudly at fetch time.
 
 ## Translated today
 
-| dir                | target         | notes                                          |
-| ------------------ | -------------- | ---------------------------------------------- |
-| `libs/collections` | `:collections` | dune overlay drops inert `(inline_tests)`/pps  |
+| dir                  | target            | notes                                                       |
+| -------------------- | ----------------- | ----------------------------------------------------------- |
+| `libs/collections`   | `:collections`    | dune overlay drops inert `(inline_tests)`/pps               |
+| `libs/commons`       | `:commons`        | dune overlay = measured dep set; `Ord.ml` overlay strips the let%test blocks |
+| `libs/process_limits`| `:process_limits` | dune overlay drops unreferenced telemetry/parallelism       |
+| `libs/profiling`     | `:profiling`      | translated as-is                                            |
+| `libs/profiling/ppx` | `:ppx_profiling`  | the first internal ppx rewriter (kind ppx_deriver)          |
+| `libs/glob`          | `:glob`           | translated as-is (menhir Parser + ocamllex Lexer)           |
 
 ## libs/commons rejection dispatch
 

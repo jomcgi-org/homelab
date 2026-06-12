@@ -119,5 +119,17 @@ build_test(
         "@ocaml_eio//:eio",
         "@ocaml_eio//:eio_utils",
         "@ocaml_eio//:eio_unix",
+        # Phase 8 wave D: libs/commons and libs/glob from the pinned tree
+        # (commons' dune overlaid to its measured dependency set; glob brings
+        # the internal profiling ppx and a menhir parser).
+        "@semgrep_src//:commons",
+        "@semgrep_src//:process_limits",
+        "@semgrep_src//:profiling",
+        "@semgrep_src//:ppx_profiling",
+        "@semgrep_src//:glob",
+        # Phase 8 wave D: the tree-sitter runtime binding chain (the bash
+        # grammar itself is exercised by examples/treesitter_bash, no-arm64).
+        "@ocaml_tsort//:tsort",
+        "@ocaml_tree_sitter_core//:tree_sitter_gen",
     ],
 )
