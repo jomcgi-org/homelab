@@ -1,10 +1,16 @@
 {{- /*
 Path-based private ingress: https://private.jomcgi.dev/app/longhorn
 
-Experimental: the Longhorn UI does not natively support a context path
-(longhorn/longhorn#1660), so Envoy strips the /app/longhorn prefix and the
-UI is served at /. If asset or websocket paths break, delete this route;
-the static tunnel route at longhorn.jomcgi.dev stays authoritative.
+Envoy strips the /app/longhorn prefix; the Longhorn UI emits relative
+asset and API URLs (context-path support landed in v1.1.0 via
+longhorn/longhorn#1660), so they resolve under the prefix as long as the
+browser is at a trailing-slash URL. The redirect route below handles the
+bare /app/longhorn case, which would otherwise resolve relative URLs
+against /app/ and fall through to the monolith catch-all.
+
+If anything still breaks (community reports on subpath setups are mixed),
+delete this file; the static tunnel route at longhorn.jomcgi.dev stays
+authoritative until this path is proven.
 */}}
 {{- if .Values.cfIngress.enabled }}
 {{- $routeParams := dict
@@ -18,6 +24,33 @@ the static tunnel route at longhorn.jomcgi.dev stays authoritative.
   "gateway" .Values.cfIngress.gateway
 }}
 {{- include "cf-ingress.httproute" $routeParams }}
+---
+# Redirect the bare prefix to the trailing-slash form so the UI's relative
+# URLs resolve under /app/longhorn/ instead of /app/.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: longhorn-private-slash-redirect
+  labels:
+    ingress-tier: {{ .Values.cfIngress.tier }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.gateway.name }}
+      namespace: {{ .Values.cfIngress.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: {{ .Values.cfIngress.pathPrefix }}
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: {{ .Values.cfIngress.pathPrefix }}/
+            statusCode: 301
 ---
 {{- include "cf-ingress.security-policy" (dict "name" "longhorn-private") }}
 {{- end }}
