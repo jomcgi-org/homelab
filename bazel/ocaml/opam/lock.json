@@ -1,983 +1,1120 @@
 {
-  "comment": [
-    "Pinned opam universe for bazel/ocaml. Maintained by update_lock.py; the",
-    "url/sha256 pins mirror each package's opam-repository metadata (the same",
-    "artifact `opam install` would fetch). Fields:",
-    "  repo:      the @<repo> Bazel repository name",
-    "  src_dirs:  dune directories dune2bazel translates (ignored if override)",
-    "  override:  hand-written BUILD in opam/overrides/<name>/BUILD.tpl, used",
-    "             when the package's dune tree needs codegen or compiler",
-    "             introspection the translator does not model",
-    "  libs:      findlib name -> target name within the repo; composes the",
-    "             lib_map dune2bazel uses to resolve (libraries ...) entries",
-    "  type:      archive type for download_and_extract (default tar.bz2)"
-  ],
-  "packages": [
-    {
-      "name": "re",
-      "version": "1.13.2",
-      "repo": "ocaml_re",
-      "url": "https://github.com/ocaml/ocaml-re/archive/refs/tags/1.13.2.tar.gz",
-      "sha256": "2e37b01b9bda0e39f0fd3913c0ec81237ed2d04c6bbe23f48b102de83ba47454",
-      "strip_prefix": "ocaml-re-1.13.2",
-      "type": "tar.gz",
-      "src_dirs": ["lib"],
-      "libs": {
-        "re": "re"
-      }
-    },
-    {
-      "name": "sexplib0",
-      "version": "v0.17.0",
-      "repo": "ocaml_sexplib0",
-      "url": "https://github.com/janestreet/sexplib0/archive/refs/tags/v0.17.0.tar.gz",
-      "sha256": "5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b",
-      "strip_prefix": "sexplib0-0.17.0",
-      "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": {
-        "sexplib0": "sexplib0"
-      }
-    },
-    {
-      "name": "ppx_derivers",
-      "version": "1.2.1",
-      "repo": "ocaml_ppx_derivers",
-      "url": "https://github.com/ocaml-ppx/ppx_derivers/archive/1.2.1.tar.gz",
-      "sha256": "b6595ee187dea792b31fc54a0e1524ab1e48bc6068d3066c45215a138cc73b95",
-      "strip_prefix": "ppx_derivers-1.2.1",
-      "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": {
-        "ppx_derivers": "ppx_derivers"
-      }
-    },
-    {
-      "name": "stdlib-shims",
-      "version": "0.3.0",
-      "repo": "ocaml_stdlib_shims",
-      "url": "https://github.com/ocaml/stdlib-shims/releases/download/0.3.0/stdlib-shims-0.3.0.tbz",
-      "sha256": "babf72d3917b86f707885f0c5528e36c63fccb698f4b46cf2bab5c7ccdd6d84a",
-      "strip_prefix": "stdlib-shims-0.3.0",
-      "override": true,
-      "libs": {
-        "stdlib-shims": "stdlib_shims"
-      }
-    },
-    {
-      "name": "ocaml-compiler-libs",
-      "version": "v0.17.0",
-      "repo": "ocaml_compiler_libs_pkg",
-      "url": "https://github.com/janestreet/ocaml-compiler-libs/archive/refs/tags/v0.17.0.tar.gz",
-      "sha256": "9b9644d7351db699e57ddba7c767bb4153e6e988ccf45ead2fb238a3bd75cdc7",
-      "strip_prefix": "ocaml-compiler-libs-0.17.0",
-      "type": "tar.gz",
-      "override": true,
-      "libs": {
-        "ocaml-compiler-libs.common": "ocaml_common",
-        "ocaml-compiler-libs.shadow": "ocaml_shadow"
-      }
-    },
-    {
-      "name": "cppo",
-      "version": "1.8.0",
-      "repo": "ocaml_cppo",
-      "url": "https://github.com/ocaml-community/cppo/archive/v1.8.0.tar.gz",
-      "sha256": "6e62a8ee0217c9cc38d5860110eb18eb8d89c05c420353d298e1431fe8bac00f",
-      "strip_prefix": "cppo-1.8.0",
-      "type": "tar.gz",
-      "override": true,
-      "libs": {}
-    },
-    {
-      "name": "ppxlib",
-      "version": "0.36.0",
-      "repo": "ocaml_ppxlib",
-      "url": "https://github.com/ocaml-ppx/ppxlib/releases/download/0.36.0/ppxlib-0.36.0.tbz",
-      "sha256": "5aba1bce14c53108614130110c843d004bf93bd2cf3a0778fd7086b85390a434",
-      "strip_prefix": "ppxlib-0.36.0",
-      "override": true,
-      "libs": {
-        "ppxlib": "ppxlib",
-        "ppxlib.ast": "ppxlib_ast",
-        "ppxlib.astlib": "astlib",
-        "ppxlib.stdppx": "stdppx",
-        "ppxlib.traverse_builtins": "ppxlib_traverse_builtins",
-        "ppxlib.print_diff": "ppxlib_print_diff",
-        "ppxlib.metaquot": "ppxlib_metaquot",
-        "ppxlib.metaquot_lifters": "ppxlib_metaquot_lifters",
-        "ppxlib.traverse": "ppxlib_traverse"
-      }
-    },
-    {
-      "name": "easy-format",
-      "version": "1.3.4",
-      "repo": "ocaml_easy_format",
-      "url": "https://github.com/ocaml-community/easy-format/releases/download/1.3.4/easy-format-1.3.4.tbz",
-      "sha256": "1dbf051e9f68574dde6e2e254a66b9c524ca425e80b36e99af96ed964ab610c3",
-      "strip_prefix": "easy-format-1.3.4",
-      "src_dirs": ["src"],
-      "libs": {
-        "easy-format": "easy_format"
-      }
-    },
-    {
-      "name": "camlp-streams",
-      "version": "5.0.1",
-      "repo": "ocaml_camlp_streams",
-      "url": "https://github.com/ocaml/camlp-streams/archive/v5.0.1.tar.gz",
-      "sha256": "ad71f62406e9bb4e7fb5d4593ede2af6c68f8b0d96f25574446e142c3eb0d9a4",
-      "strip_prefix": "camlp-streams-5.0.1",
-      "type": "tar.gz",
-      "override": true,
-      "libs": {
-        "camlp-streams": "camlp_streams"
-      }
-    },
-    {
-      "name": "biniou",
-      "version": "1.2.2",
-      "repo": "ocaml_biniou",
-      "url": "https://github.com/mjambon/biniou/releases/download/1.2.2/biniou-1.2.2.tbz",
-      "sha256": "8bf3ff17cd0ecb2d6b6d1d94cb08ef089d44caef96e9bae6be6839d428fa318f",
-      "strip_prefix": "biniou-1.2.2",
-      "src_dirs": ["src"],
-      "libs": {
-        "biniou": "biniou"
-      }
-    },
-    {
-      "name": "yojson",
-      "version": "2.2.2",
-      "repo": "ocaml_yojson",
-      "url": "https://github.com/ocaml-community/yojson/releases/download/2.2.2/yojson-2.2.2.tbz",
-      "sha256": "9abfad8c9a79d4723ad2f6448e669c1e68dbfc87cc54a1b7c064b0c90912c595",
-      "strip_prefix": "yojson-2.2.2",
-      "override": true,
-      "libs": {
-        "yojson": "yojson"
-      }
-    },
-    {
-      "name": "atd",
-      "version": "2.16.0",
-      "repo": "ocaml_atd",
-      "url": "https://github.com/ahrefs/atd/releases/download/2.16.0/atd-2.16.0.tbz",
-      "sha256": "59e6b445620241cbd6901a842b336683afb0eb125b3adbfee28bd94cd54e0def",
-      "strip_prefix": "atd-2.16.0",
-      "override": true,
-      "libs": {
-        "atd": "atd",
-        "atdgen-runtime": "atdgen_runtime"
-      }
-    },
-    {
-      "name": "pcre2-c",
-      "version": "10.44",
-      "repo": "ocaml_pcre2_c",
-      "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz",
-      "sha256": "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b",
-      "strip_prefix": "pcre2-10.44",
-      "type": "tar.gz",
-      "override": true,
-      "opam": false,
-      "libs": {}
-    },
-    {
-      "name": "pcre2",
-      "version": "8.0.4",
-      "repo": "ocaml_pcre2",
-      "url": "https://github.com/camlp5/pcre2-ocaml/archive/refs/tags/8.0.4.tar.gz",
-      "sha256": "bbe76e8ecd9ccccfa631dbd21d6a801d23bd6fa982aae6839bb3fb7829a8cea1",
-      "strip_prefix": "pcre2-ocaml-8.0.4",
-      "type": "tar.gz",
-      "override": true,
-      "libs": {
-        "pcre2": "pcre2"
-      }
-    },
-    {
-      "name": "tree-sitter",
-      "version": "0.22.6",
-      "repo": "ocaml_tree_sitter_c",
-      "url": "https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.22.6.tar.gz",
-      "sha256": "e2b687f74358ab6404730b7fb1a1ced7ddb3780202d37595ecd7b20a8f41861f",
-      "strip_prefix": "tree-sitter-0.22.6",
-      "type": "tar.gz",
-      "override": true,
-      "opam": false,
-      "libs": {}
-    },
-    {
-      "name": "tree-sitter-json",
-      "version": "0.21.0",
-      "repo": "ocaml_tree_sitter_json",
-      "url": "https://github.com/tree-sitter/tree-sitter-json/archive/refs/tags/v0.21.0.tar.gz",
-      "sha256": "83d89d297c475dceb1865a9eacd8da1008e1aecffb6137161361107665cbdf79",
-      "strip_prefix": "tree-sitter-json-0.21.0",
-      "type": "tar.gz",
-      "override": true,
-      "opam": false,
-      "libs": {}
-    },
-    {
-      "name": "menhir",
-      "version": "20240715",
-      "repo": "ocaml_menhir",
-      "url": "https://gitlab.inria.fr/fpottier/menhir/-/archive/20240715/archive.tar.gz",
-      "sha256": "ef488644aaaacbfaada7ebf08d499d64ce31e15494297c3dc8f58725fc9ac030",
-      "strip_prefix": "menhir-20240715-d71051f500c4f34c9faf93192a593cdf4903b0c0",
-      "type": "tar.gz",
-      "override": true,
-      "libs": {
-        "menhirLib": "menhirLib",
-        "menhirSdk": "menhirSdk",
-        "menhirCST": "menhirCST"
-      }
-    },
-    {
-      "name": "ppx_deriving",
-      "version": "6.1.0",
-      "repo": "ocaml_ppx_deriving",
-      "url": "https://github.com/ocaml-ppx/ppx_deriving/releases/download/v6.1.0/ppx_deriving-6.1.0.tbz",
-      "sha256": "747a5688ea630f77a50b0e90254ac6f8a66bdd4974b2e87376341427807d4b56",
-      "strip_prefix": "ppx_deriving-6.1.0",
-      "override": true,
-      "libs": {
-        "ppx_deriving.api": "ppx_deriving_api",
-        "ppx_deriving.runtime": "ppx_deriving_runtime",
-        "ppx_deriving.show": "ppx_deriving_show",
-        "ppx_deriving.eq": "ppx_deriving_eq",
-        "ppx_deriving.ord": "ppx_deriving_ord"
-      },
-      "ppx_runtime": {
-        "ppx_deriving.show": ["ppx_deriving.runtime"],
-        "ppx_deriving.eq": ["ppx_deriving.runtime"],
-        "ppx_deriving.ord": ["ppx_deriving.runtime"]
-      }
-    },
-    {
-      "name": "cmdliner",
-      "version": "2.1.1",
-      "repo": "ocaml_cmdliner",
-      "url": "https://erratique.ch/software/cmdliner/releases/cmdliner-2.1.1.tbz",
-      "sha256": "05b938d1def4f54c478178f1982822834510431ed98f2ac67cb4d90aa120d6b6",
-      "strip_prefix": "cmdliner-2.1.1",
-      "type": "tar.bz2",
-      "libs": {
-        "cmdliner": "cmdliner"
-      },
-      "override": true
-    },
-    {
-      "name": "logs",
-      "version": "0.10.0",
-      "repo": "ocaml_logs",
-      "url": "https://erratique.ch/software/logs/releases/logs-0.10.0.tbz",
-      "sha256": "760ec291c128d75b74826091337764f925b5ca414b02e2d336a0b37bf30df4ea",
-      "strip_prefix": "logs-0.10.0",
-      "type": "tar.bz2",
-      "libs": {
-        "logs": "logs",
-        "logs.fmt": "logs_fmt",
-        "logs.cli": "logs_cli"
-      },
-      "override": true
-    },
-    {
-      "name": "ocplib-endian",
-      "version": "1.2",
-      "repo": "ocaml_ocplib_endian",
-      "url": "https://github.com/OCamlPro/ocplib-endian/archive/refs/tags/1.2.tar.gz",
-      "sha256": "97ae74e8aeead46a0475df14af637ce78e2372c07258619ad8967506f2d4b320",
-      "strip_prefix": "ocplib-endian-1.2",
-      "type": "tar.gz",
-      "libs": {
-        "ocplib-endian": "ocplib_endian",
-        "ocplib-endian.bigstring": "ocplib_endian_bigstring"
-      },
-      "override": true
-    },
-    {
-      "name": "lwt",
-      "version": "5.9.2",
-      "repo": "ocaml_lwt",
-      "url": "https://github.com/ocsigen/lwt/archive/refs/tags/5.9.2.tar.gz",
-      "sha256": "f4e59d62d8cb1eb119591c7c395fa6cc1c926711d87f93fd26d0004748880ce7",
-      "strip_prefix": "lwt-5.9.2",
-      "type": "tar.gz",
-      "src_dirs": ["src/core"],
-      "libs": {
-        "lwt": "lwt",
-        "lwt.unix": "lwt_unix"
-      },
-      "override_extra": true
-    },
-    {
-      "name": "csexp",
-      "version": "1.5.2",
-      "repo": "ocaml_csexp",
-      "url": "https://github.com/ocaml-dune/csexp/releases/download/1.5.2/csexp-1.5.2.tbz",
-      "sha256": "1a14dd04bb4379a41990248550628c77913a9c07f3c35c1370b6960e697787ff",
-      "strip_prefix": "csexp-1.5.2",
-      "type": "tar.bz2",
-      "src_dirs": ["src"],
-      "libs": {
-        "csexp": "csexp"
-      }
-    },
-    {
-      "name": "dune-configurator",
-      "version": "3.19.1",
-      "repo": "ocaml_dune_configurator",
-      "url": "https://github.com/ocaml/dune/releases/download/3.19.1/dune-3.19.1.tbz",
-      "sha256": "a10386f980cda9417d1465466bed50dd2aef9c93b9d06a0f7feeedb0a1541158",
-      "strip_prefix": "dune-3.19.1",
-      "type": "tar.bz2",
-      "libs": {
-        "dune-configurator": "configurator"
-      },
-      "override": true
-    },
-    {
-      "name": "stringext",
-      "version": "1.6.0",
-      "repo": "ocaml_stringext",
-      "url": "https://github.com/rgrinberg/stringext/releases/download/1.6.0/stringext-1.6.0.tbz",
-      "sha256": "db41f5d52e9eab17615f110b899dfeb27dd7e7f89cd35ae43827c5119db206ea",
-      "strip_prefix": "stringext-1.6.0",
-      "type": "tar.bz2",
-      "src_dirs": ["lib"],
-      "libs": {
-        "stringext": "stringext"
-      }
-    },
-    {
-      "name": "bigstringaf",
-      "version": "0.10.0",
-      "repo": "ocaml_bigstringaf",
-      "url": "https://github.com/inhabitedtype/bigstringaf/archive/0.10.0.tar.gz",
-      "sha256": "ed92f5b05fbc11b9defcec734d59b1068f3717a9ae4f9705c16c7f7ac3729f28",
-      "strip_prefix": "bigstringaf-0.10.0",
-      "type": "tar.gz",
-      "libs": {
-        "bigstringaf": "bigstringaf"
-      },
-      "override": true
-    },
-    {
-      "name": "angstrom",
-      "version": "0.16.1",
-      "repo": "ocaml_angstrom",
-      "url": "https://github.com/inhabitedtype/angstrom/archive/0.16.1.tar.gz",
-      "sha256": "143536fb4d049574c539b9990840615e078ed3dd94e1d24888293f68349a100b",
-      "strip_prefix": "angstrom-0.16.1",
-      "type": "tar.gz",
-      "src_dirs": ["lib"],
-      "libs": {
-        "angstrom": "angstrom"
-      }
-    },
-    {
-      "name": "uri",
-      "version": "4.4.0",
-      "repo": "ocaml_uri",
-      "url": "https://github.com/mirage/ocaml-uri/releases/download/v4.4.0/uri-4.4.0.tbz",
-      "sha256": "cdabaf6ef5cd2161e59cc7b74c6e4a68ecb80a9f4e96002e338e1b6bf17adec4",
-      "strip_prefix": "uri-4.4.0",
-      "type": "tar.bz2",
-      "src_dirs": ["lib"],
-      "libs": {
-        "uri": "uri"
-      }
-    },
-    {
-      "name": "ocamlgraph",
-      "version": "2.2.0",
-      "repo": "ocaml_ocamlgraph",
-      "url": "https://github.com/backtracking/ocamlgraph/releases/download/2.2.0/ocamlgraph-2.2.0.tbz",
-      "sha256": "b0956210863cc24f480203ba3c2ef06dfae5579536a05744364e7de58822b230",
-      "strip_prefix": "ocamlgraph-2.2.0",
-      "type": "tar.bz2",
-      "src_dirs": ["src"],
-      "libs": {
-        "ocamlgraph": "graph"
-      }
-    },
-    {
-      "name": "parmap",
-      "version": "1.2.5",
-      "repo": "ocaml_parmap",
-      "url": "https://github.com/rdicosmo/parmap/archive/refs/tags/1.2.5.tar.gz",
-      "sha256": "6709356e724436fba0b7a10f96f65a441c2b763832954707d5e30017e78fd285",
-      "strip_prefix": "parmap-1.2.5",
-      "type": "tar.gz",
-      "libs": {
-        "parmap": "parmap"
-      },
-      "override": true
-    },
-    {
-      "name": "ocaml_intrinsics_kernel",
-      "version": "v0.17.1",
-      "repo": "ocaml_ocaml_intrinsics_kernel",
-      "url": "https://github.com/janestreet/ocaml_intrinsics_kernel/archive/refs/tags/v0.17.1.tar.gz",
-      "sha256": "c988b7769a59749631c3c98ba5edd1d2fe91f5dc380b5e0593c073c92f4bee01",
-      "strip_prefix": "ocaml_intrinsics_kernel-0.17.1",
-      "type": "tar.gz",
-      "libs": {
-        "ocaml_intrinsics_kernel": "ocaml_intrinsics_kernel"
-      },
-      "override": true
-    },
-    {
-      "name": "base",
-      "version": "v0.17.3",
-      "repo": "ocaml_base",
-      "url": "https://github.com/janestreet/base/archive/refs/tags/v0.17.3.tar.gz",
-      "sha256": "3f3f64789ab25bb5cb7f5f907dd651dec9cc9440981822fe75df6b94344b7208",
-      "strip_prefix": "base-0.17.3",
-      "type": "tar.gz",
-      "libs": {
-        "base": "base",
-        "base.base_internalhash_types": "base_internalhash_types",
-        "base.shadow_stdlib": "shadow_stdlib"
-      },
-      "override": true
-    },
-    {
-      "name": "ppxlib_jane",
-      "version": "v0.17.4",
-      "repo": "ocaml_ppxlib_jane",
-      "url": "https://github.com/janestreet/ppxlib_jane/archive/refs/tags/v0.17.4.tar.gz",
-      "sha256": "10c4d1a162a8f51eecf35d68118a96aa5f375350ff3abb357b41968faa7b4ef3",
-      "strip_prefix": "ppxlib_jane-0.17.4",
-      "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": {
-        "ppxlib_jane": "ppxlib_jane"
-      }
-    },
-    {
-      "name": "ppx_compare",
-      "version": "v0.17.0",
-      "repo": "ocaml_ppx_compare",
-      "url": "https://github.com/janestreet/ppx_compare/archive/refs/tags/v0.17.0.tar.gz",
-      "sha256": "f0b23eb78082ef4dc71a66939bbc63c6b0cc2cf6a4744a906b7a2c016cbe3098",
-      "strip_prefix": "ppx_compare-0.17.0",
-      "type": "tar.gz",
-      "src_dirs": ["src", "expander", "runtime-lib"],
-      "libs": {
-        "ppx_compare": "ppx_compare",
-        "ppx_compare.expander": "ppx_compare_expander",
-        "ppx_compare_expander": "ppx_compare_expander",
-        "ppx_compare.runtime-lib": "ppx_compare_lib",
-        "ppx_compare_lib": "ppx_compare_lib"
-      },
-      "ppx_runtime": {
-        "ppx_compare": ["ppx_compare.runtime-lib"]
-      }
-    },
-    {
-      "name": "ppx_sexp_conv",
-      "version": "v0.17.1",
-      "repo": "ocaml_ppx_sexp_conv",
-      "url": "https://github.com/janestreet/ppx_sexp_conv/archive/refs/tags/v0.17.1.tar.gz",
-      "sha256": "b850556d05203aa6d97fcbe4be75abc9679b161be059e474c0d934bc0e12fe86",
-      "strip_prefix": "ppx_sexp_conv-0.17.1",
-      "type": "tar.gz",
-      "src_dirs": ["src", "expander", "runtime-lib"],
-      "libs": {
-        "ppx_sexp_conv": "ppx_sexp_conv",
-        "ppx_sexp_conv.expander": "ppx_sexp_conv_expander",
-        "ppx_sexp_conv_expander": "ppx_sexp_conv_expander",
-        "ppx_sexp_conv.runtime-lib": "ppx_sexp_conv_lib",
-        "ppx_sexp_conv_lib": "ppx_sexp_conv_lib"
-      },
-      "ppx_runtime": {
-        "ppx_sexp_conv": ["ppx_sexp_conv.runtime-lib", "sexplib0"]
-      }
-    },
-    {
-      "name": "ppx_hash",
-      "version": "v0.17.0",
-      "repo": "ocaml_ppx_hash",
-      "url": "https://github.com/janestreet/ppx_hash/archive/refs/tags/v0.17.0.tar.gz",
-      "sha256": "8c8acae276a349d412eab9112cc3afa996d26ad4a01f2882121fc0adee0dd05e",
-      "strip_prefix": "ppx_hash-0.17.0",
-      "type": "tar.gz",
-      "src_dirs": ["src", "expander", "runtime-lib/src"],
-      "libs": {
-        "ppx_hash": "ppx_hash",
-        "ppx_hash.expander": "ppx_hash_expander",
-        "ppx_hash_expander": "ppx_hash_expander",
-        "ppx_hash.runtime-lib": "ppx_hash_lib",
-        "ppx_hash_lib": "ppx_hash_lib"
-      },
-      "ppx_runtime": {
-        "ppx_hash": ["ppx_hash.runtime-lib"]
-      }
-    },
-    {
-      "name": "fpath",
-      "version": "0.7.3",
-      "repo": "ocaml_fpath",
-      "url": "https://erratique.ch/software/fpath/releases/fpath-0.7.3.tbz",
-      "sha256": "12b08ff192d037d9b6d69e9ca19d1d385184f20b3237c27231e437ac81ace70f",
-      "strip_prefix": "fpath-0.7.3",
-      "type": "tar.bz2",
-      "libs": {
-        "fpath": "fpath"
-      },
-      "override": true
-    },
-    {
-      "name": "astring",
-      "version": "0.8.5",
-      "repo": "ocaml_astring",
-      "url": "https://erratique.ch/software/astring/releases/astring-0.8.5.tbz",
-      "sha256": "865692630c07c3ab87c66cdfc2734c0fdfc9c34a57f8e89ffec7c7d15e7a70fa",
-      "strip_prefix": "astring-0.8.5",
-      "type": "tar.bz2",
-      "libs": {
-        "astring": "astring"
-      },
-      "override": true
-    },
-    {
-      "name": "fmt",
-      "version": "0.11.0",
-      "repo": "ocaml_fmt",
-      "url": "https://erratique.ch/software/fmt/releases/fmt-0.11.0.tbz",
-      "sha256": "857cfd47a54b52429cd9b3e2665e44173cd1bd3b435bece7172f984ad5376a1b",
-      "strip_prefix": "fmt-0.11.0",
-      "type": "tar.bz2",
-      "libs": {
-        "fmt": "fmt",
-        "fmt.tty": "fmt_tty"
-      },
-      "override": true
-    },
-    {
-      "name": "uuidm",
-      "version": "0.9.10",
-      "repo": "ocaml_uuidm",
-      "url": "https://erratique.ch/software/uuidm/releases/uuidm-0.9.10.tbz",
-      "sha256": "9165594a87d6332932e6702ec68875c4d87030a676a946a12f70e1dbb277e957",
-      "strip_prefix": "uuidm-0.9.10",
-      "type": "tar.bz2",
-      "libs": {
-        "uuidm": "uuidm"
-      },
-      "override": true
-    },
-    {
-      "name": "hmap",
-      "version": "0.8.1",
-      "repo": "ocaml_hmap",
-      "url": "http://erratique.ch/software/hmap/releases/hmap-0.8.1.tbz",
-      "sha256": "6a00db1b12b6f55e1b2419f206fdfbaa669e14b51c78f8ac3cffa0a58897be83",
-      "strip_prefix": "hmap-0.8.1",
-      "type": "tar.bz2",
-      "libs": {
-        "hmap": "hmap"
-      },
-      "override": true
-    },
-    {
-      "name": "mtime",
-      "version": "2.1.0",
-      "repo": "ocaml_mtime",
-      "url": "https://erratique.ch/software/mtime/releases/mtime-2.1.0.tbz",
-      "sha256": "097cb2802e3701ead9572e1b483d5a28c6e2f0a39449faaf9b44ad8a89834d88",
-      "strip_prefix": "mtime-2.1.0",
-      "type": "tar.bz2",
-      "libs": {
-        "mtime": "mtime",
-        "mtime.clock.os": "mtime_clock"
-      },
-      "override": true
-    },
-    {
-      "name": "ANSITerminal",
-      "version": "0.8.5",
-      "repo": "ocaml_ANSITerminal",
-      "url": "https://github.com/Chris00/ANSITerminal/releases/download/0.8.5/ANSITerminal-0.8.5.tbz",
-      "sha256": "ab73b218b6a30267d2bbc43312dcf313981b8b0bec555d92b06b87664b2dd30e",
-      "strip_prefix": "ANSITerminal-0.8.5",
-      "type": "tar.bz2",
-      "libs": {
-        "ANSITerminal": "ANSITerminal"
-      },
-      "override": true
-    },
-    {
-      "name": "hex",
-      "version": "1.5.0",
-      "repo": "ocaml_hex",
-      "url": "https://github.com/mirage/ocaml-hex/releases/download/v1.5.0/hex-1.5.0.tbz",
-      "sha256": "2e67eeca1b03049307a30831b5cd694bcb2d3e7f2a6b4fb597fbdb647351b4dc",
-      "strip_prefix": "hex-1.5.0",
-      "type": "tar.bz2",
-      "src_dirs": ["lib"],
-      "libs": {
-        "hex": "hex"
-      }
-    },
-    {
-      "name": "semver",
-      "version": "0.2.1",
-      "repo": "ocaml_semver",
-      "url": "https://github.com/rgrinberg/ocaml-semver/releases/download/0.2.1/semver-0.2.1.tbz",
-      "sha256": "0a3cc352da1ee47bedeb32266fe12a548ba545451441df4c9ae278047ff698b8",
-      "strip_prefix": "semver-0.2.1",
-      "type": "tar.bz2",
-      "src_dirs": ["lib"],
-      "libs": {
-        "semver": "semver"
-      }
-    },
-    {
-      "name": "memtrace",
-      "version": "0.2.3",
-      "repo": "ocaml_memtrace",
-      "url": "https://github.com/janestreet/memtrace/archive/refs/tags/v0.2.3.tar.gz",
-      "sha256": "fa47379e78be5dbb3066cf96962d18a05d1defb4530588c14e5bc0289e0df520",
-      "strip_prefix": "memtrace-0.2.3",
-      "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": {
-        "memtrace": "memtrace"
-      }
-    },
-    {
-      "name": "optint",
-      "version": "0.3.0",
-      "repo": "ocaml_optint",
-      "url": "https://github.com/mirage/optint/releases/download/v0.3.0/optint-0.3.0.tbz",
-      "sha256": "295cff2c134b0385b13ba81d5005d9f841ba40d4a502aed10c997f239ef1147b",
-      "strip_prefix": "optint-0.3.0",
-      "type": "tar.bz2",
-      "src_dirs": ["src"],
-      "libs": {
-        "optint": "optint"
-      }
-    },
-    {
-      "name": "psq",
-      "version": "0.2.1",
-      "repo": "ocaml_psq",
-      "url": "https://github.com/pqwy/psq/releases/download/v0.2.1/psq-0.2.1.tbz",
-      "sha256": "42005f533eabe74b1799ee32b8905654cd66a22bed4af2bd266b28d8462cd344",
-      "strip_prefix": "psq-0.2.1",
-      "type": "tar.bz2",
-      "src_dirs": ["src"],
-      "libs": {
-        "psq": "psq"
-      }
-    },
-    {
-      "name": "lwt-dllist",
-      "version": "1.1.0",
-      "repo": "ocaml_lwt_dllist",
-      "url": "https://github.com/mirage/lwt-dllist/releases/download/v1.1.0/lwt-dllist-1.1.0.tbz",
-      "sha256": "b0200651e37eaa24f027177bc01e266db43da48aa18146973d1d18336c325d69",
-      "strip_prefix": "lwt-dllist-1.1.0",
-      "type": "tar.bz2",
-      "src_dirs": ["src"],
-      "libs": {
-        "lwt-dllist": "lwt_dllist"
-      }
-    },
-    {
-      "name": "thread-table",
-      "version": "1.0.0",
-      "repo": "ocaml_thread_table",
-      "url": "https://github.com/ocaml-multicore/thread-table/releases/download/1.0.0/thread-table-1.0.0.tbz",
-      "sha256": "a48cd88463597df9442c4baa69ccc06091ca77ba71e438d3609fbae0f3b81ddd",
-      "strip_prefix": "thread-table-1.0.0",
-      "type": "tar.bz2",
-      "libs": {
-        "thread-table": "thread_table"
-      },
-      "override": true
-    },
-    {
-      "name": "domain-local-await",
-      "version": "1.0.1",
-      "repo": "ocaml_domain_local_await",
-      "url": "https://github.com/ocaml-multicore/domain-local-await/releases/download/1.0.1/domain-local-await-1.0.1.tbz",
-      "sha256": "2952113c53cb07e2b054b2dc86ce72939131dab8207c8f3139adb23e64cdfa6f",
-      "strip_prefix": "domain-local-await-1.0.1",
-      "type": "tar.bz2",
-      "libs": {
-        "domain-local-await": "domain_local_await"
-      },
-      "override": true
-    },
-    {
-      "name": "cstruct",
-      "version": "6.2.0",
-      "repo": "ocaml_cstruct",
-      "url": "https://github.com/mirage/ocaml-cstruct/releases/download/v6.2.0/cstruct-6.2.0.tbz",
-      "sha256": "9a78073392580e8349148fa3ab4b1b2e989dc9d30d07401b04c96b7c60f03e62",
-      "strip_prefix": "cstruct-6.2.0",
-      "type": "tar.bz2",
-      "libs": {
-        "cstruct": "cstruct"
-      },
-      "override": true
-    },
-    {
-      "name": "sexplib",
-      "version": "v0.17.0",
-      "repo": "ocaml_sexplib",
-      "url": "https://github.com/janestreet/sexplib/archive/refs/tags/v0.17.0.tar.gz",
-      "sha256": "da863b42b81235fdcf45eb32c04fb8bde22ff446a779cfb6f989730a35103160",
-      "strip_prefix": "sexplib-0.17.0",
-      "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": {
-        "sexplib": "sexplib"
-      }
-    },
-    {
-      "name": "parsexp",
-      "version": "v0.17.0",
-      "repo": "ocaml_parsexp",
-      "url": "https://github.com/janestreet/parsexp/archive/refs/tags/v0.17.0.tar.gz",
-      "sha256": "a3d10edbc4f98d16357b644d550fd1c06f4d9aa4990ab8ee6da01276c24d55b5",
-      "strip_prefix": "parsexp-0.17.0",
-      "type": "tar.gz",
-      "src_dirs": ["src"],
-      "libs": {
-        "parsexp": "parsexp"
-      }
-    },
-    {
-      "name": "eqaf",
-      "version": "0.10",
-      "repo": "ocaml_eqaf",
-      "url": "https://github.com/mirage/eqaf/releases/download/v0.10/eqaf-0.10.tbz",
-      "sha256": "67d1369c57c4d2d14a10d02632d45e355224abeb98aec08979c0bae5843092ee",
-      "strip_prefix": "eqaf-0.10",
-      "type": "tar.bz2",
-      "libs": {
-        "eqaf": "eqaf"
-      },
-      "override": true
-    },
-    {
-      "name": "ptime",
-      "version": "1.2.0",
-      "repo": "ocaml_ptime",
-      "url": "https://erratique.ch/software/ptime/releases/ptime-1.2.0.tbz",
-      "sha256": "9616747fdf490ec36e8024cab27ee01e3a0af577d8a23226638fa4034de73ab0",
-      "strip_prefix": "ptime-1.2.0",
-      "type": "tar.bz2",
-      "libs": {
-        "ptime": "ptime"
-      },
-      "override": true
-    },
-    {
-      "name": "timedesc",
-      "version": "3.1.0",
-      "repo": "ocaml_timedesc",
-      "url": "https://github.com/daypack-dev/timere/releases/download/timedesc-3.1.0/timedesc-3.1.0.tar.gz",
-      "sha256": "9c469c849ca6242f133ff1dadab3855379f4f6bc559486589a04276223428871",
-      "strip_prefix": "",
-      "type": "tar.gz",
-      "libs": {
-        "timedesc": "timedesc"
-      },
-      "override": true
-    },
-    {
-      "name": "timedesc-tzdb",
-      "version": "3.1.0",
-      "repo": "ocaml_timedesc_tzdb",
-      "url": "https://github.com/daypack-dev/timere/releases/download/timedesc-3.1.0/timedesc-3.1.0.tar.gz",
-      "sha256": "9c469c849ca6242f133ff1dadab3855379f4f6bc559486589a04276223428871",
-      "strip_prefix": "",
-      "type": "tar.gz",
-      "libs": {
-        "timedesc-tzdb": "timedesc_tzdb"
-      },
-      "override": true
-    },
-    {
-      "name": "timedesc-tzlocal",
-      "version": "3.1.0",
-      "repo": "ocaml_timedesc_tzlocal",
-      "url": "https://github.com/daypack-dev/timere/releases/download/timedesc-3.1.0/timedesc-3.1.0.tar.gz",
-      "sha256": "9c469c849ca6242f133ff1dadab3855379f4f6bc559486589a04276223428871",
-      "strip_prefix": "",
-      "type": "tar.gz",
-      "libs": {
-        "timedesc-tzlocal": "timedesc_tzlocal"
-      },
-      "override": true
-    },
-    {
-      "name": "digestif",
-      "version": "1.3.0",
-      "repo": "ocaml_digestif",
-      "url": "https://github.com/mirage/digestif/releases/download/v1.3.0/digestif-1.3.0.tbz",
-      "sha256": "9a6cdcb332539c87f4723fc3bd73626b2675a7b1161fdf0fed309186ce18f427",
-      "strip_prefix": "digestif-1.3.0",
-      "type": "tar.bz2",
-      "libs": {
-        "digestif": "digestif",
-        "digestif.ocaml": "digestif"
-      },
-      "override": true
-    },
-    {
-      "name": "pcre",
-      "version": "8.0.5",
-      "repo": "ocaml_pcre",
-      "url": "https://github.com/mmottl/pcre-ocaml/releases/download/8.0.5/pcre-8.0.5.tbz",
-      "sha256": "ed9bcf88d781767ad6a7c0480aff09d5889f2fc500dda0d1620a1786d4e44490",
-      "strip_prefix": "pcre-8.0.5",
-      "type": "tar.bz2",
-      "libs": {
-        "pcre": "pcre"
-      },
-      "override": true
-    },
-    {
-      "name": "ppx_deriving_yojson",
-      "version": "3.10.0",
-      "repo": "ocaml_ppx_deriving_yojson",
-      "url": "https://github.com/ocaml-ppx/ppx_deriving_yojson/releases/download/v3.10.0/ppx_deriving_yojson-3.10.0.tbz",
-      "sha256": "ced3d265e4287f1f18b09df6446a24444fad52b2a3054cbcbe0c9494d0e89b3f",
-      "strip_prefix": "ppx_deriving_yojson-3.10.0",
-      "type": "tar.bz2",
-      "libs": {
-        "ppx_deriving_yojson": "ppx_deriving_yojson",
-        "ppx_deriving_yojson.runtime": "ppx_deriving_yojson_runtime",
-        "ppx_deriving_yojson_runtime": "ppx_deriving_yojson_runtime"
-      },
-      "override": true,
-      "ppx_runtime": {
-        "ppx_deriving_yojson": ["ppx_deriving_yojson.runtime", "yojson"]
-      }
-    },
-    {
-      "name": "rresult",
-      "version": "0.7.0",
-      "repo": "ocaml_rresult",
-      "url": "https://erratique.ch/software/rresult/releases/rresult-0.7.0.tbz",
-      "sha256": "11aa7f5b83460e60431e3154e3e32c071d46e151ea5760cf24377805bf975540",
-      "strip_prefix": "rresult-0.7.0",
-      "type": "tar.bz2",
-      "libs": {
-        "rresult": "rresult"
-      },
-      "override": true
-    },
-    {
-      "name": "bos",
-      "version": "0.2.1",
-      "repo": "ocaml_bos",
-      "url": "https://erratique.ch/software/bos/releases/bos-0.2.1.tbz",
-      "sha256": "d8d62e786b10d697e0457205a8eedeaa27ebcc90f1855f18df190cac2e3d8f37",
-      "strip_prefix": "bos-0.2.1",
-      "type": "tar.bz2",
-      "libs": {
-        "bos": "bos"
-      },
-      "override": true
-    },
-    {
-      "name": "testo",
-      "version": "0.2.0",
-      "repo": "ocaml_testo",
-      "url": "https://github.com/semgrep/testo/releases/download/0.2.0/testo-0.2.0.tbz",
-      "sha256": "0998766656d9a756f87c2f6c78b803d3a6e7c1230167c039f288226428cc3137",
-      "strip_prefix": "testo-0.2.0",
-      "type": "tar.bz2",
-      "src_dirs": ["diff/lib", "util/lib", "core"],
-      "libs": {
-        "testo-diff": "testo_diff",
-        "testo_diff": "testo_diff",
-        "testo-util": "testo_util",
-        "testo_util": "testo_util",
-        "testo": "testo"
-      }
-    },
-    {
-      "name": "eio",
-      "version": "1.2",
-      "repo": "ocaml_eio",
-      "url": "https://github.com/ocaml-multicore/eio/releases/download/v1.2/eio-1.2.tbz",
-      "sha256": "3792e912bd8d494bb2e38f73081825e4d212b1970cf2c1f1b2966caa9fd6bc40",
-      "strip_prefix": "eio-1.2",
-      "type": "tar.bz2",
-      "libs": {
-        "eio": "eio",
-        "eio.core": "eio__core",
-        "eio.utils": "eio_utils",
-        "eio.unix": "eio_unix",
-        "eio.runtime_events": "eio_runtime_events"
-      },
-      "override": true
-    },
-    {
-      "name": "pcre1-c",
-      "version": "8.45",
-      "repo": "ocaml_pcre1_c",
-      "url": "https://sourceforge.net/projects/pcre/files/pcre/8.45/pcre-8.45.tar.bz2/download",
-      "sha256": "4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8",
-      "strip_prefix": "pcre-8.45",
-      "type": "tar.bz2",
-      "override": true,
-      "opam": false,
-      "libs": {}
-    },
-    {
-      "name": "tsort",
-      "version": "2.2.0",
-      "repo": "ocaml_tsort",
-      "url": "https://github.com/dmbaturin/ocaml-tsort/archive/refs/tags/2.2.0.tar.gz",
-      "sha256": "c135d0cdee8821038d8206771e1a89ffdd4c6693124dd380e5dab5e2d5071167",
-      "strip_prefix": "ocaml-tsort-2.2.0",
-      "type": "tar.gz",
-      "src_dirs": ["src/lib"],
-      "libs": {
-        "tsort": "tsort"
-      }
-    },
-    {
-      "name": "ocaml-tree-sitter-core",
-      "version": "c4baff8",
-      "repo": "ocaml_tree_sitter_core",
-      "url": "https://github.com/returntocorp/ocaml-tree-sitter-core/archive/c4baff8d83b2e1f83f247acb11d0c9dafa5e48f7.tar.gz",
-      "sha256": "967ca15ed2d3bc24414cb07110d129dd621718351b11e5b818b51992f84f95be",
-      "strip_prefix": "ocaml-tree-sitter-core-c4baff8d83b2e1f83f247acb11d0c9dafa5e48f7",
-      "type": "tar.gz",
-      "override": true,
-      "opam": false,
-      "libs": {
-        "tree-sitter.bindings": "tree_sitter_bindings",
-        "tree-sitter.gen": "tree_sitter_gen",
-        "tree-sitter.run": "tree_sitter_run"
-      }
-    },
-    {
-      "name": "tree-sitter-bash",
-      "version": "c9a4e36",
-      "repo": "ocaml_tree_sitter_bash",
-      "url": "https://github.com/returntocorp/semgrep-bash/archive/c9a4e36f11b202061eb219a309580b903266c47c.tar.gz",
-      "sha256": "61399df745b096e83d529f2f9ae9f21faa7006cb598251d51b40cc07155e1058",
-      "strip_prefix": "semgrep-bash-c9a4e36f11b202061eb219a309580b903266c47c",
-      "type": "tar.gz",
-      "override": true,
-      "opam": false,
-      "libs": {
-        "tree-sitter-lang.bash": "tree_sitter_bash"
-      }
-    }
-  ]
+ "comment": [
+  "Pinned opam universe for bazel/ocaml. Maintained by update_lock.py; the",
+  "url/sha256 pins mirror each package's opam-repository metadata (the same",
+  "artifact `opam install` would fetch). Fields:",
+  "  repo:      the @<repo> Bazel repository name",
+  "  src_dirs:  dune directories dune2bazel translates (ignored if override)",
+  "  override:  hand-written BUILD in opam/overrides/<name>/BUILD.tpl, used",
+  "             when the package's dune tree needs codegen or compiler",
+  "             introspection the translator does not model",
+  "  libs:      findlib name -> target name within the repo; composes the",
+  "             lib_map dune2bazel uses to resolve (libraries ...) entries",
+  "  type:      archive type for download_and_extract (default tar.bz2)"
+ ],
+ "packages": [
+  {
+   "name": "re",
+   "version": "1.13.2",
+   "repo": "ocaml_re",
+   "url": "https://github.com/ocaml/ocaml-re/archive/refs/tags/1.13.2.tar.gz",
+   "sha256": "2e37b01b9bda0e39f0fd3913c0ec81237ed2d04c6bbe23f48b102de83ba47454",
+   "strip_prefix": "ocaml-re-1.13.2",
+   "type": "tar.gz",
+   "src_dirs": [
+    "lib"
+   ],
+   "libs": {
+    "re": "re"
+   }
+  },
+  {
+   "name": "sexplib0",
+   "version": "v0.17.0",
+   "repo": "ocaml_sexplib0",
+   "url": "https://github.com/janestreet/sexplib0/archive/refs/tags/v0.17.0.tar.gz",
+   "sha256": "5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b",
+   "strip_prefix": "sexplib0-0.17.0",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "sexplib0": "sexplib0"
+   }
+  },
+  {
+   "name": "ppx_derivers",
+   "version": "1.2.1",
+   "repo": "ocaml_ppx_derivers",
+   "url": "https://github.com/ocaml-ppx/ppx_derivers/archive/1.2.1.tar.gz",
+   "sha256": "b6595ee187dea792b31fc54a0e1524ab1e48bc6068d3066c45215a138cc73b95",
+   "strip_prefix": "ppx_derivers-1.2.1",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "ppx_derivers": "ppx_derivers"
+   }
+  },
+  {
+   "name": "stdlib-shims",
+   "version": "0.3.0",
+   "repo": "ocaml_stdlib_shims",
+   "url": "https://github.com/ocaml/stdlib-shims/releases/download/0.3.0/stdlib-shims-0.3.0.tbz",
+   "sha256": "babf72d3917b86f707885f0c5528e36c63fccb698f4b46cf2bab5c7ccdd6d84a",
+   "strip_prefix": "stdlib-shims-0.3.0",
+   "override": true,
+   "libs": {
+    "stdlib-shims": "stdlib_shims"
+   }
+  },
+  {
+   "name": "ocaml-compiler-libs",
+   "version": "v0.17.0",
+   "repo": "ocaml_compiler_libs_pkg",
+   "url": "https://github.com/janestreet/ocaml-compiler-libs/archive/refs/tags/v0.17.0.tar.gz",
+   "sha256": "9b9644d7351db699e57ddba7c767bb4153e6e988ccf45ead2fb238a3bd75cdc7",
+   "strip_prefix": "ocaml-compiler-libs-0.17.0",
+   "type": "tar.gz",
+   "override": true,
+   "libs": {
+    "ocaml-compiler-libs.common": "ocaml_common",
+    "ocaml-compiler-libs.shadow": "ocaml_shadow"
+   }
+  },
+  {
+   "name": "cppo",
+   "version": "1.8.0",
+   "repo": "ocaml_cppo",
+   "url": "https://github.com/ocaml-community/cppo/archive/v1.8.0.tar.gz",
+   "sha256": "6e62a8ee0217c9cc38d5860110eb18eb8d89c05c420353d298e1431fe8bac00f",
+   "strip_prefix": "cppo-1.8.0",
+   "type": "tar.gz",
+   "override": true,
+   "libs": {}
+  },
+  {
+   "name": "ppxlib",
+   "version": "0.36.0",
+   "repo": "ocaml_ppxlib",
+   "url": "https://github.com/ocaml-ppx/ppxlib/releases/download/0.36.0/ppxlib-0.36.0.tbz",
+   "sha256": "5aba1bce14c53108614130110c843d004bf93bd2cf3a0778fd7086b85390a434",
+   "strip_prefix": "ppxlib-0.36.0",
+   "override": true,
+   "libs": {
+    "ppxlib": "ppxlib",
+    "ppxlib.ast": "ppxlib_ast",
+    "ppxlib.astlib": "astlib",
+    "ppxlib.stdppx": "stdppx",
+    "ppxlib.traverse_builtins": "ppxlib_traverse_builtins",
+    "ppxlib.print_diff": "ppxlib_print_diff",
+    "ppxlib.metaquot": "ppxlib_metaquot",
+    "ppxlib.metaquot_lifters": "ppxlib_metaquot_lifters",
+    "ppxlib.traverse": "ppxlib_traverse"
+   }
+  },
+  {
+   "name": "easy-format",
+   "version": "1.3.4",
+   "repo": "ocaml_easy_format",
+   "url": "https://github.com/ocaml-community/easy-format/releases/download/1.3.4/easy-format-1.3.4.tbz",
+   "sha256": "1dbf051e9f68574dde6e2e254a66b9c524ca425e80b36e99af96ed964ab610c3",
+   "strip_prefix": "easy-format-1.3.4",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "easy-format": "easy_format"
+   }
+  },
+  {
+   "name": "camlp-streams",
+   "version": "5.0.1",
+   "repo": "ocaml_camlp_streams",
+   "url": "https://github.com/ocaml/camlp-streams/archive/v5.0.1.tar.gz",
+   "sha256": "ad71f62406e9bb4e7fb5d4593ede2af6c68f8b0d96f25574446e142c3eb0d9a4",
+   "strip_prefix": "camlp-streams-5.0.1",
+   "type": "tar.gz",
+   "override": true,
+   "libs": {
+    "camlp-streams": "camlp_streams"
+   }
+  },
+  {
+   "name": "biniou",
+   "version": "1.2.2",
+   "repo": "ocaml_biniou",
+   "url": "https://github.com/mjambon/biniou/releases/download/1.2.2/biniou-1.2.2.tbz",
+   "sha256": "8bf3ff17cd0ecb2d6b6d1d94cb08ef089d44caef96e9bae6be6839d428fa318f",
+   "strip_prefix": "biniou-1.2.2",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "biniou": "biniou"
+   }
+  },
+  {
+   "name": "yojson",
+   "version": "2.2.2",
+   "repo": "ocaml_yojson",
+   "url": "https://github.com/ocaml-community/yojson/releases/download/2.2.2/yojson-2.2.2.tbz",
+   "sha256": "9abfad8c9a79d4723ad2f6448e669c1e68dbfc87cc54a1b7c064b0c90912c595",
+   "strip_prefix": "yojson-2.2.2",
+   "override": true,
+   "libs": {
+    "yojson": "yojson"
+   }
+  },
+  {
+   "name": "atd",
+   "version": "2.16.0",
+   "repo": "ocaml_atd",
+   "url": "https://github.com/ahrefs/atd/releases/download/2.16.0/atd-2.16.0.tbz",
+   "sha256": "59e6b445620241cbd6901a842b336683afb0eb125b3adbfee28bd94cd54e0def",
+   "strip_prefix": "atd-2.16.0",
+   "override": true,
+   "libs": {
+    "atd": "atd",
+    "atdgen-runtime": "atdgen_runtime"
+   }
+  },
+  {
+   "name": "pcre2-c",
+   "version": "10.44",
+   "repo": "ocaml_pcre2_c",
+   "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz",
+   "sha256": "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b",
+   "strip_prefix": "pcre2-10.44",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {}
+  },
+  {
+   "name": "pcre2",
+   "version": "8.0.4",
+   "repo": "ocaml_pcre2",
+   "url": "https://github.com/camlp5/pcre2-ocaml/archive/refs/tags/8.0.4.tar.gz",
+   "sha256": "bbe76e8ecd9ccccfa631dbd21d6a801d23bd6fa982aae6839bb3fb7829a8cea1",
+   "strip_prefix": "pcre2-ocaml-8.0.4",
+   "type": "tar.gz",
+   "override": true,
+   "libs": {
+    "pcre2": "pcre2"
+   }
+  },
+  {
+   "name": "tree-sitter",
+   "version": "0.22.6",
+   "repo": "ocaml_tree_sitter_c",
+   "url": "https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.22.6.tar.gz",
+   "sha256": "e2b687f74358ab6404730b7fb1a1ced7ddb3780202d37595ecd7b20a8f41861f",
+   "strip_prefix": "tree-sitter-0.22.6",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {}
+  },
+  {
+   "name": "tree-sitter-json",
+   "version": "0.21.0",
+   "repo": "ocaml_tree_sitter_json",
+   "url": "https://github.com/tree-sitter/tree-sitter-json/archive/refs/tags/v0.21.0.tar.gz",
+   "sha256": "83d89d297c475dceb1865a9eacd8da1008e1aecffb6137161361107665cbdf79",
+   "strip_prefix": "tree-sitter-json-0.21.0",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {}
+  },
+  {
+   "name": "menhir",
+   "version": "20240715",
+   "repo": "ocaml_menhir",
+   "url": "https://gitlab.inria.fr/fpottier/menhir/-/archive/20240715/archive.tar.gz",
+   "sha256": "ef488644aaaacbfaada7ebf08d499d64ce31e15494297c3dc8f58725fc9ac030",
+   "strip_prefix": "menhir-20240715-d71051f500c4f34c9faf93192a593cdf4903b0c0",
+   "type": "tar.gz",
+   "override": true,
+   "libs": {
+    "menhirLib": "menhirLib",
+    "menhirSdk": "menhirSdk",
+    "menhirCST": "menhirCST"
+   }
+  },
+  {
+   "name": "ppx_deriving",
+   "version": "6.1.0",
+   "repo": "ocaml_ppx_deriving",
+   "url": "https://github.com/ocaml-ppx/ppx_deriving/releases/download/v6.1.0/ppx_deriving-6.1.0.tbz",
+   "sha256": "747a5688ea630f77a50b0e90254ac6f8a66bdd4974b2e87376341427807d4b56",
+   "strip_prefix": "ppx_deriving-6.1.0",
+   "override": true,
+   "libs": {
+    "ppx_deriving.api": "ppx_deriving_api",
+    "ppx_deriving.runtime": "ppx_deriving_runtime",
+    "ppx_deriving.show": "ppx_deriving_show",
+    "ppx_deriving.eq": "ppx_deriving_eq",
+    "ppx_deriving.ord": "ppx_deriving_ord"
+   },
+   "ppx_runtime": {
+    "ppx_deriving.show": [
+     "ppx_deriving.runtime"
+    ],
+    "ppx_deriving.eq": [
+     "ppx_deriving.runtime"
+    ],
+    "ppx_deriving.ord": [
+     "ppx_deriving.runtime"
+    ]
+   }
+  },
+  {
+   "name": "cmdliner",
+   "version": "2.1.1",
+   "repo": "ocaml_cmdliner",
+   "url": "https://erratique.ch/software/cmdliner/releases/cmdliner-2.1.1.tbz",
+   "sha256": "05b938d1def4f54c478178f1982822834510431ed98f2ac67cb4d90aa120d6b6",
+   "strip_prefix": "cmdliner-2.1.1",
+   "type": "tar.bz2",
+   "libs": {
+    "cmdliner": "cmdliner"
+   },
+   "override": true
+  },
+  {
+   "name": "logs",
+   "version": "0.10.0",
+   "repo": "ocaml_logs",
+   "url": "https://erratique.ch/software/logs/releases/logs-0.10.0.tbz",
+   "sha256": "760ec291c128d75b74826091337764f925b5ca414b02e2d336a0b37bf30df4ea",
+   "strip_prefix": "logs-0.10.0",
+   "type": "tar.bz2",
+   "libs": {
+    "logs": "logs",
+    "logs.fmt": "logs_fmt",
+    "logs.cli": "logs_cli"
+   },
+   "override": true
+  },
+  {
+   "name": "ocplib-endian",
+   "version": "1.2",
+   "repo": "ocaml_ocplib_endian",
+   "url": "https://github.com/OCamlPro/ocplib-endian/archive/refs/tags/1.2.tar.gz",
+   "sha256": "97ae74e8aeead46a0475df14af637ce78e2372c07258619ad8967506f2d4b320",
+   "strip_prefix": "ocplib-endian-1.2",
+   "type": "tar.gz",
+   "libs": {
+    "ocplib-endian": "ocplib_endian",
+    "ocplib-endian.bigstring": "ocplib_endian_bigstring"
+   },
+   "override": true
+  },
+  {
+   "name": "lwt",
+   "version": "5.9.2",
+   "repo": "ocaml_lwt",
+   "url": "https://github.com/ocsigen/lwt/archive/refs/tags/5.9.2.tar.gz",
+   "sha256": "f4e59d62d8cb1eb119591c7c395fa6cc1c926711d87f93fd26d0004748880ce7",
+   "strip_prefix": "lwt-5.9.2",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src/core"
+   ],
+   "libs": {
+    "lwt": "lwt",
+    "lwt.unix": "lwt_unix"
+   },
+   "override_extra": true
+  },
+  {
+   "name": "csexp",
+   "version": "1.5.2",
+   "repo": "ocaml_csexp",
+   "url": "https://github.com/ocaml-dune/csexp/releases/download/1.5.2/csexp-1.5.2.tbz",
+   "sha256": "1a14dd04bb4379a41990248550628c77913a9c07f3c35c1370b6960e697787ff",
+   "strip_prefix": "csexp-1.5.2",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "csexp": "csexp"
+   }
+  },
+  {
+   "name": "dune-configurator",
+   "version": "3.19.1",
+   "repo": "ocaml_dune_configurator",
+   "url": "https://github.com/ocaml/dune/releases/download/3.19.1/dune-3.19.1.tbz",
+   "sha256": "a10386f980cda9417d1465466bed50dd2aef9c93b9d06a0f7feeedb0a1541158",
+   "strip_prefix": "dune-3.19.1",
+   "type": "tar.bz2",
+   "libs": {
+    "dune-configurator": "configurator"
+   },
+   "override": true
+  },
+  {
+   "name": "stringext",
+   "version": "1.6.0",
+   "repo": "ocaml_stringext",
+   "url": "https://github.com/rgrinberg/stringext/releases/download/1.6.0/stringext-1.6.0.tbz",
+   "sha256": "db41f5d52e9eab17615f110b899dfeb27dd7e7f89cd35ae43827c5119db206ea",
+   "strip_prefix": "stringext-1.6.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "lib"
+   ],
+   "libs": {
+    "stringext": "stringext"
+   }
+  },
+  {
+   "name": "bigstringaf",
+   "version": "0.10.0",
+   "repo": "ocaml_bigstringaf",
+   "url": "https://github.com/inhabitedtype/bigstringaf/archive/0.10.0.tar.gz",
+   "sha256": "ed92f5b05fbc11b9defcec734d59b1068f3717a9ae4f9705c16c7f7ac3729f28",
+   "strip_prefix": "bigstringaf-0.10.0",
+   "type": "tar.gz",
+   "libs": {
+    "bigstringaf": "bigstringaf"
+   },
+   "override": true
+  },
+  {
+   "name": "angstrom",
+   "version": "0.16.1",
+   "repo": "ocaml_angstrom",
+   "url": "https://github.com/inhabitedtype/angstrom/archive/0.16.1.tar.gz",
+   "sha256": "143536fb4d049574c539b9990840615e078ed3dd94e1d24888293f68349a100b",
+   "strip_prefix": "angstrom-0.16.1",
+   "type": "tar.gz",
+   "src_dirs": [
+    "lib"
+   ],
+   "libs": {
+    "angstrom": "angstrom"
+   }
+  },
+  {
+   "name": "uri",
+   "version": "4.4.0",
+   "repo": "ocaml_uri",
+   "url": "https://github.com/mirage/ocaml-uri/releases/download/v4.4.0/uri-4.4.0.tbz",
+   "sha256": "cdabaf6ef5cd2161e59cc7b74c6e4a68ecb80a9f4e96002e338e1b6bf17adec4",
+   "strip_prefix": "uri-4.4.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "lib"
+   ],
+   "libs": {
+    "uri": "uri"
+   }
+  },
+  {
+   "name": "ocamlgraph",
+   "version": "2.2.0",
+   "repo": "ocaml_ocamlgraph",
+   "url": "https://github.com/backtracking/ocamlgraph/releases/download/2.2.0/ocamlgraph-2.2.0.tbz",
+   "sha256": "b0956210863cc24f480203ba3c2ef06dfae5579536a05744364e7de58822b230",
+   "strip_prefix": "ocamlgraph-2.2.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "ocamlgraph": "graph"
+   }
+  },
+  {
+   "name": "parmap",
+   "version": "1.2.5",
+   "repo": "ocaml_parmap",
+   "url": "https://github.com/rdicosmo/parmap/archive/refs/tags/1.2.5.tar.gz",
+   "sha256": "6709356e724436fba0b7a10f96f65a441c2b763832954707d5e30017e78fd285",
+   "strip_prefix": "parmap-1.2.5",
+   "type": "tar.gz",
+   "libs": {
+    "parmap": "parmap"
+   },
+   "override": true
+  },
+  {
+   "name": "ocaml_intrinsics_kernel",
+   "version": "v0.17.1",
+   "repo": "ocaml_ocaml_intrinsics_kernel",
+   "url": "https://github.com/janestreet/ocaml_intrinsics_kernel/archive/refs/tags/v0.17.1.tar.gz",
+   "sha256": "c988b7769a59749631c3c98ba5edd1d2fe91f5dc380b5e0593c073c92f4bee01",
+   "strip_prefix": "ocaml_intrinsics_kernel-0.17.1",
+   "type": "tar.gz",
+   "libs": {
+    "ocaml_intrinsics_kernel": "ocaml_intrinsics_kernel"
+   },
+   "override": true
+  },
+  {
+   "name": "base",
+   "version": "v0.17.3",
+   "repo": "ocaml_base",
+   "url": "https://github.com/janestreet/base/archive/refs/tags/v0.17.3.tar.gz",
+   "sha256": "3f3f64789ab25bb5cb7f5f907dd651dec9cc9440981822fe75df6b94344b7208",
+   "strip_prefix": "base-0.17.3",
+   "type": "tar.gz",
+   "libs": {
+    "base": "base",
+    "base.base_internalhash_types": "base_internalhash_types",
+    "base.shadow_stdlib": "shadow_stdlib"
+   },
+   "override": true
+  },
+  {
+   "name": "ppxlib_jane",
+   "version": "v0.17.4",
+   "repo": "ocaml_ppxlib_jane",
+   "url": "https://github.com/janestreet/ppxlib_jane/archive/refs/tags/v0.17.4.tar.gz",
+   "sha256": "10c4d1a162a8f51eecf35d68118a96aa5f375350ff3abb357b41968faa7b4ef3",
+   "strip_prefix": "ppxlib_jane-0.17.4",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "ppxlib_jane": "ppxlib_jane"
+   }
+  },
+  {
+   "name": "ppx_compare",
+   "version": "v0.17.0",
+   "repo": "ocaml_ppx_compare",
+   "url": "https://github.com/janestreet/ppx_compare/archive/refs/tags/v0.17.0.tar.gz",
+   "sha256": "f0b23eb78082ef4dc71a66939bbc63c6b0cc2cf6a4744a906b7a2c016cbe3098",
+   "strip_prefix": "ppx_compare-0.17.0",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src",
+    "expander",
+    "runtime-lib"
+   ],
+   "libs": {
+    "ppx_compare": "ppx_compare",
+    "ppx_compare.expander": "ppx_compare_expander",
+    "ppx_compare_expander": "ppx_compare_expander",
+    "ppx_compare.runtime-lib": "ppx_compare_lib",
+    "ppx_compare_lib": "ppx_compare_lib"
+   },
+   "ppx_runtime": {
+    "ppx_compare": [
+     "ppx_compare.runtime-lib"
+    ]
+   }
+  },
+  {
+   "name": "ppx_sexp_conv",
+   "version": "v0.17.1",
+   "repo": "ocaml_ppx_sexp_conv",
+   "url": "https://github.com/janestreet/ppx_sexp_conv/archive/refs/tags/v0.17.1.tar.gz",
+   "sha256": "b850556d05203aa6d97fcbe4be75abc9679b161be059e474c0d934bc0e12fe86",
+   "strip_prefix": "ppx_sexp_conv-0.17.1",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src",
+    "expander",
+    "runtime-lib"
+   ],
+   "libs": {
+    "ppx_sexp_conv": "ppx_sexp_conv",
+    "ppx_sexp_conv.expander": "ppx_sexp_conv_expander",
+    "ppx_sexp_conv_expander": "ppx_sexp_conv_expander",
+    "ppx_sexp_conv.runtime-lib": "ppx_sexp_conv_lib",
+    "ppx_sexp_conv_lib": "ppx_sexp_conv_lib"
+   },
+   "ppx_runtime": {
+    "ppx_sexp_conv": [
+     "ppx_sexp_conv.runtime-lib",
+     "sexplib0"
+    ]
+   }
+  },
+  {
+   "name": "ppx_hash",
+   "version": "v0.17.0",
+   "repo": "ocaml_ppx_hash",
+   "url": "https://github.com/janestreet/ppx_hash/archive/refs/tags/v0.17.0.tar.gz",
+   "sha256": "8c8acae276a349d412eab9112cc3afa996d26ad4a01f2882121fc0adee0dd05e",
+   "strip_prefix": "ppx_hash-0.17.0",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src",
+    "expander",
+    "runtime-lib/src"
+   ],
+   "libs": {
+    "ppx_hash": "ppx_hash",
+    "ppx_hash.expander": "ppx_hash_expander",
+    "ppx_hash_expander": "ppx_hash_expander",
+    "ppx_hash.runtime-lib": "ppx_hash_lib",
+    "ppx_hash_lib": "ppx_hash_lib"
+   },
+   "ppx_runtime": {
+    "ppx_hash": [
+     "ppx_hash.runtime-lib"
+    ]
+   }
+  },
+  {
+   "name": "fpath",
+   "version": "0.7.3",
+   "repo": "ocaml_fpath",
+   "url": "https://erratique.ch/software/fpath/releases/fpath-0.7.3.tbz",
+   "sha256": "12b08ff192d037d9b6d69e9ca19d1d385184f20b3237c27231e437ac81ace70f",
+   "strip_prefix": "fpath-0.7.3",
+   "type": "tar.bz2",
+   "libs": {
+    "fpath": "fpath"
+   },
+   "override": true
+  },
+  {
+   "name": "astring",
+   "version": "0.8.5",
+   "repo": "ocaml_astring",
+   "url": "https://erratique.ch/software/astring/releases/astring-0.8.5.tbz",
+   "sha256": "865692630c07c3ab87c66cdfc2734c0fdfc9c34a57f8e89ffec7c7d15e7a70fa",
+   "strip_prefix": "astring-0.8.5",
+   "type": "tar.bz2",
+   "libs": {
+    "astring": "astring"
+   },
+   "override": true
+  },
+  {
+   "name": "fmt",
+   "version": "0.11.0",
+   "repo": "ocaml_fmt",
+   "url": "https://erratique.ch/software/fmt/releases/fmt-0.11.0.tbz",
+   "sha256": "857cfd47a54b52429cd9b3e2665e44173cd1bd3b435bece7172f984ad5376a1b",
+   "strip_prefix": "fmt-0.11.0",
+   "type": "tar.bz2",
+   "libs": {
+    "fmt": "fmt",
+    "fmt.tty": "fmt_tty"
+   },
+   "override": true
+  },
+  {
+   "name": "uuidm",
+   "version": "0.9.10",
+   "repo": "ocaml_uuidm",
+   "url": "https://erratique.ch/software/uuidm/releases/uuidm-0.9.10.tbz",
+   "sha256": "9165594a87d6332932e6702ec68875c4d87030a676a946a12f70e1dbb277e957",
+   "strip_prefix": "uuidm-0.9.10",
+   "type": "tar.bz2",
+   "libs": {
+    "uuidm": "uuidm"
+   },
+   "override": true
+  },
+  {
+   "name": "hmap",
+   "version": "0.8.1",
+   "repo": "ocaml_hmap",
+   "url": "http://erratique.ch/software/hmap/releases/hmap-0.8.1.tbz",
+   "sha256": "6a00db1b12b6f55e1b2419f206fdfbaa669e14b51c78f8ac3cffa0a58897be83",
+   "strip_prefix": "hmap-0.8.1",
+   "type": "tar.bz2",
+   "libs": {
+    "hmap": "hmap"
+   },
+   "override": true
+  },
+  {
+   "name": "mtime",
+   "version": "2.1.0",
+   "repo": "ocaml_mtime",
+   "url": "https://erratique.ch/software/mtime/releases/mtime-2.1.0.tbz",
+   "sha256": "097cb2802e3701ead9572e1b483d5a28c6e2f0a39449faaf9b44ad8a89834d88",
+   "strip_prefix": "mtime-2.1.0",
+   "type": "tar.bz2",
+   "libs": {
+    "mtime": "mtime",
+    "mtime.clock.os": "mtime_clock"
+   },
+   "override": true
+  },
+  {
+   "name": "ANSITerminal",
+   "version": "0.8.5",
+   "repo": "ocaml_ANSITerminal",
+   "url": "https://github.com/Chris00/ANSITerminal/releases/download/0.8.5/ANSITerminal-0.8.5.tbz",
+   "sha256": "ab73b218b6a30267d2bbc43312dcf313981b8b0bec555d92b06b87664b2dd30e",
+   "strip_prefix": "ANSITerminal-0.8.5",
+   "type": "tar.bz2",
+   "libs": {
+    "ANSITerminal": "ANSITerminal"
+   },
+   "override": true
+  },
+  {
+   "name": "hex",
+   "version": "1.5.0",
+   "repo": "ocaml_hex",
+   "url": "https://github.com/mirage/ocaml-hex/releases/download/v1.5.0/hex-1.5.0.tbz",
+   "sha256": "2e67eeca1b03049307a30831b5cd694bcb2d3e7f2a6b4fb597fbdb647351b4dc",
+   "strip_prefix": "hex-1.5.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "lib"
+   ],
+   "libs": {
+    "hex": "hex"
+   }
+  },
+  {
+   "name": "semver",
+   "version": "0.2.1",
+   "repo": "ocaml_semver",
+   "url": "https://github.com/rgrinberg/ocaml-semver/releases/download/0.2.1/semver-0.2.1.tbz",
+   "sha256": "0a3cc352da1ee47bedeb32266fe12a548ba545451441df4c9ae278047ff698b8",
+   "strip_prefix": "semver-0.2.1",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "lib"
+   ],
+   "libs": {
+    "semver": "semver"
+   }
+  },
+  {
+   "name": "memtrace",
+   "version": "0.2.3",
+   "repo": "ocaml_memtrace",
+   "url": "https://github.com/janestreet/memtrace/archive/refs/tags/v0.2.3.tar.gz",
+   "sha256": "fa47379e78be5dbb3066cf96962d18a05d1defb4530588c14e5bc0289e0df520",
+   "strip_prefix": "memtrace-0.2.3",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "memtrace": "memtrace"
+   }
+  },
+  {
+   "name": "optint",
+   "version": "0.3.0",
+   "repo": "ocaml_optint",
+   "url": "https://github.com/mirage/optint/releases/download/v0.3.0/optint-0.3.0.tbz",
+   "sha256": "295cff2c134b0385b13ba81d5005d9f841ba40d4a502aed10c997f239ef1147b",
+   "strip_prefix": "optint-0.3.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "optint": "optint"
+   }
+  },
+  {
+   "name": "psq",
+   "version": "0.2.1",
+   "repo": "ocaml_psq",
+   "url": "https://github.com/pqwy/psq/releases/download/v0.2.1/psq-0.2.1.tbz",
+   "sha256": "42005f533eabe74b1799ee32b8905654cd66a22bed4af2bd266b28d8462cd344",
+   "strip_prefix": "psq-0.2.1",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "psq": "psq"
+   }
+  },
+  {
+   "name": "lwt-dllist",
+   "version": "1.1.0",
+   "repo": "ocaml_lwt_dllist",
+   "url": "https://github.com/mirage/lwt-dllist/releases/download/v1.1.0/lwt-dllist-1.1.0.tbz",
+   "sha256": "b0200651e37eaa24f027177bc01e266db43da48aa18146973d1d18336c325d69",
+   "strip_prefix": "lwt-dllist-1.1.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "lwt-dllist": "lwt_dllist"
+   }
+  },
+  {
+   "name": "thread-table",
+   "version": "1.0.0",
+   "repo": "ocaml_thread_table",
+   "url": "https://github.com/ocaml-multicore/thread-table/releases/download/1.0.0/thread-table-1.0.0.tbz",
+   "sha256": "a48cd88463597df9442c4baa69ccc06091ca77ba71e438d3609fbae0f3b81ddd",
+   "strip_prefix": "thread-table-1.0.0",
+   "type": "tar.bz2",
+   "libs": {
+    "thread-table": "thread_table"
+   },
+   "override": true
+  },
+  {
+   "name": "domain-local-await",
+   "version": "1.0.1",
+   "repo": "ocaml_domain_local_await",
+   "url": "https://github.com/ocaml-multicore/domain-local-await/releases/download/1.0.1/domain-local-await-1.0.1.tbz",
+   "sha256": "2952113c53cb07e2b054b2dc86ce72939131dab8207c8f3139adb23e64cdfa6f",
+   "strip_prefix": "domain-local-await-1.0.1",
+   "type": "tar.bz2",
+   "libs": {
+    "domain-local-await": "domain_local_await"
+   },
+   "override": true
+  },
+  {
+   "name": "cstruct",
+   "version": "6.2.0",
+   "repo": "ocaml_cstruct",
+   "url": "https://github.com/mirage/ocaml-cstruct/releases/download/v6.2.0/cstruct-6.2.0.tbz",
+   "sha256": "9a78073392580e8349148fa3ab4b1b2e989dc9d30d07401b04c96b7c60f03e62",
+   "strip_prefix": "cstruct-6.2.0",
+   "type": "tar.bz2",
+   "libs": {
+    "cstruct": "cstruct"
+   },
+   "override": true
+  },
+  {
+   "name": "sexplib",
+   "version": "v0.17.0",
+   "repo": "ocaml_sexplib",
+   "url": "https://github.com/janestreet/sexplib/archive/refs/tags/v0.17.0.tar.gz",
+   "sha256": "da863b42b81235fdcf45eb32c04fb8bde22ff446a779cfb6f989730a35103160",
+   "strip_prefix": "sexplib-0.17.0",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "sexplib": "sexplib"
+   }
+  },
+  {
+   "name": "parsexp",
+   "version": "v0.17.0",
+   "repo": "ocaml_parsexp",
+   "url": "https://github.com/janestreet/parsexp/archive/refs/tags/v0.17.0.tar.gz",
+   "sha256": "a3d10edbc4f98d16357b644d550fd1c06f4d9aa4990ab8ee6da01276c24d55b5",
+   "strip_prefix": "parsexp-0.17.0",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src"
+   ],
+   "libs": {
+    "parsexp": "parsexp"
+   }
+  },
+  {
+   "name": "eqaf",
+   "version": "0.10",
+   "repo": "ocaml_eqaf",
+   "url": "https://github.com/mirage/eqaf/releases/download/v0.10/eqaf-0.10.tbz",
+   "sha256": "67d1369c57c4d2d14a10d02632d45e355224abeb98aec08979c0bae5843092ee",
+   "strip_prefix": "eqaf-0.10",
+   "type": "tar.bz2",
+   "libs": {
+    "eqaf": "eqaf"
+   },
+   "override": true
+  },
+  {
+   "name": "ptime",
+   "version": "1.2.0",
+   "repo": "ocaml_ptime",
+   "url": "https://erratique.ch/software/ptime/releases/ptime-1.2.0.tbz",
+   "sha256": "9616747fdf490ec36e8024cab27ee01e3a0af577d8a23226638fa4034de73ab0",
+   "strip_prefix": "ptime-1.2.0",
+   "type": "tar.bz2",
+   "libs": {
+    "ptime": "ptime",
+    "ptime.clock.os": "ptime_clock"
+   },
+   "override": true
+  },
+  {
+   "name": "timedesc",
+   "version": "3.1.0",
+   "repo": "ocaml_timedesc",
+   "url": "https://github.com/daypack-dev/timere/releases/download/timedesc-3.1.0/timedesc-3.1.0.tar.gz",
+   "sha256": "9c469c849ca6242f133ff1dadab3855379f4f6bc559486589a04276223428871",
+   "strip_prefix": "",
+   "type": "tar.gz",
+   "libs": {
+    "timedesc": "timedesc"
+   },
+   "override": true
+  },
+  {
+   "name": "timedesc-tzdb",
+   "version": "3.1.0",
+   "repo": "ocaml_timedesc_tzdb",
+   "url": "https://github.com/daypack-dev/timere/releases/download/timedesc-3.1.0/timedesc-3.1.0.tar.gz",
+   "sha256": "9c469c849ca6242f133ff1dadab3855379f4f6bc559486589a04276223428871",
+   "strip_prefix": "",
+   "type": "tar.gz",
+   "libs": {
+    "timedesc-tzdb": "timedesc_tzdb"
+   },
+   "override": true
+  },
+  {
+   "name": "timedesc-tzlocal",
+   "version": "3.1.0",
+   "repo": "ocaml_timedesc_tzlocal",
+   "url": "https://github.com/daypack-dev/timere/releases/download/timedesc-3.1.0/timedesc-3.1.0.tar.gz",
+   "sha256": "9c469c849ca6242f133ff1dadab3855379f4f6bc559486589a04276223428871",
+   "strip_prefix": "",
+   "type": "tar.gz",
+   "libs": {
+    "timedesc-tzlocal": "timedesc_tzlocal"
+   },
+   "override": true
+  },
+  {
+   "name": "digestif",
+   "version": "1.3.0",
+   "repo": "ocaml_digestif",
+   "url": "https://github.com/mirage/digestif/releases/download/v1.3.0/digestif-1.3.0.tbz",
+   "sha256": "9a6cdcb332539c87f4723fc3bd73626b2675a7b1161fdf0fed309186ce18f427",
+   "strip_prefix": "digestif-1.3.0",
+   "type": "tar.bz2",
+   "libs": {
+    "digestif": "digestif",
+    "digestif.ocaml": "digestif"
+   },
+   "override": true
+  },
+  {
+   "name": "pcre",
+   "version": "8.0.5",
+   "repo": "ocaml_pcre",
+   "url": "https://github.com/mmottl/pcre-ocaml/releases/download/8.0.5/pcre-8.0.5.tbz",
+   "sha256": "ed9bcf88d781767ad6a7c0480aff09d5889f2fc500dda0d1620a1786d4e44490",
+   "strip_prefix": "pcre-8.0.5",
+   "type": "tar.bz2",
+   "libs": {
+    "pcre": "pcre"
+   },
+   "override": true
+  },
+  {
+   "name": "ppx_deriving_yojson",
+   "version": "3.10.0",
+   "repo": "ocaml_ppx_deriving_yojson",
+   "url": "https://github.com/ocaml-ppx/ppx_deriving_yojson/releases/download/v3.10.0/ppx_deriving_yojson-3.10.0.tbz",
+   "sha256": "ced3d265e4287f1f18b09df6446a24444fad52b2a3054cbcbe0c9494d0e89b3f",
+   "strip_prefix": "ppx_deriving_yojson-3.10.0",
+   "type": "tar.bz2",
+   "libs": {
+    "ppx_deriving_yojson": "ppx_deriving_yojson",
+    "ppx_deriving_yojson.runtime": "ppx_deriving_yojson_runtime",
+    "ppx_deriving_yojson_runtime": "ppx_deriving_yojson_runtime"
+   },
+   "override": true,
+   "ppx_runtime": {
+    "ppx_deriving_yojson": [
+     "ppx_deriving_yojson.runtime",
+     "yojson"
+    ]
+   }
+  },
+  {
+   "name": "rresult",
+   "version": "0.7.0",
+   "repo": "ocaml_rresult",
+   "url": "https://erratique.ch/software/rresult/releases/rresult-0.7.0.tbz",
+   "sha256": "11aa7f5b83460e60431e3154e3e32c071d46e151ea5760cf24377805bf975540",
+   "strip_prefix": "rresult-0.7.0",
+   "type": "tar.bz2",
+   "libs": {
+    "rresult": "rresult"
+   },
+   "override": true
+  },
+  {
+   "name": "bos",
+   "version": "0.2.1",
+   "repo": "ocaml_bos",
+   "url": "https://erratique.ch/software/bos/releases/bos-0.2.1.tbz",
+   "sha256": "d8d62e786b10d697e0457205a8eedeaa27ebcc90f1855f18df190cac2e3d8f37",
+   "strip_prefix": "bos-0.2.1",
+   "type": "tar.bz2",
+   "libs": {
+    "bos": "bos"
+   },
+   "override": true
+  },
+  {
+   "name": "testo",
+   "version": "0.2.0",
+   "repo": "ocaml_testo",
+   "url": "https://github.com/semgrep/testo/releases/download/0.2.0/testo-0.2.0.tbz",
+   "sha256": "0998766656d9a756f87c2f6c78b803d3a6e7c1230167c039f288226428cc3137",
+   "strip_prefix": "testo-0.2.0",
+   "type": "tar.bz2",
+   "src_dirs": [
+    "diff/lib",
+    "util/lib",
+    "core"
+   ],
+   "libs": {
+    "testo-diff": "testo_diff",
+    "testo_diff": "testo_diff",
+    "testo-util": "testo_util",
+    "testo_util": "testo_util",
+    "testo": "testo"
+   }
+  },
+  {
+   "name": "eio",
+   "version": "1.2",
+   "repo": "ocaml_eio",
+   "url": "https://github.com/ocaml-multicore/eio/releases/download/v1.2/eio-1.2.tbz",
+   "sha256": "3792e912bd8d494bb2e38f73081825e4d212b1970cf2c1f1b2966caa9fd6bc40",
+   "strip_prefix": "eio-1.2",
+   "type": "tar.bz2",
+   "libs": {
+    "eio": "eio",
+    "eio.core": "eio__core",
+    "eio.utils": "eio_utils",
+    "eio.unix": "eio_unix",
+    "eio.runtime_events": "eio_runtime_events"
+   },
+   "override": true
+  },
+  {
+   "name": "pcre1-c",
+   "version": "8.45",
+   "repo": "ocaml_pcre1_c",
+   "url": "https://sourceforge.net/projects/pcre/files/pcre/8.45/pcre-8.45.tar.bz2/download",
+   "sha256": "4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8",
+   "strip_prefix": "pcre-8.45",
+   "type": "tar.bz2",
+   "override": true,
+   "opam": false,
+   "libs": {}
+  },
+  {
+   "name": "tsort",
+   "version": "2.2.0",
+   "repo": "ocaml_tsort",
+   "url": "https://github.com/dmbaturin/ocaml-tsort/archive/refs/tags/2.2.0.tar.gz",
+   "sha256": "c135d0cdee8821038d8206771e1a89ffdd4c6693124dd380e5dab5e2d5071167",
+   "strip_prefix": "ocaml-tsort-2.2.0",
+   "type": "tar.gz",
+   "src_dirs": [
+    "src/lib"
+   ],
+   "libs": {
+    "tsort": "tsort"
+   }
+  },
+  {
+   "name": "ocaml-tree-sitter-core",
+   "version": "c4baff8",
+   "repo": "ocaml_tree_sitter_core",
+   "url": "https://github.com/returntocorp/ocaml-tree-sitter-core/archive/c4baff8d83b2e1f83f247acb11d0c9dafa5e48f7.tar.gz",
+   "sha256": "967ca15ed2d3bc24414cb07110d129dd621718351b11e5b818b51992f84f95be",
+   "strip_prefix": "ocaml-tree-sitter-core-c4baff8d83b2e1f83f247acb11d0c9dafa5e48f7",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {
+    "tree-sitter.bindings": "tree_sitter_bindings",
+    "tree-sitter.gen": "tree_sitter_gen",
+    "tree-sitter.run": "tree_sitter_run"
+   }
+  },
+  {
+   "name": "tree-sitter-bash",
+   "version": "c9a4e36",
+   "repo": "ocaml_tree_sitter_bash",
+   "url": "https://github.com/returntocorp/semgrep-bash/archive/c9a4e36f11b202061eb219a309580b903266c47c.tar.gz",
+   "sha256": "61399df745b096e83d529f2f9ae9f21faa7006cb598251d51b40cc07155e1058",
+   "strip_prefix": "semgrep-bash-c9a4e36f11b202061eb219a309580b903266c47c",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {
+    "tree-sitter-lang.bash": "tree_sitter_bash"
+   }
+  },
+  {
+   "name": "pbrt",
+   "version": "3.1.1",
+   "repo": "ocaml_pbrt",
+   "url": "https://github.com/mransan/ocaml-protoc/releases/download/v3.1.1/ocaml-protoc-3.1.1.tbz",
+   "sha256": "c5657fcbfcbaea361beb847f72b8a6a6f36ce9e773bf285b278a0da75f988fbc",
+   "strip_prefix": "ocaml-protoc-3.1.1",
+   "type": "tar.bz2",
+   "libs": {
+    "pbrt": "pbrt"
+   },
+   "override": true
+  },
+  {
+   "name": "thread-local-storage",
+   "version": "0.2",
+   "repo": "ocaml_thread_local_storage",
+   "url": "https://github.com/c-cube/thread-local-storage/releases/download/v0.2/thread-local-storage-0.2.tbz",
+   "sha256": "a68e2b1ed07f9f993ffc76141e632ec4d103ffdab73869700cdc741ecd7e0349",
+   "strip_prefix": "thread-local-storage-0.2",
+   "type": "tar.bz2",
+   "libs": {
+    "thread-local-storage": "thread_local_storage"
+   },
+   "override": true
+  },
+  {
+   "name": "ambient-context",
+   "version": "0.1.0",
+   "repo": "ocaml_ambient_context",
+   "url": "https://github.com/ELLIOTTCABLE/ocaml-ambient-context/archive/refs/tags/v0.1.0.tar.gz",
+   "sha256": "7101f5ca360df66051819d1dd72da082641cb9670c55df02d76e2f0f34ad392d",
+   "strip_prefix": "ambient-context-0.1.0",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {
+    "ambient-context": "ambient_context",
+    "ambient-context-lwt": "ambient_context_lwt"
+   }
+  },
+  {
+   "name": "opentelemetry",
+   "version": "6cfa5f1",
+   "repo": "ocaml_opentelemetry",
+   "url": "https://github.com/semgrep/ocaml-opentelemetry/archive/6cfa5f16d85ac65b602f732469b667bac4aca5ac.tar.gz",
+   "sha256": "1ab72b3a82be5821e7a36966b3e89964bc658e5fd0fb76edad0eafe01aa7408a",
+   "strip_prefix": "ocaml-opentelemetry-6cfa5f16d85ac65b602f732469b667bac4aca5ac",
+   "type": "tar.gz",
+   "override": true,
+   "opam": false,
+   "libs": {
+    "opentelemetry": "opentelemetry",
+    "opentelemetry.proto": "opentelemetry_proto",
+    "opentelemetry.atomic": "opentelemetry_atomic",
+    "opentelemetry.client": "opentelemetry_client",
+    "opentelemetry-logs": "opentelemetry_logs",
+    "opentelemetry.ambient-context": "opentelemetry_ambient_context",
+    "opentelemetry.ambient-context.types": "opentelemetry_ambient_context_types",
+    "opentelemetry.ambient-context.eio": "opentelemetry_ambient_context_eio"
+   }
+  }
+ ]
 }

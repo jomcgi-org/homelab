@@ -87,6 +87,7 @@ register_execution_platforms("//bazel/ocaml/platforms:linux_aarch64")
 ocaml_opam_ext = use_extension("//bazel/ocaml/opam:extension.bzl", "ocaml_opam")
 use_repo(
     ocaml_opam_ext,
+    "ocaml_ambient_context",
     "ocaml_ANSITerminal",
     "ocaml_angstrom",
     "ocaml_astring",
@@ -120,9 +121,11 @@ use_repo(
     "ocaml_ocaml_intrinsics_kernel",
     "ocaml_ocamlgraph",
     "ocaml_ocplib_endian",
+    "ocaml_opentelemetry",
     "ocaml_optint",
     "ocaml_parmap",
     "ocaml_parsexp",
+    "ocaml_pbrt",
     "ocaml_pcre",
     "ocaml_pcre1_c",
     "ocaml_pcre2",
@@ -145,6 +148,7 @@ use_repo(
     "ocaml_stdlib_shims",
     "ocaml_stringext",
     "ocaml_testo",
+    "ocaml_thread_local_storage",
     "ocaml_thread_table",
     "ocaml_timedesc",
     "ocaml_timedesc_tzdb",

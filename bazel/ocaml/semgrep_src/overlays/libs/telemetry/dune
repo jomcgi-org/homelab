@@ -1,0 +1,39 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; Differences from upstream, each measured against the pinned sources
+; (see semgrep_src/README.md, libs/telemetry dispatch):
+;   * opentelemetry-client-ocurl and opentelemetry-client-cohttp-eio
+;     replaced by opentelemetry.client: only Telemetry.ml names the two
+;     exporter clients (curl C bindings / a full cohttp + TLS stack, both
+;     outside the translated closure) and its overlay rejects loudly where
+;     a backend would be created. Opentelemetry_client.Self_trace is the
+;     one client-side reference left, satisfied by opentelemetry.client.
+;   * eio and eio.unix added: Telemetry.mli's eio_sw_base type names
+;     Eio.Switch.t and Eio_unix.Stdenv.base; upstream gets both libraries
+;     transitively through opentelemetry-client-cohttp-eio.
+;   * ambient-context added: Telemetry.ml calls
+;     Ambient_context.set_storage_provider directly; upstream resolves the
+;     module transitively through ambient-context-lwt.
+
+(library
+ (public_name telemetry)
+ (wrapped false)
+  (libraries
+    collections
+    uri
+    yojson
+    logs
+    eio
+    eio.unix
+    opentelemetry
+    opentelemetry.client
+    opentelemetry-logs
+    ambient-context
+    ambient-context-lwt
+    opentelemetry.ambient-context.eio
+  )
+  (preprocess (pps
+      ppx_deriving.show
+      ppx_deriving_yojson
+   ))
+)

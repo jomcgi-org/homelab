@@ -122,6 +122,22 @@ build_test(
         # grammar itself is exercised by examples/treesitter_bash, no-arm64).
         "@ocaml_tsort//:tsort",
         "@ocaml_tree_sitter_core//:tree_sitter_gen",
+        # Phase 8 telemetry closure: the semgrep opentelemetry fork (git
+        # pin) and its deps; the exporter clients stay unbuilt (see
+        # semgrep_src/README.md). libs/telemetry + libs/parallelism are the
+        # first internal dirs compiled with real (non-stub) telemetry.
+        "@ocaml_pbrt//:pbrt",
+        "@ocaml_thread_local_storage//:thread_local_storage",
+        "@ocaml_ambient_context//:ambient_context",
+        "@ocaml_ambient_context//:ambient_context_lwt",
+        "@ocaml_ptime//:ptime_clock",
+        "@ocaml_opentelemetry//:opentelemetry_proto",
+        "@ocaml_opentelemetry//:opentelemetry",
+        "@ocaml_opentelemetry//:opentelemetry_client",
+        "@ocaml_opentelemetry//:opentelemetry_logs",
+        "@ocaml_opentelemetry//:opentelemetry_ambient_context_eio",
+        "@semgrep_src//:telemetry",
+        "@semgrep_src//:parallelism",
     ],
 )
 
