@@ -93,6 +93,7 @@ use_repo(
     "ocaml_astring",
     "ocaml_atd",
     "ocaml_base",
+    "ocaml_base64",
     "ocaml_bigstringaf",
     "ocaml_biniou",
     "ocaml_bos",
