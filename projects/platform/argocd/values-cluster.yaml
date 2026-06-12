@@ -22,10 +22,16 @@ argo-cd:
     params:
       # Run server in insecure mode (behind Cloudflare Tunnel HTTPS termination)
       server.insecure: "true"
-      # UI is served from private.jomcgi.dev/app/argocd. The gateway strips
-      # the prefix before proxying, so only basehref is set (not rootpath):
-      # the API keeps serving at / for in-cluster clients like argocd-mcp.
+      # UI is served from private.jomcgi.dev/app/argocd. The gateway forwards
+      # the prefix intact (no strip), so rootpath makes argocd-server handle
+      # the subpath end to end (UI, API, websockets) and rewrite the index
+      # base href to /app/argocd/. basehref alone with a stripped prefix did
+      # not rewrite the base href in v3.x, leaving the UI blank. rootpath
+      # also moves the API off /, so in-cluster clients must use the prefix;
+      # the monolith reads ArgoCD via the K8s API and Image Updater runs in
+      # kubernetes application-API mode, so neither is affected.
       server.basehref: "/app/argocd"
+      server.rootpath: "/app/argocd"
       otlp.address: "signoz-otel-collector.signoz.svc.cluster.local:4317"
   # Enable metrics endpoints for all ArgoCD components
   # These expose Prometheus metrics including argocd_app_info for health/sync status
