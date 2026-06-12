@@ -158,5 +158,11 @@ build_test(
         "@semgrep_src//:profiling",
         "@semgrep_src//:ppx_profiling",
         "@semgrep_src//:glob",
+        # Phase 8 path/parsing layer: all reach pcre/pcre2 through commons,
+        # so they live in the cc bucket with it.
+        "@semgrep_src//:commons2",
+        "@semgrep_src//:paths",
+        "@semgrep_src//:gitignore",
+        "@semgrep_src//:lib_parsing",
     ],
 )

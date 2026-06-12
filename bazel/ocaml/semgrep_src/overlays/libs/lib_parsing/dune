@@ -1,0 +1,37 @@
+; OVERLAY (bazel/ocaml/semgrep_src/overlays) -- replaces the upstream dune.
+;
+; Differences from upstream, each measured against the pinned sources
+; (ocamldep -modules over libs/lib_parsing; see semgrep_src/README.md):
+;   * (inline_tests) and ppx_inline_test dropped; the let%test blocks live
+;     only in Pos.ml, whose overlay strips them (the Ord.ml pattern).
+;   * git_wrapper dropped: no source references Git_wrapper (it would pull
+;     the ocaml-git closure, dispatched out of scope until a source names
+;     it; see README).
+;   * the profiling rewriter is named by its public name profiling.ppx
+;     (upstream says ppx_profiling, the dune (name ...), which only dune's
+;     in-project resolution knows; the lib_map keys public names).
+
+(library
+ (public_name lib_parsing)
+ (name lib_parsing)
+ (wrapped false)
+ (libraries
+   fpath
+   sexplib
+   paths
+
+   commons
+   commons2
+   profiling
+ )
+ (preprocess
+   (pps
+     profiling.ppx
+     ppx_deriving.show
+     ppx_deriving.ord
+     ppx_deriving.eq
+     ppx_hash
+     ppx_sexp_conv
+   )
+ )
+)

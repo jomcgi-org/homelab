@@ -33,6 +33,10 @@ SEMGREP_SRC_DIRS = [
     "libs/profiling",
     "libs/profiling/ppx",
     "libs/glob",
+    "libs/commons2",
+    "libs/paths",
+    "libs/gitignore",
+    "libs/lib_parsing",
 ]
 
 SEMGREP_LIBS = {
@@ -44,6 +48,10 @@ SEMGREP_LIBS = {
     "profiling": ":profiling",
     "profiling.ppx": ":ppx_profiling",
     "glob": ":glob",
+    "commons2": ":commons2",
+    "paths": ":paths",
+    "gitignore": ":gitignore",
+    "lib_parsing": ":lib_parsing",
 }
 
 OVERLAYS = [
@@ -53,4 +61,6 @@ OVERLAYS = [
     "libs/parallelism/dune",
     "libs/commons/dune",
     "libs/commons/Ord.ml",
+    "libs/lib_parsing/dune",
+    "libs/lib_parsing/Pos.ml",
 ]

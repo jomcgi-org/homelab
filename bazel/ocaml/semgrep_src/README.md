@@ -19,6 +19,10 @@ model rejects loudly at fetch time.
 | `libs/profiling`     | `:profiling`      | translated as-is                                            |
 | `libs/profiling/ppx` | `:ppx_profiling`  | the first internal ppx rewriter (kind ppx_deriver)          |
 | `libs/glob`          | `:glob`           | translated as-is (menhir Parser + ocamllex Lexer)           |
+| `libs/commons2`      | `:commons2`       | translated as-is                                            |
+| `libs/paths`         | `:paths`          | translated as-is (profiling.ppx joins a generated driver)   |
+| `libs/gitignore`     | `:gitignore`      | translated as-is                                            |
+| `libs/lib_parsing`   | `:lib_parsing`    | dune overlay drops inline_tests + unreferenced git_wrapper; `Pos.ml` overlay strips the let%test blocks |
 
 ## libs/commons rejection dispatch
 
@@ -81,3 +85,19 @@ The dune stanzas decompose as (same legend as above):
 | `ptime.clock.os` (opentelemetry core dep)               | override+: ptime override grows the clock sublibrary (one C stub)                                       |
 | `eio_main`, `eio.mock` (parallelism)                    | overlay: drop. No source references either (the one `Eio_main` mention is a doc-comment example in `Executor_pool.mli`); eio_main would pull the io_uring backend closure, still out of scope |
 | `uri`, `yojson`, `logs`, `collections`, pps             | already in the lock / internal                                                                          |
+
+## path/parsing layer rejection dispatch (commons2, paths, gitignore, lib_parsing)
+
+No new opam packages: every external name was already in the lock (fpath,
+sexplib, logs, the deriving/hash/sexp rewriters and their runtimes). The
+stanzas decompose as:
+
+| piece                                          | dispatch                                                                                       |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `profiling.ppx` in pps (paths, gitignore, lib_parsing) | internal rewriter, already translated; composes into the generated per-library ppx drivers |
+| `ppx_profiling` in lib_parsing's pps             | overlay: renamed to its public name `profiling.ppx` (upstream uses the dune `(name ...)`, which only dune's in-project resolution knows; the lib_map keys public names) |
+| `(inline_tests)` + `ppx_inline_test` (lib_parsing) | overlay: drop the stanza AND strip the let%test blocks in `Pos.ml` (the Ord.ml pattern; decided in the plan) |
+| `git_wrapper` (lib_parsing)                      | overlay: drop. No lib_parsing source references Git_wrapper (ocamldep confirms); keeping it would pull libs/git_wrapper and through it the ocaml-git closure (`git >= 3.18.0`: carton, decompress, checkseum, ...). Dispatched out of scope until a translated dir actually names Git_wrapper |
+| `ppx_hash` / `ppx_sexp_conv` runtimes            | in the lock (wave B); ppx_runtime tables propagate ppx_hash_lib / ppx_sexp_conv_lib / sexplib0 |
+| `fpath`, `sexplib`, `logs`                       | in the lock                                                                                     |
+| `commons`, `commons2`, `paths`, `glob`, `profiling`, `collections` | internal                                                                      |
