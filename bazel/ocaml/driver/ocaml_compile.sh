@@ -99,7 +99,19 @@ OCAMLDEP="$S/bin/ocamldep.opt"
 OCAMLLEX="$S/bin/ocamllex"
 OCAMLYACC="$S/bin/ocamlyacc"
 
-echo "ocaml_compile: mode=$MODE sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
+# Per-arch sysroots are built on the arch they target (ADR 006). If the
+# scheduler hands this action to an executor of a different arch than the one
+# that built the staged sysroot, every tool invocation fails as a cryptic
+# "not found" (the foreign ELF interpreter is missing), so assert it up front
+# with a message that names the mismatch.
+EXEC_ARCH="$(uname -m)"
+SYSROOT_ARCH="$(cat "$S/.ocaml-sysroot-arch" 2>/dev/null || echo unknown)"
+if [ "$SYSROOT_ARCH" != "unknown" ] && [ "$SYSROOT_ARCH" != "$EXEC_ARCH" ]; then
+	echo "ocaml_compile: FATAL: sysroot was built on $SYSROOT_ARCH but this action is executing on $EXEC_ARCH (executor pool routing mismatch)" >&2
+	exit 1
+fi
+
+echo "ocaml_compile: mode=$MODE arch=$EXEC_ARCH sysroot=$S ocamlopt=$([ -x "$OCAMLOPT" ] && echo ok || echo MISSING) cc=$(command -v cc gcc 2>/dev/null | head -1) as=$(command -v as 2>/dev/null)" >&2
 
 # Version tokens for preprocessor arg substitution (see --pp-arg below).
 # %OCAML_VERSION% is the numeric version (5.3.0); %OCAML_AST_VERSION% is

@@ -35,6 +35,12 @@ make -j"$(nproc)" > _make.log 2>&1 || {{ log _make.log; exit 1; }}
 make install > _inst.log 2>&1 || {{ log _inst.log; exit 1; }}
 test -x "$WORK/_install/bin/ocamlopt.opt"
 test -f "$WORK/_install/lib/ocaml/compiler-libs/ocamlcommon.cmxa"
+# Stamp the arch this sysroot was built on (= the arch its binaries run on);
+# the compile driver asserts it against its own executor before invoking any
+# tool, so a cross-arch scheduling mistake fails with one clear line instead
+# of a cryptic "not found" from the missing foreign ELF interpreter.
+uname -m > "$WORK/_install/.ocaml-sysroot-arch"
+echo "ocaml_compiler: built sysroot on $(uname -m)" >&2
 tar -cf "$OUT" -C "$WORK/_install" .
 """.format(
         src_root = src_root,
