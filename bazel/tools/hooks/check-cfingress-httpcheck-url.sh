@@ -117,10 +117,10 @@ fi
 MISMATCHES=()
 for ALERT_FILE in "${ALERT_FILES[@]}"; do
 	# Extract the URL from expressions like: http.url = 'https://...'
-	ALERT_URL=$(grep -oE "http\.url = '[^']+'" "$ALERT_FILE" \
-		| grep -oE "'[^']+'" \
-		| tr -d "'" \
-		| head -1 || true)
+	ALERT_URL=$(grep -oE "http\.url = '[^']+'" "$ALERT_FILE" |
+		grep -oE "'[^']+'" |
+		tr -d "'" |
+		head -1 || true)
 	if [[ -z "$ALERT_URL" ]]; then
 		continue
 	fi
