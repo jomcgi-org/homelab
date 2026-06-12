@@ -1057,6 +1057,20 @@
       }
     },
     {
+      "name": "base64",
+      "version": "3.5.1",
+      "repo": "ocaml_base64",
+      "url": "https://github.com/mirage/ocaml-base64/releases/download/v3.5.1/base64-3.5.1.tbz",
+      "sha256": "d8fedaa59bd12feae7acc08b5928dd478aac523f4ca8d240470d2500651c65ed",
+      "strip_prefix": "base64-3.5.1",
+      "type": "tar.bz2",
+      "libs": {
+        "base64": "base64",
+        "base64.rfc2045": "base64_rfc2045"
+      },
+      "override": true
+    },
+    {
       "name": "visitors",
       "version": "20260520",
       "repo": "ocaml_visitors",
