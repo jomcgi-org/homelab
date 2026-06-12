@@ -188,12 +188,16 @@ and produces `@<repo>` with a BUILD that is either:
 
 - **translated** — `opam/dune2bazel.py` over the package's own dune files
   (re, sexplib0, ppx_derivers, csexp, lwt's core, stringext, angstrom, uri,
-  ocamlgraph today). The translator models:
+  ocamlgraph, ppxlib_jane, and the ppx_compare/ppx_sexp_conv/ppx_hash
+  trio today). The translator models:
   multiple `(library)` stanzas, `wrapped`, `(libraries ...)` resolution
   (stdlib, compiler-libs, `re_export`, and other locked packages via the
   **lib_map** composed from lock entries' `libs` tables), `(preprocess
   no_preprocessing | future_syntax | (pps ...))` — future_syntax is the
-  identity on the 5.3 sysroot, pps emits an `ocaml_ppx` target —
+  identity on the 5.3 sysroot; pps emits an `ocaml_ppx` target and
+  materializes the rewriters' `ppx_runtime_libraries` as
+  `preprocess_runtime_deps` from the lock's `ppx_runtime` tables (dune's
+  propagation, reproduced data-driven) —
   `(kind ...)`, `flags`/`ocamlopt_flags`, `(instrumentation ...)`
   (provably inert: we never pass `--instrument-with`),
   `(include_subdirs unqualified)` (recursive source glob; the driver's

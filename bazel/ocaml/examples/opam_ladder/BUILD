@@ -62,5 +62,16 @@ build_test(
         "@ocaml_base//:base_internalhash_types",
         "@ocaml_base//:shadow_stdlib",
         "@ocaml_base//:base",
+        # Phase 8 wave B: the ppx half (translated; ppxlib.traverse joined the
+        # ppxlib override for ppx_sexp_conv's expander). The e2e deriving test
+        # lives in examples/jst_ppx.
+        "@ocaml_ppxlib//:ppxlib_traverse",
+        "@ocaml_ppxlib_jane//:ppxlib_jane",
+        "@ocaml_ppx_compare//:ppx_compare",
+        "@ocaml_ppx_compare//:ppx_compare_lib",
+        "@ocaml_ppx_sexp_conv//:ppx_sexp_conv",
+        "@ocaml_ppx_sexp_conv//:ppx_sexp_conv_lib",
+        "@ocaml_ppx_hash//:ppx_hash",
+        "@ocaml_ppx_hash//:ppx_hash_lib",
     ],
 )

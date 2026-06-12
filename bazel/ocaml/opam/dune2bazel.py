@@ -19,7 +19,10 @@ ppx_deriver)`; `flags`/`ocamlopt_flags` (minus :standard);
 stage-by-basename is exactly the flat namespace); `(ocamlyacc ...)` /
 `(ocamllex ...)` stanzas (the globbed .mly/.mll go through the driver's
 generation pipeline); `modules_without_implementation` (inert: mli-only
-modules compile naturally).
+modules compile naturally); `ppx_runtime_libraries` (validated on the
+declaring library, materialized on (pps ...) consumers as
+preprocess_runtime_deps via the lock's ppx_runtime tables -- dune's
+propagation, reproduced data-driven).
 
 Anything else that changes build semantics -- module filtering, C stubs,
 `(rule)` codegen, instrumentation -- is rejected loudly rather than silently
@@ -62,6 +65,13 @@ _SUPPORTED_LIBRARY_FIELDS = {
     # naturally (ocamldep -sort includes them; only .cmx are archived), so
     # the declaration is provably inert.
     "modules_without_implementation",
+    # Names the libraries that code REWRITTEN by this ppx links at run time.
+    # Our model keeps that on the consumer (the preprocess_runtime_deps attr,
+    # the convention established with ppx_deriving.runtime), so the field
+    # only validates here: every name must resolve against the lock, which
+    # catches a missing runtime package at fetch time instead of at the
+    # first consumer's link.
+    "ppx_runtime_libraries",
 }
 
 # Non-library stanzas that provably do not affect how the library compiles.
@@ -218,17 +228,25 @@ def _resolve_flags(stanza):
     return flags
 
 
-def _resolve_preprocess(stanza, name, lib_map):
-    """Translate (preprocess ...). Returns (ppx_target_lines, preprocess_attr)."""
+def _resolve_preprocess(stanza, name, lib_map, ppx_runtime_map):
+    """Translate (preprocess ...).
+
+    Returns (ppx_target_lines, preprocess_attr, runtime_dep_labels). The
+    runtime labels reproduce dune's ppx_runtime_libraries propagation: code
+    rewritten by (pps X) compiles against X's declared runtime libraries
+    (ppx_compare emits references to Ppx_compare_lib), so the consumer gets
+    them as preprocess_runtime_deps. The map comes from lock entries'
+    `ppx_runtime` tables via the extension.
+    """
     field = _field(stanza, "preprocess")
     if field is None:
-        return [], None
+        return [], None, []
     if (
         len(field) == 1
         and isinstance(field[0], tuple)
         and field[0][1] == "no_preprocessing"
     ):
-        return [], None
+        return [], None, []
     # future_syntax is dune's built-in shim that backports newer OCaml syntax
     # to older compilers; on a compiler at least as new as the syntax it
     # models it is the identity transform. The pinned sysroot is OCaml 5.3,
@@ -238,7 +256,7 @@ def _resolve_preprocess(stanza, name, lib_map):
         and isinstance(field[0], tuple)
         and field[0][1] == "future_syntax"
     ):
-        return [], None
+        return [], None, []
     if (
         len(field) == 1
         and isinstance(field[0], list)
@@ -247,6 +265,7 @@ def _resolve_preprocess(stanza, name, lib_map):
         and field[0][0][1] == "pps"
     ):
         rewriters = []
+        runtime = []
         for item in field[0][1:]:
             pps_name = _atom(item)
             if pps_name.startswith("-"):
@@ -260,6 +279,9 @@ def _resolve_preprocess(stanza, name, lib_map):
                     "bazel/ocaml/opam/lock.json (libs tables)." % pps_name
                 )
             rewriters.append(lib_map[pps_name])
+            for label in ppx_runtime_map.get(pps_name, []):
+                if label not in runtime:
+                    runtime.append(label)
         ppx_name = name + "_ppx"
         lines = [
             "",
@@ -271,7 +293,7 @@ def _resolve_preprocess(stanza, name, lib_map):
         ]
         lines += ['        "%s",' % r for r in rewriters]
         lines += ["    ],", ")"]
-        return lines, ":" + ppx_name
+        return lines, ":" + ppx_name, runtime
     sys.exit(
         "dune2bazel: unsupported (preprocess ...) form %r. Modeled: "
         "no_preprocessing and (pps ...); per_module/action forms need an "
@@ -298,7 +320,13 @@ def _parse_menhir(stanza):
 
 
 def gen_library(
-    stanza, src_dir, lib_map, menhir_modules=None, menhir_flags=None, recursive=False
+    stanza,
+    src_dir,
+    lib_map,
+    menhir_modules=None,
+    menhir_flags=None,
+    recursive=False,
+    ppx_runtime_map=None,
 ):
     for item in stanza[1:]:
         if not (isinstance(item, list) and item and isinstance(item[0], tuple)):
@@ -339,8 +367,14 @@ def gen_library(
         wrapped = False
 
     opam_deps, deps = _resolve_libraries(_field(stanza, "libraries") or [], lib_map)
+
+    # Validate-and-drop: runtime linkage stays on the consumer (see
+    # _SUPPORTED_LIBRARY_FIELDS), but unresolvable names reject loudly here.
+    _resolve_libraries(_field(stanza, "ppx_runtime_libraries") or [], lib_map)
     flags = _resolve_flags(stanza)
-    ppx_lines, preprocess = _resolve_preprocess(stanza, name, lib_map)
+    ppx_lines, preprocess, runtime_deps = _resolve_preprocess(
+        stanza, name, lib_map, ppx_runtime_map or {}
+    )
 
     # (include_subdirs unqualified) pulls sources from subdirectories into the
     # same flat module namespace; the driver stages every source by basename,
@@ -358,6 +392,11 @@ def gen_library(
         lines.append("    wrapped = True,")
     if preprocess:
         lines.append('    preprocess = "%s",' % preprocess)
+    if runtime_deps:
+        lines.append(
+            "    preprocess_runtime_deps = [%s],"
+            % ", ".join('"%s"' % d for d in sorted(runtime_deps))
+        )
     if flags:
         lines.append(
             "    ocamlopt_flags = [%s]," % ", ".join('"%s"' % f for f in flags)
@@ -382,7 +421,7 @@ def gen_library(
     return "\n".join(lines) + "\n"
 
 
-def gen_dune_dir(dune_path, src_dir, lib_map):
+def gen_dune_dir(dune_path, src_dir, lib_map, ppx_runtime_map=None):
     """Translate every (library) stanza of one dune file; returns target text."""
     with open(dune_path, "r") as f:
         stanzas = parse(tokenize(f.read()))
@@ -442,10 +481,19 @@ def gen_dune_dir(dune_path, src_dir, lib_map):
                     menhir_modules,
                     menhir_flags,
                     recursive=recursive,
+                    ppx_runtime_map=ppx_runtime_map,
                 )
             )
         else:
-            out.append(gen_library(lib, src_dir, lib_map, recursive=recursive))
+            out.append(
+                gen_library(
+                    lib,
+                    src_dir,
+                    lib_map,
+                    recursive=recursive,
+                    ppx_runtime_map=ppx_runtime_map,
+                )
+            )
     return "".join(out)
 
 
@@ -461,6 +509,11 @@ def main(argv):
     ap.add_argument("--root", required=True, help="root Bazel module name")
     ap.add_argument("--lib-map-json", default="{}", help="findlib name -> Bazel label")
     ap.add_argument(
+        "--ppx-runtime-map-json",
+        default="{}",
+        help="pps rewriter name -> list of runtime dep Bazel labels",
+    )
+    ap.add_argument(
         "--dune-dir",
         action="append",
         required=True,
@@ -469,9 +522,10 @@ def main(argv):
     args = ap.parse_args(argv[1:])
 
     lib_map = json.loads(args.lib_map_json)
+    ppx_runtime_map = json.loads(args.ppx_runtime_map_json)
     out = [_HEADER % args.root]
     for d in args.dune_dir:
-        out.append(gen_dune_dir("%s/dune" % d, d, lib_map))
+        out.append(gen_dune_dir("%s/dune" % d, d, lib_map, ppx_runtime_map))
     sys.stdout.write("".join(out))
 
 
