@@ -37,6 +37,7 @@ SEMGREP_SRC_DIRS = [
     "libs/paths",
     "libs/gitignore",
     "libs/lib_parsing",
+    "libs/lib_parsing_tree_sitter",
 ]
 
 SEMGREP_LIBS = {
@@ -52,6 +53,7 @@ SEMGREP_LIBS = {
     "paths": ":paths",
     "gitignore": ":gitignore",
     "lib_parsing": ":lib_parsing",
+    "lib_parsing_tree_sitter": ":lib_parsing_tree_sitter",
 }
 
 OVERLAYS = [
