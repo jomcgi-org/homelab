@@ -105,7 +105,6 @@ build_test(
         "@ocaml_timedesc_tzdb//:timedesc_tzdb",
         "@ocaml_timedesc_tzlocal//:timedesc_tzlocal",
         "@ocaml_timedesc//:timedesc",
-        "@ocaml_pcre//:pcre",
         "@ocaml_ppx_deriving//:ppx_deriving_eq",
         "@ocaml_ppx_deriving//:ppx_deriving_ord",
         "@ocaml_ppx_deriving_yojson//:ppx_deriving_yojson",
@@ -119,6 +118,22 @@ build_test(
         "@ocaml_eio//:eio",
         "@ocaml_eio//:eio_utils",
         "@ocaml_eio//:eio_unix",
+        # Phase 8 wave D: the tree-sitter runtime binding chain (the bash
+        # grammar itself is exercised by examples/treesitter_bash, no-arm64).
+        "@ocaml_tsort//:tsort",
+        "@ocaml_tree_sitter_core//:tree_sitter_gen",
+    ],
+)
+
+# The cc_deps half of the ladder: everything here reaches a vendored C
+# library (commons links pcre + pcre2), and Bazel's C++ toolchain in CI
+# targets x86_64 only -- the established no-arm64 pattern (the OCaml driver
+# itself is per-arch native; only cc_library is restricted).
+build_test(
+    name = "ladder_builds_cc",
+    tags = ["no-arm64"],
+    targets = [
+        "@ocaml_pcre//:pcre",
         # Phase 8 wave D: libs/commons and libs/glob from the pinned tree
         # (commons' dune overlaid to its measured dependency set; glob brings
         # the internal profiling ppx and a menhir parser).
@@ -127,9 +142,5 @@ build_test(
         "@semgrep_src//:profiling",
         "@semgrep_src//:ppx_profiling",
         "@semgrep_src//:glob",
-        # Phase 8 wave D: the tree-sitter runtime binding chain (the bash
-        # grammar itself is exercised by examples/treesitter_bash, no-arm64).
-        "@ocaml_tsort//:tsort",
-        "@ocaml_tree_sitter_core//:tree_sitter_gen",
     ],
 )
