@@ -9,7 +9,6 @@ filegroup(
         # Exclude Go-rule reference fixtures that are not tested against yaml_rules.
         # Exclude SQL/generic and kubernetes-specific fixtures that are tested separately.
         exclude = [
-            "fixtures/no-em-dash.yaml",
             "fixtures/boto3-endpoint-url-missing-scheme.yaml",
             "fixtures/claude-print-missing-permission-mode.yaml",
             "fixtures/duckdb-bound-param-in-array-distance.yaml",
@@ -76,13 +75,6 @@ filegroup(
 filegroup(
     name = "no_stale_repo_paths_fixtures",
     srcs = ["fixtures/no-stale-repo-paths.md"],
-)
-
-# Fixture for the no-em-dash rule (languages: generic).
-# Referenced by //bazel/semgrep/rules:no_em_dash_test.
-filegroup(
-    name = "no_em_dash_fixtures",
-    srcs = ["fixtures/no-em-dash.yaml"],
 )
 
 # Fixture for the no-create-extension-sql rule (languages: generic, paths: **/migrations/*.sql).
