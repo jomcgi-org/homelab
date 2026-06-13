@@ -2090,16 +2090,6 @@ py_test(
 )
 
 py_test(
-    name = "stars_seed_test",
-    srcs = ["stars/seed_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "stars_forecast_test",
     srcs = ["stars/forecast_test.py"],
     imports = ["."],

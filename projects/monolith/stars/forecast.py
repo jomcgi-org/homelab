@@ -1,4 +1,9 @@
-"""MET Norway fetch + astronomy scoring for the stars seed sites."""
+"""MET Norway fetch + astronomy scoring for the stars sites.
+
+Sites come from the stars.sites table (sourced from the light-pollution grid,
+ADR 006). Callers pass a list of site dicts (id/lat/lon/altitude_m); this module
+fetches and scores each one's dark hours.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,6 @@ from astral import LocationInfo
 from astral.sun import elevation
 
 from stars.scoring import WeatherData, darkness_factor, quality_score
-from stars.seed import SCOTLAND_DARK_SKY_LOCATIONS, SeedLocation
 
 logger = logging.getLogger("monolith.stars.forecast")
 
@@ -24,7 +28,7 @@ RATE_LIMIT_PER_SEC = int(os.environ.get("STARS_RATE_LIMIT", "15"))
 HTTP_TIMEOUT = 30.0
 
 
-def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
+def score_location(loc: dict, forecast: dict) -> list[dict]:
     """All dark hours for one site ranked by quality, sorted by time ascending.
 
     ADR 007: every civil-dark hour (sun below -6 deg) is kept and scored by the
@@ -92,7 +96,7 @@ def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
 
 
 async def _fetch_and_score(
-    client: httpx.AsyncClient, loc: SeedLocation
+    client: httpx.AsyncClient, loc: dict
 ) -> tuple[str, list[dict] | None]:
     """Fetch + score one site. None means the fetch failed (keep stale rows)."""
     try:
@@ -113,18 +117,20 @@ async def _fetch_and_score(
     return loc["id"], score_location(loc, resp.json())
 
 
-async def fetch_all() -> dict[str, list[dict]]:
-    """Map site id -> scored future hours, for sites that fetched successfully."""
+async def fetch_all(sites: list[dict]) -> dict[str, list[dict]]:
+    """Map site id -> scored future hours, for sites that fetched successfully.
+
+    ``sites`` is the list of grid-sourced site dicts (id/lat/lon/altitude_m)
+    loaded from the stars.sites table by the refresh job.
+    """
     semaphore = asyncio.Semaphore(RATE_LIMIT_PER_SEC)
     async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
 
-        async def _bounded(loc: SeedLocation):
+        async def _bounded(loc: dict):
             async with semaphore:
                 result = await _fetch_and_score(client, loc)
                 await asyncio.sleep(1.0 / RATE_LIMIT_PER_SEC)  # stay under MET 20/s
                 return result
 
-        results = await asyncio.gather(
-            *(_bounded(loc) for loc in SCOTLAND_DARK_SKY_LOCATIONS)
-        )
+        results = await asyncio.gather(*(_bounded(loc) for loc in sites))
     return {sid: hours for sid, hours in results if hours is not None}
