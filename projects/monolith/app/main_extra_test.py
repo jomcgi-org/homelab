@@ -42,6 +42,7 @@ def _lifespan_patches_no_discord():
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
         patch("ships.on_startup_jobs"),
+        patch("hikes.on_startup_jobs"),
     ]
 
 
@@ -59,6 +60,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
         patch("ships.on_startup_jobs"),
+        patch("hikes.on_startup_jobs"),
     ]
 
 
@@ -148,6 +150,7 @@ class TestLifespanRunSchedulerLoopException:
             patch("sqlmodel.Session", return_value=mock_session),
             patch("home.on_startup_jobs"),
             patch("ships.on_startup_jobs"),
+            patch("hikes.on_startup_jobs"),
             patch(
                 "shared.scheduler.run_scheduler_loop",
                 new=failing_run_scheduler_loop,
@@ -178,6 +181,7 @@ class TestLifespanRunSchedulerLoopException:
             patch("sqlmodel.Session", return_value=mock_session),
             patch("home.on_startup_jobs"),
             patch("ships.on_startup_jobs"),
+            patch("hikes.on_startup_jobs"),
             patch(
                 "shared.scheduler.run_scheduler_loop",
                 new=failing_run_scheduler_loop,
