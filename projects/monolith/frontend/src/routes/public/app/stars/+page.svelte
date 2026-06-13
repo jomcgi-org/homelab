@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
 
@@ -7,6 +7,57 @@
 
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
+
+  // Night-filter chips (like the ships vessel-type legend): each night the
+  // forecast covers is a toggle, and StarsMap recolours every marker by the
+  // best score it reaches across the selected nights. `nights` is the sorted
+  // union of evening dates (YYYY-MM-DD) the API returns.
+  let nights = $derived(data.snapshot?.nights ?? []);
+  // Seeded all-on from the initial payload so SSR and first paint render every
+  // chip selected; the effect below then reconciles it across SSR refreshes.
+  let activeNights = $state(new Set(data.snapshot?.nights ?? []));
+  // Plain (non-reactive) mirror of the last night set we reconciled against, so
+  // the effect below only re-runs off `nights`, never off its own writes.
+  let knownNights = new Set();
+
+  // Keep the selection in step with each SSR refresh: new nights default to on,
+  // nights that fall off the horizon drop out, and the user's toggles survive
+  // the 30 min refresh. A full turnover (or first load) starts all-on.
+  $effect(() => {
+    const incoming = new Set(nights);
+    untrack(() => {
+      let next;
+      if (knownNights.size === 0) {
+        next = new Set(incoming);
+      } else {
+        next = new Set([...activeNights].filter((n) => incoming.has(n)));
+        for (const n of incoming) if (!knownNights.has(n)) next.add(n);
+      }
+      knownNights = incoming;
+      activeNights = next;
+    });
+  });
+
+  // Format a night key (the evening date) into a short "Sat 14" chip label.
+  // Noon UTC keeps the weekday/day from rolling across the date line when
+  // rendered in UK local time.
+  function nightLabel(key) {
+    const [y, m, d] = key.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12));
+    return dt.toLocaleDateString("en-GB", {
+      weekday: "short",
+      day: "numeric",
+      timeZone: "Europe/London",
+    });
+  }
+
+  function toggleNight(key) {
+    // Reassign (not mutate) so the $state Set re-renders the chips + map.
+    const next = new Set(activeNights);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    activeNights = next;
+  }
   // sites is already sorted by best_score descending, so the head is the best.
   let topScore = $derived(
     sites.length ? Math.round(sites[0].best_score ?? 0) : null,
@@ -60,7 +111,7 @@
 <div class="stars-page">
   <h1 class="sr-only">Dark-sky stargazing map, Scotland viewing windows</h1>
 
-  <StarsMap {sites} {nowMs} />
+  <StarsMap {sites} {activeNights} {nowMs} />
 
   <!-- Floating header: breadcrumb + headline stats, top-left clear of the map
        chrome (mirrors the hikes control head). -->
@@ -82,6 +133,25 @@
         </p>
       </div>
     </div>
+
+    {#if nights.length > 1}
+      <div class="panel night-filter">
+        <p class="filter-title">Nights</p>
+        <div class="night-chips">
+          {#each nights as night (night)}
+            <button
+              type="button"
+              class="night-chip"
+              class:is-off={!activeNights.has(night)}
+              aria-pressed={activeNights.has(night)}
+              onclick={() => toggleNight(night)}
+            >
+              {nightLabel(night)}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     {#if count === 0}
       <div class="panel empty-state" role="status">
@@ -204,6 +274,60 @@
     line-height: 1.5;
     letter-spacing: 0.02em;
     color: var(--ink-2);
+  }
+
+  /* Night-filter chips: a wrapped row of toggles, styled like the ships type
+     filter (bordered mono boxes; the off state dims but stays clickable). */
+  .filter-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    margin: 0 0 8px;
+  }
+
+  .night-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .night-chip {
+    padding: 5px 9px;
+    background: var(--ink);
+    color: var(--paper);
+    border: 2px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition:
+      transform 110ms ease,
+      box-shadow 110ms ease,
+      opacity 110ms ease,
+      background 110ms ease;
+  }
+
+  .night-chip:hover,
+  .night-chip:focus-visible {
+    transform: translate(-2px, -2px);
+    box-shadow: 2px 2px 0 var(--ink);
+  }
+
+  .night-chip:active {
+    transform: translate(-1px, -1px);
+    box-shadow: 1px 1px 0 var(--ink);
+  }
+
+  /* Deselected nights invert to paper + dim, so the active set reads at a
+     glance while staying clickable to re-enable. */
+  .night-chip.is-off {
+    background: var(--paper);
+    color: var(--ink);
+    opacity: 0.45;
   }
 
   @media (max-width: 640px) {
