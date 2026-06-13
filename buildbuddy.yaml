@@ -208,12 +208,13 @@ actions:
           set -eu
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
-          # Best-effort toolchain deps (non-fatal — the runner already ships zstd/
-          # curl per earlier runs; build-essential supplies cc + libc/crt to link
-          # the example Rust binary if the runner lacks them). apt failure must not
-          # kill the build, so we fall back to whatever is already present.
-          ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd curl build-essential) || true
-          echo "toolchain check: zstd=$(command -v zstd || echo no) curl=$(command -v curl || echo no) cc=$(command -v cc || echo no) gcc=$(command -v gcc || echo no)"
+          # zstd/curl to fetch+decompress the buck2 release (best-effort — the
+          # runner already ships them). No C toolchain is needed on the runner:
+          # build actions run on BuildBuddy RE (BUCK_PREFER_REMOTE below), where
+          # the example Rust binary compiles/links against the RE container's
+          # toolchain — exactly like loom.
+          (command -v zstd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || \
+            ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd curl) || true
 
           # Install the pinned buck2 release (x86_64 linux runner).
           BUCK2_RELEASE="2026-05-18"
@@ -225,6 +226,9 @@ actions:
           # The buck2 prelude is a submodule excluded from the Bazel checkout.
           git submodule update --init --recursive prelude
 
+          # Prefer RE for every action that can run remotely (so Rust links on the
+          # RE container); apko genrules opt out (network) and run on the runner.
+          export BUCK_PREFER_REMOTE=true
           /tmp/buck2 --version
           /tmp/buck2 build //tools/buck2/...
           /tmp/buck2 test  //tools/buck2/...

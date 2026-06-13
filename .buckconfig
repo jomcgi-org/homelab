@@ -36,5 +36,19 @@
 [build]
   execution_platforms = root//tools/buck2/platforms:default
 
+# Build actions run on BuildBuddy remote execution, exactly like loom — the
+# rbe-ubuntu24-04 container has a full toolchain, so Rust compiles/links there
+# without the workflow runner needing one. Set BUCK_PREFER_REMOTE=true so actions
+# prefer RE (otherwise hybrid runs local). apko genrules need network, so they
+# opt out of RE via the uses_undeclared_inputs local label.
+[project]
+  remote_enabled = true
+
 [buck2]
   digest_algorithms = SHA256
+
+[buck2_re_client]
+  engine_address = remote.buildbuddy.io
+  action_cache_address = remote.buildbuddy.io
+  cas_address = remote.buildbuddy.io
+  http_headers = x-buildbuddy-api-key:$BUILDBUDDY_API_KEY
