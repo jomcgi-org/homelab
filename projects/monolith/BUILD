@@ -1788,6 +1788,16 @@ py_test(
 )
 
 py_test(
+    name = "shared_forecast_freshness_test",
+    srcs = ["shared/forecast_freshness_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "shared_chunker_test",
     srcs = ["shared/chunker_test.py"],
     imports = ["."],
