@@ -19,12 +19,19 @@ argo-cd:
       # injected fields cluster-wide, keyed by field rather than by a name list,
       # so any real change to other Deployment fields still surfaces.
       # Policy: projects/platform/kyverno/templates/otel-injection-policy.yaml.
+      #
+      # Also ignore kubectl.kubernetes.io/restartedAt: it is written by
+      # `kubectl rollout restart`, never appears in a chart, and otherwise leaves
+      # any manually-restarted Deployment permanently OutOfSync (e.g. monolith
+      # carried one from an April restart). The "/" in the annotation key is
+      # JSON-Pointer-escaped as "~1".
       resource.customizations.ignoreDifferences.apps_Deployment: |
         jqPathExpressions:
           - '.spec.template.spec.containers[].env[]? | select(.name | startswith("OTEL_"))'
           - '.spec.template.spec.initContainers[]?.env[]? | select(.name | startswith("OTEL_"))'
         jsonPointers:
           - /spec/template/metadata/annotations/otel.injected-by
+          - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
     rbac:
       policy.csv: |
         p, mcp-agent, applications, *, */*, allow
