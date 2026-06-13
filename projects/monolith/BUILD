@@ -118,6 +118,7 @@ py_library(
     deps = [
         "@pip//astral",
         "@pip//beautifulsoup4",
+        "@pip//boto3",
         "@pip//certifi",
         "@pip//discord_py",
         "@pip//dulwich",
@@ -2102,6 +2103,17 @@ py_test(
 py_test(
     name = "stars_jobs_test",
     srcs = ["stars/jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "stars_grid_test",
+    srcs = ["stars/grid_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
