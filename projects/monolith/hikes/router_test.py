@@ -35,7 +35,10 @@ def _uk_days(windows):
     uk = ZoneInfo("Europe/London")
     return sorted(
         {
-            datetime.fromtimestamp(w[0], tz=timezone.utc).astimezone(uk).date().isoformat()
+            datetime.fromtimestamp(w[0], tz=timezone.utc)
+            .astimezone(uk)
+            .date()
+            .isoformat()
             for w in windows
         }
     )
