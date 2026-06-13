@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Upstream chart and dependency drift",
+  "labels": ["dependencies", "upstream-chart"],
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "enabledManagers": ["argocd", "helmv3"],
+  "argocd": {
+    "fileMatch": ["projects/.+/application\\.yaml$"]
+  },
+  "packageRules": [
+    {
+      "description": "First-party charts are owned by chart-version-bot, never Renovate.",
+      "matchDepNames": [
+        "monolith",
+        "agent-platform",
+        "cluster-agents",
+        "lakehouse",
+        "signoz-dashboard-sidecar",
+        "oci-model-cache-operator"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Self-referential git sources (deploy values pulled from our own repo) are not upgrade targets.",
+      "matchDepNames": [
+        "https://github.com/jomcgi/homelab",
+        "https://github.com/jomcgi/homelab.git"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Keep upstream chart majors as separate, clearly labelled PRs so the chart-upgrades skill can judge them in isolation.",
+      "matchManagers": ["argocd", "helmv3"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-upgrade"],
+      "separateMajorMinor": true
+    },
+    {
+      "description": "Never automerge. The chart-upgrades skill (or a human) reads the changelog and decides.",
+      "matchManagers": ["argocd", "helmv3"],
+      "automerge": false
+    }
+  ]
+}
