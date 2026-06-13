@@ -129,6 +129,7 @@
                   <a
                     href={app.href}
                     class="md-apps-item"
+                    data-app={app.slug}
                     role="menuitem"
                     onclick={() => (open = false)}
                   >
@@ -292,7 +293,6 @@
     padding: 8px;
     background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
     border: 2px solid #1a1a1a;
-    box-shadow: 4px 4px 0 #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     animation: md-apps-in 120ms ease;
   }
 
@@ -319,11 +319,32 @@
       border-color 120ms ease;
   }
 
+  /* On hover/focus the row tints with the app's accent and the icon tile
+     fills with the full accent; the ink border + ink icon stroke stay for
+     brutalist contrast. Accents are keyed off the data-app attribute so
+     each app highlights in its own colour (Hikes green, Ships blue). */
   .md-apps-item:hover,
   .md-apps-item:focus-visible {
-    background: #f3ede1; /* nosemgrep: svelte-hardcoded-color-in-style */
     border-color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     outline: none;
+  }
+
+  .md-apps-item[data-app="hikes"]:hover,
+  .md-apps-item[data-app="hikes"]:focus-visible {
+    background: #e8fbef; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="hikes"]:hover .md-apps-icon,
+  .md-apps-item[data-app="hikes"]:focus-visible .md-apps-icon {
+    background: #4ade80; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+
+  .md-apps-item[data-app="ships"]:hover,
+  .md-apps-item[data-app="ships"]:focus-visible {
+    background: #e7f4ff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="ships"]:hover .md-apps-icon,
+  .md-apps-item[data-app="ships"]:focus-visible .md-apps-icon {
+    background: #6fc2ff; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
   .md-apps-icon {
@@ -335,6 +356,7 @@
     color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
     border: 2px solid #1a1a1a;
+    transition: background 120ms ease;
   }
 
   .md-apps-text {
