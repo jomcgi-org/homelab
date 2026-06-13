@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from stars.models import Site, SiteHour
+from stars.models import Site, SiteHour, SiteMonthStat
 
 
 @pytest.fixture(name="session")
@@ -46,6 +46,8 @@ def test_site_hour_roundtrip(session):
         air_temperature=8.0,
         dew_spread=5.0,
         sun_elevation_deg=-18.5,
+        darkness_factor=1.0,
+        cloud_factor=0.9,
         symbol="clearsky_night",
     )
     session.add(row)
@@ -61,6 +63,8 @@ def test_site_hour_roundtrip(session):
     assert loaded.air_temperature == 8.0
     assert loaded.dew_spread == 5.0
     assert loaded.sun_elevation_deg == -18.5
+    assert loaded.darkness_factor == 1.0
+    assert loaded.cloud_factor == 0.9
     assert loaded.symbol == "clearsky_night"
     # SQLite returns naive datetimes (no tz-aware type), so assert the type
     # only, not tzinfo, matching hikes/models_test. Production is Postgres
@@ -126,6 +130,55 @@ def test_default_symbol_is_empty(session):
     loaded = session.get(SiteHour, ("tiree", hour))
     assert loaded is not None
     assert loaded.symbol == ""
+    # Factors carry their column defaults when not supplied.
+    assert loaded.darkness_factor == 0.0
+    assert loaded.cloud_factor == 0.0
+
+
+def test_site_month_stat_roundtrip(session):
+    row = SiteMonthStat(
+        site_id="galloway-forest",
+        month=12,
+        window_count=47,
+        sum_q=2800.5,
+        sum_darkness=44.0,
+        sum_clarity=39.5,
+    )
+    session.add(row)
+    session.commit()
+
+    loaded = session.get(SiteMonthStat, ("galloway-forest", 12))
+    assert loaded is not None
+    assert loaded.window_count == 47
+    assert loaded.sum_q == 2800.5
+    assert loaded.sum_darkness == 44.0
+    assert loaded.sum_clarity == 39.5
+
+
+def test_site_month_stat_defaults(session):
+    # window_count and the sums carry their column defaults.
+    row = SiteMonthStat(site_id="tiree", month=6)
+    session.add(row)
+    session.commit()
+
+    loaded = session.get(SiteMonthStat, ("tiree", 6))
+    assert loaded is not None
+    assert loaded.window_count == 0
+    assert loaded.sum_q == 0.0
+    assert loaded.sum_darkness == 0.0
+    assert loaded.sum_clarity == 0.0
+
+
+def test_site_month_stat_composite_pk_same_site_different_months(session):
+    common = {"site_id": "iona", "window_count": 1, "sum_q": 50.0}
+    session.add(SiteMonthStat(month=1, **common))
+    session.add(SiteMonthStat(month=2, **common))
+    session.commit()
+
+    rows = session.exec(
+        select(SiteMonthStat).where(SiteMonthStat.site_id == "iona")
+    ).all()
+    assert {r.month for r in rows} == {1, 2}
 
 
 def test_composite_primary_key_same_site_different_hours(session):
