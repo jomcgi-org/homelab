@@ -2121,6 +2121,19 @@ py_test(
 )
 
 py_test(
+    name = "stars_router_test",
+    srcs = ["stars/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "hikes_walkhighlands_test",
     srcs = ["hikes/walkhighlands_test.py"],
     imports = ["."],
