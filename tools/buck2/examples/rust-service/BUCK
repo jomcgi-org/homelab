@@ -1,0 +1,10 @@
+# Basic Rust service built with buck2's `rust_binary` (the same primitive loom
+# uses), compiled as a static musl binary by the hermetic Rust toolchain. The
+# binary is layered onto an apko/Wolfi base image by :image below.
+
+rust_binary(
+    name = "server",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    visibility = ["PUBLIC"],
+)

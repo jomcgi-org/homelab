@@ -207,10 +207,12 @@ actions:
           set -eu
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
-          # curl + zstd to fetch/decompress the buck2 release binary.
-          if ! command -v zstd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+          # curl + zstd to fetch/decompress the buck2 release binary; build-essential
+          # provides the `cc` + libc/crt the prelude's cxx toolchain uses to link
+          # the example Rust binary (the hermetic Rust toolchain brings rustc/std).
+          if ! command -v zstd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v cc >/dev/null 2>&1; then
             $SUDO apt-get update -qq
-            $SUDO apt-get install -y -qq zstd curl
+            $SUDO apt-get install -y -qq zstd curl build-essential
           fi
 
           # Install the pinned buck2 release (x86_64 linux runner).
