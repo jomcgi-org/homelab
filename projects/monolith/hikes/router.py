@@ -1,15 +1,109 @@
 """Hikes HTTP API. SSR-only: never added to httproute-public.yaml.
 
+One read endpoint backs the /app/hikes walk planner:
+
+- ``GET /api/hikes/walks``, the whole walk corpus with viable weather
+  windows, for the initial page render.
+
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/hikes page is the public surface and the CDN fans out to viewers.
+Conditional GETs short-circuit with a 304 via ETag.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request, Response
+from sqlmodel import Session, select
+
+from app.db import get_session
+from hikes.models import Walk
 
 logger = logging.getLogger("hikes")
 
 router = APIRouter(prefix="/api/hikes", tags=["hikes"])
+
+# Forecasts refresh 6-hourly, so 30 min fresh with a 1 h SWR window is plenty.
+# Mirrors HIKES_WALKS_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
+_WALKS_CACHE_CONTROL = (
+    "public, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
+)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Coerce a datetime to tz-aware UTC.
+
+    Postgres returns tz-aware values; SQLite (used in tests) can return
+    naive ones even though we always write tz-aware UTC. Treat naive
+    datetimes as UTC so downstream formatters and ETag stamps are stable
+    across both backends.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _iso(value: datetime | None) -> str | None:
+    """ISO-8601 string in UTC, or None. Keeps the JSON consistent across backends."""
+    coerced = _as_utc(value)
+    return coerced.isoformat() if coerced is not None else None
+
+
+def _walks_etag(walk_count: int, max_updated: datetime | None) -> str:
+    """Stable ETag for the walks payload.
+
+    Combines max(windows_updated_at) with the row count so a walk appearing
+    or disappearing invalidates the cache even when no surviving row's
+    timestamp moves.
+    """
+    stamp = max_updated.isoformat() if max_updated is not None else "null"
+    return f'"{stamp}-{walk_count}"'
+
+
+@router.get("/walks")
+def get_walks(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """The whole walk corpus for the /app/hikes planner. SSR-only, CDN-cached."""
+    rows = session.exec(select(Walk).order_by(Walk.name)).all()
+
+    walks = []
+    max_updated: datetime | None = None
+    for walk in rows:
+        updated = _as_utc(walk.windows_updated_at)
+        if updated is not None and (max_updated is None or updated > max_updated):
+            max_updated = updated
+        walks.append(
+            {
+                "uuid": walk.uuid,
+                "name": walk.name,
+                "url": walk.url,
+                "distance_km": walk.distance_km,
+                "ascent_m": walk.ascent_m,
+                "duration_h": walk.duration_h,
+                "summary": walk.summary,
+                "latitude": walk.latitude,
+                "longitude": walk.longitude,
+                "windows": walk.windows,
+            }
+        )
+
+    etag = _walks_etag(len(walks), max_updated)
+    headers = {"Cache-Control": _WALKS_CACHE_CONTROL, "ETag": etag}
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+
+    for key, value in headers.items():
+        response.headers[key] = value
+    return {
+        "count": len(walks),
+        "generated_at": _iso(max_updated),
+        "walks": walks,
+    }
