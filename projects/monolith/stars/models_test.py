@@ -101,8 +101,6 @@ def test_composite_primary_key_same_site_different_hours(session):
     session.add(SiteHour(hour_time=hour_b, **common))
     session.commit()
 
-    rows = session.exec(
-        select(SiteHour).where(SiteHour.site_id == "iona")
-    ).all()
+    rows = session.exec(select(SiteHour).where(SiteHour.site_id == "iona")).all()
     assert len(rows) == 2
     assert {r.hour_time for r in rows} == {hour_a, hour_b}
