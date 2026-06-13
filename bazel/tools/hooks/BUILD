@@ -93,3 +93,9 @@ sh_test(
     srcs = ["check-asyncio-mark-build-dep_test.sh"],
     data = [":check-asyncio-mark-build-dep.sh"],
 )
+
+sh_test(
+    name = "check_lifespan_startup_mock_sync_test",
+    srcs = ["check-lifespan-startup-mock-sync_test.sh"],
+    data = [":check-lifespan-startup-mock-sync.sh"],
+)
