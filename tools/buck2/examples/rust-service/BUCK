@@ -1,4 +1,5 @@
 load("//tools/buck2/apko:defs.bzl", "apko_image")
+load("//tools/buck2/helm:defs.bzl", "helm_chart")
 load("//tools/buck2/oci:defs.bzl", "oci_image", "tar_layer")
 
 # Basic Rust service built with buck2's `rust_binary` (the same primitive loom
@@ -31,4 +32,12 @@ oci_image(
     name = "image",
     base = ":base",
     layers = [":server_layer"],
+)
+
+# A basic Helm chart that deploys the rust image. `deps = [":image"]` makes the
+# chart depend on the image — building the chart builds the image.
+helm_chart(
+    name = "chart",
+    srcs = glob(["chart/**"]),
+    deps = [":image"],
 )
