@@ -118,9 +118,7 @@ def _load_coords() -> list[tuple[str, float, float]]:
         )
 
 
-def _persist_windows(
-    windows_by_uuid: dict[str, list], now: datetime
-) -> int:
+def _persist_windows(windows_by_uuid: dict[str, list], now: datetime) -> int:
     """Write recomputed windows in a fresh session. Returns total window count.
 
     Walks absent from windows_by_uuid keep their previous windows (the caller
