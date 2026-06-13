@@ -1,9 +1,9 @@
-load(":rust_dist.bzl", "hermetic_rust_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load(":rust_dist.bzl", "hermetic_rust_toolchain")
 
 # Minimal `toolchains` cell for homelab's buck2 project. The image/helm rules in
 # tools/buck2/** are CLI wrappers (apko/crane/helm/yq) built with `genrule`, so
