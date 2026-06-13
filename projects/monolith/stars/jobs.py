@@ -20,7 +20,7 @@ from sqlmodel import Session, delete, select
 
 from shared.forecast_freshness import top_of_hour
 from stars.forecast import fetch_all
-from stars.models import Site, SiteHour
+from stars.models import Site, SiteHour, SiteMonthStat
 
 logger = logging.getLogger("monolith.stars.jobs")
 
@@ -46,14 +46,24 @@ def _load_sites() -> list[dict]:
 
 
 def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime) -> int:
-    """Wholesale-replace rows for every fetched site. Returns rows written.
+    """Replace each fetched site's FUTURE hours. Returns rows written.
 
-    One bulk delete of the fetched sites' existing rows, then one add_all of the
-    new rows, so there is no per-iteration session.add. Sites absent from
-    ``scored`` (failed fetch) are untouched: stale beats empty.
+    Deletes only hours at or after the current clock hour for the fetched sites,
+    then add_all of the new (future) scored hours, so there is no per-iteration
+    session.add. Elapsed rows (hour_time < top_of_hour) are intentionally left
+    in place: the hourly prune is the sole remover of elapsed hours and banks
+    them into stars.site_month_stats exactly once before deleting (ADR 008). A
+    wholesale delete here would drop those rows before the prune could bank
+    them. Sites absent from ``scored`` (failed fetch) are untouched: stale beats
+    empty.
     """
     site_ids = list(scored.keys())
-    session.execute(delete(SiteHour).where(SiteHour.site_id.in_(site_ids)))
+    cutoff = top_of_hour(now)
+    session.execute(
+        delete(SiteHour).where(
+            SiteHour.site_id.in_(site_ids), SiteHour.hour_time >= cutoff
+        )
+    )
     new_rows = [
         SiteHour(
             site_id=site_id,
@@ -89,13 +99,58 @@ def _persist_sites(scored: dict[str, list[dict]]) -> int:
 
 
 def _prune_elapsed(session: Session) -> int:
-    """Delete rows whose clock hour has elapsed. Returns rows deleted.
+    """Bank then delete rows whose clock hour has elapsed. Returns rows deleted.
 
     The cutoff is the top of the current UTC clock hour: rows whose hour_time is
     strictly before it have elapsed. cutoff is tz-aware UTC, so the comparison
     stays tz-aware against the TIMESTAMPTZ column.
+
+    ADR 008 exactly-once banking: this is the SOLE remover of elapsed hours, so
+    each elapsing hour is accumulated into stars.site_month_stats once, then
+    deleted. The aggregation is done in Python (grouping by the hour's
+    month-of-year) rather than a Postgres ``extract()`` / ``ON CONFLICT`` upsert
+    so the same core is portable to the SQLite create_all test fixtures. The
+    elapsing set is small (one clock hour's worth), so the loop is cheap.
     """
     cutoff = top_of_hour()
+    elapsing = session.exec(select(SiteHour).where(SiteHour.hour_time < cutoff)).all()
+
+    # Accumulate the per-(site, month-of-year) sufficient statistics in memory.
+    buckets: dict[tuple[str, int], dict[str, float]] = {}
+    for row in elapsing:
+        key = (row.site_id, row.hour_time.month)
+        agg = buckets.setdefault(
+            key, {"count": 0, "sum_q": 0.0, "sum_darkness": 0.0, "sum_clarity": 0.0}
+        )
+        agg["count"] += 1
+        agg["sum_q"] += row.score
+        agg["sum_darkness"] += row.darkness_factor
+        agg["sum_clarity"] += row.cloud_factor
+
+    # Bank each bucket: increment the existing month row in place, or add a new
+    # one. New rows are collected and add_all'd once (no session.add in a loop).
+    new_rows: list[SiteMonthStat] = []
+    for (site_id, month), agg in buckets.items():
+        stat = session.get(SiteMonthStat, (site_id, month))
+        if stat is None:
+            new_rows.append(
+                SiteMonthStat(
+                    site_id=site_id,
+                    month=month,
+                    window_count=agg["count"],
+                    sum_q=agg["sum_q"],
+                    sum_darkness=agg["sum_darkness"],
+                    sum_clarity=agg["sum_clarity"],
+                )
+            )
+        else:
+            stat.window_count += agg["count"]
+            stat.sum_q += agg["sum_q"]
+            stat.sum_darkness += agg["sum_darkness"]
+            stat.sum_clarity += agg["sum_clarity"]
+    if new_rows:
+        session.add_all(new_rows)
+
     result = session.execute(delete(SiteHour).where(SiteHour.hour_time < cutoff))
     return result.rowcount or 0
 

@@ -21,9 +21,9 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from sqlmodel import Session, delete
+from sqlmodel import Session, delete, select
 
-from stars.models import Site
+from stars.models import Site, SiteHour
 
 logger = logging.getLogger("monolith.stars.grid")
 
@@ -133,6 +133,14 @@ def _load_grid_sync() -> int:
     with Session(get_engine()) as session:
         session.execute(delete(Site))
         session.add_all(rows)
+        # Clean orphaned forecast hours for sites no longer in the grid: the
+        # add_all above autoflushes before the subquery runs, so this sees the
+        # new grid. site_month_stats orphans are intentionally left (ADR 008):
+        # the banked monthly history is worth keeping even if a grid point is
+        # dropped, and the table is bounded at 12 rows per site.
+        session.execute(
+            delete(SiteHour).where(SiteHour.site_id.notin_(select(Site.id)))
+        )
         session.commit()
     return len(rows)
 
