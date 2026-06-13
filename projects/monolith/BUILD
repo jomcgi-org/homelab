@@ -2127,6 +2127,17 @@ py_test(
 )
 
 py_test(
+    name = "stars_climatology_test",
+    srcs = ["stars/climatology_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "stars_router_test",
     srcs = ["stars/router_test.py"],
     imports = ["."],

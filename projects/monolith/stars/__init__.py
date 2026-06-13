@@ -20,7 +20,7 @@ def register(app: FastAPI) -> None:
 
 def on_startup_jobs(session: Session) -> None:
     from shared.scheduler import register_job
-    from stars.grid import load_grid_handler
+    from stars.grid import load_climatology_handler, load_grid_handler
     from stars.jobs import prune_hours_handler, refresh_handler
 
     register_job(
@@ -28,6 +28,13 @@ def on_startup_jobs(session: Session) -> None:
         name="stars.load_grid",
         interval_secs=6 * 3600,
         handler=load_grid_handler,
+        ttl_secs=600,
+    )
+    register_job(
+        session,
+        name="stars.load_climatology",
+        interval_secs=24 * 3600,
+        handler=load_climatology_handler,
         ttl_secs=600,
     )
     register_job(

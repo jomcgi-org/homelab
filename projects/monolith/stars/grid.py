@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, delete, select
 
-from stars.models import Site, SiteHour
+from stars.models import Site, SiteHour, SiteMonthClimatology
 
 logger = logging.getLogger("monolith.stars.grid")
 
@@ -159,4 +159,113 @@ async def load_grid_handler(session: Session) -> datetime | None:
 
     count = await asyncio.to_thread(_load_grid_sync)
     logger.info("stars.load_grid: %d sites", count)
+    return None
+
+
+def _fetch_climatology() -> list[dict] | None:
+    """Read climatology.json from SeaweedFS; None on missing endpoint or any error.
+
+    The ERA5 backfill (ADR 009): an offline step uploads per-site, per-month-of-year
+    sufficient stats out-of-band. A missing/empty ``SEAWEEDFS_S3_ENDPOINT`` is the
+    expected state in environments without SeaweedFS (e.g. local dev): log a warning
+    and no-op rather than crash. Any S3/parse error is also swallowed to a warning
+    so a bad object never wedges the scheduler.
+    """
+    if not os.environ.get("SEAWEEDFS_S3_ENDPOINT", "").strip():
+        logger.warning("stars.load_climatology: SEAWEEDFS_S3_ENDPOINT unset, skipping")
+        return None
+    bucket = os.environ.get("STARS_GRID_S3_BUCKET", "stars")
+    key = os.environ.get("STARS_CLIMATOLOGY_S3_KEY", "climatology.json")
+    try:
+        s3 = _s3_client()
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read()
+        data = json.loads(body)
+    except Exception as exc:
+        logger.warning(
+            "stars.load_climatology: failed to fetch %s/%s: %s", bucket, key, exc
+        )
+        return None
+    if not isinstance(data, list):
+        logger.warning(
+            "stars.load_climatology: climatology.json is not a JSON array, skipping"
+        )
+        return None
+    return data
+
+
+def _load_climatology_sync() -> int:
+    """Wholesale-replace stars.site_month_climatology from the backfill. Returns rows written.
+
+    Malformed rows (missing site_id/month, non-numeric stats, or month outside
+    1-12) are skipped with a logged count. The delete + add_all run in one
+    transaction so a failure leaves the prior table intact rather than truncating
+    it.
+    """
+    from app.db import get_engine
+
+    backfill = _fetch_climatology()
+    if not backfill:
+        return 0
+
+    rows: list[SiteMonthClimatology] = []
+    skipped = 0
+    for entry in backfill:
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        site_id = entry.get("site_id")
+        month = entry.get("month")
+        if site_id is None or month is None:
+            skipped += 1
+            continue
+        try:
+            month_int = int(month)
+            if not 1 <= month_int <= 12:
+                skipped += 1
+                continue
+            rows.append(
+                SiteMonthClimatology(
+                    site_id=str(site_id),
+                    month=month_int,
+                    window_count=int(entry.get("window_count") or 0),
+                    sum_q=float(entry.get("sum_q") or 0.0),
+                    sum_darkness=float(entry.get("sum_darkness") or 0.0),
+                    sum_clarity=float(entry.get("sum_clarity") or 0.0),
+                )
+            )
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+    if skipped:
+        logger.warning(
+            "stars.load_climatology: skipped %d malformed climatology rows", skipped
+        )
+    if not rows:
+        logger.warning(
+            "stars.load_climatology: no valid climatology rows, leaving table intact"
+        )
+        return 0
+
+    with Session(get_engine()) as session:
+        # synchronize_session=False: a wholesale clear before reload; there are
+        # no in-session objects to keep in sync, so skip the ORM evaluator.
+        session.execute(
+            delete(SiteMonthClimatology).execution_options(synchronize_session=False)
+        )
+        session.add_all(rows)
+        session.commit()
+    return len(rows)
+
+
+async def load_climatology_handler(session: Session) -> datetime | None:
+    """Ingest the ERA5 climatology backfill into stars.site_month_climatology.
+
+    The S3 fetch + DB write run together in a worker thread with their own fresh
+    session; this handler never touches the passed session on the event loop.
+    """
+    import asyncio
+
+    count = await asyncio.to_thread(_load_climatology_sync)
+    logger.info("stars.load_climatology: %d rows", count)
     return None
