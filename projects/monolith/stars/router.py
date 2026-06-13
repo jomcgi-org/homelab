@@ -1,10 +1,13 @@
 """Stars HTTP API. SSR-only: never added to httproute-public.yaml.
 
-One read endpoint backs the /app/stars dark-sky planner:
+Two read endpoints back the /app/stars dark-sky planner:
 
 - ``GET /api/stars/sites``, every dark-sky site (from stars.sites, sourced from
   the light-pollution grid) joined with its best upcoming viewing hours, for the
-  site list + detail cards.
+  site list + detail cards (the live layer).
+- ``GET /api/stars/history``, per-site accumulated realized quality for a
+  calendar month (from stars.site_month_stats, banked by the hourly prune as
+  forecast hours elapse), for the historical heatmap layer (ADR 008).
 
 Each hour's ``score`` is the ADR 007 continuous stargazing quality (0..100,
 Q = darkness x cloud x weather), not the old additive astronomy score with a
@@ -27,12 +30,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlmodel import Session, select
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import Site, SiteHour
+from stars.models import Site, SiteHour, SiteMonthStat
 
 logger = logging.getLogger("stars")
 
@@ -198,4 +201,74 @@ def get_sites(
         "total_sites": len(by_id),
         "nights": nights,
         "fetched_at": _iso(max_fetched),
+    }
+
+
+@router.get("/history")
+def get_history(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+    month: int = Query(
+        default=0, ge=0, le=12, description="Month-of-year 1-12; 0 = current UTC month"
+    ),
+):
+    """Per-site accumulated realized quality for a calendar month. SSR-only.
+
+    The historical heatmap layer (ADR 008): for the selected month-of-year, each
+    site with banked stats reports its quality-weighted frequency ``sum_q`` (the
+    headline heat metric) plus the component decomposition (average darkness and
+    clarity over ``window_count`` hours). ``month`` defaults to the current UTC
+    month. Sites with no banked hours for the month are omitted (the layer is
+    sparse until it fills). Ordered by ``sum_q`` descending. CDN-cached with the
+    same headers as ``/sites``; conditional GETs short-circuit with a 304.
+    """
+    selected = month or datetime.now(timezone.utc).month
+
+    by_id = {site.id: site for site in session.exec(select(Site)).all()}
+    stats = session.exec(
+        select(SiteMonthStat).where(SiteMonthStat.month == selected)
+    ).all()
+
+    sites = []
+    for stat in stats:
+        meta = by_id.get(stat.site_id)
+        if meta is None:
+            # site_month_stats orphans (a site dropped from the grid) are kept
+            # as historical record but have no metadata to render; skip them.
+            logger.debug("stars.history: skipping unknown site_id %s", stat.site_id)
+            continue
+        if stat.window_count <= 0:
+            # Guard against a zero-count row producing a divide-by-zero average.
+            continue
+        sites.append(
+            {
+                "id": meta.id,
+                "name": meta.name,
+                "lat": meta.lat,
+                "lon": meta.lon,
+                "sum_q": stat.sum_q,
+                "window_count": stat.window_count,
+                "avg_darkness": stat.sum_darkness / stat.window_count,
+                "avg_clarity": stat.sum_clarity / stat.window_count,
+            }
+        )
+
+    sites.sort(key=lambda s: s["sum_q"], reverse=True)
+
+    # The ETag folds in the selected month, the site count, and the current max
+    # sum_q: as the prune banks more hours the max grows and the CDN turns over.
+    max_sum_q = max((s["sum_q"] for s in sites), default=0.0)
+    etag = f'"v1-{selected}-{len(sites)}-{max_sum_q}"'
+    headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+
+    for key, value in headers.items():
+        response.headers[key] = value
+    return {
+        "month": selected,
+        "sites": sites,
+        "count": len(sites),
     }

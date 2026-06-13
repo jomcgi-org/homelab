@@ -22,7 +22,7 @@ from sqlmodel.pool import StaticPool
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import Site, SiteHour
+from stars.models import Site, SiteHour, SiteMonthStat
 from stars.router import _SITES_CACHE_CONTROL, router
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
@@ -257,3 +257,112 @@ class TestSites:
         # Top-level nights is the sorted union of the per-site night keys.
         assert body["nights"] == sorted(set(night_scores))
         assert body["nights"] == sorted(body["nights"])
+
+
+class TestHistory:
+    def _seed_stat(
+        self,
+        session,
+        site_id,
+        month,
+        window_count,
+        sum_q,
+        sum_darkness,
+        sum_clarity,
+    ):
+        session.add(
+            SiteMonthStat(
+                site_id=site_id,
+                month=month,
+                window_count=window_count,
+                sum_q=sum_q,
+                sum_darkness=sum_darkness,
+                sum_clarity=sum_clarity,
+            )
+        )
+
+    def test_month_filter_ordering_and_derived_averages(self, client, session):
+        _seed_site(session, "galloway-forest")
+        _seed_site(session, "tomintoul")
+        # December stats: galloway leads on sum_q.
+        self._seed_stat(session, "galloway-forest", 12, 40, 3200.0, 36.0, 30.0)
+        self._seed_stat(session, "tomintoul", 12, 20, 1000.0, 14.0, 8.0)
+        # A different month must be excluded by the filter.
+        self._seed_stat(session, "tomintoul", 6, 5, 5000.0, 4.0, 4.0)
+        session.commit()
+
+        r = client.get("/api/stars/history", params={"month": 12})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["month"] == 12
+        assert body["count"] == 2
+        ids = [s["id"] for s in body["sites"]]
+        # Ordered by sum_q descending.
+        assert ids == ["galloway-forest", "tomintoul"]
+        gf = body["sites"][0]
+        assert gf["sum_q"] == 3200.0
+        assert gf["window_count"] == 40
+        # Averages are the component sums over window_count.
+        assert gf["avg_darkness"] == pytest.approx(36.0 / 40)
+        assert gf["avg_clarity"] == pytest.approx(30.0 / 40)
+        # Metadata joined from stars.sites.
+        assert gf["name"] == "Galloway Forest Park"
+        assert gf["lat"] == 55.083
+
+    def test_default_month_is_current_utc(self, client, session):
+        current = datetime.now(timezone.utc).month
+        _seed_site(session, "galloway-forest")
+        self._seed_stat(session, "galloway-forest", current, 10, 500.0, 9.0, 8.0)
+        session.commit()
+
+        r = client.get("/api/stars/history")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["month"] == current
+        assert [s["id"] for s in body["sites"]] == ["galloway-forest"]
+
+    def test_orphan_stat_without_site_is_skipped(self, client, session):
+        # A site_month_stats row whose site dropped from the grid has no
+        # metadata to render and is omitted.
+        self._seed_stat(session, "ghost", 12, 5, 100.0, 4.0, 3.0)
+        session.commit()
+
+        r = client.get("/api/stars/history", params={"month": 12})
+        assert r.status_code == 200
+        assert r.json() == {"month": 12, "sites": [], "count": 0}
+
+    def test_cache_and_etag_headers(self, client, session):
+        _seed_site(session, "galloway-forest")
+        self._seed_stat(session, "galloway-forest", 12, 10, 500.0, 9.0, 8.0)
+        session.commit()
+        r = client.get("/api/stars/history", params={"month": 12})
+        assert r.status_code == 200
+        assert r.headers["Cache-Control"] == _SITES_CACHE_CONTROL
+        assert r.headers["ETag"]
+
+    def test_conditional_get_returns_304(self, client, session):
+        _seed_site(session, "galloway-forest")
+        self._seed_stat(session, "galloway-forest", 12, 10, 500.0, 9.0, 8.0)
+        session.commit()
+        first = client.get("/api/stars/history", params={"month": 12})
+        etag = first.headers["ETag"]
+        second = client.get(
+            "/api/stars/history",
+            params={"month": 12},
+            headers={"If-None-Match": etag},
+        )
+        assert second.status_code == 304
+        assert second.headers["ETag"] == etag
+        assert second.headers["Cache-Control"]
+        assert second.content == b""
+
+    def test_empty_month_returns_empty(self, client, session):
+        _seed_site(session, "galloway-forest")
+        session.commit()
+        r = client.get("/api/stars/history", params={"month": 3})
+        assert r.status_code == 200
+        assert r.json() == {"month": 3, "sites": [], "count": 0}
+
+    def test_invalid_month_rejected(self, client):
+        assert client.get("/api/stars/history", params={"month": 13}).status_code == 422
+        assert client.get("/api/stars/history", params={"month": -1}).status_code == 422
