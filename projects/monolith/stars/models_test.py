@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from stars.models import SiteHour
+from stars.models import Site, SiteHour
 
 
 @pytest.fixture(name="session")
@@ -66,6 +66,46 @@ def test_site_hour_roundtrip(session):
     # only, not tzinfo, matching hikes/models_test. Production is Postgres
     # TIMESTAMPTZ, where the value round-trips tz-aware.
     assert isinstance(loaded.fetched_at, datetime)
+
+
+def test_site_roundtrip(session):
+    row = Site(
+        id="grid-0001",
+        name="Grid Point 1",
+        lat=57.12,
+        lon=-4.70,
+        altitude_m=312,
+        lp_zone="1a",
+        source="grid",
+    )
+    session.add(row)
+    session.commit()
+
+    loaded = session.get(Site, "grid-0001")
+    assert loaded is not None
+    assert loaded.name == "Grid Point 1"
+    assert loaded.lat == 57.12
+    assert loaded.lon == -4.70
+    assert loaded.altitude_m == 312
+    assert loaded.lp_zone == "1a"
+    assert loaded.source == "grid"
+    # SQLite returns naive datetimes; assert the type only, not tzinfo.
+    # Production is Postgres TIMESTAMPTZ where the value round-trips tz-aware.
+    assert isinstance(loaded.updated_at, datetime)
+
+
+def test_site_defaults(session):
+    # name nullable; altitude/lp_zone/source carry their column defaults.
+    row = Site(id="grid-0002", lat=58.0, lon=-5.0)
+    session.add(row)
+    session.commit()
+
+    loaded = session.get(Site, "grid-0002")
+    assert loaded is not None
+    assert loaded.name is None
+    assert loaded.altitude_m == 0
+    assert loaded.lp_zone == "unknown"
+    assert loaded.source == "grid"
 
 
 def test_default_symbol_is_empty(session):
