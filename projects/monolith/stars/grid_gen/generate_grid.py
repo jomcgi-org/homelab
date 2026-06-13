@@ -1,30 +1,36 @@
 """Offline generator for the stars grid (grid.json), uploaded to SeaweedFS.
 
 This is NOT runtime code (it is excluded from the monolith image in BUILD). It
-reproduces stargazer's generate_sample_grid (projects/stargazer/backend/spatial.py)
-without geopandas: mesh the bounds of the light-pollution dark mask at a chosen
-spacing and keep points inside it, via pure-Python ray-casting point-in-polygon.
+builds the grid as: a mesh inside stargazer's light-pollution dark mask,
+intersected with **land** and clipped to **Scotland**. The LP atlas marks open
+sea as dark, so without the land/Scotland clip the grid is ~94% offshore; this
+keeps only Scottish land dark-sky points. Pure-Python ray-casting point-in-polygon
+(no geopandas).
 
-Input: dark_regions.geojson (the LP-filtered dark-sky MultiPolygon) from the
-stargazer pipeline's PVC (/data/processed/dark_regions.geojson). Output: grid.json
-in the shape the stars.load_grid job ingests.
+Inputs:
+  - dark_regions.geojson: stargazer's LP dark mask (a MultiPolygon). Pull from the
+    running stargazer pod (shell-less, use the api container):
+        kubectl exec -n stargazer <stargazer-api-pod> -c api -- \
+            cat /data/processed/dark_regions.geojson > dark_regions.geojson
+  - admin1.geojson: Natural Earth 10m admin-1, for the Scotland boundary:
+        curl -o admin1.geojson https://raw.githubusercontent.com/nvkelso/\
+natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson
+    (features with properties.geonunit == "Scotland" are the Scottish council areas).
 
 Usage:
-    # 1. Pull the dark mask from the running stargazer pod (shell-less, use the api container):
-    kubectl exec -n stargazer <stargazer-api-pod> -c api -- \
-        cat /data/processed/dark_regions.geojson > dark_regions.geojson
-    # 2. Generate (10 km mesh ~= 1300 points; smaller spacing = more points = more met.no calls):
-    python3 generate_grid.py --input dark_regions.geojson --spacing-km 10 --output grid.json
-    # 3. Upload to SeaweedFS S3 (auth disabled cluster-wide; unsigned PUT works):
+    python3 generate_grid.py --dark-regions dark_regions.geojson \
+        --admin1 admin1.geojson --spacing-km 4 --output grid.json
+    # 4 km ~= 306 Scotland land points; finer spacing = more points = more met.no calls.
+    # Upload (SeaweedFS S3 auth is disabled cluster-wide; unsigned PUT works):
     kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 &
-    curl -X PUT http://localhost:8333/stars                              # create bucket once
-    curl -X PUT -T grid.json http://localhost:8333/stars/grid.json       # bucket=stars key=grid.json
-    # The stars.load_grid job ingests it into stars.sites on its next run.
+    curl -X PUT http://localhost:8333/stars                          # create bucket once
+    curl -X PUT -T grid.json http://localhost:8333/stars/grid.json   # bucket=stars key=grid.json
+    # stars.load_grid ingests it into stars.sites on its next run (or trigger it).
 
-Known limitation: the LP atlas marks open sea as dark, and this skips
-stargazer's road-accessibility intersection (it needs the ~193 MB roads file),
-so some points fall offshore. Refining to land/road-reachable points is a
-follow-up: regenerate and re-upload, no code or deploy change.
+Known limitation: this keeps all dark Scottish land (good: remote roadless spots are
+the best skies), so it does NOT apply stargazer's road-accessibility filter, and
+lp_zone is the binary "dark" (per-point light-pollution values need the LP raster,
+which needs rasterio). Both are refine-and-re-upload follow-ups, no code change.
 """
 
 from __future__ import annotations
@@ -32,6 +38,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+
+
+def _bbox(ring: list) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in ring]
+    ys = [p[1] for p in ring]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def _in_ring(x: float, y: float, ring: list) -> bool:
@@ -47,34 +59,39 @@ def _in_ring(x: float, y: float, ring: list) -> bool:
     return inside
 
 
-def _bbox(ring: list) -> tuple[float, float, float, float]:
-    xs = [p[0] for p in ring]
-    ys = [p[1] for p in ring]
-    return min(xs), min(ys), max(xs), max(ys)
+def _polygons(geometry: dict) -> list:
+    """Flatten a Polygon/MultiPolygon geometry to a list of (bbox, exterior, holes)."""
+    rings_list = (
+        [geometry["coordinates"]]
+        if geometry["type"] == "Polygon"
+        else geometry["coordinates"]
+    )
+    return [(_bbox(poly[0]), poly[0], poly[1:]) for poly in rings_list]
 
 
-def generate(dark_regions: dict, spacing_km: float) -> list[dict]:
-    geom = dark_regions["features"][0]["geometry"]
-    if geom["type"] != "MultiPolygon":
-        raise ValueError(f"expected MultiPolygon, got {geom['type']}")
-    polygons = geom["coordinates"]
-    bboxes = [_bbox(poly[0]) for poly in polygons]
-
-    def in_mask(x: float, y: float) -> bool:
-        for poly, (minx, miny, maxx, maxy) in zip(polygons, bboxes):
-            if x < minx or x > maxx or y < miny or y > maxy:
-                continue
-            if not _in_ring(x, y, poly[0]):
-                continue
-            if any(_in_ring(x, y, hole) for hole in poly[1:]):
-                continue
+def _contains(polys: list, x: float, y: float) -> bool:
+    for (minx, miny, maxx, maxy), ext, holes in polys:
+        if x < minx or x > maxx or y < miny or y > maxy:
+            continue
+        if _in_ring(x, y, ext) and not any(_in_ring(x, y, h) for h in holes):
             return True
-        return False
+    return False
 
-    minx = min(b[0] for b in bboxes)
-    miny = min(b[1] for b in bboxes)
-    maxx = max(b[2] for b in bboxes)
-    maxy = max(b[3] for b in bboxes)
+
+def _scotland_polygons(admin1: dict) -> list:
+    polys: list = []
+    for f in admin1["features"]:
+        if (f["properties"].get("geonunit") or "") == "Scotland":
+            polys.extend(_polygons(f["geometry"]))
+    return polys
+
+
+def generate(dark_regions: dict, scotland: list, spacing_km: float) -> list[dict]:
+    dark = _polygons(dark_regions["features"][0]["geometry"])
+    minx = min(b[0][0] for b in dark)
+    miny = min(b[0][1] for b in dark)
+    maxx = max(b[0][2] for b in dark)
+    maxy = max(b[0][3] for b in dark)
     mean_lat = (miny + maxy) / 2.0
     lat_step = spacing_km / 111.32
     lon_step = spacing_km / (111.32 * math.cos(math.radians(mean_lat)))
@@ -84,7 +101,7 @@ def generate(dark_regions: dict, spacing_km: float) -> list[dict]:
     while y <= maxy:
         x = minx
         while x <= maxx:
-            if in_mask(x, y):
+            if _contains(dark, x, y) and _contains(scotland, x, y):
                 sites.append(
                     {
                         "id": f"scotland-{len(sites):04d}",
@@ -102,17 +119,24 @@ def generate(dark_regions: dict, spacing_km: float) -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--input", default="dark_regions.geojson")
-    ap.add_argument("--spacing-km", type=float, default=10.0)
+    ap.add_argument("--dark-regions", default="dark_regions.geojson")
+    ap.add_argument("--admin1", default="admin1.geojson")
+    ap.add_argument("--spacing-km", type=float, default=4.0)
     ap.add_argument("--output", default="grid.json")
     args = ap.parse_args()
 
-    with open(args.input) as fh:
+    with open(args.dark_regions) as fh:
         dark_regions = json.load(fh)
-    sites = generate(dark_regions, args.spacing_km)
+    with open(args.admin1) as fh:
+        scotland = _scotland_polygons(json.load(fh))
+    if not scotland:
+        raise SystemExit("no Scotland polygons found (expected geonunit == 'Scotland')")
+    sites = generate(dark_regions, scotland, args.spacing_km)
     with open(args.output, "w") as fh:
         json.dump(sites, fh)
-    print(f"spacing={args.spacing_km}km -> {len(sites)} sites -> {args.output}")
+    print(
+        f"spacing={args.spacing_km}km -> {len(sites)} Scotland land sites -> {args.output}"
+    )
 
 
 if __name__ == "__main__":
