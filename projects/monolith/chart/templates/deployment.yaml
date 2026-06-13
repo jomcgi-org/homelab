@@ -165,6 +165,8 @@ spec:
               value: {{ .Values.stars.gridBucket | quote }}
             - name: STARS_GRID_S3_KEY
               value: {{ .Values.stars.gridKey | quote }}
+            - name: STARS_CLIMATOLOGY_S3_KEY
+              value: {{ .Values.stars.climatologyKey | quote }}
             {{- end }}
           livenessProbe:
             httpGet:
