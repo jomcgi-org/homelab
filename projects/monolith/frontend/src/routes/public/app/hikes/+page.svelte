@@ -4,6 +4,7 @@
   import HikesMap from "$lib/public/components/hikes/HikesMap.svelte";
   import {
     filterWalksByCharacteristics,
+    filterWalksByLocation,
     groupWindowsByDay,
     upcomingUkDays,
     viableInNextDays,
@@ -12,6 +13,23 @@
   let { data } = $props();
 
   let walks = $derived(data.snapshot?.walks ?? []);
+
+  // A handful of Scottish hubs to anchor the "near" radius filter, so the
+  // feature is useful without geolocation permission. Coordinates are the
+  // town centres; the radius is generous enough that exact centring does not
+  // matter. "__me__" is the sentinel for the device's own location.
+  const HIKE_LOCATIONS = [
+    { key: "edinburgh", label: "Edinburgh", lat: 55.9533, lon: -3.1883 },
+    { key: "glasgow", label: "Glasgow", lat: 55.8642, lon: -4.2518 },
+    { key: "stirling", label: "Stirling", lat: 56.1165, lon: -3.9369 },
+    { key: "fort-william", label: "Fort William", lat: 56.8198, lon: -5.1052 },
+    { key: "aviemore", label: "Aviemore", lat: 57.1958, lon: -3.8259 },
+    { key: "inverness", label: "Inverness", lat: 57.4778, lon: -4.2247 },
+    { key: "oban", label: "Oban", lat: 56.4153, lon: -5.4717 },
+    { key: "pitlochry", label: "Pitlochry", lat: 56.7039, lon: -3.73 },
+    { key: "aberdeen", label: "Aberdeen", lat: 57.1497, lon: -2.0943 },
+  ];
+  const GEO_SENTINEL = "__me__";
 
   // The five numeric filters, ported from the old sidebar. Empty means "no
   // constraint" (the filters module reads undefined/NaN as unbounded).
@@ -24,6 +42,47 @@
   // Date strip: one chip per upcoming UK-local day. null means "any day".
   const DATE_HORIZON = 7;
   let selectedDay = $state(null);
+
+  // "Near" filter: a preset hub key, GEO_SENTINEL for the device location, or
+  // "" for off. userCoords holds the resolved device position (null until the
+  // browser grants permission); geoError surfaces a denial or unsupported API.
+  let nearKey = $state("");
+  let radiusKm = $state("50");
+  let userCoords = $state(null);
+  let geoError = $state("");
+
+  function onNearChange() {
+    geoError = "";
+    if (nearKey === GEO_SENTINEL) {
+      if (!navigator.geolocation) {
+        geoError = "Geolocation not available";
+        nearKey = "";
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          userCoords = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+          };
+        },
+        () => {
+          geoError = "Location permission denied";
+          nearKey = "";
+          userCoords = null;
+        },
+      );
+    } else {
+      userCoords = null;
+    }
+  }
+
+  // The active centre for the radius filter: device coords, a preset, or none.
+  let nearCenter = $derived.by(() => {
+    if (nearKey === GEO_SENTINEL) return userCoords; // null until permission resolves
+    if (!nearKey) return null;
+    return HIKE_LOCATIONS.find((l) => l.key === nearKey) ?? null;
+  });
 
   // A coarse "current time" signal. The page can sit open for hours (the data
   // refetches every 30 min), so the day strip and "viable today" count must be
@@ -60,16 +119,29 @@
     }),
   );
 
-  // Then by the selected day (a walk qualifies if it has any window on that UK
-  // day). With no day selected, the characteristic set passes through.
-  let filtered = $derived(
-    selectedDay == null
-      ? byCharacteristics
-      : byCharacteristics.filter((w) => {
-          const byDay = groupWindowsByDay(w);
-          return (byDay[selectedDay]?.length ?? 0) > 0;
-        }),
-  );
+  // Then the radius filter (if a centre is set), which also annotates each walk
+  // with distance_from_user and sorts nearest-first. Then the selected day (a
+  // walk qualifies if it has any window on that UK day); .filter preserves the
+  // nearest-first order so the list and map stay sorted.
+  let filtered = $derived.by(() => {
+    let result = byCharacteristics;
+    if (nearCenter) {
+      result = filterWalksByLocation(
+        result,
+        nearCenter.lat,
+        nearCenter.lon,
+        numOr(radiusKm, Infinity),
+      );
+    }
+    if (selectedDay != null) {
+      result = result.filter(
+        (w) => (groupWindowsByDay(w)[selectedDay]?.length ?? 0) > 0,
+      );
+    }
+    return result;
+  });
+
+  let locationActive = $derived(nearCenter != null);
 
   let viableTodayCount = $derived(
     walks.filter((w) => viableInNextDays(w, 1, new Date(nowMs))).length,
@@ -82,6 +154,10 @@
     maxDistance = "";
     maxAscent = "";
     selectedDay = null;
+    nearKey = "";
+    radiusKm = "50";
+    userCoords = null;
+    geoError = "";
   }
 
   onMount(() => {
@@ -155,6 +231,33 @@
         </label>
       </div>
 
+      <p class="eyebrow near-title">Near</p>
+      <div class="near-grid">
+        <label class="near-where"
+          >Location
+          <select bind:value={nearKey} onchange={onNearChange}>
+            <option value="">Anywhere</option>
+            <option value={GEO_SENTINEL}>My location</option>
+            {#each HIKE_LOCATIONS as loc (loc.key)}
+              <option value={loc.key}>{loc.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="near-radius"
+          >Radius (km)
+          <input
+            type="number"
+            min="1"
+            step="10"
+            bind:value={radiusKm}
+            disabled={!nearKey}
+          />
+        </label>
+      </div>
+      {#if geoError}
+        <p class="near-error" role="alert">{geoError}</p>
+      {/if}
+
       <p class="eyebrow date-strip-title">Viable day</p>
       <div class="date-strip">
         <button
@@ -193,6 +296,9 @@
           <p class="walk-row-stats">
             {walk.distance_km} km &middot; {walk.ascent_m} m &middot;
             {walk.duration_h} h
+            {#if locationActive && walk.distance_from_user != null}
+              &middot; {Math.round(walk.distance_from_user)} km away
+            {/if}
           </p>
         </li>
       {/each}
@@ -327,6 +433,45 @@
     border: 2px solid var(--ink);
     color: var(--ink);
     width: 100%;
+  }
+
+  .near-title {
+    margin-top: 16px;
+  }
+
+  .near-grid {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    margin: 10px 0 4px;
+  }
+
+  .near-radius input {
+    width: 88px;
+  }
+
+  /* The native select inherits the mono/hard-border input look. */
+  .sidebar select {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 7px 8px;
+    background: var(--cream);
+    border: 2px solid var(--ink);
+    color: var(--ink);
+    width: 100%;
+  }
+
+  .sidebar input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .near-error {
+    margin: 4px 0 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--blue);
   }
 
   .date-strip-title {
