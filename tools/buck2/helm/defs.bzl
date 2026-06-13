@@ -75,6 +75,57 @@ helm_push = rule(
     },
 )
 
+_ARGOCD_APP_TEMPLATE = """apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {name}
+  namespace: argocd
+spec:
+  source:
+    repoURL: {repo}
+    chart: {chart}
+    targetRevision: {rev}
+    helm:
+      releaseName: {release}
+  destination:
+    server: {server}
+    namespace: {ns}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+"""
+
+def _argocd_app_impl(ctx: AnalysisContext) -> list[Provider]:
+    content = _ARGOCD_APP_TEMPLATE.format(
+        name = ctx.attrs.app_name or ctx.label.name,
+        repo = ctx.attrs.chart_repo,
+        chart = ctx.attrs.chart,
+        rev = ctx.attrs.target_revision,
+        release = ctx.attrs.release_name or ctx.attrs.app_name or ctx.label.name,
+        server = ctx.attrs.dest_server,
+        ns = ctx.attrs.namespace,
+    )
+    out = ctx.actions.write("application.yaml", content)
+    return [DefaultInfo(default_output = out)]
+
+# Generates an ArgoCD Application that deploys the chart published to an OCI repo
+# (chart + targetRevision), mirroring bazel/helm's argocd_app / deploy manifests.
+argocd_app = rule(
+    impl = _argocd_app_impl,
+    attrs = {
+        "chart": attrs.string(),  # chart name in the OCI repo
+        "target_revision": attrs.string(),  # chart version
+        "namespace": attrs.string(default = "default"),
+        "release_name": attrs.string(default = ""),
+        "app_name": attrs.string(default = ""),  # Application metadata.name (defaults to target name)
+        "chart_repo": attrs.string(default = "ghcr.io/jomcgi/homelab/charts"),
+        "dest_server": attrs.string(default = "https://kubernetes.default.svc"),
+    },
+)
+
 def helm_chart(name, srcs, deps = [], images = None, lint = True, publish = False, repository = "oci://ghcr.io/jomcgi/homelab/charts", visibility = ["PUBLIC"], **kwargs):
     """Package a Helm chart into a `.tgz`.
 

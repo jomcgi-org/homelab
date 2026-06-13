@@ -1,5 +1,5 @@
 load("//tools/buck2/apko:defs.bzl", "apko_image")
-load("//tools/buck2/helm:defs.bzl", "helm_chart")
+load("//tools/buck2/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//tools/buck2/oci:defs.bzl", "oci_image", "tar_layer")
 
 # Basic Rust service built with buck2's `rust_binary` (the same primitive loom
@@ -45,4 +45,14 @@ helm_chart(
     images = {"image": ":image.info"},
     # Create :chart.push (helm push to the OCI charts repo).
     publish = True,
+)
+
+# ArgoCD Application that deploys the published chart.
+argocd_app(
+    name = "app",
+    app_name = "rust-service",
+    release_name = "rust-service",
+    chart = "rust-service",
+    target_revision = "0.1.0",
+    namespace = "rust-service",
 )
