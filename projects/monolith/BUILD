@@ -116,6 +116,7 @@ py_library(
     ),  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//certifi",
         "@pip//discord_py",
@@ -2095,6 +2096,27 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "stars_forecast_test",
+    srcs = ["stars/forecast_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "stars_jobs_test",
+    srcs = ["stars/jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 
