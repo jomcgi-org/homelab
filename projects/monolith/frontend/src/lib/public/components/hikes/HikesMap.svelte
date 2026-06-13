@@ -330,7 +330,7 @@
   <div class="map" bind:this={mapContainer}></div>
 
   {#if selected}
-    <aside class="card card-hard">
+    <aside class="card">
       <button class="card-close" onclick={closeCard} aria-label="Close walk card"
         >&times;</button
       >
@@ -474,6 +474,8 @@
 
   /* Walk detail card: a hard-shadow paper card (neobrutalist), top-right and
      clear of the global app chrome. */
+  /* Flat sharp-bordered overlay, matching the ships map overlays (no
+     border-radius, no drop shadow, paper bg) rather than the global card-hard. */
   .card {
     position: absolute;
     top: 16px;
@@ -483,14 +485,8 @@
     max-height: calc(100% - 32px);
     overflow-y: auto;
     padding: 18px;
-  }
-
-  /* The card inherits .card-hard's hover-lift, but it is a static info panel:
-     hovering it does nothing on click, so the lift is a false affordance. Pin
-     it in place (still keep the hard shadow). */
-  .card:hover {
-    transform: none;
-    box-shadow: var(--shadow-hard);
+    background: var(--paper);
+    border: 2px solid var(--ink);
   }
 
   .card-close {
@@ -548,7 +544,6 @@
     padding: 10px 12px;
     background: var(--cream);
     border: 2px solid var(--ink);
-    border-radius: var(--radius);
   }
 
   .card-stats > div {
@@ -588,7 +583,6 @@
     background: var(--accent);
     color: var(--ink);
     border: 2px solid var(--ink);
-    border-radius: var(--radius);
   }
 
   .card-windows {
@@ -633,8 +627,6 @@
     padding: 10px 12px;
     background: var(--paper);
     border: 2px solid var(--ink);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-hard);
     font-family: var(--mono);
   }
 

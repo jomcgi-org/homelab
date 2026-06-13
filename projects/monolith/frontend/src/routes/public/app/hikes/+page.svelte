@@ -368,13 +368,11 @@
     width: min(420px, calc(100% - 32px));
   }
 
-  /* Neobrutalist floating card. Deliberately NOT .card-hard: these are
-     containers, not buttons, so they must not lift on hover. */
+  /* Flat sharp-bordered overlay, matching the ships map overlays: paper bg,
+     2px ink border, no border-radius, no drop shadow. */
   .panel {
     background: var(--paper);
     border: 2px solid var(--ink);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-hard);
     padding: 12px;
   }
 
