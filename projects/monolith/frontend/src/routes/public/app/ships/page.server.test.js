@@ -44,7 +44,7 @@ describe("/public/app/ships load", () => {
     );
     // Byte-for-byte mirror of _SNAPSHOT_CACHE_CONTROL in ships/router.py.
     expect(SHIPS_SNAPSHOT_CACHE_CONTROL).toBe(
-      "public, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400",
+      "public, max-age=0, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400",
     );
     expect(result.snapshot).toEqual(SNAPSHOT);
   });

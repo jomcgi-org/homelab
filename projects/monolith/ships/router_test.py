@@ -119,7 +119,7 @@ class TestSnapshot:
         assert r.status_code == 200
         assert (
             r.headers["Cache-Control"]
-            == "public, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400"
+            == "public, max-age=0, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400"
         )
         assert r.headers["ETag"]
 
@@ -195,7 +195,7 @@ class TestTrack:
         r = client.get("/api/ships/track/316001234")
         assert (
             r.headers["Cache-Control"]
-            == "public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
+            == "public, max-age=0, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
         )
 
 

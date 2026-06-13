@@ -44,7 +44,7 @@ describe("/public/app/hikes load", () => {
     );
     // Byte-for-byte mirror of _WALKS_CACHE_CONTROL in hikes/router.py.
     expect(HIKES_WALKS_CACHE_CONTROL).toBe(
-      "public, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400",
+      "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400",
     );
     expect(result.snapshot).toEqual(SNAPSHOT);
   });

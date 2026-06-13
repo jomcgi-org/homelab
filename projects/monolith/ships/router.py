@@ -33,18 +33,20 @@ router = APIRouter(prefix="/api/ships", tags=["ships"])
 # Clamp the track limit so a crafted request can't pull an unbounded history.
 _MAX_TRACK_LIMIT = 5000
 
+# max-age=0 makes the browser revalidate rather than hold a stale copy for the
+# CDN's injected ~1 h browser TTL (see the note in cache-headers.js).
 # Mirrors SHIPS_SNAPSHOT_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
 _SNAPSHOT_CACHE_CONTROL = (
-    "public, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400"
+    "public, max-age=0, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400"
 )
 # Mirrors SHIPS_TRACK_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
 _TRACK_CACHE_CONTROL = (
-    "public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
+    "public, max-age=0, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
 )
 # Heatmap rollup refreshes hourly, so 5 min fresh with a 1 h SWR window is plenty.
 # Mirrors SHIPS_HEAT_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
 _HEAT_CACHE_CONTROL = (
-    "public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=86400"
+    "public, max-age=0, s-maxage=300, stale-while-revalidate=3600, stale-if-error=86400"
 )
 
 

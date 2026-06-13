@@ -36,10 +36,12 @@ router = APIRouter(prefix="/api/hikes", tags=["hikes"])
 # image (home.schedule already relies on zoneinfo server-side).
 _UK_TZ = ZoneInfo("Europe/London")
 
-# Forecasts refresh 6-hourly, so 30 min fresh with a 1 h SWR window is plenty.
-# Mirrors HIKES_WALKS_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
+# Forecasts refresh every 2 h, so 30 min edge freshness with a 1 h SWR window is
+# plenty; max-age=0 makes the browser revalidate rather than hold a stale copy
+# (see the note in cache-headers.js). Mirrors HIKES_WALKS_CACHE_CONTROL in
+# frontend/src/lib/cache-headers.js, keep in sync.
 _WALKS_CACHE_CONTROL = (
-    "public, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
+    "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
 )
 
 
