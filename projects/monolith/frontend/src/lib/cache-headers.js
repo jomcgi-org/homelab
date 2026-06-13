@@ -38,3 +38,9 @@ export const SHIPS_HEAT_CACHE_CONTROL =
 // projects/monolith/hikes/router.py, keep in sync.
 export const HIKES_WALKS_CACHE_CONTROL =
   "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
+
+// /app/stars sites: the refresh job runs 3-hourly and elapsed hours are pruned
+// hourly, so 30 min edge freshness with a 1 h SWR window is plenty. Mirrors
+// _SITES_CACHE_CONTROL in projects/monolith/stars/router.py, keep in sync.
+export const STARS_SITES_CACHE_CONTROL =
+  "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
