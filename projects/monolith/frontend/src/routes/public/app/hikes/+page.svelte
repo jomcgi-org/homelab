@@ -174,16 +174,10 @@
     walks.filter((w) => viableInNextDays(w, 1, new Date(nowMs))).length,
   );
 
-  // Any non-default filter active, so the toggle can show a dot while collapsed.
+  // A hidden (collapsed) numeric filter is active, so the toggle can show a dot.
+  // Near lives in the always-visible head, so it does not count here.
   let filtersActive = $derived(
-    !!(
-      minDuration ||
-      maxDuration ||
-      minDistance ||
-      maxDistance ||
-      maxAscent ||
-      nearKey
-    ),
+    !!(minDuration || maxDuration || minDistance || maxDistance || maxAscent),
   );
 
   function resetFilters() {
@@ -245,6 +239,20 @@
         </p>
       </div>
 
+      <label class="field near-field"
+        >Near
+        <select bind:value={nearKey} onchange={onNearChange}>
+          <option value="">Anywhere</option>
+          <option value={GEO_SENTINEL}>My location</option>
+          {#each HIKE_LOCATIONS as loc (loc.key)}
+            <option value={loc.key}>{loc.label}</option>
+          {/each}
+        </select>
+      </label>
+      {#if geoError}
+        <p class="geo-error" role="alert">{geoError}</p>
+      {/if}
+
       <div class="day-strip" role="group" aria-label="Filter by viable day">
         <button
           type="button"
@@ -280,20 +288,6 @@
 
     {#if filtersOpen}
       <div class="panel control-more">
-        <label class="field"
-          >Near
-          <select bind:value={nearKey} onchange={onNearChange}>
-            <option value="">Anywhere</option>
-            <option value={GEO_SENTINEL}>My location</option>
-            {#each HIKE_LOCATIONS as loc (loc.key)}
-              <option value={loc.key}>{loc.label}</option>
-            {/each}
-          </select>
-        </label>
-        {#if geoError}
-          <p class="geo-error" role="alert">{geoError}</p>
-        {/if}
-
         <div class="num-grid">
           <label class="field"
             >Min duration (h)

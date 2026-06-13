@@ -15,16 +15,18 @@
     maxima = { duration: 1, ascent: 1, distance: 1 },
   } = $props();
 
-  // Effort ramp, mirrors ShipsMap's HEAT_STOPS so the two maps read as siblings:
-  // violet (gentle) -> red (strenuous). Hardcoded hex like the ships heatmap
-  // (these are data-viz ramp stops, not design-system surface tokens).
+  // Effort ramp: the universal trail-difficulty convention, green (easy) ->
+  // red (hard), keeping the ships heat ramp's orange/red hot end so the two
+  // maps still rhyme. Green keeps the gentle majority (≈67% of the corpus)
+  // reading calm instead of alarming-hot. Hardcoded hex (data-viz ramp stops,
+  // not design-system surface tokens). Keep in sync with the .legend-bar
+  // gradient below.
   const EFFORT_RAMP = [
-    { at: 0.0, color: "#7b2ff7" }, // vivid violet, gentlest
-    { at: 0.2, color: "#d61f9c" }, // magenta
-    { at: 0.4, color: "#ff0a78" }, // hot rose
-    { at: 0.6, color: "#ff6a00" }, // vivid orange
-    { at: 0.8, color: "#ff2a1f" }, // bright red
-    { at: 1.0, color: "#ff0019" }, // pure vivid red, most strenuous
+    { at: 0.0, color: "#15a34a" }, // green, gentlest
+    { at: 0.25, color: "#84c91e" }, // lime
+    { at: 0.5, color: "#ffcb1f" }, // golden yellow
+    { at: 0.75, color: "#ff6a00" }, // orange (ships)
+    { at: 1.0, color: "#ff0019" }, // red (ships), most strenuous
   ];
 
   // Effort score in [0,1]: equal-weight blend of duration, ascent and distance,
@@ -615,11 +617,10 @@
     border: 2px solid var(--ink);
     background: linear-gradient(
       to right,
-      #7b2ff7,
-      #d61f9c,
-      #ff0a78,
+      #15a34a,
+      #84c91e,
+      #ffcb1f,
       #ff6a00,
-      #ff2a1f,
       #ff0019
     );
   }
