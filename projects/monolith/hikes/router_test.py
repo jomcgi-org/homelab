@@ -147,7 +147,7 @@ class TestWalks:
         assert r.status_code == 200
         assert (
             r.headers["Cache-Control"]
-            == "public, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
+            == "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
         )
         assert r.headers["ETag"]
 

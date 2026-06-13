@@ -26,7 +26,10 @@ def on_startup_jobs(session: Session) -> None:
     register_job(
         session,
         name="hikes.refresh_forecasts",
-        interval_secs=6 * 3600,
+        # Every 2 h: met.no's multi-day forecast only re-runs a few times a day,
+        # so this hedges to catch a fresh model run within ~2 h without hammering
+        # met.no (hourly would re-fetch identical data ~20x/day for ~1600 walks).
+        interval_secs=2 * 3600,
         handler=refresh_forecasts_handler,
         ttl_secs=1800,
     )
