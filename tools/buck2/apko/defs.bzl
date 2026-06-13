@@ -44,6 +44,9 @@ def apko_image(name, config, lock, visibility = ["PUBLIC"], **kwargs):
                 name = name,
             ),
         ]),
+        # apko fetches apk packages over the network — opt this genrule out of
+        # remote execution (RE sandboxes network) so it runs on the local runner.
+        labels = ["uses_undeclared_inputs"],
         visibility = visibility,
         **kwargs
     )
