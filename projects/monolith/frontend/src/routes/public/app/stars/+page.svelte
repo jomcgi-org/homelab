@@ -15,6 +15,7 @@
   // returns.
   let nights = $derived(data.snapshot?.nights ?? []);
   let selectedNight = $state("all"); // "all" or a night key
+  let filterOpen = $state(false); // the night box is collapsed until tapped
 
   // Fall back to "all" if the chosen night has dropped off the forecast horizon
   // on an SSR refresh (it elapsed). Derived, so there is no effect to loop on.
@@ -45,6 +46,7 @@
 
   function selectNight(key) {
     selectedNight = key;
+    filterOpen = false; // collapse back to the summary once a night is picked
   }
   // sites is already sorted by best_score descending, so the head is the best.
   let topScore = $derived(
@@ -124,29 +126,46 @@
 
     {#if nights.length > 1}
       <div class="panel night-filter">
-        <p class="filter-title">Free on a night?</p>
-        <div class="night-chips">
-          <button
-            type="button"
-            class="night-chip"
-            class:is-off={effectiveNight !== "all"}
-            aria-pressed={effectiveNight === "all"}
-            onclick={() => selectNight("all")}
+        <button
+          type="button"
+          class="filter-toggle"
+          aria-expanded={filterOpen}
+          onclick={() => (filterOpen = !filterOpen)}
+        >
+          <span class="filter-label">Night</span>
+          <span class="filter-current"
+            >{effectiveNight === "all"
+              ? "All nights"
+              : nightLabel(effectiveNight)}</span
           >
-            All
-          </button>
-          {#each nights as night (night)}
+          <span class="filter-caret" class:open={filterOpen} aria-hidden="true"
+            >&#9662;</span
+          >
+        </button>
+        {#if filterOpen}
+          <div class="night-chips">
             <button
               type="button"
-              class="night-chip"
-              class:is-off={effectiveNight !== night}
-              aria-pressed={effectiveNight === night}
-              onclick={() => selectNight(night)}
+              class="night-chip night-chip-all"
+              class:is-off={effectiveNight !== "all"}
+              aria-pressed={effectiveNight === "all"}
+              onclick={() => selectNight("all")}
             >
-              {nightLabel(night)}
+              All nights
             </button>
-          {/each}
-        </div>
+            {#each nights as night (night)}
+              <button
+                type="button"
+                class="night-chip"
+                class:is-off={effectiveNight !== night}
+                aria-pressed={effectiveNight === night}
+                onclick={() => selectNight(night)}
+              >
+                {nightLabel(night)}
+              </button>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -273,26 +292,62 @@
     color: var(--ink-2);
   }
 
-  /* Night-filter chips: a wrapped row of toggles, styled like the ships type
-     filter (bordered mono boxes; the off state dims but stays clickable). */
-  .filter-title {
+  /* Night filter: a collapsed summary row that expands on click into a two-up
+     grid of night chips, so it stays out of the way until you reach for it. */
+  .night-filter {
+    padding: 0;
+  }
+
+  .filter-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--paper);
+    border: none;
+    cursor: pointer;
     font-family: var(--mono);
+    color: var(--ink);
+  }
+
+  .filter-label {
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--ink-2);
-    margin: 0 0 8px;
   }
 
+  .filter-current {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .filter-caret {
+    font-size: 11px;
+    color: var(--ink-2);
+    transition: transform 140ms ease;
+  }
+
+  .filter-caret.open {
+    transform: rotate(180deg);
+  }
+
+  /* Two-column grid of chips, revealed below the summary when expanded; the top
+     rule separates it from the toggle row. */
   .night-chips {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 6px;
+    padding: 10px 12px 12px;
+    border-top: 2px solid var(--ink);
   }
 
   .night-chip {
-    padding: 5px 9px;
+    padding: 6px 9px;
     background: var(--ink);
     color: var(--paper);
     border: 2px solid var(--ink);
@@ -300,6 +355,7 @@
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.04em;
+    text-align: center;
     cursor: pointer;
     transition:
       transform 110ms ease,
@@ -319,12 +375,17 @@
     box-shadow: 1px 1px 0 var(--ink);
   }
 
-  /* Deselected nights invert to paper + dim, so the active set reads at a
-     glance while staying clickable to re-enable. */
+  /* The picked night is the filled chip; the rest invert to paper + dim so the
+     current selection reads at a glance while staying tappable. */
   .night-chip.is-off {
     background: var(--paper);
     color: var(--ink);
-    opacity: 0.45;
+    opacity: 0.55;
+  }
+
+  /* The reset spans the full width above the per-night grid. */
+  .night-chip-all {
+    grid-column: 1 / -1;
   }
 
   @media (max-width: 640px) {
