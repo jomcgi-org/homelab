@@ -1,4 +1,5 @@
 """Tests for stars.__init__: router registration and startup job wiring."""
+
 from unittest.mock import MagicMock, patch
 
 

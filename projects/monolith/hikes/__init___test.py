@@ -1,4 +1,5 @@
 """Tests for hikes.__init__: router registration and startup job wiring."""
+
 from unittest.mock import MagicMock, patch
 
 
@@ -40,7 +41,11 @@ def test_on_startup_jobs_correct_names():
     with patch("shared.scheduler.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     names = {c[1]["name"] for c in mock_register.call_args_list}
-    assert names == {"hikes.scrape_walks", "hikes.refresh_forecasts", "hikes.prune_windows"}
+    assert names == {
+        "hikes.scrape_walks",
+        "hikes.refresh_forecasts",
+        "hikes.prune_windows",
+    }
 
 
 def test_on_startup_jobs_passes_session_as_first_positional():

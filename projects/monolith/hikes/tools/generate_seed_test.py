@@ -3,6 +3,7 @@
 Covers sql_literal() for all column types, generate() end-to-end against
 an in-memory SQLite fixture, NULL handling, and BATCH_SIZE batching.
 """
+
 import io
 import sqlite3
 import tempfile
@@ -54,7 +55,17 @@ def _row(
     latitude=57.0,
     longitude=-4.0,
 ):
-    return (uuid, name, url, distance_km, ascent_m, duration_h, summary, latitude, longitude)
+    return (
+        uuid,
+        name,
+        url,
+        distance_km,
+        ascent_m,
+        duration_h,
+        summary,
+        latitude,
+        longitude,
+    )
 
 
 # ---------------------------------------------------------------------------
