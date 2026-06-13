@@ -198,22 +198,23 @@ actions:
       # with sudo only when not already root, so it works regardless of how the
       # BuildBuddy runner is provisioned.
       - run: |
-          # Skip automated commits (nothing to build/test)
+          # Skip bot commits with nothing to build (NOT ci-format-bot — its commit
+          # is the PR head, so we must build it or the head shows a false green).
           AUTHOR="$(git log -1 --format='%an')"
           case "$AUTHOR" in
-            argocd-image-updater|ci-format-bot) echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
+            argocd-image-updater) echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
           esac
 
           set -eu
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
-          # curl + zstd to fetch/decompress the buck2 release binary; build-essential
-          # provides the `cc` + libc/crt the prelude's cxx toolchain uses to link
-          # the example Rust binary (the hermetic Rust toolchain brings rustc/std).
-          if ! command -v zstd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v cc >/dev/null 2>&1; then
-            $SUDO apt-get update -qq
-            $SUDO apt-get install -y -qq zstd curl build-essential
-          fi
+          # Install toolchain deps unconditionally: zstd/curl (fetch+decompress the
+          # buck2 release) and build-essential (the cc + libc/crt the prelude's cxx
+          # toolchain needs to link the example Rust binary). build-essential is NOT
+          # gated on `command -v cc` — a runner can have cc yet lack libc6-dev/crt,
+          # which fails the link. The hermetic Rust toolchain brings rustc/std.
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq zstd curl build-essential
 
           # Install the pinned buck2 release (x86_64 linux runner).
           BUCK2_RELEASE="2026-05-18"
