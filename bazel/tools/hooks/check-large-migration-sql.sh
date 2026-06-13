@@ -1,5 +1,6 @@
 #!/bin/bash
 # PreToolUse hook: warn when writing a large SQL file into chart/migrations/.
+# Advisory only -- exit 0 always.
 #
 # SQL files in chart/migrations/ are Helm-globbed into the monolith-migrations
 # ConfigMap, which ArgoCD applies client-side. The entire ConfigMap (including
