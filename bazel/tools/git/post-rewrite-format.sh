@@ -3,7 +3,10 @@
 # Installed via: pre-commit install --hook-type post-rewrite
 set -euo pipefail
 
-command="$1" # "rebase" or "amend"
+# "rebase" or "amend". Default to empty so `set -u` does not abort the hook
+# when git or pre-commit invokes it without the positional arg (the non-rebase
+# guard below then exits cleanly).
+command="${1:-}"
 
 # Only run after rebase (amend already triggers pre-commit)
 if [ "$command" != "rebase" ]; then
