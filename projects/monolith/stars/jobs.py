@@ -1,12 +1,13 @@
 """Stars scheduled job handlers (refresh + prune).
 
-refresh_handler runs the met.no fetch + astronomy scoring for every seed site
-and wholesale-replaces site_hours rows. prune_hours_handler drops hours once
-their clock hour has elapsed. In both, the network phase runs in the async
-handler and the synchronous Session I/O is delegated to a worker thread
-(asyncio.to_thread) so it never blocks the event loop, mirroring hikes.jobs and
-ships.retention. The scheduler passes a session, but the DB work uses its own
-fresh session inside the thread.
+refresh_handler runs the met.no fetch + astronomy scoring for every site in the
+stars.sites table (sourced from the light-pollution grid, ADR 006) and
+wholesale-replaces site_hours rows. prune_hours_handler drops hours once their
+clock hour has elapsed. In both, the network phase runs in the async handler and
+the synchronous Session I/O is delegated to a worker thread (asyncio.to_thread)
+so it never blocks the event loop, mirroring hikes.jobs and ships.retention. The
+scheduler passes a session, but the DB work uses its own fresh session inside
+the thread.
 """
 
 from __future__ import annotations
@@ -15,14 +16,33 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from sqlmodel import Session, delete
+from sqlmodel import Session, delete, select
 
 from shared.forecast_freshness import top_of_hour
 from stars.forecast import fetch_all
-from stars.models import SiteHour
-from stars.seed import SCOTLAND_DARK_SKY_LOCATIONS
+from stars.models import Site, SiteHour
 
 logger = logging.getLogger("monolith.stars.jobs")
+
+
+def _load_sites() -> list[dict]:
+    """Load the site list from stars.sites in a fresh session (off the loop).
+
+    Returns the minimal shape the forecast fetch needs (id/lat/lon/altitude_m).
+    """
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        rows = session.exec(select(Site)).all()
+        return [
+            {
+                "id": row.id,
+                "lat": row.lat,
+                "lon": row.lon,
+                "altitude_m": row.altitude_m,
+            }
+            for row in rows
+        ]
 
 
 def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime) -> int:
@@ -91,12 +111,17 @@ def _run_prune() -> int:
 async def refresh_handler(session: Session) -> datetime | None:
     """Refresh per-site dark-hour forecasts from met.no.
 
-    The network fetch + scoring runs first in the async handler; the synchronous
-    write is delegated to a worker thread with its own session. Sites whose fetch
-    failed keep their previous rows (stale beats empty); a total fetch failure
-    writes nothing.
+    The site list is loaded from stars.sites in a worker thread; the network
+    fetch + scoring runs in the async handler; the synchronous write is
+    delegated to a worker thread with its own session. Sites whose fetch failed
+    keep their previous rows (stale beats empty); a total fetch failure writes
+    nothing.
     """
-    scored = await fetch_all()
+    sites = await asyncio.to_thread(_load_sites)
+    if not sites:
+        logger.warning("stars.refresh: no sites in stars.sites, nothing to fetch")
+        return None
+    scored = await fetch_all(sites)
     if not scored:
         logger.warning("stars.refresh: empty fetch, keeping existing rows")
         return None
@@ -105,7 +130,7 @@ async def refresh_handler(session: Session) -> datetime | None:
         "stars.refresh ok: %d hours across %d/%d sites",
         written,
         len(scored),
-        len(SCOTLAND_DARK_SKY_LOCATIONS),
+        len(sites),
     )
     return None
 

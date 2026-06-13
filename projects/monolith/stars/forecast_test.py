@@ -8,15 +8,13 @@ shape, recorded sun elevation, and ascending sort are asserted directly.
 """
 
 import stars.forecast as forecast
-from stars.seed import SeedLocation
 
-_LOC: SeedLocation = {
+# A grid-sourced site dict (the shape stars.jobs._load_sites passes to fetch_all).
+_LOC: dict = {
     "id": "test-site",
-    "name": "Test Site",
     "lat": 57.0,
     "lon": -4.0,
     "altitude_m": 100,
-    "lp_zone": "1a",
 }
 
 # Sun elevation (degrees) keyed by the UTC hour of the timeseries entry.

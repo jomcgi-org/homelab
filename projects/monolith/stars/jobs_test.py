@@ -170,8 +170,8 @@ def test_prune_elapsed_drops_only_elapsed_hours(session):
 
 
 def test_refresh_handler_empty_fetch_is_noop(monkeypatch):
-    # When the fetch returns nothing, the handler must not touch the DB at all.
-    async def _empty_fetch():
+    # Sites exist, but the fetch returns nothing: the handler must not write.
+    async def _empty_fetch(sites):
         return {}
 
     called = False
@@ -181,9 +181,31 @@ def test_refresh_handler_empty_fetch_is_noop(monkeypatch):
         called = True
         return 0
 
+    monkeypatch.setattr(
+        jobs,
+        "_load_sites",
+        lambda: [{"id": "A", "lat": 57.0, "lon": -4.0, "altitude_m": 100}],
+    )
     monkeypatch.setattr(jobs, "fetch_all", _empty_fetch)
     monkeypatch.setattr(jobs, "_persist_sites", _should_not_run)
 
     result = asyncio.run(jobs.refresh_handler(None))
     assert result is None
     assert called is False
+
+
+def test_refresh_handler_no_sites_is_noop(monkeypatch):
+    # No sites in stars.sites: the handler must not even attempt the fetch.
+    fetched = False
+
+    async def _should_not_fetch(sites):  # pragma: no cover - asserted not called
+        nonlocal fetched
+        fetched = True
+        return {}
+
+    monkeypatch.setattr(jobs, "_load_sites", lambda: [])
+    monkeypatch.setattr(jobs, "fetch_all", _should_not_fetch)
+
+    result = asyncio.run(jobs.refresh_handler(None))
+    assert result is None
+    assert fetched is False

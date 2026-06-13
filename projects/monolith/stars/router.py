@@ -2,8 +2,9 @@
 
 One read endpoint backs the /app/stars dark-sky planner:
 
-- ``GET /api/stars/sites``, every curated Scotland dark-sky site joined with
-  its best upcoming viewing hours, for the site list + detail cards.
+- ``GET /api/stars/sites``, every dark-sky site (from stars.sites, sourced from
+  the light-pollution grid) joined with its best upcoming viewing hours, for the
+  site list + detail cards.
 
 Each hour's ``score`` is the ADR 007 continuous stargazing quality (0..100,
 Q = darkness x cloud x weather), not the old additive astronomy score with a
@@ -30,15 +31,11 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import SiteHour
-from stars.seed import SCOTLAND_DARK_SKY_LOCATIONS
+from stars.models import Site, SiteHour
 
 logger = logging.getLogger("stars")
 
 router = APIRouter(prefix="/api/stars", tags=["stars"])
-
-# Static site metadata, keyed by site id, joined into each row group at read time.
-_BY_ID = {loc["id"]: loc for loc in SCOTLAND_DARK_SKY_LOCATIONS}
 
 # Cap each site's hour list to the top N by score, so the payload stays light
 # even with a multi-day forecast horizon.
@@ -78,9 +75,13 @@ def get_sites(
     response: Response,
     session: Session = Depends(get_session),
 ):
-    """All curated dark-sky sites with their best upcoming hours. SSR-only, CDN-cached."""
+    """All dark-sky sites with their best upcoming hours. SSR-only, CDN-cached."""
     now = datetime.now(timezone.utc)
     cutoff = top_of_hour(now)
+
+    # Static site metadata, keyed by site id, joined into each row group at read
+    # time. Sourced from the stars.sites table (light-pollution grid, ADR 006).
+    by_id = {site.id: site for site in session.exec(select(Site)).all()}
 
     # Read-time correctness filter: only hours at or after the current clock
     # hour. The prune job is best-effort housekeeping; the endpoint must not
@@ -98,10 +99,11 @@ def get_sites(
 
     sites = []
     for site_id, hours in by_site.items():
-        meta = _BY_ID.get(site_id)
+        meta = by_id.get(site_id)
         if meta is None:
-            # Defensive: the refresh job only writes seed ids, so this should
-            # not happen. Skip rather than emit a site with no metadata.
+            # Defensive: the refresh job only writes ids that exist in
+            # stars.sites, so this should not happen. Skip rather than emit a
+            # site with no metadata.
             logger.debug("stars: skipping unknown site_id %s", site_id)
             continue
 
@@ -121,12 +123,12 @@ def get_sites(
         ]
         sites.append(
             {
-                "id": meta["id"],
-                "name": meta["name"],
-                "lat": meta["lat"],
-                "lon": meta["lon"],
-                "altitude_m": meta["altitude_m"],
-                "lp_zone": meta["lp_zone"],
+                "id": meta.id,
+                "name": meta.name,
+                "lat": meta.lat,
+                "lon": meta.lon,
+                "altitude_m": meta.altitude_m,
+                "lp_zone": meta.lp_zone,
                 "best_score": best_score,
                 "best_hours": best_hours,
             }
@@ -152,6 +154,6 @@ def get_sites(
     return {
         "sites": sites,
         "count": len(sites),
-        "total_sites": len(SCOTLAND_DARK_SKY_LOCATIONS),
+        "total_sites": len(by_id),
         "fetched_at": _iso(max_fetched),
     }

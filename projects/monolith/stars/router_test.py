@@ -1,9 +1,9 @@
 """Unit tests for stars/router.py: /api/stars/sites.
 
-Uses an in-memory SQLite DB seeded with real seed ids and a minimal FastAPI app
-that mounts only the stars router, mirroring the schema-stripping +
-``app.dependency_overrides[get_session]`` pattern in ``ships/router_test.py``
-and ``hikes/router_test.py``.
+Uses an in-memory SQLite DB seeded with stars.sites rows + site_hours and a
+minimal FastAPI app that mounts only the stars router, mirroring the
+schema-stripping + ``app.dependency_overrides[get_session]`` pattern in
+``ships/router_test.py`` and ``hikes/router_test.py``.
 
 Timestamps are computed relative to ``top_of_hour(datetime.now(timezone.utc))``
 so the read-time ``hour_time >= cutoff`` filter behaves the same regardless of
@@ -22,12 +22,32 @@ from sqlmodel.pool import StaticPool
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import SiteHour
+from stars.models import Site, SiteHour
 from stars.router import _SITES_CACHE_CONTROL, router
-from stars.seed import SCOTLAND_DARK_SKY_LOCATIONS
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 FETCHED = CUTOFF - timedelta(minutes=10)
+
+# Site metadata the router joins in from stars.sites, keyed by id.
+_SITE_META = {
+    "galloway-forest": ("Galloway Forest Park", 55.083, -4.500, 110, "1a"),
+    "tomintoul": ("Tomintoul", 57.249, -3.371, 345, "1a"),
+}
+
+
+def _seed_site(session, site_id):
+    name, lat, lon, alt, lp = _SITE_META[site_id]
+    session.add(
+        Site(
+            id=site_id,
+            name=name,
+            lat=lat,
+            lon=lon,
+            altitude_m=alt,
+            lp_zone=lp,
+            source="grid",
+        )
+    )
 
 
 @pytest.fixture(name="session")
@@ -86,6 +106,8 @@ def _hour(
 class TestSites:
     def test_ordering_by_best_score(self, client, session):
         # galloway-forest peaks at 0.9; tomintoul peaks at 0.5.
+        _seed_site(session, "galloway-forest")
+        _seed_site(session, "tomintoul")
         session.add(_hour("galloway-forest", 1, 0.7))
         session.add(_hour("galloway-forest", 2, 0.9))
         session.add(_hour("tomintoul", 1, 0.5))
@@ -99,12 +121,14 @@ class TestSites:
         ids = [s["id"] for s in body["sites"]]
         assert ids == ["galloway-forest", "tomintoul"]
         assert body["sites"][0]["best_score"] == 0.9
-        # Metadata is joined in from the seed list.
+        # Metadata is joined in from the stars.sites table.
         assert body["sites"][0]["name"] == "Galloway Forest Park"
         assert body["sites"][0]["lp_zone"] == "1a"
 
     def test_past_hours_omitted(self, client, session):
         # galloway-forest has only past hours -> excluded entirely.
+        _seed_site(session, "galloway-forest")
+        _seed_site(session, "tomintoul")
         session.add(_hour("galloway-forest", -1, 0.9))
         session.add(_hour("galloway-forest", -2, 0.8))
         # tomintoul has a mix: only its future hours come back.
@@ -129,6 +153,7 @@ class TestSites:
         assert {h["time"] for h in tomintoul["best_hours"]} == future_times
 
     def test_cache_and_etag_headers(self, client, session):
+        _seed_site(session, "galloway-forest")
         session.add(_hour("galloway-forest", 1, 0.7))
         session.commit()
         r = client.get("/api/stars/sites")
@@ -137,6 +162,7 @@ class TestSites:
         assert r.headers["ETag"]
 
     def test_conditional_get_returns_304(self, client, session):
+        _seed_site(session, "galloway-forest")
         session.add(_hour("galloway-forest", 1, 0.7))
         session.commit()
         first = client.get("/api/stars/sites")
@@ -148,19 +174,35 @@ class TestSites:
         assert second.content == b""
 
     def test_empty_table(self, client):
+        # No sites and no hours: total_sites reflects the empty stars.sites table.
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         assert r.json() == {
             "sites": [],
             "count": 0,
-            "total_sites": len(SCOTLAND_DARK_SKY_LOCATIONS),
+            "total_sites": 0,
             "fetched_at": None,
         }
 
+    def test_total_sites_counts_stars_sites_rows(self, client, session):
+        # total_sites is the count of stars.sites rows, independent of which
+        # sites have upcoming hours.
+        _seed_site(session, "galloway-forest")
+        _seed_site(session, "tomintoul")
+        session.add(_hour("galloway-forest", 1, 0.7))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        body = r.json()
+        assert body["count"] == 1
+        assert body["total_sites"] == 2
+
     def test_best_hours_capped_at_eight(self, client, session):
         # 12 future hours with ascending scores; expect the top 8 by score.
-        for i in range(12):
-            session.add(_hour("galloway-forest", i + 1, score=i / 100.0))
+        _seed_site(session, "galloway-forest")
+        session.add_all(
+            [_hour("galloway-forest", i + 1, score=i / 100.0) for i in range(12)]
+        )
         session.commit()
 
         r = client.get("/api/stars/sites")
