@@ -1,0 +1,203 @@
+"""Unit tests for the pure WalkHighlands parsing functions (no network)."""
+
+import uuid
+
+from hikes.walkhighlands import (
+    _parse_duration_hours,
+    parse_area_links,
+    parse_sub_area_links,
+    parse_walk,
+    parse_walk_links,
+)
+
+BASE_URL = "https://www.walkhighlands.co.uk/"
+
+HOMEPAGE_HTML = """
+<html><body>
+<div id="choosearea">
+  <table>
+    <tr>
+      <td class="cell"><a href="/fortwilliam/">Fort William</a></td>
+      <td class="cell"><a href="/maps.shtml">Maps</a></td>
+      <td class="cell"><a href="/forum/index.php">Forum</a></td>
+      <td class="cell"><a href="https://www.walkhighlands.co.uk/skye/">Skye</a></td>
+      <td class="cell"><a href="/empty/"></a></td>
+    </tr>
+  </table>
+</div>
+</body></html>
+"""
+
+AREA_HTML = """
+<html><body>
+<div id="arealist">
+  <table>
+    <tr>
+      <td class="cell"><a href="/fortwilliam/glen-nevis.shtml">Glen Nevis</a></td>
+      <td class="cell"><a href="/fortwilliam/ardgour.shtml">Ardgour</a></td>
+      <td class="cell"><a href="/news.php">News</a></td>
+    </tr>
+  </table>
+</div>
+</body></html>
+"""
+
+SUB_AREA_HTML = """
+<html><body>
+<div class="walktable">
+  <table class="table1">
+    <tbody>
+      <tr>
+        <td><a href="/fortwilliam/ben-nevis.shtml">Ben Nevis</a></td>
+        <td><a href="/fortwilliam/">Fort William</a></td>
+      </tr>
+      <tr>
+        <td><a href="/fortwilliam/cow-hill.shtml">Cow Hill</a></td>
+        <td>Grade 2</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</body></html>
+"""
+
+# Same table without an explicit tbody: html.parser does not synthesize one,
+# so the selector must work either way.
+SUB_AREA_HTML_NO_TBODY = """
+<html><body>
+<div class="walktable">
+  <table class="table1">
+    <tr><td><a href="/fortwilliam/ben-nevis.shtml">Ben Nevis</a></td><td>Grade 5</td></tr>
+  </table>
+</div>
+</body></html>
+"""
+
+WALK_PAGE_HTML = """
+<html>
+<head>
+  <link rel="canonical" href="https://www.walkhighlands.co.uk/sutherland/sandwood-bay.shtml">
+</head>
+<body>
+<div id="content">
+  <h1>Sandwood Bay</h1>
+  <h2>Summary</h2>
+  <p>A magnificent walk to one of the wildest and most beautiful bays.</p>
+</div>
+<div id="col">
+  <dl>
+    <dt>Distance</dt><dd>13.25km / 8.25 miles</dd>
+    <dt>Time</dt><dd>5.5 - 6.5 hours</dd>
+    <dt>Ascent</dt><dd>730m</dd>
+  </dl>
+  <a href="https://www.google.com/maps/search/58.55180,-4.68820/">Open in Google Maps</a>
+</div>
+</body>
+</html>
+"""
+
+WALK_PAGE_NO_COORDS_HTML = """
+<html>
+<head>
+  <link rel="canonical" href="https://www.walkhighlands.co.uk/sutherland/sandwood-bay.shtml">
+</head>
+<body>
+<div id="content">
+  <h1>Sandwood Bay</h1>
+  <h2>Summary</h2>
+  <p>A magnificent walk.</p>
+</div>
+<div id="col">
+  <dl>
+    <dt>Distance</dt><dd>13.25km / 8.25 miles</dd>
+    <dt>Time</dt><dd>6 hours</dd>
+    <dt>Ascent</dt><dd>730m</dd>
+  </dl>
+</div>
+</body>
+</html>
+"""
+
+
+def test_parse_area_links_extracts_and_skips():
+    links = parse_area_links(HOMEPAGE_HTML, BASE_URL)
+    # .shtml and .php links are navigation chrome, empty-text links dropped.
+    assert links == [
+        "https://www.walkhighlands.co.uk/fortwilliam/",
+        "https://www.walkhighlands.co.uk/skye/",
+    ]
+
+
+def test_parse_area_links_missing_container():
+    assert parse_area_links("<html><body></body></html>", BASE_URL) == []
+
+
+def test_parse_sub_area_links_extracts_and_skips_php():
+    links = parse_sub_area_links(AREA_HTML, BASE_URL)
+    # Sub-area pages ARE .shtml, so only .php is skipped at this stage.
+    assert links == [
+        "https://www.walkhighlands.co.uk/fortwilliam/glen-nevis.shtml",
+        "https://www.walkhighlands.co.uk/fortwilliam/ardgour.shtml",
+    ]
+
+
+def test_parse_sub_area_links_missing_container():
+    assert parse_sub_area_links("<html><body></body></html>", BASE_URL) == []
+
+
+def test_parse_walk_links_first_cell_only():
+    links = parse_walk_links(SUB_AREA_HTML, BASE_URL)
+    # Only the first td of each row holds the walk link; the second-cell
+    # area link must not be picked up.
+    assert links == [
+        "https://www.walkhighlands.co.uk/fortwilliam/ben-nevis.shtml",
+        "https://www.walkhighlands.co.uk/fortwilliam/cow-hill.shtml",
+    ]
+
+
+def test_parse_walk_links_without_tbody():
+    links = parse_walk_links(SUB_AREA_HTML_NO_TBODY, BASE_URL)
+    assert links == ["https://www.walkhighlands.co.uk/fortwilliam/ben-nevis.shtml"]
+
+
+def test_parse_walk_links_empty_page():
+    assert parse_walk_links("<html><body></body></html>", BASE_URL) == []
+
+
+def test_parse_walk_happy_path():
+    walk = parse_walk(WALK_PAGE_HTML)
+    assert walk is not None
+    assert walk.name == "Sandwood Bay"
+    assert walk.url == "https://www.walkhighlands.co.uk/sutherland/sandwood-bay.shtml"
+    assert walk.summary == (
+        "A magnificent walk to one of the wildest and most beautiful bays."
+    )
+    assert walk.distance_km == 13.25
+    # Time range "5.5 - 6.5 hours" takes the upper bound.
+    assert walk.duration_h == 6.5
+    assert walk.ascent_m == 730
+    assert walk.latitude == 58.5518
+    assert walk.longitude == -4.6882
+
+
+def test_parse_walk_uuid5_identity_is_stable():
+    walk_a = parse_walk(WALK_PAGE_HTML)
+    walk_b = parse_walk(WALK_PAGE_HTML)
+    assert walk_a is not None and walk_b is not None
+    assert walk_a.uuid == walk_b.uuid
+    # The identity is uuid5(NAMESPACE_URL, "lat,lon") with float repr, matching
+    # the seeded corpus from the original scraper.
+    expected = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{58.5518},{-4.6882}"))
+    assert walk_a.uuid == expected
+
+
+def test_parse_walk_returns_none_without_coordinates():
+    assert parse_walk(WALK_PAGE_NO_COORDS_HTML) is None
+
+
+def test_parse_duration_single_value():
+    assert _parse_duration_hours("3 hours") == 3.0
+
+
+def test_parse_duration_range_takes_upper_bound():
+    assert _parse_duration_hours("5.5 - 6.5 hours") == 6.5
