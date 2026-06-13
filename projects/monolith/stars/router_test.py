@@ -22,7 +22,7 @@ from sqlmodel.pool import StaticPool
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import Site, SiteHour, SiteMonthStat
+from stars.models import Site, SiteHour, SiteMonthClimatology, SiteMonthStat
 from stars.router import _SITES_CACHE_CONTROL, router
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
@@ -281,14 +281,39 @@ class TestHistory:
             )
         )
 
+    def _seed_climo(
+        self,
+        session,
+        site_id,
+        month,
+        window_count,
+        sum_q,
+        sum_darkness,
+        sum_clarity,
+    ):
+        session.add(
+            SiteMonthClimatology(
+                site_id=site_id,
+                month=month,
+                window_count=window_count,
+                sum_q=sum_q,
+                sum_darkness=sum_darkness,
+                sum_clarity=sum_clarity,
+            )
+        )
+
     def test_month_filter_ordering_and_derived_averages(self, client, session):
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        # December stats: galloway leads on sum_q.
+        # December: live accumulator plus ERA5 climatology backfill combine per
+        # field. galloway leads on combined sum_q.
         self._seed_stat(session, "galloway-forest", 12, 40, 3200.0, 36.0, 30.0)
+        self._seed_climo(session, "galloway-forest", 12, 10, 800.0, 9.0, 6.0)
         self._seed_stat(session, "tomintoul", 12, 20, 1000.0, 14.0, 8.0)
-        # A different month must be excluded by the filter.
+        self._seed_climo(session, "tomintoul", 12, 5, 250.0, 3.0, 2.0)
+        # A different month must be excluded by the filter (both tables).
         self._seed_stat(session, "tomintoul", 6, 5, 5000.0, 4.0, 4.0)
+        self._seed_climo(session, "tomintoul", 6, 5, 5000.0, 4.0, 4.0)
         session.commit()
 
         r = client.get("/api/stars/history", params={"month": 12})
@@ -297,17 +322,38 @@ class TestHistory:
         assert body["month"] == 12
         assert body["count"] == 2
         ids = [s["id"] for s in body["sites"]]
-        # Ordered by sum_q descending.
+        # Ordered by combined sum_q descending.
         assert ids == ["galloway-forest", "tomintoul"]
         gf = body["sites"][0]
-        assert gf["sum_q"] == 3200.0
-        assert gf["window_count"] == 40
-        # Averages are the component sums over window_count.
-        assert gf["avg_darkness"] == pytest.approx(36.0 / 40)
-        assert gf["avg_clarity"] == pytest.approx(30.0 / 40)
+        # Combined sums: live + climatology.
+        assert gf["sum_q"] == pytest.approx(3200.0 + 800.0)
+        assert gf["window_count"] == 40 + 10
+        # Averages are the combined component sums over the combined window_count.
+        assert gf["avg_darkness"] == pytest.approx((36.0 + 9.0) / (40 + 10))
+        assert gf["avg_clarity"] == pytest.approx((30.0 + 6.0) / (40 + 10))
         # Metadata joined from stars.sites.
         assert gf["name"] == "Galloway Forest Park"
         assert gf["lat"] == 55.083
+
+    def test_site_present_only_in_climatology_is_included(self, client, session):
+        # A site with no live stats but an ERA5 backfill row still appears, with
+        # the climatology values standing in for the full combined stats.
+        _seed_site(session, "galloway-forest")
+        _seed_site(session, "tomintoul")
+        self._seed_stat(session, "galloway-forest", 4, 20, 1000.0, 18.0, 14.0)
+        self._seed_climo(session, "tomintoul", 4, 8, 400.0, 6.0, 5.0)
+        session.commit()
+
+        r = client.get("/api/stars/history", params={"month": 4})
+        assert r.status_code == 200
+        body = r.json()
+        assert {s["id"] for s in body["sites"]} == {"galloway-forest", "tomintoul"}
+        by_id = {s["id"]: s for s in body["sites"]}
+        tom = by_id["tomintoul"]
+        assert tom["sum_q"] == pytest.approx(400.0)
+        assert tom["window_count"] == 8
+        assert tom["avg_darkness"] == pytest.approx(6.0 / 8)
+        assert tom["avg_clarity"] == pytest.approx(5.0 / 8)
 
     def test_default_month_is_current_utc(self, client, session):
         current = datetime.now(timezone.utc).month

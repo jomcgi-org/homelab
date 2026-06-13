@@ -35,7 +35,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import Site, SiteHour, SiteMonthStat
+from stars.models import Site, SiteHour, SiteMonthClimatology, SiteMonthStat
 
 logger = logging.getLogger("stars")
 
@@ -213,33 +213,58 @@ def get_history(
         default=0, ge=0, le=12, description="Month-of-year 1-12; 0 = current UTC month"
     ),
 ):
-    """Per-site accumulated realized quality for a calendar month. SSR-only.
+    """Per-site combined realized quality for a calendar month. SSR-only.
 
-    The historical heatmap layer (ADR 008): for the selected month-of-year, each
-    site with banked stats reports its quality-weighted frequency ``sum_q`` (the
-    headline heat metric) plus the component decomposition (average darkness and
-    clarity over ``window_count`` hours). ``month`` defaults to the current UTC
-    month. Sites with no banked hours for the month are omitted (the layer is
-    sparse until it fills). Ordered by ``sum_q`` descending. CDN-cached with the
-    same headers as ``/sites``; conditional GETs short-circuit with a 304.
+    The historical heatmap layer (ADR 008 + 009): for the selected month-of-year,
+    each site's heat is the sum of the live accumulator (stars.site_month_stats,
+    banked by the hourly prune as forecast hours elapse) and the ERA5 climatology
+    backfill (stars.site_month_climatology, a long-run seasonal baseline). The two
+    tables carry identical sufficient stats, so they compose by per-field addition:
+    ``window_count``, ``sum_q``, ``sum_darkness`` and ``sum_clarity`` add, and the
+    averages are the combined component sums over the combined ``window_count``.
+
+    A site is included if it appears in EITHER table (full-outer-join by site_id,
+    done in Python). ``sum_q`` is the headline heat metric; ``avg_darkness`` /
+    ``avg_clarity`` give the decomposition. ``month`` defaults to the current UTC
+    month. Sites with no metadata (dropped from the grid) or a zero combined count
+    are omitted. Ordered by combined ``sum_q`` descending. CDN-cached with the same
+    headers as ``/sites``; conditional GETs short-circuit with a 304.
     """
     selected = month or datetime.now(timezone.utc).month
 
     by_id = {site.id: site for site in session.exec(select(Site)).all()}
-    stats = session.exec(
+    live = session.exec(
         select(SiteMonthStat).where(SiteMonthStat.month == selected)
     ).all()
+    climo = session.exec(
+        select(SiteMonthClimatology).where(SiteMonthClimatology.month == selected)
+    ).all()
+
+    # Full-outer-join the two accumulators by site_id, summing the sufficient
+    # stats per field. A site present in only one table contributes that table's
+    # values (the other side defaults to zero).
+    combined: dict[str, dict[str, float]] = {}
+    for row in (*live, *climo):
+        agg = combined.setdefault(
+            row.site_id,
+            {"window_count": 0, "sum_q": 0.0, "sum_darkness": 0.0, "sum_clarity": 0.0},
+        )
+        agg["window_count"] += row.window_count
+        agg["sum_q"] += row.sum_q
+        agg["sum_darkness"] += row.sum_darkness
+        agg["sum_clarity"] += row.sum_clarity
 
     sites = []
-    for stat in stats:
-        meta = by_id.get(stat.site_id)
+    for site_id, agg in combined.items():
+        meta = by_id.get(site_id)
         if meta is None:
-            # site_month_stats orphans (a site dropped from the grid) are kept
-            # as historical record but have no metadata to render; skip them.
-            logger.debug("stars.history: skipping unknown site_id %s", stat.site_id)
+            # Orphans (a site dropped from the grid) are kept in both tables as
+            # historical record but have no metadata to render; skip them.
+            logger.debug("stars.history: skipping unknown site_id %s", site_id)
             continue
-        if stat.window_count <= 0:
-            # Guard against a zero-count row producing a divide-by-zero average.
+        count = agg["window_count"]
+        if count <= 0:
+            # Guard against a zero combined count producing a divide-by-zero average.
             continue
         sites.append(
             {
@@ -247,19 +272,21 @@ def get_history(
                 "name": meta.name,
                 "lat": meta.lat,
                 "lon": meta.lon,
-                "sum_q": stat.sum_q,
-                "window_count": stat.window_count,
-                "avg_darkness": stat.sum_darkness / stat.window_count,
-                "avg_clarity": stat.sum_clarity / stat.window_count,
+                "sum_q": agg["sum_q"],
+                "window_count": count,
+                "avg_darkness": agg["sum_darkness"] / count,
+                "avg_clarity": agg["sum_clarity"] / count,
             }
         )
 
     sites.sort(key=lambda s: s["sum_q"], reverse=True)
 
-    # The ETag folds in the selected month, the site count, and the current max
-    # sum_q: as the prune banks more hours the max grows and the CDN turns over.
+    # The ETag folds in the selected month, the site count, the max combined
+    # sum_q and the total combined window_count: it turns over when EITHER the
+    # live prune banks more hours or the climatology backfill is reloaded.
     max_sum_q = max((s["sum_q"] for s in sites), default=0.0)
-    etag = f'"v1-{selected}-{len(sites)}-{max_sum_q}"'
+    total_count = sum(s["window_count"] for s in sites)
+    etag = f'"v2-{selected}-{len(sites)}-{max_sum_q}-{total_count}"'
     headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
 
     if request.headers.get("if-none-match") == etag:
