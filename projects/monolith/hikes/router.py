@@ -83,15 +83,26 @@ def _iso(value: datetime | None) -> str | None:
     return coerced.isoformat() if coerced is not None else None
 
 
+# Bump whenever the /walks response SHAPE changes (fields added/removed/renamed).
+# The ETag is otherwise data-derived (max_updated + count), so a shape-only code
+# deploy leaves it unchanged: browsers revalidate, get a 304, and keep their
+# stale-shape body. Folding this token in means a shape change busts every
+# client's cache, so they pick up the new shape on the next revalidation rather
+# than staying broken until the underlying data happens to change.
+# History: v2 = dropped hourly `windows` + `summary`, added `viable_days`.
+_WALKS_SCHEMA_VERSION = "v2"
+
+
 def _walks_etag(walk_count: int, max_updated: datetime | None) -> str:
     """Stable ETag for the walks payload.
 
-    Combines max(windows_updated_at) with the row count so a walk appearing
-    or disappearing invalidates the cache even when no surviving row's
-    timestamp moves.
+    Combines a response-schema token with max(windows_updated_at) and the row
+    count, so the cache invalidates on a shape change (schema token), a data
+    refresh (timestamp), or a walk appearing/disappearing (count) even when no
+    surviving row's timestamp moves.
     """
     stamp = max_updated.isoformat() if max_updated is not None else "null"
-    return f'"{stamp}-{walk_count}"'
+    return f'"{_WALKS_SCHEMA_VERSION}-{stamp}-{walk_count}"'
 
 
 @router.get("/walks")
