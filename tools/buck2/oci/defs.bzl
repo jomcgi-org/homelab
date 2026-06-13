@@ -42,6 +42,7 @@ def tar_layer(name, binary, path, visibility = ["PUBLIC"], **kwargs):
       path: absolute in-image path for the binary (e.g. "/usr/local/bin/server").
       visibility: target visibility.
     """
+
     # Compute the parent dir in Starlark — buck2 would parse a shell $(dirname ...)
     # as a (failing) target macro.
     parent = path.rsplit("/", 1)[0]
