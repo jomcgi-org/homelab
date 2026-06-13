@@ -239,8 +239,10 @@ run_test "no_startup_calls_skipped" \
 	0 ""
 
 # 11. All patched domains present in test files -- no warning even with multiple
+# Use $'...' quoting so \n becomes a real newline; plain double-quotes leave a
+# literal backslash-n, causing grep to match the spurious domain "nships".
 run_test "all_domains_patched_silent" \
-	"$(make_write_json "$MAIN_PY" "home.on_startup_jobs(session)\nships.on_startup_jobs(session)")" \
+	"$(make_write_json "$MAIN_PY" $'home.on_startup_jobs(session)\nships.on_startup_jobs(session)')" \
 	0 ""
 
 # ---------------------------------------------------------------------------
