@@ -127,7 +127,7 @@ marine:
 stars:
   seaweedfsS3Endpoint: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
   gridBucket: "stars"
-  gridKey: "stars/grid.json"
+  gridKey: "grid.json"
   s3AccessKeyId: "duckdb"
   s3SecretAccessKey: "duckdb"
 

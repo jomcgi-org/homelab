@@ -55,6 +55,8 @@ py_venv_binary(
             "**/test_*.py",
             "*/tests/**/*.py",
             "shared/testing/**/*.py",
+            # Offline grid generator: run by hand, not part of the runtime image.
+            "stars/grid_gen/**",
         ],
     ),  # keep
     data = [":frontend_dist"],
@@ -112,6 +114,8 @@ py_library(
             "**/test_*.py",
             "*/tests/**/*.py",
             "shared/testing/**/*.py",
+            # Offline grid generator: run by hand, not part of the runtime image.
+            "stars/grid_gen/**",
         ],
     ),  # keep
     visibility = ["//:__subpackages__"],
