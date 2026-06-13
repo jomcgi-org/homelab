@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.log import configure_logging
 import chat
+import hikes
 import home
 import knowledge
 import scheduler
@@ -66,6 +67,7 @@ async def lifespan(app: FastAPI):
         knowledge_startup(session)
         home.on_startup_jobs(session)
         ships.on_startup_jobs(session)
+        hikes.on_startup_jobs(session)
 
     # Start Discord bot + chat jobs if configured
     bot = None
@@ -218,6 +220,7 @@ chat.register(app)
 knowledge.register(app)
 scheduler.register(app)
 ships.register(app)
+hikes.register(app)
 app.mount("/mcp", _mcp_app)
 
 
