@@ -75,7 +75,9 @@ describe("filterWalksByCharacteristics", () => {
   it("treats maxAscent as inclusive and drops above it", () => {
     // Exactly at the cap is kept; strictly above is dropped.
     expect(
-      filterWalksByCharacteristics(walks, { maxAscent: 200 }).map((w) => w.uuid),
+      filterWalksByCharacteristics(walks, { maxAscent: 200 }).map(
+        (w) => w.uuid,
+      ),
     ).toEqual(["a"]);
     expect(
       filterWalksByCharacteristics(walks, { maxAscent: 199 }).map(
