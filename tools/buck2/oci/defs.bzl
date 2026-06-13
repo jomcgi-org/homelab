@@ -12,6 +12,37 @@ base config so no separate mutate step is needed for the common case.
 load(":providers.bzl", "OciImageInfo")
 
 _REGCTL = "//tools/buck2/bin:regctl"
+_CRANE = "//tools/buck2/bin:crane"
+
+def _oci_push_impl(ctx: AnalysisContext) -> list[Provider]:
+    image = ctx.attrs.image[DefaultInfo].default_outputs[0]
+    sh = ctx.actions.write(
+        "oci_push.sh",
+        "\n".join([
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            "CRANE=\"$1\"; IMAGE=\"$2\"; REPO=\"$3\"; shift 3",
+            "if [ \"$#\" -eq 0 ]; then echo \"usage: buck2 run <target> -- <tag>...\" >&2; exit 2; fi",
+            "for t in \"$@\"; do echo \"pushing $REPO:$t\" >&2; \"$CRANE\" push \"$IMAGE\" \"$REPO:$t\"; done",
+        ]),
+        is_executable = True,
+    )
+    return [
+        DefaultInfo(),
+        RunInfo(args = cmd_args([sh, ctx.attrs._crane[RunInfo], image, ctx.attrs.repository])),
+    ]
+
+# Runnable: `buck2 run <image>.push -- <tag>...` pushes the image tar to its
+# repository at each runtime-supplied tag (via crane). Tags are runtime args (the
+# Buck2 runtime-arg analogue of bazel's stamped remote_tags); see image_tags.sh.
+oci_push = rule(
+    impl = _oci_push_impl,
+    attrs = {
+        "image": attrs.dep(),
+        "repository": attrs.string(),
+        "_crane": attrs.exec_dep(default = _CRANE, providers = [RunInfo]),
+    },
+)
 
 def _oci_image_info_impl(ctx: AnalysisContext) -> list[Provider]:
     image = ctx.attrs.image[DefaultInfo].default_outputs[0]
@@ -76,10 +107,16 @@ def oci_image(name, base, layers = [], platform = "linux/amd64", repository = No
     )
 
     # Expose OciImageInfo (repository + digest) for helm digest-pinning, like
-    # bazel's go_image/apko_image `.info` sub-target.
+    # bazel's go_image/apko_image `.info` sub-target, and a `.push` runnable.
     if repository:
         oci_image_info(
             name = name + ".info",
+            image = ":" + name,
+            repository = repository,
+            visibility = visibility,
+        )
+        oci_push(
+            name = name + ".push",
             image = ":" + name,
             repository = repository,
             visibility = visibility,

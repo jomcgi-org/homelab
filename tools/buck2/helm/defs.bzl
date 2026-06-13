@@ -46,7 +46,36 @@ helm_images_values = rule(
     },
 )
 
-def helm_chart(name, srcs, deps = [], images = None, lint = True, visibility = ["PUBLIC"], **kwargs):
+def _helm_push_impl(ctx: AnalysisContext) -> list[Provider]:
+    chart = ctx.attrs.chart[DefaultInfo].default_outputs[0]
+    sh = ctx.actions.write(
+        "helm_push.sh",
+        "\n".join([
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            "HELM=\"$1\"; CHART=\"$2\"; REPO=\"$3\"",
+            "echo \"pushing $CHART -> $REPO\" >&2",
+            "\"$HELM\" push \"$CHART\" \"$REPO\"",
+        ]),
+        is_executable = True,
+    )
+    return [
+        DefaultInfo(),
+        RunInfo(args = cmd_args([sh, ctx.attrs._helm[RunInfo], chart, ctx.attrs.repository])),
+    ]
+
+# Runnable: `buck2 run <chart>.push` pushes the packaged chart .tgz to an OCI
+# registry (helm push). Mirrors bazel/helm's helm_push.
+helm_push = rule(
+    impl = _helm_push_impl,
+    attrs = {
+        "chart": attrs.dep(),
+        "repository": attrs.string(),
+        "_helm": attrs.exec_dep(default = _HELM, providers = [RunInfo]),
+    },
+)
+
+def helm_chart(name, srcs, deps = [], images = None, lint = True, publish = False, repository = "oci://ghcr.io/jomcgi/homelab/charts", visibility = ["PUBLIC"], **kwargs):
     """Package a Helm chart into a `.tgz`.
 
     Args:
@@ -55,6 +84,8 @@ def helm_chart(name, srcs, deps = [], images = None, lint = True, visibility = [
       deps: targets the chart depends on (e.g. an oci_image) — built, not packaged.
       images: {yaml-path: image `.info` label} — digest-pinned into values.yaml.
       lint: also create a `<name>.lint` target running `helm lint`.
+      publish: also create a `<name>.push` runnable (`helm push` to `repository`).
+      repository: OCI repository to publish the chart to.
       visibility: target visibility.
     """
     overlay_srcs = []
@@ -92,6 +123,14 @@ def helm_chart(name, srcs, deps = [], images = None, lint = True, visibility = [
         visibility = visibility,
         **kwargs
     )
+
+    if publish:
+        helm_push(
+            name = name + ".push",
+            chart = ":" + name,
+            repository = repository,
+            visibility = visibility,
+        )
 
     if lint:
         native.genrule(
