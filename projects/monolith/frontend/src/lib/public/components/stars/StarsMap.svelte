@@ -8,32 +8,20 @@
   let { sites = [], nowMs = Date.now() } = $props();
 
   // OpenFreeMap needs no API key (same hosted liberty style as /app/ships and
-  // /app/hikes, so the maps read as siblings). The liberty style ships light,
-  // so we recolor its land/water/label layers to a night palette on load (see
-  // darkenBasemap): dark skies want a dark map.
+  // /app/hikes, so the maps read as siblings). The liberty style ships light and
+  // we keep it light: these are daytime drive-planning maps, the dark skies are
+  // the subject, not the chrome.
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
-  // Night-sky basemap recolor. Defined in JS (not the design tokens, which are
-  // a light cream palette) so the map reads dark; mirrors how ShipsMap keeps
-  // its vivid marker colors in JS rather than in a <style> block. This is a map
-  // paint surface, not chrome, so the svelte-hardcoded-color rule does not
-  // apply here (the same surface ShipsMap uses for VESSEL_COLORS).
-  const NIGHT = {
-    land: "#0c1020", // near-black navy land base + background
-    water: "#05070f", // darker water so coastlines still read
-    line: "#1b2138", // roads / boundaries, dimmed right down
-    label: "#8893b0", // muted slate place labels
-    labelHalo: "#05070f", // dark halo keeps labels legible on the dark map
-  };
-
-  // Score buckets: muted (poor) -> sky-blue (fair) -> gold (prime). Hardcoded
-  // in JS (a data-viz ramp, not a design-system surface), chosen to rhyme with
-  // the --blue and --accent tokens. Mirrors how HikesMap keeps its EFFORT_RAMP
-  // stops in JS and renders the legend swatches via inline style attributes.
+  // Score buckets: muted (poor) -> blue (fair) -> violet (prime). Hardcoded in
+  // JS (a data-viz ramp, not a design-system surface), tuned to read on the
+  // light basemap; the prime stop is the funky violet that also marks Stars in
+  // the nav. Mirrors how HikesMap keeps its EFFORT_RAMP stops in JS and renders
+  // the legend swatches via inline style attributes.
   const SCORE_BUCKETS = [
-    { key: "low", label: "< 70", color: "#5b678c" }, // muted slate-blue
-    { key: "mid", label: "70-85", color: "#5fb9f2" }, // sky blue (~--blue)
-    { key: "high", label: "85+", color: "#ffd23f" }, // bright gold (~--accent)
+    { key: "low", label: "< 70", color: "#94a3b8" }, // muted slate
+    { key: "mid", label: "70-85", color: "#3b82f6" }, // blue
+    { key: "high", label: "85+", color: "#7c3aed" }, // violet (prime)
   ];
 
   const SOURCE_ID = "sites";
@@ -106,12 +94,12 @@
     return true;
   }
 
-  // Marker stroke comes from the design tokens (paper), a light ring that lifts
-  // every dot off the near-black basemap regardless of its score colour.
+  // Marker stroke comes from the design tokens (ink), a dark ring that lifts
+  // every dot off the light basemap regardless of its score colour.
   function palette() {
     const s = getComputedStyle(document.documentElement);
     return {
-      paper: s.getPropertyValue("--paper").trim(),
+      ink: s.getPropertyValue("--ink").trim(),
     };
   }
 
@@ -151,33 +139,6 @@
     fitToSites();
     // If the open card's site fell out of the set, close it.
     if (selected && !index.has(selected.id)) closeCard();
-  }
-
-  // Recolor the (light) liberty basemap to the night palette. Iterate the
-  // style's own layers so it survives upstream style tweaks; wrap each set in a
-  // try/catch because some layers (e.g. fill-pattern) don't carry the property
-  // we set, and we'd rather skip those than abort the whole restyle.
-  function darkenBasemap() {
-    const layers = map.getStyle()?.layers ?? [];
-    for (const layer of layers) {
-      const { id, type } = layer;
-      try {
-        if (type === "background") {
-          map.setPaintProperty(id, "background-color", NIGHT.land);
-        } else if (type === "fill") {
-          const water = /water|sea|ocean|lake|river|bay/i.test(id);
-          map.setPaintProperty(id, "fill-color", water ? NIGHT.water : NIGHT.land);
-          map.setPaintProperty(id, "fill-outline-color", NIGHT.line);
-        } else if (type === "line") {
-          map.setPaintProperty(id, "line-color", NIGHT.line);
-        } else if (type === "symbol") {
-          map.setPaintProperty(id, "text-color", NIGHT.label);
-          map.setPaintProperty(id, "text-halo-color", NIGHT.labelHalo);
-        }
-      } catch {
-        // Layer doesn't carry this property; leave it as the style shipped it.
-      }
-    }
   }
 
   // Repaint whenever the site set changes.
@@ -229,7 +190,6 @@
 
       map.on("load", () => {
         const pal = palette();
-        darkenBasemap();
 
         map.addSource(SOURCE_ID, { type: "geojson", data: emptyFC() });
         map.addLayer({
@@ -237,9 +197,9 @@
           type: "circle",
           source: SOURCE_ID,
           paint: {
-            // Fill by best score: muted slate -> sky blue -> gold, stepped at
-            // the 70 / 85 bucket boundaries. Paper stroke keeps every dot
-            // legible on the dark basemap; better sites read a touch larger.
+            // Fill by best score: muted slate -> blue -> violet, stepped at
+            // the 70 / 85 bucket boundaries. Ink stroke keeps every dot
+            // legible on the light basemap; better sites read a touch larger.
             "circle-color": [
               "step",
               ["get", "score"],
@@ -259,7 +219,7 @@
               11,
             ],
             "circle-stroke-width": 1.5,
-            "circle-stroke-color": pal.paper,
+            "circle-stroke-color": pal.ink,
           },
         });
         layerReady = true;
@@ -368,10 +328,9 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
-    /* Dark base behind the map while tiles stream in (the page sits on --ink
-       too); --ink is the darkest design token, so the load flash matches the
-       night basemap rather than flashing cream. */
-    background: var(--ink);
+    /* Light base behind the map while tiles stream in, so the load flash
+       matches the light liberty basemap rather than flashing dark. */
+    background: var(--paper);
   }
 
   .map {
