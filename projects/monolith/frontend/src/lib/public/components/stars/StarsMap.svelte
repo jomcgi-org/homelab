@@ -1,15 +1,25 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import { relativeMax, heatWeightExpression } from "$lib/public/stars/heat.js";
 
-  // `sites` is the curated dark-sky list to plot; clicking a dot opens the
-  // detail card. `activeNights` is the set of selected night keys (evening
-  // dates) from the parent's night filter: a marker is coloured by the best
-  // score it reaches across those nights, and drops off the map when none of
-  // its hours fall on a selected night. `nowMs` is a coarse clock signal from
-  // the parent so the card can drop hours that have already elapsed between
-  // SSR loads.
-  let { sites = [], activeNights = new Set(), nowMs = Date.now() } = $props();
+  // `sites` is the list to plot; clicking a dot opens the detail card. In LIVE
+  // mode the rows carry per-night scores + best upcoming hours; in HISTORICAL
+  // mode they carry accumulated `sum_q` + component averages (ADR 008).
+  // `activeNights` is the set of selected night keys from the parent's night
+  // filter (LIVE only): a marker is coloured by the best score it reaches across
+  // those nights, and drops off the map when none of its hours fall on a
+  // selected night. `nowMs` is a coarse clock signal so the card can drop hours
+  // that have already elapsed between SSR loads. `mode` ("live"|"historical")
+  // switches how each feature's heat + marker value is derived and which card
+  // body renders. `heatVisible` toggles the heatmap layer.
+  let {
+    sites = [],
+    activeNights = new Set(),
+    nowMs = Date.now(),
+    mode = "live",
+    heatVisible = false,
+  } = $props();
 
   // OpenFreeMap needs no API key (same hosted liberty style as /app/ships and
   // /app/hikes, so the maps read as siblings). The liberty style ships light and
@@ -17,23 +27,48 @@
   // the subject, not the chrome.
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
-  // Score buckets: muted (poor) -> blue (fair) -> violet (prime). Hardcoded in
+  // Marker buckets: muted (poor) -> blue (fair) -> violet (prime). Hardcoded in
   // JS (a data-viz ramp, not a design-system surface), tuned to read on the
   // light basemap; the prime stop is the funky violet that also marks Stars in
-  // the nav. Mirrors how HikesMap keeps its EFFORT_RAMP stops in JS and renders
-  // the legend swatches via inline style attributes.
+  // the nav. Mirrors how HikesMap keeps its EFFORT_RAMP stops in JS.
   //
-  // Boundaries follow the ADR 007 continuous quality Q = D x C x W: an ideal
-  // winter night reaches ~90+, while summer's best (sun never far below the
-  // horizon) tops out around 30-50, so the buckets break at 35 / 65.
+  // LIVE: boundaries follow the ADR 007 continuous quality Q = D x C x W (an
+  // ideal winter night reaches ~90+, summer tops out ~30-50, so 35 / 65). The
+  // marker's `score` property is the absolute live quality there. HISTORICAL:
+  // the `score` property is instead a RELATIVE percentile (heat / max-heat *
+  // 100), so the same 35 / 65 break reads as low / medium / high thirds of the
+  // realized-quality spread, and the legend relabels accordingly.
   const SCORE_BUCKETS = [
     { key: "low", label: "< 35", color: "#94a3b8" }, // muted slate
     { key: "mid", label: "35-65", color: "#3b82f6" }, // blue
     { key: "high", label: "65+", color: "#7c3aed" }, // violet (prime)
   ];
 
+  // Heatmap colour ramp (transparent -> cool -> warm), keyed on heatmap-density.
+  // Like ShipsMap's HEAT_STOPS these are JS map-paint colours, not design tokens:
+  // a saturated plasma scale that stays vivid on the light/green basemap. The
+  // densest clusters bloom red, the sparse fringe fades to transparent blue.
+  const HEATMAP_COLOR = [
+    "interpolate",
+    ["linear"],
+    ["heatmap-density"],
+    0,
+    "rgba(59, 130, 246, 0)",
+    0.15,
+    "rgba(59, 130, 246, 0.45)", // cool blue
+    0.4,
+    "rgba(124, 58, 237, 0.7)", // violet
+    0.65,
+    "rgba(214, 31, 156, 0.8)", // magenta
+    0.85,
+    "rgba(255, 106, 0, 0.9)", // orange
+    1,
+    "rgba(255, 42, 31, 0.95)", // hot red (densest)
+  ];
+
   const SOURCE_ID = "sites";
   const LAYER_ID = "sites";
+  const HEAT_LAYER_ID = "sites-heat";
 
   let maplibregl; // loaded lazily in onMount (browser-only module)
   let mapContainer; // bound <div>
@@ -41,14 +76,37 @@
   let layerReady = false;
   let didFit = false;
 
+  // The relative-normalization ceiling for the current feature set, restamped on
+  // every pushData. Drives both the historical marker percentile and the
+  // heatmap-weight rescale, so the field re-normalizes as mode/night/month
+  // changes. Defaults to the live score ceiling.
+  let currentMaxHeat = 100;
+
   // site id -> site row, so a marker click can recover the full record.
   const index = new Map();
 
   let selected = $state(null); // selected site row, or null
 
+  // Mode-aware legend: LIVE shows the absolute score buckets; HISTORICAL relabels
+  // the same colours as relative low/medium/high (the heat field is normalized,
+  // so an absolute number would mislead).
+  let legendTitle = $derived(
+    mode === "historical" ? "Realized quality" : "Best score",
+  );
+  let legendItems = $derived(
+    mode === "historical"
+      ? [
+          { key: "low", label: "Low", color: SCORE_BUCKETS[0].color },
+          { key: "mid", label: "Medium", color: SCORE_BUCKETS[1].color },
+          { key: "high", label: "High", color: SCORE_BUCKETS[2].color },
+        ]
+      : SCORE_BUCKETS,
+  );
+
   // The selected site's hours, dropping any that have already elapsed (the hour
-  // is over once nowMs passes its end). The endpoint already prunes past hours
-  // server-side; this just keeps a long-open page honest between refreshes.
+  // is over once nowMs passes its end). LIVE only; historical rows carry no
+  // best_hours. The endpoint already prunes past hours server-side; this just
+  // keeps a long-open page honest between refreshes.
   let cardHours = $derived(
     (selected?.best_hours ?? []).filter((h) => {
       const t = Date.parse(h.time);
@@ -116,7 +174,7 @@
   // data, so an older build or a CDN-cached pre-feature response never blanks
   // the map; with night data and "All" selected this still equals best_score.
   // A single selected night returns null for sites with no window then, so they
-  // drop off the map (the actual filter).
+  // drop off the map (the actual filter). LIVE only.
   function effectiveScore(site) {
     const ns = site.night_scores;
     if (!ns || !activeNights || activeNights.size === 0) {
@@ -130,25 +188,70 @@
     return best;
   }
 
+  // The raw heat value for a site in the current mode: LIVE = the per-night
+  // score (the value the marker already colours by), HISTORICAL = the
+  // accumulated quality-weighted frequency sum_q. null drops the site (LIVE: no
+  // window on the selected night; HISTORICAL: missing/zero stat).
+  function rawHeat(site) {
+    if (mode === "historical") {
+      const q = site.sum_q;
+      return typeof q === "number" && q > 0 ? q : null;
+    }
+    return effectiveScore(site);
+  }
+
   function buildFeatures() {
-    const features = [];
+    // First pass: collect each plotted site's raw heat; second pass: normalize.
+    const raw = [];
     for (const site of sites) {
       if (!validLatLon(site.lat, site.lon)) continue;
-      const score = effectiveScore(site);
-      if (score === null) continue;
-      features.push({
-        type: "Feature",
-        id: site.id,
-        geometry: { type: "Point", coordinates: [site.lon, site.lat] },
-        properties: { id: site.id, score },
-      });
+      const heat = rawHeat(site);
+      if (heat === null) continue;
+      raw.push({ site, heat });
     }
+    // Relative ceiling: the densest point reaches full weight regardless of the
+    // field's absolute scale (live 0..100 vs historical sum_q). Restamped here so
+    // the heatmap-weight expression in pushData rescales to whatever is in view.
+    currentMaxHeat = relativeMax(raw.map((r) => r.heat));
+
+    const features = raw.map(({ site, heat }) => ({
+      type: "Feature",
+      id: site.id,
+      geometry: { type: "Point", coordinates: [site.lon, site.lat] },
+      properties: {
+        id: site.id,
+        heat,
+        // Marker colour/size value: absolute live score, or a 0..100 relative
+        // percentile in historical so the shared 35 / 65 buckets read as thirds.
+        score:
+          mode === "historical" ? (100 * heat) / currentMaxHeat : heat,
+      },
+    }));
     return { type: "FeatureCollection", features };
   }
 
   function pushData() {
     const src = map?.getSource(SOURCE_ID);
-    if (src) src.setData(buildFeatures());
+    if (!src) return;
+    src.setData(buildFeatures());
+    // Re-normalize the heatmap weight to the current ceiling so the field
+    // rescales as data/mode changes (ADR 008: colour normalizes relatively).
+    if (map.getLayer(HEAT_LAYER_ID)) {
+      map.setPaintProperty(
+        HEAT_LAYER_ID,
+        "heatmap-weight",
+        heatWeightExpression(currentMaxHeat),
+      );
+    }
+  }
+
+  function applyHeatVisibility() {
+    if (!map || !map.getLayer(HEAT_LAYER_ID)) return;
+    map.setLayoutProperty(
+      HEAT_LAYER_ID,
+      "visibility",
+      heatVisible ? "visible" : "none",
+    );
   }
 
   function fitToSites() {
@@ -181,6 +284,22 @@
   $effect(() => {
     void activeNights;
     if (map && layerReady) pushData();
+  });
+
+  // Mode flip (live <-> historical) swaps what each feature means, so rebuild the
+  // data and drop any open card (its row shape belongs to the other mode).
+  $effect(() => {
+    void mode;
+    if (map && layerReady) {
+      closeCard();
+      pushData();
+    }
+  });
+
+  // Show/hide the heatmap layer when the parent toggles it.
+  $effect(() => {
+    void heatVisible;
+    if (map && layerReady) applyHeatVisibility();
   });
 
   onMount(() => {
@@ -228,15 +347,64 @@
         const pal = palette();
 
         map.addSource(SOURCE_ID, { type: "geojson", data: emptyFC() });
+
+        // Heatmap first, so it sits BENEATH the circle markers (which stay on
+        // top and clickable). Weighted by each feature's `heat`, normalized
+        // relatively in pushData; hidden until the parent toggles it on.
+        map.addLayer({
+          id: HEAT_LAYER_ID,
+          type: "heatmap",
+          source: SOURCE_ID,
+          layout: { visibility: heatVisible ? "visible" : "none" },
+          paint: {
+            "heatmap-weight": heatWeightExpression(currentMaxHeat),
+            // Lift the whole field as you zoom in so sparse points still bloom.
+            "heatmap-intensity": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              5,
+              1,
+              11,
+              3,
+            ],
+            "heatmap-color": HEATMAP_COLOR,
+            // Generous radius: only ~30 sites span Scotland, so each needs a
+            // wide bloom to read as heat rather than a fuzzy dot. Grows with
+            // zoom so clusters stay coherent.
+            "heatmap-radius": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              5,
+              22,
+              8,
+              45,
+              11,
+              70,
+            ],
+            // Fade slightly as you zoom in so the markers take over up close.
+            "heatmap-opacity": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              5,
+              0.9,
+              10,
+              0.6,
+            ],
+          },
+        });
+
         map.addLayer({
           id: LAYER_ID,
           type: "circle",
           source: SOURCE_ID,
           paint: {
-            // Fill by best score: muted slate -> blue -> violet, stepped at
-            // the 35 / 65 bucket boundaries (ADR 007 continuous quality). Ink
-            // stroke keeps every dot legible on the light basemap; better sites
-            // read a touch larger.
+            // Fill by the marker `score` value (absolute live quality, or a
+            // 0..100 relative percentile in historical), stepped at the 35 / 65
+            // bucket boundaries. Ink stroke keeps every dot legible on the light
+            // basemap; better sites read a touch larger.
             "circle-color": [
               "step",
               ["get", "score"],
@@ -302,43 +470,75 @@
         >&times;</button
       >
       <h2 class="card-name">{selected.name}</h2>
-      <dl class="card-stats">
-        <div>
-          <dt>Coordinates</dt>
-          <dd>{fmtCoord(selected.lat, selected.lon)}</dd>
-        </div>
-        <div><dt>Altitude</dt><dd>{selected.altitude_m} m</dd></div>
-        <div><dt>LP zone</dt><dd>{selected.lp_zone}</dd></div>
-      </dl>
 
-      {#if cardHours.length}
-        <p class="eyebrow card-windows-title">Best upcoming hours</p>
-        <table class="card-windows">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Score</th>
-              <th>Cloud</th>
-              <th>Temp</th>
-              <th>Dew</th>
-              <th>Sky</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each cardHours as h (h.time)}
-              <tr>
-                <td>{fmtTime(h.time)}</td>
-                <td>{Math.round(h.score)}</td>
-                <td>{Math.round(h.cloud_area_fraction)}%</td>
-                <td>{Math.round(h.air_temperature)}C</td>
-                <td>{h.dew_spread?.toFixed(1)}</td>
-                <td>{fmtSymbol(h.symbol)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      {#if mode === "historical"}
+        <!-- Historical body: accumulated realized quality for the month, plus
+             the darkness/clarity decomposition (ADR 008). No hourly windows. -->
+        <dl class="card-stats">
+          <div>
+            <dt>Coordinates</dt>
+            <dd>{fmtCoord(selected.lat, selected.lon)}</dd>
+          </div>
+          <div>
+            <dt>Realized quality</dt>
+            <dd>{Math.round(selected.sum_q ?? 0)}</dd>
+          </div>
+          <div>
+            <dt>Hours banked</dt>
+            <dd>{selected.window_count ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Avg darkness</dt>
+            <dd>{(selected.avg_darkness ?? 0).toFixed(1)}</dd>
+          </div>
+          <div>
+            <dt>Avg clarity</dt>
+            <dd>{(selected.avg_clarity ?? 0).toFixed(1)}</dd>
+          </div>
+        </dl>
+        <p class="card-empty">
+          Quality-weighted frequency accumulated as forecast hours elapsed this
+          month. Higher means more, clearer dark hours banked here.
+        </p>
       {:else}
-        <p class="card-empty">No upcoming viewing hours for this site.</p>
+        <dl class="card-stats">
+          <div>
+            <dt>Coordinates</dt>
+            <dd>{fmtCoord(selected.lat, selected.lon)}</dd>
+          </div>
+          <div><dt>Altitude</dt><dd>{selected.altitude_m} m</dd></div>
+          <div><dt>LP zone</dt><dd>{selected.lp_zone}</dd></div>
+        </dl>
+
+        {#if cardHours.length}
+          <p class="eyebrow card-windows-title">Best upcoming hours</p>
+          <table class="card-windows">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Score</th>
+                <th>Cloud</th>
+                <th>Temp</th>
+                <th>Dew</th>
+                <th>Sky</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each cardHours as h (h.time)}
+                <tr>
+                  <td>{fmtTime(h.time)}</td>
+                  <td>{Math.round(h.score)}</td>
+                  <td>{Math.round(h.cloud_area_fraction)}%</td>
+                  <td>{Math.round(h.air_temperature)}C</td>
+                  <td>{h.dew_spread?.toFixed(1)}</td>
+                  <td>{fmtSymbol(h.symbol)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="card-empty">No upcoming viewing hours for this site.</p>
+        {/if}
       {/if}
 
       <a class="card-link" href={mapsLink} target="_blank" rel="noopener"
@@ -347,11 +547,11 @@
     </aside>
   {/if}
 
-  <!-- Score legend: the colour buckets that tint the dots. -->
+  <!-- Marker legend: the colour buckets that tint the dots (mode-aware). -->
   <div class="legend">
-    <span class="legend-title">Best score</span>
+    <span class="legend-title">{legendTitle}</span>
     <ul class="legend-list">
-      {#each SCORE_BUCKETS as b (b.key)}
+      {#each legendItems as b (b.key)}
         <li>
           <span class="legend-sw" style="background: {b.color}"></span>{b.label}
         </li>
@@ -545,6 +745,7 @@
   .card-empty {
     font-family: var(--mono);
     font-size: 11px;
+    line-height: 1.5;
     color: var(--ink-3);
     margin-bottom: 14px;
   }
@@ -575,7 +776,7 @@
     margin-left: 2px;
   }
 
-  /* Score legend, bottom-left, clear of the bottom-right zoom + attribution. */
+  /* Marker legend, bottom-left, clear of the bottom-right zoom + attribution. */
   .legend {
     position: absolute;
     left: 16px;
