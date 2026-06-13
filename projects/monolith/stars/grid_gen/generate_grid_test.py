@@ -4,6 +4,7 @@ All functions under test are pure (no I/O, no side effects), so no mocks
 are needed. Fixtures use simple synthetic geometries: unit squares, triangles,
 and squares with holes.
 """
+
 import math
 
 import pytest
@@ -335,7 +336,9 @@ class TestGenerate:
     def test_site_fields_are_complete(self):
         """Every generated site has id, name, lat, lon, altitude_m, and lp_zone."""
         dark = _dark_regions_geojson([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
-        scotland = _scotland_polys_from_ring([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
+        scotland = _scotland_polys_from_ring(
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        )
         sites = generate(dark, scotland, spacing_km=500.0)
         assert len(sites) > 0
         for site in sites:
@@ -349,7 +352,9 @@ class TestGenerate:
     def test_site_defaults(self):
         """Generated sites have name=None, altitude_m=0, lp_zone='dark'."""
         dark = _dark_regions_geojson([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
-        scotland = _scotland_polys_from_ring([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
+        scotland = _scotland_polys_from_ring(
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        )
         sites = generate(dark, scotland, spacing_km=500.0)
         assert len(sites) > 0
         for site in sites:
@@ -360,7 +365,9 @@ class TestGenerate:
     def test_site_ids_are_sequential(self):
         """Site IDs follow the pattern scotland-NNNN with no gaps."""
         dark = _dark_regions_geojson([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
-        scotland = _scotland_polys_from_ring([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
+        scotland = _scotland_polys_from_ring(
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        )
         sites = generate(dark, scotland, spacing_km=500.0)
         assert len(sites) > 0
         for i, site in enumerate(sites):
@@ -369,7 +376,9 @@ class TestGenerate:
     def test_lat_lon_rounded_to_4dp(self):
         """lat and lon are rounded to 4 decimal places."""
         dark = _dark_regions_geojson([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
-        scotland = _scotland_polys_from_ring([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
+        scotland = _scotland_polys_from_ring(
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        )
         sites = generate(dark, scotland, spacing_km=500.0)
         for site in sites:
             assert site["lat"] == round(site["lat"], 4)
@@ -378,7 +387,9 @@ class TestGenerate:
     def test_finer_spacing_produces_more_sites(self):
         """Halving the spacing (approximately) produces more sites."""
         dark = _dark_regions_geojson([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
-        scotland = _scotland_polys_from_ring([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]])
+        scotland = _scotland_polys_from_ring(
+            [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        )
         coarse = generate(dark, scotland, spacing_km=300.0)
         fine = generate(dark, scotland, spacing_km=150.0)
         assert len(fine) > len(coarse)
