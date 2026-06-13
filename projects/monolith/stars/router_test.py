@@ -181,6 +181,7 @@ class TestSites:
             "sites": [],
             "count": 0,
             "total_sites": 0,
+            "nights": [],
             "fetched_at": None,
         }
 
@@ -212,6 +213,47 @@ class TestSites:
         best_hours = body["sites"][0]["best_hours"]
         assert len(best_hours) == 8
         scores = [h["score"] for h in best_hours]
-        # Sorted descending, and exactly the 8 highest (0.11 .. 0.04).
-        assert scores == sorted(scores, reverse=True)
-        assert scores == [0.11, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04]
+        # Selection is the 8 highest scores (offsets 5..12, scores 0.04..0.11).
+        assert set(scores) == {0.11, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04}
+
+    def test_best_hours_in_chronological_order(self, client, session):
+        # Hours arrive scored out of time order; the card must read by time, so
+        # the response sorts the selected hours ascending by hour_time.
+        _seed_site(session, "galloway-forest")
+        session.add(_hour("galloway-forest", 1, 0.3))
+        session.add(_hour("galloway-forest", 2, 0.9))
+        session.add(_hour("galloway-forest", 3, 0.5))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        times = [h["time"] for h in body["sites"][0]["best_hours"]]
+        assert times == sorted(times)
+        assert times == [
+            (CUTOFF + timedelta(hours=1)).isoformat(),
+            (CUTOFF + timedelta(hours=2)).isoformat(),
+            (CUTOFF + timedelta(hours=3)).isoformat(),
+        ]
+
+    def test_night_scores_and_nights(self, client, session):
+        # Two nights' worth of hours: each site exposes the best score per night
+        # (keyed by the evening date), and the response lists the union of
+        # nights ascending for the filter chips.
+        _seed_site(session, "galloway-forest")
+        # Offsets chosen relative to a fixed cutoff so both nights are covered
+        # regardless of when the suite runs.
+        session.add(_hour("galloway-forest", 1, 0.4))
+        session.add(_hour("galloway-forest", 2, 0.8))
+        session.add(_hour("galloway-forest", 26, 0.6))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        night_scores = body["sites"][0]["night_scores"]
+        # Each night maps to the best score reached that night.
+        assert max(night_scores.values()) == 0.8
+        # Top-level nights is the sorted union of the per-site night keys.
+        assert body["nights"] == sorted(set(night_scores))
+        assert body["nights"] == sorted(body["nights"])

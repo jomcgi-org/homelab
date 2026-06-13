@@ -24,7 +24,8 @@ been pruned yet is still excluded here.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
@@ -40,6 +41,14 @@ router = APIRouter(prefix="/api/stars", tags=["stars"])
 # Cap each site's hour list to the top N by score, so the payload stays light
 # even with a multi-day forecast horizon.
 _DISPLAY_HOURS = 8
+
+# Dark hours run across midnight, so a viewing "night" is not a calendar day.
+# We label each night by its evening date in UK local time: shifting the local
+# clock back 12 h folds an evening and the following pre-dawn hours into one
+# night key, so the map's night filter groups hours the way a stargazer thinks
+# about them (one outing = one night).
+_LONDON = ZoneInfo("Europe/London")
+_NIGHT_SHIFT = timedelta(hours=12)
 
 # Forecasts refresh hourly, so 30 min edge freshness with a 1 h SWR window is
 # plenty; max-age=0 makes the browser revalidate rather than hold a stale copy.
@@ -67,6 +76,19 @@ def _iso(value: datetime | None) -> str | None:
     """ISO-8601 string in UTC, or None. Keeps the JSON consistent across backends."""
     coerced = _as_utc(value)
     return coerced.isoformat() if coerced is not None else None
+
+
+def _night_key(hour_time: datetime) -> str:
+    """ISO date (YYYY-MM-DD) of the night a dark hour belongs to.
+
+    A night runs from one evening into the next morning, so labelling by the
+    calendar date would split a single outing at midnight. Convert to UK local
+    time and shift back 12 h before taking the date: evening hours keep their
+    own date and pre-dawn hours fold back onto the evening that opened the
+    night. The frontend formats this key into the chip label.
+    """
+    local = _as_utc(hour_time).astimezone(_LONDON)
+    return (local - _NIGHT_SHIFT).date().isoformat()
 
 
 @router.get("/sites")
@@ -108,6 +130,19 @@ def get_sites(
             continue
 
         best_score = max(h.score for h in hours)
+
+        # Per-night best score, so the map's night filter can recolour each
+        # marker by the quality it can reach on the selected night(s).
+        night_scores: dict[str, float] = {}
+        for h in hours:
+            key = _night_key(h.hour_time)
+            if key not in night_scores or h.score > night_scores[key]:
+                night_scores[key] = h.score
+
+        # Select the best N hours by score (the windows worth showing), then
+        # display them in chronological order: a planner reads the night top to
+        # bottom, so the card must run by time, not by score.
+        top_hours = sorted(hours, key=lambda h: h.score, reverse=True)[:_DISPLAY_HOURS]
         best_hours = [
             {
                 "time": _iso(h.hour_time),
@@ -119,7 +154,7 @@ def get_sites(
                 "dew_spread": h.dew_spread,
                 "symbol": h.symbol,
             }
-            for h in sorted(hours, key=lambda h: h.score, reverse=True)[:_DISPLAY_HOURS]
+            for h in sorted(top_hours, key=lambda h: h.hour_time)
         ]
         sites.append(
             {
@@ -131,10 +166,16 @@ def get_sites(
                 "lp_zone": meta.lp_zone,
                 "best_score": best_score,
                 "best_hours": best_hours,
+                "night_scores": night_scores,
             }
         )
 
     sites.sort(key=lambda s: s["best_score"], reverse=True)
+
+    # Union of nights present across all sites, ascending, so the frontend can
+    # render one stable row of night-filter chips (a site missing a night just
+    # has no score for it).
+    nights = sorted({key for s in sites for key in s["night_scores"]})
 
     # The ETag folds in the current clock hour so the CDN turns over hourly even
     # when fetched_at has not changed: as hours fall past the cutoff the payload
@@ -155,5 +196,6 @@ def get_sites(
         "sites": sites,
         "count": len(sites),
         "total_sites": len(by_id),
+        "nights": nights,
         "fetched_at": _iso(max_fetched),
     }

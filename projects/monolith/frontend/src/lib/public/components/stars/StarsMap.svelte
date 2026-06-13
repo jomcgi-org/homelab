@@ -3,9 +3,13 @@
   import "maplibre-gl/dist/maplibre-gl.css";
 
   // `sites` is the curated dark-sky list to plot; clicking a dot opens the
-  // detail card. `nowMs` is a coarse clock signal from the parent so the card
-  // can drop hours that have already elapsed between SSR loads.
-  let { sites = [], nowMs = Date.now() } = $props();
+  // detail card. `activeNights` is the set of selected night keys (evening
+  // dates) from the parent's night filter: a marker is coloured by the best
+  // score it reaches across those nights, and drops off the map when none of
+  // its hours fall on a selected night. `nowMs` is a coarse clock signal from
+  // the parent so the card can drop hours that have already elapsed between
+  // SSR loads.
+  let { sites = [], activeNights = new Set(), nowMs = Date.now() } = $props();
 
   // OpenFreeMap needs no API key (same hosted liberty style as /app/ships and
   // /app/hikes, so the maps read as siblings). The liberty style ships light and
@@ -107,15 +111,32 @@
     };
   }
 
+  // Best score this site reaches across the currently selected nights, or null
+  // when none of its hours fall on an active night (so it drops off the map,
+  // mirroring how the ships type filter hides deselected vessels). With every
+  // night selected this equals best_score, so the default view is unchanged.
+  function effectiveScore(site) {
+    if (!activeNights || activeNights.size === 0) return null;
+    const ns = site.night_scores || {};
+    let best = null;
+    for (const night of activeNights) {
+      const s = ns[night];
+      if (s != null && (best === null || s > best)) best = s;
+    }
+    return best;
+  }
+
   function buildFeatures() {
     const features = [];
     for (const site of sites) {
       if (!validLatLon(site.lat, site.lon)) continue;
+      const score = effectiveScore(site);
+      if (score === null) continue;
       features.push({
         type: "Feature",
         id: site.id,
         geometry: { type: "Point", coordinates: [site.lon, site.lat] },
-        properties: { id: site.id, score: site.best_score ?? 0 },
+        properties: { id: site.id, score },
       });
     }
     return { type: "FeatureCollection", features };
@@ -149,6 +170,13 @@
   $effect(() => {
     void sites;
     if (map && layerReady) syncSites();
+  });
+
+  // Recolour/refilter the markers when the night selection changes. setData
+  // alone (no refit) keeps the viewport put while the dots restyle.
+  $effect(() => {
+    void activeNights;
+    if (map && layerReady) pushData();
   });
 
   onMount(() => {
