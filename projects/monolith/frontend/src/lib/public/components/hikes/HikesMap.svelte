@@ -300,7 +300,13 @@
       <button class="card-close" onclick={closeCard} aria-label="Close walk card"
         >&times;</button
       >
-      <h2 class="card-name">{selected.name}</h2>
+      <h2 class="card-name">
+        <a href={selected.url} target="_blank" rel="noopener"
+          >{selected.name}<span class="card-name-arrow" aria-hidden="true"
+            >&nearr;</span
+          ></a
+        >
+      </h2>
       <dl class="card-stats">
         <div><dt>Distance</dt><dd>{selected.distance_km} km</dd></div>
         <div><dt>Ascent</dt><dd>{selected.ascent_m} m</dd></div>
@@ -337,10 +343,6 @@
       {:else}
         <p class="card-empty">No viable weather windows in the forecast.</p>
       {/if}
-
-      <a class="card-link" href={selected.url} target="_blank" rel="noopener">
-        View on WalkHighlands &nearr;
-      </a>
     </aside>
   {/if}
 
@@ -474,16 +476,47 @@
     word-break: break-word;
   }
 
+  /* The name is the link to WalkHighlands (no separate footer link). */
+  .card-name a {
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+    text-decoration-skip-ink: none;
+    text-underline-offset: 3px;
+    transition: background 140ms ease;
+  }
+
+  .card-name a:hover,
+  .card-name a:focus-visible {
+    background: linear-gradient(transparent 62%, var(--accent) 62%);
+    text-decoration-color: var(--ink);
+  }
+
+  .card-name-arrow {
+    font-size: 0.62em;
+    margin-left: 3px;
+    white-space: nowrap;
+    vertical-align: 0.18em;
+  }
+
+  /* Stats sit in a framed box so the grey labels read as a distinct block
+     rather than floating low-contrast on the paper. */
   .card-stats {
     display: flex;
-    gap: 14px;
-    margin-bottom: 12px;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    background: var(--cream);
+    border: 2px solid var(--ink);
+    border-radius: var(--radius);
   }
 
   .card-stats > div {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
   }
 
   .card-stats dt {
@@ -491,12 +524,12 @@
     font-size: 10px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
   .card-stats dd {
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 700;
   }
 
@@ -508,8 +541,16 @@
     margin-bottom: 14px;
   }
 
+  /* Highlighted header bar so "Next viable: <day>" reads as the answer, not a
+     faint grey eyebrow (overrides .eyebrow's muted colour). */
   .card-windows-title {
-    margin-bottom: 8px;
+    display: inline-block;
+    margin: 0 0 10px;
+    padding: 4px 8px;
+    background: var(--accent);
+    color: var(--ink);
+    border: 2px solid var(--ink);
+    border-radius: var(--radius);
   }
 
   .card-windows {
@@ -539,28 +580,6 @@
     font-size: 11px;
     color: var(--ink-3);
     margin-bottom: 14px;
-  }
-
-  .card-link {
-    display: inline-block;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-    transition: background 140ms ease;
-  }
-
-  .card-link:hover,
-  .card-link:focus-visible {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-    text-decoration-color: var(--ink);
   }
 
   /* Effort legend, bottom-left, clear of the bottom-right zoom + attribution. */
