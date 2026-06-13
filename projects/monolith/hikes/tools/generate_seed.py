@@ -73,12 +73,17 @@ def generate(db_path: Path, out) -> tuple[int, int]:
     kept: list[str] = []
     skipped = 0
     for row in rows:
-        if any(value is None for value in row):
+        record = dict(zip(COLUMNS, row))
+        # summary is NOT NULL DEFAULT '' in the schema, so a NULL summary is a
+        # valid walk: coerce it rather than dropping the whole row.
+        if record["summary"] is None:
+            record["summary"] = ""
+        if any(value is None for value in record.values()):
             skipped += 1
             print(f"skipping row with NULL column: uuid={row[0]!r}", file=sys.stderr)
             continue
         values = ", ".join(
-            sql_literal(column, value) for column, value in zip(COLUMNS, row)
+            sql_literal(column, record[column]) for column in COLUMNS
         )
         kept.append(f"({values})")
 

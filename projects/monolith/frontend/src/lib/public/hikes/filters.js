@@ -108,10 +108,23 @@ export function groupWindowsByDay(walk, now = new Date()) {
 
 // The UK-local calendar days for the next `n` days starting today (inclusive),
 // as YYYY-MM-DD strings. n=1 is just today.
+//
+// We anchor on the UK-local calendar day of `now` and walk the day component
+// forward (parsing the YYYY-MM-DD key at noon UTC so the increment stays inside
+// the right calendar day across BST/GMT), rather than adding a fixed 24h in ms.
+// Adding 86_400_000 ms skips or duplicates a calendar day across the spring/
+// autumn DST transition; incrementing the day component yields N consecutive UK
+// calendar days with no skip or duplicate. Mirrors the legacy app.js
+// generateDateOptions, which did date.setDate(ukToday.getDate() + i).
 export function upcomingUkDays(n, now = new Date()) {
+  // Noon UTC on the UK-local "today" sits comfortably inside that calendar day
+  // for both BST (UTC+1) and GMT, so day-component arithmetic never slips into
+  // a neighbouring day.
+  const anchor = new Date(`${ukDayString(now)}T12:00:00Z`);
   const days = [];
   for (let i = 0; i < n; i++) {
-    const d = new Date(now.getTime() + i * 86_400_000);
+    const d = new Date(anchor);
+    d.setUTCDate(anchor.getUTCDate() + i);
     days.push(ukDayString(d));
   }
   return days;

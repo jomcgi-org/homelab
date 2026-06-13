@@ -80,9 +80,12 @@ def parse_hourly(forecast_json: dict | None) -> list[dict]:
                 "time": time_str,
                 "temp_c": instant.get("air_temperature"),
                 "wind_speed_ms": instant.get("wind_speed"),
+                # Coerce a present-but-null precipitation_amount to 0 so the
+                # downstream `> threshold` comparison never sees None.
                 "precipitation_mm": next_1_hours.get("details", {}).get(
                     "precipitation_amount", 0
-                ),
+                )
+                or 0,
                 "cloud_area_fraction": instant.get("cloud_area_fraction"),
             }
         )
@@ -170,7 +173,19 @@ async def fetch_all_windows(
             forecast = await fetch_forecast(client, lat, lon)
         if forecast is None:
             return
-        results[walk_uuid] = compute_windows(parse_hourly(forecast), now, lat, lon)
+        try:
+            windows = compute_windows(parse_hourly(forecast), now, lat, lon)
+        except Exception:
+            # A single malformed forecast must not abort the whole refresh;
+            # this walk stays absent from results and keeps its prior windows.
+            logger.warning(
+                "hikes forecast: window computation failed for (%s, %s)",
+                lat,
+                lon,
+                exc_info=True,
+            )
+            return
+        results[walk_uuid] = windows
 
     await asyncio.gather(*(_one(u, lat, lon) for u, lat, lon in walks))
     return results
