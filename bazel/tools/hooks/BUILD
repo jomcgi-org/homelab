@@ -99,3 +99,9 @@ sh_test(
     srcs = ["check-lifespan-startup-mock-sync_test.sh"],
     data = [":check-lifespan-startup-mock-sync.sh"],
 )
+
+sh_test(
+    name = "check_large_migration_sql_test",
+    srcs = ["check-large-migration-sql_test.sh"],
+    data = [":check-large-migration-sql.sh"],
+)
