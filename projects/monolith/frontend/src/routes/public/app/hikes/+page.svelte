@@ -100,7 +100,21 @@
     return Number.isNaN(n) ? fallback : n;
   }
 
-  let dayKeys = $derived(upcomingUkDays(DATE_HORIZON, new Date(nowMs)));
+  // The days any walk is actually viable on (union of viable_days across the
+  // corpus). met.no's compact forecast only carries hourly data for ~3 days, so
+  // the corpus only covers ~today..+2; without this the strip would render dead
+  // chips for days 4-7 that match no walk ("picking a day shows nothing").
+  let availableDays = $derived(
+    new Set(walks.flatMap((w) => w.viable_days ?? [])),
+  );
+
+  // The upcoming UK days that have forecast coverage: the rolling N-day strip
+  // intersected with days the data actually has. Every chip shown yields walks.
+  let dayKeys = $derived(
+    upcomingUkDays(DATE_HORIZON, new Date(nowMs)).filter((k) =>
+      availableDays.has(k),
+    ),
+  );
 
   function dayLabel(key) {
     // Noon UTC keeps the label on the intended UK calendar day across BST/GMT.
