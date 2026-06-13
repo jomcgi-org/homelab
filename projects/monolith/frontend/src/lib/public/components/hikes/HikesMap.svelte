@@ -6,7 +6,46 @@
   // `walks` is the filtered set to plot; clicking a marker opens the card.
   // `selectedDay` is the parent's chosen day chip (YYYY-MM-DD) or null for
   // "any"; the marker card prefers that day's windows when it is set.
-  let { walks = [], selectedDay = null } = $props();
+  // `maxima` holds the corpus p95 of duration/ascent/distance, the ceilings the
+  // effort score normalizes against (passed in so the colour is stable as the
+  // filtered set changes).
+  let {
+    walks = [],
+    selectedDay = null,
+    maxima = { duration: 1, ascent: 1, distance: 1 },
+  } = $props();
+
+  // Effort ramp, mirrors ShipsMap's HEAT_STOPS so the two maps read as siblings:
+  // violet (gentle) -> red (strenuous). Hardcoded hex like the ships heatmap
+  // (these are data-viz ramp stops, not design-system surface tokens).
+  const EFFORT_RAMP = [
+    { at: 0.0, color: "#7b2ff7" }, // vivid violet, gentlest
+    { at: 0.2, color: "#d61f9c" }, // magenta
+    { at: 0.4, color: "#ff0a78" }, // hot rose
+    { at: 0.6, color: "#ff6a00" }, // vivid orange
+    { at: 0.8, color: "#ff2a1f" }, // bright red
+    { at: 1.0, color: "#ff0019" }, // pure vivid red, most strenuous
+  ];
+
+  // Effort score in [0,1]: equal-weight blend of duration, ascent and distance,
+  // each normalized against the corpus p95 and clamped. Triple-counts effort on
+  // purpose (the user asked for "time + ascent + length"); they correlate, so
+  // the blend just sharpens the ordering.
+  function effortScore(walk) {
+    const norm = (v, max) => Math.min(1, Math.max(0, (v ?? 0) / (max || 1)));
+    const d = norm(walk.duration_h, maxima.duration);
+    const a = norm(walk.ascent_m, maxima.ascent);
+    const l = norm(walk.distance_km, maxima.distance);
+    return (d + a + l) / 3;
+  }
+
+  // WalkHighlands stores duration as fractional hours (e.g. 0.333). Show
+  // sub-hour walks in minutes and the rest as hours without a trailing ".0".
+  function fmtDuration(hours) {
+    if (hours == null) return "";
+    if (hours < 1) return `${Math.round(hours * 60)} min`;
+    return `${Number(hours.toFixed(1))} h`;
+  }
 
   // OpenFreeMap needs no API key (same hosted liberty style as /app/ships, so
   // the two maps read as siblings).
@@ -41,21 +80,15 @@
     return true;
   }
 
-  // Marker fills come from the design tokens (no hardcoded hex): viable walks
-  // get the accent, the rest sit in ink so the eye lands on what is hikeable.
+  // Marker stroke comes from the design tokens; the fill is the effort ramp
+  // (see EFFORT_RAMP). A paper stroke keeps every dot legible over the
+  // basemap's greens and water regardless of its ramp colour.
   function palette() {
     const s = getComputedStyle(document.documentElement);
     return {
       ink: s.getPropertyValue("--ink").trim(),
-      accent: s.getPropertyValue("--accent").trim(),
       paper: s.getPropertyValue("--paper").trim(),
     };
-  }
-
-  // A walk is "viable" for the marker tint when it carries any window at all
-  // (the forecast job only stores windows that passed the viability ladder).
-  function isViable(walk) {
-    return (walk.windows ?? []).length > 0;
   }
 
   function buildFeatures() {
@@ -69,7 +102,7 @@
           type: "Point",
           coordinates: [walk.longitude, walk.latitude],
         },
-        properties: { uuid: walk.uuid, viable: isViable(walk) },
+        properties: { uuid: walk.uuid, score: effortScore(walk) },
       });
     }
     return { type: "FeatureCollection", features };
@@ -146,9 +179,10 @@
     });
   }
 
-  // Repaint whenever the filtered walk set changes.
+  // Repaint whenever the filtered walk set or the effort ceilings change.
   $effect(() => {
     void walks;
+    void maxima;
     if (map && layerReady) syncWalks();
   });
 
@@ -202,15 +236,24 @@
           type: "circle",
           source: SOURCE_ID,
           paint: {
-            // Viable walks pop in accent; the rest sit in ink. Both carry a
-            // paper stroke so they read against the basemap's greens.
+            // Fill by effort: violet (gentle) -> red (strenuous), interpolated
+            // over the score. Paper stroke keeps every dot legible on any
+            // basemap colour; harder walks read a touch larger.
             "circle-color": [
-              "case",
-              ["get", "viable"],
-              pal.accent,
-              pal.ink,
+              "interpolate",
+              ["linear"],
+              ["get", "score"],
+              ...EFFORT_RAMP.flatMap((s) => [s.at, s.color]),
             ],
-            "circle-radius": ["case", ["get", "viable"], 7, 5],
+            "circle-radius": [
+              "interpolate",
+              ["linear"],
+              ["get", "score"],
+              0,
+              5,
+              1,
+              8,
+            ],
             "circle-stroke-width": 2,
             "circle-stroke-color": pal.paper,
           },
@@ -261,7 +304,7 @@
       <dl class="card-stats">
         <div><dt>Distance</dt><dd>{selected.distance_km} km</dd></div>
         <div><dt>Ascent</dt><dd>{selected.ascent_m} m</dd></div>
-        <div><dt>Duration</dt><dd>{selected.duration_h} h</dd></div>
+        <div><dt>Duration</dt><dd>{fmtDuration(selected.duration_h)}</dd></div>
       </dl>
       {#if selected.summary}
         <p class="card-summary">{selected.summary}</p>
@@ -300,6 +343,14 @@
       </a>
     </aside>
   {/if}
+
+  <!-- Effort legend: the colour ramp that tints the markers. -->
+  <div class="legend">
+    <span class="legend-title">Effort</span>
+    <span class="legend-bar" aria-hidden="true"></span>
+    <span class="legend-ends"><span>Gentle</span><span>Strenuous</span></span>
+    <span class="legend-note">distance + ascent + time</span>
+  </div>
 </div>
 
 <style>
@@ -392,6 +443,14 @@
     max-height: calc(100% - 32px);
     overflow-y: auto;
     padding: 18px;
+  }
+
+  /* The card inherits .card-hard's hover-lift, but it is a static info panel:
+     hovering it does nothing on click, so the lift is a false affordance. Pin
+     it in place (still keep the hard shadow). */
+  .card:hover {
+    transform: none;
+    box-shadow: var(--shadow-hard);
   }
 
   .card-close {
@@ -504,7 +563,69 @@
     text-decoration-color: var(--ink);
   }
 
+  /* Effort legend, bottom-left, clear of the bottom-right zoom + attribution. */
+  .legend {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 184px;
+    padding: 10px 12px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-hard);
+    font-family: var(--mono);
+  }
+
+  .legend-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+
+  /* Gradient mirrors EFFORT_RAMP (kept in sync by hand: CSS can't read the JS
+     const). */
+  .legend-bar {
+    height: 10px;
+    border: 2px solid var(--ink);
+    background: linear-gradient(
+      to right,
+      #7b2ff7,
+      #d61f9c,
+      #ff0a78,
+      #ff6a00,
+      #ff2a1f,
+      #ff0019
+    );
+  }
+
+  .legend-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+  }
+
+  .legend-note {
+    font-size: 9px;
+    letter-spacing: 0.02em;
+    color: var(--ink-3);
+  }
+
   @media (max-width: 640px) {
+    /* Tight on phones: the open card is a bottom sheet, so the legend would
+       collide with it; drop the legend there (the colours stay self-evident). */
+    .legend {
+      display: none;
+    }
+
     /* The card becomes a bottom sheet so the map keeps the upper screen. */
     .card {
       top: auto;
