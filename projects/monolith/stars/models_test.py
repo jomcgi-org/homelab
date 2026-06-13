@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from stars.models import Site, SiteHour, SiteMonthStat
+from stars.models import Site, SiteHour, SiteMonthClimatology, SiteMonthStat
 
 
 @pytest.fixture(name="session")
@@ -179,6 +179,40 @@ def test_site_month_stat_composite_pk_same_site_different_months(session):
         select(SiteMonthStat).where(SiteMonthStat.site_id == "iona")
     ).all()
     assert {r.month for r in rows} == {1, 2}
+
+
+def test_site_month_climatology_roundtrip(session):
+    row = SiteMonthClimatology(
+        site_id="scotland-0001",
+        month=3,
+        window_count=300,
+        sum_q=18180.0,
+        sum_darkness=210.5,
+        sum_clarity=250.1,
+    )
+    session.add(row)
+    session.commit()
+
+    loaded = session.get(SiteMonthClimatology, ("scotland-0001", 3))
+    assert loaded is not None
+    assert loaded.window_count == 300
+    assert loaded.sum_q == 18180.0
+    assert loaded.sum_darkness == 210.5
+    assert loaded.sum_clarity == 250.1
+
+
+def test_site_month_climatology_defaults(session):
+    # window_count and the sums carry their column defaults.
+    row = SiteMonthClimatology(site_id="scotland-0002", month=7)
+    session.add(row)
+    session.commit()
+
+    loaded = session.get(SiteMonthClimatology, ("scotland-0002", 7))
+    assert loaded is not None
+    assert loaded.window_count == 0
+    assert loaded.sum_q == 0.0
+    assert loaded.sum_darkness == 0.0
+    assert loaded.sum_clarity == 0.0
 
 
 def test_composite_primary_key_same_site_different_hours(session):

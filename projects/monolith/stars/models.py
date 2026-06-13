@@ -68,3 +68,27 @@ class SiteMonthStat(
     sum_q: float = Field(default=0.0)
     sum_darkness: float = Field(default=0.0)
     sum_clarity: float = Field(default=0.0)
+
+
+class SiteMonthClimatology(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
+    """Per-site, per-month-of-year ERA5 reanalysis backfill (ADR 009).
+
+    A long-run seasonal baseline computed offline from the ERA5 reanalysis and
+    ingested by the stars.load_climatology job from climatology.json on SeaweedFS.
+    Same sufficient stats as ``SiteMonthStat`` (window_count + the sum_q /
+    sum_darkness / sum_clarity sums) so /api/stars/history can compose the two by
+    per-field addition: the climatology pre-fills the heatmap before the live
+    accumulator has banked enough elapsed hours to be meaningful.
+    """
+
+    __tablename__ = "site_month_climatology"
+    __table_args__ = {"schema": "stars", "extend_existing": True}
+
+    site_id: str = Field(primary_key=True)
+    month: int = Field(primary_key=True)
+    window_count: int = Field(default=0)
+    sum_q: float = Field(default=0.0)
+    sum_darkness: float = Field(default=0.0)
+    sum_clarity: float = Field(default=0.0)
