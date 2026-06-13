@@ -1,0 +1,31 @@
+load("@prelude//platforms:defs.bzl", "host_configuration")
+load(":defs.bzl", "buildbuddy_platforms")
+
+# Execution platform for standalone homelab buck2 builds. Referenced by
+# .buckconfig [build] execution_platforms = root//tools/buck2/platforms:default.
+# (When loom consumes tools/buck2 as an external cell it uses *its own* platforms;
+# this one only governs builds rooted in homelab.)
+buildbuddy_platforms(
+    name = "default",
+    cpu_configuration = host_configuration.cpu,
+    os_configuration = host_configuration.os,
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "linux-x86_64",
+    constraint_values = [
+        "prelude//cpu/constraints:x86_64",
+        "prelude//os/constraints:linux",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "linux-aarch64",
+    constraint_values = [
+        "prelude//cpu/constraints:arm64",
+        "prelude//os/constraints:linux",
+    ],
+    visibility = ["PUBLIC"],
+)

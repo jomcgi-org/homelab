@@ -1,0 +1,37 @@
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
+
+# Minimal `toolchains` cell for homelab's buck2 project. The image/helm rules in
+# tools/buck2/** are CLI wrappers (apko/crane/helm/yq) built with `genrule`, so
+# the genrule toolchain is the load-bearing one; the rest are system toolchains
+# the prelude expects to resolve. No Rust/LLVM here — homelab doesn't compile
+# native code under buck2 (cf. loom/toolchains/BUCK, which adds a hermetic Rust
+# toolchain on top of these same system toolchains).
+
+system_cxx_toolchain(
+    name = "cxx",
+    visibility = ["PUBLIC"],
+)
+
+system_genrule_toolchain(
+    name = "genrule",
+    visibility = ["PUBLIC"],
+)
+
+system_python_bootstrap_toolchain(
+    name = "python_bootstrap",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)

@@ -1,0 +1,15 @@
+# Minimal self-contained Wolfi (distroless-ish) example image — exercises the
+# apko_image rule in CI without depending on any external service binary.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+entrypoint:
+  command: /bin/sh -c "echo hello from apko"
+archs:
+  - x86_64
+  - aarch64
