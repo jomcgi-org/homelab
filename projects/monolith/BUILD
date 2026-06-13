@@ -10,6 +10,7 @@
 # gazelle:exclude shared
 # gazelle:exclude ships
 # gazelle:exclude hikes
+# gazelle:exclude stars
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
@@ -43,6 +44,7 @@ py_venv_binary(
             "shared/**/*.py",
             "ships/**/*.py",
             "hikes/**/*.py",
+            "stars/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -98,6 +100,7 @@ py_library(
             "shared/**/*.py",
             "ships/**/*.py",
             "hikes/**/*.py",
+            "stars/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and

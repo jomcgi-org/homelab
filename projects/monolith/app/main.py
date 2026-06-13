@@ -16,6 +16,7 @@ import home
 import knowledge
 import scheduler
 import ships
+import stars
 from home.observability.router import warm_cache, warm_stats_cache
 
 configure_logging()
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
         home.on_startup_jobs(session)
         ships.on_startup_jobs(session)
         hikes.on_startup_jobs(session)
+        stars.on_startup_jobs(session)
 
     # Start Discord bot + chat jobs if configured
     bot = None
@@ -221,6 +223,7 @@ knowledge.register(app)
 scheduler.register(app)
 ships.register(app)
 hikes.register(app)
+stars.register(app)
 app.mount("/mcp", _mcp_app)
 
 
