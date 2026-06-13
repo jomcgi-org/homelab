@@ -208,13 +208,12 @@ actions:
           set -eu
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
-          # Install toolchain deps unconditionally: zstd/curl (fetch+decompress the
-          # buck2 release) and build-essential (the cc + libc/crt the prelude's cxx
-          # toolchain needs to link the example Rust binary). build-essential is NOT
-          # gated on `command -v cc` — a runner can have cc yet lack libc6-dev/crt,
-          # which fails the link. The hermetic Rust toolchain brings rustc/std.
-          $SUDO apt-get update -qq
-          $SUDO apt-get install -y -qq zstd curl build-essential
+          # Best-effort toolchain deps (non-fatal — the runner already ships zstd/
+          # curl per earlier runs; build-essential supplies cc + libc/crt to link
+          # the example Rust binary if the runner lacks them). apt failure must not
+          # kill the build, so we fall back to whatever is already present.
+          ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd curl build-essential) || true
+          echo "toolchain check: zstd=$(command -v zstd || echo no) curl=$(command -v curl || echo no) cc=$(command -v cc || echo no) gcc=$(command -v gcc || echo no)"
 
           # Install the pinned buck2 release (x86_64 linux runner).
           BUCK2_RELEASE="2026-05-18"
