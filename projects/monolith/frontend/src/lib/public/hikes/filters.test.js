@@ -146,6 +146,21 @@ describe("upcomingUkDays", () => {
       "2026-06-17",
     ]);
   });
+
+  it("yields consecutive days across the spring-forward DST boundary", () => {
+    // UK clocks go forward on 2026-03-29 (01:00 GMT -> 02:00 BST), so that day
+    // is only 23 hours long. Anchoring on the UK calendar day (rather than
+    // adding 86_400_000 ms) must still yield consecutive distinct days with no
+    // skip or duplicate. Start just before UK midnight on the spring-forward
+    // day: 2026-03-28T23:30Z is 23:30 GMT on the 28th.
+    const now = new Date("2026-03-28T23:30:00Z");
+    expect(upcomingUkDays(4, now)).toEqual([
+      "2026-03-28",
+      "2026-03-29",
+      "2026-03-30",
+      "2026-03-31",
+    ]);
+  });
 });
 
 describe("viableInNextDays", () => {

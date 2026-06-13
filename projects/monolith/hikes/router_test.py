@@ -21,9 +21,11 @@ from hikes.router import router
 
 T0 = datetime(2026, 6, 12, 6, 0, 0, tzinfo=timezone.utc)
 
+# Window tuples are [unix_ts_seconds, temp_c, precip_mm, wind_kmh, cloud_pct],
+# matching what hikes.forecast.compute_windows emits and what the frontend reads.
 WINDOWS = [
-    ["2026-06-13T09:00:00+00:00", 14.2, 0.0, 12.5, 40],
-    ["2026-06-13T10:00:00+00:00", 15.1, 0.3, 18.0, 55],
+    [1750582800, 14, 0, 12, 40],
+    [1750586400, 15, 0, 18, 55],
 ]
 
 

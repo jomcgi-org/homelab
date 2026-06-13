@@ -25,12 +25,20 @@
   const DATE_HORIZON = 7;
   let selectedDay = $state(null);
 
+  // A coarse "current time" signal. The page can sit open for hours (the data
+  // refetches every 30 min), so the day strip and "viable today" count must be
+  // recomputed from a value that advances, otherwise they go stale across UK
+  // midnight: the first "today" chip would point at a now-past day with zero
+  // walks. We tick this a few times an hour (see onMount), which is plenty to
+  // roll the calendar day over shortly after midnight.
+  let nowMs = $state(Date.now());
+
   function numOr(value, fallback) {
     const n = parseFloat(value);
     return Number.isNaN(n) ? fallback : n;
   }
 
-  let dayKeys = $derived(upcomingUkDays(DATE_HORIZON));
+  let dayKeys = $derived(upcomingUkDays(DATE_HORIZON, new Date(nowMs)));
 
   function dayLabel(key) {
     // Noon UTC keeps the label on the intended UK calendar day across BST/GMT.
@@ -64,7 +72,7 @@
   );
 
   let viableTodayCount = $derived(
-    walks.filter((w) => viableInNextDays(w, 1)).length,
+    walks.filter((w) => viableInNextDays(w, 1, new Date(nowMs))).length,
   );
 
   function resetFilters() {
@@ -79,8 +87,19 @@
   onMount(() => {
     // Live updates: re-run the SSR load on a 30 min timer (windows only change
     // 6-hourly, so this is plenty). No client-side call to /api/hikes/* happens.
-    const refresh = setInterval(() => invalidateAll(), 30 * 60_000);
-    return () => clearInterval(refresh);
+    const refresh = setInterval(() => {
+      nowMs = Date.now();
+      invalidateAll();
+    }, 30 * 60_000);
+    // Roll the calendar day over shortly after midnight without waiting for the
+    // next 30 min data refetch: a few-minute tick keeps the day strip and the
+    // "viable today" count fresh on a long-open page. Deliberately low frequency
+    // (not a per-second clock): nothing here needs sub-minute resolution.
+    const dayTick = setInterval(() => (nowMs = Date.now()), 5 * 60_000);
+    return () => {
+      clearInterval(refresh);
+      clearInterval(dayTick);
+    };
   });
 </script>
 
@@ -159,7 +178,7 @@
     </aside>
 
     <section class="map-region">
-      <HikesMap walks={filtered} />
+      <HikesMap walks={filtered} {selectedDay} />
     </section>
   </div>
 

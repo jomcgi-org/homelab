@@ -36,6 +36,11 @@ TIMEOUT_SECS = 15.0
 # request rate stays bounded).
 CONCURRENCY = 3
 POLITENESS_DELAY_SECS = 0.5
+# The legacy scraper retried each fetch on transient failures; keep a small
+# bounded retry with backoff so one flaky request does not drop a whole branch
+# of the corpus (a failed homepage would otherwise abort the entire scrape).
+MAX_FETCH_ATTEMPTS = 3
+RETRY_BACKOFF_SECS = 1.0
 
 # The original selector included an explicit tbody
 # (div.walktable > table.table1 > tbody > tr > td:nth-child(1) > a). The
@@ -223,19 +228,33 @@ async def _fetch(
     stats: dict[str, int],
     stage: str,
 ) -> str | None:
-    """Fetch one page politely. Failures are logged and counted, never raised."""
+    """Fetch one page politely, retrying transient failures.
+
+    Failures after the final attempt are logged and counted, never raised.
+    """
     async with semaphore:
-        try:
-            response = await client.get(url, headers=HEADERS, timeout=TIMEOUT_SECS)
-            response.raise_for_status()
-        except Exception:
-            logger.warning(
-                "hikes scrape: %s fetch failed for %s", stage, url, exc_info=True
-            )
-            _bump(stats, f"{stage}_fetch_errors")
-            return None
-        await asyncio.sleep(POLITENESS_DELAY_SECS)
-        return response.text
+        for attempt in range(1, MAX_FETCH_ATTEMPTS + 1):
+            try:
+                response = await client.get(
+                    url, headers=HEADERS, timeout=TIMEOUT_SECS
+                )
+                response.raise_for_status()
+            except Exception:
+                if attempt == MAX_FETCH_ATTEMPTS:
+                    logger.warning(
+                        "hikes scrape: %s fetch failed for %s after %d attempts",
+                        stage,
+                        url,
+                        attempt,
+                        exc_info=True,
+                    )
+                    _bump(stats, f"{stage}_fetch_errors")
+                    return None
+                await asyncio.sleep(RETRY_BACKOFF_SECS * attempt)
+                continue
+            await asyncio.sleep(POLITENESS_DELAY_SECS)
+            return response.text
+        return None
 
 
 async def fetch_all_walks(client: httpx.AsyncClient) -> tuple[list[Walk], dict]:

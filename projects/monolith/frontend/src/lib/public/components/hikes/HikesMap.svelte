@@ -4,7 +4,9 @@
   import { groupWindowsByDay, windowFields } from "$lib/public/hikes/filters.js";
 
   // `walks` is the filtered set to plot; clicking a marker opens the card.
-  let { walks = [] } = $props();
+  // `selectedDay` is the parent's chosen day chip (YYYY-MM-DD) or null for
+  // "any"; the marker card prefers that day's windows when it is set.
+  let { walks = [], selectedDay = null } = $props();
 
   // OpenFreeMap needs no API key (same hosted liberty style as /app/ships, so
   // the two maps read as siblings).
@@ -17,7 +19,11 @@
   let mapContainer; // bound <div>
   let map = null;
   let layerReady = false;
-  let didFit = false;
+  // Signature of the coordinate set we last framed. The filtered `walks` prop
+  // changes as the user adjusts filters, so (unlike ShipsMap's stable live
+  // snapshot) we re-fit whenever the set of plotted coordinates actually
+  // changes, but skip unrelated re-renders that leave the points identical.
+  let lastFitKey = null;
 
   // uuid -> walk row, so a marker click can recover the full record.
   const index = new Map();
@@ -75,13 +81,21 @@
   }
 
   function fitToWalks() {
-    if (didFit) return;
     const pts = walks.filter((w) => validLatLon(w.latitude, w.longitude));
+    // No plottable points: leave the view as-is (do not crash, do not reset the
+    // coordinate signature, so the next non-empty set re-frames).
     if (!pts.length) return;
+    // Only re-fit when the coordinate set genuinely changed; an unrelated
+    // re-render with the same points should not re-animate the viewport.
+    const key = pts
+      .map((w) => `${w.longitude},${w.latitude}`)
+      .sort()
+      .join("|");
+    if (key === lastFitKey) return;
     const b = new maplibregl.LngLatBounds();
     for (const w of pts) b.extend([w.longitude, w.latitude]);
     map.fitBounds(b, { padding: 56, maxZoom: 11, duration: 0 });
-    didFit = true;
+    lastFitKey = key;
   }
 
   function syncWalks() {
@@ -99,15 +113,23 @@
   }
 
   // Stats + window rows for the selected walk's card. Windows are grouped by
-  // UK-local day and the next viable day's rows are shown.
+  // UK-local day. We show the day the user filtered to (the parent's
+  // selectedDay chip) when this walk has windows on it, so clicking a marker
+  // that survived a "Saturday" filter shows Saturday's rows. Otherwise we fall
+  // back to the earliest day with a future window.
   let cardDays = $derived(selected ? groupWindowsByDay(selected) : {});
   let cardDayKeys = $derived(Object.keys(cardDays).sort());
+  let cardDayKey = $derived(
+    selectedDay && cardDays[selectedDay]?.length
+      ? selectedDay
+      : (cardDayKeys[0] ?? null),
+  );
   let cardRows = $derived(
-    cardDayKeys.length ? cardDays[cardDayKeys[0]].map(windowFields) : [],
+    cardDayKey ? cardDays[cardDayKey].map(windowFields) : [],
   );
   let cardDayLabel = $derived(
-    cardDayKeys.length
-      ? new Date(`${cardDayKeys[0]}T12:00:00Z`).toLocaleDateString("en-GB", {
+    cardDayKey
+      ? new Date(`${cardDayKey}T12:00:00Z`).toLocaleDateString("en-GB", {
           weekday: "long",
           day: "numeric",
           month: "short",
@@ -216,6 +238,7 @@
         map?.remove();
         map = null;
         layerReady = false;
+        lastFitKey = null;
       };
     })();
 
