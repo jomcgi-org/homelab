@@ -40,9 +40,7 @@ _UK_TZ = ZoneInfo("Europe/London")
 # plenty; max-age=0 makes the browser revalidate rather than hold a stale copy
 # (see the note in cache-headers.js). Mirrors HIKES_WALKS_CACHE_CONTROL in
 # frontend/src/lib/cache-headers.js, keep in sync.
-_WALKS_CACHE_CONTROL = (
-    "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
-)
+_WALKS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
 
 
 def _viable_days(windows: list | None) -> list[str]:
