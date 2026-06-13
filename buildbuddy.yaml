@@ -171,3 +171,58 @@ actions:
         merge_with_base: false
     steps:
       - run: ./bazel/helm/ci-diff-manifests.sh
+
+  # Buck2 rules — builds & tests the Buck2 image/helm rules under tools/buck2/**
+  # (the Buck2 counterparts to bazel/helm + bazel/tools/oci, consumed by the
+  # `loom` repo as an external cell). homelab is otherwise a Bazel repo, so this
+  # action self-installs the pinned buck2 release and checks out the buck2
+  # prelude submodule before building. Local execution only (no buck2 RE yet).
+  # Keep BUCK2_RELEASE aligned with tools/buck2/README.md + loom/.buckconfig.
+  - name: "Buck2 rules"
+    container_image: "ubuntu-24.04"
+    max_retries: 1
+    resource_requests:
+      cpu: "4"
+      memory: "8GB"
+      disk: "30GB"
+    triggers:
+      push:
+        branches:
+          - "main"
+      pull_request:
+        branches:
+          - "*"
+        merge_with_base: false
+    steps:
+      - run: |
+          set -euo pipefail
+
+          # Skip automated commits (nothing to build/test)
+          AUTHOR="$(git log -1 --format='%an')"
+          if [ "$AUTHOR" = "argocd-image-updater" ] || [ "$AUTHOR" = "ci-format-bot" ]; then
+            echo "Skipping automated commit from $AUTHOR"
+            exit 0
+          fi
+
+          BUCK2_RELEASE="2026-05-18"
+
+          # curl + zstd to fetch/decompress the buck2 release binary.
+          if ! command -v zstd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+            apt-get update -qq
+            apt-get install -y -qq zstd curl
+          fi
+
+          # Install the pinned buck2 release (x86_64 linux runner).
+          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
+          curl -fsSL "$url" -o /tmp/buck2.zst
+          zstd -df /tmp/buck2.zst -o /tmp/buck2
+          chmod +x /tmp/buck2
+          export PATH="/tmp:$PATH"
+          buck2 --version
+
+          # The buck2 prelude is a submodule excluded from the Bazel checkout.
+          git submodule update --init --recursive prelude
+
+          # Build & test the buck2 rules + any examples we add under tools/buck2/.
+          buck2 build //tools/buck2/...
+          buck2 test  //tools/buck2/...

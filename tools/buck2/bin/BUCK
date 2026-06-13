@@ -1,0 +1,86 @@
+load(":defs.bzl", "pinned_cli")
+
+# Pinned CLIs the buck2 image/helm rules wrap. To bump a tool: update its version
+# and refresh the three sha256s (download the asset and `shasum -a 256`, or read
+# the release's checksums sidecar). darwin wired arm64-only; macOS x86_64 hosts
+# are unsupported.
+
+# -- apko — Wolfi/distroless OCI image builder (chainguard-dev/apko) -----------
+_APKO_V = "1.2.16"
+_APKO_URL = "https://github.com/chainguard-dev/apko/releases/download/v{v}/apko_{v}_{os}_{arch}.tar.gz"
+
+pinned_cli(
+    name = "apko",
+    binary = "apko",
+    archive = "tar_strip1",  # apko_<v>_<os>_<arch>/apko
+    urls = {
+        "darwin-arm64": _APKO_URL.format(v = _APKO_V, os = "darwin", arch = "arm64"),
+        "linux-amd64": _APKO_URL.format(v = _APKO_V, os = "linux", arch = "amd64"),
+        "linux-arm64": _APKO_URL.format(v = _APKO_V, os = "linux", arch = "arm64"),
+    },
+    shas = {
+        "darwin-arm64": "9c969bfd19bf9ed80dfe58f1dff839390b1d3ecc8362ba05fcc1d109c75ee52b",
+        "linux-amd64": "d5ac99bd37c0e00e1f732ecf2f5e83e8b3f93b748ec692b30cd848ac2160f726",
+        "linux-arm64": "ac3dbf12e84ff8e4d6b746e82077bd036277d206660a5a2d7bd0e7c7a5b05d0f",
+    },
+)
+
+# -- crane — OCI registry tool (google/go-containerregistry) -------------------
+_CRANE_V = "v0.21.6"
+_CRANE_URL = "https://github.com/google/go-containerregistry/releases/download/{v}/go-containerregistry_{tok}.tar.gz"
+
+pinned_cli(
+    name = "crane",
+    binary = "crane",
+    archive = "tar_root",  # crane at archive root
+    urls = {
+        "darwin-arm64": _CRANE_URL.format(v = _CRANE_V, tok = "Darwin_arm64"),
+        "linux-amd64": _CRANE_URL.format(v = _CRANE_V, tok = "Linux_x86_64"),
+        "linux-arm64": _CRANE_URL.format(v = _CRANE_V, tok = "Linux_arm64"),
+    },
+    shas = {
+        "darwin-arm64": "a124f297d1e63e8b6c63c2463e43565290d2fd074c1dadb5ca73d737bc7b2484",
+        "linux-amd64": "7ebbdcd05b652345c1f5105f8475e518534b90d66f3bdb50017be63f426ea435",
+        "linux-arm64": "6f61571ca0c2a5da27c2927fcb143255ccb2b74b8977dfcb44645b372ab0f951",
+    },
+)
+
+# -- helm — chart packaging/publishing (helm/helm) -----------------------------
+_HELM_V = "v4.2.1"
+_HELM_URL = "https://get.helm.sh/helm-{v}-{a}.tar.gz"
+
+pinned_cli(
+    name = "helm",
+    binary = "helm",
+    archive = "tar_strip1",  # <os>-<arch>/helm
+    urls = {
+        "darwin-arm64": _HELM_URL.format(v = _HELM_V, a = "darwin-arm64"),
+        "linux-amd64": _HELM_URL.format(v = _HELM_V, a = "linux-amd64"),
+        "linux-arm64": _HELM_URL.format(v = _HELM_V, a = "linux-arm64"),
+    },
+    shas = {
+        "darwin-arm64": "896472d2ec0740c60f64a9df0fc30d478beee38a1a2a6ed91aa6e6ee177c1575",
+        "linux-amd64": "479dca836e5b45e8bd222400c5591b0e3a647378f03ff96597180db97c17fdae",
+        "linux-arm64": "596b9a73d366c1e72ce67d595c22805480e30914593aafbc9f547694e72814db",
+    },
+)
+
+# -- yq — YAML query/merge, single binary (mikefarah/yq) -----------------------
+_YQ_V = "v4.53.3"
+_YQ_URL = "https://github.com/mikefarah/yq/releases/download/{v}/yq_{a}"
+
+pinned_cli(
+    name = "yq",
+    binary = "yq",
+    archive = "raw",  # bare binary, no archive
+    urls = {
+        "darwin-arm64": _YQ_URL.format(v = _YQ_V, a = "darwin_arm64"),
+        "linux-amd64": _YQ_URL.format(v = _YQ_V, a = "linux_amd64"),
+        "linux-arm64": _YQ_URL.format(v = _YQ_V, a = "linux_arm64"),
+    },
+    shas = {
+        "darwin-arm64": "877de31753a4dd2401aa048937aa9a7fc4d5f6ce858cf31508c5802954297213",
+        "linux-amd64": "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4",
+        "linux-arm64": "578648e463a11c1b6db6010cbf41eafed6bee79466fcffa1bb446672cf7945ea",
+    },
+)
