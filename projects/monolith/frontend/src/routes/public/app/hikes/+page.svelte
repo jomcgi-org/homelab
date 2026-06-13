@@ -14,20 +14,29 @@
 
   let walks = $derived(data.snapshot?.walks ?? []);
 
-  // A handful of Scottish hubs to anchor the "near" radius filter, so the
-  // feature is useful without geolocation permission. Coordinates are the
-  // town centres; the radius is generous enough that exact centring does not
-  // matter. "__me__" is the sentinel for the device's own location.
+  // Preset anchors for the "near" radius filter, so it is useful without
+  // geolocation permission. These are the densest WalkHighlands regions by
+  // walk count in the seed corpus (Fort William 128, Cairngorms 108, Argyll
+  // 104, Perthshire 100, Galloway 82, Skye 76, Sutherland 68, Ullapool 66,
+  // Loch Ness 65, Loch Lomond 64, Glasgow 64, Torridon/Wester Ross 59), not
+  // population centres: a hike planner wants to jump to where the walks are,
+  // and "My location" already covers "near where I live". Each coordinate is
+  // the centroid of that region's walks, which centres the radius circle on
+  // the cluster. Ordered densest first. "__me__" is the device-location
+  // sentinel.
   const HIKE_LOCATIONS = [
-    { key: "edinburgh", label: "Edinburgh", lat: 55.9533, lon: -3.1883 },
-    { key: "glasgow", label: "Glasgow", lat: 55.8642, lon: -4.2518 },
-    { key: "stirling", label: "Stirling", lat: 56.1165, lon: -3.9369 },
-    { key: "fort-william", label: "Fort William", lat: 56.8198, lon: -5.1052 },
-    { key: "aviemore", label: "Aviemore", lat: 57.1958, lon: -3.8259 },
-    { key: "inverness", label: "Inverness", lat: 57.4778, lon: -4.2247 },
-    { key: "oban", label: "Oban", lat: 56.4153, lon: -5.4717 },
-    { key: "pitlochry", label: "Pitlochry", lat: 56.7039, lon: -3.73 },
-    { key: "aberdeen", label: "Aberdeen", lat: 57.1497, lon: -2.0943 },
+    { key: "fort-william", label: "Fort William", lat: 56.8326, lon: -5.251 },
+    { key: "cairngorms", label: "Cairngorms", lat: 57.1232, lon: -3.631 },
+    { key: "argyll", label: "Argyll & Oban", lat: 56.1519, lon: -5.2638 },
+    { key: "perthshire", label: "Perthshire", lat: 56.5572, lon: -3.8982 },
+    { key: "galloway", label: "Galloway", lat: 55.0211, lon: -4.08 },
+    { key: "skye", label: "Skye", lat: 57.3649, lon: -6.2075 },
+    { key: "sutherland", label: "Sutherland", lat: 58.3045, lon: -4.1337 },
+    { key: "ullapool", label: "Ullapool & Assynt", lat: 57.9288, lon: -4.9246 },
+    { key: "loch-ness", label: "Loch Ness", lat: 57.4078, lon: -4.5199 },
+    { key: "loch-lomond", label: "Loch Lomond", lat: 56.2231, lon: -4.5265 },
+    { key: "glasgow", label: "Glasgow", lat: 55.6912, lon: -4.3392 },
+    { key: "torridon", label: "Wester Ross", lat: 57.5841, lon: -5.5325 },
   ];
   const GEO_SENTINEL = "__me__";
 
