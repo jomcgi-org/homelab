@@ -113,6 +113,7 @@ py_library(
     ),  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//beautifulsoup4",
         "@pip//certifi",
         "@pip//discord_py",
         "@pip//dulwich",
@@ -134,6 +135,7 @@ py_library(
         "@pip//pyyaml",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+        "@pip//timelength",
         "@pip//trafilatura",
         "@pip//tzdata",
         "@pip//uvicorn",
@@ -2048,6 +2050,16 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "hikes_walkhighlands_test",
+    srcs = ["hikes/walkhighlands_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 
