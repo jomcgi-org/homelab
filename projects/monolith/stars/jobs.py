@@ -59,10 +59,13 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
     """
     site_ids = list(scored.keys())
     cutoff = top_of_hour(now)
+    # synchronize_session=False: issue the DELETE as SQL rather than evaluating
+    # the predicate in Python, which would compare the aware cutoff against
+    # SQLite's naive datetimes in tests and raise.
     session.execute(
-        delete(SiteHour).where(
-            SiteHour.site_id.in_(site_ids), SiteHour.hour_time >= cutoff
-        )
+        delete(SiteHour)
+        .where(SiteHour.site_id.in_(site_ids), SiteHour.hour_time >= cutoff)
+        .execution_options(synchronize_session=False)
     )
     new_rows = [
         SiteHour(
@@ -151,7 +154,14 @@ def _prune_elapsed(session: Session) -> int:
     if new_rows:
         session.add_all(new_rows)
 
-    result = session.execute(delete(SiteHour).where(SiteHour.hour_time < cutoff))
+    # synchronize_session=False: the rows were just loaded to bank them, so an
+    # in-Python evaluation of the predicate would compare the aware cutoff
+    # against SQLite's naive datetimes (in tests) and raise. Issue the SQL delete.
+    result = session.execute(
+        delete(SiteHour)
+        .where(SiteHour.hour_time < cutoff)
+        .execution_options(synchronize_session=False)
+    )
     return result.rowcount or 0
 
 

@@ -138,8 +138,12 @@ def _load_grid_sync() -> int:
         # new grid. site_month_stats orphans are intentionally left (ADR 008):
         # the banked monthly history is worth keeping even if a grid point is
         # dropped, and the table is bounded at 12 rows per site.
+        # synchronize_session=False: the ORM evaluator cannot evaluate a notin_
+        # subquery in Python, so issue the DELETE as SQL.
         session.execute(
-            delete(SiteHour).where(SiteHour.site_id.notin_(select(Site.id)))
+            delete(SiteHour)
+            .where(SiteHour.site_id.notin_(select(Site.id)))
+            .execution_options(synchronize_session=False)
         )
         session.commit()
     return len(rows)
