@@ -23,5 +23,6 @@ class SiteHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     wind_speed: float
     air_temperature: float
     dew_spread: float
+    sun_elevation_deg: float = Field(default=0.0)
     symbol: str = ""
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
