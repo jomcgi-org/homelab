@@ -23,25 +23,41 @@ def test_register_passes_router_to_include_router():
     assert args[0] is real_router
 
 
-def test_on_startup_jobs_calls_register_job_three_times():
-    """on_startup_jobs() calls register_job exactly three times."""
+def test_on_startup_jobs_calls_register_job_four_times():
+    """on_startup_jobs() calls register_job exactly four times."""
     import stars
 
     session = MagicMock()
     with patch("shared.scheduler.register_job") as mock_register:
         stars.on_startup_jobs(session)
-    assert mock_register.call_count == 3
+    assert mock_register.call_count == 4
 
 
 def test_on_startup_jobs_correct_names():
-    """on_startup_jobs() registers stars.load_grid, stars.refresh, and stars.prune_hours."""
+    """on_startup_jobs() registers the four stars scheduled jobs."""
     import stars
 
     session = MagicMock()
     with patch("shared.scheduler.register_job") as mock_register:
         stars.on_startup_jobs(session)
     names = {c[1]["name"] for c in mock_register.call_args_list}
-    assert names == {"stars.load_grid", "stars.refresh", "stars.prune_hours"}
+    assert names == {
+        "stars.load_grid",
+        "stars.load_climatology",
+        "stars.refresh",
+        "stars.prune_hours",
+    }
+
+
+def test_on_startup_jobs_load_climatology_interval():
+    """stars.load_climatology is registered with a 24-hour interval."""
+    import stars
+
+    session = MagicMock()
+    with patch("shared.scheduler.register_job") as mock_register:
+        stars.on_startup_jobs(session)
+    by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
+    assert by_name["stars.load_climatology"]["interval_secs"] == 24 * 3600
 
 
 def test_on_startup_jobs_passes_session_as_first_positional():
