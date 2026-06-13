@@ -1,9 +1,14 @@
 """Hikes HTTP API. SSR-only: never added to httproute-public.yaml.
 
-One read endpoint backs the /app/hikes walk planner:
+Two read endpoints back the /app/hikes walk planner:
 
-- ``GET /api/hikes/walks``, the whole walk corpus with viable weather
-  windows, for the initial page render.
+- ``GET /api/hikes/walks``, the whole walk corpus as a LIGHT list (stats,
+  coordinates, and the set of viable UK-local days), for the map + filters.
+  Deliberately omits the hour-by-hour ``windows`` and the prose ``summary``:
+  shipping ~49 hourly tuples for all ~1600 walks was ~3 MB, and the map and
+  day filter only need "which days is this walk viable".
+- ``GET /api/hikes/walks/{uuid}``, the per-walk detail (``summary`` +
+  hourly ``windows``) the selected-walk card fetches on demand.
 
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/hikes page is the public surface and the CDN fans out to viewers.
@@ -14,8 +19,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -25,11 +31,35 @@ logger = logging.getLogger("hikes")
 
 router = APIRouter(prefix="/api/hikes", tags=["hikes"])
 
+# Walks are in Scotland, so viable-day bucketing uses the UK civil calendar (the
+# frontend day strip does the same in the browser). tzdata is present in the
+# image (home.schedule already relies on zoneinfo server-side).
+_UK_TZ = ZoneInfo("Europe/London")
+
 # Forecasts refresh 6-hourly, so 30 min fresh with a 1 h SWR window is plenty.
 # Mirrors HIKES_WALKS_CACHE_CONTROL in frontend/src/lib/cache-headers.js, keep in sync.
 _WALKS_CACHE_CONTROL = (
     "public, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
 )
+
+
+def _viable_days(windows: list | None) -> list[str]:
+    """Distinct UK-local calendar days (YYYY-MM-DD) that carry a viable window.
+
+    Window tuples are [ts_seconds, ...]; ts is unix UTC. We emit ABSOLUTE dates
+    (not "next 7 days") so the value is independent of when it was computed and
+    stays correct in a CDN cache across midnight; the client intersects them
+    with its own rolling 7-day strip.
+    """
+    days: set[str] = set()
+    for window in windows or []:
+        try:
+            ts = window[0]
+        except (TypeError, IndexError, KeyError):
+            continue
+        local = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(_UK_TZ)
+        days.add(local.date().isoformat())
+    return sorted(days)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -87,10 +117,11 @@ def get_walks(
                 "distance_km": walk.distance_km,
                 "ascent_m": walk.ascent_m,
                 "duration_h": walk.duration_h,
-                "summary": walk.summary,
                 "latitude": walk.latitude,
                 "longitude": walk.longitude,
-                "windows": walk.windows,
+                # Light: the days this walk is viable, not the hourly windows.
+                # The card fetches windows + summary from /walks/{uuid}.
+                "viable_days": _viable_days(walk.windows),
             }
         )
 
@@ -106,4 +137,27 @@ def get_walks(
         "count": len(walks),
         "generated_at": _iso(max_updated),
         "walks": walks,
+    }
+
+
+@router.get("/walks/{uuid}")
+def get_walk_detail(
+    uuid: str,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """Per-walk detail (summary + hourly windows) for the selected-walk card.
+
+    Split out of the list so the corpus stays light; fetched on demand when a
+    marker is clicked. SSR-only, CDN-cached the same as the list.
+    """
+    walk = session.get(Walk, uuid)
+    if walk is None:
+        raise HTTPException(status_code=404, detail="walk not found")
+
+    response.headers["Cache-Control"] = _WALKS_CACHE_CONTROL
+    return {
+        "uuid": walk.uuid,
+        "summary": walk.summary,
+        "windows": walk.windows,
     }

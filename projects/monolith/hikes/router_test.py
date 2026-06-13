@@ -8,6 +8,7 @@ that mounts only the hikes router, mirroring the schema-stripping +
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +28,17 @@ WINDOWS = [
     [1750582800, 14, 0, 12, 40],
     [1750586400, 15, 0, 18, 55],
 ]
+
+
+def _uk_days(windows):
+    """Expected viable_days for a window set, mirroring router._viable_days."""
+    uk = ZoneInfo("Europe/London")
+    return sorted(
+        {
+            datetime.fromtimestamp(w[0], tz=timezone.utc).astimezone(uk).date().isoformat()
+            for w in windows
+        }
+    )
 
 
 @pytest.fixture(name="session")
@@ -114,15 +126,17 @@ class TestWalks:
         assert ben["distance_km"] == 11.0
         assert ben["ascent_m"] == 920
         assert ben["duration_h"] == 5.5
-        assert ben["summary"] == "A steep but rewarding Munro above Loch Lomond."
         assert ben["latitude"] == 56.2734
         assert ben["longitude"] == -4.7521
-        # The windows list comes through intact.
-        assert ben["windows"] == WINDOWS
+        # The light list carries viable_days, not the hourly windows or summary
+        # (those move to the per-walk detail endpoint).
+        assert ben["viable_days"] == _uk_days(WINDOWS)
+        assert "windows" not in ben
+        assert "summary" not in ben
 
-        # The walk without a forecast has empty windows.
+        # The walk without a forecast has no viable days.
         an_teallach = body["walks"][0]
-        assert an_teallach["windows"] == []
+        assert an_teallach["viable_days"] == []
 
     def test_cache_and_etag_headers(self, client, session):
         _seed_walks(session)
@@ -147,3 +161,20 @@ class TestWalks:
         r = client.get("/api/hikes/walks")
         assert r.status_code == 200
         assert r.json() == {"count": 0, "generated_at": None, "walks": []}
+
+
+class TestWalkDetail:
+    def test_detail_returns_summary_and_windows(self, client, session):
+        _seed_walks(session)
+        r = client.get("/api/hikes/walks/aaaaaaaa-0000-5000-8000-000000000001")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["uuid"] == "aaaaaaaa-0000-5000-8000-000000000001"
+        assert body["summary"] == "A steep but rewarding Munro above Loch Lomond."
+        assert body["windows"] == WINDOWS
+        assert r.headers["Cache-Control"]
+
+    def test_detail_404_for_unknown_uuid(self, client, session):
+        _seed_walks(session)
+        r = client.get("/api/hikes/walks/does-not-exist")
+        assert r.status_code == 404

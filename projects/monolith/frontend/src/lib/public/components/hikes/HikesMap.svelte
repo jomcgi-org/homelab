@@ -69,7 +69,34 @@
   // uuid -> walk row, so a marker click can recover the full record.
   const index = new Map();
 
-  let selected = $state(null); // selected walk object, or null
+  let selected = $state(null); // selected walk (light list row), or null
+  // The light corpus omits summary + hourly windows; the card fetches them per
+  // walk on selection from /app/hikes/walk/{uuid}. detail = {summary, windows}.
+  let selectedDetail = $state(null);
+  let detailLoading = $state(false);
+  let detailError = $state(false);
+  // Guards against an out-of-order resolution: a fast second click must win.
+  let detailToken = 0;
+
+  async function selectWalk(walk) {
+    selected = walk;
+    selectedDetail = null;
+    detailError = false;
+    detailLoading = true;
+    const token = ++detailToken;
+    try {
+      const res = await fetch(`/app/hikes/walk/${encodeURIComponent(walk.uuid)}`);
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const detail = await res.json();
+      if (token !== detailToken) return; // a newer selection superseded this one
+      selectedDetail = detail;
+    } catch {
+      if (token !== detailToken) return;
+      detailError = true;
+    } finally {
+      if (token === detailToken) detailLoading = false;
+    }
+  }
 
   function emptyFC() {
     return { type: "FeatureCollection", features: [] };
@@ -140,19 +167,24 @@
     pushData();
     fitToWalks();
     // If the open card's walk fell out of the filtered set, close it.
-    if (selected && !index.has(selected.uuid)) selected = null;
+    if (selected && !index.has(selected.uuid)) closeCard();
   }
 
   function closeCard() {
     selected = null;
+    selectedDetail = null;
+    detailError = false;
+    detailLoading = false;
+    detailToken++; // invalidate any in-flight detail fetch
   }
 
-  // Stats + window rows for the selected walk's card. Windows are grouped by
-  // UK-local day. We show the day the user filtered to (the parent's
-  // selectedDay chip) when this walk has windows on it, so clicking a marker
-  // that survived a "Saturday" filter shows Saturday's rows. Otherwise we fall
-  // back to the earliest day with a future window.
-  let cardDays = $derived(selected ? groupWindowsByDay(selected) : {});
+  // Window rows for the selected walk's card, grouped by UK-local day. Windows
+  // come from the per-walk detail fetch (selectedDetail), not the light list.
+  // We show the day the user filtered to (the parent's selectedDay chip) when
+  // this walk has windows on it, so clicking a marker that survived a
+  // "Saturday" filter shows Saturday's rows. Otherwise we fall back to the
+  // earliest day with a future window.
+  let cardDays = $derived(selectedDetail ? groupWindowsByDay(selectedDetail) : {});
   let cardDayKeys = $derived(Object.keys(cardDays).sort());
   let cardDayKey = $derived(
     selectedDay && cardDays[selectedDay]?.length
@@ -266,7 +298,7 @@
           const f = e.features?.[0];
           if (!f) return;
           const walk = index.get(f.properties.uuid);
-          if (walk) selected = walk;
+          if (walk) selectWalk(walk);
         });
         map.on("mouseenter", LAYER_ID, () => {
           map.getCanvas().style.cursor = "pointer";
@@ -314,11 +346,15 @@
         <div><dt>Ascent</dt><dd>{selected.ascent_m} m</dd></div>
         <div><dt>Duration</dt><dd>{fmtDuration(selected.duration_h)}</dd></div>
       </dl>
-      {#if selected.summary}
-        <p class="card-summary">{selected.summary}</p>
+      {#if selectedDetail?.summary}
+        <p class="card-summary">{selectedDetail.summary}</p>
       {/if}
 
-      {#if cardRows.length}
+      {#if detailLoading}
+        <p class="card-empty">Loading forecast…</p>
+      {:else if detailError}
+        <p class="card-empty">Couldn't load the forecast. Try again.</p>
+      {:else if cardRows.length}
         <p class="eyebrow card-windows-title">Next viable: {cardDayLabel}</p>
         <table class="card-windows">
           <thead>
