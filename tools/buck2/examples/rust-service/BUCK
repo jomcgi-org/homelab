@@ -46,4 +46,3 @@ helm_chart(
     # Create :chart.push (helm push to the OCI charts repo).
     publish = True,
 )
-

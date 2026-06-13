@@ -18,9 +18,9 @@ branch="${GITHUB_REF_NAME:-${GIT_BRANCH:-${BUILDKITE_BRANCH:-$(git rev-parse --a
 branch_tag="$(echo "${branch}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')"
 
 if [ "${branch}" = "main" ]; then
-  image_tag="${base_tag}"
+	image_tag="${base_tag}"
 else
-  image_tag="dev-${base_tag}"
+	image_tag="dev-${base_tag}"
 fi
 
 echo "${image_tag} ${branch_tag}"
