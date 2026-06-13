@@ -44,6 +44,7 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
             wind_speed=h["wind_speed"],
             air_temperature=h["air_temperature"],
             dew_spread=h["dew_spread"],
+            sun_elevation_deg=h["sun_elevation_deg"],
             symbol=h["symbol"],
             fetched_at=now,
         )
