@@ -2,20 +2,32 @@
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
+  import { monthLabel, monthShort } from "$lib/public/stars/heat.js";
 
   let { data } = $props();
 
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
 
-  // Night picker: "I'm free Saturday, show me the map for Saturday night." One
-  // chip per viewing night plus an "All" reset; picking a night filters the map
-  // to that night and StarsMap recolours each marker by the score it reaches
-  // then. `nights` is the sorted union of evening dates (YYYY-MM-DD) the API
-  // returns.
+  // Mode: LIVE = the upcoming-forecast layer (per-night quality); HISTORICAL =
+  // the month-bucketed accumulated quality layer (ADR 008). The toggle swaps the
+  // map's data source, the time control (night picker vs month picker), and the
+  // heat field StarsMap weights by.
+  let mode = $state("live");
+
+  // Heat layer: in LIVE it is an optional overlay (markers-first by default, the
+  // shipped look), so it is off until toggled; in HISTORICAL it is the point of
+  // the layer, so it is always on. StarsMap reads the resolved value.
+  let showHeat = $state(false);
+  let heatOn = $derived(mode === "historical" ? true : showHeat);
+
+  // Night picker (LIVE): "I'm free Saturday, show me the map for Saturday night."
+  // One chip per viewing night plus an "All" reset; picking a night filters the
+  // map to that night and StarsMap recolours each marker by the score it reaches
+  // then. `nights` is the sorted union of evening dates the API returns.
   let nights = $derived(data.snapshot?.nights ?? []);
   let selectedNight = $state("all"); // "all" or a night key
-  let filterOpen = $state(false); // the night box is collapsed until tapped
+  let nightOpen = $state(false); // the night box is collapsed until tapped
 
   // Fall back to "all" if the chosen night has dropped off the forecast horizon
   // on an SSR refresh (it elapsed). Derived, so there is no effect to loop on.
@@ -46,8 +58,76 @@
 
   function selectNight(key) {
     selectedNight = key;
-    filterOpen = false; // collapse back to the summary once a night is picked
+    nightOpen = false; // collapse back to the summary once a night is picked
   }
+
+  // Month picker (HISTORICAL): one chip per month-of-year, defaulting to the
+  // current UTC month (the accumulator buckets by month-of-year, not year-month,
+  // so the picker is a fixed Jan..Dec, ADR 008).
+  const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
+  let selectedMonth = $state(new Date().getUTCMonth() + 1);
+  let monthOpen = $state(false);
+
+  function selectMonth(m) {
+    selectedMonth = m;
+    monthOpen = false;
+  }
+
+  // Historical data, fetched through the SSR-only same-origin proxy
+  // (/app/stars/history/<month>) so the browser never touches /api/stars/*.
+  // Cached per month so re-selecting a month is instant.
+  const historyCache = new Map();
+  let historyData = $state(null); // last loaded {month, sites, count}
+  let historyLoading = $state(false);
+  let historyError = $state(false);
+
+  async function loadMonth(m) {
+    if (historyCache.has(m)) {
+      historyData = historyCache.get(m);
+      historyError = false;
+      return;
+    }
+    historyLoading = true;
+    historyError = false;
+    try {
+      const res = await fetch(`/app/stars/history/${m}`);
+      if (!res.ok) throw new Error(`history ${res.status}`);
+      const payload = await res.json();
+      historyCache.set(m, payload);
+      // Only apply if the user has not moved on while the fetch was in flight.
+      if (mode === "historical" && selectedMonth === m) {
+        historyData = payload;
+      }
+    } catch {
+      if (mode === "historical" && selectedMonth === m) historyError = true;
+    } finally {
+      historyLoading = false;
+    }
+  }
+
+  // Load (or re-use) the selected month whenever we are in historical mode or the
+  // month changes. Reads mode + selectedMonth, so it re-runs on either; it does
+  // not read the history state it writes, so there is no loop.
+  $effect(() => {
+    if (mode === "historical") loadMonth(selectedMonth);
+  });
+
+  function setMode(next) {
+    if (next === mode) return;
+    mode = next;
+    if (next === "live") showHeat = false; // back to markers-first live default
+  }
+
+  // The site set the map plots: live snapshot, or the loaded month's sites.
+  let mapSites = $derived(mode === "live" ? sites : (historyData?.sites ?? []));
+
+  // Whether the loaded history matches the currently selected month (guards the
+  // header + empty state from showing stale counts during a month switch).
+  let histReady = $derived(
+    !!historyData && historyData.month === selectedMonth,
+  );
+  let histCount = $derived(histReady ? historyData.count : 0);
+
   // sites is already sorted by best_score descending, so the head is the best.
   let topScore = $derived(
     sites.length ? Math.round(sites[0].best_score ?? 0) : null,
@@ -94,14 +174,14 @@
   <title>Dark-sky stargazing map, Scotland viewing windows</title>
   <meta
     name="description"
-    content="A map of curated Scottish dark-sky sites scored by upcoming viewing windows from the met.no forecast."
+    content="A map of curated Scottish dark-sky sites scored by upcoming viewing windows from the met.no forecast, with a historical realized-quality layer by month."
   />
 </svelte:head>
 
 <div class="stars-page">
   <h1 class="sr-only">Dark-sky stargazing map, Scotland viewing windows</h1>
 
-  <StarsMap {sites} {activeNights} {nowMs} />
+  <StarsMap sites={mapSites} {activeNights} {nowMs} {mode} heatVisible={heatOn} />
 
   <!-- Floating header: breadcrumb + headline stats, top-left clear of the map
        chrome (mirrors the hikes control head). -->
@@ -116,64 +196,158 @@
           <span class="crumb-sep">/</span>
           <span class="crumb-name">stars</span>
         </nav>
-        <p class="stats">
-          {count} dark-sky sites{#if topScore != null}
-            &middot; best score {topScore}{/if}{#if agoLabel}
-            &middot; updated {agoLabel} ago{/if}
-        </p>
+        {#if mode === "historical"}
+          <p class="stats">
+            {histCount}
+            {histCount === 1 ? "site" : "sites"} with history in {monthLabel(
+              selectedMonth,
+            )}
+          </p>
+        {:else}
+          <p class="stats">
+            {count} dark-sky sites{#if topScore != null}
+              &middot; best score {topScore}{/if}{#if agoLabel}
+              &middot; updated {agoLabel} ago{/if}
+          </p>
+        {/if}
       </div>
     </div>
 
-    {#if nights.length > 1}
-      <div class="panel night-filter">
+    <!-- Mode toggle: LIVE forecast vs HISTORICAL realized-quality (ADR 008). -->
+    <div class="panel mode-toggle" role="group" aria-label="Map mode">
+      <button
+        type="button"
+        class="seg"
+        class:is-active={mode === "live"}
+        aria-pressed={mode === "live"}
+        onclick={() => setMode("live")}
+      >
+        Live
+      </button>
+      <button
+        type="button"
+        class="seg"
+        class:is-active={mode === "historical"}
+        aria-pressed={mode === "historical"}
+        onclick={() => setMode("historical")}
+      >
+        Historical
+      </button>
+    </div>
+
+    {#if mode === "live"}
+      <!-- Heat overlay switch (live only): historical forces heat on. -->
+      <button
+        type="button"
+        class="panel heat-switch"
+        class:is-on={showHeat}
+        aria-pressed={showHeat}
+        onclick={() => (showHeat = !showHeat)}
+      >
+        <span class="heat-label">Heatmap</span>
+        <span class="heat-state">{showHeat ? "On" : "Off"}</span>
+      </button>
+
+      {#if nights.length > 1}
+        <div class="panel night-filter">
+          <button
+            type="button"
+            class="filter-toggle"
+            aria-expanded={nightOpen}
+            onclick={() => (nightOpen = !nightOpen)}
+          >
+            <span class="filter-label">Night</span>
+            <span class="filter-current"
+              >{effectiveNight === "all"
+                ? "All nights"
+                : nightLabel(effectiveNight)}</span
+            >
+            <span class="filter-caret" class:open={nightOpen} aria-hidden="true"
+              >&#9662;</span
+            >
+          </button>
+          {#if nightOpen}
+            <div class="night-chips">
+              <button
+                type="button"
+                class="night-chip night-chip-all"
+                class:is-off={effectiveNight !== "all"}
+                aria-pressed={effectiveNight === "all"}
+                onclick={() => selectNight("all")}
+              >
+                All nights
+              </button>
+              {#each nights as night (night)}
+                <button
+                  type="button"
+                  class="night-chip"
+                  class:is-off={effectiveNight !== night}
+                  aria-pressed={effectiveNight === night}
+                  onclick={() => selectNight(night)}
+                >
+                  {nightLabel(night)}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if count === 0}
+        <div class="panel empty-state" role="status">
+          No dark-sky windows in the next few nights. Check back after the next
+          forecast refresh.
+        </div>
+      {/if}
+    {:else}
+      <!-- Month picker (historical): a collapsed summary that expands into a
+           four-up grid of month chips, mirroring the night picker. -->
+      <div class="panel month-filter">
         <button
           type="button"
           class="filter-toggle"
-          aria-expanded={filterOpen}
-          onclick={() => (filterOpen = !filterOpen)}
+          aria-expanded={monthOpen}
+          onclick={() => (monthOpen = !monthOpen)}
         >
-          <span class="filter-label">Night</span>
-          <span class="filter-current"
-            >{effectiveNight === "all"
-              ? "All nights"
-              : nightLabel(effectiveNight)}</span
-          >
-          <span class="filter-caret" class:open={filterOpen} aria-hidden="true"
+          <span class="filter-label">Month</span>
+          <span class="filter-current">{monthLabel(selectedMonth)}</span>
+          <span class="filter-caret" class:open={monthOpen} aria-hidden="true"
             >&#9662;</span
           >
         </button>
-        {#if filterOpen}
-          <div class="night-chips">
-            <button
-              type="button"
-              class="night-chip night-chip-all"
-              class:is-off={effectiveNight !== "all"}
-              aria-pressed={effectiveNight === "all"}
-              onclick={() => selectNight("all")}
-            >
-              All nights
-            </button>
-            {#each nights as night (night)}
+        {#if monthOpen}
+          <div class="month-chips">
+            {#each MONTHS as m (m)}
               <button
                 type="button"
-                class="night-chip"
-                class:is-off={effectiveNight !== night}
-                aria-pressed={effectiveNight === night}
-                onclick={() => selectNight(night)}
+                class="month-chip"
+                class:is-off={selectedMonth !== m}
+                aria-pressed={selectedMonth === m}
+                onclick={() => selectMonth(m)}
               >
-                {nightLabel(night)}
+                {monthShort(m)}
               </button>
             {/each}
           </div>
         {/if}
       </div>
-    {/if}
 
-    {#if count === 0}
-      <div class="panel empty-state" role="status">
-        No dark-sky windows in the next few nights. Check back after the next
-        forecast refresh.
-      </div>
+      {#if historyError}
+        <div class="panel empty-state" role="status">
+          Historical data is unavailable right now. Try another month or check
+          back shortly.
+        </div>
+      {:else if historyLoading && !histReady}
+        <div class="panel empty-state" role="status">
+          Loading {monthLabel(selectedMonth)} history&hellip;
+        </div>
+      {:else if histReady && histCount === 0}
+        <div class="panel empty-state" role="status">
+          Historical data is still accumulating for {monthLabel(selectedMonth)}.
+          Quality banks as forecast hours elapse, so this layer fills over the
+          coming weeks.
+        </div>
+      {/if}
     {/if}
   </div>
 </div>
@@ -292,9 +466,83 @@
     color: var(--ink-2);
   }
 
-  /* Night filter: a collapsed summary row that expands on click into a two-up
-     grid of night chips, so it stays out of the way until you reach for it. */
-  .night-filter {
+  /* Mode toggle: two equal segments, the active one filled ink-on-paper, the
+     other inverted, sharing one border (neobrutalist segmented control). */
+  .mode-toggle {
+    display: flex;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .seg {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--paper);
+    color: var(--ink);
+    border: none;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    transition: background 110ms ease;
+  }
+
+  .seg + .seg {
+    border-left: 2px solid var(--ink);
+  }
+
+  .seg.is-active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .seg:not(.is-active):hover,
+  .seg:not(.is-active):focus-visible {
+    background: var(--cream);
+  }
+
+  /* Heat switch: a single full-width pill mirroring the filter toggle row; fills
+     accent when on so it reads as engaged. */
+  .heat-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-family: var(--mono);
+    text-align: left;
+    transition: background 110ms ease;
+  }
+
+  .heat-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+
+  .heat-state {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .heat-switch.is-on {
+    background: var(--accent);
+  }
+
+  .heat-switch.is-on .heat-label,
+  .heat-switch.is-on .heat-state {
+    color: var(--ink);
+  }
+
+  /* Time filters (night + month): a collapsed summary row that expands on click
+     into a grid of chips, so it stays out of the way until reached for. */
+  .night-filter,
+  .month-filter {
     padding: 0;
   }
 
@@ -336,8 +584,8 @@
     transform: rotate(180deg);
   }
 
-  /* Two-column grid of chips, revealed below the summary when expanded; the top
-     rule separates it from the toggle row. */
+  /* Grid of chips, revealed below the summary when expanded; the top rule
+     separates it from the toggle row. Nights are two-up, months four-up. */
   .night-chips {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -346,7 +594,16 @@
     border-top: 2px solid var(--ink);
   }
 
-  .night-chip {
+  .month-chips {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 10px 12px 12px;
+    border-top: 2px solid var(--ink);
+  }
+
+  .night-chip,
+  .month-chip {
     padding: 6px 9px;
     background: var(--ink);
     color: var(--paper);
@@ -365,25 +622,29 @@
   }
 
   .night-chip:hover,
-  .night-chip:focus-visible {
+  .night-chip:focus-visible,
+  .month-chip:hover,
+  .month-chip:focus-visible {
     transform: translate(-2px, -2px);
     box-shadow: 2px 2px 0 var(--ink);
   }
 
-  .night-chip:active {
+  .night-chip:active,
+  .month-chip:active {
     transform: translate(-1px, -1px);
     box-shadow: 1px 1px 0 var(--ink);
   }
 
-  /* The picked night is the filled chip; the rest invert to paper + dim so the
-     current selection reads at a glance while staying tappable. */
-  .night-chip.is-off {
+  /* The picked chip is filled; the rest invert to paper + dim so the current
+     selection reads at a glance while staying tappable. */
+  .night-chip.is-off,
+  .month-chip.is-off {
     background: var(--paper);
     color: var(--ink);
     opacity: 0.55;
   }
 
-  /* The reset spans the full width above the per-night grid. */
+  /* The night reset spans the full width above the per-night grid. */
   .night-chip-all {
     grid-column: 1 / -1;
   }

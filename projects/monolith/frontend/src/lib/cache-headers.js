@@ -44,3 +44,11 @@ export const HIKES_WALKS_CACHE_CONTROL =
 // _SITES_CACHE_CONTROL in projects/monolith/stars/router.py, keep in sync.
 export const STARS_SITES_CACHE_CONTROL =
   "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
+
+// /app/stars history: per-month accumulated stats, banked by the hourly prune.
+// The numbers only grow as hours elapse, so the same 30 min fresh / 1 h SWR
+// window the live sites use is plenty. The history endpoint in router.py reuses
+// _SITES_CACHE_CONTROL, so this is the byte-for-byte same string; kept as its
+// own constant so the proxy reads intentionally and the two can diverge later.
+export const STARS_HISTORY_CACHE_CONTROL =
+  "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
