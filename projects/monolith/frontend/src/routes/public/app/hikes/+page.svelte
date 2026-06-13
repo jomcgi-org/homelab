@@ -5,9 +5,7 @@
   import {
     filterWalksByCharacteristics,
     filterWalksByLocation,
-    groupWindowsByDay,
     upcomingUkDays,
-    viableInNextDays,
   } from "$lib/public/hikes/filters.js";
 
   let { data } = $props();
@@ -163,15 +161,17 @@
       );
     }
     if (selectedDay != null) {
-      result = result.filter(
-        (w) => (groupWindowsByDay(w)[selectedDay]?.length ?? 0) > 0,
-      );
+      // viable_days is the server-computed set of UK days with a viable window;
+      // membership is a cheap O(1) check, no hourly windows to re-parse.
+      result = result.filter((w) => w.viable_days?.includes(selectedDay));
     }
     return result;
   });
 
+  // Today's UK-local day key (first chip of the rolling strip).
+  let todayKey = $derived(upcomingUkDays(1, new Date(nowMs))[0]);
   let viableTodayCount = $derived(
-    walks.filter((w) => viableInNextDays(w, 1, new Date(nowMs))).length,
+    walks.filter((w) => w.viable_days?.includes(todayKey)).length,
   );
 
   // A hidden (collapsed) numeric filter is active, so the toggle can show a dot.
