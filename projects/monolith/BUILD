@@ -2078,6 +2078,27 @@ py_test(
 )
 
 py_test(
+    name = "stars_scoring_test",
+    srcs = ["stars/scoring_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pydantic",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "stars_seed_test",
+    srcs = ["stars/seed_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "hikes_walkhighlands_test",
     srcs = ["hikes/walkhighlands_test.py"],
     imports = ["."],
