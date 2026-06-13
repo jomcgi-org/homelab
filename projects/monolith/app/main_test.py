@@ -156,6 +156,7 @@ def _lifespan_patches_no_discord():
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
         patch("ships.on_startup_jobs"),
+        patch("hikes.on_startup_jobs"),
     ]
 
 
@@ -258,6 +259,7 @@ async def test_lifespan_scheduler_task_is_run_scheduler_loop():
         patch("home.on_startup_jobs"),
         patch("shared.scheduler.run_scheduler_loop", mock_scheduler),
         patch("ships.on_startup_jobs"),
+        patch("hikes.on_startup_jobs"),
     ]
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
@@ -405,6 +407,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
         patch("ships.on_startup_jobs"),
+        patch("hikes.on_startup_jobs"),
     ]
 
 
