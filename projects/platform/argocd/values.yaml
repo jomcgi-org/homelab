@@ -11,6 +11,20 @@ argo-cd:
   configs:
     cm:
       accounts.mcp-agent: apiKey
+      # Kyverno's inject-otel-env-vars ClusterPolicy mutates every Deployment at
+      # admission to add the OTEL_EXPORTER_OTLP_* env vars (and an
+      # otel.injected-by pod-template annotation). ArgoCD renders charts without
+      # those injected fields, so it permanently reports such Deployments as
+      # OutOfSync (Healthy, but the noise hides genuine drift). Ignore exactly the
+      # injected fields cluster-wide, keyed by field rather than by a name list,
+      # so any real change to other Deployment fields still surfaces.
+      # Policy: projects/platform/kyverno/templates/otel-injection-policy.yaml.
+      resource.customizations.ignoreDifferences.apps_Deployment: |
+        jqPathExpressions:
+          - '.spec.template.spec.containers[].env[]? | select(.name | startswith("OTEL_"))'
+          - '.spec.template.spec.initContainers[]?.env[]? | select(.name | startswith("OTEL_"))'
+        jsonPointers:
+          - /spec/template/metadata/annotations/otel.injected-by
     rbac:
       policy.csv: |
         p, mcp-agent, applications, *, */*, allow
