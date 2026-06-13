@@ -85,8 +85,8 @@
 
     {#if count === 0}
       <div class="panel empty-state" role="status">
-        No viewing windows above score 60 in the next few nights. Check back
-        after the next forecast refresh.
+        No dark-sky windows in the next few nights. Check back after the next
+        forecast refresh.
       </div>
     {/if}
   </div>

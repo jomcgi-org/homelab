@@ -5,6 +5,11 @@ One read endpoint backs the /app/stars dark-sky planner:
 - ``GET /api/stars/sites``, every curated Scotland dark-sky site joined with
   its best upcoming viewing hours, for the site list + detail cards.
 
+Each hour's ``score`` is the ADR 007 continuous stargazing quality (0..100,
+Q = darkness x cloud x weather), not the old additive astronomy score with a
+fixed display floor. ``best_score`` is the max quality across a site's future
+hours and drives the map ordering and marker colour.
+
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/stars page is the public surface and the CDN fans out to viewers, per
 ADR 002. Conditional GETs short-circuit with a 304 via ETag.

@@ -18,10 +18,14 @@
   // light basemap; the prime stop is the funky violet that also marks Stars in
   // the nav. Mirrors how HikesMap keeps its EFFORT_RAMP stops in JS and renders
   // the legend swatches via inline style attributes.
+  //
+  // Boundaries follow the ADR 007 continuous quality Q = D x C x W: an ideal
+  // winter night reaches ~90+, while summer's best (sun never far below the
+  // horizon) tops out around 30-50, so the buckets break at 35 / 65.
   const SCORE_BUCKETS = [
-    { key: "low", label: "< 70", color: "#94a3b8" }, // muted slate
-    { key: "mid", label: "70-85", color: "#3b82f6" }, // blue
-    { key: "high", label: "85+", color: "#7c3aed" }, // violet (prime)
+    { key: "low", label: "< 35", color: "#94a3b8" }, // muted slate
+    { key: "mid", label: "35-65", color: "#3b82f6" }, // blue
+    { key: "high", label: "65+", color: "#7c3aed" }, // violet (prime)
   ];
 
   const SOURCE_ID = "sites";
@@ -198,15 +202,16 @@
           source: SOURCE_ID,
           paint: {
             // Fill by best score: muted slate -> blue -> violet, stepped at
-            // the 70 / 85 bucket boundaries. Ink stroke keeps every dot
-            // legible on the light basemap; better sites read a touch larger.
+            // the 35 / 65 bucket boundaries (ADR 007 continuous quality). Ink
+            // stroke keeps every dot legible on the light basemap; better sites
+            // read a touch larger.
             "circle-color": [
               "step",
               ["get", "score"],
               SCORE_BUCKETS[0].color,
-              70,
+              35,
               SCORE_BUCKETS[1].color,
-              85,
+              65,
               SCORE_BUCKETS[2].color,
             ],
             "circle-radius": [
