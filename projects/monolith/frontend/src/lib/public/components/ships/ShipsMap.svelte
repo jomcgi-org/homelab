@@ -586,6 +586,16 @@
 
         syncVessels();
         startLoop();
+
+        // Warm the heat grid in the background so the first Heat toggle is
+        // instant. Still lazy (kept out of the initial payload), just fetched
+        // on idle after first paint instead of waiting for the toggle.
+        // loadHeat() is a no-op once cached, so the toggle handler stays correct.
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(() => loadHeat(), { timeout: 3000 });
+        } else {
+          setTimeout(() => loadHeat(), 1500);
+        }
       });
 
       cleanup = () => {
