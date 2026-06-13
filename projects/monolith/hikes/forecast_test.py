@@ -1,14 +1,16 @@
 """Unit tests for the pure met.no forecast logic (no network).
 
-compute_windows ports the exact viability ladder from the legacy
+compute_windows ports the viability ladder from the legacy
 update_forecast/update.py, so these tests pin the threshold edges
-(precip 2.0 mm, wind 80 km/h), the 07:00-19:00 daylight gate, the
-past/horizon drops, the None defaults, and the emitted tuple rounding.
+(precip 2.0 mm, wind 80 km/h), the past/horizon drops, the None defaults,
+and the emitted tuple rounding. The daylight gate is the one intentional
+divergence: it now follows real sunrise/sunset at the walk's coordinates
+(see TestDaylightGate and TestSunTimes) rather than a fixed 07:00-19:00 band.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from hikes.forecast import compute_windows, parse_hourly
+from hikes.forecast import compute_windows, is_daylight, parse_hourly, sun_times
 
 NOW = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)
 LAT = 56.7969
@@ -63,17 +65,25 @@ class TestViabilityThresholds:
 
 
 class TestDaylightGate:
-    def test_hour_6_is_not_viable(self):
-        assert _windows(_entry("2026-06-14T06:00:00Z")) == []
+    # At the test coordinates (Ben Nevis area, 56.8 N) on 2026-06-14 the sun is
+    # up roughly 03:28-21:14 UTC, far wider than the legacy 07:00-19:00 band.
+    # The gate must admit the early-morning and late-evening summer hours the
+    # old fixed band wrongly dropped, and still reject true darkness.
+    def test_before_sunrise_is_not_viable(self):
+        # 03:00 UTC, a few minutes before the ~03:28 sunrise.
+        assert _windows(_entry("2026-06-14T03:00:00Z")) == []
 
-    def test_hour_7_is_viable(self):
-        assert len(_windows(_entry("2026-06-14T07:00:00Z"))) == 1
+    def test_early_summer_morning_is_viable(self):
+        # 04:00 UTC (05:00 BST) is daylight in June but dark under the old band.
+        assert len(_windows(_entry("2026-06-14T04:00:00Z"))) == 1
 
-    def test_hour_19_is_viable(self):
-        assert len(_windows(_entry("2026-06-14T19:00:00Z"))) == 1
+    def test_late_summer_evening_is_viable(self):
+        # 21:00 UTC (22:00 BST), just before the ~21:14 sunset.
+        assert len(_windows(_entry("2026-06-14T21:00:00Z"))) == 1
 
-    def test_hour_20_is_not_viable(self):
-        assert _windows(_entry("2026-06-14T20:00:00Z")) == []
+    def test_after_sunset_is_not_viable(self):
+        # 22:00 UTC, after the sun has set.
+        assert _windows(_entry("2026-06-14T22:00:00Z")) == []
 
 
 class TestTimeBounds:
@@ -172,3 +182,44 @@ class TestParseHourly:
         assert parse_hourly(None) == []
         assert parse_hourly({}) == []
         assert parse_hourly({"type": "Feature"}) == []
+
+
+class TestSunTimes:
+    """The NOAA sunrise equation that backs the daylight gate. Tolerances are a
+    few minutes (the model is ~1 min accurate); the point is to catch a
+    wrong-direction band, a UTC/local mix-up, or a winter/summer swap, not to
+    verify the almanac to the second.
+    """
+
+    def _between(self, dt, start, end):
+        lo = datetime.fromisoformat(f"2026-{start}Z")
+        hi = datetime.fromisoformat(f"2026-{end}Z")
+        return lo <= dt <= hi
+
+    def test_summer_solstice_window_is_long(self):
+        # Ben Nevis area near the solstice: sunrise well before the old 07:00
+        # gate, sunset well after 19:00.
+        sunrise, sunset = sun_times(NOW.replace(month=6, day=14), LAT, LON)
+        assert self._between(sunrise, "06-14T03:00:00", "06-14T04:00:00")
+        assert self._between(sunset, "06-14T21:00:00", "06-14T21:30:00")
+        assert sunset - sunrise > timedelta(hours=17)
+
+    def test_winter_solstice_window_is_short(self):
+        # Same place at midwinter: a ~7 h band shifted later in the UTC day,
+        # the opposite of a fixed 07:00-19:00 assumption.
+        sunrise, sunset = sun_times(NOW.replace(month=12, day=21), LAT, LON)
+        assert self._between(sunrise, "12-21T08:30:00", "12-21T09:15:00")
+        assert self._between(sunset, "12-21T15:30:00", "12-21T16:00:00")
+        assert sunset - sunrise < timedelta(hours=8)
+
+    def test_polar_night_has_no_daylight(self):
+        # Svalbard at the winter solstice: the sun never rises.
+        midwinter = datetime(2026, 12, 21, 12, tzinfo=timezone.utc)
+        assert sun_times(midwinter, 78.0, 16.0) is None
+        assert is_daylight(midwinter, 78.0, 16.0) is False
+
+    def test_polar_day_is_all_daylight(self):
+        # Svalbard at the summer solstice: the sun never sets, so even 02:00
+        # UTC reads as daylight.
+        midnight_sun = datetime(2026, 6, 21, 2, tzinfo=timezone.utc)
+        assert is_daylight(midnight_sun, 78.0, 16.0) is True
