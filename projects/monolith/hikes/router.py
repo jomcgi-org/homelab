@@ -12,7 +12,9 @@ Two read endpoints back the /app/hikes walk planner:
 
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/hikes page is the public surface and the CDN fans out to viewers.
-Conditional GETs short-circuit with a 304 via ETag.
+Conditional GETs on the list short-circuit with a 304 via its ETag; the detail
+endpoint is CDN-cached without an ETag, and the client drops any already-started
+hour by absolute timestamp, so a momentarily stale detail never shows past hours.
 
 The read-time hour filter (``hour_time >= top_of_hour(now)``) is the source of
 truth for "future windows": both endpoints query the typed walk_hours table and
