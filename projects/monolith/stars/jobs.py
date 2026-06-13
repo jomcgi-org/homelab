@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, delete
 
+from shared.forecast_freshness import top_of_hour
 from stars.forecast import fetch_all
 from stars.models import SiteHour
 from stars.seed import SCOTLAND_DARK_SKY_LOCATIONS
@@ -67,7 +68,15 @@ async def refresh_handler(session: Session) -> datetime | None:
     return None
 
 
-async def prune_hours_handler(
-    session: Session,
-) -> datetime | None:  # implemented in a later task
-    raise NotImplementedError
+async def prune_hours_handler(session: Session) -> datetime | None:
+    """Drop elapsed hours (housekeeping; the read endpoint also filters).
+
+    The cutoff is the top of the current UTC clock hour: rows whose hour_time
+    is strictly before it have elapsed and are removed. fetched_at is never
+    touched. cutoff is tz-aware UTC, so the comparison stays tz-aware.
+    """
+    cutoff = top_of_hour()
+    result = session.execute(delete(SiteHour).where(SiteHour.hour_time < cutoff))
+    session.commit()
+    logger.info("stars.prune_hours: deleted %s elapsed rows", result.rowcount)
+    return None
