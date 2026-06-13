@@ -43,6 +43,12 @@
       desc: "Live AIS vessel tracker",
       href: "/app/ships",
     },
+    {
+      slug: "stars",
+      label: "Stars",
+      desc: "Scotland dark-sky planner",
+      href: "/app/stars",
+    },
   ];
 
   const appsActive = $derived(apps.some((a) => a.slug === route));
@@ -165,6 +171,21 @@
                             stroke-width="1.8"
                             stroke-linecap="round"
                             stroke-linejoin="round"
+                          />
+                        </svg>
+                      {:else if app.slug === "stars"}
+                        <svg width="22" height="22" viewBox="0 0 24 24">
+                          <path
+                            d="M12 2 L14 9 L21 11 L14 13 L12 20 L10 13 L3 11 L10 9 Z"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linejoin="round"
+                          />
+                          <path
+                            d="M18.5 3 L19 5 L21 5.5 L19 6 L18.5 8 L18 6 L16 5.5 L18 5 Z"
+                            fill="currentColor"
+                            stroke="none"
                           />
                         </svg>
                       {/if}
