@@ -104,4 +104,11 @@ def test_composite_primary_key_same_site_different_hours(session):
 
     rows = session.exec(select(SiteHour).where(SiteHour.site_id == "iona")).all()
     assert len(rows) == 2
-    assert {r.hour_time for r in rows} == {hour_a, hour_b}
+    # SQLite returns naive datetimes; coerce to UTC-aware before comparing.
+    loaded = {
+        r.hour_time
+        if r.hour_time.tzinfo is not None
+        else r.hour_time.replace(tzinfo=timezone.utc)
+        for r in rows
+    }
+    assert loaded == {hour_a, hour_b}
