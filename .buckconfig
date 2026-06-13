@@ -36,19 +36,5 @@
 [build]
   execution_platforms = root//tools/buck2/platforms:default
 
-# Remote execution on BuildBuddy (same as loom): the rbe-ubuntu24-04 container
-# has a full C toolchain, so the example Rust binary links there without the
-# workflow runner needing build-essential. Genrules that need network (apko) opt
-# out via the `uses_undeclared_inputs` local label. Needs BUILDBUDDY_API_KEY in
-# the env (BuildBuddy workflows provide it; unset locally falls back to local).
-[project]
-  remote_enabled = true
-
 [buck2]
   digest_algorithms = SHA256
-
-[buck2_re_client]
-  engine_address = remote.buildbuddy.io
-  action_cache_address = remote.buildbuddy.io
-  cas_address = remote.buildbuddy.io
-  http_headers = x-buildbuddy-api-key:$BUILDBUDDY_API_KEY
