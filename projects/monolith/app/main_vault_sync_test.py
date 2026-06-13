@@ -23,6 +23,7 @@ async def test_lifespan_calls_clone_vault():
         patch("home.on_startup_jobs"),
         patch("ships.on_startup_jobs"),
         patch("hikes.on_startup_jobs"),
+        patch("stars.on_startup_jobs"),
     ):
         from app.main import lifespan, app
 

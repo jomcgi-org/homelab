@@ -60,9 +60,10 @@ def test_site_hour_roundtrip(session):
     assert loaded.air_temperature == 8.0
     assert loaded.dew_spread == 5.0
     assert loaded.symbol == "clearsky_night"
+    # SQLite returns naive datetimes (no tz-aware type), so assert the type
+    # only, not tzinfo, matching hikes/models_test. Production is Postgres
+    # TIMESTAMPTZ, where the value round-trips tz-aware.
     assert isinstance(loaded.fetched_at, datetime)
-    assert loaded.fetched_at.tzinfo is not None
-    assert loaded.fetched_at.utcoffset() is not None
 
 
 def test_default_symbol_is_empty(session):
