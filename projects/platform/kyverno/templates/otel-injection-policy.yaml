@@ -19,11 +19,50 @@ metadata:
     policies.kyverno.io/description: |
       Automatically injects OTEL environment variables into all workloads
       for cluster-wide observability. ENABLED BY DEFAULT.
+
+      The env vars are APPENDED to each container's env list (json6902 add to
+      env/-), not strategic-merge-merged. Strategic merge prepends new env
+      entries, which shifts every chart-defined env var down by two and makes
+      ArgoCD (which diffs env positionally) report the workload permanently
+      OutOfSync even with an ignoreDifferences for the injected names. Appending
+      keeps the chart's env at its original indices so a by-name ignore lines up
+      and the workload stays Synced. The append rule is idempotent (skips a
+      container that already carries OTEL_EXPORTER_OTLP_ENDPOINT) and skips
+      containers with no env (nothing to instrument; keeps the env/- path valid).
 spec:
   background: {{ .Values.otelInjection.background }}
   validationFailureAction: Audit
   rules:
-  - name: add-otel-config-deployments
+  - name: add-otel-annotation-deployments
+    skipBackgroundRequests: true
+    match:
+      any:
+      - resources:
+          kinds:
+          {{- range .Values.otelInjection.targetKinds }}
+          - {{ . }}
+          {{- end }}
+    exclude:
+      any:
+      # Exclude system namespaces
+      - resources:
+          namespaces:
+          {{- range .Values.otelInjection.excludeNamespaces }}
+          - {{ . }}
+          {{- end }}
+      # Explicit opt-out only
+      - resources:
+          selector:
+            matchLabels:
+              otel.instrumentation: "disabled"
+    mutate:
+      patchStrategicMerge:
+        spec:
+          template:
+            metadata:
+              annotations:
+                otel.injected-by: "kyverno/inject-otel-env-vars"
+  - name: add-otel-env-deployments
     skipBackgroundRequests: true
     match:
       any:
@@ -51,18 +90,29 @@ spec:
         name: otel-config
         namespace: {{ .Release.Namespace }}
     mutate:
-      patchStrategicMerge:
-        spec:
-          template:
-            metadata:
-              annotations:
-                otel.injected-by: "kyverno/inject-otel-env-vars"
-            spec:
-              containers:
-              - (name): "*"
-                env:
-                - name: OTEL_EXPORTER_OTLP_ENDPOINT
-                  value: "{{ `{{ otelConfig.data.endpoint }}` }}"
-                - name: OTEL_EXPORTER_OTLP_PROTOCOL
-                  value: "{{ `{{ otelConfig.data.protocol }}` }}"
+      foreach:
+      - list: "request.object.spec.template.spec.containers"
+        preconditions:
+          all:
+          # Only containers that already declare env: nothing to instrument
+          # otherwise, and it keeps the json6902 env/- append path valid.
+          - key: "{{ `{{ length(element.env || '') }}` }}"
+            operator: GreaterThan
+            value: 0
+          # Idempotent: skip a container that already carries the injected var so
+          # a re-admission of an already-injected object does not duplicate it.
+          - key: OTEL_EXPORTER_OTLP_ENDPOINT
+            operator: AnyNotIn
+            value: "{{ `{{ element.env[].name }}` }}"
+        patchesJson6902: |-
+          - op: add
+            path: "/spec/template/spec/containers/{{ `{{ elementIndex }}` }}/env/-"
+            value:
+              name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "{{ `{{ otelConfig.data.endpoint }}` }}"
+          - op: add
+            path: "/spec/template/spec/containers/{{ `{{ elementIndex }}` }}/env/-"
+            value:
+              name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "{{ `{{ otelConfig.data.protocol }}` }}"
 {{- end }}

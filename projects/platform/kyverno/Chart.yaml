@@ -2,7 +2,7 @@ apiVersion: v2
 name: kyverno
 description: Kyverno policy engine with ClusterPolicies for GHCR secret management
 type: application
-version: 1.0.3
+version: 1.0.4
 appVersion: "3.5.2"
 
 dependencies:
