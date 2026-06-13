@@ -82,9 +82,7 @@ def generate(db_path: Path, out) -> tuple[int, int]:
             skipped += 1
             print(f"skipping row with NULL column: uuid={row[0]!r}", file=sys.stderr)
             continue
-        values = ", ".join(
-            sql_literal(column, record[column]) for column in COLUMNS
-        )
+        values = ", ".join(sql_literal(column, record[column]) for column in COLUMNS)
         kept.append(f"({values})")
 
     out.write(HEADER)

@@ -235,9 +235,7 @@ async def _fetch(
     async with semaphore:
         for attempt in range(1, MAX_FETCH_ATTEMPTS + 1):
             try:
-                response = await client.get(
-                    url, headers=HEADERS, timeout=TIMEOUT_SECS
-                )
+                response = await client.get(url, headers=HEADERS, timeout=TIMEOUT_SECS)
                 response.raise_for_status()
             except Exception:
                 if attempt == MAX_FETCH_ATTEMPTS:
