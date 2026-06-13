@@ -7,13 +7,14 @@ or plugin dependency is required.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 import stars.jobs as jobs
+from shared.forecast_freshness import top_of_hour
 from stars.models import SiteHour
 
 
@@ -155,3 +156,37 @@ def test_refresh_replaces_site_rows_wholesale(monkeypatch, session):
     # The stale rows are gone.
     assert old_a not in {r.hour_time for r in rows}
     assert all(r.symbol == "clearsky_night" for r in rows)
+
+
+def _seed_hour(session, site_id, hour_time):
+    session.add(
+        SiteHour(
+            site_id=site_id,
+            hour_time=hour_time,
+            score=70.0,
+            cloud_area_fraction=10.0,
+            relative_humidity=60.0,
+            wind_speed=3.0,
+            air_temperature=8.0,
+            dew_spread=5.0,
+            symbol="clearsky_night",
+        )
+    )
+
+
+def test_prune_drops_only_elapsed_hours(session):
+    cutoff = top_of_hour(datetime.now(timezone.utc))
+    # Two elapsed hours (strictly before the cutoff) and two current/future.
+    past_a = cutoff - timedelta(hours=3)
+    past_b = cutoff - timedelta(hours=1)
+    current = cutoff
+    future = cutoff + timedelta(hours=2)
+    for i, h in enumerate((past_a, past_b, current, future)):
+        _seed_hour(session, f"site-{i}", h)
+    session.commit()
+
+    result = asyncio.run(jobs.prune_hours_handler(session))
+    assert result is None
+
+    remaining = {r.hour_time for r in session.exec(select(SiteHour)).all()}
+    assert remaining == {current, future}
