@@ -2,16 +2,24 @@
 
 Ported from projects/hikes/update_forecast/update.py with fetch split from
 the pure logic: fetch_forecast hits locationforecast/2.0/compact, parse_hourly
-flattens the timeseries, and compute_windows applies the exact viability
-ladder (past hours, 7-day horizon, 07:00-19:00 daylight gate, precip > 2.0 mm,
+flattens the timeseries, and compute_windows applies the viability ladder
+(past hours, 7-day horizon, real per-coordinate daylight gate, precip > 2.0 mm,
 wind > 80 km/h) and emits the compact window tuples
 [timestamp, temp_c, precip_mm, wind_kmh, cloud_pct] with the original
 rounding rules so the stored windows match the old bundle format exactly.
+
+The one intentional change from the legacy logic: the daylight gate. The old
+code kept a fixed 07:00-19:00 UTC band, which is wrong both ways in Scotland
+(it drops viable ~03:30-07:00 / 19:00-21:00 UTC summer hours and admits dark
+winter hours). We now gate on the walk's actual sunrise/sunset for that UTC
+date via the NOAA sunrise equation (see sun_times). met.no timestamps are
+already UTC, so the computed sun times are UTC too and compare directly.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+import math
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -26,9 +34,91 @@ CONCURRENCY = 10
 
 MAX_PRECIPITATION_MM = 2.0
 MAX_WIND_KMH = 80.0
-DAYLIGHT_START_HOUR = 7
-DAYLIGHT_END_HOUR = 19
 FORECAST_HORIZON_DAYS = 7
+
+# Earth's axial tilt (obliquity of the ecliptic), degrees.
+_OBLIQUITY_DEG = 23.4397
+# Standard sunrise/sunset altitude of the sun's centre: -0.833 deg accounts for
+# atmospheric refraction (~34') plus the solar disc's apparent radius (~16').
+_SUN_ALTITUDE_DEG = -0.833
+
+
+def sun_times(
+    date: datetime, lat: float, lon: float
+) -> tuple[datetime, datetime] | None:
+    """Return (sunrise_utc, sunset_utc) for the UTC calendar day of ``date`` at
+    (lat, lon), via the NOAA sunrise equation. Pure; accurate to ~1 minute.
+
+    Returns None when the sun never rises that day (polar night). For the
+    polar-day case (sun never sets) returns the full UTC day [00:00, 24:00) so
+    every hour reads as daylight. Scotland (~56-58 N) never hits either branch;
+    they are defensive so the gate degrades sanely anywhere on Earth.
+    """
+    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+
+    # Julian day count since the J2000.0 epoch (2000-01-01 12:00 UTC), anchored
+    # at noon of the target day. unix / 86400 + 2440587.5 is the Julian Date.
+    noon = day_start + timedelta(hours=12)
+    julian_day = noon.timestamp() / 86400.0 + 2440587.5
+    n = julian_day - 2451545.0 + 0.0008
+
+    mean_solar_noon = n - lon / 360.0
+    solar_anomaly = math.radians((357.5291 + 0.98560028 * mean_solar_noon) % 360.0)
+    center = (
+        1.9148 * math.sin(solar_anomaly)
+        + 0.0200 * math.sin(2 * solar_anomaly)
+        + 0.0003 * math.sin(3 * solar_anomaly)
+    )
+    ecliptic_lon = math.radians(
+        (math.degrees(solar_anomaly) + center + 180.0 + 102.9372) % 360.0
+    )
+
+    solar_transit = (
+        2451545.0
+        + mean_solar_noon
+        + 0.0053 * math.sin(solar_anomaly)
+        - 0.0069 * math.sin(2 * ecliptic_lon)
+    )
+    declination = math.asin(
+        math.sin(ecliptic_lon) * math.sin(math.radians(_OBLIQUITY_DEG))
+    )
+
+    lat_rad = math.radians(lat)
+    cos_hour_angle = (
+        math.sin(math.radians(_SUN_ALTITUDE_DEG))
+        - math.sin(lat_rad) * math.sin(declination)
+    ) / (math.cos(lat_rad) * math.cos(declination))
+
+    if cos_hour_angle >= 1.0:
+        # Sun stays below the horizon all day: polar night, no daylight.
+        return None
+    if cos_hour_angle <= -1.0:
+        # Sun never sets: polar day. Treat the whole UTC day as daylight.
+        return day_start, day_start + timedelta(days=1)
+
+    hour_angle = math.degrees(math.acos(cos_hour_angle))
+    sunrise_jd = solar_transit - hour_angle / 360.0
+    sunset_jd = solar_transit + hour_angle / 360.0
+
+    sunrise = datetime.fromtimestamp(
+        (sunrise_jd - 2440587.5) * 86400.0, tz=timezone.utc
+    )
+    sunset = datetime.fromtimestamp((sunset_jd - 2440587.5) * 86400.0, tz=timezone.utc)
+    return sunrise, sunset
+
+
+def is_daylight(dt: datetime, lat: float, lon: float) -> bool:
+    """True if ``dt`` (UTC) falls between sunrise and sunset at (lat, lon).
+
+    Replaces the legacy fixed 07:00-19:00 UTC band. An hour counts as daylight
+    when its start instant is within [sunrise, sunset]; polar night is never
+    daylight, polar day always is (see sun_times).
+    """
+    times = sun_times(dt, lat, lon)
+    if times is None:
+        return False
+    sunrise, sunset = times
+    return sunrise <= dt <= sunset
 
 
 async def fetch_forecast(
@@ -111,14 +201,13 @@ def compute_windows(
 ) -> list[list]:
     """Compute viable hiking windows from hourly forecast data. Pure.
 
-    Ports the exact filter ladder from the original process_walk: skip past
-    hours, skip beyond now + 7 days, skip outside 07:00-19:00 (the parsed
-    datetime's hour, as the original is_daylight_hour did; lat/lon are kept
-    for signature parity with a future real solar calculation), skip
-    non-viable weather. Emits [timestamp, temp_c, precip_mm, wind_kmh,
-    cloud_pct] with the original rounding and None-default rules.
+    Filter ladder: skip past hours, skip beyond now + 7 days, skip hours
+    outside the walk's real daylight (sunrise to sunset at lat/lon for that UTC
+    date, via is_daylight), skip non-viable weather. Emits [timestamp, temp_c,
+    precip_mm, wind_kmh, cloud_pct] with the original rounding and None-default
+    rules. The daylight gate is the one deliberate divergence from the legacy
+    fixed 07:00-19:00 band (see the module docstring).
     """
-    del lat, lon  # Reserved for a real daylight calculation; unused for now.
     horizon = now + timedelta(days=FORECAST_HORIZON_DAYS)
     windows: list[list] = []
 
@@ -129,7 +218,7 @@ def compute_windows(
             continue
         if dt > horizon:
             continue
-        if not (DAYLIGHT_START_HOUR <= dt.hour <= DAYLIGHT_END_HOUR):
+        if not is_daylight(dt, lat, lon):
             continue
         if not _is_weather_viable(weather):
             continue
