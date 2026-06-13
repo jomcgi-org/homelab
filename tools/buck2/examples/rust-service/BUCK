@@ -1,10 +1,34 @@
+load("//tools/buck2/apko:defs.bzl", "apko_image")
+load("//tools/buck2/oci:defs.bzl", "oci_image", "tar_layer")
+
 # Basic Rust service built with buck2's `rust_binary` (the same primitive loom
-# uses), compiled as a static musl binary by the hermetic Rust toolchain. The
-# binary is layered onto an apko/Wolfi base image by :image below.
+# uses), compiled as an x86_64-linux binary by the hermetic Rust toolchain and
+# linked on BuildBuddy RE. Layered onto an apko/Wolfi distroless base by :image.
 
 rust_binary(
     name = "server",
     srcs = ["src/main.rs"],
     crate_root = "src/main.rs",
     visibility = ["PUBLIC"],
+)
+
+# Distroless Wolfi base (CA certs + nonroot, entrypoint = /usr/local/bin/server).
+apko_image(
+    name = "base",
+    config = "base.apko.yaml",
+    lock = "base.apko.lock.json",
+)
+
+# Package the Rust binary into a layer at the entrypoint path.
+tar_layer(
+    name = "server_layer",
+    binary = ":server",
+    path = "/usr/local/bin/server",
+)
+
+# The deployable image: Rust binary layered onto the apko base.
+oci_image(
+    name = "image",
+    base = ":base",
+    layers = [":server_layer"],
 )

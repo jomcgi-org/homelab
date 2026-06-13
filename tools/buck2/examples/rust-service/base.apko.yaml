@@ -1,0 +1,23 @@
+# Distroless Wolfi base for the rust-service image: just CA certs + a nonroot
+# user, single-arch x86_64 to match the x86_64 Rust binary layered on top. The
+# entrypoint points at the binary the layer adds (so oci_image needs no mutate).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+accounts:
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  run-as: 65532
+entrypoint:
+  command: /usr/local/bin/server
+archs:
+  - x86_64
