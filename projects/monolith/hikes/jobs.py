@@ -1,18 +1,19 @@
 """Scheduled job handlers for the hikes domain.
 
-scrape_walks_handler runs the weekly WalkHighlands scrape; the network phase
-completes fully before any session use (mirroring how ships.ingest separates
-network work from Session usage). refresh_forecasts_handler is a stub until
-the met.no forecast job lands.
+scrape_walks_handler runs the weekly WalkHighlands scrape and
+refresh_forecasts_handler the 6-hourly met.no window refresh; in both, the
+network phase completes fully before any session writes (mirroring how
+ships.ingest separates network work from Session usage).
 """
 
 import logging
 from datetime import datetime, timezone
 
 import httpx
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from hikes import models
+from hikes.forecast import fetch_all_windows
 from hikes.walkhighlands import fetch_all_walks
 
 logger = logging.getLogger("hikes")
@@ -83,6 +84,40 @@ async def scrape_walks_handler(session: Session) -> datetime | None:
 
 
 async def refresh_forecasts_handler(session: Session) -> datetime | None:
-    """Stub: the met.no forecast windows job lands in a follow-up task."""
-    logger.info("hikes.refresh_forecasts: not implemented yet")
+    """6-hourly met.no refresh: recompute viable hiking windows per walk.
+
+    Loads the coordinate corpus, runs the whole network phase, then updates
+    windows and windows_updated_at in one transaction. Walks whose fetch
+    failed are absent from the result dict and keep their previous windows
+    (stale beats empty).
+    """
+    coords = session.exec(
+        select(models.Walk.uuid, models.Walk.latitude, models.Walk.longitude)
+    ).all()
+    if not coords:
+        logger.info("hikes forecast: no walks in corpus, nothing to refresh")
+        return None
+
+    now = datetime.now(timezone.utc)
+    async with httpx.AsyncClient() as client:
+        windows_by_uuid = await fetch_all_windows(client, coords, now)
+
+    total_windows = 0
+    for walk_uuid, windows in windows_by_uuid.items():
+        walk = session.get(models.Walk, walk_uuid)
+        if walk is None:
+            continue
+        walk.windows = windows
+        walk.windows_updated_at = now
+        total_windows += len(windows)
+        # Tracked-row mutation: session.get rows flush on commit without
+        # a session.add in the loop.
+    session.commit()
+
+    logger.info(
+        "hikes forecast: %d walks, %d forecasts fetched, %d viable windows",
+        len(coords),
+        len(windows_by_uuid),
+        total_windows,
+    )
     return None

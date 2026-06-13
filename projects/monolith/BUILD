@@ -2064,6 +2064,16 @@ py_test(
 )
 
 py_test(
+    name = "hikes_forecast_test",
+    srcs = ["hikes/forecast_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "ships_heat_test",
     srcs = ["ships/heat_test.py"],
     imports = ["."],
