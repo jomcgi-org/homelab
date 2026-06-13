@@ -65,6 +65,27 @@ pinned_cli(
     },
 )
 
+# -- regctl — OCI registry/layout tool (regclient/regclient) -------------------
+# Used by oci_image to layer onto a local OCI image (apko base) with no registry.
+_REGCTL_V = "v0.11.5"
+_REGCTL_URL = "https://github.com/regclient/regclient/releases/download/{v}/regctl-{a}"
+
+pinned_cli(
+    name = "regctl",
+    binary = "regctl",
+    archive = "raw",  # bare binary, no archive
+    urls = {
+        "darwin-arm64": _REGCTL_URL.format(v = _REGCTL_V, a = "darwin-arm64"),
+        "linux-amd64": _REGCTL_URL.format(v = _REGCTL_V, a = "linux-amd64"),
+        "linux-arm64": _REGCTL_URL.format(v = _REGCTL_V, a = "linux-arm64"),
+    },
+    shas = {
+        "darwin-arm64": "f4d536d64d0c3cc1db7400902175a1c314675991d22e87e15c319501a2676d3f",
+        "linux-amd64": "c93aa7638749f5aaac1a8e01787321889c78f0101809bb2880343478d0ba0467",
+        "linux-arm64": "c4cf231e74cda685f1599f3d866b02b03c572e54b79ec8b062f32070b0ba4587",
+    },
+)
+
 # -- yq — YAML query/merge, single binary (mikefarah/yq) -----------------------
 _YQ_V = "v4.53.3"
 _YQ_URL = "https://github.com/mikefarah/yq/releases/download/{v}/yq_{a}"

@@ -1,34 +1,41 @@
-"""Minimal rules_oci-style image composition — wraps the pinned `crane`.
+"""Minimal rules_oci-style image composition — wraps the pinned `regctl`.
 
 `oci_image` layers one or more filesystem tarballs onto a base OCI image (e.g.
-from `apko_image`) via `crane append`, preserving the base's config (entrypoint,
-user, env). This is the Buck2 counterpart to rules_oci's `oci_image(base=...,
-tars=[...])`. Image config (entrypoint etc.) is set on the apko base config so no
-separate mutate step is needed for the common case.
+from `apko_image`) via regctl `image mod --layer-add`, preserving the base's
+config (entrypoint, user, env). This is the Buck2 counterpart to rules_oci's
+`oci_image(base=..., tars=[...])`. regctl operates on a local OCI layout
+(`ocidir://`) so no registry is needed — crane append, by contrast, only takes a
+registry reference as its base. Image config (entrypoint etc.) is set on the apko
+base config so no separate mutate step is needed for the common case.
 """
 
-_CRANE = "//tools/buck2/bin:crane"
+_REGCTL = "//tools/buck2/bin:regctl"
 
-def oci_image(name, base, layers = [], visibility = ["PUBLIC"], **kwargs):
-    """Append `layers` (filesystem tarballs) onto `base` (an OCI image tar).
+def oci_image(name, base, layers = [], platform = "linux/amd64", visibility = ["PUBLIC"], **kwargs):
+    """Layer `layers` (filesystem tarballs) onto `base` (an OCI image tar).
 
     Args:
       name: target name; output is `<name>`'s `image.tar` (an OCI image tar).
       base: an OCI image tar target (e.g. an apko_image).
       layers: list of tar targets, each a filesystem layer to add (lowest first).
+      platform: platform of the layers (matches the single-arch base).
       visibility: target visibility.
     """
-    f_args = " ".join(["-f $(location {})".format(layer) for layer in layers])
+    add_args = " ".join([
+        "--layer-add \"tar=$(location {layer}),platform={p}\"".format(layer = layer, p = platform)
+        for layer in layers
+    ])
     native.genrule(
         name = name,
         out = "image.tar",
-        # crane append is offline (operates on local tarballs); base + layers are
-        # declared inputs via $(location), so this can run on RE.
-        cmd = "$(exe {crane}) append -b $(location {base}) {fargs} -o $OUT".format(
-            crane = _CRANE,
-            base = base,
-            fargs = f_args,
-        ),
+        # Import the base tar into a local OCI layout, add the layers, export the
+        # result. All in the action's $TMP; regctl runs offline (RE-eligible).
+        cmd = " && ".join([
+            "rm -rf \"$TMP/oci\"",
+            "$(exe {rc}) image import ocidir://$TMP/oci:base $(location {base})".format(rc = _REGCTL, base = base),
+            "$(exe {rc}) image mod ocidir://$TMP/oci:base --create ocidir://$TMP/oci:img {add}".format(rc = _REGCTL, add = add_args),
+            "$(exe {rc}) image export ocidir://$TMP/oci:img $OUT".format(rc = _REGCTL),
+        ]),
         visibility = visibility,
         **kwargs
     )
