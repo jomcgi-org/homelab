@@ -40,10 +40,6 @@ api:
     hostname: api.jomcgi.dev
     # Path prefix for stargazer API
     pathPrefix: /stargazer
-# Enable web server for dev
-webServer:
-  enabled: true
-  replicas: 1
 # Enable test data until CronJob runs successfully
 testData:
   enabled: true
