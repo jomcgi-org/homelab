@@ -13,6 +13,12 @@ Two read endpoints back the /app/hikes walk planner:
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/hikes page is the public surface and the CDN fans out to viewers.
 Conditional GETs short-circuit with a 304 via ETag.
+
+The read-time hour filter (``hour_time >= top_of_hour(now)``) is the source of
+truth for "future windows": both endpoints query the typed walk_hours table and
+never trust it to be already pruned. The hourly prune job is housekeeping only,
+so a stale row that has not been pruned yet is still excluded here. The list
+ETag folds the cutoff in (see _walks_etag) so the CDN turns over hourly.
 """
 
 from __future__ import annotations
@@ -25,7 +31,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
 from app.db import get_session
-from hikes.models import Walk
+from hikes.models import Walk, WalkHour
+from shared.forecast_freshness import top_of_hour
 
 logger = logging.getLogger("hikes")
 
@@ -41,25 +48,6 @@ _UK_TZ = ZoneInfo("Europe/London")
 # (see the note in cache-headers.js). Mirrors HIKES_WALKS_CACHE_CONTROL in
 # frontend/src/lib/cache-headers.js, keep in sync.
 _WALKS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
-
-
-def _viable_days(windows: list | None) -> list[str]:
-    """Distinct UK-local calendar days (YYYY-MM-DD) that carry a viable window.
-
-    Window tuples are [ts_seconds, ...]; ts is unix UTC. We emit ABSOLUTE dates
-    (not "next 7 days") so the value is independent of when it was computed and
-    stays correct in a CDN cache across midnight; the client intersects them
-    with its own rolling 7-day strip.
-    """
-    days: set[str] = set()
-    for window in windows or []:
-        try:
-            ts = window[0]
-        except (TypeError, IndexError, KeyError):
-            continue
-        local = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(_UK_TZ)
-        days.add(local.date().isoformat())
-    return sorted(days)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -83,26 +71,62 @@ def _iso(value: datetime | None) -> str | None:
     return coerced.isoformat() if coerced is not None else None
 
 
+def _viable_days(hours: list[datetime]) -> list[str]:
+    """Distinct UK-local calendar days (YYYY-MM-DD) covered by the given hours.
+
+    We emit ABSOLUTE dates (not "next 7 days") so the value is independent of
+    when it was computed and stays correct in a CDN cache across midnight; the
+    client intersects them with its own rolling 7-day strip.
+    """
+    days: set[str] = set()
+    for hour_time in hours:
+        coerced = _as_utc(hour_time)
+        if coerced is None:
+            continue
+        days.add(coerced.astimezone(_UK_TZ).date().isoformat())
+    return sorted(days)
+
+
+def _window_tuple(row: WalkHour) -> list:
+    """Reassemble the compact wire tuple from a typed walk_hours row.
+
+    The client reads windows as [ts_unix_seconds, temp_c, precip_mm, wind_kmh,
+    cloud_pct] tuples (see frontend hikes/filters.js). Storage is normalised to
+    typed rows, but the wire format is unchanged, so the frontend needs no edit.
+    wind_kmh and cloud_pct were integers in the legacy tuple, so cast them back
+    from the DOUBLE PRECISION columns; temp_c/precip_mm stay as stored.
+    """
+    coerced = _as_utc(row.hour_time)
+    return [
+        int(coerced.timestamp()),
+        row.temp_c,
+        row.precip_mm,
+        int(row.wind_kmh),
+        int(row.cloud_pct),
+    ]
+
+
 # Bump whenever the /walks response SHAPE changes (fields added/removed/renamed).
-# The ETag is otherwise data-derived (max_updated + count), so a shape-only code
-# deploy leaves it unchanged: browsers revalidate, get a 304, and keep their
-# stale-shape body. Folding this token in means a shape change busts every
-# client's cache, so they pick up the new shape on the next revalidation rather
-# than staying broken until the underlying data happens to change.
+# The ETag is otherwise data-derived, so a shape-only code deploy would leave it
+# unchanged: browsers revalidate, get a 304, and keep their stale-shape body.
+# Folding this token in means a shape change busts every client's cache.
 # History: v2 = dropped hourly `windows` + `summary`, added `viable_days`.
-_WALKS_SCHEMA_VERSION = "v2"
+#          v3 = windows backed by typed walk_hours; ETag folds in the hourly
+#               top_of_hour cutoff so the CDN turns over each clock hour.
+_WALKS_SCHEMA_VERSION = "v3"
 
 
-def _walks_etag(walk_count: int, max_updated: datetime | None) -> str:
+def _walks_etag(walk_count: int, cutoff: datetime, max_fetched: datetime | None) -> str:
     """Stable ETag for the walks payload.
 
-    Combines a response-schema token with max(windows_updated_at) and the row
-    count, so the cache invalidates on a shape change (schema token), a data
-    refresh (timestamp), or a walk appearing/disappearing (count) even when no
-    surviving row's timestamp moves.
+    Combines the response-schema token, the current clock-hour cutoff, the
+    freshest walk_hours fetched_at, and the row count. The cutoff token turns
+    the cache over at each hour boundary (as hours fall past the cutoff the
+    viable_days sets shrink); fetched_at busts it on a forecast refresh; count
+    busts it when a walk appears or disappears.
     """
-    stamp = max_updated.isoformat() if max_updated is not None else "null"
-    return f'"{_WALKS_SCHEMA_VERSION}-{stamp}-{walk_count}"'
+    stamp = max_fetched.isoformat() if max_fetched is not None else "null"
+    return f'"{_WALKS_SCHEMA_VERSION}-{cutoff.isoformat()}-{stamp}-{walk_count}"'
 
 
 @router.get("/walks")
@@ -112,31 +136,46 @@ def get_walks(
     session: Session = Depends(get_session),
 ):
     """The whole walk corpus for the /app/hikes planner. SSR-only, CDN-cached."""
-    rows = session.exec(select(Walk).order_by(Walk.name)).all()
+    now = datetime.now(timezone.utc)
+    cutoff = top_of_hour(now)
 
-    walks = []
-    max_updated: datetime | None = None
-    for walk in rows:
-        updated = _as_utc(walk.windows_updated_at)
-        if updated is not None and (max_updated is None or updated > max_updated):
-            max_updated = updated
-        walks.append(
-            {
-                "uuid": walk.uuid,
-                "name": walk.name,
-                "url": walk.url,
-                "distance_km": walk.distance_km,
-                "ascent_m": walk.ascent_m,
-                "duration_h": walk.duration_h,
-                "latitude": walk.latitude,
-                "longitude": walk.longitude,
-                # Light: the days this walk is viable, not the hourly windows.
-                # The card fetches windows + summary from /walks/{uuid}.
-                "viable_days": _viable_days(walk.windows),
-            }
+    walk_rows = session.exec(select(Walk).order_by(Walk.name)).all()
+
+    # Read-time correctness filter: only hours at or after the current clock
+    # hour. The prune job is best-effort housekeeping; the endpoint must not
+    # trust the table to be already pruned.
+    hour_rows = session.exec(
+        select(WalkHour.walk_uuid, WalkHour.hour_time, WalkHour.fetched_at).where(
+            WalkHour.hour_time >= cutoff
         )
+    ).all()
 
-    etag = _walks_etag(len(walks), max_updated)
+    hours_by_walk: dict[str, list[datetime]] = {}
+    max_fetched: datetime | None = None
+    for walk_uuid, hour_time, fetched_at in hour_rows:
+        hours_by_walk.setdefault(walk_uuid, []).append(hour_time)
+        coerced = _as_utc(fetched_at)
+        if coerced is not None and (max_fetched is None or coerced > max_fetched):
+            max_fetched = coerced
+
+    walks = [
+        {
+            "uuid": walk.uuid,
+            "name": walk.name,
+            "url": walk.url,
+            "distance_km": walk.distance_km,
+            "ascent_m": walk.ascent_m,
+            "duration_h": walk.duration_h,
+            "latitude": walk.latitude,
+            "longitude": walk.longitude,
+            # Light: the days this walk is viable, not the hourly windows.
+            # The card fetches windows + summary from /walks/{uuid}.
+            "viable_days": _viable_days(hours_by_walk.get(walk.uuid, [])),
+        }
+        for walk in walk_rows
+    ]
+
+    etag = _walks_etag(len(walks), cutoff, max_fetched)
     headers = {"Cache-Control": _WALKS_CACHE_CONTROL, "ETag": etag}
 
     if request.headers.get("if-none-match") == etag:
@@ -146,7 +185,7 @@ def get_walks(
         response.headers[key] = value
     return {
         "count": len(walks),
-        "generated_at": _iso(max_updated),
+        "generated_at": _iso(max_fetched),
         "walks": walks,
     }
 
@@ -160,15 +199,24 @@ def get_walk_detail(
     """Per-walk detail (summary + hourly windows) for the selected-walk card.
 
     Split out of the list so the corpus stays light; fetched on demand when a
-    marker is clicked. SSR-only, CDN-cached the same as the list.
+    marker is clicked. SSR-only, CDN-cached the same as the list. Hours are
+    filtered to the current clock hour and reassembled into the wire tuples the
+    frontend expects.
     """
     walk = session.get(Walk, uuid)
     if walk is None:
         raise HTTPException(status_code=404, detail="walk not found")
 
+    cutoff = top_of_hour(datetime.now(timezone.utc))
+    hour_rows = session.exec(
+        select(WalkHour)
+        .where(WalkHour.walk_uuid == uuid, WalkHour.hour_time >= cutoff)
+        .order_by(WalkHour.hour_time)
+    ).all()
+
     response.headers["Cache-Control"] = _WALKS_CACHE_CONTROL
     return {
         "uuid": walk.uuid,
         "summary": walk.summary,
-        "windows": walk.windows,
+        "windows": [_window_tuple(row) for row in hour_rows],
     }
