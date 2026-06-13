@@ -65,6 +65,8 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
             air_temperature=h["air_temperature"],
             dew_spread=h["dew_spread"],
             sun_elevation_deg=h["sun_elevation_deg"],
+            darkness_factor=h["darkness_factor"],
+            cloud_factor=h["cloud_factor"],
             symbol=h["symbol"],
             fetched_at=now,
         )

@@ -47,11 +47,13 @@ def _utc(dt):
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _hour(time_str, score=80.0):
+def _hour(time_str, score=80.0, darkness=1.0, clarity=0.9):
     return {
         "time": time_str,
         "score": score,
         "sun_elevation_deg": -18.5,
+        "darkness_factor": darkness,
+        "cloud_factor": clarity,
         "cloud_area_fraction": 10.0,
         "relative_humidity": 60.0,
         "wind_speed": 3.0,
@@ -102,6 +104,9 @@ def test_write_sites_inserts_rows_for_each_site(session):
     assert gf.score == 90.0
     # The sun elevation written by the forecast flows through to the row.
     assert gf.sun_elevation_deg == -18.5
+    # The decomposed factors flow through so the prune can bank them.
+    assert gf.darkness_factor == 1.0
+    assert gf.cloud_factor == 0.9
     # A single shared fetched_at is stamped across the whole run.
     assert len({r.fetched_at for r in rows}) == 1
 
