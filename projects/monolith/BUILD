@@ -2184,6 +2184,46 @@ py_test(
 )
 
 py_test(
+    name = "hikes_init_test",
+    srcs = ["hikes/__init___test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "stars_init_test",
+    srcs = ["stars/__init___test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "hikes_generate_seed_test",
+    srcs = [
+        "hikes/tools/generate_seed.py",
+        "hikes/tools/generate_seed_test.py",
+    ],
+    imports = ["hikes/tools"],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "stars_generate_grid_test",
+    srcs = [
+        "stars/grid_gen/generate_grid.py",
+        "stars/grid_gen/generate_grid_test.py",
+    ],
+    imports = ["stars/grid_gen"],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "ships_heat_test",
     srcs = ["ships/heat_test.py"],
     imports = ["."],
