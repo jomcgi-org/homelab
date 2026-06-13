@@ -12,9 +12,13 @@ def register(app: FastAPI) -> None:
 
 
 def on_startup_jobs(session: Session) -> None:
-    """Register hikes scheduled jobs (scrape + forecast refresh)."""
+    """Register hikes scheduled jobs (scrape + forecast refresh + hourly prune)."""
     from shared.scheduler import register_job
-    from hikes.jobs import refresh_forecasts_handler, scrape_walks_handler
+    from hikes.jobs import (
+        prune_windows_handler,
+        refresh_forecasts_handler,
+        scrape_walks_handler,
+    )
 
     register_job(
         session,
@@ -32,4 +36,14 @@ def on_startup_jobs(session: Session) -> None:
         interval_secs=2 * 3600,
         handler=refresh_forecasts_handler,
         ttl_secs=1800,
+    )
+    register_job(
+        session,
+        name="hikes.prune_windows",
+        # Hourly housekeeping: drop walk_hours whose clock hour has elapsed so
+        # the table does not grow unbounded between the slower refreshes. The
+        # read endpoints filter defensively regardless (top_of_hour cutoff).
+        interval_secs=3600,
+        handler=prune_windows_handler,
+        ttl_secs=300,
     )

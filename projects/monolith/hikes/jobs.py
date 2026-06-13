@@ -13,12 +13,13 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 
 from hikes import models
 from hikes.forecast import fetch_all_windows
 from hikes.walkhighlands import Walk as ScrapedWalk
 from hikes.walkhighlands import fetch_all_walks
+from shared.forecast_freshness import top_of_hour
 
 logger = logging.getLogger("hikes")
 
@@ -31,9 +32,9 @@ FORECAST_TIMEOUT_SECS = 30.0
 def _persist_walks(walks: list[ScrapedWalk]) -> tuple[int, int]:
     """Upsert scraped walks in a fresh session. Returns (new, updated).
 
-    Upserts only the scraped columns plus scraped_at; windows and
-    windows_updated_at belong to the forecast job and are never touched here.
-    Runs off the event loop via asyncio.to_thread.
+    Upserts only the scraped columns plus scraped_at; the typed walk_hours
+    rows belong to the forecast job and are never touched here. Runs off the
+    event loop via asyncio.to_thread.
     """
     from app.db import get_engine
 
@@ -118,34 +119,88 @@ def _load_coords() -> list[tuple[str, float, float]]:
         )
 
 
-def _persist_windows(windows_by_uuid: dict[str, list], now: datetime) -> int:
-    """Write recomputed windows in a fresh session. Returns total window count.
+def _write_walk_hours(
+    session: Session, windows_by_uuid: dict[str, list], now: datetime
+) -> int:
+    """Wholesale-replace walk_hours rows for every fetched walk. Returns rows written.
 
-    Walks absent from windows_by_uuid keep their previous windows (the caller
-    only includes walks whose forecast fetch and computation both succeeded).
+    One bulk delete of the fetched walks' existing hours, then one add_all of
+    the new typed rows, so there is no per-iteration session.add. Walks absent
+    from ``windows_by_uuid`` (failed fetch) are untouched: stale beats empty.
+    A walk present with an empty window list correctly ends up with no hours
+    (its fetch succeeded but yielded nothing viable).
+
+    Each window tuple is [ts_unix, temp_c, precip_mm, wind_kmh, cloud_pct] as
+    emitted by hikes.forecast.compute_windows; the unix timestamp becomes the
+    tz-aware UTC hour_time.
+    """
+    walk_uuids = list(windows_by_uuid.keys())
+    session.execute(
+        delete(models.WalkHour).where(models.WalkHour.walk_uuid.in_(walk_uuids))
+    )
+    new_rows = [
+        models.WalkHour(
+            walk_uuid=walk_uuid,
+            hour_time=datetime.fromtimestamp(window[0], tz=timezone.utc),
+            temp_c=window[1],
+            precip_mm=window[2],
+            wind_kmh=window[3],
+            cloud_pct=window[4],
+            fetched_at=now,
+        )
+        for walk_uuid, windows in windows_by_uuid.items()
+        for window in windows
+    ]
+    session.add_all(new_rows)
+    return len(new_rows)
+
+
+def _persist_windows(windows_by_uuid: dict[str, list], now: datetime) -> int:
+    """Write recomputed hours in a fresh session. Returns total hour count."""
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        written = _write_walk_hours(session, windows_by_uuid, now)
+        session.commit()
+    return written
+
+
+def _prune_elapsed(session: Session) -> int:
+    """Delete walk_hours whose clock hour has elapsed. Returns rows deleted.
+
+    The cutoff is the top of the current UTC clock hour: rows whose hour_time is
+    strictly before it have elapsed. cutoff is tz-aware UTC, so the comparison
+    stays tz-aware against the TIMESTAMPTZ column.
+    """
+    cutoff = top_of_hour()
+    result = session.execute(
+        delete(models.WalkHour).where(models.WalkHour.hour_time < cutoff)
+    )
+    return result.rowcount or 0
+
+
+def _run_prune() -> int:
+    """Prune elapsed hours in a fresh session (runs off the event loop).
+
+    Commits only when rows were actually deleted, so a quiet hour is a no-op
+    transaction; fetched_at is never touched (the prune only deletes).
     """
     from app.db import get_engine
 
-    total_windows = 0
     with Session(get_engine()) as session:
-        for walk_uuid, windows in windows_by_uuid.items():
-            walk = session.get(models.Walk, walk_uuid)
-            if walk is None:
-                continue
-            walk.windows = windows
-            walk.windows_updated_at = now
-            total_windows += len(windows)
-        session.commit()
-    return total_windows
+        deleted = _prune_elapsed(session)
+        if deleted:
+            session.commit()
+    return deleted
 
 
 async def refresh_forecasts_handler(session: Session) -> datetime | None:
     """6-hourly met.no refresh: recompute viable hiking windows per walk.
 
-    Loads the coordinate corpus, runs the whole network phase, then updates
-    windows and windows_updated_at in one transaction. Walks whose fetch or
-    window computation failed are absent from the result dict and keep their
-    previous windows (stale beats empty).
+    Loads the coordinate corpus, runs the whole network phase, then
+    wholesale-replaces each fetched walk's typed walk_hours rows in one
+    transaction. Walks whose fetch or window computation failed are absent from
+    the result dict and keep their previous hours (stale beats empty).
     """
     coords = await asyncio.to_thread(_load_coords)
     if not coords:
@@ -156,11 +211,18 @@ async def refresh_forecasts_handler(session: Session) -> datetime | None:
     async with httpx.AsyncClient(timeout=FORECAST_TIMEOUT_SECS) as client:
         windows_by_uuid = await fetch_all_windows(client, coords, now)
 
-    total_windows = await asyncio.to_thread(_persist_windows, windows_by_uuid, now)
+    total_hours = await asyncio.to_thread(_persist_windows, windows_by_uuid, now)
     logger.info(
-        "hikes forecast: %d walks, %d forecasts fetched, %d viable windows",
+        "hikes forecast: %d walks, %d forecasts fetched, %d viable hours",
         len(coords),
         len(windows_by_uuid),
-        total_windows,
+        total_hours,
     )
+    return None
+
+
+async def prune_windows_handler(session: Session) -> datetime | None:
+    """Drop elapsed hours hourly (housekeeping; the read endpoints also filter)."""
+    deleted = await asyncio.to_thread(_run_prune)
+    logger.info("hikes prune_windows: deleted %d elapsed rows", deleted)
     return None
