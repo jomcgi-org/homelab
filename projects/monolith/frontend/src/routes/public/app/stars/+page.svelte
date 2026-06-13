@@ -95,14 +95,14 @@
 <style>
   /* Full-bleed, map-first (same shell as /app/ships + /app/hikes): the map owns
      the viewport and every control floats over it. StarsMap's .map-wrap is
-     absolutely positioned, so this is its containing block. --ink is the dark
-     base so the load flash matches the night basemap, not a cream flash. */
+     absolutely positioned, so this is its containing block. --paper is the light
+     base so the load flash matches the light liberty basemap, not a dark flash. */
   .stars-page {
     position: relative;
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
-    background: var(--ink);
+    background: var(--paper);
     color: var(--ink);
   }
 

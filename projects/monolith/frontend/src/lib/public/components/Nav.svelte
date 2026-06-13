@@ -368,6 +368,15 @@
     background: #6fc2ff; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
+  .md-apps-item[data-app="stars"]:hover,
+  .md-apps-item[data-app="stars"]:focus-visible {
+    background: #f4ecff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="stars"]:hover .md-apps-icon,
+  .md-apps-item[data-app="stars"]:focus-visible .md-apps-icon {
+    background: #b14fff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+
   .md-apps-icon {
     flex: 0 0 auto;
     display: grid;
