@@ -194,35 +194,35 @@ actions:
           - "*"
         merge_with_base: false
     steps:
+      # POSIX sh-safe (no `pipefail` — the runner shell may be dash). apt is run
+      # with sudo only when not already root, so it works regardless of how the
+      # BuildBuddy runner is provisioned.
       - run: |
-          set -euo pipefail
-
           # Skip automated commits (nothing to build/test)
           AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "argocd-image-updater" ] || [ "$AUTHOR" = "ci-format-bot" ]; then
-            echo "Skipping automated commit from $AUTHOR"
-            exit 0
-          fi
+          case "$AUTHOR" in
+            argocd-image-updater|ci-format-bot) echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
+          esac
 
-          BUCK2_RELEASE="2026-05-18"
+          set -eu
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
           # curl + zstd to fetch/decompress the buck2 release binary.
           if ! command -v zstd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq zstd curl
+            $SUDO apt-get update -qq
+            $SUDO apt-get install -y -qq zstd curl
           fi
 
           # Install the pinned buck2 release (x86_64 linux runner).
+          BUCK2_RELEASE="2026-05-18"
           url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
           curl -fsSL "$url" -o /tmp/buck2.zst
           zstd -df /tmp/buck2.zst -o /tmp/buck2
           chmod +x /tmp/buck2
-          export PATH="/tmp:$PATH"
-          buck2 --version
 
           # The buck2 prelude is a submodule excluded from the Bazel checkout.
           git submodule update --init --recursive prelude
 
-          # Build & test the buck2 rules + any examples we add under tools/buck2/.
-          buck2 build //tools/buck2/...
-          buck2 test  //tools/buck2/...
+          /tmp/buck2 --version
+          /tmp/buck2 build //tools/buck2/...
+          /tmp/buck2 test  //tools/buck2/...
