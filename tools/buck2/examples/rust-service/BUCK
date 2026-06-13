@@ -43,4 +43,7 @@ helm_chart(
     deps = [":image"],
     # Digest-pin the deployed image's repository@digest into values.yaml.
     images = {"image": ":image.info"},
+    # Create :chart.push (helm push to the OCI charts repo).
+    publish = True,
 )
+
