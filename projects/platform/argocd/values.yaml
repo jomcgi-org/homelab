@@ -12,12 +12,14 @@ argo-cd:
     cm:
       accounts.mcp-agent: apiKey
       # Kyverno's inject-otel-env-vars ClusterPolicy mutates every Deployment at
-      # admission to add the OTEL_EXPORTER_OTLP_* env vars (and an
-      # otel.injected-by pod-template annotation). ArgoCD renders charts without
-      # those injected fields, so it permanently reports such Deployments as
-      # OutOfSync (Healthy, but the noise hides genuine drift). Ignore exactly the
-      # injected fields cluster-wide, keyed by field rather than by a name list,
-      # so any real change to other Deployment fields still surfaces.
+      # admission to add the otel.injected-by annotation and exactly two env
+      # vars: OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL. ArgoCD
+      # renders charts without those, so affected Deployments sit permanently
+      # OutOfSync (Healthy, but the noise hides genuine drift). Ignore EXACTLY the
+      # two injected names, not all OTEL_* : charts define their own OTEL vars
+      # (e.g. monolith sets OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and
+      # OTEL_COLLECTOR_HTTP_URL), and a startswith("OTEL_") match would strip
+      # those from the live side too and manufacture a fresh diff.
       # Policy: projects/platform/kyverno/templates/otel-injection-policy.yaml.
       #
       # Also ignore kubectl.kubernetes.io/restartedAt: it is written by
@@ -27,8 +29,8 @@ argo-cd:
       # JSON-Pointer-escaped as "~1".
       resource.customizations.ignoreDifferences.apps_Deployment: |
         jqPathExpressions:
-          - '.spec.template.spec.containers[].env[]? | select(.name | startswith("OTEL_"))'
-          - '.spec.template.spec.initContainers[]?.env[]? | select(.name | startswith("OTEL_"))'
+          - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
+          - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
         jsonPointers:
           - /spec/template/metadata/annotations/otel.injected-by
           - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
