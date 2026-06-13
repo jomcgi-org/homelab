@@ -44,7 +44,8 @@ def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
         try:
             if elevation(observer, t) > NAUTICAL_TWILIGHT_DEG:
                 continue
-        except Exception:  # pragma: no cover - astral edge cases
+        except Exception as exc:  # pragma: no cover - astral edge cases
+            logger.debug("astral elevation failed for %s at %s: %s", loc["id"], t, exc)
             continue
         instant = entry.get("data", {}).get("instant", {}).get("details", {})
         next_1h = entry.get("data", {}).get("next_1_hours", {})
@@ -60,7 +61,8 @@ def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
                     "air_pressure_at_sea_level", 1013.25
                 ),
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("skip malformed weather entry at %s: %s", time_str, exc)
             continue
         score = calculate_astronomy_score(weather)
         if score < MIN_DISPLAY_SCORE:

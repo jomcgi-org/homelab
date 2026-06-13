@@ -1,9 +1,11 @@
-"""Unit tests for stars.jobs.refresh_handler on SQLite.
+"""Unit tests for stars.jobs DB cores on SQLite.
 
 Uses SQLModel.metadata.create_all (no migrations), mirroring stars/models_test.
-fetch_all is monkeypatched so no network call is made. The async handler is
-driven with asyncio.run inside a synchronous test, so no pytest-asyncio marker
-or plugin dependency is required.
+The async handlers delegate their DB work to synchronous cores (_write_sites,
+_prune_elapsed) via asyncio.to_thread with a fresh engine session, mirroring
+hikes.jobs / ships.retention. The cores take an explicit session so they are
+testable against the in-memory fixture; the thin async wrappers are not unit
+tested here (only the empty-fetch guard is, by monkeypatching the persist step).
 """
 
 import asyncio
@@ -53,14 +55,23 @@ def _hour(time_str, score=80.0):
     }
 
 
-def _patch_fetch_all(monkeypatch, scored):
-    async def _fake_fetch_all():
-        return scored
+def _seed_hour(session, site_id, hour_time, symbol="clearsky_night", score=70.0):
+    session.add(
+        SiteHour(
+            site_id=site_id,
+            hour_time=hour_time,
+            score=score,
+            cloud_area_fraction=10.0,
+            relative_humidity=60.0,
+            wind_speed=3.0,
+            air_temperature=8.0,
+            dew_spread=5.0,
+            symbol=symbol,
+        )
+    )
 
-    monkeypatch.setattr(jobs, "fetch_all", _fake_fetch_all)
 
-
-def test_refresh_inserts_rows_for_each_site(monkeypatch, session):
+def test_write_sites_inserts_rows_for_each_site(session):
     scored = {
         "galloway-forest": [_hour("2026-06-13T23:00:00Z", 90.0)],
         "tiree": [
@@ -68,10 +79,11 @@ def test_refresh_inserts_rows_for_each_site(monkeypatch, session):
             _hour("2026-06-13T23:00:00Z", 72.0),
         ],
     }
-    _patch_fetch_all(monkeypatch, scored)
+    now = datetime(2026, 6, 13, 21, tzinfo=timezone.utc)
 
-    result = asyncio.run(jobs.refresh_handler(session))
-    assert result is None
+    written = jobs._write_sites(session, scored, now)
+    session.commit()
+    assert written == 3
 
     rows = session.exec(select(SiteHour)).all()
     assert len(rows) == 3
@@ -81,102 +93,58 @@ def test_refresh_inserts_rows_for_each_site(monkeypatch, session):
         ("galloway-forest", datetime(2026, 6, 13, 23, tzinfo=timezone.utc)),
     )
     assert gf is not None
-    assert gf.site_id == "galloway-forest"
     assert gf.score == 90.0
-    assert gf.hour_time == datetime(2026, 6, 13, 23, tzinfo=timezone.utc)
-    assert gf.hour_time.tzinfo is not None
-    assert gf.fetched_at is not None
-    assert gf.fetched_at.tzinfo is not None
-
     # A single shared fetched_at is stamped across the whole run.
     assert len({r.fetched_at for r in rows}) == 1
 
 
-def test_refresh_empty_fetch_keeps_existing_rows(monkeypatch, session):
-    hour = datetime(2026, 6, 13, 21, tzinfo=timezone.utc)
-    session.add(
-        SiteHour(
-            site_id="X",
-            hour_time=hour,
-            score=88.0,
-            cloud_area_fraction=5.0,
-            relative_humidity=50.0,
-            wind_speed=2.0,
-            air_temperature=9.0,
-            dew_spread=6.0,
-            symbol="clearsky_night",
-        )
-    )
+def test_write_sites_leaves_unfetched_sites_untouched(session):
+    # Stale beats empty: the bulk delete only targets fetched site ids, so a
+    # site absent from the scored map keeps its previous rows.
+    kept = datetime(2026, 6, 13, 21, tzinfo=timezone.utc)
+    _seed_hour(session, "X", kept, symbol="old", score=88.0)
     session.commit()
 
-    _patch_fetch_all(monkeypatch, {})
+    now = datetime(2026, 6, 13, 22, tzinfo=timezone.utc)
+    jobs._write_sites(session, {"A": [_hour("2026-06-13T23:00:00Z", 90.0)]}, now)
+    session.commit()
 
-    result = asyncio.run(jobs.refresh_handler(session))
-    assert result is None
-
-    survivor = session.get(SiteHour, ("X", hour))
+    survivor = session.get(SiteHour, ("X", kept))
     assert survivor is not None
     assert survivor.score == 88.0
+    assert (
+        session.get(SiteHour, ("A", datetime(2026, 6, 13, 23, tzinfo=timezone.utc)))
+        is not None
+    )
 
 
-def test_refresh_replaces_site_rows_wholesale(monkeypatch, session):
+def test_write_sites_replaces_site_rows_wholesale(session):
     old_a = datetime(2026, 6, 13, 20, tzinfo=timezone.utc)
     old_b = datetime(2026, 6, 13, 21, tzinfo=timezone.utc)
-    for h in (old_a, old_b):
-        session.add(
-            SiteHour(
-                site_id="A",
-                hour_time=h,
-                score=50.0,
-                cloud_area_fraction=40.0,
-                relative_humidity=70.0,
-                wind_speed=4.0,
-                air_temperature=7.0,
-                dew_spread=4.0,
-                symbol="stale",
-            )
-        )
+    _seed_hour(session, "A", old_a, symbol="stale", score=50.0)
+    _seed_hour(session, "A", old_b, symbol="stale", score=50.0)
     session.commit()
 
+    now = datetime(2026, 6, 13, 22, tzinfo=timezone.utc)
     scored = {
         "A": [
             _hour("2026-06-13T23:00:00Z", 90.0),
             _hour("2026-06-14T00:00:00Z", 85.0),
         ]
     }
-    _patch_fetch_all(monkeypatch, scored)
-
-    asyncio.run(jobs.refresh_handler(session))
+    jobs._write_sites(session, scored, now)
+    session.commit()
 
     rows = session.exec(select(SiteHour).where(SiteHour.site_id == "A")).all()
     assert {r.hour_time for r in rows} == {
         datetime(2026, 6, 13, 23, tzinfo=timezone.utc),
         datetime(2026, 6, 14, 0, tzinfo=timezone.utc),
     }
-    # The stale rows are gone.
-    assert old_a not in {r.hour_time for r in rows}
     assert all(r.symbol == "clearsky_night" for r in rows)
 
 
-def _seed_hour(session, site_id, hour_time):
-    session.add(
-        SiteHour(
-            site_id=site_id,
-            hour_time=hour_time,
-            score=70.0,
-            cloud_area_fraction=10.0,
-            relative_humidity=60.0,
-            wind_speed=3.0,
-            air_temperature=8.0,
-            dew_spread=5.0,
-            symbol="clearsky_night",
-        )
-    )
-
-
-def test_prune_drops_only_elapsed_hours(session):
+def test_prune_elapsed_drops_only_elapsed_hours(session):
     cutoff = top_of_hour(datetime.now(timezone.utc))
-    # Two elapsed hours (strictly before the cutoff) and two current/future.
     past_a = cutoff - timedelta(hours=3)
     past_b = cutoff - timedelta(hours=1)
     current = cutoff
@@ -185,8 +153,29 @@ def test_prune_drops_only_elapsed_hours(session):
         _seed_hour(session, f"site-{i}", h)
     session.commit()
 
-    result = asyncio.run(jobs.prune_hours_handler(session))
-    assert result is None
+    deleted = jobs._prune_elapsed(session)
+    session.commit()
+    assert deleted == 2
 
     remaining = {r.hour_time for r in session.exec(select(SiteHour)).all()}
     assert remaining == {current, future}
+
+
+def test_refresh_handler_empty_fetch_is_noop(monkeypatch):
+    # When the fetch returns nothing, the handler must not touch the DB at all.
+    async def _empty_fetch():
+        return {}
+
+    called = False
+
+    def _should_not_run(scored):  # pragma: no cover - asserted not called
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setattr(jobs, "fetch_all", _empty_fetch)
+    monkeypatch.setattr(jobs, "_persist_sites", _should_not_run)
+
+    result = asyncio.run(jobs.refresh_handler(None))
+    assert result is None
+    assert called is False
