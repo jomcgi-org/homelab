@@ -1,4 +1,4 @@
-h1:r4PG/Srikltt/CSfRpH9dqjRIxVY8j5Zq6e6Ez3X7Dk=
+h1:Z7COhtYWd7KHwWzPkhT0qoWcZVkLUpb3/yoWBtY6nsQ=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -30,4 +30,3 @@ h1:r4PG/Srikltt/CSfRpH9dqjRIxVY8j5Zq6e6Ez3X7Dk=
 20260610000000_ships_schema.sql h1:Ja7g3S4yJxKhscRMUUqg+hg0kAWVRoHeUkKxkZoPxSQ=
 20260611000000_ships_heat_cells.sql h1:k3TYgAMF/TSXFcJoHtJlc9Or/NP2C3L97nEo2UpDdlk=
 20260613000000_hikes_schema.sql h1:I3wFdg/TMhLmFDKr81gPoIAIMe58j8ekriZrVvymsyw=
-20260613000001_hikes_seed.sql h1:Zj6SUzRW23F14apF9QTH7BgmV1t5ZGqmWjLD/R6U3VE=
