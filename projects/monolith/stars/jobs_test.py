@@ -51,6 +51,7 @@ def _hour(time_str, score=80.0):
     return {
         "time": time_str,
         "score": score,
+        "sun_elevation_deg": -18.5,
         "cloud_area_fraction": 10.0,
         "relative_humidity": 60.0,
         "wind_speed": 3.0,
@@ -99,6 +100,8 @@ def test_write_sites_inserts_rows_for_each_site(session):
     )
     assert gf is not None
     assert gf.score == 90.0
+    # The sun elevation written by the forecast flows through to the row.
+    assert gf.sun_elevation_deg == -18.5
     # A single shared fetched_at is stamped across the whole run.
     assert len({r.fetched_at for r in rows}) == 1
 

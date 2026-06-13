@@ -11,7 +11,7 @@ import httpx
 from astral import LocationInfo
 from astral.sun import elevation
 
-from stars.scoring import WeatherData, calculate_astronomy_score
+from stars.scoring import WeatherData, darkness_factor, quality_score
 from stars.seed import SCOTLAND_DARK_SKY_LOCATIONS, SeedLocation
 
 logger = logging.getLogger("monolith.stars.forecast")
@@ -21,17 +21,21 @@ USER_AGENT = os.environ.get(
     "STARS_USER_AGENT", "jomcgi-homelab-stars/1.0 https://jomcgi.dev"
 )
 RATE_LIMIT_PER_SEC = int(os.environ.get("STARS_RATE_LIMIT", "15"))
-MIN_DISPLAY_SCORE = int(os.environ.get("STARS_MIN_DISPLAY_SCORE", "60"))
-NAUTICAL_TWILIGHT_DEG = -12.0
 HTTP_TIMEOUT = 30.0
 
 
 def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
-    """All qualifying dark hours for one site, sorted by time ascending.
+    """All dark hours for one site ranked by quality, sorted by time ascending.
+
+    ADR 007: every civil-dark hour (sun below -6 deg) is kept and scored by the
+    continuous quality Q = D x C x W, so summer nights surface the best
+    available windows instead of going empty. Hours that are not dark, or are
+    dark but hopeless (Q == 0, e.g. fully clouded), are dropped.
 
     Each returned dict matches the stars.site_hours columns (minus site_id /
-    fetched_at, which the job sets): time, score, cloud_area_fraction,
-    relative_humidity, wind_speed, air_temperature, dew_spread, symbol.
+    fetched_at, which the job sets): time, score, sun_elevation_deg,
+    cloud_area_fraction, relative_humidity, wind_speed, air_temperature,
+    dew_spread, symbol.
     """
     observer = LocationInfo(latitude=loc["lat"], longitude=loc["lon"]).observer
     hours: list[dict] = []
@@ -42,11 +46,12 @@ def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
         except ValueError:
             continue
         try:
-            if elevation(observer, t) > NAUTICAL_TWILIGHT_DEG:
-                continue
+            e = elevation(observer, t)
         except Exception as exc:  # pragma: no cover - astral edge cases
             logger.debug("astral elevation failed for %s at %s: %s", loc["id"], t, exc)
             continue
+        if darkness_factor(e) <= 0.0:
+            continue  # daylight / brighter than civil twilight
         instant = entry.get("data", {}).get("instant", {}).get("details", {})
         next_1h = entry.get("data", {}).get("next_1_hours", {})
         try:
@@ -64,13 +69,14 @@ def score_location(loc: SeedLocation, forecast: dict) -> list[dict]:
         except Exception as exc:
             logger.debug("skip malformed weather entry at %s: %s", time_str, exc)
             continue
-        score = calculate_astronomy_score(weather)
-        if score < MIN_DISPLAY_SCORE:
-            continue
+        q = quality_score(weather, e)
+        if q <= 0.0:
+            continue  # dark but hopeless (e.g. fully clouded)
         hours.append(
             {
                 "time": time_str,
-                "score": round(score, 1),
+                "score": round(q, 1),
+                "sun_elevation_deg": round(e, 1),
                 "cloud_area_fraction": weather.cloud_area_fraction,
                 "relative_humidity": weather.relative_humidity,
                 "wind_speed": weather.wind_speed,

@@ -1,8 +1,10 @@
 """Unit tests for stars.forecast.score_location.
 
 elevation() is monkeypatched per entry so the dark/daylight gate is fully
-deterministic and independent of the real ephemeris. The qualifying-hour
-shape and ascending sort are asserted directly.
+deterministic and independent of the real ephemeris. ADR 007: score_location
+keeps every civil-dark hour ranked by the continuous quality Q = D x C x W and
+drops daytime hours and dark-but-hopeless (Q == 0) hours. The qualifying-hour
+shape, recorded sun elevation, and ascending sort are asserted directly.
 """
 
 import stars.forecast as forecast
@@ -18,7 +20,7 @@ _LOC: SeedLocation = {
 }
 
 # Sun elevation (degrees) keyed by the UTC hour of the timeseries entry.
-# Hours 22, 23, 0 are below nautical twilight (dark); hour 12 is daytime.
+# Hours 22, 23, 0 are deep dark (below astronomical -18); hour 12 is daytime.
 _ELEV_BY_HOUR = {22: -20.0, 23: -20.0, 0: -20.0, 12: 30.0}
 
 
@@ -50,13 +52,13 @@ def _forecast():
     return {
         "properties": {
             "timeseries": [
-                # dark + clear -> qualifies (score 100)
+                # deep-dark + clear -> qualifies (Q == 100)
                 {"time": "2026-06-13T23:00:00Z", **_instant(5, 55, 2, 8, 2)},
-                # dark + heavily clouded -> score < 60, dropped
+                # dark but fully clouded -> Q == 0, dropped
                 {"time": "2026-06-14T00:00:00Z", **_instant(100, 90, 2, 8, 7)},
-                # daytime (sun up) -> dropped before scoring
+                # daytime (sun up, not dark) -> dropped before scoring
                 {"time": "2026-06-13T12:00:00Z", **_instant(0, 40, 1, 12, 2)},
-                # dark + clear, earlier hour -> qualifies, must sort first
+                # deep-dark + clear, earlier hour -> qualifies, must sort first
                 {"time": "2026-06-13T22:00:00Z", **_instant(5, 55, 2, 8, 2)},
             ]
         }
@@ -66,6 +68,7 @@ def _forecast():
 _EXPECTED_KEYS = {
     "time",
     "score",
+    "sun_elevation_deg",
     "cloud_area_fraction",
     "relative_humidity",
     "wind_speed",
@@ -80,7 +83,8 @@ def test_score_location_keeps_only_qualifying_hours_sorted(monkeypatch):
 
     hours = forecast.score_location(_LOC, _forecast())
 
-    # Two dark+clear hours qualify; the cloudy and daytime hours are dropped.
+    # Two deep-dark clear hours qualify; the fully-clouded (Q == 0) and daytime
+    # hours are dropped.
     assert [h["time"] for h in hours] == [
         "2026-06-13T22:00:00Z",
         "2026-06-13T23:00:00Z",
@@ -88,7 +92,10 @@ def test_score_location_keeps_only_qualifying_hours_sorted(monkeypatch):
     for h in hours:
         assert set(h.keys()) == _EXPECTED_KEYS
     first = hours[0]
+    # Deep dark (-20 -> darkness 1.0) + 5% cloud (under the 10% allowance) +
+    # ideal weather -> full quality.
     assert first["score"] == 100.0
+    assert first["sun_elevation_deg"] == -20.0
     assert first["cloud_area_fraction"] == 5
     assert first["relative_humidity"] == 55
     assert first["wind_speed"] == 2
