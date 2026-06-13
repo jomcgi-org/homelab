@@ -111,13 +111,17 @@
     };
   }
 
-  // Best score this site reaches across the currently selected nights, or null
-  // when none of its hours fall on an active night (so it drops off the map,
-  // mirroring how the ships type filter hides deselected vessels). With every
-  // night selected this equals best_score, so the default view is unchanged.
+  // Best score this site reaches across the currently selected nights. Falls
+  // back to best_score (always present) when the payload carries no per-night
+  // data, so an older build or a CDN-cached pre-feature response never blanks
+  // the map; with night data and "All" selected this still equals best_score.
+  // A single selected night returns null for sites with no window then, so they
+  // drop off the map (the actual filter).
   function effectiveScore(site) {
-    if (!activeNights || activeNights.size === 0) return null;
-    const ns = site.night_scores || {};
+    const ns = site.night_scores;
+    if (!ns || !activeNights || activeNights.size === 0) {
+      return site.best_score ?? null;
+    }
     let best = null;
     for (const night of activeNights) {
       const s = ns[night];
