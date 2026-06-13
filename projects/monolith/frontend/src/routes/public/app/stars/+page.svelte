@@ -1,5 +1,5 @@
 <script>
-  import { onMount, untrack } from "svelte";
+  import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
 
@@ -8,35 +8,27 @@
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
 
-  // Night-filter chips (like the ships vessel-type legend): each night the
-  // forecast covers is a toggle, and StarsMap recolours every marker by the
-  // best score it reaches across the selected nights. `nights` is the sorted
-  // union of evening dates (YYYY-MM-DD) the API returns.
+  // Night picker: "I'm free Saturday, show me the map for Saturday night." One
+  // chip per viewing night plus an "All" reset; picking a night filters the map
+  // to that night and StarsMap recolours each marker by the score it reaches
+  // then. `nights` is the sorted union of evening dates (YYYY-MM-DD) the API
+  // returns.
   let nights = $derived(data.snapshot?.nights ?? []);
-  // Seeded all-on from the initial payload so SSR and first paint render every
-  // chip selected; the effect below then reconciles it across SSR refreshes.
-  let activeNights = $state(new Set(data.snapshot?.nights ?? []));
-  // Plain (non-reactive) mirror of the last night set we reconciled against, so
-  // the effect below only re-runs off `nights`, never off its own writes.
-  let knownNights = new Set();
+  let selectedNight = $state("all"); // "all" or a night key
 
-  // Keep the selection in step with each SSR refresh: new nights default to on,
-  // nights that fall off the horizon drop out, and the user's toggles survive
-  // the 30 min refresh. A full turnover (or first load) starts all-on.
-  $effect(() => {
-    const incoming = new Set(nights);
-    untrack(() => {
-      let next;
-      if (knownNights.size === 0) {
-        next = new Set(incoming);
-      } else {
-        next = new Set([...activeNights].filter((n) => incoming.has(n)));
-        for (const n of incoming) if (!knownNights.has(n)) next.add(n);
-      }
-      knownNights = incoming;
-      activeNights = next;
-    });
-  });
+  // Fall back to "all" if the chosen night has dropped off the forecast horizon
+  // on an SSR refresh (it elapsed). Derived, so there is no effect to loop on.
+  let effectiveNight = $derived(
+    selectedNight !== "all" && nights.includes(selectedNight)
+      ? selectedNight
+      : "all",
+  );
+
+  // The nights the map scores against: every night for "all", else just the
+  // chosen one. StarsMap takes the max score across this set per marker.
+  let activeNights = $derived(
+    effectiveNight === "all" ? new Set(nights) : new Set([effectiveNight]),
+  );
 
   // Format a night key (the evening date) into a short "Sat 14" chip label.
   // Noon UTC keeps the weekday/day from rolling across the date line when
@@ -51,12 +43,8 @@
     });
   }
 
-  function toggleNight(key) {
-    // Reassign (not mutate) so the $state Set re-renders the chips + map.
-    const next = new Set(activeNights);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    activeNights = next;
+  function selectNight(key) {
+    selectedNight = key;
   }
   // sites is already sorted by best_score descending, so the head is the best.
   let topScore = $derived(
@@ -136,15 +124,24 @@
 
     {#if nights.length > 1}
       <div class="panel night-filter">
-        <p class="filter-title">Nights</p>
+        <p class="filter-title">Free on a night?</p>
         <div class="night-chips">
+          <button
+            type="button"
+            class="night-chip"
+            class:is-off={effectiveNight !== "all"}
+            aria-pressed={effectiveNight === "all"}
+            onclick={() => selectNight("all")}
+          >
+            All
+          </button>
           {#each nights as night (night)}
             <button
               type="button"
               class="night-chip"
-              class:is-off={!activeNights.has(night)}
-              aria-pressed={activeNights.has(night)}
-              onclick={() => toggleNight(night)}
+              class:is-off={effectiveNight !== night}
+              aria-pressed={effectiveNight === night}
+              onclick={() => selectNight(night)}
             >
               {nightLabel(night)}
             </button>
