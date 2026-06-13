@@ -86,6 +86,26 @@ pinned_cli(
     },
 )
 
+# -- kubeconform — validate rendered manifests vs K8s API schemas (yannh/kubeconform)
+_KCF_V = "v0.8.0"
+_KCF_URL = "https://github.com/yannh/kubeconform/releases/download/{v}/kubeconform-{a}.tar.gz"
+
+pinned_cli(
+    name = "kubeconform",
+    binary = "kubeconform",
+    archive = "tar_root",
+    urls = {
+        "darwin-arm64": _KCF_URL.format(v = _KCF_V, a = "darwin-arm64"),
+        "linux-amd64": _KCF_URL.format(v = _KCF_V, a = "linux-amd64"),
+        "linux-arm64": _KCF_URL.format(v = _KCF_V, a = "linux-arm64"),
+    },
+    shas = {
+        "darwin-arm64": "f84f4dfbebf4a6b0b230385fa065a39ea35e02608c2b50d025dcf64775a69d67",
+        "linux-amd64": "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883",
+        "linux-arm64": "1f53fc8e81258197a35e8603054162a5af1de8c5af13746c71ab680d9534ed87",
+    },
+)
+
 # -- yq — YAML query/merge, single binary (mikefarah/yq) -----------------------
 _YQ_V = "v4.53.3"
 _YQ_URL = "https://github.com/mikefarah/yq/releases/download/{v}/yq_{a}"
