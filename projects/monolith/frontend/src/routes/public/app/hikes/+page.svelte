@@ -14,16 +14,14 @@
 
   let walks = $derived(data.snapshot?.walks ?? []);
 
-  // Preset anchors for the "near" radius filter, so it is useful without
-  // geolocation permission. These are the densest WalkHighlands regions by
+  // Preset anchors for the "near" filter, the densest WalkHighlands regions by
   // walk count in the seed corpus (Fort William 128, Cairngorms 108, Argyll
   // 104, Perthshire 100, Galloway 82, Skye 76, Sutherland 68, Ullapool 66,
   // Loch Ness 65, Loch Lomond 64, Glasgow 64, Torridon/Wester Ross 59), not
   // population centres: a hike planner wants to jump to where the walks are,
   // and "My location" already covers "near where I live". Each coordinate is
-  // the centroid of that region's walks, which centres the radius circle on
-  // the cluster. Ordered densest first. "__me__" is the device-location
-  // sentinel.
+  // the centroid of that region's walks. Ordered densest first. "__me__" is the
+  // device-location sentinel.
   const HIKE_LOCATIONS = [
     { key: "fort-william", label: "Fort William", lat: 56.8326, lon: -5.251 },
     { key: "cairngorms", label: "Cairngorms", lat: 57.1232, lon: -3.631 },
@@ -39,9 +37,13 @@
     { key: "torridon", label: "Wester Ross", lat: 57.5841, lon: -5.5325 },
   ];
   const GEO_SENTINEL = "__me__";
+  // Fixed radius for a region preset. The presets already pick a coarse area, so
+  // a single generous radius beats a fiddly per-use input (regions span tens of
+  // km; this captures the cluster without spilling into the next one).
+  const REGION_RADIUS_KM = 75;
 
-  // The five numeric filters, ported from the old sidebar. Empty means "no
-  // constraint" (the filters module reads undefined/NaN as unbounded).
+  // The five numeric filters. Empty means "no constraint" (the filters module
+  // reads undefined/NaN as unbounded).
   let minDuration = $state("");
   let maxDuration = $state("");
   let minDistance = $state("");
@@ -53,12 +55,14 @@
   let selectedDay = $state(null);
 
   // "Near" filter: a preset hub key, GEO_SENTINEL for the device location, or
-  // "" for off. userCoords holds the resolved device position (null until the
-  // browser grants permission); geoError surfaces a denial or unsupported API.
+  // "" for off. userCoords resolves async once the browser grants permission.
   let nearKey = $state("");
-  let radiusKm = $state("50");
   let userCoords = $state(null);
   let geoError = $state("");
+
+  // The extra filters (region + numeric) collapse by default so the map keeps
+  // the screen; only the day chips stay permanently visible.
+  let filtersOpen = $state(false);
 
   function onNearChange() {
     geoError = "";
@@ -70,10 +74,7 @@
       }
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          userCoords = {
-            lat: pos.coords.latitude,
-            lon: pos.coords.longitude,
-          };
+          userCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
         },
         () => {
           geoError = "Location permission denied";
@@ -86,19 +87,14 @@
     }
   }
 
-  // The active centre for the radius filter: device coords, a preset, or none.
   let nearCenter = $derived.by(() => {
     if (nearKey === GEO_SENTINEL) return userCoords; // null until permission resolves
     if (!nearKey) return null;
     return HIKE_LOCATIONS.find((l) => l.key === nearKey) ?? null;
   });
 
-  // A coarse "current time" signal. The page can sit open for hours (the data
-  // refetches every 30 min), so the day strip and "viable today" count must be
-  // recomputed from a value that advances, otherwise they go stale across UK
-  // midnight: the first "today" chip would point at a now-past day with zero
-  // walks. We tick this a few times an hour (see onMount), which is plenty to
-  // roll the calendar day over shortly after midnight.
+  // A coarse "current time" signal so the day strip and "viable today" count
+  // roll over UK midnight on a long-open page (see the tick in onMount).
   let nowMs = $state(Date.now());
 
   function numOr(value, fallback) {
@@ -117,6 +113,32 @@
     });
   }
 
+  // Difficulty normalization ceilings: the 95th percentile of each metric over
+  // the WHOLE corpus (not the filtered set), so the colour a walk gets is its
+  // intrinsic effort and does not shift as you filter. The p95 (rather than max)
+  // keeps a handful of epic routes from compressing everything else to "easy".
+  function pct(values, p) {
+    const s = values
+      .filter((v) => v != null && !Number.isNaN(v))
+      .sort((a, b) => a - b);
+    if (!s.length) return 1;
+    return s[Math.min(s.length - 1, Math.floor(p * s.length))] || 1;
+  }
+  let maxima = $derived({
+    duration: pct(
+      walks.map((w) => w.duration_h),
+      0.95,
+    ),
+    ascent: pct(
+      walks.map((w) => w.ascent_m),
+      0.95,
+    ),
+    distance: pct(
+      walks.map((w) => w.distance_km),
+      0.95,
+    ),
+  });
+
   // Walks passing the numeric filters.
   let byCharacteristics = $derived(
     filterWalksByCharacteristics(walks, {
@@ -128,10 +150,8 @@
     }),
   );
 
-  // Then the radius filter (if a centre is set), which also annotates each walk
-  // with distance_from_user and sorts nearest-first. Then the selected day (a
-  // walk qualifies if it has any window on that UK day); .filter preserves the
-  // nearest-first order so the list and map stay sorted.
+  // Then the region radius (if a centre is set; annotates distance_from_user and
+  // sorts nearest-first), then the selected day (.filter preserves that order).
   let filtered = $derived.by(() => {
     let result = byCharacteristics;
     if (nearCenter) {
@@ -139,7 +159,7 @@
         result,
         nearCenter.lat,
         nearCenter.lon,
-        numOr(radiusKm, Infinity),
+        REGION_RADIUS_KM,
       );
     }
     if (selectedDay != null) {
@@ -150,10 +170,20 @@
     return result;
   });
 
-  let locationActive = $derived(nearCenter != null);
-
   let viableTodayCount = $derived(
     walks.filter((w) => viableInNextDays(w, 1, new Date(nowMs))).length,
+  );
+
+  // Any non-default filter active, so the toggle can show a dot while collapsed.
+  let filtersActive = $derived(
+    !!(
+      minDuration ||
+      maxDuration ||
+      minDistance ||
+      maxDistance ||
+      maxAscent ||
+      nearKey
+    ),
   );
 
   function resetFilters() {
@@ -164,22 +194,18 @@
     maxAscent = "";
     selectedDay = null;
     nearKey = "";
-    radiusKm = "50";
     userCoords = null;
     geoError = "";
   }
 
   onMount(() => {
-    // Live updates: re-run the SSR load on a 30 min timer (windows only change
-    // 6-hourly, so this is plenty). No client-side call to /api/hikes/* happens.
+    // Live updates: re-run the SSR load every 30 min (windows change 6-hourly).
     const refresh = setInterval(() => {
       nowMs = Date.now();
       invalidateAll();
     }, 30 * 60_000);
-    // Roll the calendar day over shortly after midnight without waiting for the
-    // next 30 min data refetch: a few-minute tick keeps the day strip and the
-    // "viable today" count fresh on a long-open page. Deliberately low frequency
-    // (not a per-second clock): nothing here needs sub-minute resolution.
+    // Roll the UK calendar day shortly after midnight without waiting for the
+    // data refetch; low frequency, nothing here needs sub-minute resolution.
     const dayTick = setInterval(() => (nowMs = Date.now()), 5 * 60_000);
     return () => {
       clearInterval(refresh);
@@ -192,88 +218,39 @@
   <title>Hike planner, Scotland walks by weather window</title>
   <meta
     name="description"
-    content="A map of Scottish hill walks filtered by distance, ascent, duration, and viable weather windows from the met.no forecast."
+    content="A map of Scottish hill walks coloured by effort and filtered by viable weather windows from the met.no forecast."
   />
 </svelte:head>
 
 <div class="hikes-page">
   <h1 class="sr-only">Hike planner, Scotland walks by weather window</h1>
 
-  <header class="topbar">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <a class="crumb-home" href="https://jomcgi.dev/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
-      >
-      <span class="crumb-sep">/</span>
-      <span class="crumb-name">hikes</span>
-    </nav>
-    <p class="topbar-stats">
-      {walks.length} walks &middot; {viableTodayCount} viable today &middot;
-      {filtered.length} shown
-    </p>
-  </header>
+  <HikesMap walks={filtered} {selectedDay} {maxima} />
 
-  <div class="layout">
-    <aside class="sidebar">
-      <p class="eyebrow">Filters</p>
-
-      <div class="filter-grid">
-        <label
-          >Min duration (h)
-          <input type="number" min="0" step="0.5" bind:value={minDuration} />
-        </label>
-        <label
-          >Max duration (h)
-          <input type="number" min="0" step="0.5" bind:value={maxDuration} />
-        </label>
-        <label
-          >Min distance (km)
-          <input type="number" min="0" step="1" bind:value={minDistance} />
-        </label>
-        <label
-          >Max distance (km)
-          <input type="number" min="0" step="1" bind:value={maxDistance} />
-        </label>
-        <label class="filter-wide"
-          >Max ascent (m)
-          <input type="number" min="0" step="50" bind:value={maxAscent} />
-        </label>
+  <!-- Floating controls: day chips always visible, the rest expands on demand. -->
+  <div class="controls">
+    <div class="panel control-head">
+      <div class="crumb-row">
+        <nav class="crumb" aria-label="Breadcrumb">
+          <a class="crumb-home" href="https://jomcgi.dev/"
+            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+            ></a
+          >
+          <span class="crumb-sep">/</span>
+          <span class="crumb-name">hikes</span>
+        </nav>
+        <p class="stats">
+          {walks.length} walks &middot; {viableTodayCount} viable today &middot;
+          {filtered.length} shown
+        </p>
       </div>
 
-      <p class="eyebrow near-title">Near</p>
-      <div class="near-grid">
-        <label class="near-where"
-          >Location
-          <select bind:value={nearKey} onchange={onNearChange}>
-            <option value="">Anywhere</option>
-            <option value={GEO_SENTINEL}>My location</option>
-            {#each HIKE_LOCATIONS as loc (loc.key)}
-              <option value={loc.key}>{loc.label}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="near-radius"
-          >Radius (km)
-          <input
-            type="number"
-            min="1"
-            step="10"
-            bind:value={radiusKm}
-            disabled={!nearKey}
-          />
-        </label>
-      </div>
-      {#if geoError}
-        <p class="near-error" role="alert">{geoError}</p>
-      {/if}
-
-      <p class="eyebrow date-strip-title">Viable day</p>
-      <div class="date-strip">
+      <div class="day-strip" role="group" aria-label="Filter by viable day">
         <button
           type="button"
           class="day-chip"
           class:active={selectedDay == null}
-          onclick={() => (selectedDay = null)}>Any</button
+          onclick={() => (selectedDay = null)}>Any day</button
         >
         {#each dayKeys as key (key)}
           <button
@@ -286,40 +263,75 @@
         {/each}
       </div>
 
-      <button type="button" class="reset" onclick={resetFilters}>Reset</button>
-    </aside>
+      <button
+        type="button"
+        class="more-toggle"
+        class:on={filtersOpen}
+        aria-expanded={filtersOpen}
+        onclick={() => (filtersOpen = !filtersOpen)}
+      >
+        Filters{#if filtersActive && !filtersOpen}<span
+            class="dot"
+            aria-hidden="true"
+          ></span>{/if}
+        <span class="chev" aria-hidden="true">{filtersOpen ? "▴" : "▾"}</span>
+      </button>
+    </div>
 
-    <section class="map-region">
-      <HikesMap walks={filtered} {selectedDay} />
-    </section>
+    {#if filtersOpen}
+      <div class="panel control-more">
+        <label class="field"
+          >Near
+          <select bind:value={nearKey} onchange={onNearChange}>
+            <option value="">Anywhere</option>
+            <option value={GEO_SENTINEL}>My location</option>
+            {#each HIKE_LOCATIONS as loc (loc.key)}
+              <option value={loc.key}>{loc.label}</option>
+            {/each}
+          </select>
+        </label>
+        {#if geoError}
+          <p class="geo-error" role="alert">{geoError}</p>
+        {/if}
+
+        <div class="num-grid">
+          <label class="field"
+            >Min duration (h)
+            <input type="number" min="0" step="0.5" bind:value={minDuration} />
+          </label>
+          <label class="field"
+            >Max duration (h)
+            <input type="number" min="0" step="0.5" bind:value={maxDuration} />
+          </label>
+          <label class="field"
+            >Min distance (km)
+            <input type="number" min="0" step="1" bind:value={minDistance} />
+          </label>
+          <label class="field"
+            >Max distance (km)
+            <input type="number" min="0" step="1" bind:value={maxDistance} />
+          </label>
+          <label class="field field-wide"
+            >Max ascent (m)
+            <input type="number" min="0" step="50" bind:value={maxAscent} />
+          </label>
+        </div>
+
+        <button type="button" class="reset" onclick={resetFilters}>Reset</button>
+      </div>
+    {/if}
   </div>
-
-  <section class="list-view" aria-label="Walk list">
-    <p class="eyebrow">{filtered.length} walks</p>
-    <ul class="walk-list">
-      {#each filtered as walk (walk.uuid)}
-        <li class="walk-row card-hard">
-          <a class="walk-row-name" href={walk.url} target="_blank" rel="noopener"
-            >{walk.name} &nearr;</a
-          >
-          <p class="walk-row-stats">
-            {walk.distance_km} km &middot; {walk.ascent_m} m &middot;
-            {walk.duration_h} h
-            {#if locationActive && walk.distance_from_user != null}
-              &middot; {Math.round(walk.distance_from_user)} km away
-            {/if}
-          </p>
-        </li>
-      {/each}
-    </ul>
-  </section>
 </div>
 
 <style>
+  /* Full-bleed, map-first (same shell as /app/ships): the map owns the viewport
+     and every control floats over it. HikesMap's .map-wrap is absolutely
+     positioned, so this is its containing block. */
   .hikes-page {
     position: relative;
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
     background: var(--cream);
     color: var(--ink);
   }
@@ -336,17 +348,40 @@
     border: 0;
   }
 
-  /* Header bar reads as a sibling of the ships breadcrumb chip: mono, uppercase,
-     hard border. */
-  .topbar {
+  /* Floating control stack, top-left, clear of the map's own chrome. */
+  .controls {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 5;
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    padding: 12px 16px;
+    flex-direction: column;
+    gap: 10px;
+    width: min(420px, calc(100% - 32px));
+  }
+
+  /* Neobrutalist floating card. Deliberately NOT .card-hard: these are
+     containers, not buttons, so they must not lift on hover. */
+  .panel {
     background: var(--paper);
-    border-bottom: 2px solid var(--ink);
+    border: 2px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-hard);
+    padding: 12px;
+  }
+
+  .control-head {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .crumb-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 14px;
+    flex-wrap: wrap;
   }
 
   .crumb {
@@ -386,112 +421,21 @@
     color: var(--ink-3);
   }
 
-  .topbar-stats {
+  .stats {
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--ink-2);
   }
 
-  /* Map + sidebar fill the viewport under the header; the list view scrolls in
-     below. */
-  .layout {
-    display: flex;
-    height: calc(100dvh - 49px);
-    min-height: 420px;
-  }
-
-  .sidebar {
-    flex: none;
-    width: 280px;
-    padding: 16px;
-    background: var(--paper);
-    border-right: 2px solid var(--ink);
-    overflow-y: auto;
-  }
-
-  .filter-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin: 10px 0 4px;
-  }
-
-  .filter-wide {
-    grid-column: 1 / -1;
-  }
-
-  .sidebar label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-
-  .sidebar input {
-    font-family: var(--mono);
-    font-size: 13px;
-    padding: 7px 8px;
-    background: var(--cream);
-    border: 2px solid var(--ink);
-    color: var(--ink);
-    width: 100%;
-  }
-
-  .near-title {
-    margin-top: 16px;
-  }
-
-  .near-grid {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 10px;
-    margin: 10px 0 4px;
-  }
-
-  .near-radius input {
-    width: 88px;
-  }
-
-  /* The native select inherits the mono/hard-border input look. */
-  .sidebar select {
-    font-family: var(--mono);
-    font-size: 13px;
-    padding: 7px 8px;
-    background: var(--cream);
-    border: 2px solid var(--ink);
-    color: var(--ink);
-    width: 100%;
-  }
-
-  .sidebar input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .near-error {
-    margin: 4px 0 0;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: var(--blue);
-  }
-
-  .date-strip-title {
-    margin-top: 16px;
-  }
-
-  .date-strip {
+  /* Day chips wrap, and scroll horizontally only if they truly overflow on a
+     very narrow screen. */
+  .day-strip {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
-    margin: 8px 0 16px;
   }
 
   .day-chip {
@@ -504,6 +448,7 @@
     border: 2px solid var(--ink);
     color: var(--ink);
     cursor: pointer;
+    white-space: nowrap;
     transition:
       transform 110ms ease,
       box-shadow 110ms ease;
@@ -519,13 +464,101 @@
     color: var(--paper);
   }
 
+  .more-toggle {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 7px 11px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    color: var(--ink);
+    cursor: pointer;
+    transition:
+      transform 110ms ease,
+      box-shadow 110ms ease;
+  }
+
+  .more-toggle:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 2px 2px 0 var(--ink);
+  }
+
+  .more-toggle.on {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .more-toggle .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--blue);
+  }
+
+  .more-toggle .chev {
+    font-size: 10px;
+  }
+
+  .control-more {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .num-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .field-wide {
+    grid-column: 1 / -1;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  .field input,
+  .field select {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 7px 8px;
+    background: var(--cream);
+    border: 2px solid var(--ink);
+    color: var(--ink);
+    width: 100%;
+  }
+
+  .geo-error {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--blue);
+  }
+
   .reset {
+    align-self: flex-start;
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    padding: 10px 16px;
+    padding: 9px 16px;
     background: var(--blue);
     border: 2px solid var(--ink);
     color: var(--ink);
@@ -540,66 +573,28 @@
     box-shadow: 2px 2px 0 var(--ink);
   }
 
-  /* HikesMap's .map-wrap is absolutely positioned, so this is its containing
-     block. */
-  .map-region {
-    position: relative;
-    flex: 1 1 auto;
-    overflow: hidden;
-  }
-
-  .list-view {
-    padding: 24px 16px 40px;
-  }
-
-  .walk-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
-    margin-top: 12px;
-  }
-
-  .walk-row {
-    padding: 14px 16px;
-  }
-
-  .walk-row-name {
-    display: inline-block;
-    font-family: var(--serif);
-    font-size: 19px;
-    line-height: 1.1;
-    color: var(--ink);
-  }
-
-  .walk-row-stats {
-    margin-top: 6px;
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    color: var(--ink-3);
-  }
-
-  @media (max-width: 760px) {
-    /* Stack the sidebar above the map on narrow screens so neither is cramped. */
-    .layout {
-      flex-direction: column;
-      height: auto;
+  @media (max-width: 640px) {
+    .controls {
+      top: 12px;
+      left: 12px;
+      width: calc(100% - 24px);
     }
 
-    .sidebar {
-      width: auto;
-      border-right: none;
-      border-bottom: 2px solid var(--ink);
+    /* Keep the day strip on one swipeable line so the panel stays short. */
+    .day-strip {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
     }
 
-    .map-region {
-      height: 70vh;
-      min-height: 360px;
+    .day-strip::-webkit-scrollbar {
+      display: none;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .day-chip,
+    .more-toggle,
     .reset {
       transition: none;
     }
