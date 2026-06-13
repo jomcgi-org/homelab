@@ -24,3 +24,9 @@ export const SHIPS_TRACK_CACHE_CONTROL =
 // SWR. Mirrors _HEAT_CACHE_CONTROL in projects/monolith/ships/router.py, keep in sync.
 export const SHIPS_HEAT_CACHE_CONTROL =
   "public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=86400";
+
+// /app/hikes walks: forecasts refresh 6-hourly, so 30 min fresh with a 1 h SWR
+// window is plenty. Mirrors _WALKS_CACHE_CONTROL in projects/monolith/hikes/router.py,
+// keep in sync.
+export const HIKES_WALKS_CACHE_CONTROL =
+  "public, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
