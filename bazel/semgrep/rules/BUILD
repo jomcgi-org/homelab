@@ -188,22 +188,6 @@ semgrep_test(
     tags = ["semgrep"],
 )
 
-# no-em-dash uses languages: [generic] so its fixture is a YAML file.
-# This test wires the rule to its annotation fixture independently of
-# generic_rules_test (which only scans no-stale-repo-paths fixtures).
-filegroup(
-    name = "no_em_dash_rule",
-    srcs = ["generic/no-em-dash.yaml"],
-)
-
-semgrep_test(
-    name = "no_em_dash_test",
-    srcs = ["//bazel/semgrep/tests:no_em_dash_fixtures"],
-    env = {"SEMGREP_TEST_MODE": "1"},
-    rules = [":no_em_dash_rule"],
-    tags = ["semgrep"],
-)
-
 # no-generic-test-filename uses languages: [generic] so its fixture is a Python file.
 # This test wires the rule to its annotation fixture independently of
 # generic_rules_test (which only scans no-stale-repo-paths fixtures).
