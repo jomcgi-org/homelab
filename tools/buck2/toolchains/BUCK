@@ -3,6 +3,7 @@ load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load(":cxx_dist.bzl", "hermetic_cxx_tools")
 load(":rust_dist.bzl", "hermetic_rust_toolchain")
 
 # Minimal `toolchains` cell for homelab's buck2 project. The image/helm rules in
@@ -12,8 +13,27 @@ load(":rust_dist.bzl", "hermetic_rust_toolchain")
 # native code under buck2 (cf. loom/toolchains/BUCK, which adds a hermetic Rust
 # toolchain on top of these same system toolchains).
 
+# Hermetic LLVM (same dist as loom) so `clang++`/`lld` are materialized for the
+# link action rather than assumed present on the RE container.
+LLVM_VERSION = "22.1.2"
+
+http_archive(
+    name = "llvm-x86_64-linux",
+    urls = ["https://github.com/llvm/llvm-project/releases/download/llvmorg-{v}/LLVM-{v}-Linux-X64.tar.xz".format(v = LLVM_VERSION)],
+    sha256 = "ff32497b6801267ee427bc69cdaeecfb2d19578af8c2a942e864c45215f9a2ac",
+    strip_prefix = "LLVM-{}-Linux-X64".format(LLVM_VERSION),
+    visibility = ["PUBLIC"],
+)
+
+hermetic_cxx_tools(
+    name = "cxx-tools",
+    llvm_dist = ":llvm-x86_64-linux",
+    visibility = ["PUBLIC"],
+)
+
 system_cxx_toolchain(
     name = "cxx",
+    _cxx_tools_info = ":cxx-tools",
     visibility = ["PUBLIC"],
 )
 
