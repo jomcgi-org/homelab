@@ -184,6 +184,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-cfingress-httpcheck-url.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-lifespan-startup-mock-sync.sh",
+            "timeout": 10
           }
         ]
       }
