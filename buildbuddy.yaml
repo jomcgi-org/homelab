@@ -229,6 +229,11 @@ actions:
           # Prefer RE for every action that can run remotely (so Rust links on the
           # RE container); apko genrules opt out (network) and run on the runner.
           export BUCK_PREFER_REMOTE=true
+          # The BuildBuddy runner can reuse a VM snapshot carrying a stale buck2
+          # daemon whose buck-out was reset between runs, which aborts the build
+          # with "Failed to stat buck-out/v2: ENOENT". Kill any leftover daemon so
+          # we always start fresh.
+          /tmp/buck2 killall 2>/dev/null || true
           /tmp/buck2 --version
           /tmp/buck2 build //tools/buck2/...
           /tmp/buck2 test  //tools/buck2/...

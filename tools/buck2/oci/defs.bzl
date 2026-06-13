@@ -9,9 +9,44 @@ registry reference as its base. Image config (entrypoint etc.) is set on the apk
 base config so no separate mutate step is needed for the common case.
 """
 
+load(":providers.bzl", "OciImageInfo")
+
 _REGCTL = "//tools/buck2/bin:regctl"
 
-def oci_image(name, base, layers = [], platform = "linux/amd64", visibility = ["PUBLIC"], **kwargs):
+def _oci_image_info_impl(ctx: AnalysisContext) -> list[Provider]:
+    image = ctx.attrs.image[DefaultInfo].default_outputs[0]
+    digest = ctx.actions.declare_output("digest")
+
+    # The image tar is an OCI layout; the first sha256 in index.json is the
+    # (single-arch) manifest digest — i.e. the ref you'd pull as repo@sha256:...
+    ctx.actions.run(
+        cmd_args([
+            "bash",
+            "-c",
+            'set -e; D="$(mktemp -d)"; tar -xf "$1" -C "$D" index.json; grep -oE "sha256:[a-f0-9]{64}" "$D/index.json" | head -1 | tr -d "\\n" > "$2"',
+            "_",  # $0
+            image,
+            digest.as_output(),
+        ]),
+        category = "oci_digest",
+    )
+
+    return [
+        DefaultInfo(default_output = digest),
+        OciImageInfo(repository = ctx.attrs.repository, digest = digest),
+    ]
+
+# Exposes OciImageInfo (repository + content digest) for an image tar, so
+# helm_images_values can digest-pin the chart. Mirrors bazel's oci_image_info.
+oci_image_info = rule(
+    impl = _oci_image_info_impl,
+    attrs = {
+        "image": attrs.dep(),
+        "repository": attrs.string(),
+    },
+)
+
+def oci_image(name, base, layers = [], platform = "linux/amd64", repository = None, visibility = ["PUBLIC"], **kwargs):
     """Layer `layers` (filesystem tarballs) onto `base` (an OCI image tar).
 
     Args:
@@ -39,6 +74,16 @@ def oci_image(name, base, layers = [], platform = "linux/amd64", visibility = ["
         visibility = visibility,
         **kwargs
     )
+
+    # Expose OciImageInfo (repository + digest) for helm digest-pinning, like
+    # bazel's go_image/apko_image `.info` sub-target.
+    if repository:
+        oci_image_info(
+            name = name + ".info",
+            image = ":" + name,
+            repository = repository,
+            visibility = visibility,
+        )
 
 def tar_layer(name, binary, path, visibility = ["PUBLIC"], **kwargs):
     """Package a single executable `binary` target into a layer tar at `path`.
