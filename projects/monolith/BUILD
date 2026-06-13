@@ -3039,6 +3039,11 @@ semgrep_target_test(
         # keep
         "avoid-sqlalchemy-text",
         "generic-sql-fastapi",  # keep
+        # stars/grid.py's _s3_client guards endpoint_url with a scheme check
+        # (prepends http:// when absent), mirroring the lakehouse S3 client, so
+        # the runtime "Invalid endpoint" risk is handled. semgrep-core does not
+        # honour the inline # nosemgrep, so exclude the rule here.
+        "boto3-endpoint-url-missing-scheme",  # keep
         # The monolith uses datetime | None = None for intentional NULL state
         # fields (e.g. last_run_at, locked_at, updated_at). semgrep-core
         # invokes the rule engine directly without pysemgrep, so # nosemgrep
