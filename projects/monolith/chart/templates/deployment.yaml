@@ -154,6 +154,18 @@ spec:
             - name: SIGNOZ_URL
               value: {{ .Values.agent.signoz.url | quote }}
             {{- end }}
+            {{- if .Values.stars }}
+            - name: SEAWEEDFS_S3_ENDPOINT
+              value: {{ .Values.stars.seaweedfsS3Endpoint | quote }}
+            - name: S3_ACCESS_KEY_ID
+              value: {{ .Values.stars.s3AccessKeyId | quote }}
+            - name: S3_SECRET_ACCESS_KEY
+              value: {{ .Values.stars.s3SecretAccessKey | quote }}
+            - name: STARS_GRID_S3_BUCKET
+              value: {{ .Values.stars.gridBucket | quote }}
+            - name: STARS_GRID_S3_KEY
+              value: {{ .Values.stars.gridKey | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
