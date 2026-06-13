@@ -34,18 +34,27 @@ def sun_elevation_deg(lat, lon, dt):
     hour = dt.hour + dt.minute / 60.0
     g = 2 * math.pi / 365.0 * (doy - 1 + (hour - 12) / 24.0)
     eqtime = 229.18 * (
-        0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g)
-        - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g)
+        0.000075
+        + 0.001868 * math.cos(g)
+        - 0.032077 * math.sin(g)
+        - 0.014615 * math.cos(2 * g)
+        - 0.040849 * math.sin(2 * g)
     )
     decl = (
-        0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g)
-        - 0.006758 * math.cos(2 * g) + 0.000907 * math.sin(2 * g)
-        - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g)
+        0.006918
+        - 0.399912 * math.cos(g)
+        + 0.070257 * math.sin(g)
+        - 0.006758 * math.cos(2 * g)
+        + 0.000907 * math.sin(2 * g)
+        - 0.002697 * math.cos(3 * g)
+        + 0.00148 * math.sin(3 * g)
     )
     tst = hour * 60.0 + eqtime + 4.0 * lon
     ha = math.radians(tst / 4.0 - 180.0)
     latr = math.radians(lat)
-    cz = math.sin(latr) * math.sin(decl) + math.cos(latr) * math.cos(decl) * math.cos(ha)
+    cz = math.sin(latr) * math.sin(decl) + math.cos(latr) * math.cos(decl) * math.cos(
+        ha
+    )
     return 90.0 - math.degrees(math.acos(max(-1.0, min(1.0, cz))))
 
 
@@ -86,13 +95,19 @@ def _dew_score(spread):
 
 
 def weather_modifier(humidity, wind, dew_spread):
-    avg = (_humidity_score(humidity) + 100.0 + _wind_score(wind) + _dew_score(dew_spread)) / 4.0
+    avg = (
+        _humidity_score(humidity) + 100.0 + _wind_score(wind) + _dew_score(dew_spread)
+    ) / 4.0
     return 0.7 + 0.3 * (avg / 100.0)
 
 
 def score_point(lat, lon, hourly):
     times, cc, temp = hourly["time"], hourly["cloud_cover"], hourly["temperature_2m"]
-    rh, wind, dew = hourly["relative_humidity_2m"], hourly["wind_speed_10m"], hourly["dew_point_2m"]
+    rh, wind, dew = (
+        hourly["relative_humidity_2m"],
+        hourly["wind_speed_10m"],
+        hourly["dew_point_2m"],
+    )
     by_month = {}
     for i, t in enumerate(times):
         if cc[i] is None or temp[i] is None or dew[i] is None:
@@ -102,7 +117,12 @@ def score_point(lat, lon, hourly):
         if d <= 0:
             continue
         c = cloud_factor(cc[i], d)
-        q = d * c * weather_modifier(rh[i] or 100, wind[i] or 0, temp[i] - dew[i]) * 100.0
+        q = (
+            d
+            * c
+            * weather_modifier(rh[i] or 100, wind[i] or 0, temp[i] - dew[i])
+            * 100.0
+        )
         if q <= 0:
             continue
         b = by_month.setdefault(dt.month, [0, 0.0, 0.0, 0.0])
@@ -116,9 +136,13 @@ def score_point(lat, lon, hourly):
 def fetch(lat, lon):
     qs = urllib.parse.urlencode(
         {
-            "latitude": lat, "longitude": lon, "start_date": START, "end_date": END,
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": START,
+            "end_date": END,
             "hourly": "cloud_cover,temperature_2m,relative_humidity_2m,wind_speed_10m,dew_point_2m",
-            "timezone": "UTC", "wind_speed_unit": "ms",
+            "timezone": "UTC",
+            "wind_speed_unit": "ms",
         }
     )
     transient = 0
@@ -151,18 +175,26 @@ def main():
         if hourly is None:
             print(f"  skipped {site['id']}", file=sys.stderr)
             continue
-        for month, (cnt, sq, sd, sc) in score_point(site["lat"], site["lon"], hourly).items():
+        for month, (cnt, sq, sd, sc) in score_point(
+            site["lat"], site["lon"], hourly
+        ).items():
             out.append(
                 {
-                    "site_id": site["id"], "month": month, "window_count": cnt,
-                    "sum_q": round(sq, 3), "sum_darkness": round(sd, 3), "sum_clarity": round(sc, 3),
+                    "site_id": site["id"],
+                    "month": month,
+                    "window_count": cnt,
+                    "sum_q": round(sq, 3),
+                    "sum_darkness": round(sd, 3),
+                    "sum_clarity": round(sc, 3),
                 }
             )
         json.dump(out, open(OUT, "w"))  # incremental save after every point
         if n % 10 == 0:
             print(f"  {n + 1}/{len(todo)} this run", file=sys.stderr)
         time.sleep(2.0)
-    print(f"DONE: {len(set(r['site_id'] for r in out))} sites -> {len(out)} rows -> {OUT}")
+    print(
+        f"DONE: {len(set(r['site_id'] for r in out))} sites -> {len(out)} rows -> {OUT}"
+    )
 
 
 if __name__ == "__main__":
