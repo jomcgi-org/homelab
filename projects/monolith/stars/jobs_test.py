@@ -42,6 +42,11 @@ def session_fixture():
                 table.schema = original_schemas[table.name]
 
 
+def _utc(dt):
+    """Coerce a loaded datetime to UTC-aware (SQLite returns naive values)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def _hour(time_str, score=80.0):
     return {
         "time": time_str,
@@ -136,7 +141,7 @@ def test_write_sites_replaces_site_rows_wholesale(session):
     session.commit()
 
     rows = session.exec(select(SiteHour).where(SiteHour.site_id == "A")).all()
-    assert {r.hour_time for r in rows} == {
+    assert {_utc(r.hour_time) for r in rows} == {
         datetime(2026, 6, 13, 23, tzinfo=timezone.utc),
         datetime(2026, 6, 14, 0, tzinfo=timezone.utc),
     }
@@ -157,7 +162,7 @@ def test_prune_elapsed_drops_only_elapsed_hours(session):
     session.commit()
     assert deleted == 2
 
-    remaining = {r.hour_time for r in session.exec(select(SiteHour)).all()}
+    remaining = {_utc(r.hour_time) for r in session.exec(select(SiteHour)).all()}
     assert remaining == {current, future}
 
 
