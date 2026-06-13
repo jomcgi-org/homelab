@@ -1,0 +1,8 @@
+# The chart deploys the buck2-built rust-service image. repository/tag point at
+# where CI publishes it; in a full setup these are digest-pinned by helm_chart's
+# image injection (see the bazel/helm equivalent) — kept static here for the
+# example.
+image:
+  repository: ghcr.io/jomcgi/homelab/rust-service
+  tag: latest
+replicas: 1

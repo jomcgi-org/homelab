@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rust-service
+description: Example chart deploying the buck2-built Rust service image
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
