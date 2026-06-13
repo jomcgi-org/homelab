@@ -1,4 +1,4 @@
-h1:F1JZqBioY+rz9fFPEyn4yBg9DEMDTUsenNJU0XqoiNI=
+h1:bFTtp4Bx3jzBPieGw82SwG644fzdq6wNBpQO6Cy8geY=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -32,3 +32,4 @@ h1:F1JZqBioY+rz9fFPEyn4yBg9DEMDTUsenNJU0XqoiNI=
 20260613000000_hikes_schema.sql h1:I3wFdg/TMhLmFDKr81gPoIAIMe58j8ekriZrVvymsyw=
 20260613000010_stars_schema.sql h1:JoKjmwNkR27a/+uj4PaNhN/DHjXmZXocHC9q7ZA9FXw=
 20260613000020_hikes_walk_hours.sql h1:WKm0YYkAh+9F5MlloiNw6rbNAvaTFkyDF4j2q2/Vz/g=
+20260613000030_stars_sun_elevation.sql h1:KZFw4zfaRTVVvPeEXk/z/Ts1qtK7cMAxiW8EThPJA1I=

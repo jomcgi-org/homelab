@@ -45,6 +45,7 @@ def test_site_hour_roundtrip(session):
         wind_speed=3.0,
         air_temperature=8.0,
         dew_spread=5.0,
+        sun_elevation_deg=-18.5,
         symbol="clearsky_night",
     )
     session.add(row)
@@ -59,6 +60,7 @@ def test_site_hour_roundtrip(session):
     assert loaded.wind_speed == 3.0
     assert loaded.air_temperature == 8.0
     assert loaded.dew_spread == 5.0
+    assert loaded.sun_elevation_deg == -18.5
     assert loaded.symbol == "clearsky_night"
     # SQLite returns naive datetimes (no tz-aware type), so assert the type
     # only, not tzinfo, matching hikes/models_test. Production is Postgres
