@@ -10,8 +10,10 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
+from datetime import datetime, timezone
+
 import stars.grid as grid
-from stars.models import Site
+from stars.models import Site, SiteHour
 
 
 @pytest.fixture(name="engine")
@@ -106,6 +108,48 @@ def test_load_grid_sync_skips_malformed_points(engine, monkeypatch):
     with Session(engine) as session:
         ids = {r.id for r in session.exec(select(Site)).all()}
     assert ids == {"good"}
+
+
+def test_load_grid_sync_removes_orphaned_site_hours(engine, monkeypatch):
+    # A site that drops out of the grid must have its forecast hours cleaned;
+    # hours for sites still in the grid survive (ADR 008 orphan clean).
+    hour = datetime(2026, 6, 13, 22, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        session.add(Site(id="stale", lat=1.0, lon=2.0, source="grid"))
+        session.add(
+            SiteHour(
+                site_id="stale",
+                hour_time=hour,
+                score=70.0,
+                cloud_area_fraction=10.0,
+                relative_humidity=60.0,
+                wind_speed=3.0,
+                air_temperature=8.0,
+                dew_spread=5.0,
+            )
+        )
+        session.add(
+            SiteHour(
+                site_id="grid-0001",
+                hour_time=hour,
+                score=80.0,
+                cloud_area_fraction=10.0,
+                relative_humidity=60.0,
+                wind_speed=3.0,
+                air_temperature=8.0,
+                dew_spread=5.0,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(grid, "_fetch_grid", lambda: [_GRID[0]])
+    written = grid._load_grid_sync()
+    assert written == 1
+
+    with Session(engine) as session:
+        hour_site_ids = {r.site_id for r in session.exec(select(SiteHour)).all()}
+    # The orphaned site's hour is gone; the surviving grid site's hour remains.
+    assert hour_site_ids == {"grid-0001"}
 
 
 def test_load_grid_sync_empty_grid_is_noop(engine, monkeypatch):
