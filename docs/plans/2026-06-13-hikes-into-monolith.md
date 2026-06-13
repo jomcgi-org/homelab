@@ -131,7 +131,7 @@ The corpus in `projects/hikes/scrape_walkhighlands/walks.db` is checked into git
 
 **Step 1:** Write a small generator that reads `walks.db` (stdlib `sqlite3`, columns `uuid, name, url, distance_km, ascent_m, duration_h, summary, latitude, longitude`) and emits `INSERT INTO hikes.walks (...) VALUES ... ON CONFLICT (uuid) DO NOTHING;` statements with properly escaped literals (double the single quotes; summaries contain apostrophes).
 
-**Step 2:** Run it locally (reading a git file is fine, this is not a test run), review the output size (roughly 750 rows), and commit the generated SQL as the migration. Atlas applies it after the schema migration by timestamp ordering.
+**Step 2:** Run it locally (reading a git file is fine, this is not a test run), review the output size (1,620 rows; walks.db also has a stale viable_dates column, ignore it), and commit the generated SQL as the migration. Atlas applies it after the schema migration by timestamp ordering.
 
 **Step 3:** Sanity-check a couple of rows against the old frontend's data.
 
@@ -169,7 +169,7 @@ Commit: `feat(monolith): port walkhighlands scraper as scheduled job`
 
 **Design (port from `projects/hikes/update_forecast/update.py`):**
 
-- `httpx.AsyncClient` against `https://api.met.no/weatherapi/locationforecast/2.0/compact`, params `lat`/`lon` rounded to 4 dp, User-Agent `"jomcgi.dev/app/hikes (https://github.com/jomcgi/homelab)"`. Bounded concurrency around 10 with a rate cap (met.no asks for max 20 req/s; the old code used 20 workers, stay at or below). Roughly 750 walks means a run of about a minute.
+- `httpx.AsyncClient` against `https://api.met.no/weatherapi/locationforecast/2.0/compact`, params `lat`/`lon` rounded to 4 dp, User-Agent `"jomcgi.dev/app/hikes (https://github.com/jomcgi/homelab)"`. Bounded concurrency around 10 with a rate cap (met.no asks for max 20 req/s; the old code used 20 workers, stay at or below). The corpus is 1,620 walks, so a run takes roughly 90 seconds at the rate cap.
 - Pure `compute_windows(hourly, now)` ports the exact filter ladder: skip past hours, skip beyond 7 days, skip outside 07:00-19:00, skip precip > 2.0 mm, skip wind > 80 km/h; emit `[timestamp, temp_c, precip_mm, wind_kmh, cloud_pct]` with the same rounding rules.
 - Handler: load all walks (uuid, lat, lon), fetch forecasts, compute windows, then batch-update `windows` + `windows_updated_at` in one transaction. A walk whose fetch failed keeps its previous windows (stale beats empty).
 
