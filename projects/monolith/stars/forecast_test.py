@@ -67,6 +67,8 @@ _EXPECTED_KEYS = {
     "time",
     "score",
     "sun_elevation_deg",
+    "darkness_factor",
+    "cloud_factor",
     "cloud_area_fraction",
     "relative_humidity",
     "wind_speed",
@@ -94,6 +96,10 @@ def test_score_location_keeps_only_qualifying_hours_sorted(monkeypatch):
     # ideal weather -> full quality.
     assert first["score"] == 100.0
     assert first["sun_elevation_deg"] == -20.0
+    # Deep dark -> darkness factor 1.0; 5% cloud under the darkness-scaled
+    # allowance -> clarity 1.0. These are the components the prune banks.
+    assert first["darkness_factor"] == 1.0
+    assert first["cloud_factor"] == 1.0
     assert first["cloud_area_fraction"] == 5
     assert first["relative_humidity"] == 55
     assert first["wind_speed"] == 2

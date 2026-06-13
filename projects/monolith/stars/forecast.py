@@ -16,7 +16,7 @@ import httpx
 from astral import LocationInfo
 from astral.sun import elevation
 
-from stars.scoring import WeatherData, darkness_factor, quality_score
+from stars.scoring import WeatherData, cloud_factor, darkness_factor, quality_score
 
 logger = logging.getLogger("monolith.stars.forecast")
 
@@ -54,7 +54,8 @@ def score_location(loc: dict, forecast: dict) -> list[dict]:
         except Exception as exc:  # pragma: no cover - astral edge cases
             logger.debug("astral elevation failed for %s at %s: %s", loc["id"], t, exc)
             continue
-        if darkness_factor(e) <= 0.0:
+        d = darkness_factor(e)
+        if d <= 0.0:
             continue  # daylight / brighter than civil twilight
         instant = entry.get("data", {}).get("instant", {}).get("details", {})
         next_1h = entry.get("data", {}).get("next_1_hours", {})
@@ -76,11 +77,19 @@ def score_location(loc: dict, forecast: dict) -> list[dict]:
         q = quality_score(weather, e)
         if q <= 0.0:
             continue  # dark but hopeless (e.g. fully clouded)
+        # Store the decomposed factors alongside Q so the prune can bank the
+        # component sums (darkness, clarity) per month, not just the lossy Q sum
+        # (ADR 008). darkness is reused from the gate above; clarity is the
+        # cloud factor under the same darkness-scaled allowance quality_score
+        # uses internally, so behavior is identical to before.
+        c = cloud_factor(weather.cloud_area_fraction, d)
         hours.append(
             {
                 "time": time_str,
                 "score": round(q, 1),
                 "sun_elevation_deg": round(e, 1),
+                "darkness_factor": round(d, 4),
+                "cloud_factor": round(c, 4),
                 "cloud_area_fraction": weather.cloud_area_fraction,
                 "relative_humidity": weather.relative_humidity,
                 "wind_speed": weather.wind_speed,
