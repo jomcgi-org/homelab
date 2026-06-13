@@ -6,7 +6,11 @@ from stars.scoring import (
     ScoredForecast,
     WeatherData,
     calculate_astronomy_score,
+    cloud_factor,
+    darkness_factor,
     is_dark_enough,
+    quality_score,
+    weather_modifier,
 )
 
 
@@ -308,3 +312,100 @@ class TestIsDarkEnough:
     def test_custom_threshold_civil(self):
         assert is_dark_enough(-6.0, astronomical_darkness_threshold=-6.0) is True
         assert is_dark_enough(-5.9, astronomical_darkness_threshold=-6.0) is False
+
+
+class TestDarknessFactor:
+    def test_civil_twilight_is_zero(self):
+        assert darkness_factor(-6.0) == 0.0
+
+    def test_nautical_twilight_is_half(self):
+        assert darkness_factor(-12.0) == pytest.approx(0.5)
+
+    def test_astronomical_is_one(self):
+        assert darkness_factor(-18.0) == 1.0
+
+    def test_daytime_is_zero(self):
+        assert darkness_factor(0.0) == 0.0
+
+    def test_deep_dark_clamps_at_one(self):
+        assert darkness_factor(-30.0) == 1.0
+
+
+class TestCloudFactor:
+    def test_very_dark_full_credit_within_allowance(self):
+        # darkness=1 -> allowance 10; 8% cloud is under it, full credit.
+        assert cloud_factor(8.0, 1.0) == 1.0
+
+    def test_very_dark_reaches_zero_at_span(self):
+        # darkness=1 -> allowance 10; 55% cloud is allowance + 45 span -> 0.
+        assert cloud_factor(55.0, 1.0) == 0.0
+
+    def test_very_dark_midpoint(self):
+        # darkness=1 -> allowance 10; 32.5% cloud -> excess 22.5 / 45 -> 0.5.
+        assert cloud_factor(32.5, 1.0) == pytest.approx(0.5)
+
+    def test_ok_dark_full_credit_within_allowance(self):
+        # darkness=0.5 -> allowance 7.5; 4% cloud is under it, full credit.
+        assert cloud_factor(4.0, 0.5) == 1.0
+
+
+class TestWeatherModifier:
+    def _ideal(self) -> WeatherData:
+        return WeatherData(
+            cloud_area_fraction=0.0,
+            relative_humidity=40.0,
+            fog_area_fraction=0.0,
+            wind_speed=1.0,
+            air_temperature=5.0,
+            dew_point_temperature=-2.0,
+            air_pressure_at_sea_level=1020.0,
+        )
+
+    def _poor(self) -> WeatherData:
+        return WeatherData(
+            cloud_area_fraction=0.0,
+            relative_humidity=100.0,
+            fog_area_fraction=100.0,
+            wind_speed=100.0,
+            air_temperature=5.0,
+            dew_point_temperature=5.0,
+            air_pressure_at_sea_level=1000.0,
+        )
+
+    def test_within_bounds_ideal(self):
+        m = weather_modifier(self._ideal())
+        assert 0.7 <= m <= 1.0
+
+    def test_within_bounds_poor(self):
+        m = weather_modifier(self._poor())
+        assert 0.7 <= m <= 1.0
+
+    def test_ideal_is_full(self):
+        assert weather_modifier(self._ideal()) == pytest.approx(1.0)
+
+
+class TestQualityScore:
+    def _ideal(self, cloud: float = 0.0) -> WeatherData:
+        return WeatherData(
+            cloud_area_fraction=cloud,
+            relative_humidity=40.0,
+            fog_area_fraction=0.0,
+            wind_speed=1.0,
+            air_temperature=5.0,
+            dew_point_temperature=-2.0,
+            air_pressure_at_sea_level=1020.0,
+        )
+
+    def test_ideal_deep_dark_near_100(self):
+        assert quality_score(self._ideal(), -18.0) > 90.0
+
+    def test_ideal_nautical_near_50(self):
+        q = quality_score(self._ideal(), -12.0)
+        assert 45.0 < q < 55.0
+
+    def test_cloud_drags_quality_down(self):
+        q = quality_score(self._ideal(cloud=40.0), -18.0)
+        assert 25.0 < q < 45.0
+
+    def test_not_dark_is_zero(self):
+        assert quality_score(self._ideal(), -3.0) == 0.0

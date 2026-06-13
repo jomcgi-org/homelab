@@ -35,6 +35,44 @@ class ScoredForecast(BaseModel):
     symbol: str = ""
 
 
+def _humidity_score(weather: WeatherData) -> float:
+    """Relative-humidity sub-score (0-100). Lifted verbatim from the inline
+    humidity branch of calculate_astronomy_score; reused by weather_modifier."""
+    if weather.relative_humidity < 70:
+        return 100
+    if weather.relative_humidity < 85:
+        return 100 - (weather.relative_humidity - 70) * 3.33
+    return max(0, 50 - (weather.relative_humidity - 85) * 3.33)
+
+
+def _fog_score(weather: WeatherData) -> float:
+    """Fog sub-score (0-100). Lifted verbatim from the inline fog branch."""
+    if weather.fog_area_fraction < 5:
+        return 100
+    if weather.fog_area_fraction < 20:
+        return 100 - (weather.fog_area_fraction - 5) * 3.33
+    return max(0, 50 - (weather.fog_area_fraction - 20) * 1.67)
+
+
+def _wind_score(weather: WeatherData) -> float:
+    """Wind sub-score (0-100). Lifted verbatim from the inline wind branch."""
+    if weather.wind_speed < 5:
+        return 100
+    if weather.wind_speed < 10:
+        return 100 - (weather.wind_speed - 5) * 10
+    return max(0, 50 - (weather.wind_speed - 10) * 5)
+
+
+def _dew_score(weather: WeatherData) -> float:
+    """Dew-spread sub-score (0-100). Lifted verbatim from the inline dew branch."""
+    dew_spread = weather.air_temperature - weather.dew_point_temperature
+    if dew_spread > 5:
+        return 100
+    if dew_spread > 2:
+        return 100 - (5 - dew_spread) * 16.67
+    return max(0, 50 - (2 - dew_spread) * 25)
+
+
 def calculate_astronomy_score(weather: WeatherData) -> float:
     """Calculate astronomy suitability score (0-100).
 
@@ -47,34 +85,10 @@ def calculate_astronomy_score(weather: WeatherData) -> float:
     else:
         cloud_score = max(0, 50 - (weather.cloud_area_fraction - 50))
 
-    if weather.relative_humidity < 70:
-        humidity_score = 100
-    elif weather.relative_humidity < 85:
-        humidity_score = 100 - (weather.relative_humidity - 70) * 3.33
-    else:
-        humidity_score = max(0, 50 - (weather.relative_humidity - 85) * 3.33)
-
-    if weather.fog_area_fraction < 5:
-        fog_score = 100
-    elif weather.fog_area_fraction < 20:
-        fog_score = 100 - (weather.fog_area_fraction - 5) * 3.33
-    else:
-        fog_score = max(0, 50 - (weather.fog_area_fraction - 20) * 1.67)
-
-    if weather.wind_speed < 5:
-        wind_score = 100
-    elif weather.wind_speed < 10:
-        wind_score = 100 - (weather.wind_speed - 5) * 10
-    else:
-        wind_score = max(0, 50 - (weather.wind_speed - 10) * 5)
-
-    dew_spread = weather.air_temperature - weather.dew_point_temperature
-    if dew_spread > 5:
-        dew_score = 100
-    elif dew_spread > 2:
-        dew_score = 100 - (5 - dew_spread) * 16.67
-    else:
-        dew_score = max(0, 50 - (2 - dew_spread) * 25)
+    humidity_score = _humidity_score(weather)
+    fog_score = _fog_score(weather)
+    wind_score = _wind_score(weather)
+    dew_score = _dew_score(weather)
 
     pressure_bonus = 0
     if weather.air_pressure_at_sea_level > 1015:
@@ -89,6 +103,56 @@ def calculate_astronomy_score(weather: WeatherData) -> float:
         + pressure_bonus
     )
     return min(100, max(0, weighted))
+
+
+CIVIL_TWILIGHT_DEG = -6.0
+ASTRONOMICAL_DEG = -18.0
+CLOUD_FALLOFF_SPAN = 45.0  # cloud % beyond the darkness-scaled allowance at which the cloud factor reaches 0
+
+
+def darkness_factor(sun_elevation_deg: float) -> float:
+    """Continuous darkness 0..1: 0 at civil twilight (-6 deg), 1 at astronomical
+    darkness (-18 deg); nautical (-12 deg) lands at 0.5 (ADR 007)."""
+    if sun_elevation_deg >= CIVIL_TWILIGHT_DEG:
+        return 0.0
+    if sun_elevation_deg <= ASTRONOMICAL_DEG:
+        return 1.0
+    return (CIVIL_TWILIGHT_DEG - sun_elevation_deg) / (
+        CIVIL_TWILIGHT_DEG - ASTRONOMICAL_DEG
+    )
+
+
+def cloud_factor(cloud_area_fraction: float, darkness: float) -> float:
+    """Cloud 0..1 with a darkness-scaled allowance: full credit up to ~5% cloud
+    when only ok-dark and ~10% when very dark, then linear falloff (ADR 007).
+    Deeper darkness forgives more cloud."""
+    allowance = 5.0 + 5.0 * darkness
+    excess = max(0.0, cloud_area_fraction - allowance)
+    return max(0.0, 1.0 - excess / CLOUD_FALLOFF_SPAN)
+
+
+def weather_modifier(weather: WeatherData) -> float:
+    """Non-cloud weather (humidity, fog, wind, dew) folded into a 0.7..1.0
+    modifier so it nudges quality without overpowering the darkness/cloud core.
+    Reuses the same per-component sub-scores as calculate_astronomy_score."""
+    avg = (
+        _humidity_score(weather)
+        + _fog_score(weather)
+        + _wind_score(weather)
+        + _dew_score(weather)
+    ) / 4.0  # each is 0..100
+    return 0.7 + 0.3 * (avg / 100.0)
+
+
+def quality_score(weather: WeatherData, sun_elevation_deg: float) -> float:
+    """Continuous stargazing quality 0..100 = D x C x W (ADR 007). 0 when the
+    sky is not at least civil-dark."""
+    d = darkness_factor(sun_elevation_deg)
+    if d <= 0.0:
+        return 0.0
+    c = cloud_factor(weather.cloud_area_fraction, d)
+    w = weather_modifier(weather)
+    return d * c * w * 100.0
 
 
 def is_dark_enough(
