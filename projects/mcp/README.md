@@ -19,6 +19,7 @@ projects/mcp/
     │   ├── Chart.yaml          # Chart metadata; declares mcp-stack + homelab-library deps
     │   ├── values.yaml         # Chart defaults (most feature flags off, auth config)
     │   └── templates/
+    │       ├── _helpers.tpl        # Helm named template helpers
     │       ├── httproute.yaml      # Gateway API HTTPRoute for mcp.jomcgi.dev
     │       ├── networkpolicy.yaml  # Cross-namespace ingress policy (disabled; see below)
     │       └── onepassworditem.yaml # 1Password secret sync (JWT_SECRET_KEY, etc.)
