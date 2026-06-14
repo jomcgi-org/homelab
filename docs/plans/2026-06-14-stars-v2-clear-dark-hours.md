@@ -13,7 +13,7 @@
 - A **clear-dark hour** = `sun_elevation_deg < -12.0` AND `cloud_area_fraction < 10.0`.
 - A **dark hour** (denominator) = `sun_elevation_deg < -12.0`.
 - Accumulator sufficient stats per `(site_id, month)`: `dark_hours` (count), `clear_dark_hours` (count). Headline metric = `clear_dark_hours`. Clarity rate = `clear_dark_hours / dark_hours`.
-- Light pollution → **World Atlas 2015** (single-band data): `https://datapub.gfz-potsdam.de/download/10.5880.GFZ.1.4.2016.001/World_Atlas_2015.zip` → `World_Atlas_2015.tif` (EPSG:4326, mcd/m², **lower = darker**; mask sea/nodata before percentiling). NOTE: the stargazer PVC files `scotland_lp_2024.tif` / `europe_lp_2024.tif` are **3-band RGB renders, not data** (ambiguous colormap, the source of the v1 inversion bug), do NOT sample them.
+- Light pollution → **local `scotland_lp_2024.tif`** from the stargazer PVC (`kubectl cp -n stargazer <api-pod>:/data/processed/scotland_lp_2024.tif -c api ...`), 2024 data, EPSG:4326, ~900 m px. It is a 3-band RGB render using a **discrete 8-stop legend** (validated lossless: median nearest-color distance 0.0). Classify each pixel by nearest match to these swatches, darkest→brightest: `black(0,0,0) pristine`, `gray(66,66,66) excellent`, `blue(33,84,216) rural`, `green(31,161,42)`, `yellow(184,166,37)`, `orange(253,150,80)`, `pink(251,153,138)`, `white(242,242,242)`. **Use float/int32 distance (uint8 squared overflows int16).** Keep the **darkest zones (black + gray + blue)** = the user's "excellent and better" cutoff (verified: Cairngorms/Assynt=gray, Galloway=blue dark-sky-park; cities=pink/orange). NOTE the `color_palette.json` on the PVC is a mismatched legend, ignore it; the colorbar swatches above are authoritative. (World Atlas 2015 download is the fallback only if this raster is unavailable.)
 - Roads → **local, no download**: copy `scotland-roads.geojson` (193 MB) from the stargazer PVC (`kubectl cp -n stargazer <api-pod>:/data/processed/scotland-roads.geojson -c api ...`); reproject to EPSG:27700; distance test via `STRtree.query(points, predicate="dwithin", distance=2000)`. (Fallback if it's gone: Geofabrik `scotland-latest-free.shp.zip` → `gis_osm_roads_free_1.shp`.)
 - Altitude (optional) → SRTM tiles on the stargazer PVC (`/data/raw/srtm_tiles/`) can populate real `altitude_m` (currently hardcoded 0).
 - Grid mesh spacing: **2 km**; aggressive dark filter = keep points with World Atlas value below the **excellent** cutoff (~0.014 mcd/m², ratio < 0.08 of the 0.174 natural reference) AND within the **darkest 25%** of road-accessible candidates (whichever is stricter), targeting ~150–400 genuinely-dark accessible sites.
@@ -196,14 +196,14 @@ Commit: `feat(monolith): clear-dark heatmap + per-site monthly graph (v2)`.
 
 1. Build the Scotland-land mesh at **2 km** spacing (reuse the existing land/Scotland point-in-polygon from `generate_grid.py`, or import its helpers).
 2. **Road filter:** load `gis_osm_roads_free_1.shp`, reproject roads + mesh points to EPSG:27700, `STRtree.query(points, predicate="dwithin", distance=2000)`; keep points within 2 km of a road. Optionally drop `fclass in {path, footway, steps, cycleway, bridleway}` so "road" means drivable.
-3. **Dark filter:** `rasterio.open("World_Atlas_2015.tif")`, `src.sample([(lon,lat)...])`; mask `nodata`/non-finite and any point whose value is ~0 only because it's off-land (already excluded by the land mesh). Keep points with `value < 0.014` mcd/m² AND in the darkest 25% of the road-accessible set (whichever is stricter).
-4. Emit `grid.json`: `{id: "scotland-NNNN", name: null, lat, lon, altitude_m: 0, lp_zone, sky_brightness_mcd_m2}` where `lp_zone` is bucketed from the World Atlas value (e.g. `pristine/excellent/good`). Keep ids stable-sorted by (lat, lon).
+3. **Dark filter:** open `scotland_lp_2024.tif` (GDAL), read the 3 RGB bands, classify each mesh point's pixel by **nearest match to the 8 legend swatches** (use float distance, NOT int16). Keep points whose zone is in `{black, gray, blue}` (pristine/excellent/rural). The zones are exact (median distance 0.0), so no percentile needed; if the kept count is too high, tighten to `{black, gray}`.
+4. Emit `grid.json`: `{id: "scotland-NNNN", name, lat, lon, altitude_m, lp_zone}` where `lp_zone` is the classified zone name (`pristine/excellent/rural`). `altitude_m` from SRTM tiles if wired (else 0). Keep ids stable-sorted by (lat, lon).
 
-**Testable pure helpers** (unit-tested without the big files): `lp_zone_for(value)`, `keep_dark(values, abs_cutoff, pct)`, the mesh generator. Mock/skip the raster + shapefile I/O.
+**Testable pure helpers** (unit-tested without the big files): `classify_zone(rgb) -> zone` (nearest-swatch), `is_dark_zone(zone) -> bool`, the mesh generator. Mock/skip the raster + roads I/O.
 
-Document the run in the module docstring (download URLs, `unzip`, run command, expected count).
+Document the run in the module docstring (kubectl cp commands for the PVC raster + roads, run command, expected count).
 
-Commit: `feat(monolith): stars grid-v2 generator (road + World Atlas dark filter)`.
+Commit: `feat(monolith): stars grid-v2 generator (road + LP-zone dark filter)`.
 
 ---
 
