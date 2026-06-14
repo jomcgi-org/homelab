@@ -7,6 +7,7 @@ prod, not in these SQLite-friendly unit tests.
 
 from datetime import date
 
+from ships.heat import bank_day_sql
 from ships.retention import (
     create_partition_sql,
     drop_partition_sql,
@@ -103,6 +104,16 @@ def test_drop_partition_sql():
         drop_partition_sql(date(2026, 6, 11))
         == "DROP TABLE IF EXISTS ships.positions_20260611"
     )
+
+
+def test_bank_precedes_drop_for_same_day():
+    day = date(2026, 6, 1)
+    # Both reference the same day; maintenance runs bank then drop in one txn.
+    # The bank reads the parent table by range (no child partition name) so a
+    # retry after the drop reads zero rows; the drop targets the child by name.
+    assert "positions" in bank_day_sql(day, 0.005, 0.0075, 1.0)
+    assert "positions_20260601" not in bank_day_sql(day, 0.005, 0.0075, 1.0)
+    assert "positions_20260601" in drop_partition_sql(day)
 
 
 def _days(n: int):

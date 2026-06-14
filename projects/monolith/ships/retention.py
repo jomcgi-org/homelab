@@ -22,6 +22,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlmodel import Session, text
 
+from ships.heat import LAT_STEP, LON_STEP, MIN_SPEED_KN, bank_day_sql
+
 logger = logging.getLogger("ships")
 
 # Keep position data for this many days. A partition is only dropped once its
@@ -119,11 +121,21 @@ def _run_partition_maintenance() -> None:
         try:
             for day in partitions_to_create(today, PARTITION_AHEAD_DAYS):
                 session.execute(text(create_partition_sql(day)))
-            for day in partitions_to_drop(today, RETENTION_DAYS, DROP_SCAN_DAYS):
+            dropped = partitions_to_drop(today, RETENTION_DAYS, DROP_SCAN_DAYS)
+            for day in dropped:
+                # Bank the day's per-cell counts into the all-time accumulator
+                # BEFORE dropping the partition, in this same transaction. The
+                # bank reads the day's slice from the parent table by range, so a
+                # retry after the drop reads zero rows (idempotent).
+                session.execute(
+                    text(bank_day_sql(day, LAT_STEP, LON_STEP, MIN_SPEED_KN))
+                )
                 session.execute(text(drop_partition_sql(day)))
             session.commit()
             logger.info(
-                "ships partition maintenance ok (retention=%dd)", RETENTION_DAYS
+                "ships partition maintenance ok (retention=%dd, banked+dropped %d days)",
+                RETENTION_DAYS,
+                len(dropped),
             )
         except Exception:
             logger.exception("ships partition maintenance failed")
