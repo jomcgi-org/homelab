@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import HikesMap from "$lib/public/components/hikes/HikesMap.svelte";
+  import BrutalistSelect from "$lib/public/components/BrutalistSelect.svelte";
   import {
     filterWalksByCharacteristics,
     filterWalksByLocation,
@@ -35,6 +36,13 @@
     { key: "torridon", label: "Wester Ross", lat: 57.5841, lon: -5.5325 },
   ];
   const GEO_SENTINEL = "__me__";
+  // Flat option list for the brutalist "Near" dropdown: the two specials first,
+  // then the density-ordered region presets.
+  const NEAR_OPTIONS = [
+    { value: "", label: "Anywhere" },
+    { value: GEO_SENTINEL, label: "My location" },
+    ...HIKE_LOCATIONS.map((l) => ({ value: l.key, label: l.label })),
+  ];
   // Fixed radius for a region preset. The presets already pick a coarse area, so
   // a single generous radius beats a fiddly per-use input (regions span tens of
   // km; this captures the cluster without spilling into the next one).
@@ -253,16 +261,16 @@
         </p>
       </div>
 
-      <label class="field near-field"
-        >Near
-        <select bind:value={nearKey} onchange={onNearChange}>
-          <option value="">Anywhere</option>
-          <option value={GEO_SENTINEL}>My location</option>
-          {#each HIKE_LOCATIONS as loc (loc.key)}
-            <option value={loc.key}>{loc.label}</option>
-          {/each}
-        </select>
-      </label>
+      <div class="field near-field">
+        <span class="field-label" id="near-label">Near</span>
+        <BrutalistSelect
+          id="near"
+          label="Near"
+          options={NEAR_OPTIONS}
+          bind:value={nearKey}
+          onchange={onNearChange}
+        />
+      </div>
       {#if geoError}
         <p class="geo-error" role="alert">{geoError}</p>
       {/if}
@@ -538,8 +546,7 @@
     color: var(--ink-3);
   }
 
-  .field input,
-  .field select {
+  .field input {
     font-family: var(--mono);
     font-size: 13px;
     padding: 7px 8px;
