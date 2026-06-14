@@ -21,6 +21,8 @@ resources:
   - ./seaweedfs
   - ./signoz
   - ./signoz-addons # Must be after signoz
-  - ./temporal # Event-sourced lakehouse (ADR 015); sync-wave 2, needs temporal-databases first
-  - ./temporal-databases # CNPG Database CRs for temporal + temporal_visibility; sync-wave 1
-  - ./warehouse-bucket # SeaweedFS warehouse bucket for the Iceberg lakehouse (platform/004)
+  # ./temporal and ./warehouse-bucket removed: lakehouse/Temporal stack
+  # decommissioned (superseded by ../loom). temporal-databases is retained
+  # transiently with its Database CRs flipped to ensure:absent so CNPG drops the
+  # temporal/temporal_visibility/lakehouse databases; removed in a follow-up.
+  - ./temporal-databases

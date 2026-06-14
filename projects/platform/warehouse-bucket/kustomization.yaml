@@ -1,9 +1,0 @@
-# Kustomization for the warehouse-bucket ArgoCD Application.
-#
-# Plain kustomize (no Helm): a single idempotent Job that creates the
-# `warehouse` S3 bucket on the existing SeaweedFS deployment.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-resources:
-  - job.yaml

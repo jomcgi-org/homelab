@@ -23,4 +23,5 @@ spec:
     name: monolith-pg
   name: lakehouse
   owner: app
-  ensure: present
+  # Decommissioning: absent tells CNPG to DROP the database. See database-temporal.yaml.
+  ensure: absent
