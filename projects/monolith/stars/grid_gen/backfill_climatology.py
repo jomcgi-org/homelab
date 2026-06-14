@@ -1,16 +1,22 @@
-"""Offline ERA5 climatology backfill for the stars historical heatmap (ADR 009).
+"""Offline ERA5 climatology backfill for the stars historical heatmap (stars v2).
 
-Fetches ~5yr of hourly ERA5 (Open-Meteo archive) per grid point, scores each
-dark hour with the same Q = D x C x W model as the live pipeline, and aggregates
-sufficient statistics by month-of-year into climatology.json.
+Fetches ~5yr of hourly ERA5 (Open-Meteo archive) per grid point and counts
+clear-dark hours by month-of-year into climatology.json. A dark hour is one
+where the sun is below -12 deg (nautical/astronomical); a clear-dark hour is a
+dark hour whose cloud cover is under 10%. Per (site_id, month-of-year) we emit
+two sufficient stats: dark_hours (the denominator) and clear_dark_hours (the
+headline metric). Clarity rate downstream = clear_dark_hours / dark_hours.
+
+Output rows: {site_id, month, dark_hours, clear_dark_hours}.
 
 Resumable + hourly-rate-limit aware: saves after every point, skips already-done
 sites on restart, and sleeps until the next hour when Open-Meteo returns 429
 (its limit is hourly), so a single run self-paces over a few hours to cover all
-points. Pure stdlib: NOAA solar elevation (so D matches astral within tolerance)
-and the Q-factor formulas replicated from projects/monolith/stars/scoring.py
-(KEEP IN SYNC). Output is uploaded to SeaweedFS (s3://stars/climatology.json) and
-ingested by the stars.load_climatology job.
+points. Pure stdlib: NOAA solar elevation (so the dark-hour test matches astral
+within tolerance). The -12 deg / 10% thresholds are replicated from
+projects/monolith/stars/scoring.py (KEEP IN SYNC with is_clear_dark_hour).
+Output is uploaded to SeaweedFS (s3://stars/climatology.json) and ingested by
+the stars.load_climatology job.
 """
 
 import json
@@ -25,7 +31,10 @@ from datetime import datetime
 
 ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 START, END = "2021-01-01", "2025-12-31"
-CIVIL, ASTRO, CLOUD_SPAN = -6.0, -18.0, 45.0
+# KEEP IN SYNC with projects/monolith/stars/scoring.py (is_clear_dark_hour):
+# a dark hour is sun < -12 deg, a clear-dark hour is dark AND cloud < 10%.
+NAUTICAL_DARK_DEG = -12.0
+CLEAR_CLOUD_MAX_PCT = 10.0
 OUT = "/tmp/climatology.json"
 
 # Adaptive 429 backoff, persisted across points. Open-Meteo's short-window
@@ -66,78 +75,26 @@ def sun_elevation_deg(lat, lon, dt):
     return 90.0 - math.degrees(math.acos(max(-1.0, min(1.0, cz))))
 
 
-def darkness_factor(e):
-    if e >= CIVIL:
-        return 0.0
-    if e <= ASTRO:
-        return 1.0
-    return (CIVIL - e) / (CIVIL - ASTRO)
-
-
-def cloud_factor(cloud, d):
-    return max(0.0, 1.0 - max(0.0, cloud - (5.0 + 5.0 * d)) / CLOUD_SPAN)
-
-
-def _humidity_score(h):
-    if h < 70:
-        return 100.0
-    if h < 85:
-        return 100.0 - (h - 70) * 3.33
-    return max(0.0, 50.0 - (h - 85) * 3.33)
-
-
-def _wind_score(w):
-    if w < 5:
-        return 100.0
-    if w < 10:
-        return 100.0 - (w - 5) * 10.0
-    return max(0.0, 50.0 - (w - 10) * 5.0)
-
-
-def _dew_score(spread):
-    if spread > 5:
-        return 100.0
-    if spread > 2:
-        return 100.0 - (5 - spread) * 16.67
-    return max(0.0, 50.0 - (2 - spread) * 25.0)
-
-
-def weather_modifier(humidity, wind, dew_spread):
-    avg = (
-        _humidity_score(humidity) + 100.0 + _wind_score(wind) + _dew_score(dew_spread)
-    ) / 4.0
-    return 0.7 + 0.3 * (avg / 100.0)
-
-
 def score_point(lat, lon, hourly):
-    times, cc, temp = hourly["time"], hourly["cloud_cover"], hourly["temperature_2m"]
-    rh, wind, dew = (
-        hourly["relative_humidity_2m"],
-        hourly["wind_speed_10m"],
-        hourly["dew_point_2m"],
-    )
+    """Count clear-dark hours per month-of-year for one grid point.
+
+    Walks every hourly sample, keeps the dark ones (sun < -12 deg), and tallies
+    dark_hours plus clear_dark_hours (dark AND cloud < 10%). Returns
+    {month: [dark_hours, clear_dark_hours]}. Thresholds KEEP IN SYNC with
+    scoring.py is_clear_dark_hour.
+    """
+    times, cc = hourly["time"], hourly["cloud_cover"]
     by_month = {}
     for i, t in enumerate(times):
-        if cc[i] is None or temp[i] is None or dew[i] is None:
+        if cc[i] is None:
             continue
         dt = datetime.fromisoformat(t)
-        d = darkness_factor(sun_elevation_deg(lat, lon, dt))
-        if d <= 0:
-            continue
-        c = cloud_factor(cc[i], d)
-        q = (
-            d
-            * c
-            * weather_modifier(rh[i] or 100, wind[i] or 0, temp[i] - dew[i])
-            * 100.0
-        )
-        if q <= 0:
-            continue
-        b = by_month.setdefault(dt.month, [0, 0.0, 0.0, 0.0])
-        b[0] += 1
-        b[1] += q
-        b[2] += d
-        b[3] += c
+        if sun_elevation_deg(lat, lon, dt) >= NAUTICAL_DARK_DEG:
+            continue  # not a dark hour: skip
+        b = by_month.setdefault(dt.month, [0, 0])
+        b[0] += 1  # dark_hours
+        if cc[i] < CLEAR_CLOUD_MAX_PCT:
+            b[1] += 1  # clear_dark_hours
     return by_month
 
 
@@ -148,9 +105,8 @@ def fetch(lat, lon):
             "longitude": lon,
             "start_date": START,
             "end_date": END,
-            "hourly": "cloud_cover,temperature_2m,relative_humidity_2m,wind_speed_10m,dew_point_2m",
+            "hourly": "cloud_cover",
             "timezone": "UTC",
-            "wind_speed_unit": "ms",
         }
     )
     transient = 0
@@ -196,17 +152,15 @@ def main():
         if hourly is None:
             print(f"  skipped {site['id']}", file=sys.stderr)
             continue
-        for month, (cnt, sq, sd, sc) in score_point(
+        for month, (dark_hours, clear_dark_hours) in score_point(
             site["lat"], site["lon"], hourly
         ).items():
             out.append(
                 {
                     "site_id": site["id"],
                     "month": month,
-                    "window_count": cnt,
-                    "sum_q": round(sq, 3),
-                    "sum_darkness": round(sd, 3),
-                    "sum_clarity": round(sc, 3),
+                    "dark_hours": dark_hours,
+                    "clear_dark_hours": clear_dark_hours,
                 }
             )
         json.dump(out, open(OUT, "w"))  # incremental save after every point
