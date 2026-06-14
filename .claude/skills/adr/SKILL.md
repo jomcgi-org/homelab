@@ -100,7 +100,32 @@ Reference `docs/security.md` for baseline. Document any deviations.
 
 ````
 
-### Step 3: Commit with conventional commit format
+### Step 3: Register the ADR (required, CI-enforced)
+
+A new ADR file is not enough. Two more files must be updated or the
+`//projects/websites/docs.jomcgi.dev:config_links_test` test fails CI (it asserts
+every ADR markdown file has a docs-site sidebar entry):
+
+1. **Regenerate the docs-site sidebar.** Write the ADR's first-line heading as
+   `# ADR NNN: <Title>` first (the generator derives the sidebar label from it),
+   then run:
+
+   ```bash
+   bash bazel/images/generate-docs-sidebar.sh
+   ```
+
+   This scans `docs/decisions/*/*.md` and rewrites
+   `projects/websites/docs.jomcgi.dev/.vitepress/adr-sidebar.json`. That file is
+   `.prettierignore`'d, so its compact one-line form is canonical: do not
+   reformat it.
+
+2. **Add an index row.** Add a row for the new ADR to its category table in
+   `docs/decisions/index.md`.
+
+### Step 4: Commit with conventional commit format
+
+Commit the ADR file, the regenerated `adr-sidebar.json`, and the updated
+`index.md` together.
 
 ```bash
 git commit -m "docs(adr): <short description>"
@@ -131,3 +156,4 @@ When a decision is reversed or evolved:
 - **Diagrams**: Mermaid for all architecture and flow diagrams (renders natively on GitHub)
 - **Sections**: Problem, Decision, Architecture, Alternatives, Security, Risks, References
 - **No work tracking**: implementation lives in `docs/plans/` and PRs, not in the ADR
+- **Three files per ADR**: the new ADR file, the regenerated `adr-sidebar.json`, and the `index.md` row. CI fails if the sidebar entry is missing (see Step 3).
