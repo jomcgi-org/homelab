@@ -482,7 +482,5 @@ class TestContentColumn:
         session.commit()
 
         assert reconciler._backfill_content() == 0
-        note = session.execute(
-            select(Note).where(Note.note_id == "ghost")
-        ).scalar_one()
+        note = session.execute(select(Note).where(Note.note_id == "ghost")).scalar_one()
         assert note.content is None
