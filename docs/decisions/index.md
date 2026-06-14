@@ -39,22 +39,23 @@ ADRs document significant architectural decisions and their context.
 
 ## Platform
 
-| ADR                                                                                                            | Decision                                                                        |
-| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [001 - Obsidian Vault Monolith Migration](platform/001-obsidian-vault-monolith-migration.md)                   | Migrate Obsidian vault into the monolith on TigerFS                             |
-| [002 - CDN-Cached Data Fetching](platform/002-cdn-cached-data-fetching.md)                                     | Public JSON endpoints cache at the Cloudflare edge; clients poll cached         |
-| [003 - CDN Cache Rule Scoped to `public.jomcgi.dev`](platform/003-cdn-cache-hostname-rule.md)                  | Scope CDN cache rule to public.jomcgi.dev (supersedes 002 partially)            |
-| [004 - Iceberg-on-SeaweedFS Lakehouse with Hot-Swap Quack Serving](platform/004-iceberg-lakehouse-hot-swap.md) | Event-sourced lakehouse; NATS → Iceberg → Quack hot-swap; partially evolves 001 |
+| ADR                                                                                                            | Decision                                                                                         |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| [001 - Obsidian Vault Monolith Migration](platform/001-obsidian-vault-monolith-migration.md)                   | Migrate Obsidian vault into the monolith on TigerFS                                              |
+| [002 - CDN-Cached Data Fetching](platform/002-cdn-cached-data-fetching.md)                                     | Public JSON endpoints cache at the Cloudflare edge; clients poll cached                          |
+| [003 - CDN Cache Rule Scoped to `public.jomcgi.dev`](platform/003-cdn-cache-hostname-rule.md)                  | Scope CDN cache rule to public.jomcgi.dev (supersedes 002 partially)                             |
+| [004 - Iceberg-on-SeaweedFS Lakehouse with Hot-Swap Quack Serving](platform/004-iceberg-lakehouse-hot-swap.md) | Event-sourced lakehouse; NATS → Iceberg → Quack hot-swap; partially evolves 001                  |
 | [005 - Per-PR Preview Environments](platform/005-per-pr-preview-environments.md)                               | Ephemeral monolith previews: CoW Postgres clone, muted side effects, ApplicationSet PR generator |
-| [006 - Decommission Obsidian via a Postgres Interim](platform/006-obsidian-decommission-postgres-interim.md)   | Kill Obsidian now: note body authoritative in Postgres, web UI editor; interim ahead of 004 |
+| [006 - Decommission Obsidian via a Postgres Interim](platform/006-obsidian-decommission-postgres-interim.md)   | Kill Obsidian now: note body authoritative in Postgres, web UI editor; interim ahead of 004      |
+| [007 - SeaweedFS Bucket Provisioning via COSI](platform/007-seaweedfs-bucket-provisioning-cosi.md)             | Declarative buckets + lifecycle + per-app creds via COSI; replaces create-only weed-shell Jobs   |
 
 ## Security
 
-| ADR                                                                                | Decision                                                        |
-| ---------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| [001 - Bazel Semgrep](security/001-bazel-semgrep.md)                               | Semgrep SAST integrated via Bazel rules                         |
-| [002 - Semgrep Rule Generation via RL](security/002-semgrep-rule-generation-rl.md) | RL-finetuned Qwen 3.5 9B for generating Semgrep rules from CVEs |
-| [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                  | User-space kernel isolation for agent sandbox pods via runsc    |
+| ADR                                                                                            | Decision                                                                               |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [001 - Bazel Semgrep](security/001-bazel-semgrep.md)                                           | Semgrep SAST integrated via Bazel rules                                                |
+| [002 - Semgrep Rule Generation via RL](security/002-semgrep-rule-generation-rl.md)             | RL-finetuned Qwen 3.5 9B for generating Semgrep rules from CVEs                        |
+| [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                              | User-space kernel isolation for agent sandbox pods via runsc                           |
 | [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets |
 
 ## Services
@@ -66,13 +67,13 @@ ADRs document significant architectural decisions and their context.
 
 ## Tooling
 
-| ADR                                                                           | Decision                                                                                |
-| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| [001 - OCI Tool Distribution](tooling/001-oci-tool-distribution.md)           | Multi-arch OCI image for developer tools, eliminating local Bazel                       |
-| [002 - Service Deployment Tooling](tooling/002-service-deployment-tooling.md) | Copier template to scaffold new services, eliminating per-service boilerplate           |
-| [003 - Spec-First CLI and Skills](tooling/003-spec-first-cli-and-skills.md)   | OpenAPI as source of truth; CLI commands and Claude skills are derived                  |
-| [004 - OCaml Rules for Semgrep](tooling/004-ocaml-rules-for-semgrep.md)       | Scale the custom bazel/ocaml ruleset (not obazl); ppx first, per-arch native toolchains |
-| [005 - tOyCaml Demonstrator](tooling/005-toycaml-demonstrator.md)             | Engine-shaped demonstrator exercising the ruleset before Semgrep lands                  |
-| [006 - Multi-arch OCaml Toolchains](tooling/006-extensible-multiarch-ocaml-toolchains.md) | Data-driven arch registry; per-arch toolchain registration gated on pool verification |
-| [007 - OCaml BUILD Generation](tooling/007-ocaml-build-file-generation-gazelle.md) | Gazelle-based BUILD file generation for OCaml sources                              |
-| [008 - CLI Multi-platform Distribution](tooling/008-cli-multiplatform-distribution.md) | One Bazel graph, native execution platforms (cloud arm64, self-hosted darwin); no cross-compilation, QEMU, or wasm |
+| ADR                                                                                       | Decision                                                                                                           |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| [001 - OCI Tool Distribution](tooling/001-oci-tool-distribution.md)                       | Multi-arch OCI image for developer tools, eliminating local Bazel                                                  |
+| [002 - Service Deployment Tooling](tooling/002-service-deployment-tooling.md)             | Copier template to scaffold new services, eliminating per-service boilerplate                                      |
+| [003 - Spec-First CLI and Skills](tooling/003-spec-first-cli-and-skills.md)               | OpenAPI as source of truth; CLI commands and Claude skills are derived                                             |
+| [004 - OCaml Rules for Semgrep](tooling/004-ocaml-rules-for-semgrep.md)                   | Scale the custom bazel/ocaml ruleset (not obazl); ppx first, per-arch native toolchains                            |
+| [005 - tOyCaml Demonstrator](tooling/005-toycaml-demonstrator.md)                         | Engine-shaped demonstrator exercising the ruleset before Semgrep lands                                             |
+| [006 - Multi-arch OCaml Toolchains](tooling/006-extensible-multiarch-ocaml-toolchains.md) | Data-driven arch registry; per-arch toolchain registration gated on pool verification                              |
+| [007 - OCaml BUILD Generation](tooling/007-ocaml-build-file-generation-gazelle.md)        | Gazelle-based BUILD file generation for OCaml sources                                                              |
+| [008 - CLI Multi-platform Distribution](tooling/008-cli-multiplatform-distribution.md)    | One Bazel graph, native execution platforms (cloud arm64, self-hosted darwin); no cross-compilation, QEMU, or wasm |
