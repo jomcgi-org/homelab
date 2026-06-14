@@ -1,0 +1,18 @@
+[Unit]
+Description=Node ingress traffic shaper (CAKE on uplink)
+Documentation=https://github.com/jomcgi/homelab/tree/main/projects/platform/node-traffic-shaper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Inbound ceiling. 940mbit on a 1GbE link keeps the queue inside CAKE (just under
+# line rate) so its per-flow fairness, not the dumb NIC/switch buffer, decides who
+# waits during a saturating pull.
+Environment=BANDWIDTH=940mbit
+ExecStart=/usr/local/sbin/node-traffic-shaper.sh
+ExecStop=/usr/local/sbin/node-traffic-shaper-down.sh
+
+[Install]
+WantedBy=multi-user.target
