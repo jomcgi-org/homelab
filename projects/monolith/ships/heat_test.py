@@ -5,7 +5,9 @@ only (aggregation over ships.positions) and is exercised in prod / CI-against-
 Postgres, never here.
 """
 
-from ships.heat import rollup_insert_sql
+from datetime import date
+
+from ships.heat import bank_day_sql, rollup_insert_sql
 
 
 def test_rollup_insert_sql_counts_distinct_movers():
@@ -33,3 +35,16 @@ def test_rollup_insert_sql_threads_all_params():
     assert "floor(p.lon / 0.02)::int" in sql
     assert "HAVING max(speed) >= 2.5" in sql
     assert "interval '3 days'" in sql
+
+
+def test_bank_day_sql_targets_historical_and_filters_one_day():
+    sql = bank_day_sql(date(2026, 6, 1), 0.005, 0.0075, 1.0)
+    assert "INSERT INTO ships.heat_cells_historical" in sql
+    assert "ON CONFLICT (lat_bin, lon_bin)" in sql
+    assert "count = ships.heat_cells_historical.count + EXCLUDED.count" in sql
+    assert "FROM ships.positions" in sql
+    assert "positions_20260601" not in sql
+    assert "recorded_at >= '2026-06-01'" in sql
+    assert "recorded_at < '2026-06-02'" in sql
+    assert "max(speed) >= 1.0" in sql
+    assert "count(distinct" in sql
