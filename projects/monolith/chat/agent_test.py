@@ -92,7 +92,6 @@ class TestFormatContextMessages:
                     ),
                     Blob(
                         sha256="abc123",
-                        data=b"",
                         content_type="image/png",
                         description="A cat on a keyboard",
                     ),

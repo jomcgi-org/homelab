@@ -129,7 +129,6 @@ class TestSaveMessageWithAttachments:
         blob = session.get(Blob, saved[0].blob_sha256)
         assert blob is not None
         assert blob.description == "A cat"
-        assert blob.data is None  # bytes now in SeaweedFS
 
     @pytest.mark.asyncio
     async def test_embeds_combined_text_and_descriptions(self, store):

@@ -71,7 +71,6 @@ class TestGetBlobHappyPath:
         assert result is not None
         assert isinstance(result, Blob)
         assert result.sha256 == sha
-        assert result.data is None  # bytes now in SeaweedFS, not the data column
         assert result.description == "A test image"
         assert result.content_type == "image/png"
 
@@ -82,7 +81,6 @@ class TestGetBlobHappyPath:
 
         blob = Blob(
             sha256=sha,
-            data=raw,
             content_type="image/jpeg",
             description="A direct blob",
         )
@@ -93,7 +91,7 @@ class TestGetBlobHappyPath:
 
         assert result is not None
         assert result.sha256 == sha
-        assert result.data == raw
+        assert result.content_type == "image/jpeg"
         assert result.description == "A direct blob"
 
 
@@ -119,7 +117,6 @@ class TestGetBlobMissPath:
         session.add(
             Blob(
                 sha256=correct_sha,
-                data=raw,
                 content_type="image/png",
                 description="real blob",
             )
@@ -132,8 +129,8 @@ class TestGetBlobMissPath:
 
 class TestBlobBytesRoutedToSeaweedFS:
     @pytest.mark.asyncio
-    async def test_save_uploads_bytes_to_s3_and_nulls_column(self, store):
-        """Saving a new attachment uploads bytes to SeaweedFS and NULLs data."""
+    async def test_save_uploads_bytes_to_s3_and_keeps_metadata_row(self, store):
+        """Saving a new attachment uploads bytes to SeaweedFS and keeps the metadata row."""
         image_data = b"\x89PNG\r\n\x1a\nrouted"
         sha = hashlib.sha256(image_data).hexdigest()
 
@@ -158,4 +155,4 @@ class TestBlobBytesRoutedToSeaweedFS:
         put.assert_called_once_with(sha, image_data, "image/png")
         blob = store.get_blob(sha)
         assert blob is not None
-        assert blob.data is None
+        assert blob.sha256 == sha

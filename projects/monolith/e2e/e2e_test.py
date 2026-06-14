@@ -267,9 +267,6 @@ class TestMessageStore:
         att, blob = pairs[0]
         assert att.filename == "photo.jpg"
         assert blob.content_type == "image/jpeg"
-        # Bytes now live in SeaweedFS (S3 unset in e2e env, so not uploaded);
-        # the row persists with a NULL data column.
-        assert blob.data is None
 
     @pytest.mark.asyncio
     async def test_upsert_summary_insert_and_update(self, store):

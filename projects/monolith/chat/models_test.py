@@ -179,29 +179,26 @@ class TestBlobModel:
         columns = {c.name for c in Blob.__table__.columns}
         expected = {
             "sha256",
-            "data",
             "content_type",
             "description",
         }
         assert expected == columns
 
     def test_blob_construction(self):
-        """Blob can be constructed with all fields."""
+        """Blob can be constructed with all metadata fields."""
         blob = Blob(
             sha256="deadbeef" * 8,
-            data=b"\x89PNG",
             content_type="image/png",
             description="A photo of a cat",
         )
+        assert blob.sha256 == "deadbeef" * 8
         assert blob.content_type == "image/png"
-        assert blob.data == b"\x89PNG"
         assert blob.description == "A photo of a cat"
 
     def test_blob_description_defaults_empty(self):
         """Blob.description defaults to empty string."""
         blob = Blob(
             sha256="abcd1234" * 8,
-            data=b"",
             content_type="image/gif",
         )
         assert blob.description == ""

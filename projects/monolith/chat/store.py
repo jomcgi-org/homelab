@@ -142,7 +142,6 @@ class MessageStore:
                         self.session.add(
                             Blob(
                                 sha256=sha,
-                                data=None,
                                 content_type=a["content_type"],
                                 description=a.get("description", ""),
                             )

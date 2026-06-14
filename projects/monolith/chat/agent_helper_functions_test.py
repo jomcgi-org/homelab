@@ -298,7 +298,6 @@ class TestFormatContextMessagesAttachments:
                     Attachment(id=1, message_id=5, blob_sha256="aaa", filename="a.png"),
                     Blob(
                         sha256="aaa",
-                        data=b"",
                         content_type="image/png",
                         description="A dog",
                     ),
@@ -307,7 +306,6 @@ class TestFormatContextMessagesAttachments:
                     Attachment(id=2, message_id=5, blob_sha256="bbb", filename="b.png"),
                     Blob(
                         sha256="bbb",
-                        data=b"",
                         content_type="image/png",
                         description="A cat",
                     ),
@@ -341,7 +339,6 @@ class TestFormatContextMessagesAttachments:
                     Attachment(id=1, message_id=7, blob_sha256="ccc", filename="c.png"),
                     Blob(
                         sha256="ccc",
-                        data=b"",
                         content_type="image/png",
                         description="Sunset",
                     ),
