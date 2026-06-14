@@ -41,6 +41,7 @@ from knowledge.gaps import (
     verify_gap,
 )
 from knowledge.gardener import Gardener, _slugify
+from knowledge.indexing import index_note_best_effort
 from knowledge.ingest_queue import IngestQueueItem
 from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
 from knowledge.notes import (
@@ -443,12 +444,13 @@ def undelete_note_endpoint(
 
 
 @router.put("/notes/{note_id}")
-def edit_note(
+async def edit_note(
     note_id: str,
     data: EditNoteRequest,
     session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
 ) -> dict:
-    """Update an existing note's frontmatter and/or body in the vault."""
+    """Update an existing note's frontmatter and/or body, then re-index."""
     store = KnowledgeStore(session)
     note = store.get_note_by_id(note_id)
     if note is None:
@@ -502,6 +504,15 @@ def edit_note(
         file_content
     )  # nosemgrep: tainted-path-traversal-stdlib-fastapi (guarded by is_relative_to check above)
 
+    # ADR 006 Phase 3: re-index synchronously so the edit is searchable and
+    # the body of record is current. Disk write above is the safety net.
+    await index_note_best_effort(
+        store,
+        embed_client,
+        note_id=note_id,
+        rel_path=note["path"],
+        raw=file_content,
+    )
     return {"path": note["path"], "note_id": note_id}
 
 
@@ -539,7 +550,16 @@ class CreateNoteRequest(BaseModel):
 
 @router.post("/notes", status_code=201)
 def create_note(data: CreateNoteRequest) -> dict:
-    """Create a new markdown note in the vault with YAML frontmatter."""
+    """Capture a new markdown note as a vault-root drop.
+
+    This is a capture path, not direct graph-note creation: the drop is
+    swept into ``_raw/`` by ``raw_ingest`` and decomposed into ``_processed``
+    atoms by the gardener, so its content reaches Postgres via
+    ``raw_inputs`` (and the resulting atoms via the reconciler). It is
+    therefore intentionally NOT indexed into ``knowledge.notes`` here — only
+    ``edit_note``, which mutates an existing ``_processed`` note, indexes
+    synchronously (ADR 006 Phase 3).
+    """
     content = data.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="content must not be empty")

@@ -296,6 +296,7 @@ class TestEditNoteTool:
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
             patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
             patch("knowledge.mcp.KnowledgeStore") as MockStore,
         ):
             MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
@@ -306,6 +307,33 @@ class TestEditNoteTool:
         assert "title: Updated Title" in text
         assert "New body" in text
         assert "Old body" not in text
+
+    @pytest.mark.asyncio
+    async def test_reindexes_into_postgres(self, tmp_path, monkeypatch):
+        """ADR 006 Phase 3: an edit re-indexes synchronously via upsert_note."""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        note_file = vault_dir / "papers" / "attention.md"
+        note_file.parent.mkdir(parents=True)
+        note_file.write_text("---\nid: n1\ntitle: Original\n---\nOld body")
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+
+        embed = AsyncMock()
+        embed.embed_batch.side_effect = lambda texts: [[0.1] * 1024 for _ in texts]
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
+            await edit_note("n1", content="Fresh body")
+
+        MockStore.return_value.upsert_note.assert_called_once()
+        kwargs = MockStore.return_value.upsert_note.call_args.kwargs
+        assert kwargs["note_id"] == "n1"
+        assert "Fresh body" in kwargs["content"]
 
     @pytest.mark.asyncio
     async def test_not_found_returns_error(self):
@@ -363,6 +391,7 @@ class TestEditNoteTool:
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
             patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
             patch("knowledge.mcp.KnowledgeStore") as MockStore,
         ):
             MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
@@ -387,6 +416,7 @@ class TestEditNoteTool:
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
             patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
             patch("knowledge.mcp.KnowledgeStore") as MockStore,
         ):
             MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE

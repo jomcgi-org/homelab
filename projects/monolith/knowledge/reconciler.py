@@ -15,11 +15,11 @@ from typing import Protocol
 from sqlalchemy import text
 from sqlmodel import Session, select
 
-from knowledge import frontmatter, links, wikilinks
+from knowledge import frontmatter, wikilinks
 from knowledge.frontmatter import FrontmatterError, ParsedFrontmatter
+from knowledge.indexing import index_parsed_note
 from knowledge.models import Gap
 from knowledge.store import KnowledgeStore
-from shared.chunker import chunk_markdown
 
 logger = logging.getLogger("monolith.knowledge.reconciler")
 
@@ -375,24 +375,17 @@ class Reconciler:
                     "knowledge: vault read-only, skipping links sync for %s", rel_path
                 )
 
-        chunks = chunk_markdown(authored_body)
-        if not chunks:
-            chunks = [
-                {"index": 0, "section_header": "", "text": authored_body or title}
-            ]
-        vectors = await self.embed_client.embed_batch([c["text"] for c in chunks])
-        note_links = links.extract(authored_body)
-
-        self.store.upsert_note(
+        # ADR 006 Phase 3: the chunk/embed/upsert step is shared with the
+        # write paths via knowledge.indexing so both index identically.
+        await index_parsed_note(
+            self.store,
+            self.embed_client,
             note_id=note_id,
-            path=rel_path,
+            rel_path=rel_path,
             content_hash=content_hash,
             title=title,
-            metadata=meta,
-            chunks=chunks,
-            vectors=vectors,
-            links=note_links,
-            content=authored_body,
+            meta=meta,
+            authored_body=authored_body,
         )
         return True
 

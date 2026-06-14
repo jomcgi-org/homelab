@@ -1915,6 +1915,17 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_indexing_test",
+    srcs = ["knowledge/indexing_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "knowledge_wikilinks_test",
     srcs = ["knowledge/wikilinks_test.py"],
     imports = ["."],
