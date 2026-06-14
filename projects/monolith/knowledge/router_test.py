@@ -230,6 +230,31 @@ class TestGetNoteEndpoint:
         assert body["tags"] == ["ml", "transformers"]
         assert body["content"] == "# Attention\n\nSelf-attention mechanism."
 
+    def test_serves_content_from_db_without_disk(
+        self, tmp_path, fake_session, monkeypatch
+    ):
+        """ADR 006 Phase 2: body is served from Postgres, no vault file."""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()  # intentionally empty — no note file on disk
+        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+
+        app.dependency_overrides[get_session] = lambda: fake_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            with patch("knowledge.router.KnowledgeStore") as MockStore:
+                MockStore.return_value.get_note_by_id.return_value = {
+                    **SAMPLE_NOTE,
+                    "content": "# From Postgres\n\nNo disk read needed.",
+                }
+                MockStore.return_value.get_note_links.return_value = []
+                r = c.get("/api/knowledge/notes/n1")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["content"] == "# From Postgres\n\nNo disk read needed."
+
     def test_missing_note_returns_404(self, note_client):
         """get_note_by_id returns None -> 404 'note not found'."""
         with patch("knowledge.router.KnowledgeStore") as MockStore:

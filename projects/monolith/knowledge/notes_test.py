@@ -27,6 +27,7 @@ from knowledge.notes import (
     _serialize_frontmatter,
     _trash_filename,
     _write_note_visibility_frontmatter,
+    resolve_note_body,
 )
 
 
@@ -157,6 +158,48 @@ class TestReadNoteSnippet:
         (tmp_path / "plain.md").write_text("plain text\nno frontmatter\n")
         snippet = _read_note_snippet(tmp_path, note)
         assert "plain text" in snippet
+
+    def test_prefers_db_content_over_disk(self, tmp_path: Path) -> None:
+        """ADR 006 Phase 2: snippet comes from Postgres ``content``."""
+        note = _make_note(path="db.md")
+        note.content = "Body straight from Postgres."
+        # No file written — the snippet must still resolve from content.
+        snippet = _read_note_snippet(tmp_path, note)
+        assert "Body straight from Postgres." in snippet
+
+
+# ---------------------------------------------------------------------------
+# resolve_note_body
+# ---------------------------------------------------------------------------
+
+
+class TestResolveNoteBody:
+    def test_returns_content_when_present(self, tmp_path: Path) -> None:
+        # Disk holds something different to prove content wins.
+        (tmp_path / "n.md").write_text("from disk")
+        body = resolve_note_body("from postgres", "n.md", tmp_path)
+        assert body == "from postgres"
+
+    def test_falls_back_to_disk_when_content_none(self, tmp_path: Path) -> None:
+        (tmp_path / "n.md").write_text("---\nvisibility: public\n---\n\nfrom disk\n")
+        body = resolve_note_body(None, "n.md", tmp_path)
+        assert body is not None
+        assert "from disk" in body
+        assert "visibility" not in body  # frontmatter stripped on fallback
+
+    def test_returns_none_when_content_none_and_file_missing(
+        self, tmp_path: Path
+    ) -> None:
+        assert resolve_note_body(None, "ghost.md", tmp_path) is None
+
+    def test_returns_none_on_path_traversal(self, tmp_path: Path) -> None:
+        (tmp_path.parent / "escape.md").write_text("secret")
+        assert resolve_note_body(None, "../escape.md", tmp_path) is None
+
+    def test_empty_string_content_is_served(self, tmp_path: Path) -> None:
+        # An empty body is a valid value, not a reason to hit disk.
+        (tmp_path / "n.md").write_text("disk fallback should not run")
+        assert resolve_note_body("", "n.md", tmp_path) == ""
 
 
 # ---------------------------------------------------------------------------

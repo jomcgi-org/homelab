@@ -347,11 +347,13 @@ class KnowledgeStore:
         return results
 
     def get_note_by_id(self, note_id: str) -> dict | None:
-        """Fetch lightweight note metadata by stable ``note_id``.
+        """Fetch note metadata plus its body by stable ``note_id``.
 
-        Returns ``None`` if no note matches. Used by the knowledge search
-        overlay's preview pane (ADR 003) to resolve a selected result to
-        its displayable metadata without re-running the vector query.
+        Returns ``None`` if no note matches. Includes the authoritative
+        ``content`` (ADR 006) so note-detail readers can serve the body
+        from Postgres; ``content`` is ``None`` for rows whose Phase 1
+        backfill has not run yet, in which case callers fall back to the
+        vault file. Used by the note-detail and MCP ``get_note`` paths.
         """
         row = self.session.execute(
             select(
@@ -360,6 +362,7 @@ class KnowledgeStore:
                 Note.path,
                 Note.type,
                 Note.tags,
+                Note.content,
             )
             .where(Note.note_id == note_id)
             .where(Note.deleted_at.is_(None))
@@ -373,6 +376,7 @@ class KnowledgeStore:
             "path": row.path,
             "type": row.type,
             "tags": list(row.tags or []),
+            "content": row.content,
         }
 
     def get_graph(self) -> dict:
