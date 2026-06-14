@@ -167,6 +167,12 @@ spec:
               value: {{ .Values.stars.gridKey | quote }}
             - name: STARS_CLIMATOLOGY_S3_KEY
               value: {{ .Values.stars.climatologyKey | quote }}
+            {{- if .Values.chat }}
+            # Chat attachment blob store reuses the shared SeaweedFS S3 endpoint/
+            # creds above (emitted under the stars block, which is always set).
+            - name: CHAT_BLOB_S3_BUCKET
+              value: {{ .Values.chat.blobBucket | quote }}
+            {{- end }}
             {{- end }}
           livenessProbe:
             httpGet:

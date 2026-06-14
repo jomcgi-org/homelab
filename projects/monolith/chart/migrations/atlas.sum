@@ -1,4 +1,4 @@
-h1:erYbK5suS31+LqrRO/Z6AdoicxphNMl/WW79GY4Wyzg=
+h1:g93V7UYRgEgXV96UweIWhTTSNVuAeKDbHugie6uJO1A=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -38,3 +38,4 @@ h1:erYbK5suS31+LqrRO/Z6AdoicxphNMl/WW79GY4Wyzg=
 20260613000060_stars_climatology.sql h1:iHhd80/ZuZYw+77h9wJxQR2wvUny+MUqkLv6Tsis/qA=
 20260614000010_stars_v2_site_hours.sql h1:ZoC3kzKNSgyDoEDLO4M9rk4CL2TekRXzbbmSoK3QNBc=
 20260614000020_stars_v2_accumulators.sql h1:Al0nCReLo8Y5234WWoRpLgZnar6z4e+HTUeR00NSKGk=
+20260614120000_chat_blobs_data_nullable.sql h1:lTPA223wK0DrJTzu2jlOPW5Ni8w87wK2NcAo8YAUfa8=

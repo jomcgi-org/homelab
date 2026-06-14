@@ -5,7 +5,7 @@ import hashlib
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from chat.models import Blob
 from chat.store import MessageStore
@@ -71,7 +71,7 @@ class TestGetBlobHappyPath:
         assert result is not None
         assert isinstance(result, Blob)
         assert result.sha256 == sha
-        assert result.data == image_data
+        assert result.data is None  # bytes now in SeaweedFS, not the data column
         assert result.description == "A test image"
         assert result.content_type == "image/png"
 
@@ -128,3 +128,34 @@ class TestGetBlobMissPath:
 
         result = store.get_blob(wrong_sha)
         assert result is None
+
+
+class TestBlobBytesRoutedToSeaweedFS:
+    @pytest.mark.asyncio
+    async def test_save_uploads_bytes_to_s3_and_nulls_column(self, store):
+        """Saving a new attachment uploads bytes to SeaweedFS and NULLs data."""
+        image_data = b"\x89PNG\r\n\x1a\nrouted"
+        sha = hashlib.sha256(image_data).hexdigest()
+
+        with patch("chat.store._blob_s3_put", return_value=True) as put:
+            await store.save_message(
+                discord_message_id="blob-s3-1",
+                channel_id="ch1",
+                user_id="u1",
+                username="Alice",
+                content="img",
+                is_bot=False,
+                attachments=[
+                    {
+                        "data": image_data,
+                        "content_type": "image/png",
+                        "filename": "x.png",
+                        "description": "d",
+                    }
+                ],
+            )
+
+        put.assert_called_once_with(sha, image_data, "image/png")
+        blob = store.get_blob(sha)
+        assert blob is not None
+        assert blob.data is None

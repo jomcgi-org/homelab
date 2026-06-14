@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -20,6 +21,54 @@ from chat.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
+    """Best-effort upload of a content-addressed attachment blob to SeaweedFS.
+
+    Stored at ``s3://<CHAT_BLOB_S3_BUCKET>/blobs/<sha256>``. Content-addressed,
+    so writes are idempotent and dedup for free. Mirrors stars.grid._s3_client:
+    dummy creds (SeaweedFS auth is disabled cluster-wide), path-style addressing,
+    scheme prepended to the endpoint. The bucket is auto-created on first write.
+
+    The caller treats failures as non-fatal: blob bytes are write-only today
+    (no read path consumes them), so an upload miss is at worst an archival gap,
+    never a chat-breaking error.
+    """
+    import boto3
+    from botocore.config import Config
+    from botocore.exceptions import ClientError
+
+    bucket = os.environ.get("CHAT_BLOB_S3_BUCKET", "")
+    endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
+    if not bucket or not endpoint:
+        logger.warning("chat blob S3 not configured; skipping upload of %s", sha256)
+        return False
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = "http://" + endpoint
+    # Scheme guaranteed by the guard above; inline nosemgrep clears the pre-commit
+    # boto3-endpoint-url-missing-scheme hook (the Bazel main_semgrep_test, which
+    # ignores nosemgrep, is covered by exclude_rules in projects/monolith/BUILD).
+    client = boto3.client(  # nosemgrep
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
+        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
+        config=Config(s3={"addressing_style": "path"}),
+    )
+    key = f"blobs/{sha256}"
+    try:
+        client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchBucket", "404"):
+            client.create_bucket(Bucket=bucket)
+            client.put_object(
+                Bucket=bucket, Key=key, Body=data, ContentType=content_type
+            )
+        else:
+            raise
+    return True
 
 
 @dataclass
@@ -83,10 +132,17 @@ class MessageStore:
                     sha = hashlib.sha256(a["data"]).hexdigest()
                     existing_blob = self.session.get(Blob, sha)
                     if not existing_blob:
+                        # Raw bytes go to SeaweedFS (content-addressed); the row
+                        # keeps only metadata. Upload failure is non-fatal (bytes
+                        # have no read path), so log and store the row regardless.
+                        try:
+                            _blob_s3_put(sha, a["data"], a["content_type"])
+                        except Exception:
+                            logger.exception("chat blob S3 upload failed for %s", sha)
                         self.session.add(
                             Blob(
                                 sha256=sha,
-                                data=a["data"],
+                                data=None,
                                 content_type=a["content_type"],
                                 description=a.get("description", ""),
                             )
