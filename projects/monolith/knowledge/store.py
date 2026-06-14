@@ -61,6 +61,25 @@ class KnowledgeStore:
         )
         return {path: ch for path, ch in result.all()}
 
+    def notes_missing_content(self) -> list[Note]:
+        """Live notes whose ``content`` column has not been populated yet.
+
+        Drives the ADR 006 one-shot backfill: pre-existing rows predate the
+        ``content`` column and carry NULL until the reconciler reads their
+        body from disk and fills it in. Returns tracked ORM rows so the
+        caller can mutate ``content`` and commit once (no per-row commit,
+        no re-embedding). After the corpus is backfilled this returns ``[]``.
+        """
+        return list(
+            self.session.execute(
+                select(Note).where(
+                    Note.content.is_(None), Note.deleted_at.is_(None)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
     def upsert_note(
         self,
         *,
@@ -72,6 +91,7 @@ class KnowledgeStore:
         chunks: list[ChunkPayload],
         vectors: list[list[float]],
         links: list[Link],
+        content: str | None = None,
     ) -> None:
         # Wrap delete+insert in a SAVEPOINT so a mid-insert failure rolls
         # back the cascade deletes — the existing row is preserved even if
@@ -102,6 +122,7 @@ class KnowledgeStore:
                 path=path,
                 title=title,
                 content_hash=content_hash,
+                content=content,
                 type=metadata.type,
                 status=metadata.status,
                 visibility=metadata.visibility,

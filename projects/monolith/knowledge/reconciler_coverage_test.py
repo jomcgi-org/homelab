@@ -398,3 +398,91 @@ class TestRollbackFailurePaths:
 
         assert result.failed == 1
         assert any("rollback after frontmatter" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# ADR 006: content column population + one-shot backfill
+# ---------------------------------------------------------------------------
+
+
+class TestContentColumn:
+    @pytest.mark.asyncio
+    async def test_ingest_populates_content(self, reconciler, tmp_path, session):
+        """A normal ingest writes the authored body into Note.content,
+        with the generated ## Links section stripped."""
+        _write(
+            tmp_path,
+            "a.md",
+            "---\nid: a\ntitle: A\ntype: atom\n---\nHello body.\n\n## Links\n\n- Up: [[b]]\n",
+        )
+
+        await reconciler.run()
+
+        note = session.execute(select(Note).where(Note.note_id == "a")).scalar_one()
+        assert note.content is not None
+        assert "Hello body." in note.content
+        # The generated Links section is regenerable from edges, so it is
+        # excluded from the body of record.
+        assert "## Links" not in note.content
+
+    def test_backfill_fills_null_content_without_embedding(
+        self, reconciler, tmp_path, session, embed_client
+    ):
+        """_backfill_content populates content for a pre-existing row whose
+        content is NULL, reading the body from disk and never re-embedding."""
+        # Simulate a row that predates the content column.
+        _write(tmp_path, "old.md", "---\nid: old\ntitle: Old\n---\nLegacy body.\n")
+        session.add(
+            Note(
+                note_id="old",
+                path="_processed/old.md",
+                title="Old",
+                content_hash="stale",
+                content=None,
+            )
+        )
+        session.commit()
+
+        updated = reconciler._backfill_content()
+
+        assert updated == 1
+        note = session.execute(select(Note).where(Note.note_id == "old")).scalar_one()
+        assert note.content is not None
+        assert "Legacy body." in note.content
+        # Backfill must not touch the embedding path.
+        embed_client.embed_batch.assert_not_called()
+
+    def test_backfill_is_noop_when_all_populated(self, reconciler, session):
+        """With no null-content rows the backfill returns 0 and does nothing."""
+        session.add(
+            Note(
+                note_id="full",
+                path="_processed/full.md",
+                title="Full",
+                content_hash="h",
+                content="already here",
+            )
+        )
+        session.commit()
+
+        assert reconciler._backfill_content() == 0
+
+    def test_backfill_skips_missing_file(self, reconciler, session):
+        """A null-content row whose disk file is gone is left NULL (retried
+        on a later cycle), not crashed on."""
+        session.add(
+            Note(
+                note_id="ghost",
+                path="_processed/ghost.md",
+                title="Ghost",
+                content_hash="h",
+                content=None,
+            )
+        )
+        session.commit()
+
+        assert reconciler._backfill_content() == 0
+        note = session.execute(
+            select(Note).where(Note.note_id == "ghost")
+        ).scalar_one()
+        assert note.content is None

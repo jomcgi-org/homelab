@@ -122,6 +122,11 @@ class Reconciler:
         # comparison so that notes with missing or stale sections get
         # re-ingested in this cycle via the normal hash-change path.
         await asyncio.to_thread(self._pre_sync_links)
+        # ADR 006 one-shot backfill: fill `content` for rows that predate the
+        # column from disk, without re-embedding. No-op once the corpus is
+        # populated. Runs before the hash-diff loop so the body of record is
+        # in Postgres regardless of whether a file changed this cycle.
+        await asyncio.to_thread(self._backfill_content)
         indexed = await asyncio.to_thread(self.store.get_indexed)
         on_disk = await asyncio.to_thread(self._walk, previous_indexed=indexed)
 
@@ -243,6 +248,44 @@ class Reconciler:
                 out[rel] = hashlib.sha256(data).hexdigest()
         return out
 
+    def _backfill_content(self) -> int:
+        """One-shot ADR 006 backfill: populate ``content`` from disk.
+
+        The reconciler only re-ingests files whose hash changed, so rows
+        that predate the ``content`` column would otherwise never get a
+        body. This reads each null-content note's body from disk, strips
+        the generated ``## Links`` section (regenerable from frontmatter
+        edges), and fills the column in a single commit. No re-embedding —
+        chunks are untouched. Returns the number of rows updated; a no-op
+        returning 0 once the corpus is fully backfilled.
+        """
+        notes = self.store.notes_missing_content()
+        if not notes:
+            return 0
+        updated = 0
+        for note in notes:
+            abs_path = self.vault_root / note.path
+            try:
+                raw = self._read_text(abs_path)
+            except (FileNotFoundError, UnicodeDecodeError, OSError):
+                # File gone or unreadable this cycle — leave content NULL
+                # and retry on a later cycle.
+                continue
+            try:
+                _meta, body = frontmatter.parse(raw)
+            except FrontmatterError:
+                logger.warning(
+                    "knowledge: backfill skipping invalid frontmatter %s",
+                    note.path,
+                )
+                continue
+            note.content = wikilinks.strip_links_section(body)
+            updated += 1
+        if updated:
+            self.store.session.commit()
+            logger.info("knowledge: backfilled content for %d notes", updated)
+        return updated
+
     def _read_text(self, abs_path: Path) -> str:
         try:
             # newline="" disables universal-newlines translation so we
@@ -313,6 +356,7 @@ class Reconciler:
                 chunks=[],
                 vectors=[],
                 links=[],
+                content=wikilinks.strip_links_section(body),
             )
             _project_gap_frontmatter(self.store.session, note_id, meta)
             return True
@@ -348,6 +392,7 @@ class Reconciler:
             chunks=chunks,
             vectors=vectors,
             links=note_links,
+            content=authored_body,
         )
         return True
 

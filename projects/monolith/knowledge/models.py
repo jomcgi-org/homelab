@@ -85,6 +85,10 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     path: str = Field(unique=True)
     title: str
     content_hash: str
+    # Authoritative markdown body (frontmatter stripped), the source of
+    # record per ADR 006. Nullable until the one-shot reconciler backfill
+    # populates pre-existing rows from disk; new upserts always set it.
+    content: str | None = None
     type: str | None = None
     status: str | None = None
     visibility: Visibility | None = Field(
