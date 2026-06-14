@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Emit the image tags to push, space-separated, for the runtime-arg push flow:
 #
-#   buck2 run //path:image.push -- $(tools/buck2/image_tags.sh)
+#   buck2 run //path:image.push -- $(buck2/image_tags.sh)
 #
 # This is the Buck2 analogue of bazel/tools/workspace_status.sh's STABLE_IMAGE_TAG
 # / STABLE_BRANCH_TAG (buck2 has no --stamp): the timestamped+sha tag plus the

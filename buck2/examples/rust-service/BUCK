@@ -1,6 +1,6 @@
-load("//tools/buck2/apko:defs.bzl", "apko_image")
-load("//tools/buck2/helm:defs.bzl", "argocd_app", "helm_chart")
-load("//tools/buck2/oci:defs.bzl", "oci_image", "tar_layer")
+load("//buck2/apko:defs.bzl", "apko_image")
+load("//buck2/helm:defs.bzl", "argocd_app", "helm_chart")
+load("//buck2/oci:defs.bzl", "oci_image", "tar_layer")
 
 # Basic Rust service built with buck2's `rust_binary` (the same primitive loom
 # uses), compiled as an x86_64-linux binary by the hermetic Rust toolchain and

@@ -16,7 +16,7 @@ MODULE.bazel.lock
 # Symlinks created by Bazel into the output tree
 /bazel-*
 
-# Buck2 output tree (tools/buck2 build rules)
+# Buck2 output tree (buck2 build rules)
 /buck-out
 
 # Local developer tools (from bootstrap.sh / crane export)

@@ -11,8 +11,8 @@ base config so no separate mutate step is needed for the common case.
 
 load(":providers.bzl", "OciImageInfo")
 
-_REGCTL = "//tools/buck2/bin:regctl"
-_CRANE = "//tools/buck2/bin:crane"
+_REGCTL = "//buck2/bin:regctl"
+_CRANE = "//buck2/bin:crane"
 
 def _oci_push_impl(ctx: AnalysisContext) -> list[Provider]:
     image = ctx.attrs.image[DefaultInfo].default_outputs[0]

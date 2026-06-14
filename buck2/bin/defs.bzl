@@ -15,7 +15,7 @@ def pinned_cli(name, binary, urls, shas, archive, visibility = ["PUBLIC"]):
     """Define a host-selected pinned CLI.
 
     Args:
-      name: alias target name (and the `buck2 run //tools/buck2/bin:<name>` handle).
+      name: alias target name (and the `buck2 run //buck2/bin:<name>` handle).
       binary: the executable's filename inside the archive (== alias output name).
       urls: {label: download_url} for each of _LABELS.
       shas: {label: sha256} for each of _LABELS.

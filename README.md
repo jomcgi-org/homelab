@@ -51,6 +51,7 @@ projects/             # All services, operators, websites — colocated with dep
 ├── websites/         #   Static sites (VitePress, Astro)
 └── home-cluster/     #   Auto-generated ArgoCD root kustomization
 bazel/                # Build infrastructure (rules, tools, images, semgrep)
+buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)
 docs/                 # Design docs, ADRs, and plans
 ```
 

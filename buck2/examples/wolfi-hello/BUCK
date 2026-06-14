@@ -1,4 +1,4 @@
-load("//tools/buck2/apko:defs.bzl", "apko_image")
+load("//buck2/apko:defs.bzl", "apko_image")
 
 # Self-contained example: a minimal Wolfi image built entirely from apk packages
 # (no dependency on any external service binary), so it builds & validates in CI
@@ -9,7 +9,7 @@ apko_image(
     lock = "apko.lock.json",
 )
 
-# Build-time validation (runs under `buck2 build //tools/buck2/...`): assert the
+# Build-time validation (runs under `buck2 build //buck2/...`): assert the
 # output tar is a multi-arch OCI index carrying both amd64 and arm64 manifests.
 genrule(
     name = "hello-validate",
