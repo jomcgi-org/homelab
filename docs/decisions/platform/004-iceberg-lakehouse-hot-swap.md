@@ -1,10 +1,21 @@
 # ADR 004: Iceberg-on-SeaweedFS Lakehouse with Hot-Swap Quack Serving
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Superseded
 **Created:** 2026-05-30
+**Superseded:** 2026-06-14 (lakehouse + Temporal stack decommissioned in PR #2596; the event-sourced serving substrate moved to `loom`)
 **Partially evolves:** [001 — Obsidian Vault Migration into Monolith](001-obsidian-vault-monolith-migration.md) for the notes/KG storage domain
 **Depends on:** [agents/015 — Temporal](../agents/015-temporal-orchestration-substrate.md), [agents/016 — NATS](../agents/016-nats-canonical-event-stream.md), [agents/017 — Event Schema](../agents/017-domain-event-schema.md)
+
+---
+
+## Superseded (2026-06-14)
+
+This ADR is no longer the destination architecture. The Iceberg/Temporal/Quack lakehouse stack it proposed was decommissioned on 2026-06-14 (`projects/lakehouse` and the `temporal` / `warehouse-bucket` platform apps removed in PR #2596); the event-sourced data platform work continues under `loom` instead.
+
+For the **notes / knowledge-graph storage domain** specifically, the durable body-of-record is now CNPG Postgres (`knowledge.notes.content`) per [ADR 006](006-obsidian-decommission-postgres-interim.md), which is the accepted destination rather than the interim it was originally framed as. The "Eventual (ADR 004)" column in ADR 006's comparison table is withdrawn along with this ADR.
+
+The problem analysis and tier rationale below are retained for historical context.
 
 ---
 

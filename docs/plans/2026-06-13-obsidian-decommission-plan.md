@@ -1,7 +1,8 @@
 # Obsidian Decommission: Implementation Plan
 
-**Design:** [ADR 006 — Decommission Obsidian via a Postgres Interim](../decisions/platform/006-obsidian-decommission-postgres-interim.md)
+**Design:** [ADR 006 — Decommission Obsidian, Postgres as the Body of Record](../decisions/platform/006-obsidian-decommission-postgres-interim.md)
 **Created:** 2026-06-13
+**Updated:** 2026-06-14: ADR 006 Accepted; reframed from interim to destination after the ADR 004 lakehouse was decommissioned (PR #2596). Phase 1 merged (#2593, chart 0.135.0); Phase 2 in flight (#2604).
 **Branch:** `claude/obsidian-postgres-migration-b6sdnl`
 **Scope decision:** Full ADR 006 end-to-end. v1 web UI ships editor + search; wikilink graph navigation is deferred to a follow-up phase (the read-only graph at `/private/notes` already exists and stays).
 
@@ -25,9 +26,9 @@ Per repo rules: no local test loop. Each phase is a commit (or small commit set)
 
 ---
 
-## Phase 0 — Accept ADR 006
+## Phase 0 — Accept ADR 006 ✅ (2026-06-14)
 
-- Flip ADR 006 status `Draft` -> `Accepted` (`docs/decisions/platform/006-obsidian-decommission-postgres-interim.md:4`). This is Joe's call; the plan assumes acceptance.
+- ADR 006 status flipped `Draft` -> `Accepted` and reframed from "interim" to "destination" after the ADR 004 lakehouse was decommissioned (PR #2596). ADR 004 marked `Superseded` for the KG storage domain.
 
 ## Phase 1 — Note body in Postgres (the gate)
 
@@ -106,8 +107,8 @@ Out-of-band: cancel the paid Obsidian Sync subscription and archive the `jomcgi/
 - **Backfill incomplete** -> Phase 1 gate asserts `content IS NULL` count is 0 before any read/write switch.
 - **Gardener tmpdir mis-writes** -> upsert keyed on `note_id` + `content_hash`; optional markdown git export as recovery; dual-write kept until Phase 6.
 - **Lost mobile capture** -> capture box + `ingest_queue` validated in Phase 5 before Sync is cut in Phase 7.
-- **Web UI partly redone at ADR 004 (lakehouse)** -> data access stays behind the `KnowledgeStore` interface so the read path re-points at Quack rather than being rewritten.
+- **Web UI is net-new work** -> reuse the existing `/private/notes` graph + search API; data access stays behind the `KnowledgeStore` interface for testability and a clean read-path seam.
 
 ## Out of scope
 
-ADR 004 lakehouse cutover (NATS/Temporal/Iceberg/Quack). This plan keeps the note/gap representation shape-compatible with `note_events`/`gap_events` so that later cutover is a re-point, not a remodel.
+The ADR 004 lakehouse cutover is no longer pending: that stack was decommissioned on 2026-06-14 (PR #2596). Postgres is the destination, so there is no later re-point to design around and no `note_events`/`gap_events` shape to mirror.
