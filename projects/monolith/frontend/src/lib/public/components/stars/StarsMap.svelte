@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
-  import { relativeMax, heatWeightExpression } from "$lib/public/stars/heat.js";
+  import { relativeMax } from "$lib/public/stars/heat.js";
 
   // `sites` is the list to plot; clicking a dot opens the detail card. In LIVE
   // mode the rows carry per-night scores + best upcoming hours; in HISTORICAL
@@ -12,7 +12,9 @@
   // selected night. `nowMs` is a coarse clock signal so the card can drop hours
   // that have already elapsed between SSR loads. `mode` ("live"|"historical")
   // switches how each feature's heat + marker value is derived and which card
-  // body renders. `heatVisible` toggles the heatmap layer.
+  // body renders. `heatVisible` toggles between the point markers and the
+  // box-cell heatmap: when on, the circle markers hide and each site renders as
+  // a coloured grid cell (ADR 009, mirroring /app/ships' fill-layer heatmap).
   let {
     sites = [],
     activeNights = new Set(),
@@ -44,31 +46,39 @@
     { key: "high", label: "65+", color: "#7c3aed" }, // violet (prime)
   ];
 
-  // Heatmap colour ramp (transparent -> cool -> warm), keyed on heatmap-density.
-  // Like ShipsMap's HEAT_STOPS these are JS map-paint colours, not design tokens:
-  // a saturated plasma scale that stays vivid on the light/green basemap. The
-  // densest clusters bloom red, the sparse fringe fades to transparent blue.
-  const HEATMAP_COLOR = [
+  // Box-cell heatmap ramp (cool -> warm), keyed on each cell's `score` (0..100:
+  // absolute live quality, or a relative percentile in historical). Like
+  // ShipsMap's HEAT_STOPS these are JS map-paint colours, not design tokens: a
+  // saturated plasma scale that stays vivid on the light basemap. Smooth
+  // `interpolate` (not stepped) so the field reads as a heatmap; the three named
+  // stops below feed the legend so it stays truthful to the fill.
+  const CELL_LOW = "#3b82f6"; // blue (low)
+  const CELL_MID = "#d61f9c"; // magenta (medium)
+  const CELL_HIGH = "#ff2a1f"; // hot red (best)
+  const CELL_FILL_COLOR = [
     "interpolate",
     ["linear"],
-    ["heatmap-density"],
+    ["get", "score"],
     0,
-    "rgba(59, 130, 246, 0)",
-    0.15,
-    "rgba(59, 130, 246, 0.45)", // cool blue
-    0.4,
-    "rgba(124, 58, 237, 0.7)", // violet
-    0.65,
-    "rgba(214, 31, 156, 0.8)", // magenta
-    0.85,
-    "rgba(255, 106, 0, 0.9)", // orange
-    1,
-    "rgba(255, 42, 31, 0.95)", // hot red (densest)
+    CELL_LOW,
+    35,
+    "#7c3aed", // violet
+    65,
+    CELL_MID,
+    85,
+    "#ff6a00", // orange
+    100,
+    CELL_HIGH,
   ];
+  // Fill opacity: high enough to read as solid blocks over the light basemap,
+  // low enough that coastlines/place labels still ghost through at the edges
+  // (ShipsMap uses 0.9 over water; stars cells sit on land so go a touch lower).
+  const CELL_FILL_OPACITY = 0.72;
 
-  const SOURCE_ID = "sites";
+  const SOURCE_ID = "sites"; // point features -> circle markers
   const LAYER_ID = "sites";
-  const HEAT_LAYER_ID = "sites-heat";
+  const CELL_SOURCE = "sites-cells"; // square polygons -> fill heatmap
+  const CELL_LAYER = "sites-cells";
 
   let maplibregl; // loaded lazily in onMount (browser-only module)
   let mapContainer; // bound <div>
@@ -77,9 +87,9 @@
   let didFit = false;
 
   // The relative-normalization ceiling for the current feature set, restamped on
-  // every pushData. Drives both the historical marker percentile and the
-  // heatmap-weight rescale, so the field re-normalizes as mode/night/month
-  // changes. Defaults to the live score ceiling.
+  // every plottable(). Drives the historical 0..100 percentile that both the
+  // markers and the box-cell fill colour by, so the field re-normalizes as
+  // mode/night/month changes. Defaults to the live score ceiling.
   let currentMaxHeat = 100;
 
   // site id -> site row, so a marker click can recover the full record.
@@ -87,18 +97,23 @@
 
   let selected = $state(null); // selected site row, or null
 
-  // Mode-aware legend: LIVE shows the absolute score buckets; HISTORICAL relabels
-  // the same colours as relative low/medium/high (the heat field is normalized,
-  // so an absolute number would mislead).
+  // The legend follows what is actually drawn. With the box heatmap on (always
+  // in HISTORICAL, optional in LIVE) it shows the cell ramp as relative
+  // low/medium/high, since the field is normalized and an absolute number would
+  // mislead. With markers (LIVE, heat off) it shows the absolute score buckets.
   let legendTitle = $derived(
-    mode === "historical" ? "Realized quality" : "Best score",
+    heatVisible
+      ? mode === "historical"
+        ? "Realized quality"
+        : "Quality"
+      : "Best score",
   );
   let legendItems = $derived(
-    mode === "historical"
+    heatVisible
       ? [
-          { key: "low", label: "Low", color: SCORE_BUCKETS[0].color },
-          { key: "mid", label: "Medium", color: SCORE_BUCKETS[1].color },
-          { key: "high", label: "High", color: SCORE_BUCKETS[2].color },
+          { key: "low", label: "Low", color: CELL_LOW },
+          { key: "mid", label: "Medium", color: CELL_MID },
+          { key: "high", label: "High", color: CELL_HIGH },
         ]
       : SCORE_BUCKETS,
   );
@@ -200,8 +215,12 @@
     return effectiveScore(site);
   }
 
-  function buildFeatures() {
-    // First pass: collect each plotted site's raw heat; second pass: normalize.
+  // The plottable sites with their derived marker/cell `score`, computed once so
+  // the point and cell feature collections share one normalization. LIVE score
+  // is the absolute quality; HISTORICAL is a 0..100 relative percentile (heat /
+  // max-heat) so the shared 35 / 65 ramp breaks read as thirds of the realized
+  // spread. Sites with no heat in the current mode/night drop out here.
+  function plottable() {
     const raw = [];
     for (const site of sites) {
       if (!validLatLon(site.lat, site.lon)) continue;
@@ -209,48 +228,107 @@
       if (heat === null) continue;
       raw.push({ site, heat });
     }
-    // Relative ceiling: the densest point reaches full weight regardless of the
-    // field's absolute scale (live 0..100 vs historical sum_q). Restamped here so
-    // the heatmap-weight expression in pushData rescales to whatever is in view.
+    // Relative ceiling: the densest point reaches full scale regardless of the
+    // field's absolute range (live 0..100 vs historical sum_q). Restamped here
+    // so the score rescales to whatever is in view as mode/night/month changes.
     currentMaxHeat = relativeMax(raw.map((r) => r.heat));
-
-    const features = raw.map(({ site, heat }) => ({
-      type: "Feature",
-      id: site.id,
-      geometry: { type: "Point", coordinates: [site.lon, site.lat] },
-      properties: {
-        id: site.id,
-        heat,
-        // Marker colour/size value: absolute live score, or a 0..100 relative
-        // percentile in historical so the shared 35 / 65 buckets read as thirds.
-        score:
-          mode === "historical" ? (100 * heat) / currentMaxHeat : heat,
-      },
+    return raw.map(({ site, heat }) => ({
+      site,
+      score: mode === "historical" ? (100 * heat) / currentMaxHeat : heat,
     }));
-    return { type: "FeatureCollection", features };
+  }
+
+  function pointFC(rows) {
+    return {
+      type: "FeatureCollection",
+      features: rows.map(({ site, score }) => ({
+        type: "Feature",
+        id: site.id,
+        geometry: { type: "Point", coordinates: [site.lon, site.lat] },
+        properties: { id: site.id, score },
+      })),
+    };
+  }
+
+  // The grid step in degrees, derived from the plotted sites: the smallest
+  // positive gap between adjacent unique lats/lons. The grid is a regular ~4km
+  // mesh, so every gap is an integer multiple of the base step and the minimum
+  // recovers it. Falls back to the known ~4km step if a set is too small to
+  // measure (e.g. a single site in view).
+  function deriveStep(rows) {
+    const uniq = (vals) =>
+      [...new Set(vals.map((v) => Math.round(v * 1e6) / 1e6))].sort(
+        (a, b) => a - b,
+      );
+    const minGap = (xs, fallback) => {
+      let m = Infinity;
+      for (let i = 1; i < xs.length; i++) {
+        const d = xs[i] - xs[i - 1];
+        if (d > 1e-6 && d < m) m = d;
+      }
+      return Number.isFinite(m) ? m : fallback;
+    };
+    const lats = uniq(rows.map((r) => r.site.lat));
+    const lons = uniq(rows.map((r) => r.site.lon));
+    return { latStep: minGap(lats, 0.036), lonStep: minGap(lons, 0.067) };
+  }
+
+  // Each site becomes a square cell centred on its lat/lon, sized to the grid
+  // step, so the historical layer reads as discrete blocks (like /app/ships)
+  // rather than a blurry bloom. Same `score` as the point features, so the fill
+  // ramp and the (hidden) markers always agree.
+  function cellFC(rows) {
+    const { latStep, lonStep } = deriveStep(rows);
+    const hLat = latStep / 2;
+    const hLon = lonStep / 2;
+    return {
+      type: "FeatureCollection",
+      features: rows.map(({ site, score }) => {
+        const x = site.lon;
+        const y = site.lat;
+        return {
+          type: "Feature",
+          id: site.id,
+          geometry: {
+            type: "Polygon",
+            coordinates: [
+              [
+                [x - hLon, y - hLat],
+                [x + hLon, y - hLat],
+                [x + hLon, y + hLat],
+                [x - hLon, y + hLat],
+                [x - hLon, y - hLat],
+              ],
+            ],
+          },
+          properties: { id: site.id, score },
+        };
+      }),
+    };
   }
 
   function pushData() {
-    const src = map?.getSource(SOURCE_ID);
-    if (!src) return;
-    src.setData(buildFeatures());
-    // Re-normalize the heatmap weight to the current ceiling so the field
-    // rescales as data/mode changes (ADR 008: colour normalizes relatively).
-    if (map.getLayer(HEAT_LAYER_ID)) {
-      map.setPaintProperty(
-        HEAT_LAYER_ID,
-        "heatmap-weight",
-        heatWeightExpression(currentMaxHeat),
-      );
-    }
+    if (!map) return;
+    const rows = plottable();
+    map.getSource(SOURCE_ID)?.setData(pointFC(rows));
+    map.getSource(CELL_SOURCE)?.setData(cellFC(rows));
   }
 
+  // The box heatmap and the point markers are mutually exclusive: when heat is
+  // on the cells show and the markers hide, and vice versa. Both stay clickable
+  // when visible (a hidden layer receives no events), so the detail card works
+  // either way.
   function applyHeatVisibility() {
-    if (!map || !map.getLayer(HEAT_LAYER_ID)) return;
+    if (!map || !layerReady) return;
     map.setLayoutProperty(
-      HEAT_LAYER_ID,
+      CELL_LAYER,
       "visibility",
       heatVisible ? "visible" : "none",
+    );
+    map.setLayoutProperty(
+      LAYER_ID,
+      "visibility",
+      heatVisible ? "none" : "visible",
     );
   }
 
@@ -296,7 +374,7 @@
     }
   });
 
-  // Show/hide the heatmap layer when the parent toggles it.
+  // Swap markers <-> box-cell heatmap when the parent toggles heat on/off.
   $effect(() => {
     void heatVisible;
     if (map && layerReady) applyHeatVisibility();
@@ -347,52 +425,22 @@
         const pal = palette();
 
         map.addSource(SOURCE_ID, { type: "geojson", data: emptyFC() });
+        map.addSource(CELL_SOURCE, { type: "geojson", data: emptyFC() });
 
-        // Heatmap first, so it sits BENEATH the circle markers (which stay on
-        // top and clickable). Weighted by each feature's `heat`, normalized
-        // relatively in pushData; hidden until the parent toggles it on.
+        // Box-cell heatmap first, so it sits BENEATH the markers. One square per
+        // site, filled by the cell `score` via the plasma ramp; visible only when
+        // the parent toggles heat on (always in historical), where the markers
+        // hide. Transparent outline so adjacent same-score cells merge into a
+        // field rather than a grid of boxes.
         map.addLayer({
-          id: HEAT_LAYER_ID,
-          type: "heatmap",
-          source: SOURCE_ID,
+          id: CELL_LAYER,
+          type: "fill",
+          source: CELL_SOURCE,
           layout: { visibility: heatVisible ? "visible" : "none" },
           paint: {
-            "heatmap-weight": heatWeightExpression(currentMaxHeat),
-            // Lift the whole field as you zoom in so sparse points still bloom.
-            "heatmap-intensity": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              5,
-              1,
-              11,
-              3,
-            ],
-            "heatmap-color": HEATMAP_COLOR,
-            // Generous radius: only ~30 sites span Scotland, so each needs a
-            // wide bloom to read as heat rather than a fuzzy dot. Grows with
-            // zoom so clusters stay coherent.
-            "heatmap-radius": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              5,
-              22,
-              8,
-              45,
-              11,
-              70,
-            ],
-            // Fade slightly as you zoom in so the markers take over up close.
-            "heatmap-opacity": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              5,
-              0.9,
-              10,
-              0.6,
-            ],
+            "fill-color": CELL_FILL_COLOR,
+            "fill-opacity": CELL_FILL_OPACITY,
+            "fill-outline-color": "rgba(0, 0, 0, 0)",
           },
         });
 
@@ -400,6 +448,8 @@
           id: LAYER_ID,
           type: "circle",
           source: SOURCE_ID,
+          // Markers hide while the box heatmap is on (and vice versa).
+          layout: { visibility: heatVisible ? "none" : "visible" },
           paint: {
             // Fill by the marker `score` value (absolute live quality, or a
             // 0..100 relative percentile in historical), stepped at the 35 / 65
@@ -429,18 +479,21 @@
         });
         layerReady = true;
 
-        map.on("click", LAYER_ID, (e) => {
+        // Click opens the detail card from either representation; only the
+        // visible layer fires, so the two handlers never both run for one click.
+        const openFromFeature = (e) => {
           const f = e.features?.[0];
           if (!f) return;
           const site = index.get(f.properties.id);
           if (site) selectSite(site);
-        });
-        map.on("mouseenter", LAYER_ID, () => {
-          map.getCanvas().style.cursor = "pointer";
-        });
-        map.on("mouseleave", LAYER_ID, () => {
-          map.getCanvas().style.cursor = "";
-        });
+        };
+        const cursorPointer = () => (map.getCanvas().style.cursor = "pointer");
+        const cursorReset = () => (map.getCanvas().style.cursor = "");
+        for (const id of [LAYER_ID, CELL_LAYER]) {
+          map.on("click", id, openFromFeature);
+          map.on("mouseenter", id, cursorPointer);
+          map.on("mouseleave", id, cursorReset);
+        }
 
         syncSites();
       });

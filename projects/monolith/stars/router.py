@@ -210,10 +210,13 @@ def get_history(
     response: Response,
     session: Session = Depends(get_session),
     month: int = Query(
-        default=0, ge=0, le=12, description="Month-of-year 1-12; 0 = current UTC month"
+        default=0,
+        ge=0,
+        le=12,
+        description="Month-of-year 1-12; 0 = all year (every month summed)",
     ),
 ):
-    """Per-site combined realized quality for a calendar month. SSR-only.
+    """Per-site combined realized quality for a month, or the whole year. SSR-only.
 
     The historical heatmap layer (ADR 008 + 009): for the selected month-of-year,
     each site's heat is the sum of the live accumulator (stars.site_month_stats,
@@ -223,22 +226,29 @@ def get_history(
     ``window_count``, ``sum_q``, ``sum_darkness`` and ``sum_clarity`` add, and the
     averages are the combined component sums over the combined ``window_count``.
 
+    ``month`` 1-12 filters to that month-of-year; ``month`` 0 is the all-year view
+    (the default), which sums every month bucket per site, so the page opens on a
+    full seasonal picture and the dropdown narrows to a single month. Because the
+    full-outer-join below aggregates by site_id, the all-year case naturally folds
+    a site's twelve month rows into one.
+
     A site is included if it appears in EITHER table (full-outer-join by site_id,
     done in Python). ``sum_q`` is the headline heat metric; ``avg_darkness`` /
-    ``avg_clarity`` give the decomposition. ``month`` defaults to the current UTC
-    month. Sites with no metadata (dropped from the grid) or a zero combined count
-    are omitted. Ordered by combined ``sum_q`` descending. CDN-cached with the same
-    headers as ``/sites``; conditional GETs short-circuit with a 304.
+    ``avg_clarity`` give the decomposition. Sites with no metadata (dropped from
+    the grid) or a zero combined count are omitted. Ordered by combined ``sum_q``
+    descending. CDN-cached with the same headers as ``/sites``; conditional GETs
+    short-circuit with a 304.
     """
-    selected = month or datetime.now(timezone.utc).month
-
     by_id = {site.id: site for site in session.exec(select(Site)).all()}
-    live = session.exec(
-        select(SiteMonthStat).where(SiteMonthStat.month == selected)
-    ).all()
-    climo = session.exec(
-        select(SiteMonthClimatology).where(SiteMonthClimatology.month == selected)
-    ).all()
+    # month == 0 -> all year: no month filter, so every month-of-year row flows
+    # into the per-site aggregation below. 1-12 filters to that single month.
+    live_q = select(SiteMonthStat)
+    climo_q = select(SiteMonthClimatology)
+    if month:
+        live_q = live_q.where(SiteMonthStat.month == month)
+        climo_q = climo_q.where(SiteMonthClimatology.month == month)
+    live = session.exec(live_q).all()
+    climo = session.exec(climo_q).all()
 
     # Full-outer-join the two accumulators by site_id, summing the sufficient
     # stats per field. A site present in only one table contributes that table's
@@ -281,12 +291,12 @@ def get_history(
 
     sites.sort(key=lambda s: s["sum_q"], reverse=True)
 
-    # The ETag folds in the selected month, the site count, the max combined
-    # sum_q and the total combined window_count: it turns over when EITHER the
-    # live prune banks more hours or the climatology backfill is reloaded.
+    # The ETag folds in the selected month (0 = all year), the site count, the
+    # max combined sum_q and the total combined window_count: it turns over when
+    # EITHER the live prune banks more hours or the climatology backfill reloads.
     max_sum_q = max((s["sum_q"] for s in sites), default=0.0)
     total_count = sum(s["window_count"] for s in sites)
-    etag = f'"v2-{selected}-{len(sites)}-{max_sum_q}-{total_count}"'
+    etag = f'"v2-{month}-{len(sites)}-{max_sum_q}-{total_count}"'
     headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
 
     if request.headers.get("if-none-match") == etag:
@@ -295,7 +305,7 @@ def get_history(
     for key, value in headers.items():
         response.headers[key] = value
     return {
-        "month": selected,
+        "month": month,
         "sites": sites,
         "count": len(sites),
     }
