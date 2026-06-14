@@ -6,11 +6,11 @@ Tests run against real PostgreSQL 16 + pgvector. External services
 
 import pytest
 from pydantic_ai.messages import ToolCallPart
+from sqlalchemy import text
 
 
 def test_postgres_is_running(pg):
     """Smoke test: PostgreSQL is reachable and has pgvector."""
-    from sqlalchemy import text
     from sqlmodel import create_engine
 
     engine = create_engine(pg.url)
@@ -267,7 +267,9 @@ class TestMessageStore:
         att, blob = pairs[0]
         assert att.filename == "photo.jpg"
         assert blob.content_type == "image/jpeg"
-        assert blob.data == b"blob-data-for-join-test"
+        # Bytes now live in SeaweedFS (S3 unset in e2e env, so not uploaded);
+        # the row persists with a NULL data column.
+        assert blob.data is None
 
     @pytest.mark.asyncio
     async def test_upsert_summary_insert_and_update(self, store):
