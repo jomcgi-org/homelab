@@ -127,9 +127,7 @@ class TestResolveNoteBody:
     def test_returns_none_on_path_escape(self, tmp_path: Path) -> None:
         assert resolve_note_body(None, tmp_path, "../escape.md") is None
 
-    def test_empty_string_content_is_served_not_fallback(
-        self, tmp_path: Path
-    ) -> None:
+    def test_empty_string_content_is_served_not_fallback(self, tmp_path: Path) -> None:
         # An empty body is a legitimate value, distinct from NULL — it must
         # not trigger the disk fallback.
         _write_vault_note(tmp_path, "e.md", body="should not be read")
