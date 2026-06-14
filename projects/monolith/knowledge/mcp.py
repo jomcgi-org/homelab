@@ -24,6 +24,7 @@ from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import approve_gap as _approve_gap
 from knowledge.gaps import list_review_queue, split_csv
 from knowledge.gardener import _slugify
+from knowledge.indexing import index_note_best_effort
 from knowledge.notes import resolve_note_body
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
@@ -238,6 +239,15 @@ async def edit_note(
             "---\n" + yaml.dump(fm_dict, default_flow_style=False) + "---\n" + body
         )
         resolved.write_text(file_content)
+        # ADR 006 Phase 3: re-index synchronously into Postgres; the disk
+        # write above is the safety net.
+        await index_note_best_effort(
+            store,
+            EmbeddingClient(),
+            note_id=note_id,
+            rel_path=note["path"],
+            raw=file_content,
+        )
         return {"path": note["path"], "note_id": note_id}
 
 

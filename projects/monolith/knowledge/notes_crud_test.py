@@ -1,7 +1,7 @@
 """Unit tests for knowledge notes CRUD endpoints."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -12,6 +12,7 @@ from sqlmodel.pool import StaticPool
 from app.db import get_session
 from app.main import app
 from knowledge.models import Note
+from knowledge.router import get_embedding_client
 from knowledge.service import VAULT_ROOT_ENV
 
 
@@ -21,10 +22,23 @@ def fake_session():
 
 
 @pytest.fixture()
-def client(fake_session, tmp_path, monkeypatch):
-    """TestClient with overridden session and a temp vault root."""
+def fake_embed_client():
+    """Embedding client whose embed_batch returns deterministic vectors.
+
+    ADR 006 Phase 3: edit_note re-indexes synchronously, so the write-path
+    tests need the embedder overridden to avoid a real network call.
+    """
+    client = AsyncMock()
+    client.embed_batch.side_effect = lambda texts: [[0.1] * 1024 for _ in texts]
+    return client
+
+
+@pytest.fixture()
+def client(fake_session, fake_embed_client, tmp_path, monkeypatch):
+    """TestClient with overridden session, embedder, and a temp vault root."""
     monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
     app.dependency_overrides[get_session] = lambda: fake_session
+    app.dependency_overrides[get_embedding_client] = lambda: fake_embed_client
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 
@@ -59,10 +73,11 @@ def real_session():
 
 
 @pytest.fixture()
-def db_client(real_session, tmp_path, monkeypatch):
+def db_client(real_session, fake_embed_client, tmp_path, monkeypatch):
     """TestClient backed by a real session — used by the soft-delete tests."""
     monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
     app.dependency_overrides[get_session] = lambda: real_session
+    app.dependency_overrides[get_embedding_client] = lambda: fake_embed_client
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 
