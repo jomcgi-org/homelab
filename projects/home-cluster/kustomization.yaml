@@ -4,7 +4,6 @@ kind: Kustomization
 
 resources:
   - ../../projects/agent_platform
-  - ../../projects/lakehouse
   - ../../projects/mcp/context-forge-gateway/deploy
   - ../../projects/monolith/deploy
   - ../../projects/operators/oci-model-cache/deploy
