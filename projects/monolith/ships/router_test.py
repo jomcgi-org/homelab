@@ -17,8 +17,14 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from app.db import get_session
-from ships.models import HeatCell, LatestPosition, Position, Vessel
-from ships.router import _parse_since, router
+from ships.models import (
+    HeatCell,
+    HeatCellHistorical,
+    LatestPosition,
+    Position,
+    Vessel,
+)
+from ships.router import _merge_cells, _parse_since, _quantile_stops, router
 
 T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -242,3 +248,41 @@ class TestHeat:
         body = r.json()
         assert body["count"] == 0
         assert body["cells"] == []
+
+    def test_merges_live_and_historical_and_emits_stops(self, client, session):
+        # Same cell in both tables -> the all-time view sums the two counts.
+        session.add(HeatCell(lat_bin=9856, lon_bin=-16416, count=22))
+        session.add(HeatCellHistorical(lat_bin=9856, lon_bin=-16416, count=100))
+        session.add(HeatCellHistorical(lat_bin=9520, lon_bin=-16312, count=7))
+        session.commit()
+
+        r = client.get("/api/ships/heat")
+        assert r.status_code == 200
+        body = r.json()
+        # Two distinct cells; the shared one is summed, not double-counted.
+        assert body["count"] == 2
+        triples = {(c[0], c[1]): c[2] for c in body["cells"]}
+        assert triples[(9856, -16416)] == 122
+        assert triples[(9520, -16312)] == 7
+        assert "stops" in body
+        assert body["stops"]
+
+
+def test_merge_cells_sums_overlapping_bins():
+    live = [(1, 2, 5), (3, 4, 10)]
+    hist = [(1, 2, 100), (5, 6, 7)]
+    merged = {(la, lo): c for la, lo, c in _merge_cells(live, hist)}
+    assert merged[(1, 2)] == 105
+    assert merged[(3, 4)] == 10
+    assert merged[(5, 6)] == 7
+
+
+def test_quantile_stops_ascending_unique_and_capped():
+    stops = _quantile_stops([1, 1, 1, 2, 5, 8, 13, 21, 34, 55, 89, 144])
+    assert stops == sorted(set(stops))
+    assert len(stops) <= 6
+    assert stops[0] >= 1
+
+
+def test_quantile_stops_empty():
+    assert _quantile_stops([]) == []

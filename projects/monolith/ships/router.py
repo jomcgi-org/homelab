@@ -24,7 +24,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from ships.heat import LAT_STEP as HEAT_LAT_STEP
 from ships.heat import LON_STEP as HEAT_LON_STEP
-from ships.models import HeatCell, LatestPosition, Position, Vessel
+from ships.models import HeatCell, HeatCellHistorical, LatestPosition, Position, Vessel
 
 logger = logging.getLogger("ships")
 
@@ -101,6 +101,36 @@ def _parse_since(s: str | None) -> timedelta | None:
     except ValueError:
         return None
     return None
+
+
+def _merge_cells(live, historical):
+    """Sum per-cell counts across the live 7-day rollup and the all-time
+    accumulator. Each input is an iterable of (lat_bin, lon_bin, count).
+    Returns a list of (lat_bin, lon_bin, count). No double-counting: a day is
+    either live or banked, never both (see retention.py invariant)."""
+    totals: dict[tuple[int, int], int] = {}
+    for lat_bin, lon_bin, count in (*live, *historical):
+        totals[(lat_bin, lon_bin)] = totals.get((lat_bin, lon_bin), 0) + count
+    return [(la, lo, c) for (la, lo), c in totals.items()]
+
+
+def _quantile_stops(counts, n=6):
+    """Up to n ascending, unique color breakpoints derived from the cell count
+    distribution, so the stepped ramp self-calibrates as all-time totals grow (a
+    fixed ramp would saturate to all-red). First stop is always 1. Empty -> []."""
+    values = sorted(c for c in counts if c > 0)
+    if not values:
+        return []
+    raw = [1]
+    for i in range(1, n):
+        q = i / n
+        idx = min(len(values) - 1, int(q * len(values)))
+        raw.append(values[idx])
+    out: list[int] = []
+    for v in raw:
+        if not out or v > out[-1]:
+            out.append(int(v))
+    return out
 
 
 @router.get("/snapshot")
@@ -198,19 +228,24 @@ def get_track(
 
 
 @router.get("/heat")
-def get_heat(
-    response: Response,
-    session: Session = Depends(get_session),
-):
-    """Precomputed traffic-density grid for the /app/ships heatmap.
+def get_heat(response: Response, session: Session = Depends(get_session)):
+    """All-time traffic-density grid for the /app/ships heatmap.
 
-    Returns the occupied ~500m cells as compact [lat_bin, lon_bin, count]
-    triples plus the cell steps; the client reconstructs each cell polygon as
-    [lat_bin*step_lat, lon_bin*step_lon] .. [+step]. SSR-only, CDN-cached. The
-    heavy aggregation runs hourly in ships.heat; this just reads the rollup.
+    Sums the live 7-day rollup (HeatCell) with the all-time accumulator
+    (HeatCellHistorical, banked at partition drop) per cell, so the map shows
+    cumulative vessel-days rather than only the last 7 days. Returns data-derived
+    quantile color stops so the stepped ramp self-calibrates. SSR-only, CDN-cached.
     """
-    rows = session.exec(select(HeatCell)).all()
-    cells = [[c.lat_bin, c.lon_bin, c.count] for c in rows]
+    live = [
+        (c.lat_bin, c.lon_bin, c.count) for c in session.exec(select(HeatCell)).all()
+    ]
+    hist = [
+        (c.lat_bin, c.lon_bin, c.count)
+        for c in session.exec(select(HeatCellHistorical)).all()
+    ]
+    merged = _merge_cells(live, hist)
+    cells = [[la, lo, c] for la, lo, c in merged]
+    stops = _quantile_stops([c for _, _, c in merged])
 
     response.headers["Cache-Control"] = _HEAT_CACHE_CONTROL
     return {
@@ -218,4 +253,5 @@ def get_heat(
         "step_lon": HEAT_LON_STEP,
         "count": len(cells),
         "cells": cells,
+        "stops": stops,
     }
