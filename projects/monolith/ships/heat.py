@@ -28,7 +28,7 @@ This module is split like ``retention.py``:
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from sqlmodel import Session, text
 
@@ -72,6 +72,42 @@ def rollup_insert_sql(
         "  AND p.lat BETWEEN -90 AND 90 AND p.lon BETWEEN -180 AND 180 "
         "  AND NOT (p.lat = 0 AND p.lon = 0) "
         "GROUP BY 1, 2"
+    )
+
+
+def bank_day_sql(day: date, lat_step: float, lon_step: float, min_speed: float) -> str:
+    """Build the INSERT...SELECT that banks ONE day's per-cell distinct-mover
+    counts into ships.heat_cells_historical, additively.
+
+    Reads the day's rows from the PARENT partitioned table by recorded_at range
+    (Postgres prunes to the one partition). After that partition is dropped this
+    SELECT returns zero rows, so re-running adds nothing: the bank is idempotent
+    and is therefore safe to run in the same transaction as the DROP and to
+    re-attempt on later maintenance passes.
+
+    day, steps and min_speed are derived from a date / module env constants,
+    never user input, so the f-string cannot carry SQL injection. (Flagged to
+    preempt the semgrep raw-SQL rule, mirrors rollup_insert_sql.)
+    """
+    lo = day.isoformat()
+    hi = (day + timedelta(days=1)).isoformat()
+    return (
+        "INSERT INTO ships.heat_cells_historical (lat_bin, lon_bin, count) "
+        "WITH movers AS ("
+        "  SELECT mmsi FROM ships.positions"
+        f"  WHERE recorded_at >= '{lo}' AND recorded_at < '{hi}'"
+        f"  GROUP BY mmsi HAVING max(speed) >= {min_speed}"
+        ") "
+        f"SELECT floor(p.lat / {lat_step})::int, floor(p.lon / {lon_step})::int, "
+        "       count(distinct p.mmsi) "
+        "FROM ships.positions p JOIN movers USING (mmsi) "
+        f"WHERE p.recorded_at >= '{lo}' AND p.recorded_at < '{hi}' "
+        "  AND p.lat BETWEEN -90 AND 90 AND p.lon BETWEEN -180 AND 180 "
+        "  AND NOT (p.lat = 0 AND p.lon = 0) "
+        "GROUP BY 1, 2 "
+        "ON CONFLICT (lat_bin, lon_bin) DO UPDATE "
+        "SET count = ships.heat_cells_historical.count + EXCLUDED.count, "
+        "    updated_at = now()"
     )
 
 
