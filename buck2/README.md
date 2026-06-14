@@ -1,4 +1,4 @@
-# tools/buck2 — Buck2 build rules
+# buck2 — Buck2 build rules
 
 Reusable [Buck2](https://buck2.build) rules for building/publishing container
 images and Helm charts, maintained here and consumed by Buck2 projects (e.g.
@@ -38,15 +38,15 @@ Local execution only (no buck2 RE yet). From the repo root, in a shell with
 
 ```sh
 git submodule update --init --recursive   # fetch the prelude
-buck2 build //tools/buck2/...
-buck2 test  //tools/buck2/...
+buck2 build //buck2/...
+buck2 test  //buck2/...
 ```
 
 CI runs the same via the **Buck2 rules** action in `buildbuddy.yaml`.
 
 ## Internal-reference rule
 
-All loads/targets inside `tools/buck2/**` use only cell-relative `//tools/buck2/…`
+All loads/targets inside `buck2/**` use only cell-relative `//buck2/…`
 and `prelude//…` — never a bespoke cell name. An external cell's own `[cells]`
 config is ignored by the consumer, so this keeps the rules resolving identically
 whether built standalone here or consumed by `loom`.

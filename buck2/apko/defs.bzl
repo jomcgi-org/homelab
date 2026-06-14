@@ -13,7 +13,7 @@ The output `<name>.tar` is a standard OCI image (an index when the config lists
 tags live in a separate step (see apko_push / the oci push rules).
 """
 
-_APKO = "//tools/buck2/bin:apko"
+_APKO = "//buck2/bin:apko"
 
 def apko_image(name, config, lock, visibility = ["PUBLIC"], **kwargs):
     """Build an OCI image tar from an apko `config` + `lock`.

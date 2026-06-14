@@ -8,11 +8,11 @@ to bazel/helm's `helm_chart(images=...)` + `helm_images_values`). `lint=True`
 adds a `helm lint` validation target.
 """
 
-load("//tools/buck2/oci:providers.bzl", "OciImageInfo")
+load("//buck2/oci:providers.bzl", "OciImageInfo")
 
-_HELM = "//tools/buck2/bin:helm"
-_YQ = "//tools/buck2/bin:yq"
-_KUBECONFORM = "//tools/buck2/bin:kubeconform"
+_HELM = "//buck2/bin:helm"
+_YQ = "//buck2/bin:yq"
+_KUBECONFORM = "//buck2/bin:kubeconform"
 
 def _helm_images_values_impl(ctx: AnalysisContext) -> list[Provider]:
     out = ctx.actions.declare_output("images.yaml")

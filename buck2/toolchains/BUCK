@@ -7,7 +7,7 @@ load(":cxx_dist.bzl", "hermetic_cxx_tools")
 load(":rust_dist.bzl", "hermetic_rust_toolchain")
 
 # Minimal `toolchains` cell for homelab's buck2 project. The image/helm rules in
-# tools/buck2/** are CLI wrappers (apko/crane/helm/yq) built with `genrule`, so
+# buck2/** are CLI wrappers (apko/crane/helm/yq) built with `genrule`, so
 # the genrule toolchain is the load-bearing one; the rest are system toolchains
 # the prelude expects to resolve. No Rust/LLVM here — homelab doesn't compile
 # native code under buck2 (cf. loom/toolchains/BUCK, which adds a hermetic Rust

@@ -1,13 +1,14 @@
-# buck2 project root for homelab's Buck2 build rules (tools/buck2/**).
+# buck2 project root for homelab's Buck2 build rules (buck2/**).
 #
 # homelab is primarily a Bazel monorepo; this .buckconfig adds a *second*,
 # self-contained buck2 project rooted here so the reusable image/helm rules in
-# tools/buck2/ can be developed and tested in place. buck2 reads `BUCK` files,
+# buck2/ can be developed and tested in place. buck2 reads `BUCK` files,
 # Bazel reads `BUILD`/`BUILD.bazel`, so the two coexist without collision; the
 # buck2 prelude submodule is excluded from Bazel via .bazelignore.
 #
 # Pinned to the same buck2 release (2026-05-18) + prelude commit as the `loom`
-# repo, which consumes tools/buck2 as an external cell — keep them aligned.
+# repo, which will consume this top-level `buck2/` cell as an external cell. Keep
+# them aligned.
 #
 # Execution is LOCAL only for now (no buck2 RE): builds run in the BuildBuddy
 # workflow container. To enable RE later, add [project] remote_enabled = true
@@ -17,7 +18,7 @@
 [cells]
   root = .
   prelude = prelude
-  toolchains = tools/buck2/toolchains
+  toolchains = buck2/toolchains
   none = none
 
 [cell_aliases]
@@ -34,7 +35,7 @@
     target:toolchains//...->prelude//platforms:default
 
 [build]
-  execution_platforms = root//tools/buck2/platforms:default
+  execution_platforms = root//buck2/platforms:default
 
 # Build actions run on BuildBuddy remote execution, exactly like loom — the
 # rbe-ubuntu24-04 container has a full toolchain, so Rust compiles/links there

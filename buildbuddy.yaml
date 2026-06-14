@@ -172,12 +172,12 @@ actions:
     steps:
       - run: ./bazel/helm/ci-diff-manifests.sh
 
-  # Buck2 rules — builds & tests the Buck2 image/helm rules under tools/buck2/**
+  # Buck2 rules — builds & tests the Buck2 image/helm rules under buck2/**
   # (the Buck2 counterparts to bazel/helm + bazel/tools/oci, consumed by the
   # `loom` repo as an external cell). homelab is otherwise a Bazel repo, so this
   # action self-installs the pinned buck2 release and checks out the buck2
   # prelude submodule before building. Local execution only (no buck2 RE yet).
-  # Keep BUCK2_RELEASE aligned with tools/buck2/README.md + loom/.buckconfig.
+  # Keep BUCK2_RELEASE aligned with buck2/README.md + loom/.buckconfig.
   - name: "Buck2 rules"
     container_image: "ubuntu-24.04"
     max_retries: 1
@@ -235,5 +235,5 @@ actions:
           # we always start fresh.
           /tmp/buck2 killall 2>/dev/null || true
           /tmp/buck2 --version
-          /tmp/buck2 build //tools/buck2/...
-          /tmp/buck2 test  //tools/buck2/...
+          /tmp/buck2 build //buck2/...
+          /tmp/buck2 test  //buck2/...
