@@ -71,8 +71,9 @@ async def search_knowledge(
 async def get_note(note_id: str) -> dict:
     """Retrieve a knowledge note by its stable ID.
 
-    Returns note metadata (title, type, tags), the full markdown
-    content read from the vault, and all outgoing graph edges.
+    Returns note metadata (title, type, tags), the markdown body (the
+    authored body from Postgres, with the vault file as a fallback), and
+    all outgoing graph edges.
 
     Args:
         note_id: The stable note identifier (e.g. "attention-is-all-you-need").
@@ -84,12 +85,14 @@ async def get_note(note_id: str) -> dict:
             return {"error": f"note not found: {note_id}"}
 
         vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-        resolved = (vault_root / note["path"]).resolve()
-        if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+        body = notes_module.resolve_note_body(
+            note.get("content"), vault_root, note["path"]
+        )
+        if body is None:
             return {"error": f"vault file missing for {note_id}"}
 
         edges = store.get_note_links(note_id)
-        return {**note, "content": resolved.read_text(), "edges": edges}
+        return {**note, "content": body, "edges": edges}
 
 
 @mcp.tool

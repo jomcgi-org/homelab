@@ -27,6 +27,7 @@ from knowledge.notes import (
     _serialize_frontmatter,
     _trash_filename,
     _write_note_visibility_frontmatter,
+    resolve_note_body,
 )
 
 
@@ -47,6 +48,7 @@ def _make_note(
     source: str | None = None,
     deleted_at: datetime | None = None,
     updated_at: datetime | None = None,
+    content: str | None = None,
 ) -> Note:
     """Return an *unsaved* Note for testing pure helpers that don't need a DB."""
     return Note(
@@ -54,6 +56,7 @@ def _make_note(
         path=path or f"{note_id}.md",
         title=title,
         content_hash=f"hash-{note_id}",
+        content=content,
         type=type_,
         visibility=visibility,  # type: ignore[arg-type]
         visibility_verified=visibility_verified,
@@ -91,7 +94,55 @@ def _write_vault_note(
 # ---------------------------------------------------------------------------
 
 
+class TestResolveNoteBody:
+    """ADR 006 Phase 2: prefer the Postgres content column, fall back to disk."""
+
+    def test_prefers_content_column_without_disk_access(self, tmp_path: Path) -> None:
+        # No file on disk; content must come from the column.
+        body = resolve_note_body("from the column", tmp_path, "nope.md")
+        assert body == "from the column"
+
+    def test_falls_back_to_disk_when_content_none(self, tmp_path: Path) -> None:
+        _write_vault_note(tmp_path, "note.md", body="disk body")
+        body = resolve_note_body(None, tmp_path, "note.md")
+        assert body is not None
+        assert "disk body" in body
+        # Frontmatter is stripped on the disk path.
+        assert "visibility" not in body
+
+    def test_disk_fallback_strips_links_section(self, tmp_path: Path) -> None:
+        (tmp_path / "n.md").write_text(
+            "---\nid: n\ntitle: N\n---\nReal body.\n\n## Links\n\n- Up: [[x]]\n"
+        )
+        body = resolve_note_body(None, tmp_path, "n.md")
+        assert body is not None
+        assert "Real body." in body
+        assert "## Links" not in body
+
+    def test_returns_none_when_content_none_and_file_missing(
+        self, tmp_path: Path
+    ) -> None:
+        assert resolve_note_body(None, tmp_path, "ghost.md") is None
+
+    def test_returns_none_on_path_escape(self, tmp_path: Path) -> None:
+        assert resolve_note_body(None, tmp_path, "../escape.md") is None
+
+    def test_empty_string_content_is_served_not_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        # An empty body is a legitimate value, distinct from NULL — it must
+        # not trigger the disk fallback.
+        _write_vault_note(tmp_path, "e.md", body="should not be read")
+        assert resolve_note_body("", tmp_path, "e.md") == ""
+
+
 class TestReadNoteSnippet:
+    def test_uses_content_column_when_present(self, tmp_path: Path) -> None:
+        # No disk file; the snippet must be sourced from the column.
+        note = _make_note(path="col.md", content="Body from Postgres.")
+        snippet = _read_note_snippet(tmp_path, note)
+        assert "Body from Postgres." in snippet
+
     def test_returns_body_without_frontmatter(self, tmp_path: Path) -> None:
         note = _make_note(path="note.md")
         _write_vault_note(

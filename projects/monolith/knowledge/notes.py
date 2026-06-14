@@ -27,6 +27,7 @@ import yaml
 from sqlmodel import Session, select
 
 from knowledge import frontmatter
+from knowledge import wikilinks
 from knowledge.models import Note
 
 logger = logging.getLogger(__name__)
@@ -62,32 +63,53 @@ def _get_note_or_raise(session: Session, note_id: str) -> Note:
     return note
 
 
+def resolve_note_body(content: str | None, vault_root: Path, path: str) -> str | None:
+    """Return a note's markdown body, preferring the Postgres ``content``
+    column (the ADR 006 body of record) and falling back to the on-disk
+    vault file while pre-existing rows may still carry NULL content (the
+    one-shot reconciler backfill is in progress).
+
+    The returned body is frontmatter- and ``## Links``-section-stripped in
+    both paths so callers get a stable shape regardless of source: the
+    column already holds the authored body, and the disk fallback parses
+    and strips to match. Returns ``None`` when content is NULL and the file
+    is missing or escapes the vault root, so callers can map that to their
+    own not-found / empty response.
+    """
+    if content is not None:
+        return content
+    resolved = (vault_root / path).resolve()
+    if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+        return None
+    try:
+        raw = resolved.read_text()
+    except OSError:
+        return None
+    try:
+        _, body = frontmatter.parse(raw)
+    except frontmatter.FrontmatterError:
+        # Body still useful even if frontmatter is broken; fall back to raw.
+        return raw
+    return wikilinks.strip_links_section(body)
+
+
 def _read_note_snippet(vault_root: Path, note: Note) -> str:
     """Return the first ~100 lines of ``note``'s body, capped at 8 KiB.
 
-    Reads the vault file and strips frontmatter. Missing / unreadable
-    files return an empty string — review-queue listing is best-effort
-    metadata and must never break on a partial vault. The line+byte cap
-    is sized to give the audit UI enough context to evaluate a note
-    in-place without surfacing the entire body.
+    Prefers the Postgres ``content`` column (ADR 006), falling back to the
+    vault file. Missing / unreadable files return an empty string —
+    review-queue listing is best-effort metadata and must never break on a
+    partial vault. The line+byte cap is sized to give the audit UI enough
+    context to evaluate a note in-place without surfacing the entire body.
     """
-    try:
-        resolved = (vault_root / note.path).resolve()
-        if not resolved.is_relative_to(vault_root) or not resolved.is_file():
-            return ""
-        raw = resolved.read_text()
-    except OSError:
+    body = resolve_note_body(note.content, vault_root, note.path)
+    if body is None:
         logger.warning(
             "notes._read_note_snippet: failed to read %s for note_id=%r",
             note.path,
             note.note_id,
         )
         return ""
-    try:
-        _, body = frontmatter.parse(raw)
-    except frontmatter.FrontmatterError:
-        # Body still useful even if frontmatter is broken; fall back to raw.
-        body = raw
     head = "\n".join(body.lstrip().splitlines()[:_SNIPPET_MAX_LINES])
     # Byte cap as a backstop: a single very long line shouldn't blow
     # the payload past what the review UI can render comfortably.
