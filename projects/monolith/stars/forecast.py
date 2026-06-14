@@ -16,7 +16,7 @@ import httpx
 from astral import LocationInfo
 from astral.sun import elevation
 
-from stars.scoring import WeatherData, cloud_factor, darkness_factor, quality_score
+from stars.scoring import CLEAR_CLOUD_MAX_PCT, is_dark_hour
 
 logger = logging.getLogger("monolith.stars.forecast")
 
@@ -29,17 +29,18 @@ HTTP_TIMEOUT = 30.0
 
 
 def score_location(loc: dict, forecast: dict) -> list[dict]:
-    """All dark hours for one site ranked by quality, sorted by time ascending.
+    """All dark hours for one site, sorted by time ascending (stars v2).
 
-    ADR 007: every civil-dark hour (sun below -6 deg) is kept and scored by the
-    continuous quality Q = D x C x W, so summer nights surface the best
-    available windows instead of going empty. Hours that are not dark, or are
-    dark but hopeless (Q == 0, e.g. fully clouded), are dropped.
+    Every dark hour (sun below -12 deg, nautical) is kept and tagged with
+    ``is_clear`` (cloud < 10%); the clear-dark hours are the windows worth
+    showing. Hours that are not dark (daylight or only civil twilight) are
+    dropped. Unlike v1, a dark-but-cloudy hour is no longer dropped: it is kept
+    with ``is_clear`` False so the prune can still count it toward dark_hours
+    (the clarity-rate denominator).
 
-    Each returned dict matches the stars.site_hours columns (minus site_id /
-    fetched_at, which the job sets): time, score, sun_elevation_deg,
-    cloud_area_fraction, relative_humidity, wind_speed, air_temperature,
-    dew_spread, symbol.
+    Each returned dict carries the fields the job and the read path need (minus
+    site_id / fetched_at, which the job sets): time, sun_elevation_deg,
+    cloud_area_fraction, air_temperature, dew_spread, symbol, is_clear.
     """
     observer = LocationInfo(latitude=loc["lat"], longitude=loc["lon"]).observer
     hours: list[dict] = []
@@ -54,50 +55,24 @@ def score_location(loc: dict, forecast: dict) -> list[dict]:
         except Exception as exc:  # pragma: no cover - astral edge cases
             logger.debug("astral elevation failed for %s at %s: %s", loc["id"], t, exc)
             continue
-        d = darkness_factor(e)
-        if d <= 0.0:
-            continue  # daylight / brighter than civil twilight
+        if not is_dark_hour(e):
+            continue  # daylight / not yet nautically dark
         instant = entry.get("data", {}).get("instant", {}).get("details", {})
         next_1h = entry.get("data", {}).get("next_1_hours", {})
-        try:
-            weather = WeatherData(
-                cloud_area_fraction=instant.get("cloud_area_fraction", 100),
-                relative_humidity=instant.get("relative_humidity", 100),
-                fog_area_fraction=instant.get("fog_area_fraction", 0),
-                wind_speed=instant.get("wind_speed", 0),
-                air_temperature=instant.get("air_temperature", 10),
-                dew_point_temperature=instant.get("dew_point_temperature", 5),
-                air_pressure_at_sea_level=instant.get(
-                    "air_pressure_at_sea_level", 1013.25
-                ),
-            )
-        except Exception as exc:
-            logger.debug("skip malformed weather entry at %s: %s", time_str, exc)
-            continue
-        q = quality_score(weather, e)
-        if q <= 0.0:
-            continue  # dark but hopeless (e.g. fully clouded)
-        # Store the decomposed factors alongside Q so the prune can bank the
-        # component sums (darkness, clarity) per month, not just the lossy Q sum
-        # (ADR 008). darkness is reused from the gate above; clarity is the
-        # cloud factor under the same darkness-scaled allowance quality_score
-        # uses internally, so behavior is identical to before.
-        c = cloud_factor(weather.cloud_area_fraction, d)
+        # Missing cloud defaults to overcast (100) so an absent reading counts as
+        # not-clear rather than silently qualifying as a clear-dark hour.
+        cloud = instant.get("cloud_area_fraction", 100)
+        air_temperature = instant.get("air_temperature", 10)
+        dew_point = instant.get("dew_point_temperature", 5)
         hours.append(
             {
                 "time": time_str,
-                "score": round(q, 1),
                 "sun_elevation_deg": round(e, 1),
-                "darkness_factor": round(d, 4),
-                "cloud_factor": round(c, 4),
-                "cloud_area_fraction": weather.cloud_area_fraction,
-                "relative_humidity": weather.relative_humidity,
-                "wind_speed": weather.wind_speed,
-                "air_temperature": weather.air_temperature,
-                "dew_spread": round(
-                    weather.air_temperature - weather.dew_point_temperature, 1
-                ),
+                "cloud_area_fraction": cloud,
+                "air_temperature": air_temperature,
+                "dew_spread": round(air_temperature - dew_point, 1),
                 "symbol": next_1h.get("summary", {}).get("symbol_code", ""),
+                "is_clear": cloud < CLEAR_CLOUD_MAX_PCT,
             }
         )
     hours.sort(key=lambda h: h["time"])

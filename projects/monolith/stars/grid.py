@@ -228,10 +228,8 @@ def _load_climatology_sync() -> int:
                 SiteMonthClimatology(
                     site_id=str(site_id),
                     month=month_int,
-                    window_count=int(entry.get("window_count") or 0),
-                    sum_q=float(entry.get("sum_q") or 0.0),
-                    sum_darkness=float(entry.get("sum_darkness") or 0.0),
-                    sum_clarity=float(entry.get("sum_clarity") or 0.0),
+                    dark_hours=int(entry.get("dark_hours") or 0),
+                    clear_dark_hours=int(entry.get("clear_dark_hours") or 0),
                 )
             )
         except (TypeError, ValueError):

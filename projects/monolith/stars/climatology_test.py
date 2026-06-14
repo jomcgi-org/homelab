@@ -43,18 +43,14 @@ _CLIMO = [
     {
         "site_id": "scotland-0001",
         "month": 3,
-        "window_count": 300,
-        "sum_q": 18180.0,
-        "sum_darkness": 210.5,
-        "sum_clarity": 250.1,
+        "dark_hours": 300,
+        "clear_dark_hours": 85,
     },
     {
         "site_id": "scotland-0002",
         "month": 3,
-        "window_count": 120,
-        "sum_q": 6000.0,
-        "sum_darkness": 80.0,
-        "sum_clarity": 70.0,
+        "dark_hours": 120,
+        "clear_dark_hours": 30,
     },
 ]
 
@@ -70,17 +66,17 @@ def test_load_climatology_sync_upserts_rows(engine, monkeypatch):
         by_id = {r.site_id: r for r in rows}
     assert set(by_id) == {"scotland-0001", "scotland-0002"}
     assert by_id["scotland-0001"].month == 3
-    assert by_id["scotland-0001"].window_count == 300
-    assert by_id["scotland-0001"].sum_q == 18180.0
-    assert by_id["scotland-0001"].sum_darkness == 210.5
-    assert by_id["scotland-0001"].sum_clarity == 250.1
+    assert by_id["scotland-0001"].dark_hours == 300
+    assert by_id["scotland-0001"].clear_dark_hours == 85
 
 
 def test_load_climatology_sync_replaces_existing_rows(engine, monkeypatch):
     # A stale row not present in the new backfill must be removed (wholesale replace).
     with Session(engine) as session:
         session.add(
-            SiteMonthClimatology(site_id="stale", month=9, window_count=5, sum_q=10.0)
+            SiteMonthClimatology(
+                site_id="stale", month=9, dark_hours=5, clear_dark_hours=2
+            )
         )
         session.commit()
 
@@ -98,7 +94,7 @@ def test_load_climatology_sync_replaces_existing_rows(engine, monkeypatch):
 
 def test_load_climatology_sync_skips_malformed_rows(engine, monkeypatch):
     payload = [
-        {"site_id": "good", "month": 6, "window_count": 1, "sum_q": 5.0},
+        {"site_id": "good", "month": 6, "dark_hours": 30, "clear_dark_hours": 5},
         {"site_id": "no-month"},  # missing month -> skipped
         {"month": 6},  # missing site_id -> skipped
         {"site_id": "bad-month", "month": 13},  # month out of range -> skipped

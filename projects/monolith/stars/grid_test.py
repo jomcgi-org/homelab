@@ -120,24 +120,20 @@ def test_load_grid_sync_removes_orphaned_site_hours(engine, monkeypatch):
             SiteHour(
                 site_id="stale",
                 hour_time=hour,
-                score=70.0,
                 cloud_area_fraction=10.0,
-                relative_humidity=60.0,
-                wind_speed=3.0,
                 air_temperature=8.0,
                 dew_spread=5.0,
+                sun_elevation_deg=-18.0,
             )
         )
         session.add(
             SiteHour(
                 site_id="grid-0001",
                 hour_time=hour,
-                score=80.0,
                 cloud_area_fraction=10.0,
-                relative_humidity=60.0,
-                wind_speed=3.0,
                 air_temperature=8.0,
                 dew_spread=5.0,
+                sun_elevation_deg=-18.0,
             )
         )
         session.commit()

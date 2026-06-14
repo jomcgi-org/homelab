@@ -21,6 +21,7 @@ from sqlmodel import Session, delete, select
 from shared.forecast_freshness import top_of_hour
 from stars.forecast import fetch_all
 from stars.models import Site, SiteHour, SiteMonthStat
+from stars.scoring import is_clear_dark_hour
 
 logger = logging.getLogger("monolith.stars.jobs")
 
@@ -71,15 +72,10 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
         SiteHour(
             site_id=site_id,
             hour_time=datetime.fromisoformat(h["time"].replace("Z", "+00:00")),
-            score=h["score"],
             cloud_area_fraction=h["cloud_area_fraction"],
-            relative_humidity=h["relative_humidity"],
-            wind_speed=h["wind_speed"],
             air_temperature=h["air_temperature"],
             dew_spread=h["dew_spread"],
             sun_elevation_deg=h["sun_elevation_deg"],
-            darkness_factor=h["darkness_factor"],
-            cloud_factor=h["cloud_factor"],
             symbol=h["symbol"],
             fetched_at=now,
         )
@@ -108,9 +104,11 @@ def _prune_elapsed(session: Session) -> int:
     strictly before it have elapsed. cutoff is tz-aware UTC, so the comparison
     stays tz-aware against the TIMESTAMPTZ column.
 
-    ADR 008 exactly-once banking: this is the SOLE remover of elapsed hours, so
-    each elapsing hour is accumulated into stars.site_month_stats once, then
-    deleted. The aggregation is done in Python (grouping by the hour's
+    Exactly-once banking: this is the SOLE remover of elapsed hours, so each
+    elapsing hour is accumulated into stars.site_month_stats once, then deleted.
+    Every elapsing row is a dark hour (forecast keeps only sun < -12), so each
+    increments dark_hours; the subset that is also clear (cloud < 10%) increments
+    clear_dark_hours. The aggregation is done in Python (grouping by the hour's
     month-of-year) rather than a Postgres ``extract()`` / ``ON CONFLICT`` upsert
     so the same core is portable to the SQLite create_all test fixtures. The
     elapsing set is small (one clock hour's worth), so the loop is cheap.
@@ -118,17 +116,14 @@ def _prune_elapsed(session: Session) -> int:
     cutoff = top_of_hour()
     elapsing = session.exec(select(SiteHour).where(SiteHour.hour_time < cutoff)).all()
 
-    # Accumulate the per-(site, month-of-year) sufficient statistics in memory.
-    buckets: dict[tuple[str, int], dict[str, float]] = {}
+    # Accumulate the per-(site, month-of-year) clear-dark counts in memory.
+    buckets: dict[tuple[str, int], dict[str, int]] = {}
     for row in elapsing:
         key = (row.site_id, row.hour_time.month)
-        agg = buckets.setdefault(
-            key, {"count": 0, "sum_q": 0.0, "sum_darkness": 0.0, "sum_clarity": 0.0}
-        )
-        agg["count"] += 1
-        agg["sum_q"] += row.score
-        agg["sum_darkness"] += row.darkness_factor
-        agg["sum_clarity"] += row.cloud_factor
+        agg = buckets.setdefault(key, {"dark": 0, "clear": 0})
+        agg["dark"] += 1
+        if is_clear_dark_hour(row.sun_elevation_deg, row.cloud_area_fraction):
+            agg["clear"] += 1
 
     # Bank each bucket: increment the existing month row in place, or add a new
     # one. New rows are collected and add_all'd once (no session.add in a loop).
@@ -140,17 +135,13 @@ def _prune_elapsed(session: Session) -> int:
                 SiteMonthStat(
                     site_id=site_id,
                     month=month,
-                    window_count=agg["count"],
-                    sum_q=agg["sum_q"],
-                    sum_darkness=agg["sum_darkness"],
-                    sum_clarity=agg["sum_clarity"],
+                    dark_hours=agg["dark"],
+                    clear_dark_hours=agg["clear"],
                 )
             )
         else:
-            stat.window_count += agg["count"]
-            stat.sum_q += agg["sum_q"]
-            stat.sum_darkness += agg["sum_darkness"]
-            stat.sum_clarity += agg["sum_clarity"]
+            stat.dark_hours += agg["dark"]
+            stat.clear_dark_hours += agg["clear"]
     if new_rows:
         session.add_all(new_rows)
 

@@ -39,15 +39,10 @@ def test_site_hour_roundtrip(session):
     row = SiteHour(
         site_id="galloway-forest",
         hour_time=hour,
-        score=87.5,
-        cloud_area_fraction=10.0,
-        relative_humidity=60.0,
-        wind_speed=3.0,
+        cloud_area_fraction=8.0,
         air_temperature=8.0,
         dew_spread=5.0,
         sun_elevation_deg=-18.5,
-        darkness_factor=1.0,
-        cloud_factor=0.9,
         symbol="clearsky_night",
     )
     session.add(row)
@@ -56,15 +51,12 @@ def test_site_hour_roundtrip(session):
     loaded = session.get(SiteHour, ("galloway-forest", hour))
     assert loaded is not None
     assert loaded.site_id == "galloway-forest"
-    assert loaded.score == 87.5
-    assert loaded.cloud_area_fraction == 10.0
-    assert loaded.relative_humidity == 60.0
-    assert loaded.wind_speed == 3.0
+    # The v2 metric inputs round-trip; the Q columns (score/darkness/cloud
+    # factor) are gone.
+    assert loaded.cloud_area_fraction == 8.0
     assert loaded.air_temperature == 8.0
     assert loaded.dew_spread == 5.0
     assert loaded.sun_elevation_deg == -18.5
-    assert loaded.darkness_factor == 1.0
-    assert loaded.cloud_factor == 0.9
     assert loaded.symbol == "clearsky_night"
     # SQLite returns naive datetimes (no tz-aware type), so assert the type
     # only, not tzinfo, matching hikes/models_test. Production is Postgres
@@ -117,10 +109,7 @@ def test_default_symbol_is_empty(session):
     row = SiteHour(
         site_id="tiree",
         hour_time=hour,
-        score=70.0,
         cloud_area_fraction=20.0,
-        relative_humidity=65.0,
-        wind_speed=4.0,
         air_temperature=9.0,
         dew_spread=4.0,
     )
@@ -130,47 +119,43 @@ def test_default_symbol_is_empty(session):
     loaded = session.get(SiteHour, ("tiree", hour))
     assert loaded is not None
     assert loaded.symbol == ""
-    # Factors carry their column defaults when not supplied.
-    assert loaded.darkness_factor == 0.0
-    assert loaded.cloud_factor == 0.0
+    # sun_elevation_deg and the retained vestigial weather columns carry their
+    # defaults when not supplied.
+    assert loaded.sun_elevation_deg == 0.0
+    assert loaded.relative_humidity == 0.0
+    assert loaded.wind_speed == 0.0
 
 
 def test_site_month_stat_roundtrip(session):
     row = SiteMonthStat(
         site_id="galloway-forest",
         month=12,
-        window_count=47,
-        sum_q=2800.5,
-        sum_darkness=44.0,
-        sum_clarity=39.5,
+        dark_hours=47,
+        clear_dark_hours=18,
     )
     session.add(row)
     session.commit()
 
     loaded = session.get(SiteMonthStat, ("galloway-forest", 12))
     assert loaded is not None
-    assert loaded.window_count == 47
-    assert loaded.sum_q == 2800.5
-    assert loaded.sum_darkness == 44.0
-    assert loaded.sum_clarity == 39.5
+    assert loaded.dark_hours == 47
+    assert loaded.clear_dark_hours == 18
 
 
 def test_site_month_stat_defaults(session):
-    # window_count and the sums carry their column defaults.
+    # dark_hours and clear_dark_hours carry their column defaults.
     row = SiteMonthStat(site_id="tiree", month=6)
     session.add(row)
     session.commit()
 
     loaded = session.get(SiteMonthStat, ("tiree", 6))
     assert loaded is not None
-    assert loaded.window_count == 0
-    assert loaded.sum_q == 0.0
-    assert loaded.sum_darkness == 0.0
-    assert loaded.sum_clarity == 0.0
+    assert loaded.dark_hours == 0
+    assert loaded.clear_dark_hours == 0
 
 
 def test_site_month_stat_composite_pk_same_site_different_months(session):
-    common = {"site_id": "iona", "window_count": 1, "sum_q": 50.0}
+    common = {"site_id": "iona", "dark_hours": 5, "clear_dark_hours": 1}
     session.add(SiteMonthStat(month=1, **common))
     session.add(SiteMonthStat(month=2, **common))
     session.commit()
@@ -185,34 +170,28 @@ def test_site_month_climatology_roundtrip(session):
     row = SiteMonthClimatology(
         site_id="scotland-0001",
         month=3,
-        window_count=300,
-        sum_q=18180.0,
-        sum_darkness=210.5,
-        sum_clarity=250.1,
+        dark_hours=300,
+        clear_dark_hours=85,
     )
     session.add(row)
     session.commit()
 
     loaded = session.get(SiteMonthClimatology, ("scotland-0001", 3))
     assert loaded is not None
-    assert loaded.window_count == 300
-    assert loaded.sum_q == 18180.0
-    assert loaded.sum_darkness == 210.5
-    assert loaded.sum_clarity == 250.1
+    assert loaded.dark_hours == 300
+    assert loaded.clear_dark_hours == 85
 
 
 def test_site_month_climatology_defaults(session):
-    # window_count and the sums carry their column defaults.
+    # dark_hours and clear_dark_hours carry their column defaults.
     row = SiteMonthClimatology(site_id="scotland-0002", month=7)
     session.add(row)
     session.commit()
 
     loaded = session.get(SiteMonthClimatology, ("scotland-0002", 7))
     assert loaded is not None
-    assert loaded.window_count == 0
-    assert loaded.sum_q == 0.0
-    assert loaded.sum_darkness == 0.0
-    assert loaded.sum_clarity == 0.0
+    assert loaded.dark_hours == 0
+    assert loaded.clear_dark_hours == 0
 
 
 def test_composite_primary_key_same_site_different_hours(session):
@@ -220,10 +199,7 @@ def test_composite_primary_key_same_site_different_hours(session):
     hour_b = datetime(2026, 6, 13, 23, 0, 0, tzinfo=timezone.utc)
     common = {
         "site_id": "iona",
-        "score": 80.0,
         "cloud_area_fraction": 15.0,
-        "relative_humidity": 62.0,
-        "wind_speed": 2.0,
         "air_temperature": 7.0,
         "dew_spread": 6.0,
     }
