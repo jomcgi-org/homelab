@@ -1,9 +1,18 @@
 # ADR 008: Stars live and historical heatmaps via month-bucketed accumulate-at-drop
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Superseded (in part) by [009-stars-era5-climatology-backfill](009-stars-era5-climatology-backfill.md)
 **Created:** 2026-06-13
 **Supersedes:** the heatmap section of [007-stars-quality-model-and-heatmap](007-stars-quality-model-and-heatmap.md) (its quality model `Q = D x C x W` still stands)
+
+> **Status note (superseded in part):** the live bank-at-prune accumulator
+> (`stars.site_month_stats`) described below has been retired. The ERA5/CERRA
+> climatology backfill (ADR 009) gives a complete, immediate multi-year seasonal
+> picture, which made the slow-filling live accumulator redundant: the historical
+> layer now reads `stars.site_month_climatology` alone, the `site_month_stats`
+> table is dropped, and the hourly prune only deletes elapsed forecast hours (it
+> no longer banks). The two-layer live/historical UX and the clear-dark metric
+> below are unchanged; only the source of the historical counts moved.
 
 ---
 

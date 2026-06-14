@@ -47,39 +47,18 @@ class SiteHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class SiteMonthStat(
-    SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
-    """Per-site, per-calendar-month accumulator of clear-dark hours (v2).
-
-    Banked by the hourly prune as forecast hours elapse: each elapsing dark hour
-    adds 1 to ``dark_hours`` and, when it is also clear (cloud < 10%), 1 to
-    ``clear_dark_hours``, in the row for its month-of-year (1-12). The table stays
-    bounded at 12 rows per site and builds a stable seasonal picture.
-    ``clear_dark_hours`` is the headline metric; ``clear_dark_hours / dark_hours``
-    is the clarity rate.
-    """
-
-    __tablename__ = "site_month_stats"
-    __table_args__ = {"schema": "stars", "extend_existing": True}
-
-    site_id: str = Field(primary_key=True)
-    month: int = Field(primary_key=True)
-    dark_hours: int = Field(default=0)
-    clear_dark_hours: int = Field(default=0)
-
-
 class SiteMonthClimatology(
     SQLModel, table=True
 ):  # nosemgrep: sqlmodel-datetime-without-factory
-    """Per-site, per-month-of-year ERA5 reanalysis backfill (v2).
+    """Per-site, per-month-of-year ERA5/CERRA reanalysis backfill (v2).
 
-    A long-run seasonal baseline computed offline from the ERA5 reanalysis and
-    ingested by the stars.load_climatology job from climatology.json on SeaweedFS.
-    Same clear-dark counts as ``SiteMonthStat`` (dark_hours + clear_dark_hours) so
-    /api/stars/history can compose the two by per-field addition: the climatology
-    pre-fills the heatmap before the live accumulator has banked enough elapsed
-    hours to be meaningful.
+    A long-run seasonal baseline computed offline from the ERA5/CERRA reanalysis
+    and ingested by the stars.load_climatology job from climatology.json on
+    SeaweedFS. ``dark_hours`` is the per-month-of-year (1-12) count of dark hours
+    (sun < -12 deg) and ``clear_dark_hours`` the subset that is also clear (cloud
+    < 10%); ``clear_dark_hours / dark_hours`` is the clarity rate. /api/stars/history
+    reads this table directly: it is the sole source of the historical layer now
+    that the live bank-at-prune accumulator has been retired (ADR 009).
     """
 
     __tablename__ = "site_month_climatology"

@@ -5,10 +5,12 @@ Two read endpoints back the /app/stars dark-sky planner:
 - ``GET /api/stars/sites``, every dark-sky site (from stars.sites, sourced from
   the light-pollution grid) joined with its upcoming clear-dark viewing hours,
   for the site list + detail cards (the live layer).
-- ``GET /api/stars/history``, per-site accumulated clear-dark hours for a
-  calendar month (from stars.site_month_stats, banked by the hourly prune as
-  forecast hours elapse, combined with the ERA5 climatology baseline), for the
-  historical heatmap layer.
+- ``GET /api/stars/history``, per-site clear-dark hours for a calendar month (or
+  the whole year) from the ERA5/CERRA climatology (stars.site_month_climatology,
+  ADR 009), for the historical heatmap layer.
+- ``GET /api/stars/history/site/{id}``, one site's 12-month clear-dark-hours
+  breakdown, fetched lazily when a history card opens (the bulk /history payload
+  no longer carries the per-month map).
 
 The stars v2 metric is a concrete count of clear dark hours (sun < -12 deg and
 cloud < 10%), not the old continuous quality Q = darkness x cloud x weather.
@@ -36,7 +38,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
-from stars.models import Site, SiteHour, SiteMonthClimatology, SiteMonthStat
+from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.scoring import is_clear_dark_hour
 
 logger = logging.getLogger("stars")
@@ -60,6 +62,17 @@ _NIGHT_SHIFT = timedelta(hours=12)
 # Mirrors STARS_SITES_CACHE_CONTROL in frontend/src/lib/cache-headers.js if/when
 # that constant is added; keep in sync.
 _SITES_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
+
+# The historical layer is effectively IMMUTABLE between reloads: the bytes change
+# only when the (roughly yearly) ERA5/CERRA climatology reload runs, so cache it
+# at the edge for a year and invalidate explicitly. The reload is a manual op
+# (backfill_cerra.py -> upload -> stars.load_climatology), so its runbook purges
+# the Cloudflare cache for /app/stars/history* right after, the two always happen
+# together, so the cache can never be wrongly stale. max-age=0 keeps the browser
+# off a private stale copy so a CDN purge fully invalidates. NOTE: a code change
+# to the /history response shape also needs that same purge. Mirrors
+# STARS_HISTORY_CACHE_CONTROL in frontend/src/lib/cache-headers.js; keep in sync.
+_HISTORY_CACHE_CONTROL = "public, max-age=0, s-maxage=31536000, stale-while-revalidate=604800, stale-if-error=604800"
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -220,44 +233,31 @@ def get_history(
         description="Month-of-year 1-12; 0 = all year (every month summed)",
     ),
 ):
-    """Per-site combined clear-dark hours for a month, or the whole year. SSR-only.
+    """Per-site historical clear-dark hours for a month, or the whole year. SSR-only.
 
-    The historical heatmap layer: each site's heat is the sum of the live
-    accumulator (stars.site_month_stats, banked by the hourly prune as forecast
-    hours elapse) and the ERA5 climatology backfill (stars.site_month_climatology,
-    a long-run seasonal baseline). The two tables carry identical clear-dark
-    counts, so they compose by per-field addition: ``dark_hours`` and
-    ``clear_dark_hours`` add, and ``clear_rate`` is the combined
-    clear_dark_hours over the combined dark_hours.
+    The historical heatmap layer reads the ERA5/CERRA climatology backfill
+    (stars.site_month_climatology, a long-run seasonal baseline ingested by
+    stars.load_climatology, ADR 009). The retired live bank-at-prune accumulator
+    no longer contributes: history is the climatology alone.
 
     ``month`` 1-12 filters the headline counts to that month-of-year; ``month`` 0
     is the all-year view (the default), which sums every month bucket per site.
-    Regardless of the selected view, each site carries a ``months`` map of all 12
-    months' clear_dark_hours (built from the UNFILTERED rows) so the frontend can
-    always draw a 12-bar seasonal graph.
 
-    A site is included if it appears in EITHER table for the selected view
-    (full-outer-join by site_id, done in Python). ``clear_dark_hours`` is the
-    headline heat metric. Sites with no metadata (dropped from the grid) or zero
-    dark hours in the selected view are omitted. Ordered by combined
-    ``clear_dark_hours`` descending. CDN-cached with the same headers as
-    ``/sites``; conditional GETs short-circuit with a 304.
+    Each site carries only its headline counts for the selected view
+    (``clear_dark_hours`` / ``dark_hours`` / ``clear_rate``). The per-month 12-bar
+    breakdown is fetched lazily per site from /history/site/{id} when a card opens,
+    so this bulk payload stays light. Sites with no metadata (dropped from the
+    grid) or zero dark hours in the selected view are omitted. Ordered by
+    ``clear_dark_hours`` descending. CDN-cached; conditional GETs short-circuit
+    with a 304.
     """
     by_id = {site.id: site for site in session.exec(select(Site)).all()}
 
-    # Read every month bucket from both accumulators once. A single pass builds
-    # two things: the per-site months map (always all 12 months, for the graph)
-    # and the selected-view headline counts (the chosen month, or all when 0).
-    live = session.exec(select(SiteMonthStat)).all()
-    climo = session.exec(select(SiteMonthClimatology)).all()
+    rows = session.exec(select(SiteMonthClimatology)).all()
 
-    # site_id -> {month: combined clear_dark_hours} for the 12-bar graph.
-    months_index: dict[str, dict[int, int]] = {}
-    # site_id -> {dark, clear} for the selected view (month, or all-year sum).
+    # site_id -> {dark, clear} for the selected view (a month, or the all-year sum).
     combined: dict[str, dict[str, int]] = {}
-    for row in (*live, *climo):
-        per_month = months_index.setdefault(row.site_id, {})
-        per_month[row.month] = per_month.get(row.month, 0) + row.clear_dark_hours
+    for row in rows:
         if month == 0 or row.month == month:
             agg = combined.setdefault(row.site_id, {"dark": 0, "clear": 0})
             agg["dark"] += row.dark_hours
@@ -267,8 +267,8 @@ def get_history(
     for site_id, agg in combined.items():
         meta = by_id.get(site_id)
         if meta is None:
-            # Orphans (a site dropped from the grid) are kept in both tables as
-            # historical record but have no metadata to render; skip them.
+            # Orphans (a site dropped from the grid) are kept in the climatology
+            # as historical record but have no metadata to render; skip them.
             logger.debug("stars.history: skipping unknown site_id %s", site_id)
             continue
         dark = agg["dark"]
@@ -277,7 +277,6 @@ def get_history(
             # No dark hours in the selected view: nothing to show, and the rate
             # would divide by zero.
             continue
-        per_month = months_index.get(site_id, {})
         sites.append(
             {
                 "id": meta.id,
@@ -287,22 +286,18 @@ def get_history(
                 "clear_dark_hours": clear,
                 "dark_hours": dark,
                 "clear_rate": clear / dark if dark else 0.0,
-                # All 12 months, zero-filled, so the frontend always has 12 bars
-                # regardless of the selected view.
-                "months": {mo: per_month.get(mo, 0) for mo in range(1, 13)},
             }
         )
 
     sites.sort(key=lambda s: s["clear_dark_hours"], reverse=True)
 
-    # The ETag folds in the selected month (0 = all year), the site count, the
-    # max combined clear_dark_hours and the total combined dark_hours: it turns
-    # over when EITHER the live prune banks more hours or the climatology
+    # The ETag folds in the selected month (0 = all year), the site count, the max
+    # clear_dark_hours and the total dark_hours: it turns over when the climatology
     # backfill reloads.
     max_clear = max((s["clear_dark_hours"] for s in sites), default=0)
     total_dark = sum(s["dark_hours"] for s in sites)
     etag = f'"v2-{month}-{len(sites)}-{max_clear}-{total_dark}"'
-    headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
+    headers = {"Cache-Control": _HISTORY_CACHE_CONTROL, "ETag": etag}
 
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
@@ -314,3 +309,41 @@ def get_history(
         "sites": sites,
         "count": len(sites),
     }
+
+
+@router.get("/history/site/{site_id}")
+def get_history_site(
+    site_id: str,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """One site's 12-month clear-dark-hours breakdown. SSR-only, lazy per card.
+
+    Backs the historical detail card's 12-bar seasonal chart: the bulk /history
+    payload no longer carries the per-month map, so the card fetches this when it
+    opens. Reads the ERA5/CERRA climatology (stars.site_month_climatology, ADR
+    009). ``months`` is a {1..12: clear_dark_hours} map, zero-filled for any month
+    the site has no climatology row. CDN-cached like /history; conditional GETs
+    short-circuit with a 304.
+    """
+    rows = session.exec(
+        select(SiteMonthClimatology).where(SiteMonthClimatology.site_id == site_id)
+    ).all()
+    months = {mo: 0 for mo in range(1, 13)}
+    for row in rows:
+        if 1 <= row.month <= 12:
+            months[row.month] = row.clear_dark_hours
+
+    # The ETag folds in the site id and the year total: it turns over when the
+    # climatology backfill reloads.
+    total = sum(months.values())
+    etag = f'"v2-site-{site_id}-{total}"'
+    headers = {"Cache-Control": _HISTORY_CACHE_CONTROL, "ETag": etag}
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+
+    for key, value in headers.items():
+        response.headers[key] = value
+    return {"site_id": site_id, "months": months}

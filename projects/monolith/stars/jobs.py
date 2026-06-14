@@ -20,8 +20,7 @@ from sqlmodel import Session, delete, select
 
 from shared.forecast_freshness import top_of_hour
 from stars.forecast import fetch_all
-from stars.models import Site, SiteHour, SiteMonthStat
-from stars.scoring import is_clear_dark_hour
+from stars.models import Site, SiteHour
 
 logger = logging.getLogger("monolith.stars.jobs")
 
@@ -52,11 +51,8 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
     Deletes only hours at or after the current clock hour for the fetched sites,
     then add_all of the new (future) scored hours, so there is no per-iteration
     session.add. Elapsed rows (hour_time < top_of_hour) are intentionally left
-    in place: the hourly prune is the sole remover of elapsed hours and banks
-    them into stars.site_month_stats exactly once before deleting (ADR 008). A
-    wholesale delete here would drop those rows before the prune could bank
-    them. Sites absent from ``scored`` (failed fetch) are untouched: stale beats
-    empty.
+    in place for the hourly prune to delete, rather than wholesale-cleared here.
+    Sites absent from ``scored`` (failed fetch) are untouched: stale beats empty.
     """
     site_ids = list(scored.keys())
     cutoff = top_of_hour(now)
@@ -98,56 +94,21 @@ def _persist_sites(scored: dict[str, list[dict]]) -> int:
 
 
 def _prune_elapsed(session: Session) -> int:
-    """Bank then delete rows whose clock hour has elapsed. Returns rows deleted.
+    """Delete rows whose clock hour has elapsed. Returns rows deleted.
 
     The cutoff is the top of the current UTC clock hour: rows whose hour_time is
     strictly before it have elapsed. cutoff is tz-aware UTC, so the comparison
     stays tz-aware against the TIMESTAMPTZ column.
 
-    Exactly-once banking: this is the SOLE remover of elapsed hours, so each
-    elapsing hour is accumulated into stars.site_month_stats once, then deleted.
-    Every elapsing row is a dark hour (forecast keeps only sun < -12), so each
-    increments dark_hours; the subset that is also clear (cloud < 10%) increments
-    clear_dark_hours. The aggregation is done in Python (grouping by the hour's
-    month-of-year) rather than a Postgres ``extract()`` / ``ON CONFLICT`` upsert
-    so the same core is portable to the SQLite create_all test fixtures. The
-    elapsing set is small (one clock hour's worth), so the loop is cheap.
+    This is pure housekeeping. The historical layer no longer comes from a live
+    accumulator banked here: it comes entirely from the ERA5/CERRA climatology
+    (stars.site_month_climatology, ADR 009), so the prune just drops elapsed
+    forecast hours.
     """
     cutoff = top_of_hour()
-    elapsing = session.exec(select(SiteHour).where(SiteHour.hour_time < cutoff)).all()
-
-    # Accumulate the per-(site, month-of-year) clear-dark counts in memory.
-    buckets: dict[tuple[str, int], dict[str, int]] = {}
-    for row in elapsing:
-        key = (row.site_id, row.hour_time.month)
-        agg = buckets.setdefault(key, {"dark": 0, "clear": 0})
-        agg["dark"] += 1
-        if is_clear_dark_hour(row.sun_elevation_deg, row.cloud_area_fraction):
-            agg["clear"] += 1
-
-    # Bank each bucket: increment the existing month row in place, or add a new
-    # one. New rows are collected and add_all'd once (no session.add in a loop).
-    new_rows: list[SiteMonthStat] = []
-    for (site_id, month), agg in buckets.items():
-        stat = session.get(SiteMonthStat, (site_id, month))
-        if stat is None:
-            new_rows.append(
-                SiteMonthStat(
-                    site_id=site_id,
-                    month=month,
-                    dark_hours=agg["dark"],
-                    clear_dark_hours=agg["clear"],
-                )
-            )
-        else:
-            stat.dark_hours += agg["dark"]
-            stat.clear_dark_hours += agg["clear"]
-    if new_rows:
-        session.add_all(new_rows)
-
-    # synchronize_session=False: the rows were just loaded to bank them, so an
-    # in-Python evaluation of the predicate would compare the aware cutoff
-    # against SQLite's naive datetimes (in tests) and raise. Issue the SQL delete.
+    # synchronize_session=False: issue the DELETE as SQL rather than evaluating
+    # the predicate in Python, which would compare the aware cutoff against
+    # SQLite's naive datetimes (in tests) and raise.
     result = session.execute(
         delete(SiteHour)
         .where(SiteHour.hour_time < cutoff)

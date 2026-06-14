@@ -17,7 +17,7 @@ from sqlmodel.pool import StaticPool
 
 import stars.jobs as jobs
 from shared.forecast_freshness import top_of_hour
-from stars.models import SiteHour, SiteMonthStat
+from stars.models import SiteHour
 
 
 @pytest.fixture(name="session")
@@ -134,9 +134,9 @@ def test_write_sites_leaves_unfetched_sites_untouched(session):
 
 
 def test_write_sites_replaces_future_only_keeps_elapsed(session):
-    # ADR 008: refresh replaces a fetched site's FUTURE hours only. An elapsed
-    # hour (< top_of_hour) survives the refresh so the prune can bank it; the
-    # stale future hour is replaced by the freshly scored future hours.
+    # Refresh replaces a fetched site's FUTURE hours only. An elapsed hour
+    # (< top_of_hour) survives the refresh and is left for the prune to delete;
+    # the stale future hour is replaced by the freshly scored future hours.
     elapsed = datetime(2026, 6, 13, 20, tzinfo=timezone.utc)
     stale_future = datetime(2026, 6, 13, 23, tzinfo=timezone.utc)
     _seed_hour(session, "A", elapsed, symbol="banked")
@@ -182,47 +182,36 @@ def test_prune_elapsed_drops_only_elapsed_hours(session):
     assert remaining == {current, future}
 
 
-def test_prune_banks_elapsed_into_month_stats(session):
-    # Elapsed dark hours are banked into site_month_stats (the right month
-    # bucket) before deletion: every elapsing row counts toward dark_hours, and
-    # the clear ones (cloud < 10%) toward clear_dark_hours.
+def test_prune_only_deletes_no_banking(session):
+    # The prune is pure housekeeping now: it deletes elapsed hours and writes no
+    # accumulator. The live bank-at-prune table (site_month_stats) was retired in
+    # favour of the ERA5/CERRA climatology (ADR 009), so the model is gone and the
+    # SQLite fixture never creates that table.
+    assert "site_month_stats" not in SQLModel.metadata.tables
+
     cutoff = top_of_hour(datetime.now(timezone.utc))
     h1 = cutoff - timedelta(hours=2)
     h2 = cutoff - timedelta(hours=3)
     future = cutoff + timedelta(hours=1)
-    # h1 is clear (5% cloud); h2 is dark but cloudy (50%).
     _seed_hour(session, "S", h1, cloud=5.0)
     _seed_hour(session, "S", h2, cloud=50.0)
-    # A future hour must be neither banked nor deleted.
     _seed_hour(session, "S", future, cloud=5.0)
     session.commit()
 
+    before = len(session.exec(select(SiteHour)).all())
     deleted = jobs._prune_elapsed(session)
     session.commit()
     assert deleted == 2
 
-    # Group the seeded elapsed hours by month exactly as the prune does, so the
-    # assertion holds even if the two hours straddle a month boundary.
-    expected: dict[int, dict[str, int]] = {}
-    for ht, clear in ((h1, True), (h2, False)):
-        agg = expected.setdefault(ht.month, {"dark": 0, "clear": 0})
-        agg["dark"] += 1
-        if clear:
-            agg["clear"] += 1
-    for month, agg in expected.items():
-        stat = session.get(SiteMonthStat, ("S", month))
-        assert stat is not None
-        assert stat.dark_hours == agg["dark"]
-        assert stat.clear_dark_hours == agg["clear"]
-
-    # The elapsed rows are deleted; only the future hour remains.
-    remaining = {_utc(r.hour_time) for r in session.exec(select(SiteHour)).all()}
-    assert remaining == {_utc(future)}
+    # The elapsed rows are deleted; only the future hour remains. The count drops
+    # by exactly the deleted rows, with nothing banked anywhere.
+    remaining = session.exec(select(SiteHour)).all()
+    assert len(remaining) == before - deleted == 1
+    assert {_utc(r.hour_time) for r in remaining} == {_utc(future)}
 
 
-def test_prune_rerun_does_not_double_count(session):
-    # The prune is the sole elapsed-remover and banks exactly once: a second run
-    # over an already-pruned table banks nothing more (no double-count).
+def test_prune_rerun_on_empty_table_is_noop(session):
+    # A second run over an already-pruned table deletes nothing more.
     cutoff = top_of_hour(datetime.now(timezone.utc))
     h1 = cutoff - timedelta(hours=2)
     _seed_hour(session, "S", h1, cloud=5.0)
@@ -230,39 +219,9 @@ def test_prune_rerun_does_not_double_count(session):
 
     assert jobs._prune_elapsed(session) == 1
     session.commit()
-    # Rows are gone, so the second prune finds nothing to bank or delete.
     assert jobs._prune_elapsed(session) == 0
     session.commit()
-
-    stat = session.get(SiteMonthStat, ("S", h1.month))
-    assert stat is not None
-    assert stat.dark_hours == 1
-    assert stat.clear_dark_hours == 1
-
-
-def test_prune_increments_existing_month_stat(session):
-    # Banking accumulates additively into an existing month row.
-    cutoff = top_of_hour(datetime.now(timezone.utc))
-    h1 = cutoff - timedelta(hours=2)
-    month = h1.month
-    session.add(
-        SiteMonthStat(
-            site_id="S",
-            month=month,
-            dark_hours=5,
-            clear_dark_hours=3,
-        )
-    )
-    _seed_hour(session, "S", h1, cloud=5.0)
-    session.commit()
-
-    assert jobs._prune_elapsed(session) == 1
-    session.commit()
-
-    stat = session.get(SiteMonthStat, ("S", month))
-    assert stat is not None
-    assert stat.dark_hours == 6
-    assert stat.clear_dark_hours == 4
+    assert session.exec(select(SiteHour)).all() == []
 
 
 def test_refresh_handler_empty_fetch_is_noop(monkeypatch):

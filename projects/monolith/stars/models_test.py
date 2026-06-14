@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from stars.models import Site, SiteHour, SiteMonthClimatology, SiteMonthStat
+from stars.models import Site, SiteHour, SiteMonthClimatology
 
 
 @pytest.fixture(name="session")
@@ -126,46 +126,6 @@ def test_default_symbol_is_empty(session):
     assert loaded.wind_speed == 0.0
 
 
-def test_site_month_stat_roundtrip(session):
-    row = SiteMonthStat(
-        site_id="galloway-forest",
-        month=12,
-        dark_hours=47,
-        clear_dark_hours=18,
-    )
-    session.add(row)
-    session.commit()
-
-    loaded = session.get(SiteMonthStat, ("galloway-forest", 12))
-    assert loaded is not None
-    assert loaded.dark_hours == 47
-    assert loaded.clear_dark_hours == 18
-
-
-def test_site_month_stat_defaults(session):
-    # dark_hours and clear_dark_hours carry their column defaults.
-    row = SiteMonthStat(site_id="tiree", month=6)
-    session.add(row)
-    session.commit()
-
-    loaded = session.get(SiteMonthStat, ("tiree", 6))
-    assert loaded is not None
-    assert loaded.dark_hours == 0
-    assert loaded.clear_dark_hours == 0
-
-
-def test_site_month_stat_composite_pk_same_site_different_months(session):
-    common = {"site_id": "iona", "dark_hours": 5, "clear_dark_hours": 1}
-    session.add(SiteMonthStat(month=1, **common))
-    session.add(SiteMonthStat(month=2, **common))
-    session.commit()
-
-    rows = session.exec(
-        select(SiteMonthStat).where(SiteMonthStat.site_id == "iona")
-    ).all()
-    assert {r.month for r in rows} == {1, 2}
-
-
 def test_site_month_climatology_roundtrip(session):
     row = SiteMonthClimatology(
         site_id="scotland-0001",
@@ -192,6 +152,12 @@ def test_site_month_climatology_defaults(session):
     assert loaded is not None
     assert loaded.dark_hours == 0
     assert loaded.clear_dark_hours == 0
+
+
+def test_site_month_stats_table_is_gone():
+    # The live bank-at-prune accumulator was retired (ADR 009): history comes
+    # entirely from the climatology, so the model and its table no longer exist.
+    assert "site_month_stats" not in SQLModel.metadata.tables
 
 
 def test_composite_primary_key_same_site_different_hours(session):

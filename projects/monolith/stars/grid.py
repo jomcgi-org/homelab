@@ -135,9 +135,9 @@ def _load_grid_sync() -> int:
         session.add_all(rows)
         # Clean orphaned forecast hours for sites no longer in the grid: the
         # add_all above autoflushes before the subquery runs, so this sees the
-        # new grid. site_month_stats orphans are intentionally left (ADR 008):
-        # the banked monthly history is worth keeping even if a grid point is
-        # dropped, and the table is bounded at 12 rows per site.
+        # new grid. site_month_climatology orphans are intentionally left: the
+        # seasonal history is worth keeping even if a grid point is dropped, and
+        # the table is bounded at 12 rows per site.
         # synchronize_session=False: the ORM evaluator cannot evaluate a notin_
         # subquery in Python, so issue the DELETE as SQL.
         session.execute(
