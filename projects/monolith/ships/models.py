@@ -81,3 +81,18 @@ class HeatCell(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     lon_bin: int = Field(primary_key=True)
     count: int
     computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class HeatCellHistorical(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
+    __tablename__ = "heat_cells_historical"
+    __table_args__ = {"schema": "ships", "extend_existing": True}
+
+    # Monotonic all-time traffic accumulator: cumulative vessel-days (sum of each
+    # dropped day's distinct-mover count) per ~500m cell. Banked at partition drop
+    # by ships.retention; summed with the live HeatCell rollup by the serving layer.
+    lat_bin: int = Field(primary_key=True)
+    lon_bin: int = Field(primary_key=True)
+    count: int
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

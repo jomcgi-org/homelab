@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from ships.models import LatestPosition, Vessel
+from ships.models import HeatCellHistorical, LatestPosition, Vessel
 
 
 @pytest.fixture(name="session")
@@ -82,3 +82,12 @@ def test_latest_position_roundtrip(session):
     assert loaded.ship_name == "Maersk"
     assert loaded.first_seen_at_location is None
     assert isinstance(loaded.updated_at, datetime)
+
+
+def test_heat_cell_historical_roundtrip(session):
+    session.add(HeatCellHistorical(lat_bin=10, lon_bin=-20, count=1234))
+    session.commit()
+    row = session.get(HeatCellHistorical, (10, -20))
+    assert row is not None
+    assert row.count == 1234
+    assert isinstance(row.updated_at, datetime)
