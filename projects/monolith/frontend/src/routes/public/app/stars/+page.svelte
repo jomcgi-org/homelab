@@ -61,12 +61,25 @@
     nightOpen = false; // collapse back to the summary once a night is picked
   }
 
-  // Month picker (HISTORICAL): one chip per month-of-year, defaulting to the
-  // current UTC month (the accumulator buckets by month-of-year, not year-month,
-  // so the picker is a fixed Jan..Dec, ADR 008).
+  // Month picker (HISTORICAL): an "All year" option (0) plus one chip per
+  // month-of-year. Defaults to All year so the page opens on the full seasonal
+  // picture from the ERA5 climatology (ADR 009); month 0 makes the API sum every
+  // month bucket per site. The accumulator buckets by month-of-year, not
+  // year-month, so the picker is a fixed All / Jan..Dec (ADR 008).
+  const ALL_YEAR = 0;
   const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
-  let selectedMonth = $state(new Date().getUTCMonth() + 1);
+  let selectedMonth = $state(ALL_YEAR);
   let monthOpen = $state(false);
+
+  // Display label for the current selection, and the phrase used in the header.
+  let monthSummary = $derived(
+    selectedMonth === ALL_YEAR ? "All year" : monthLabel(selectedMonth),
+  );
+  let historyScope = $derived(
+    selectedMonth === ALL_YEAR
+      ? "across the year"
+      : `in ${monthLabel(selectedMonth)}`,
+  );
 
   function selectMonth(m) {
     selectedMonth = m;
@@ -199,9 +212,7 @@
         {#if mode === "historical"}
           <p class="stats">
             {histCount}
-            {histCount === 1 ? "site" : "sites"} with history in {monthLabel(
-              selectedMonth,
-            )}
+            {histCount === 1 ? "site" : "sites"} with history {historyScope}
           </p>
         {:else}
           <p class="stats">
@@ -310,13 +321,22 @@
           onclick={() => (monthOpen = !monthOpen)}
         >
           <span class="filter-label">Month</span>
-          <span class="filter-current">{monthLabel(selectedMonth)}</span>
+          <span class="filter-current">{monthSummary}</span>
           <span class="filter-caret" class:open={monthOpen} aria-hidden="true"
             >&#9662;</span
           >
         </button>
         {#if monthOpen}
           <div class="month-chips">
+            <button
+              type="button"
+              class="month-chip month-chip-all"
+              class:is-off={selectedMonth !== ALL_YEAR}
+              aria-pressed={selectedMonth === ALL_YEAR}
+              onclick={() => selectMonth(ALL_YEAR)}
+            >
+              All year
+            </button>
             {#each MONTHS as m (m)}
               <button
                 type="button"
@@ -339,13 +359,12 @@
         </div>
       {:else if historyLoading && !histReady}
         <div class="panel empty-state" role="status">
-          Loading {monthLabel(selectedMonth)} history&hellip;
+          Loading {monthSummary} history&hellip;
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">
-          Historical data is still accumulating for {monthLabel(selectedMonth)}.
-          Quality banks as forecast hours elapse, so this layer fills over the
-          coming weeks.
+          No realized quality {historyScope} yet. The seasonal baseline fills from
+          the ERA5 backfill, and live quality banks as forecast hours elapse.
         </div>
       {/if}
     {/if}
@@ -644,8 +663,10 @@
     opacity: 0.55;
   }
 
-  /* The night reset spans the full width above the per-night grid. */
-  .night-chip-all {
+  /* The night reset and the "All year" option each span the full width above
+     their per-chip grid. */
+  .night-chip-all,
+  .month-chip-all {
     grid-column: 1 / -1;
   }
 

@@ -355,17 +355,28 @@ class TestHistory:
         assert tom["avg_darkness"] == pytest.approx(6.0 / 8)
         assert tom["avg_clarity"] == pytest.approx(5.0 / 8)
 
-    def test_default_month_is_current_utc(self, client, session):
-        current = datetime.now(timezone.utc).month
+    def test_default_is_all_year(self, client, session):
+        # No month param -> all-year view (month 0): every month-of-year bucket
+        # for a site, across both tables, is summed into one combined row.
         _seed_site(session, "galloway-forest")
-        self._seed_stat(session, "galloway-forest", current, 10, 500.0, 9.0, 8.0)
+        _seed_site(session, "tomintoul")
+        self._seed_stat(session, "galloway-forest", 1, 10, 500.0, 9.0, 8.0)
+        self._seed_stat(session, "galloway-forest", 12, 20, 1500.0, 18.0, 15.0)
+        self._seed_climo(session, "galloway-forest", 6, 5, 300.0, 4.0, 3.0)
+        self._seed_stat(session, "tomintoul", 7, 8, 400.0, 6.0, 5.0)
         session.commit()
 
         r = client.get("/api/stars/history")
         assert r.status_code == 200
         body = r.json()
-        assert body["month"] == current
-        assert [s["id"] for s in body["sites"]] == ["galloway-forest"]
+        assert body["month"] == 0
+        gf = next(s for s in body["sites"] if s["id"] == "galloway-forest")
+        # All three galloway rows (Jan + Dec live + Jun climo) fold into one.
+        assert gf["window_count"] == 10 + 20 + 5
+        assert gf["sum_q"] == pytest.approx(500.0 + 1500.0 + 300.0)
+        assert gf["avg_darkness"] == pytest.approx((9.0 + 18.0 + 4.0) / (10 + 20 + 5))
+        # Ordered by combined sum_q desc: galloway (2300) before tomintoul (400).
+        assert [s["id"] for s in body["sites"]] == ["galloway-forest", "tomintoul"]
 
     def test_orphan_stat_without_site_is_skipped(self, client, session):
         # A site_month_stats row whose site dropped from the grid has no
