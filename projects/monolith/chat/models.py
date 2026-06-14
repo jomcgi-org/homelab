@@ -38,10 +38,8 @@ class Blob(SQLModel, table=True):
     __table_args__ = {"schema": "chat", "extend_existing": True}
 
     sha256: str = Field(primary_key=True, max_length=64)
-    # Raw bytes now live in SeaweedFS object storage at s3://<bucket>/blobs/<sha256>
-    # (written by chat.store). This column is retained nullable during the
-    # transition; a follow-up migration drops it once existing rows are exported.
-    data: bytes | None = Field(default=None)
+    # Raw bytes live in SeaweedFS object storage at s3://<bucket>/blobs/<sha256>
+    # (written by chat.store). The row holds only metadata.
     content_type: str
     description: str = Field(default="")
 

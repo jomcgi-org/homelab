@@ -1,5 +1,6 @@
 """Additional tests for get_attachments() edge cases and save_message() with attachments."""
 
+import hashlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -215,8 +216,8 @@ class TestSaveMessageWithAttachmentsAdditional:
         assert len(saved) == 0
 
     @pytest.mark.asyncio
-    async def test_blob_data_is_preserved_exactly(self, store, session):
-        """save_message() stores attachment bytes in the Blob without modification."""
+    async def test_blob_sha256_is_content_address(self, store, session):
+        """save_message() content-addresses the Blob by the sha256 of the bytes."""
         raw_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
         msg = await store.save_message(
             discord_message_id="bytes_check",
@@ -241,9 +242,8 @@ class TestSaveMessageWithAttachmentsAdditional:
         assert saved_att is not None
         saved_blob = session.get(Blob, saved_att.blob_sha256)
         assert saved_blob is not None
-        # Bytes now go to SeaweedFS (S3 unconfigured in tests, so not uploaded);
-        # the row persists with a NULL data column.
-        assert saved_blob.data is None
+        # Bytes now live in SeaweedFS; the row is keyed by the content hash.
+        assert saved_blob.sha256 == hashlib.sha256(raw_bytes).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -326,4 +326,3 @@ class TestBlobDeduplication:
         # Only one blob row exists
         all_blobs = session.exec(select(Blob)).all()
         assert len(all_blobs) == 1
-        assert all_blobs[0].data is None  # bytes now in SeaweedFS
