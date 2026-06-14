@@ -28,6 +28,14 @@ START, END = "2021-01-01", "2025-12-31"
 CIVIL, ASTRO, CLOUD_SPAN = -6.0, -18.0, 45.0
 OUT = "/tmp/climatology.json"
 
+# Adaptive 429 backoff, persisted across points. Open-Meteo's short-window
+# (minutely) budget refills in ~1 min, so a 429 from a normal burst clears with
+# a short sleep; only a real hourly/daily cap produces 429s that persist across
+# retries, which escalates the wait toward RL_MAX. Reset to RL_MIN on any
+# success (see fetch), so the common case never pays more than RL_MIN.
+RL_MIN, RL_MAX = 60, 1800
+_RL = {"wait": RL_MIN}
+
 
 def sun_elevation_deg(lat, lon, dt):
     doy = dt.timetuple().tm_yday
@@ -149,14 +157,27 @@ def fetch(lat, lon):
     while True:
         try:
             with urllib.request.urlopen(f"{ARCHIVE}?{qs}", timeout=60) as r:
-                return json.loads(r.read())["hourly"]
+                hourly = json.loads(r.read())["hourly"]
+            _RL["wait"] = RL_MIN  # success: a normal burst cleared, reset backoff
+            return hourly
         except urllib.error.HTTPError as e:
-            if e.code == 429:  # hourly limit: wait for the next hour and resume
-                print("  429 hourly limit, sleeping 1h...", file=sys.stderr)
-                time.sleep(3700)
+            if e.code == 429:
+                # The short-window budget usually refills within RL_MIN; sleep,
+                # then double the wait (capped at RL_MAX) so persistent 429s from
+                # a real hourly/daily cap escalate instead of hammering. Keep
+                # retrying rather than skipping: a 429 is transient, not a bad
+                # point. The backoff resets the next time any fetch succeeds.
+                wait = _RL["wait"]
+                print(f"  429 rate-limited, sleeping {wait}s...", file=sys.stderr)
+                time.sleep(wait)
+                _RL["wait"] = min(wait * 2, RL_MAX)
                 continue
             transient += 1
-        except Exception as exc:
+        # Transient network / response faults (connection, timeout, malformed or
+        # truncated JSON, missing "hourly" key): print and skip the point after 4
+        # strikes rather than abort the whole resumable run. Narrowed from a bare
+        # `except Exception` so genuine bugs still propagate.
+        except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
             transient += 1
             print(f"  transient error: {exc}", file=sys.stderr)
         if transient >= 4:
