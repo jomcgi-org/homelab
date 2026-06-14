@@ -55,6 +55,7 @@ ADRs document significant architectural decisions and their context.
 | [001 - Bazel Semgrep](security/001-bazel-semgrep.md)                               | Semgrep SAST integrated via Bazel rules                         |
 | [002 - Semgrep Rule Generation via RL](security/002-semgrep-rule-generation-rl.md) | RL-finetuned Qwen 3.5 9B for generating Semgrep rules from CVEs |
 | [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                  | User-space kernel isolation for agent sandbox pods via runsc    |
+| [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets |
 
 ## Services
 
