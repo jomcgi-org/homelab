@@ -16,7 +16,7 @@ frontend:
 postgres:
   instances: 1
   storage:
-    size: 2Gi
+    size: 50Gi
 
 onepassword:
   enabled: true
