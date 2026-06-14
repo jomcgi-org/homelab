@@ -89,38 +89,60 @@
 
   // ── Traffic-density heatmap ────────────────────────────────────────────
   // 'vessels' shows the live markers; 'heat' hides them and shows a GPU fill
-  // layer of ~500m cells coloured by how many distinct moving vessels used each
-  // over the last 7 days. The grid is fetched once, on the first toggle.
+  // layer of ~500m cells coloured by how many distinct moving vessels have used
+  // each, cumulatively over all time (vessel-days, not a sliding window). The
+  // grid is fetched once, on the first toggle.
   const HEAT_SOURCE = "heat-cells";
   const HEAT_LAYER = "heat-fill";
 
-  // Neo-brutalist stepped ramp, tuned to the distinct-mover counts measured on
-  // live data (p50=1, p90=3, p99=10, max~22): quiet water -> busy lanes.
-  // Fully saturated plasma scale (vivid violet through magenta and rose to
-  // orange/red). Deliberately skips green and pale blue so even the quiet-water
-  // low end stays vibrant against the green-and-beige basemap when zoomed out.
-  // Brightness climbs monotonically to the top so the busiest lanes read as the
-  // BRIGHTEST red, not a dark maroon. The old ramp topped out at a deep #c1121f
-  // that was darker than the step below it, which (compounded by the basemap's
-  // grayscale CSS filter, see <style>) made busy water look muddy instead of
-  // hot. The high end is now a pure vivid red.
-  const HEAT_STOPS = [
-    { at: 1, color: "#7b2ff7", label: "1-2" }, // vivid violet
-    { at: 3, color: "#d61f9c", label: "3-5" }, // magenta
-    { at: 6, color: "#ff0a78", label: "6-9" }, // hot rose
-    { at: 10, color: "#ff6a00", label: "10-14" }, // vivid orange
-    { at: 15, color: "#ff2a1f", label: "15-19" }, // bright red
-    { at: 20, color: "#ff0019", label: "20+" }, // pure vivid red (hottest)
+  // Neo-brutalist stepped plasma palette: vivid violet through magenta and rose
+  // to orange/red. Deliberately skips green and pale blue so even the quiet end
+  // stays vibrant against the green-and-beige basemap when zoomed out, and the
+  // brightness climbs monotonically so the busiest lanes read as the BRIGHTEST
+  // red (not a dark maroon: the old deep #c1121f top step, compounded by the
+  // basemap filter, made busy water look muddy instead of hot).
+  //
+  // The breakpoints are no longer fixed. All-time vessel-day counts grow
+  // unbounded, so a hardcoded ramp would saturate the whole map to red. The
+  // backend derives per-fetch quantile breaks (data.stops, ascending+unique,
+  // first is 1) and we build the step ramp + legend from those. FALLBACK_BREAKS
+  // covers old cached payloads or an empty grid (no stops).
+  const HEAT_COLORS = [
+    "#7b2ff7", // vivid violet
+    "#d61f9c", // magenta
+    "#ff0a78", // hot rose
+    "#ff6a00", // vivid orange
+    "#ff2a1f", // bright red
+    "#ff0019", // pure vivid red (hottest)
   ];
-  const HEAT_FILL_COLOR = [
-    "step",
-    ["get", "count"],
-    HEAT_STOPS[0].color,
-    ...HEAT_STOPS.slice(1).flatMap((s) => [s.at, s.color]),
-  ];
+  const FALLBACK_BREAKS = [1, 3, 6, 10, 15, 20];
+
+  // MapLibre `step` wants STRICTLY ASCENDING stop inputs: first the default
+  // color (count < breaks[1]), then (stopValue, color) pairs. The backend
+  // guarantees `stops` is ascending+unique and FALLBACK_BREAKS is too, so the
+  // expression is always valid.
+  function rampFor(stops) {
+    const breaks = stops && stops.length ? stops : FALLBACK_BREAKS;
+    const expr = ["step", ["get", "count"], HEAT_COLORS[0]];
+    for (let i = 1; i < breaks.length && i < HEAT_COLORS.length; i++) {
+      expr.push(breaks[i], HEAT_COLORS[i]);
+    }
+    return { expr, breaks };
+  }
+
+  // Legend label for bucket i: "lo-hi" for interior buckets, "lo" when the next
+  // break is adjacent (no range), "lo+" for the open-ended top bucket.
+  function heatLabel(breaks, i) {
+    if (i >= breaks.length - 1) return `${breaks[i]}+`;
+    const hi = breaks[i + 1] - 1;
+    return hi < breaks[i] ? `${breaks[i]}` : `${breaks[i]}-${hi}`;
+  }
 
   let mode = $state("vessels"); // 'vessels' | 'heat'
   let heatLoaded = false;
+  // Drives the legend; updated from data.stops once the grid loads, so the
+  // swatches/labels track the live quantile breaks (fallback until then).
+  let heatBreaks = $state(FALLBACK_BREAKS);
 
   // Build square cell polygons from the compact API payload
   // ({step_lat, step_lon, cells:[[lat_bin, lon_bin, count]]}).
@@ -158,7 +180,11 @@
       // Same-origin proxy to /api/ships/heat (see heat/+server.js).
       const res = await fetch("/app/ships/heat");
       if (!res.ok) return;
-      map.getSource(HEAT_SOURCE)?.setData(buildHeatFC(await res.json()));
+      const data = await res.json();
+      const { expr, breaks } = rampFor(data.stops);
+      map.setPaintProperty(HEAT_LAYER, "fill-color", expr);
+      heatBreaks = breaks; // re-render the legend from the live breaks
+      map.getSource(HEAT_SOURCE)?.setData(buildHeatFC(data));
       heatLoaded = true;
     } catch {
       // Leave the grid empty on failure; the toggle still works.
@@ -513,7 +539,9 @@
           source: HEAT_SOURCE,
           layout: { visibility: "none" },
           paint: {
-            "fill-color": HEAT_FILL_COLOR,
+            // Placeholder fallback ramp; replaced with the data-derived ramp in
+            // loadHeat() once the grid (and its quantile breaks) arrives.
+            "fill-color": rampFor(null).expr,
             // High opacity keeps the beige/green basemap from bleeding through
             // and muting the ramp; the cells already sit on water/lanes so the
             // map underneath stays readable at the edges.
@@ -657,11 +685,11 @@
     </div>
   {:else}
     <div class="legend">
-      <p class="eyebrow legend-title">Vessels / cell · 7d</p>
+      <p class="eyebrow legend-title">Vessels / cell · all time</p>
       <ul class="heat-scale">
-        {#each HEAT_STOPS as s (s.at)}
+        {#each heatBreaks.slice(0, HEAT_COLORS.length) as br, i (br)}
           <li>
-            <span class="heat-sw" style="background: {s.color}"></span>{s.label}
+            <span class="heat-sw" style="background: {HEAT_COLORS[i]}"></span>{heatLabel(heatBreaks, i)}
           </li>
         {/each}
       </ul>
