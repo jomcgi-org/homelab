@@ -72,9 +72,7 @@ class KnowledgeStore:
         """
         return list(
             self.session.execute(
-                select(Note).where(
-                    Note.content.is_(None), Note.deleted_at.is_(None)
-                )
+                select(Note).where(Note.content.is_(None), Note.deleted_at.is_(None))
             )
             .scalars()
             .all()
