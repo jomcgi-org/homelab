@@ -21,8 +21,7 @@ resources:
   - ./seaweedfs
   - ./signoz
   - ./signoz-addons # Must be after signoz
-  # ./temporal and ./warehouse-bucket removed: lakehouse/Temporal stack
-  # decommissioned (superseded by ../loom). temporal-databases is retained
-  # transiently with its Database CRs flipped to ensure:absent so CNPG drops the
-  # temporal/temporal_visibility/lakehouse databases; removed in a follow-up.
-  - ./temporal-databases
+  # temporal, warehouse-bucket and temporal-databases removed: lakehouse/Temporal
+  # stack decommissioned (superseded by ../loom). The CNPG temporal/
+  # temporal_visibility/lakehouse databases were dropped via ensure:absent before
+  # this removal.
