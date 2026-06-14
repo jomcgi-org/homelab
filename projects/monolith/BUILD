@@ -2235,6 +2235,16 @@ py_test(
 )
 
 py_test(
+    name = "stars_generate_grid_v2_test",
+    srcs = [
+        "stars/grid_gen/generate_grid_v2.py",
+        "stars/grid_gen/generate_grid_v2_test.py",
+    ],
+    imports = ["stars/grid_gen"],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "ships_heat_test",
     srcs = ["ships/heat_test.py"],
     imports = ["."],
