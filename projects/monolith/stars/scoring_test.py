@@ -1,411 +1,64 @@
-"""Unit tests for stars.scoring (ported from projects/stargazer/backend/scoring_test.py)."""
-
-import pytest
+"""Unit tests for stars.scoring: the v2 clear-dark-hour predicates."""
 
 from stars.scoring import (
-    ScoredForecast,
-    WeatherData,
-    calculate_astronomy_score,
-    cloud_factor,
-    darkness_factor,
-    is_dark_enough,
-    quality_score,
-    weather_modifier,
+    CLEAR_CLOUD_MAX_PCT,
+    NAUTICAL_DARK_DEG,
+    is_clear_dark_hour,
+    is_dark_hour,
 )
 
 
-class TestWeatherDataValidation:
-    def test_accepts_valid_data(self):
-        w = WeatherData(
-            cloud_area_fraction=10.0,
-            relative_humidity=60.0,
-            wind_speed=3.0,
-            air_temperature=10.0,
-            dew_point_temperature=5.0,
-        )
-        assert w.cloud_area_fraction == 10.0
-
-    def test_fog_defaults_to_zero(self):
-        w = WeatherData(
-            cloud_area_fraction=50.0,
-            relative_humidity=70.0,
-            wind_speed=5.0,
-            air_temperature=10.0,
-            dew_point_temperature=5.0,
-        )
-        assert w.fog_area_fraction == 0.0
-
-    def test_pressure_defaults_to_standard(self):
-        w = WeatherData(
-            cloud_area_fraction=50.0,
-            relative_humidity=70.0,
-            wind_speed=5.0,
-            air_temperature=10.0,
-            dew_point_temperature=5.0,
-        )
-        assert w.air_pressure_at_sea_level == 1013.25
-
-    def test_rejects_negative_cloud_fraction(self):
-        with pytest.raises(ValueError):
-            WeatherData(
-                cloud_area_fraction=-1.0,
-                relative_humidity=50.0,
-                wind_speed=5.0,
-                air_temperature=10.0,
-                dew_point_temperature=5.0,
-            )
-
-    def test_rejects_cloud_fraction_over_100(self):
-        with pytest.raises(ValueError):
-            WeatherData(
-                cloud_area_fraction=101.0,
-                relative_humidity=50.0,
-                wind_speed=5.0,
-                air_temperature=10.0,
-                dew_point_temperature=5.0,
-            )
-
-    def test_rejects_negative_humidity(self):
-        with pytest.raises(ValueError):
-            WeatherData(
-                cloud_area_fraction=50.0,
-                relative_humidity=-5.0,
-                wind_speed=5.0,
-                air_temperature=10.0,
-                dew_point_temperature=5.0,
-            )
-
-    def test_rejects_humidity_over_100(self):
-        with pytest.raises(ValueError):
-            WeatherData(
-                cloud_area_fraction=50.0,
-                relative_humidity=105.0,
-                wind_speed=5.0,
-                air_temperature=10.0,
-                dew_point_temperature=5.0,
-            )
-
-    def test_rejects_negative_wind_speed(self):
-        with pytest.raises(ValueError):
-            WeatherData(
-                cloud_area_fraction=50.0,
-                relative_humidity=50.0,
-                wind_speed=-1.0,
-                air_temperature=10.0,
-                dew_point_temperature=5.0,
-            )
-
-    def test_accepts_zero_wind_speed(self):
-        w = WeatherData(
-            cloud_area_fraction=50.0,
-            relative_humidity=50.0,
-            wind_speed=0.0,
-            air_temperature=10.0,
-            dew_point_temperature=5.0,
-        )
-        assert w.wind_speed == 0.0
-
-    def test_accepts_boundary_cloud_values(self):
-        w_clear = WeatherData(
-            cloud_area_fraction=0.0,
-            relative_humidity=50.0,
-            wind_speed=5.0,
-            air_temperature=10.0,
-            dew_point_temperature=5.0,
-        )
-        assert w_clear.cloud_area_fraction == 0.0
-
-        w_overcast = WeatherData(
-            cloud_area_fraction=100.0,
-            relative_humidity=50.0,
-            wind_speed=5.0,
-            air_temperature=10.0,
-            dew_point_temperature=5.0,
-        )
-        assert w_overcast.cloud_area_fraction == 100.0
-
-    def test_negative_temperature_is_valid(self):
-        w = WeatherData(
-            cloud_area_fraction=10.0,
-            relative_humidity=50.0,
-            wind_speed=3.0,
-            air_temperature=-10.0,
-            dew_point_temperature=-15.0,
-        )
-        assert w.air_temperature == -10.0
+def test_thresholds_are_the_contract_values():
+    assert NAUTICAL_DARK_DEG == -12.0
+    assert CLEAR_CLOUD_MAX_PCT == 10.0
 
 
-class TestScoredForecastModel:
-    def test_accepts_valid_scored_forecast(self):
-        sf = ScoredForecast(
-            time="2024-01-15T22:00:00Z",
-            score=85.0,
-            cloud_area_fraction=10.0,
-            relative_humidity=60.0,
-            fog_area_fraction=0.0,
-            wind_speed=3.0,
-            air_temperature=8.0,
-            dew_spread=5.0,
-            air_pressure=1018.0,
-        )
-        assert sf.score == 85.0
-        assert sf.symbol == ""
+class TestIsDarkHour:
+    def test_exactly_minus_12_is_not_dark(self):
+        # Strictly below -12, so the boundary itself does not count.
+        assert is_dark_hour(-12.0) is False
 
-    def test_score_must_be_0_to_100(self):
-        with pytest.raises(ValueError):
-            ScoredForecast(
-                time="2024-01-15T22:00:00Z",
-                score=101.0,
-                cloud_area_fraction=10.0,
-                relative_humidity=60.0,
-                fog_area_fraction=0.0,
-                wind_speed=3.0,
-                air_temperature=8.0,
-                dew_spread=5.0,
-                air_pressure=1018.0,
-            )
+    def test_just_below_minus_12_is_dark(self):
+        assert is_dark_hour(-12.01) is True
+
+    def test_deep_dark_is_dark(self):
+        assert is_dark_hour(-30.0) is True
+
+    def test_civil_twilight_is_not_dark(self):
+        assert is_dark_hour(-6.0) is False
+
+    def test_daytime_is_not_dark(self):
+        assert is_dark_hour(0.0) is False
 
 
-class TestCalculateAstronomyScore:
-    def _make_weather(self, **kwargs) -> WeatherData:
-        defaults = {
-            "cloud_area_fraction": 0.0,
-            "relative_humidity": 40.0,
-            "fog_area_fraction": 0.0,
-            "wind_speed": 2.0,
-            "air_temperature": 15.0,
-            "dew_point_temperature": 5.0,
-            "air_pressure_at_sea_level": 1030.0,
-        }
-        defaults.update(kwargs)
-        return WeatherData(**defaults)
+class TestIsClearDarkHour:
+    def test_dark_and_clear(self):
+        assert is_clear_dark_hour(-18.0, 9.99) is True
 
-    def test_score_always_in_0_to_100_range(self):
-        worst = self._make_weather(
-            cloud_area_fraction=100.0,
-            relative_humidity=100.0,
-            fog_area_fraction=100.0,
-            wind_speed=100.0,
-            air_temperature=0.0,
-            dew_point_temperature=0.0,
-            air_pressure_at_sea_level=900.0,
-        )
-        assert 0.0 <= calculate_astronomy_score(worst) <= 100.0
-        best = self._make_weather()
-        assert 0.0 <= calculate_astronomy_score(best) <= 100.0
+    def test_cloud_exactly_10_is_not_clear(self):
+        # Strictly below 10%, so the boundary itself is not clear.
+        assert is_clear_dark_hour(-18.0, 10.0) is False
 
-    def test_ideal_conditions_score_near_100(self):
-        score = calculate_astronomy_score(self._make_weather())
-        assert score >= 95.0
+    def test_cloud_just_under_10_is_clear(self):
+        assert is_clear_dark_hour(-18.0, 9.99) is True
 
-    def test_full_cloud_cover_penalises_heavily(self):
-        clear_score = calculate_astronomy_score(
-            self._make_weather(cloud_area_fraction=0.0)
-        )
-        cloudy_score = calculate_astronomy_score(
-            self._make_weather(cloud_area_fraction=100.0)
-        )
-        assert clear_score - cloudy_score >= 40.0
+    def test_dark_but_cloudy_is_not_clear_dark(self):
+        assert is_clear_dark_hour(-18.0, 50.0) is False
 
-    def test_high_humidity_penalises_score(self):
-        score_low = calculate_astronomy_score(
-            self._make_weather(relative_humidity=50.0)
-        )
-        score_high = calculate_astronomy_score(
-            self._make_weather(relative_humidity=95.0)
-        )
-        assert score_low > score_high
+    def test_clear_but_not_dark_is_not_clear_dark(self):
+        assert is_clear_dark_hour(-6.0, 0.0) is False
 
-    def test_calm_wind_better_than_strong_wind(self):
-        base = {
-            "cloud_area_fraction": 30.0,
-            "relative_humidity": 75.0,
-            "fog_area_fraction": 5.0,
-            "air_temperature": 10.0,
-            "dew_point_temperature": 7.0,
-            "air_pressure_at_sea_level": 1013.0,
-        }
-        calm = calculate_astronomy_score(self._make_weather(wind_speed=2.0, **base))
-        strong = calculate_astronomy_score(self._make_weather(wind_speed=20.0, **base))
-        assert calm > strong
+    def test_dark_boundary_not_met_is_not_clear_dark(self):
+        assert is_clear_dark_hour(-12.0, 0.0) is False
 
-    def test_good_dew_spread_scores_higher(self):
-        good = self._make_weather(air_temperature=15.0, dew_point_temperature=5.0)
-        poor = self._make_weather(air_temperature=10.0, dew_point_temperature=9.5)
-        assert calculate_astronomy_score(good) > calculate_astronomy_score(poor)
-
-    def test_high_pressure_gives_bonus(self):
-        low_p = self._make_weather(
-            cloud_area_fraction=30.0, air_pressure_at_sea_level=1005.0
-        )
-        high_p = self._make_weather(
-            cloud_area_fraction=30.0, air_pressure_at_sea_level=1025.0
-        )
-        assert calculate_astronomy_score(high_p) > calculate_astronomy_score(low_p)
-
-    def test_pressure_bonus_capped_at_10(self):
-        moderate = self._make_weather(
-            cloud_area_fraction=50.0, air_pressure_at_sea_level=1020.0
-        )
-        extreme = self._make_weather(
-            cloud_area_fraction=50.0, air_pressure_at_sea_level=1100.0
-        )
-        assert calculate_astronomy_score(extreme) == pytest.approx(
-            calculate_astronomy_score(moderate), abs=0.1
-        )
-
-    def test_score_capped_at_100(self):
-        perfect = self._make_weather(air_pressure_at_sea_level=9999.0)
-        assert calculate_astronomy_score(perfect) <= 100.0
-
-    def test_score_clamped_at_0(self):
-        terrible = WeatherData(
-            cloud_area_fraction=100.0,
-            relative_humidity=100.0,
-            fog_area_fraction=100.0,
-            wind_speed=100.0,
-            air_temperature=0.0,
-            dew_point_temperature=10.0,
-            air_pressure_at_sea_level=900.0,
-        )
-        assert calculate_astronomy_score(terrible) >= 0.0
-
-    def test_weighted_average_components(self):
-        base = WeatherData(
-            cloud_area_fraction=0.0,
-            relative_humidity=40.0,
-            fog_area_fraction=0.0,
-            wind_speed=2.0,
-            air_temperature=15.0,
-            dew_point_temperature=5.0,
-            air_pressure_at_sea_level=1013.0,
-        )
-        all_cloud = WeatherData(
-            cloud_area_fraction=100.0,
-            relative_humidity=40.0,
-            fog_area_fraction=0.0,
-            wind_speed=2.0,
-            air_temperature=15.0,
-            dew_point_temperature=5.0,
-            air_pressure_at_sea_level=1013.0,
-        )
-        diff = calculate_astronomy_score(base) - calculate_astronomy_score(all_cloud)
-        assert 40.0 <= diff <= 60.0
-
-
-class TestIsDarkEnough:
-    def test_sun_at_minus_18_is_dark(self):
-        assert is_dark_enough(-18.0) is True
-
-    def test_sun_below_minus_18_is_dark(self):
-        assert is_dark_enough(-20.0) is True
-
-    def test_sun_just_above_threshold_is_not_dark(self):
-        assert is_dark_enough(-17.9) is False
-
-    def test_nautical_twilight_not_dark(self):
-        assert is_dark_enough(-12.0) is False
-
-    def test_daytime_not_dark(self):
-        assert is_dark_enough(0.0) is False
-
-    def test_custom_threshold_civil(self):
-        assert is_dark_enough(-6.0, astronomical_darkness_threshold=-6.0) is True
-        assert is_dark_enough(-5.9, astronomical_darkness_threshold=-6.0) is False
-
-
-class TestDarknessFactor:
-    def test_civil_twilight_is_zero(self):
-        assert darkness_factor(-6.0) == 0.0
-
-    def test_nautical_twilight_is_half(self):
-        assert darkness_factor(-12.0) == pytest.approx(0.5)
-
-    def test_astronomical_is_one(self):
-        assert darkness_factor(-18.0) == 1.0
-
-    def test_daytime_is_zero(self):
-        assert darkness_factor(0.0) == 0.0
-
-    def test_deep_dark_clamps_at_one(self):
-        assert darkness_factor(-30.0) == 1.0
-
-
-class TestCloudFactor:
-    def test_very_dark_full_credit_within_allowance(self):
-        # darkness=1 -> allowance 10; 8% cloud is under it, full credit.
-        assert cloud_factor(8.0, 1.0) == 1.0
-
-    def test_very_dark_reaches_zero_at_span(self):
-        # darkness=1 -> allowance 10; 55% cloud is allowance + 45 span -> 0.
-        assert cloud_factor(55.0, 1.0) == 0.0
-
-    def test_very_dark_midpoint(self):
-        # darkness=1 -> allowance 10; 32.5% cloud -> excess 22.5 / 45 -> 0.5.
-        assert cloud_factor(32.5, 1.0) == pytest.approx(0.5)
-
-    def test_ok_dark_full_credit_within_allowance(self):
-        # darkness=0.5 -> allowance 7.5; 4% cloud is under it, full credit.
-        assert cloud_factor(4.0, 0.5) == 1.0
-
-
-class TestWeatherModifier:
-    def _ideal(self) -> WeatherData:
-        return WeatherData(
-            cloud_area_fraction=0.0,
-            relative_humidity=40.0,
-            fog_area_fraction=0.0,
-            wind_speed=1.0,
-            air_temperature=5.0,
-            dew_point_temperature=-2.0,
-            air_pressure_at_sea_level=1020.0,
-        )
-
-    def _poor(self) -> WeatherData:
-        return WeatherData(
-            cloud_area_fraction=0.0,
-            relative_humidity=100.0,
-            fog_area_fraction=100.0,
-            wind_speed=100.0,
-            air_temperature=5.0,
-            dew_point_temperature=5.0,
-            air_pressure_at_sea_level=1000.0,
-        )
-
-    def test_within_bounds_ideal(self):
-        m = weather_modifier(self._ideal())
-        assert 0.7 <= m <= 1.0
-
-    def test_within_bounds_poor(self):
-        m = weather_modifier(self._poor())
-        assert 0.7 <= m <= 1.0
-
-    def test_ideal_is_full(self):
-        assert weather_modifier(self._ideal()) == pytest.approx(1.0)
-
-
-class TestQualityScore:
-    def _ideal(self, cloud: float = 0.0) -> WeatherData:
-        return WeatherData(
-            cloud_area_fraction=cloud,
-            relative_humidity=40.0,
-            fog_area_fraction=0.0,
-            wind_speed=1.0,
-            air_temperature=5.0,
-            dew_point_temperature=-2.0,
-            air_pressure_at_sea_level=1020.0,
-        )
-
-    def test_ideal_deep_dark_near_100(self):
-        assert quality_score(self._ideal(), -18.0) > 90.0
-
-    def test_ideal_nautical_near_50(self):
-        q = quality_score(self._ideal(), -12.0)
-        assert 45.0 < q < 55.0
-
-    def test_cloud_drags_quality_down(self):
-        q = quality_score(self._ideal(cloud=40.0), -18.0)
-        assert 25.0 < q < 45.0
-
-    def test_not_dark_is_zero(self):
-        assert quality_score(self._ideal(), -3.0) == 0.0
+    def test_truth_table(self):
+        cases = [
+            (-12.01, 9.99, True),  # dark + clear
+            (-12.01, 10.0, False),  # dark + cloud at boundary
+            (-12.0, 0.0, False),  # sun at boundary, not dark
+            (-20.0, 0.0, True),  # deep dark + clear
+            (-20.0, 100.0, False),  # deep dark + overcast
+            (5.0, 0.0, False),  # daytime, clear sky
+        ]
+        for sun, cloud, expected in cases:
+            assert is_clear_dark_hour(sun, cloud) is expected

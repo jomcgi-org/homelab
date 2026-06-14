@@ -47,19 +47,17 @@ def _utc(dt):
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _hour(time_str, score=80.0, darkness=1.0, clarity=0.9):
+def _hour(time_str, sun_elevation_deg=-18.5, cloud=5.0):
+    """A forecast-emitted hour dict (the shape stars.forecast.score_location
+    returns and stars.jobs._write_sites consumes)."""
     return {
         "time": time_str,
-        "score": score,
-        "sun_elevation_deg": -18.5,
-        "darkness_factor": darkness,
-        "cloud_factor": clarity,
-        "cloud_area_fraction": 10.0,
-        "relative_humidity": 60.0,
-        "wind_speed": 3.0,
+        "sun_elevation_deg": sun_elevation_deg,
+        "cloud_area_fraction": cloud,
         "air_temperature": 8.0,
         "dew_spread": 5.0,
         "symbol": "clearsky_night",
+        "is_clear": cloud < 10.0,
     }
 
 
@@ -68,22 +66,17 @@ def _seed_hour(
     site_id,
     hour_time,
     symbol="clearsky_night",
-    score=70.0,
-    darkness=0.0,
-    clarity=0.0,
+    sun_elevation_deg=-18.5,
+    cloud=5.0,
 ):
     session.add(
         SiteHour(
             site_id=site_id,
             hour_time=hour_time,
-            score=score,
-            cloud_area_fraction=10.0,
-            relative_humidity=60.0,
-            wind_speed=3.0,
+            cloud_area_fraction=cloud,
             air_temperature=8.0,
             dew_spread=5.0,
-            darkness_factor=darkness,
-            cloud_factor=clarity,
+            sun_elevation_deg=sun_elevation_deg,
             symbol=symbol,
         )
     )
@@ -91,10 +84,10 @@ def _seed_hour(
 
 def test_write_sites_inserts_rows_for_each_site(session):
     scored = {
-        "galloway-forest": [_hour("2026-06-13T23:00:00Z", 90.0)],
+        "galloway-forest": [_hour("2026-06-13T23:00:00Z", cloud=5.0)],
         "tiree": [
-            _hour("2026-06-13T22:00:00Z", 75.0),
-            _hour("2026-06-13T23:00:00Z", 72.0),
+            _hour("2026-06-13T22:00:00Z", cloud=5.0),
+            _hour("2026-06-13T23:00:00Z", cloud=5.0),
         ],
     }
     now = datetime(2026, 6, 13, 21, tzinfo=timezone.utc)
@@ -111,12 +104,11 @@ def test_write_sites_inserts_rows_for_each_site(session):
         ("galloway-forest", datetime(2026, 6, 13, 23, tzinfo=timezone.utc)),
     )
     assert gf is not None
-    assert gf.score == 90.0
-    # The sun elevation written by the forecast flows through to the row.
+    # The clear-dark metric inputs written by the forecast flow through.
     assert gf.sun_elevation_deg == -18.5
-    # The decomposed factors flow through so the prune can bank them.
-    assert gf.darkness_factor == 1.0
-    assert gf.cloud_factor == 0.9
+    assert gf.cloud_area_fraction == 5.0
+    assert gf.air_temperature == 8.0
+    assert gf.symbol == "clearsky_night"
     # A single shared fetched_at is stamped across the whole run.
     assert len({r.fetched_at for r in rows}) == 1
 
@@ -125,16 +117,16 @@ def test_write_sites_leaves_unfetched_sites_untouched(session):
     # Stale beats empty: the bulk delete only targets fetched site ids, so a
     # site absent from the scored map keeps its previous rows.
     kept = datetime(2026, 6, 13, 21, tzinfo=timezone.utc)
-    _seed_hour(session, "X", kept, symbol="old", score=88.0)
+    _seed_hour(session, "X", kept, symbol="old")
     session.commit()
 
     now = datetime(2026, 6, 13, 22, tzinfo=timezone.utc)
-    jobs._write_sites(session, {"A": [_hour("2026-06-13T23:00:00Z", 90.0)]}, now)
+    jobs._write_sites(session, {"A": [_hour("2026-06-13T23:00:00Z", cloud=5.0)]}, now)
     session.commit()
 
     survivor = session.get(SiteHour, ("X", kept))
     assert survivor is not None
-    assert survivor.score == 88.0
+    assert survivor.symbol == "old"
     assert (
         session.get(SiteHour, ("A", datetime(2026, 6, 13, 23, tzinfo=timezone.utc)))
         is not None
@@ -147,15 +139,15 @@ def test_write_sites_replaces_future_only_keeps_elapsed(session):
     # stale future hour is replaced by the freshly scored future hours.
     elapsed = datetime(2026, 6, 13, 20, tzinfo=timezone.utc)
     stale_future = datetime(2026, 6, 13, 23, tzinfo=timezone.utc)
-    _seed_hour(session, "A", elapsed, symbol="banked", score=50.0)
-    _seed_hour(session, "A", stale_future, symbol="stale", score=50.0)
+    _seed_hour(session, "A", elapsed, symbol="banked")
+    _seed_hour(session, "A", stale_future, symbol="stale")
     session.commit()
 
     now = datetime(2026, 6, 13, 22, tzinfo=timezone.utc)
     scored = {
         "A": [
-            _hour("2026-06-13T23:00:00Z", 90.0),
-            _hour("2026-06-14T00:00:00Z", 85.0),
+            _hour("2026-06-13T23:00:00Z", cloud=5.0),
+            _hour("2026-06-14T00:00:00Z", cloud=5.0),
         ]
     }
     jobs._write_sites(session, scored, now)
@@ -163,14 +155,12 @@ def test_write_sites_replaces_future_only_keeps_elapsed(session):
 
     rows = session.exec(select(SiteHour).where(SiteHour.site_id == "A")).all()
     by_time = {_utc(r.hour_time): r for r in rows}
-    # Elapsed row is untouched (still present, still its original symbol/score).
+    # Elapsed row is untouched (still present, still its original symbol).
     assert elapsed in by_time
     assert by_time[elapsed].symbol == "banked"
-    assert by_time[elapsed].score == 50.0
     # Future hours are the freshly scored set; the stale 23:00 row was replaced.
     assert _utc(stale_future) in by_time
     assert by_time[_utc(stale_future)].symbol == "clearsky_night"
-    assert by_time[_utc(stale_future)].score == 90.0
     assert datetime(2026, 6, 14, 0, tzinfo=timezone.utc) in by_time
 
 
@@ -193,16 +183,18 @@ def test_prune_elapsed_drops_only_elapsed_hours(session):
 
 
 def test_prune_banks_elapsed_into_month_stats(session):
-    # ADR 008: elapsed hours are banked into site_month_stats (the right month
-    # bucket, summed score/darkness/clarity, counted) before being deleted.
+    # Elapsed dark hours are banked into site_month_stats (the right month
+    # bucket) before deletion: every elapsing row counts toward dark_hours, and
+    # the clear ones (cloud < 10%) toward clear_dark_hours.
     cutoff = top_of_hour(datetime.now(timezone.utc))
     h1 = cutoff - timedelta(hours=2)
     h2 = cutoff - timedelta(hours=3)
     future = cutoff + timedelta(hours=1)
-    _seed_hour(session, "S", h1, score=80.0, darkness=1.0, clarity=0.9)
-    _seed_hour(session, "S", h2, score=60.0, darkness=0.5, clarity=0.8)
+    # h1 is clear (5% cloud); h2 is dark but cloudy (50%).
+    _seed_hour(session, "S", h1, cloud=5.0)
+    _seed_hour(session, "S", h2, cloud=50.0)
     # A future hour must be neither banked nor deleted.
-    _seed_hour(session, "S", future, score=99.0, darkness=1.0, clarity=1.0)
+    _seed_hour(session, "S", future, cloud=5.0)
     session.commit()
 
     deleted = jobs._prune_elapsed(session)
@@ -211,20 +203,17 @@ def test_prune_banks_elapsed_into_month_stats(session):
 
     # Group the seeded elapsed hours by month exactly as the prune does, so the
     # assertion holds even if the two hours straddle a month boundary.
-    expected: dict[int, dict[str, float]] = {}
-    for ht, score, dark, clarity in ((h1, 80.0, 1.0, 0.9), (h2, 60.0, 0.5, 0.8)):
-        agg = expected.setdefault(ht.month, {"n": 0, "q": 0.0, "d": 0.0, "c": 0.0})
-        agg["n"] += 1
-        agg["q"] += score
-        agg["d"] += dark
-        agg["c"] += clarity
+    expected: dict[int, dict[str, int]] = {}
+    for ht, clear in ((h1, True), (h2, False)):
+        agg = expected.setdefault(ht.month, {"dark": 0, "clear": 0})
+        agg["dark"] += 1
+        if clear:
+            agg["clear"] += 1
     for month, agg in expected.items():
         stat = session.get(SiteMonthStat, ("S", month))
         assert stat is not None
-        assert stat.window_count == agg["n"]
-        assert stat.sum_q == pytest.approx(agg["q"])
-        assert stat.sum_darkness == pytest.approx(agg["d"])
-        assert stat.sum_clarity == pytest.approx(agg["c"])
+        assert stat.dark_hours == agg["dark"]
+        assert stat.clear_dark_hours == agg["clear"]
 
     # The elapsed rows are deleted; only the future hour remains.
     remaining = {_utc(r.hour_time) for r in session.exec(select(SiteHour)).all()}
@@ -236,7 +225,7 @@ def test_prune_rerun_does_not_double_count(session):
     # over an already-pruned table banks nothing more (no double-count).
     cutoff = top_of_hour(datetime.now(timezone.utc))
     h1 = cutoff - timedelta(hours=2)
-    _seed_hour(session, "S", h1, score=80.0, darkness=1.0, clarity=0.9)
+    _seed_hour(session, "S", h1, cloud=5.0)
     session.commit()
 
     assert jobs._prune_elapsed(session) == 1
@@ -247,8 +236,8 @@ def test_prune_rerun_does_not_double_count(session):
 
     stat = session.get(SiteMonthStat, ("S", h1.month))
     assert stat is not None
-    assert stat.window_count == 1
-    assert stat.sum_q == pytest.approx(80.0)
+    assert stat.dark_hours == 1
+    assert stat.clear_dark_hours == 1
 
 
 def test_prune_increments_existing_month_stat(session):
@@ -260,13 +249,11 @@ def test_prune_increments_existing_month_stat(session):
         SiteMonthStat(
             site_id="S",
             month=month,
-            window_count=5,
-            sum_q=400.0,
-            sum_darkness=4.0,
-            sum_clarity=3.5,
+            dark_hours=5,
+            clear_dark_hours=3,
         )
     )
-    _seed_hour(session, "S", h1, score=80.0, darkness=1.0, clarity=0.9)
+    _seed_hour(session, "S", h1, cloud=5.0)
     session.commit()
 
     assert jobs._prune_elapsed(session) == 1
@@ -274,10 +261,8 @@ def test_prune_increments_existing_month_stat(session):
 
     stat = session.get(SiteMonthStat, ("S", month))
     assert stat is not None
-    assert stat.window_count == 6
-    assert stat.sum_q == pytest.approx(480.0)
-    assert stat.sum_darkness == pytest.approx(5.0)
-    assert stat.sum_clarity == pytest.approx(4.4)
+    assert stat.dark_hours == 6
+    assert stat.clear_dark_hours == 4
 
 
 def test_refresh_handler_empty_fetch_is_noop(monkeypatch):

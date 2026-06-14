@@ -86,32 +86,36 @@ def client_fixture(session):
 def _hour(
     site_id: str,
     offset_hours: int,
-    score: float,
+    cloud: float = 5.0,
+    sun: float = -18.0,
 ) -> SiteHour:
-    """A SiteHour for ``site_id`` at cutoff + offset_hours, with a given score."""
+    """A SiteHour for ``site_id`` at cutoff + offset_hours.
+
+    Defaults are a clear-dark hour (sun below -12, cloud below 10%); pass a
+    higher ``cloud`` to make the dark hour not-clear.
+    """
     return SiteHour(
         site_id=site_id,
         hour_time=CUTOFF + timedelta(hours=offset_hours),
-        score=score,
-        cloud_area_fraction=10.0,
-        relative_humidity=70.0,
-        wind_speed=3.0,
+        cloud_area_fraction=cloud,
         air_temperature=8.0,
         dew_spread=2.0,
+        sun_elevation_deg=sun,
         symbol="clearsky_night",
         fetched_at=FETCHED,
     )
 
 
 class TestSites:
-    def test_ordering_by_best_score(self, client, session):
-        # galloway-forest peaks at 0.9; tomintoul peaks at 0.5.
+    def test_ordering_by_clear_dark_hours(self, client, session):
+        # galloway-forest has 2 upcoming clear-dark hours; tomintoul has 1 (its
+        # second future hour is dark but cloudy).
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        session.add(_hour("galloway-forest", 1, 0.7))
-        session.add(_hour("galloway-forest", 2, 0.9))
-        session.add(_hour("tomintoul", 1, 0.5))
-        session.add(_hour("tomintoul", 2, 0.3))
+        session.add(_hour("galloway-forest", 1))
+        session.add(_hour("galloway-forest", 2))
+        session.add(_hour("tomintoul", 1))
+        session.add(_hour("tomintoul", 2, cloud=50.0))
         session.commit()
 
         r = client.get("/api/stars/sites")
@@ -120,7 +124,8 @@ class TestSites:
         assert body["count"] == 2
         ids = [s["id"] for s in body["sites"]]
         assert ids == ["galloway-forest", "tomintoul"]
-        assert body["sites"][0]["best_score"] == 0.9
+        assert body["sites"][0]["clear_dark_hours"] == 2
+        assert body["sites"][1]["clear_dark_hours"] == 1
         # Metadata is joined in from the stars.sites table.
         assert body["sites"][0]["name"] == "Galloway Forest Park"
         assert body["sites"][0]["lp_zone"] == "1a"
@@ -129,12 +134,12 @@ class TestSites:
         # galloway-forest has only past hours -> excluded entirely.
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        session.add(_hour("galloway-forest", -1, 0.9))
-        session.add(_hour("galloway-forest", -2, 0.8))
-        # tomintoul has a mix: only its future hours come back.
-        session.add(_hour("tomintoul", -1, 0.95))
-        session.add(_hour("tomintoul", 1, 0.4))
-        session.add(_hour("tomintoul", 2, 0.6))
+        session.add(_hour("galloway-forest", -1))
+        session.add(_hour("galloway-forest", -2))
+        # tomintoul has a mix: only its future clear-dark hours are counted.
+        session.add(_hour("tomintoul", -1))
+        session.add(_hour("tomintoul", 1))
+        session.add(_hour("tomintoul", 2))
         session.commit()
 
         r = client.get("/api/stars/sites")
@@ -143,18 +148,34 @@ class TestSites:
         assert body["count"] == 1
         assert [s["id"] for s in body["sites"]] == ["tomintoul"]
         tomintoul = body["sites"][0]
-        # Only the two future hours; the past hour (and its higher score) is gone.
+        # Only the two future hours; the past clear-dark hour is gone.
         assert len(tomintoul["best_hours"]) == 2
-        assert tomintoul["best_score"] == 0.6
+        assert tomintoul["clear_dark_hours"] == 2
         future_times = {
             (CUTOFF + timedelta(hours=1)).isoformat(),
             (CUTOFF + timedelta(hours=2)).isoformat(),
         }
         assert {h["time"] for h in tomintoul["best_hours"]} == future_times
 
+    def test_dark_but_cloudy_site_has_zero_clear_dark(self, client, session):
+        # A dark site whose upcoming hours are all cloudy still appears, with a
+        # zero clear-dark count and no displayed windows.
+        _seed_site(session, "galloway-forest")
+        session.add(_hour("galloway-forest", 1, cloud=80.0))
+        session.add(_hour("galloway-forest", 2, cloud=90.0))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 1
+        gf = body["sites"][0]
+        assert gf["clear_dark_hours"] == 0
+        assert gf["best_hours"] == []
+
     def test_cache_and_etag_headers(self, client, session):
         _seed_site(session, "galloway-forest")
-        session.add(_hour("galloway-forest", 1, 0.7))
+        session.add(_hour("galloway-forest", 1))
         session.commit()
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
@@ -163,7 +184,7 @@ class TestSites:
 
     def test_conditional_get_returns_304(self, client, session):
         _seed_site(session, "galloway-forest")
-        session.add(_hour("galloway-forest", 1, 0.7))
+        session.add(_hour("galloway-forest", 1))
         session.commit()
         first = client.get("/api/stars/sites")
         etag = first.headers["ETag"]
@@ -190,7 +211,7 @@ class TestSites:
         # sites have upcoming hours.
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        session.add(_hour("galloway-forest", 1, 0.7))
+        session.add(_hour("galloway-forest", 1))
         session.commit()
 
         r = client.get("/api/stars/sites")
@@ -199,30 +220,31 @@ class TestSites:
         assert body["total_sites"] == 2
 
     def test_best_hours_capped_at_eight(self, client, session):
-        # 12 future hours with ascending scores; expect the top 8 by score.
+        # 12 future clear-dark hours; the count reports all 12 but the displayed
+        # list is capped at the earliest 8 by time.
         _seed_site(session, "galloway-forest")
-        session.add_all(
-            [_hour("galloway-forest", i + 1, score=i / 100.0) for i in range(12)]
-        )
+        session.add_all([_hour("galloway-forest", i + 1) for i in range(12)])
         session.commit()
 
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
         assert body["count"] == 1
-        best_hours = body["sites"][0]["best_hours"]
+        site = body["sites"][0]
+        assert site["clear_dark_hours"] == 12
+        best_hours = site["best_hours"]
         assert len(best_hours) == 8
-        scores = [h["score"] for h in best_hours]
-        # Selection is the 8 highest scores (offsets 5..12, scores 0.04..0.11).
-        assert set(scores) == {0.11, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04}
+        # The earliest 8 hours by time (offsets 1..8).
+        expected = [(CUTOFF + timedelta(hours=i + 1)).isoformat() for i in range(8)]
+        assert [h["time"] for h in best_hours] == expected
 
     def test_best_hours_in_chronological_order(self, client, session):
-        # Hours arrive scored out of time order; the card must read by time, so
-        # the response sorts the selected hours ascending by hour_time.
+        # The card must read by time, so the response sorts the displayed hours
+        # ascending by hour_time.
         _seed_site(session, "galloway-forest")
-        session.add(_hour("galloway-forest", 1, 0.3))
-        session.add(_hour("galloway-forest", 2, 0.9))
-        session.add(_hour("galloway-forest", 3, 0.5))
+        session.add(_hour("galloway-forest", 2))
+        session.add(_hour("galloway-forest", 1))
+        session.add(_hour("galloway-forest", 3))
         session.commit()
 
         r = client.get("/api/stars/sites")
@@ -236,84 +258,63 @@ class TestSites:
             (CUTOFF + timedelta(hours=3)).isoformat(),
         ]
 
-    def test_night_scores_and_nights(self, client, session):
-        # Two nights' worth of hours: each site exposes the best score per night
-        # (keyed by the evening date), and the response lists the union of
-        # nights ascending for the filter chips.
+    def test_night_clear_dark_and_nights(self, client, session):
+        # Two nights' worth of clear-dark hours: each site exposes the per-night
+        # clear-dark count (keyed by the evening date), and the response lists
+        # the union of nights ascending for the filter chips.
         _seed_site(session, "galloway-forest")
         # Offsets chosen relative to a fixed cutoff so both nights are covered
         # regardless of when the suite runs.
-        session.add(_hour("galloway-forest", 1, 0.4))
-        session.add(_hour("galloway-forest", 2, 0.8))
-        session.add(_hour("galloway-forest", 26, 0.6))
+        session.add(_hour("galloway-forest", 1))
+        session.add(_hour("galloway-forest", 2))
+        session.add(_hour("galloway-forest", 26))
         session.commit()
 
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
-        night_scores = body["sites"][0]["night_scores"]
-        # Each night maps to the best score reached that night.
-        assert max(night_scores.values()) == 0.8
+        night_clear_dark = body["sites"][0]["night_clear_dark"]
+        # The per-night counts sum to the site's total clear-dark hours.
+        assert sum(night_clear_dark.values()) == 3
         # Top-level nights is the sorted union of the per-site night keys.
-        assert body["nights"] == sorted(set(night_scores))
+        assert body["nights"] == sorted(set(night_clear_dark))
         assert body["nights"] == sorted(body["nights"])
 
 
 class TestHistory:
-    def _seed_stat(
-        self,
-        session,
-        site_id,
-        month,
-        window_count,
-        sum_q,
-        sum_darkness,
-        sum_clarity,
-    ):
+    def _seed_stat(self, session, site_id, month, dark_hours, clear_dark_hours):
         session.add(
             SiteMonthStat(
                 site_id=site_id,
                 month=month,
-                window_count=window_count,
-                sum_q=sum_q,
-                sum_darkness=sum_darkness,
-                sum_clarity=sum_clarity,
+                dark_hours=dark_hours,
+                clear_dark_hours=clear_dark_hours,
             )
         )
 
-    def _seed_climo(
-        self,
-        session,
-        site_id,
-        month,
-        window_count,
-        sum_q,
-        sum_darkness,
-        sum_clarity,
-    ):
+    def _seed_climo(self, session, site_id, month, dark_hours, clear_dark_hours):
         session.add(
             SiteMonthClimatology(
                 site_id=site_id,
                 month=month,
-                window_count=window_count,
-                sum_q=sum_q,
-                sum_darkness=sum_darkness,
-                sum_clarity=sum_clarity,
+                dark_hours=dark_hours,
+                clear_dark_hours=clear_dark_hours,
             )
         )
 
-    def test_month_filter_ordering_and_derived_averages(self, client, session):
+    def test_month_filter_ordering_rate_and_months_map(self, client, session):
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
         # December: live accumulator plus ERA5 climatology backfill combine per
-        # field. galloway leads on combined sum_q.
-        self._seed_stat(session, "galloway-forest", 12, 40, 3200.0, 36.0, 30.0)
-        self._seed_climo(session, "galloway-forest", 12, 10, 800.0, 9.0, 6.0)
-        self._seed_stat(session, "tomintoul", 12, 20, 1000.0, 14.0, 8.0)
-        self._seed_climo(session, "tomintoul", 12, 5, 250.0, 3.0, 2.0)
-        # A different month must be excluded by the filter (both tables).
-        self._seed_stat(session, "tomintoul", 6, 5, 5000.0, 4.0, 4.0)
-        self._seed_climo(session, "tomintoul", 6, 5, 5000.0, 4.0, 4.0)
+        # field. galloway leads on combined clear_dark_hours.
+        self._seed_stat(session, "galloway-forest", 12, 40, 20)
+        self._seed_climo(session, "galloway-forest", 12, 10, 5)
+        self._seed_stat(session, "tomintoul", 12, 20, 4)
+        self._seed_climo(session, "tomintoul", 12, 5, 2)
+        # A different month is excluded from the headline counts but still feeds
+        # the (unfiltered) 12-month graph.
+        self._seed_stat(session, "tomintoul", 6, 5, 5)
+        self._seed_climo(session, "tomintoul", 6, 5, 5)
         session.commit()
 
         r = client.get("/api/stars/history", params={"month": 12})
@@ -322,26 +323,34 @@ class TestHistory:
         assert body["month"] == 12
         assert body["count"] == 2
         ids = [s["id"] for s in body["sites"]]
-        # Ordered by combined sum_q descending.
+        # Ordered by combined clear_dark_hours descending.
         assert ids == ["galloway-forest", "tomintoul"]
         gf = body["sites"][0]
-        # Combined sums: live + climatology.
-        assert gf["sum_q"] == pytest.approx(3200.0 + 800.0)
-        assert gf["window_count"] == 40 + 10
-        # Averages are the combined component sums over the combined window_count.
-        assert gf["avg_darkness"] == pytest.approx((36.0 + 9.0) / (40 + 10))
-        assert gf["avg_clarity"] == pytest.approx((30.0 + 6.0) / (40 + 10))
+        # Combined counts: live + climatology.
+        assert gf["clear_dark_hours"] == 20 + 5
+        assert gf["dark_hours"] == 40 + 10
+        assert gf["clear_rate"] == pytest.approx((20 + 5) / (40 + 10))
         # Metadata joined from stars.sites.
         assert gf["name"] == "Galloway Forest Park"
         assert gf["lat"] == 55.083
+        # The months map is always 12 entries (string keys in JSON), zero-filled.
+        assert set(gf["months"].keys()) == {str(m) for m in range(1, 13)}
+        assert gf["months"]["12"] == 25
+        assert gf["months"]["6"] == 0
+        # tomintoul's June bucket (excluded from the headline) still shows in the
+        # unfiltered months map: 5 live + 5 climo clear-dark hours.
+        tom = body["sites"][1]
+        assert tom["clear_dark_hours"] == 4 + 2
+        assert tom["months"]["12"] == 6
+        assert tom["months"]["6"] == 10
 
     def test_site_present_only_in_climatology_is_included(self, client, session):
         # A site with no live stats but an ERA5 backfill row still appears, with
-        # the climatology values standing in for the full combined stats.
+        # the climatology values standing in for the combined counts.
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        self._seed_stat(session, "galloway-forest", 4, 20, 1000.0, 18.0, 14.0)
-        self._seed_climo(session, "tomintoul", 4, 8, 400.0, 6.0, 5.0)
+        self._seed_stat(session, "galloway-forest", 4, 20, 18)
+        self._seed_climo(session, "tomintoul", 4, 8, 5)
         session.commit()
 
         r = client.get("/api/stars/history", params={"month": 4})
@@ -350,20 +359,20 @@ class TestHistory:
         assert {s["id"] for s in body["sites"]} == {"galloway-forest", "tomintoul"}
         by_id = {s["id"]: s for s in body["sites"]}
         tom = by_id["tomintoul"]
-        assert tom["sum_q"] == pytest.approx(400.0)
-        assert tom["window_count"] == 8
-        assert tom["avg_darkness"] == pytest.approx(6.0 / 8)
-        assert tom["avg_clarity"] == pytest.approx(5.0 / 8)
+        assert tom["clear_dark_hours"] == 5
+        assert tom["dark_hours"] == 8
+        assert tom["clear_rate"] == pytest.approx(5 / 8)
+        assert tom["months"]["4"] == 5
 
     def test_default_is_all_year(self, client, session):
         # No month param -> all-year view (month 0): every month-of-year bucket
         # for a site, across both tables, is summed into one combined row.
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        self._seed_stat(session, "galloway-forest", 1, 10, 500.0, 9.0, 8.0)
-        self._seed_stat(session, "galloway-forest", 12, 20, 1500.0, 18.0, 15.0)
-        self._seed_climo(session, "galloway-forest", 6, 5, 300.0, 4.0, 3.0)
-        self._seed_stat(session, "tomintoul", 7, 8, 400.0, 6.0, 5.0)
+        self._seed_stat(session, "galloway-forest", 1, 10, 8)
+        self._seed_stat(session, "galloway-forest", 12, 20, 15)
+        self._seed_climo(session, "galloway-forest", 6, 5, 4)
+        self._seed_stat(session, "tomintoul", 7, 8, 6)
         session.commit()
 
         r = client.get("/api/stars/history")
@@ -372,16 +381,19 @@ class TestHistory:
         assert body["month"] == 0
         gf = next(s for s in body["sites"] if s["id"] == "galloway-forest")
         # All three galloway rows (Jan + Dec live + Jun climo) fold into one.
-        assert gf["window_count"] == 10 + 20 + 5
-        assert gf["sum_q"] == pytest.approx(500.0 + 1500.0 + 300.0)
-        assert gf["avg_darkness"] == pytest.approx((9.0 + 18.0 + 4.0) / (10 + 20 + 5))
-        # Ordered by combined sum_q desc: galloway (2300) before tomintoul (400).
+        assert gf["dark_hours"] == 10 + 20 + 5
+        assert gf["clear_dark_hours"] == 8 + 15 + 4
+        # The months map still separates the per-month buckets.
+        assert gf["months"]["1"] == 8
+        assert gf["months"]["12"] == 15
+        assert gf["months"]["6"] == 4
+        # Ordered by combined clear_dark_hours desc: galloway (27) before tomintoul (6).
         assert [s["id"] for s in body["sites"]] == ["galloway-forest", "tomintoul"]
 
     def test_orphan_stat_without_site_is_skipped(self, client, session):
         # A site_month_stats row whose site dropped from the grid has no
         # metadata to render and is omitted.
-        self._seed_stat(session, "ghost", 12, 5, 100.0, 4.0, 3.0)
+        self._seed_stat(session, "ghost", 12, 5, 4)
         session.commit()
 
         r = client.get("/api/stars/history", params={"month": 12})
@@ -390,7 +402,7 @@ class TestHistory:
 
     def test_cache_and_etag_headers(self, client, session):
         _seed_site(session, "galloway-forest")
-        self._seed_stat(session, "galloway-forest", 12, 10, 500.0, 9.0, 8.0)
+        self._seed_stat(session, "galloway-forest", 12, 10, 5)
         session.commit()
         r = client.get("/api/stars/history", params={"month": 12})
         assert r.status_code == 200
@@ -399,7 +411,7 @@ class TestHistory:
 
     def test_conditional_get_returns_304(self, client, session):
         _seed_site(session, "galloway-forest")
-        self._seed_stat(session, "galloway-forest", 12, 10, 500.0, 9.0, 8.0)
+        self._seed_stat(session, "galloway-forest", 12, 10, 5)
         session.commit()
         first = client.get("/api/stars/history", params={"month": 12})
         etag = first.headers["ETag"]
