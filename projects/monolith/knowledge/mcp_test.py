@@ -142,6 +142,29 @@ class TestGetNote:
         assert result["edges"] == []
 
     @pytest.mark.asyncio
+    async def test_serves_content_from_db_without_disk(self, tmp_path, monkeypatch):
+        """ADR 006 Phase 2: body comes from Postgres, no vault file read."""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()  # empty — proves the read does not touch disk
+        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = {
+                **SAMPLE_NOTE,
+                "content": "# From Postgres\n\nNo disk read needed.",
+            }
+            MockStore.return_value.get_note_links.return_value = []
+            result = await get_note("n1")
+
+        assert result["content"] == "# From Postgres\n\nNo disk read needed."
+        assert result["edges"] == []
+
+    @pytest.mark.asyncio
     async def test_missing_note_returns_error(self):
         mock_session = MagicMock()
         with (

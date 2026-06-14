@@ -24,6 +24,7 @@ from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import approve_gap as _approve_gap
 from knowledge.gaps import list_review_queue, split_csv
 from knowledge.gardener import _slugify
+from knowledge.notes import resolve_note_body
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
@@ -72,7 +73,9 @@ async def get_note(note_id: str) -> dict:
     """Retrieve a knowledge note by its stable ID.
 
     Returns note metadata (title, type, tags), the full markdown
-    content read from the vault, and all outgoing graph edges.
+    body (authoritative ``knowledge.notes.content`` in Postgres, with a
+    vault fallback during the ADR 006 Phase 1 backfill), and all
+    outgoing graph edges.
 
     Args:
         note_id: The stable note identifier (e.g. "attention-is-all-you-need").
@@ -83,13 +86,15 @@ async def get_note(note_id: str) -> dict:
         if note is None:
             return {"error": f"note not found: {note_id}"}
 
+        # ADR 006 Phase 2: body of record is Postgres ``content``; the vault
+        # read is a fallback only while the Phase 1 backfill is in flight.
         vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-        resolved = (vault_root / note["path"]).resolve()
-        if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+        body = resolve_note_body(note.get("content"), note["path"], vault_root)
+        if body is None:
             return {"error": f"vault file missing for {note_id}"}
 
         edges = store.get_note_links(note_id)
-        return {**note, "content": resolved.read_text(), "edges": edges}
+        return {**note, "content": body, "edges": edges}
 
 
 @mcp.tool

@@ -88,6 +88,7 @@ def _upsert(
     metadata=None,
     n_chunks=1,
     links=None,
+    content=None,
 ):
     metadata = metadata or _meta(title=title)
     store.upsert_note(
@@ -99,6 +100,7 @@ def _upsert(
         chunks=_chunks(n_chunks),
         vectors=_vecs(n_chunks),
         links=links or [],
+        content=content,
     )
 
 
@@ -509,7 +511,22 @@ class TestGetNoteById:
             "path": "folder/note.md",
             "type": "paper",
             "tags": ["x"],
+            "content": None,
         }
+
+    def test_returns_content_when_set(self, store):
+        """ADR 006: get_note_by_id surfaces the authoritative body."""
+        _upsert(
+            store,
+            note_id="n2",
+            path="folder/n2.md",
+            title="With Body",
+            metadata=_meta(title="With Body"),
+            content="# Heading\n\nThe authoritative body.",
+        )
+        got = store.get_note_by_id("n2")
+        assert got is not None
+        assert got["content"] == "# Heading\n\nThe authoritative body."
 
     def test_returns_none_when_missing(self, store):
         assert store.get_note_by_id("nope") is None

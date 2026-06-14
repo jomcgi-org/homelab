@@ -48,6 +48,7 @@ from knowledge.notes import (
     delete_note,
     list_notes_for_review,
     reset_note_visibility,
+    resolve_note_body,
     set_note_visibility,
     undelete_note,
     verify_note_visibility,
@@ -304,18 +305,17 @@ def get_public_note(
         logger.info("public.note.404 note_id=%s reason=%s", note_id, reason)
         raise HTTPException(status_code=404, detail="Not Found")
 
-    # Load the body from the vault. Reuse the same path-traversal guard
-    # the private GET /notes/{id} uses so a malformed path can't escape
-    # the vault root.
+    # ADR 006 Phase 2: body of record is Postgres ``content``. The vault
+    # read is a fallback only while the Phase 1 backfill is in flight, and
+    # ``resolve_note_body`` keeps the same path-traversal guard so a
+    # malformed path can't escape the vault root.
     vault_root = _get_vault_root()
-    resolved = (vault_root / note.path).resolve()
-    if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+    body = resolve_note_body(note.content, note.path, vault_root)
+    if body is None:
         # Same identical 404 — don't leak that the DB row exists but
-        # the file is missing/escaped.
+        # the body is unavailable.
         logger.info("public.note.404 note_id=%s reason=vault_file_missing", note_id)
         raise HTTPException(status_code=404, detail="Not Found")
-    raw = resolved.read_text()
-    _, body = frontmatter.parse(raw)
 
     # Slugified ids of every non-public note. ``sanitize_public_body``
     # slugifies wikilink display text via ``visibility._slugify`` and
@@ -384,13 +384,15 @@ def get_knowledge_note(
     if note is None:
         raise HTTPException(status_code=404, detail="note not found")
 
+    # ADR 006 Phase 2: body of record is Postgres ``content``; the vault
+    # read is a fallback only while the Phase 1 backfill is in flight.
     vault_root = _get_vault_root()
-    resolved = (vault_root / note["path"]).resolve()
-    if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+    body = resolve_note_body(note.get("content"), note["path"], vault_root)
+    if body is None:
         raise HTTPException(status_code=404, detail="vault file missing")
 
     edges = store.get_note_links(note_id)
-    return {**note, "content": resolved.read_text(), "edges": edges}
+    return {**note, "content": body, "edges": edges}
 
 
 @router.delete("/notes/{note_id}")
