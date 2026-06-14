@@ -9,17 +9,15 @@
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
 
-  // Mode: LIVE = the upcoming-forecast layer (per-night quality); HISTORICAL =
-  // the month-bucketed clear-dark-hours layer (stars v2). The toggle swaps the
-  // map's data source, the time control (night picker vs month picker), and the
-  // heat field StarsMap weights by.
+  // Mode: LIVE = the upcoming-forecast layer (per-night quality), markers only;
+  // HISTORICAL = the month-bucketed clear-dark-hours layer (stars v2), the
+  // box-cell heatmap. The toggle swaps the map's data source, the time control
+  // (night picker vs month picker), and whether the box-cell heatmap shows.
   let mode = $state("live");
 
-  // Heat layer: in LIVE it is an optional overlay (markers-first by default, the
-  // shipped look), so it is off until toggled; in HISTORICAL it is the point of
-  // the layer, so it is always on. StarsMap reads the resolved value.
-  let showHeat = $state(false);
-  let heatOn = $derived(mode === "historical" ? true : showHeat);
+  // The box-cell heatmap belongs to the historical layer only: LIVE is always
+  // markers, HISTORICAL is always the heatmap. StarsMap reads this resolved flag.
+  let heatOn = $derived(mode === "historical");
 
   // Night picker (LIVE): "I'm free Saturday, show me the map for Saturday night."
   // One chip per viewing night plus an "All" reset; picking a night filters the
@@ -128,7 +126,6 @@
   function setMode(next) {
     if (next === mode) return;
     mode = next;
-    if (next === "live") showHeat = false; // back to markers-first live default
   }
 
   // The site set the map plots: live snapshot, or the loaded month's sites.
@@ -248,18 +245,6 @@
     </div>
 
     {#if mode === "live"}
-      <!-- Heat overlay switch (live only): historical forces heat on. -->
-      <button
-        type="button"
-        class="panel heat-switch"
-        class:is-on={showHeat}
-        aria-pressed={showHeat}
-        onclick={() => (showHeat = !showHeat)}
-      >
-        <span class="heat-label">Heatmap</span>
-        <span class="heat-state">{showHeat ? "On" : "Off"}</span>
-      </button>
-
       {#if nights.length > 1}
         <div class="panel night-filter">
           <button
@@ -364,9 +349,8 @@
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">
-          No clear dark hours {historyScope} yet. The seasonal baseline fills from
-          the ERA5 backfill, and live clear-dark hours bank as forecast hours
-          elapse.
+          No clear dark hours {historyScope}. The seasonal baseline comes from the
+          ERA5 reanalysis backfill.
         </div>
       {/if}
     {/if}
@@ -522,42 +506,6 @@
   .seg:not(.is-active):hover,
   .seg:not(.is-active):focus-visible {
     background: var(--cream);
-  }
-
-  /* Heat switch: a single full-width pill mirroring the filter toggle row; fills
-     accent when on so it reads as engaged. */
-  .heat-switch {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    font-family: var(--mono);
-    text-align: left;
-    transition: background 110ms ease;
-  }
-
-  .heat-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-2);
-  }
-
-  .heat-state {
-    margin-left: auto;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-  }
-
-  .heat-switch.is-on {
-    background: var(--accent);
-  }
-
-  .heat-switch.is-on .heat-label,
-  .heat-switch.is-on .heat-state {
-    color: var(--ink);
   }
 
   /* Time filters (night + month): a collapsed summary row that expands on click

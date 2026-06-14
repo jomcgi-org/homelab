@@ -53,6 +53,13 @@ Reproduction runbook:
   kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 &
   curl -X PUT -T /tmp/climatology.json http://localhost:8333/stars/climatology.json
   homelab scheduler jobs run-now stars.load_climatology
+
+  # 5. Invalidate the CDN. /api/stars/history* is cached at the edge for a year
+  #    (immutable between reloads), so PURGE Cloudflare for the history paths
+  #    right after the load or the new climatology will not show until expiry.
+  #    Do this every reload (and after any /history response-shape change):
+  #    Cloudflare dashboard -> Caching -> Purge -> "https://jomcgi.dev/app/stars/history*"
+  #    (or the API: POST .../zones/<zone>/purge_cache with that prefix).
 """
 
 import argparse
