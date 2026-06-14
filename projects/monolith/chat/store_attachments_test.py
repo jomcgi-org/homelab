@@ -241,7 +241,9 @@ class TestSaveMessageWithAttachmentsAdditional:
         assert saved_att is not None
         saved_blob = session.get(Blob, saved_att.blob_sha256)
         assert saved_blob is not None
-        assert saved_blob.data == raw_bytes
+        # Bytes now go to SeaweedFS (S3 unconfigured in tests, so not uploaded);
+        # the row persists with a NULL data column.
+        assert saved_blob.data is None
 
 
 # ---------------------------------------------------------------------------
@@ -324,4 +326,4 @@ class TestBlobDeduplication:
         # Only one blob row exists
         all_blobs = session.exec(select(Blob)).all()
         assert len(all_blobs) == 1
-        assert all_blobs[0].data == shared_data
+        assert all_blobs[0].data is None  # bytes now in SeaweedFS

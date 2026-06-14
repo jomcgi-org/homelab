@@ -233,7 +233,8 @@ class TestBlobFlushBeforeAttachment:
 
         blob = session.get(Blob, expected_sha)
         assert blob is not None, "Blob must exist after save_message()"
-        assert blob.data == raw_data, "Blob data must be preserved exactly"
+        # Flush still happens; bytes now live in SeaweedFS so data is NULL.
+        assert blob.data is None
 
         atts = session.exec(
             select(Attachment).where(Attachment.message_id == msg.id)
@@ -341,4 +342,4 @@ class TestBlobFlushBeforeAttachment:
         att, blob = result[msg.id][0]
         assert att.blob_sha256 == expected_sha
         assert blob.sha256 == expected_sha
-        assert blob.data == raw_data
+        assert blob.data is None  # bytes now in SeaweedFS
