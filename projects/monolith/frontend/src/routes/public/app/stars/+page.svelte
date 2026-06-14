@@ -10,7 +10,7 @@
   let count = $derived(data.snapshot?.count ?? 0);
 
   // Mode: LIVE = the upcoming-forecast layer (per-night quality); HISTORICAL =
-  // the month-bucketed accumulated quality layer (ADR 008). The toggle swaps the
+  // the month-bucketed clear-dark-hours layer (stars v2). The toggle swaps the
   // map's data source, the time control (night picker vs month picker), and the
   // heat field StarsMap weights by.
   let mode = $state("live");
@@ -141,9 +141,10 @@
   );
   let histCount = $derived(histReady ? historyData.count : 0);
 
-  // sites is already sorted by best_score descending, so the head is the best.
-  let topScore = $derived(
-    sites.length ? Math.round(sites[0].best_score ?? 0) : null,
+  // sites is already sorted by clear_dark_hours descending, so the head is the
+  // site with the most upcoming clear-dark hours.
+  let topClearDark = $derived(
+    sites.length ? Math.round(sites[0].clear_dark_hours ?? 0) : null,
   );
 
   // A coarse "current time" signal: it advances the "updated Xm ago" label and
@@ -187,7 +188,7 @@
   <title>Dark-sky stargazing map, Scotland viewing windows</title>
   <meta
     name="description"
-    content="A map of curated Scottish dark-sky sites scored by upcoming viewing windows from the met.no forecast, with a historical realized-quality layer by month."
+    content="A map of curated Scottish dark-sky sites scored by upcoming viewing windows from the met.no forecast, with a historical clear-dark-hours layer by month."
   />
 </svelte:head>
 
@@ -216,15 +217,15 @@
           </p>
         {:else}
           <p class="stats">
-            {count} dark-sky sites{#if topScore != null}
-              &middot; best score {topScore}{/if}{#if agoLabel}
+            {count} dark-sky sites{#if topClearDark != null}
+              &middot; best {topClearDark} clear-dark hrs{/if}{#if agoLabel}
               &middot; updated {agoLabel} ago{/if}
           </p>
         {/if}
       </div>
     </div>
 
-    <!-- Mode toggle: LIVE forecast vs HISTORICAL realized-quality (ADR 008). -->
+    <!-- Mode toggle: LIVE forecast vs HISTORICAL clear-dark hours (stars v2). -->
     <div class="panel mode-toggle" role="group" aria-label="Map mode">
       <button
         type="button"
@@ -363,8 +364,9 @@
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">
-          No realized quality {historyScope} yet. The seasonal baseline fills from
-          the ERA5 backfill, and live quality banks as forecast hours elapse.
+          No clear dark hours {historyScope} yet. The seasonal baseline fills from
+          the ERA5 backfill, and live clear-dark hours bank as forecast hours
+          elapse.
         </div>
       {/if}
     {/if}

@@ -1,11 +1,13 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
-  import { relativeMax } from "$lib/public/stars/heat.js";
+  import { relativeMax, monthBars } from "$lib/public/stars/heat.js";
 
   // `sites` is the list to plot; clicking a dot opens the detail card. In LIVE
-  // mode the rows carry per-night scores + best upcoming hours; in HISTORICAL
-  // mode they carry accumulated `sum_q` + component averages (ADR 008).
+  // mode the rows carry per-night scores + upcoming clear-dark hours; in
+  // HISTORICAL mode they carry banked clear-dark-hour counts (clear_dark_hours /
+  // dark_hours / clear_rate) plus a per-month {1..12} breakdown for the card
+  // graph (stars v2 metric).
   // `activeNights` is the set of selected night keys from the parent's night
   // filter (LIVE only): a marker is coloured by the best score it reaches across
   // those nights, and drops off the map when none of its hours fall on a
@@ -34,20 +36,20 @@
   // light basemap; the prime stop is the funky violet that also marks Stars in
   // the nav. Mirrors how HikesMap keeps its EFFORT_RAMP stops in JS.
   //
-  // LIVE: boundaries follow the ADR 007 continuous quality Q = D x C x W (an
-  // ideal winter night reaches ~90+, summer tops out ~30-50, so 35 / 65). The
-  // marker's `score` property is the absolute live quality there. HISTORICAL:
-  // the `score` property is instead a RELATIVE percentile (heat / max-heat *
-  // 100), so the same 35 / 65 break reads as low / medium / high thirds of the
-  // realized-quality spread, and the legend relabels accordingly.
+  // The marker `score` is always a 0..100 RELATIVE percentile of clear-dark hours
+  // (heat / max-heat) in both modes, so the 35 / 65 breaks read as low / medium /
+  // high thirds of whatever is in view. Colours only (the legend labels these
+  // Low/Medium/High); muted slate -> blue -> violet (prime), tuned for the light
+  // basemap, the violet matching the Stars nav accent.
   const SCORE_BUCKETS = [
-    { key: "low", label: "< 35", color: "#94a3b8" }, // muted slate
-    { key: "mid", label: "35-65", color: "#3b82f6" }, // blue
-    { key: "high", label: "65+", color: "#7c3aed" }, // violet (prime)
+    { key: "low", label: "Low", color: "#94a3b8" }, // muted slate
+    { key: "mid", label: "Medium", color: "#3b82f6" }, // blue
+    { key: "high", label: "High", color: "#7c3aed" }, // violet (prime)
   ];
 
   // Box-cell heatmap ramp (cool -> warm), keyed on each cell's `score` (0..100:
-  // absolute live quality, or a relative percentile in historical). Like
+  // absolute live quality, or a relative percentile of clear-dark hours in
+  // historical). Like
   // ShipsMap's HEAT_STOPS these are JS map-paint colours, not design tokens: a
   // saturated plasma scale that stays vivid on the light basemap. Smooth
   // `interpolate` (not stepped) so the field reads as a heatmap; the three named
@@ -97,17 +99,11 @@
 
   let selected = $state(null); // selected site row, or null
 
-  // The legend follows what is actually drawn. With the box heatmap on (always
-  // in HISTORICAL, optional in LIVE) it shows the cell ramp as relative
-  // low/medium/high, since the field is normalized and an absolute number would
-  // mislead. With markers (LIVE, heat off) it shows the absolute score buckets.
-  let legendTitle = $derived(
-    heatVisible
-      ? mode === "historical"
-        ? "Realized quality"
-        : "Quality"
-      : "Best score",
-  );
+  // The legend follows what is actually drawn. The field is always a relative
+  // clear-dark-hour percentile, so it reads low/medium/high either way: the cell
+  // ramp colours when the box heatmap is on (always HISTORICAL, optional LIVE),
+  // the marker bucket colours when markers show (LIVE, heat off).
+  let legendTitle = $derived("Clear dark hours");
   let legendItems = $derived(
     heatVisible
       ? [
@@ -115,7 +111,11 @@
           { key: "mid", label: "Medium", color: CELL_MID },
           { key: "high", label: "High", color: CELL_HIGH },
         ]
-      : SCORE_BUCKETS,
+      : [
+          { key: "low", label: "Low", color: SCORE_BUCKETS[0].color },
+          { key: "mid", label: "Medium", color: SCORE_BUCKETS[1].color },
+          { key: "high", label: "High", color: SCORE_BUCKETS[2].color },
+        ],
   );
 
   // The selected site's hours, dropping any that have already elapsed (the hour
@@ -156,6 +156,13 @@
     return `${Math.abs(lat).toFixed(3)}°${ns}, ${Math.abs(lon).toFixed(3)}°${ew}`;
   }
 
+  // clear_rate arrives as a 0..1 fraction (clear_dark_hours / dark_hours);
+  // render it as a whole-number percentage, guarding null/NaN to 0%.
+  function fmtPct(rate) {
+    const r = typeof rate === "number" && Number.isFinite(rate) ? rate : 0;
+    return `${Math.round(r * 100)}%`;
+  }
+
   function selectSite(site) {
     selected = site;
   }
@@ -184,42 +191,46 @@
     };
   }
 
-  // Best score this site reaches across the currently selected nights. Falls
-  // back to best_score (always present) when the payload carries no per-night
-  // data, so an older build or a CDN-cached pre-feature response never blanks
-  // the map; with night data and "All" selected this still equals best_score.
-  // A single selected night returns null for sites with no window then, so they
-  // drop off the map (the actual filter). LIVE only.
-  function effectiveScore(site) {
-    const ns = site.night_scores;
-    if (!ns || !activeNights || activeNights.size === 0) {
-      return site.best_score ?? null;
+  // Upcoming clear-dark-hour count this site reaches across the currently
+  // selected nights. Falls back to the site-level clear_dark_hours when the
+  // payload carries no per-night map (older build / CDN-cached response), so the
+  // map never blanks. With a single selected night, sites with no clear-dark
+  // hours that night return null and drop off the map (the night filter). LIVE
+  // only. night_clear_dark only holds nights with >= 1 clear-dark hour, so a
+  // missing key is correctly treated as zero (dropped under a single night).
+  function effectiveClearDark(site) {
+    const nd = site.night_clear_dark;
+    if (!nd || !activeNights || activeNights.size === 0) {
+      return site.clear_dark_hours ?? null;
     }
     let best = null;
     for (const night of activeNights) {
-      const s = ns[night];
-      if (s != null && (best === null || s > best)) best = s;
+      const c = nd[night];
+      if (c != null && (best === null || c > best)) best = c;
     }
     return best;
   }
 
-  // The raw heat value for a site in the current mode: LIVE = the per-night
-  // score (the value the marker already colours by), HISTORICAL = the
-  // accumulated quality-weighted frequency sum_q. null drops the site (LIVE: no
-  // window on the selected night; HISTORICAL: missing/zero stat).
+  // The raw heat value for a site in the current mode: LIVE = the count of
+  // upcoming clear-dark hours across the selected nights, HISTORICAL = the banked
+  // clear-dark-hour count for the selected view (a month bucket or the all-year
+  // sum). null drops the site (LIVE: no clear-dark hours on the selected night;
+  // HISTORICAL: missing/zero count).
   function rawHeat(site) {
     if (mode === "historical") {
-      const q = site.sum_q;
-      return typeof q === "number" && q > 0 ? q : null;
+      const c = site.clear_dark_hours;
+      return typeof c === "number" && c > 0 ? c : null;
     }
-    return effectiveScore(site);
+    return effectiveClearDark(site);
   }
 
   // The plottable sites with their derived marker/cell `score`, computed once so
-  // the point and cell feature collections share one normalization. LIVE score
-  // is the absolute quality; HISTORICAL is a 0..100 relative percentile (heat /
-  // max-heat) so the shared 35 / 65 ramp breaks read as thirds of the realized
-  // spread. Sites with no heat in the current mode/night drop out here.
+  // the point and cell feature collections share one normalization. Both modes
+  // measure clear-dark hours (LIVE = upcoming count, HISTORICAL = banked count),
+  // so both map onto a 0..100 RELATIVE percentile (heat / max-heat): the 35 / 65
+  // ramp breaks read as low / medium / high thirds of whatever is in view, and
+  // the field rescales as the night/month/all-year view changes. Sites with no
+  // clear-dark hours in the current mode/night drop out here.
   function plottable() {
     const raw = [];
     for (const site of sites) {
@@ -228,13 +239,13 @@
       if (heat === null) continue;
       raw.push({ site, heat });
     }
-    // Relative ceiling: the densest point reaches full scale regardless of the
-    // field's absolute range (live 0..100 vs historical sum_q). Restamped here
-    // so the score rescales to whatever is in view as mode/night/month changes.
+    // Relative ceiling: the richest site reaches full scale regardless of the
+    // absolute count (a short forecast horizon vs the 5-year banked history),
+    // restamped here so the score rescales to whatever is in view.
     currentMaxHeat = relativeMax(raw.map((r) => r.heat));
     return raw.map(({ site, heat }) => ({
       site,
-      score: mode === "historical" ? (100 * heat) / currentMaxHeat : heat,
+      score: (100 * heat) / currentMaxHeat,
     }));
   }
 
@@ -525,33 +536,69 @@
       <h2 class="card-name">{selected.name}</h2>
 
       {#if mode === "historical"}
-        <!-- Historical body: accumulated realized quality for the month, plus
-             the darkness/clarity decomposition (ADR 008). No hourly windows. -->
+        <!-- Historical body: the clear-dark-hour count for the selected view
+             (sun below -12 deg AND under 10% cloud), its dark-hour denominator,
+             the clear rate, and a 12-month breakdown so the seasonal shape
+             reads at a glance (stars v2). No hourly windows. -->
         <dl class="card-stats">
           <div>
             <dt>Coordinates</dt>
             <dd>{fmtCoord(selected.lat, selected.lon)}</dd>
           </div>
           <div>
-            <dt>Realized quality</dt>
-            <dd>{Math.round(selected.sum_q ?? 0)}</dd>
+            <dt>Clear dark hours</dt>
+            <dd>{selected.clear_dark_hours ?? 0}</dd>
           </div>
           <div>
-            <dt>Hours banked</dt>
-            <dd>{selected.window_count ?? 0}</dd>
+            <dt>Dark hours</dt>
+            <dd>{selected.dark_hours ?? 0}</dd>
           </div>
           <div>
-            <dt>Avg darkness</dt>
-            <dd>{(selected.avg_darkness ?? 0).toFixed(1)}</dd>
-          </div>
-          <div>
-            <dt>Avg clarity</dt>
-            <dd>{(selected.avg_clarity ?? 0).toFixed(1)}</dd>
+            <dt>Clear rate</dt>
+            <dd>{fmtPct(selected.clear_rate)}</dd>
           </div>
         </dl>
+
+        {@const bars = monthBars(selected.months)}
+        <p class="eyebrow card-windows-title">Clear dark hours by month</p>
+        <!-- Inline SVG bar chart (no charting dep): one bar per month-of-year,
+             height relative to the busiest month, the tallest bar(s) accented
+             and value-labelled. viewBox does the scaling so the CSS width keeps
+             it crisp. Mono labels + 2px ink strokes mirror the card chrome. -->
+        <svg
+          class="month-chart"
+          viewBox="0 0 264 112"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label="Clear dark hours for each month of the year"
+        >
+          <line x1="6" y1="86" x2="258" y2="86" class="chart-axis" />
+          {#each bars as bar (bar.month)}
+            {@const bw = 16}
+            {@const x = 8 + (bar.month - 1) * 20.8}
+            {@const h = bar.value > 0 ? Math.max(2, Math.round(bar.frac * 70)) : 0}
+            {#if h > 0}
+              <rect
+                {x}
+                y={86 - h}
+                width={bw}
+                height={h}
+                class="chart-bar"
+                class:is-max={bar.isMax}
+              />
+            {/if}
+            {#if bar.isMax && bar.value > 0}
+              <text x={x + bw / 2} y={86 - h - 4} class="chart-val"
+                >{bar.value}</text
+              >
+            {/if}
+            <text x={x + bw / 2} y={100} class="chart-tick">{bar.short[0]}</text>
+          {/each}
+        </svg>
         <p class="card-empty">
-          Quality-weighted frequency accumulated as forecast hours elapsed this
-          month. Higher means more, clearer dark hours banked here.
+          Hours with the sun below -12 deg and under 10% cloud, banked as forecast
+          hours elapse and seeded from the ERA5 seasonal baseline. Taller bars are
+          the months this spot clears most.
         </p>
       {:else}
         <dl class="card-stats">
@@ -564,15 +611,13 @@
         </dl>
 
         {#if cardHours.length}
-          <p class="eyebrow card-windows-title">Best upcoming hours</p>
+          <p class="eyebrow card-windows-title">Upcoming clear dark hours</p>
           <table class="card-windows">
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Score</th>
                 <th>Cloud</th>
                 <th>Temp</th>
-                <th>Dew</th>
                 <th>Sky</th>
               </tr>
             </thead>
@@ -580,17 +625,15 @@
               {#each cardHours as h (h.time)}
                 <tr>
                   <td>{fmtTime(h.time)}</td>
-                  <td>{Math.round(h.score)}</td>
                   <td>{Math.round(h.cloud_area_fraction)}%</td>
                   <td>{Math.round(h.air_temperature)}C</td>
-                  <td>{h.dew_spread?.toFixed(1)}</td>
                   <td>{fmtSymbol(h.symbol)}</td>
                 </tr>
               {/each}
             </tbody>
           </table>
         {:else}
-          <p class="card-empty">No upcoming viewing hours for this site.</p>
+          <p class="card-empty">No upcoming clear dark hours for this site.</p>
         {/if}
       {/if}
 
@@ -793,6 +836,46 @@
   .card-windows td {
     padding: 4px 6px 4px 0;
     border-bottom: 1px dashed var(--rule-2);
+  }
+
+  /* 12-month clear-dark-hours bar chart: a flat SVG block sitting in the card,
+     bars in the blue data colour with a 2px ink edge, the busiest month(s)
+     flipped to accent so the seasonal peak pops. */
+  .month-chart {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-bottom: 12px;
+  }
+
+  .month-chart .chart-axis {
+    stroke: var(--ink);
+    stroke-width: 2;
+  }
+
+  .month-chart .chart-bar {
+    fill: var(--blue);
+    stroke: var(--ink);
+    stroke-width: 2;
+  }
+
+  .month-chart .chart-bar.is-max {
+    fill: var(--accent);
+  }
+
+  .month-chart .chart-val {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    fill: var(--ink);
+    text-anchor: middle;
+  }
+
+  .month-chart .chart-tick {
+    font-family: var(--mono);
+    font-size: 9px;
+    fill: var(--ink-3);
+    text-anchor: middle;
   }
 
   .card-empty {
