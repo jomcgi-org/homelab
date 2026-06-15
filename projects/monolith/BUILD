@@ -11,6 +11,7 @@
 # gazelle:exclude ships
 # gazelle:exclude hikes
 # gazelle:exclude stars
+# gazelle:exclude trips
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
@@ -45,6 +46,7 @@ py_venv_binary(
             "ships/**/*.py",
             "hikes/**/*.py",
             "stars/**/*.py",
+            "trips/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -57,6 +59,8 @@ py_venv_binary(
             "shared/testing/**/*.py",
             # Offline grid generator: run by hand, not part of the runtime image.
             "stars/grid_gen/**",
+            # Run-by-hand S3->Postgres backfill, not part of the runtime image.
+            "trips/backfill/**",
         ],
     ),  # keep
     data = [":frontend_dist"],
@@ -103,6 +107,7 @@ py_library(
             "ships/**/*.py",
             "hikes/**/*.py",
             "stars/**/*.py",
+            "trips/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -116,6 +121,8 @@ py_library(
             "shared/testing/**/*.py",
             # Offline grid generator: run by hand, not part of the runtime image.
             "stars/grid_gen/**",
+            # Run-by-hand S3->Postgres backfill, not part of the runtime image.
+            "trips/backfill/**",
         ],
     ),  # keep
     visibility = ["//:__subpackages__"],
@@ -3415,4 +3422,87 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":classify_visibility_backfill",
+)
+
+# Run-by-hand backfill: re-derive trips.points from S3 image EXIF (+ optional
+# KML gap route and NRCan elevation) and upsert into Postgres. Not part of the
+# server image (excluded from the :main / :monolith_backend globs above).
+#   bazel run //projects/monolith:trips_backfill -- run --slug <slug> ...
+py_library(
+    name = "trips_backfill_lib",
+    srcs = glob(
+        ["trips/**/*.py"],
+        exclude = ["trips/**/*_test.py"],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//boto3",
+        "@pip//botocore",
+        "@pip//defusedxml",
+        "@pip//httpx",
+        "@pip//pillow",
+        "@pip//pyyaml",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//typer",
+        "@pip//tzdata",
+    ],
+)
+
+py_venv_binary(
+    name = "trips_backfill",
+    srcs = glob(
+        ["trips/**/*.py"],
+        exclude = ["trips/**/*_test.py"],
+    ),
+    imports = ["."],
+    main = "trips/backfill/main.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":trips_backfill_lib"],
+)
+
+semgrep_target_test(
+    name = "trips_backfill_semgrep_test",
+    exclude_rules = [
+        # main.py guards the SeaweedFS endpoint with a scheme check; semgrep-core
+        # does not honour the inline # nosemgrep, so exclude here (mirrors :main).
+        "boto3-endpoint-url-missing-scheme",
+        # trips.models uses datetime fields for the migration's TIMESTAMPTZ
+        # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
+        "sqlmodel-datetime-without-factory",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":trips_backfill",
+)
+
+py_test(
+    name = "trips_models_test",
+    srcs = ["trips/models_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "trips_backfill_transform_test",
+    srcs = ["trips/backfill/transform_test.py"],
+    imports = ["."],
+    deps = [
+        ":trips_backfill_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "trips_backfill_exif_test",
+    srcs = ["trips/backfill/exif_test.py"],
+    imports = ["."],
+    deps = [
+        ":trips_backfill_lib",
+        "@pip//pytest",
+    ],
 )
