@@ -168,6 +168,33 @@
     }),
   );
 
+  // Group the live windows by London-local day so the list shows each day once
+  // (a rowspan label) with its hours beneath, rather than repeating "Mon, Mon,
+  // Mon...". best_hours can arrive ranked by cloud rather than time, so sort the
+  // groups and the hours within each group chronologically here. The day key is
+  // the real date (YYYY-MM-DD), so this Monday and next Monday stay distinct.
+  let windowGroups = $derived.by(() => {
+    const byDay = new Map();
+    for (const h of cardHours) {
+      const ms = Date.parse(h.time);
+      const key = new Date(ms).toLocaleDateString("en-CA", {
+        timeZone: "Europe/London",
+      });
+      if (!byDay.has(key)) {
+        byDay.set(key, { key, day: fmtDay(h.time), ms, items: [] });
+      }
+      const g = byDay.get(key);
+      g.items.push(h);
+      if (ms < g.ms) g.ms = ms;
+    }
+    const groups = [...byDay.values()];
+    groups.sort((a, b) => a.ms - b.ms);
+    for (const g of groups) {
+      g.items.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    }
+    return groups;
+  });
+
   // Honest title for the live windows table: "clear dark hours" only when every
   // shown hour is true dark (sun < -12). In the midsummer twilight fallback some
   // or all hours are twilight-only, so the wider "clear windows" reads true. An
@@ -184,27 +211,21 @@
       : null,
   );
 
-  function fmtTime(iso) {
-    const d = new Date(iso);
-    return d.toLocaleTimeString("en-GB", {
+  // Split the window timestamp into a weekday ("Sun") and a clock ("01:00") so
+  // the table keeps two narrow columns instead of one wide combined cell.
+  function fmtDay(iso) {
+    return new Date(iso).toLocaleDateString("en-GB", {
       weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
       timeZone: "Europe/London",
     });
   }
 
-  function fmtSymbol(symbol) {
-    // met.no symbol codes like "clearsky_night" -> "clearsky night".
-    return symbol ? symbol.replace(/_/g, " ") : "n/a";
-  }
-
-  // Sun elevation as a signed whole-degree label (e.g. "-13 deg"), or "" when
-  // the payload predates the per-hour elevation field.
-  function fmtElev(deg) {
-    return typeof deg === "number" && Number.isFinite(deg)
-      ? `${Math.round(deg)} deg`
-      : "";
+  function fmtClock(iso) {
+    return new Date(iso).toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "Europe/London",
+    });
   }
 
   function fmtCoord(lat, lon) {
@@ -611,13 +632,13 @@
 
   {#if selected}
     <aside class="card">
-      <!-- Header keeps the close control in normal flow (right-aligned via
-           margin-left:auto) so it always reserves its own height and can never
-           overlap the stats box, with or without a site name (grid sites have
-           none, which is why the absolutely-positioned button used to collide
-           with the cream stats box). -->
+      <!-- The section title is always present, so it anchors a header row with
+           the close glyph on its right: no empty band, and the glyph needs no
+           border of its own. -->
       <header class="card-head">
-        {#if selected.name}<h2 class="card-name">{selected.name}</h2>{/if}
+        <p class="card-title">
+          {mode === "historical" ? "Clear dark hours by month" : windowsTitle}
+        </p>
         <button class="card-close" onclick={closeCard} aria-label="Close site card"
           >&times;</button
         >
@@ -628,11 +649,7 @@
              (sun below -12 deg AND under 10% cloud), its dark-hour denominator,
              the clear rate, and a 12-month breakdown so the seasonal shape
              reads at a glance (stars v2). No hourly windows. -->
-        <dl class="card-stats">
-          <div>
-            <dt>Coordinates</dt>
-            <dd>{fmtCoord(selected.lat, selected.lon)}</dd>
-          </div>
+        <dl class="card-metric">
           <div>
             <dt>Clear dark hours</dt>
             <dd>{selected.clear_dark_hours ?? 0}</dd>
@@ -647,7 +664,6 @@
           </div>
         </dl>
 
-        <p class="eyebrow card-windows-title">Clear dark hours by month</p>
         {#if cardMonths}
           {@const bars = monthBars(cardMonths)}
           <!-- Inline SVG bar chart (no charting dep): one bar per month-of-year,
@@ -696,47 +712,26 @@
           clears most.
         </p>
       {:else}
-        <dl class="card-stats">
-          <div>
-            <dt>Coordinates</dt>
-            <dd>{fmtCoord(selected.lat, selected.lon)}</dd>
-          </div>
-          <div><dt>Altitude</dt><dd>{selected.altitude_m} m</dd></div>
-          <div><dt>LP zone</dt><dd>{selected.lp_zone}</dd></div>
-        </dl>
-
         {#if cardHours.length}
-          <p class="eyebrow card-windows-title">{windowsTitle}</p>
           <table class="card-windows">
             <thead>
               <tr>
+                <th>Day</th>
                 <th>Time</th>
-                <th>Phase</th>
                 <th>Cloud</th>
-                <th>Temp</th>
-                <th>Sky</th>
               </tr>
             </thead>
             <tbody>
-              {#each cardHours as h (h.time)}
-                <tr>
-                  <td>{fmtTime(h.time)}</td>
-                  <td>
-                    <!-- True dark (sun < -12) vs twilight-only fallback
-                         (-12 .. -10), with the sun elevation so the window is
-                         honestly marked. `dark` undefined (older payload) reads
-                         as dark. -->
-                    <span class="phase" class:is-twilight={h.dark === false}
-                      >{h.dark === false ? "Twilight" : "Dark"}</span
-                    >
-                    {#if fmtElev(h.sun_elevation_deg)}
-                      <span class="phase-elev">{fmtElev(h.sun_elevation_deg)}</span>
+              {#each windowGroups as g (g.key)}
+                {#each g.items as h, i (h.time)}
+                  <tr class:day-start={i === 0}>
+                    {#if i === 0}
+                      <td class="win-day" rowspan={g.items.length}>{g.day}</td>
                     {/if}
-                  </td>
-                  <td>{Math.round(h.cloud_area_fraction)}%</td>
-                  <td>{Math.round(h.air_temperature)}C</td>
-                  <td>{fmtSymbol(h.symbol)}</td>
-                </tr>
+                    <td>{fmtClock(h.time)}</td>
+                    <td>{Math.round(h.cloud_area_fraction)}%</td>
+                  </tr>
+                {/each}
               {/each}
             </tbody>
           </table>
@@ -745,9 +740,16 @@
         {/if}
       {/if}
 
-      <a class="card-link" href={mapsLink} target="_blank" rel="noopener"
-        >Open in maps<span class="card-link-arrow" aria-hidden="true">&nearr;</span></a
-      >
+      <!-- Location footer: the coordinates themselves are the link out to maps
+           (this is the card's primary action, hence the accent fill). -->
+      <a class="card-loc" href={mapsLink} target="_blank" rel="noopener">
+        <span class="card-loc-coord"
+          >{fmtCoord(selected.lat, selected.lon)}<span
+            class="card-loc-arrow"
+            aria-hidden="true">&nearr;</span
+          ></span
+        >
+      </a>
     </aside>
   {/if}
 
@@ -860,142 +862,125 @@
     border: 2px solid var(--ink);
   }
 
-  /* Header row: site name (when present) on the left, close control pushed to
-     the right. Reserves the button's height in flow so content sits clear. */
+  /* Header row: the section title (always present) anchors the left, the close
+     glyph the right. A bare muted glyph, not a bordered box: it darkens on
+     hover, keeps a 40px hit area, and uses negative margins to tuck into the
+     corner without inflating the row height. */
   .card-head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 12px;
-    margin-bottom: 12px;
+    margin-bottom: 16px;
   }
 
-  /* Close control: a bordered paper square matching the map's zoom/attribution
-     chrome (a bare glyph read as a stray character), 40px so it stays an easy
-     tap target. Lifts with the neobrutalist translate + hard shadow, flipping to
-     the accent on hover/press. */
+  .card-title {
+    flex: 1 1 auto;
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+
   .card-close {
     flex: 0 0 auto;
-    margin-left: auto;
+    margin: -8px -8px -8px 0;
     display: flex;
     align-items: center;
     justify-content: center;
     width: 40px;
     height: 40px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
+    background: none;
+    border: none;
     font-family: var(--mono);
-    font-size: 22px;
+    font-size: 26px;
     line-height: 1;
     cursor: pointer;
-    color: var(--ink);
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease,
-      background 110ms ease;
+    color: var(--ink-3);
+    transition: color 110ms ease;
   }
 
   .card-close:hover,
   .card-close:focus-visible {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-    background: var(--accent);
+    color: var(--ink);
   }
 
-  .card-close:active {
-    transform: translate(-1px, -1px);
-    box-shadow: 1px 1px 0 var(--ink);
-  }
-
-  .card-name {
-    flex: 1 1 auto;
-    font-family: var(--serif);
-    font-size: 26px;
-    line-height: 1.05;
-    margin: 0;
-    word-break: break-word;
-  }
-
-  .card-stats {
+  /* Historical headline metrics: a plain inline row of label/value pairs, the
+     numbers carrying the weight, no box. */
+  .card-metric {
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 10px 12px;
+    gap: 12px 20px;
     margin-bottom: 14px;
-    padding: 10px 12px;
-    background: var(--cream);
-    border: 2px solid var(--ink);
   }
 
-  .card-stats > div {
+  .card-metric > div {
     display: flex;
     flex-direction: column;
     gap: 3px;
   }
 
-  .card-stats dt {
+  .card-metric dt {
     font-family: var(--mono);
     font-size: 10px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--ink-2);
+    color: var(--ink-3);
   }
 
-  .card-stats dd {
+  .card-metric dd {
+    margin: 0;
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
   }
 
-  /* Highlighted header bar so the table reads as the answer, not a faint grey
-     eyebrow (overrides .eyebrow's muted colour). */
-  .card-windows-title {
-    display: inline-block;
-    margin: 0 0 10px;
-    padding: 4px 8px;
-    background: var(--accent);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-  }
-
+  /* Day / Time / Cloud kept simple: one rule under the header, generous row
+     padding instead of a line on every row. */
   .card-windows {
     width: 100%;
     border-collapse: collapse;
     font-family: var(--mono);
-    font-size: 11px;
-    margin-bottom: 14px;
+    font-size: 13px;
+    margin-bottom: 6px;
   }
 
   .card-windows th {
     text-align: left;
+    font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--ink-3);
     border-bottom: 2px solid var(--ink);
-    padding: 4px 6px 4px 0;
+    padding: 0 8px 8px 0;
   }
 
   .card-windows td {
-    padding: 4px 6px 4px 0;
-    border-bottom: 1px dashed var(--rule-2);
-  }
-
-  /* Phase tag: true-dark windows read in ink, twilight-fallback windows in the
-     muted ink so the eye trusts the dark ones first. The sun elevation sits
-     under the tag, dimmer still, so the column stays narrow. */
-  .phase {
-    display: block;
+    padding: 9px 8px 9px 0;
     font-weight: 700;
-    letter-spacing: 0.04em;
   }
 
-  .phase.is-twilight {
-    color: var(--ink-3);
+  /* Cloud reads as a right-aligned number column. */
+  .card-windows th:last-child,
+  .card-windows td:last-child {
+    text-align: right;
+    padding-right: 0;
   }
 
-  .phase-elev {
-    display: block;
-    font-size: 10px;
-    color: var(--ink-3);
+  /* Day label spans its group's hours (rowspan), sitting top-aligned against the
+     first time. One light rule separates day groups so the list reads in blocks
+     without a line on every row. */
+  .card-windows .win-day {
+    vertical-align: top;
+    padding-right: 18px;
+    font-weight: 700;
+  }
+
+  .card-windows tbody tr.day-start:not(:first-child) td {
+    border-top: 1px solid var(--rule-2);
   }
 
   /* 12-month clear-dark-hours bar chart: a flat SVG block sitting in the card,
@@ -1054,51 +1039,41 @@
     margin: 4px 0 12px;
   }
 
-  /* Primary action: a full-width filled button rather than a thin underlined
-     link, so it is a comfortable tap target (>=44px tall) on the mobile bottom
-     sheet and reads as the card's main action. Lifts on press with the same
-     neobrutalist translate + hard shadow as the night/month chips. */
-  .card-link {
+  /* Location footer: a full-bleed accent block (yellow + ink, high contrast and
+     readable) that borrows the card's bottom + side edges and is set off by a
+     single top rule. The whole block is the maps link and the card's primary
+     action; it inverts to ink/paper on hover for press feedback. */
+  .card-loc {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-    min-height: 44px;
-    padding: 12px 14px;
-    background: var(--ink);
-    color: var(--paper);
-    border: 2px solid var(--ink);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    margin: 16px -18px -18px;
+    padding: 16px 18px;
+    background: var(--accent);
+    border-top: 2px solid var(--ink);
+    color: var(--ink);
     text-decoration: none;
-    text-align: center;
-    cursor: pointer;
+    font-family: var(--mono);
     transition:
-      transform 110ms ease,
-      box-shadow 110ms ease,
       background 110ms ease,
       color 110ms ease;
   }
 
-  .card-link:hover,
-  .card-link:focus-visible {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-    background: var(--accent);
-    color: var(--ink);
+  .card-loc:hover,
+  .card-loc:focus-visible {
+    background: var(--ink);
+    color: var(--paper);
   }
 
-  .card-link:active {
-    transform: translate(-1px, -1px);
-    box-shadow: 1px 1px 0 var(--ink);
+  .card-loc-coord {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 15px;
+    font-weight: 700;
   }
 
-  .card-link-arrow {
-    font-size: 0.85em;
+  .card-loc-arrow {
+    font-size: 0.9em;
   }
 
   /* Marker legend, bottom-left, clear of the bottom-right zoom + attribution. */
