@@ -71,13 +71,15 @@ cfIngress:
 
 knowledge:
   enabled: true
-  gitRemote: "https://github.com/jomcgi/obsidian-vault.git"
+  # Obsidian + vault git-sync torn out 2026-06-15 (ADR 006). Note bodies are
+  # authoritative in Postgres (knowledge.notes.content, backfilled) and raws
+  # are exported to s3://knowledge-raws, so the slow per-rollout vault download
+  # is gone. gitRemote cleared -> clone_vault and vault-backup no-op;
+  # headlessSync.enabled is false in the chart so the obsidian sidecar is not
+  # rendered. Reversible: restore gitRemote + set headlessSync.enabled: true.
+  gitRemote: ""
   gaps:
     rewriteDiscardable: true
-  headlessSync:
-    vaultName: "jomcgi"
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/obsidian"
 
 dashboards:
   cnpg-overview:
