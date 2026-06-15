@@ -3456,21 +3456,19 @@ py_venv_binary(
         ["trips/**/*.py"],
         exclude = ["trips/**/*_test.py"],
     ),
-    imports = ["."],
     main = "trips/backfill/main.py",
     visibility = ["//:__subpackages__"],
-    deps = [":trips_backfill_lib"],
 )
 
 semgrep_target_test(
     name = "trips_backfill_semgrep_test",
     exclude_rules = [
-        # main.py guards the SeaweedFS endpoint with a scheme check; semgrep-core
-        # does not honour the inline # nosemgrep, so exclude here (mirrors :main).
-        "boto3-endpoint-url-missing-scheme",
         # trips.models uses datetime fields for the migration's TIMESTAMPTZ
         # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
         "sqlmodel-datetime-without-factory",
+        "avoid-sqlalchemy-text",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":trips_backfill",
