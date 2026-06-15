@@ -138,7 +138,8 @@ async def _fetch_elevations(
                     out[(lat, lng)] = (
                         resp.json().get("altitude") if resp.status_code == 200 else None
                     )
-                except Exception:  # noqa: BLE001 - best effort, leave as None
+                except Exception as exc:  # noqa: BLE001 - best effort, leave as None
+                    logger.debug("elevation fetch failed for %s,%s: %s", lat, lng, exc)
                     out[(lat, lng)] = None
 
         await asyncio.gather(*(one(la, ln) for la, ln in unique))
