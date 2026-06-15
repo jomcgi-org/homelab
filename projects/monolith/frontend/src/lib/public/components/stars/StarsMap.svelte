@@ -854,24 +854,38 @@
     box-shadow: var(--shadow-hard);
   }
 
+  /* Close control: a full 44px square hit area (the glyph stays visually small
+     but the tap target meets the touch-size floor), sat in the top-right corner.
+     Lifts to the accent on hover/press so the affordance is obvious. */
   .card-close {
     position: absolute;
-    top: 8px;
-    right: 10px;
+    top: 4px;
+    right: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
     background: none;
     border: none;
     font-family: var(--mono);
-    font-size: 22px;
+    font-size: 24px;
     line-height: 1;
     cursor: pointer;
     color: var(--ink);
+    transition: background 110ms ease;
+  }
+
+  .card-close:hover,
+  .card-close:focus-visible {
+    background: var(--accent);
   }
 
   .card-name {
     font-family: var(--serif);
     font-size: 26px;
     line-height: 1.05;
-    margin: 2px 28px 12px 0;
+    margin: 2px 44px 12px 0;
     word-break: break-word;
   }
 
