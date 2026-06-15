@@ -56,7 +56,7 @@ def test_trip_roundtrip(session):
     assert loaded.title == "WINTER ROAD TRIP"
     assert loaded.short_title == "Liard"
     # Default timezone applies when not set explicitly.
-    assert loaded.timezone == "America/Vancouver"
+    assert loaded.tz == "America/Vancouver"
     assert loaded.default_zoom == 4
     assert loaded.days["1"]["label"] == "VAN -> KAMLOOPS"
     assert loaded.highlights[0]["id"] == "liard-hotsprings"

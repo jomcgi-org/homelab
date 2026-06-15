@@ -157,7 +157,7 @@ def _load_trip_row(slug: str, config_path: Path, tz: str) -> Trip:
         title=trip.get("title", slug),
         short_title=trip.get("short_title"),
         subtitle=trip.get("subtitle"),
-        timezone=tz,
+        tz=tz,
         default_image=timeline.get("default_image"),
         default_zoom=timeline.get("default_zoom"),
         days=days,
