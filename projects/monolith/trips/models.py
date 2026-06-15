@@ -15,7 +15,11 @@ Postgres uses JSONB / TEXT[]; the SQLite variants let SQLModel.metadata
 .create_all() build the tables for the in-memory unit-test fixtures.
 """
 
-from datetime import datetime, timezone
+# Import datetime's timezone under an alias so the `timezone` model field
+# (mapping the trips.trips.timezone column) does not shadow the module name
+# (semgrep python-shadow-module-import).
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import Any
 
 from sqlalchemy import JSON, Column, String
@@ -44,7 +48,7 @@ class Trip(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     days: dict[str, Any] = Field(default_factory=dict, sa_column=Column(_JSONB))
     highlights: list[Any] = Field(default_factory=list, sa_column=Column(_JSONB))
     stats: dict[str, Any] = Field(default_factory=dict, sa_column=Column(_JSONB))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(dt_timezone.utc))
 
 
 class TripPoint(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
@@ -65,4 +69,4 @@ class TripPoint(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-f
     shutter_speed: str | None = None
     aperture: float | None = None
     focal_length_35mm: int | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(dt_timezone.utc))

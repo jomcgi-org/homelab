@@ -3463,6 +3463,10 @@ py_venv_binary(
 semgrep_target_test(
     name = "trips_backfill_semgrep_test",
     exclude_rules = [
+        # main.py guards the SeaweedFS endpoint with a scheme check, but
+        # semgrep-core ignores the inline # nosemgrep (mirrors :main). The
+        # # keep stops gazelle from dropping it back to the file directive set.
+        "boto3-endpoint-url-missing-scheme",  # keep
         # trips.models uses datetime fields for the migration's TIMESTAMPTZ
         # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
         "sqlmodel-datetime-without-factory",
