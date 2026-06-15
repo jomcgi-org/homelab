@@ -9,6 +9,16 @@
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
 
+  // Page-level darkness mode from the live snapshot (stars twilight fallback):
+  //   "astronomical" - true dark (sun < -12) is available somewhere tonight;
+  //   "twilight"     - no true dark anywhere, only the -10 deg twilight floor;
+  //   "none"         - not even twilight (deep midsummer in the far north).
+  // For ~7 weeks each midsummer Scotland has no astronomical darkness, so this
+  // drives the disclaimer and tells StarsMap to colour by the twilight count.
+  // Defaults to "astronomical" so an older/cached payload without the field
+  // behaves exactly as before (no disclaimer, dark-hour colouring).
+  let darkness = $derived(data.snapshot?.darkness ?? "astronomical");
+
   // Mode: LIVE = the upcoming-forecast layer (per-night quality), markers only;
   // HISTORICAL = the month-bucketed clear-dark-hours layer (stars v2), the
   // box-cell heatmap. The toggle swaps the map's data source, the time control
@@ -192,7 +202,14 @@
 <div class="stars-page">
   <h1 class="sr-only">Dark-sky stargazing map, Scotland viewing windows</h1>
 
-  <StarsMap sites={mapSites} {activeNights} {nowMs} {mode} heatVisible={heatOn} />
+  <StarsMap
+    sites={mapSites}
+    {activeNights}
+    {nowMs}
+    {mode}
+    darknessMode={darkness}
+    heatVisible={heatOn}
+  />
 
   <!-- Floating header: breadcrumb + headline stats, top-left clear of the map
        chrome (mirrors the hikes control head). -->
@@ -290,7 +307,23 @@
         </div>
       {/if}
 
-      {#if count === 0}
+      <!-- Summer twilight disclaimer: for ~7 weeks each midsummer Scotland gets
+           no astronomical darkness, so the live layer falls back to the darkest
+           twilight windows (down to -10 deg) and says so. -->
+      {#if darkness === "none"}
+        <div class="panel disclaimer" role="status">
+          No usable stargazing windows in Scotland this week: right now the summer
+          sky never gets dark enough, even for twilight. Astronomical darkness
+          returns by August.
+        </div>
+      {:else if darkness === "twilight"}
+        <div class="panel disclaimer" role="status">
+          No astronomical darkness in Scotland right now (it returns by August).
+          Showing the darkest twilight windows instead, best in the south.
+        </div>
+      {/if}
+
+      {#if count === 0 && darkness === "astronomical"}
         <div class="panel empty-state" role="status">
           No dark-sky windows in the next few nights. Check back after the next
           forecast refresh.
@@ -469,6 +502,18 @@
     line-height: 1.5;
     letter-spacing: 0.02em;
     color: var(--ink-2);
+  }
+
+  /* Summer twilight disclaimer: same mono read as the empty state, lifted with a
+     thick accent left edge so it registers as a heads-up, not an error. */
+  .disclaimer {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    border-left-width: 8px;
+    border-left-color: var(--accent);
   }
 
   /* Mode toggle: two equal segments, the active one filled ink-on-paper, the
