@@ -40,22 +40,24 @@ Make **Postgres the source of truth for note bodies** and **a monolith-served no
 
 1. **Body in Postgres.** Add an authoritative `content` column to `knowledge.notes`. `get_note` stops reading the filesystem; the web app and MCP tools read and write `content` directly. One-shot backfill of existing `_processed/` bodies from disk (raws are already in `knowledge.raw_inputs`).
 2. **Notes web UI.** A markdown read/write surface in the monolith (list, search, edit, wikilink and graph navigation reusing the existing search API and `layout_x/y`), reachable through Cloudflare Access exactly as the `homelab` CLI is today. This replaces the Obsidian app for both desktop and mobile (browser).
-3. **Gardener without a vault filesystem.** The gardener keeps its Claude-Code-with-files ergonomics by materializing only its working set into a per-run temp directory from Postgres, letting the subprocess edit files there, and writing results back to `knowledge.notes`. The vault stops being a durable, externally-mutated filesystem.
-4. **Retire Obsidian plumbing.** Remove the `headless-sync` sidecar and the durable `/vault` volume, cancel the Obsidian Sync subscription, and switch the deploy to `RollingUpdate`. Capture paths that previously relied on Obsidian mobile (quick capture) move to the already-built `ingest_queue`, `web_share`, `insert_api`, and Discord-mirror paths, plus a capture box in the web UI.
-5. **Backup.** Replace the git-push `knowledge.vault-backup` job with CNPG WAL/PITR (already configured) plus an optional periodic markdown export to a read-only git mirror, preserving a human-readable audit trail.
+3. **Gardener via schema-enforced tools, not a filesystem.** The gardener's Claude Code subprocess stops reading and writing `_processed/*.md`. Instead it operates through a `knowledge` Typer CLI grounded in the monolith's own store: `search`, `get`, `create-atom`, `edit`, `patch-edges`, and `get-raw`. The CLI is a thin veneer over the same `KnowledgeStore` + `knowledge.indexing` code the HTTP API and MCP tools use, so there is exactly one validated implementation of every operation. Atom/fact/active schemas are enforced at the CLI argument boundary, so a malformed atom is rejected with a correctable error instead of the prompt begging the model to quote its YAML. This removes the materialize-to-tmpdir step entirely: there is no working set to stage because the subprocess queries live Postgres on each call. (Originally specified as a per-run tmpdir materialized from Postgres; superseded 2026-06-14 by this tool-based approach, which is simpler and folds in schema enforcement.)
+4. **Raws as ground truth in object storage.** The immutable, content-addressed raw captures move out of `knowledge.raw_inputs.content` (Postgres) into SeaweedFS at `s3://knowledge-raws/<sha256>`, with the bucket provisioned via COSI per [ADR 007](007-seaweedfs-bucket-provisioning-cosi.md) (`deletionPolicy: Retain`, no TTL, content-addressed). `raw_inputs` keeps metadata plus the content-hash key; the gardener reads a raw via `get-raw`. This keeps the hot Postgres lean (raws are the bulk of the bytes and are never query targets), mirroring the `chat.blobs` BYTEA -> SeaweedFS migration. Sequenced after the tool-based gardener (Phase 4b).
+5. **Retire Obsidian plumbing.** Remove the `headless-sync` sidecar and the durable `/vault` volume, cancel the Obsidian Sync subscription, and switch the deploy to `RollingUpdate`. Capture paths that previously relied on Obsidian mobile (quick capture) move to the already-built `ingest_queue`, `web_share`, `insert_api`, and Discord-mirror paths, plus a capture box in the web UI.
+6. **Backup.** Replace the git-push `knowledge.vault-backup` job with CNPG WAL/PITR (already configured) plus an optional periodic markdown export to a read-only git mirror, preserving a human-readable audit trail.
 
 Postgres is the **destination** for note bodies, not an interim (the lakehouse this ADR originally preceded was withdrawn on 2026-06-14). Web-app data access still sits behind the thin `KnowledgeStore` interface, kept for testability and a clean read-path seam rather than as a hedge toward a future serving layer.
 
-| Aspect                  | Today (Obsidian)                     | Decided (Postgres, destination)                         |
-| ----------------------- | ------------------------------------ | ------------------------------------------------------- |
-| **Editing surface**     | Obsidian app + paid Sync             | Monolith notes web UI (Cloudflare Access)               |
-| **Note body of record** | `/vault/_processed/*.md` on disk     | `knowledge.notes.content` in Postgres                   |
-| **Search**              | pgvector on `chunks`                 | pgvector on `chunks` (unchanged)                        |
-| **Gardener I/O**        | Claude Code against durable `/vault` | Claude Code against per-run tmpdir, results to Postgres |
-| **Sync sidecar**        | `headless-sync` (Obsidian Sync)      | none                                                    |
-| **Vault volume**        | durable emptyDir/PVC, single replica | none; `RollingUpdate`, N replicas                       |
-| **Backup**              | git push of `/vault`                 | CNPG WAL + optional markdown git export                 |
-| **Third-party egress**  | Obsidian cloud                       | none                                                    |
+| Aspect                  | Today (Obsidian)                                     | Decided (Postgres, destination)                                             |
+| ----------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| **Editing surface**     | Obsidian app + paid Sync                             | Monolith notes web UI (Cloudflare Access)                                   |
+| **Note body of record** | `/vault/_processed/*.md` on disk                     | `knowledge.notes.content` in Postgres                                       |
+| **Raw ground truth**    | `/vault/_raw/*.md` + `raw_inputs.content` (Postgres) | `s3://knowledge-raws/<sha256>` (SeaweedFS, COSI)                            |
+| **Search**              | pgvector on `chunks`                                 | pgvector on `chunks` (unchanged)                                            |
+| **Gardener I/O**        | Claude Code against durable `/vault`                 | Claude Code via schema-enforced `knowledge` CLI -> Postgres (no filesystem) |
+| **Sync sidecar**        | `headless-sync` (Obsidian Sync)                      | none                                                                        |
+| **Vault volume**        | durable emptyDir/PVC, single replica                 | none; `RollingUpdate`, N replicas                                           |
+| **Backup**              | git push of `/vault`                                 | CNPG WAL + optional markdown git export                                     |
+| **Third-party egress**  | Obsidian cloud                                       | none                                                                        |
 
 ---
 
@@ -74,17 +76,17 @@ graph TB
     IQ -->|raw markdown| PG
 
     subgraph Gardener["knowledge.garden (scheduled)"]
-      MAT["materialize working set -> tmpdir"] --> CC["Claude Code (Read/Write/Edit)"]
-      CC --> WB["write results back"]
+      CC["Claude Code subprocess"] -->|search / get / create-atom / edit / patch-edges| CLI["knowledge Typer CLI"]
+      CC -->|get-raw| CLI
     end
-    PG -->|raws + context| MAT
-    WB -->|upsert notes / edges / gaps| PG
+    CLI -->|same KnowledgeStore + indexing| PG
+    RAW[("SeaweedFS<br/>s3://knowledge-raws/&lt;sha256&gt;")] -->|get-raw| CLI
 
     PG -->|CNPG WAL / PITR| BK["backups"]
     PG -.->|optional periodic export| GIT["read-only markdown git mirror"]
 ```
 
-The only components that change are the ones Obsidian touched: the editing surface (new web UI), the body-of-record (now `knowledge.notes.content`), and the gardener's file I/O (now a per-run tmpdir). Chunking, embedding, pgvector search, edges, gaps, graph layout, and the scheduler are unchanged.
+The only components that change are the ones Obsidian touched: the editing surface (new web UI), the body-of-record (now `knowledge.notes.content`), the raw ground truth (now `s3://knowledge-raws` via COSI), and the gardener's I/O (now the schema-enforced `knowledge` CLI, no filesystem). Chunking, embedding, pgvector search, edges, gaps, graph layout, and the scheduler are unchanged.
 
 ---
 
@@ -111,13 +113,13 @@ Baseline per `docs/security.md`. Deviations and notes:
 
 ## Risks
 
-| Risk                                                      | Likelihood | Impact | Mitigation                                                                                                   |
-| --------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------ |
-| Web UI is real net-new work                               | High       | Medium | Reuse the existing `/private/notes` graph + search API; ship editor + capture incrementally (plan Phase 5)   |
-| Gardener tmpdir materialization loses or mis-writes notes | Medium     | High   | Write-back is an explicit upsert keyed on `note_id` + `content_hash`; keep a markdown git export as recovery |
-| Loss of Obsidian mobile capture ergonomics                | Medium     | Medium | Web UI capture box plus existing `ingest_queue`/`web_share`/Discord paths; validate before cutting Sync      |
-| Processed-note body backfill from disk is incomplete      | Low        | High   | One-shot reconcile diffs `content_hash` against disk; run before removing the vault volume                   |
-| pgvector load grows on the shared CNPG cluster            | Low        | Medium | Unchanged from today; monitor via SigNoz, bump CNPG resources if needed                                      |
+| Risk                                                 | Likelihood | Impact | Mitigation                                                                                                                                                                                         |
+| ---------------------------------------------------- | ---------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web UI is real net-new work                          | High       | Medium | Reuse the existing `/private/notes` graph + search API; ship editor + capture incrementally (plan Phase 5)                                                                                         |
+| Gardener atom writes are malformed or lose data      | Medium     | High   | The `create-atom`/`edit` CLI validates the schema and goes through the shared `knowledge.indexing` upsert (atomic, committed); raws stay immutable in object storage so any atom can be re-derived |
+| Loss of Obsidian mobile capture ergonomics           | Medium     | Medium | Web UI capture box plus existing `ingest_queue`/`web_share`/Discord paths; validate before cutting Sync                                                                                            |
+| Processed-note body backfill from disk is incomplete | Low        | High   | One-shot reconcile diffs `content_hash` against disk; run before removing the vault volume                                                                                                         |
+| pgvector load grows on the shared CNPG cluster       | Low        | Medium | Unchanged from today; monitor via SigNoz, bump CNPG resources if needed                                                                                                                            |
 
 ---
 
@@ -130,10 +132,11 @@ Baseline per `docs/security.md`. Deviations and notes:
 
 ## References
 
-| Resource                                                                                 | Relevance                                                      |
-| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| [001 — Obsidian Vault Migration into Monolith](001-obsidian-vault-monolith-migration.md) | Superseded: it kept Obsidian Sync via TigerFS                  |
-| [004 — Iceberg-on-SeaweedFS Lakehouse](004-iceberg-lakehouse-hot-swap.md)                | Superseded (KG storage domain); lakehouse withdrawn 2026-06-14 |
-| `projects/monolith/knowledge/`                                                           | Gardener, store, router, MCP tools being adapted               |
-| `projects/monolith/chart/migrations/20260408000000_knowledge_schema.sql`                 | `knowledge.notes` schema gaining a `content` column            |
-| `projects/monolith/chart/templates/cnpg-cluster.yaml`                                    | CNPG cluster + pgvector hosting the body of record             |
+| Resource                                                                                  | Relevance                                                      |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| [001 — Obsidian Vault Migration into Monolith](001-obsidian-vault-monolith-migration.md)  | Superseded: it kept Obsidian Sync via TigerFS                  |
+| [004 — Iceberg-on-SeaweedFS Lakehouse](004-iceberg-lakehouse-hot-swap.md)                 | Superseded (KG storage domain); lakehouse withdrawn 2026-06-14 |
+| [007 — SeaweedFS bucket provisioning via COSI](007-seaweedfs-bucket-provisioning-cosi.md) | How the `knowledge-raws` bucket is provisioned (Phase 4b)      |
+| `projects/monolith/knowledge/`                                                            | Gardener, store, router, MCP tools, and the `knowledge` CLI    |
+| `projects/monolith/chart/migrations/20260408000000_knowledge_schema.sql`                  | `knowledge.notes` schema gaining a `content` column            |
+| `projects/monolith/chart/templates/cnpg-cluster.yaml`                                     | CNPG cluster + pgvector hosting the body of record             |

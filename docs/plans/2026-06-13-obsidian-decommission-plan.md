@@ -63,14 +63,22 @@ Keep writing the disk file **too** (dual-write) so Obsidian Sync and the reconci
 
 **Verify:** CI green; create/edit via web API, confirm row + chunks update and (still) a disk file appears.
 
-## Phase 4 — Gardener without a durable vault FS
+## Phase 4 — Gardener via schema-enforced tools (revised 2026-06-14)
 
-Repoint the gardener's Claude Code subprocess from the durable `/vault` to a **per-run tmpdir** materialized from Postgres:
+Originally specified as a per-run tmpdir materialized from Postgres. Superseded by a **tool-based gardener**: the subprocess never touches a filesystem, it operates through a `knowledge` Typer CLI grounded in the monolith store. This dissolves the materialization problem (the subprocess discovers and edits notes mid-run via `knowledge-search`, so the working set is unknowable up front) and folds in schema enforcement. Split into two independently shippable sub-phases.
 
-- `knowledge/gardener.py:261-277` (`vault_root`/`processed_root`), `:786` (`cwd=self.vault_root`), `:920-984` (before/after glob + read-back): materialize only the working set (target raws + relevant `_processed` notes pulled from `knowledge.notes.content`) into `tempfile.mkdtemp()`, set `cwd` there, diff new/changed files after the run, and `upsert_note` results back to Postgres keyed on `note_id` + `content_hash`.
-- The vault-wide reconciler scan becomes redundant for gardener output once writes go through `upsert_note`; keep it running until Phase 6 as the consistency net.
+### Phase 4a — `knowledge` Typer CLI + tool-based gardener
 
-**Verify:** CI green; trigger `knowledge.garden` (scheduler skill / `monolith-agent-trigger-job`), confirm new atoms land in Postgres with no durable-vault dependency.
+- **New `knowledge/cli.py`**: a Typer app exposing `search`, `get`, `create-atom`, `edit`, `patch-edges`, `get-raw`. Thin veneer over `KnowledgeStore` + `knowledge.indexing` (the same code the HTTP API and MCP use); opens a DB session in-process exactly as `knowledge/tools/knowledge-search` does today. Register a console-script/shim and bake into the image alongside `knowledge-search` (`BUILD:173-175` pattern).
+- **Schema enforcement**: Pydantic models for `atom` / `fact` / `active` (active requires `status` + `size`; edges typed; `visibility` required). `create-atom` validates and, on failure, prints a correctable error the subprocess can act on. `create-atom`/`edit` go through `index_note_from_raw`/`index_parsed_note` (chunk + embed + upsert, committed) and record `atom_raw_provenance`.
+- **Gardener rewrite** (`knowledge/gardener.py`): drop `cwd=vault_root`, the before/after `_processed` glob, and the disk read-back. Rewrite `_CLAUDE_PROMPT_HEADER` to instruct the subprocess to use the `knowledge` CLI verbs instead of Read/Write/Edit + filesystem paths. Provenance is recorded from the `create-atom` return (note ids), not from globbed files.
+- **Verify:** CI green; trigger `knowledge.garden`, confirm new atoms land in Postgres with no `_processed` filesystem writes; malformed-atom rejection exercised in tests.
+
+### Phase 4b — Raws to SeaweedFS via COSI (sequenced after 4a)
+
+- Provision a `knowledge-raws` bucket via a COSI `BucketClaim` in `projects/monolith/deploy/` per [ADR 007](../decisions/platform/007-seaweedfs-bucket-provisioning-cosi.md) (`deletionPolicy: Retain`, content-addressed, no TTL).
+- Move raw content from `knowledge.raw_inputs.content` (Postgres) to `s3://knowledge-raws/<sha256>`, mirroring the `chat.blobs` migration (nullable -> backfill/export -> drop column -> `VACUUM FULL`). `raw_inputs` keeps metadata + the content-hash key. `get-raw` reads from S3.
+- **Verify:** CI green; `raw_inputs.content` dropped; gardener `get-raw` serves from SeaweedFS; Postgres size reclaimed.
 
 ## Phase 5 — Notes web UI (editor + search)
 
