@@ -124,8 +124,14 @@ chat:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
+# Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
+# gardener paused, the raw export / file moves can be done as a controlled
+# one-off, and the gardener stays down until the CLI-based version (Phase 4a-ii)
+# is ready. Dropping the token makes garden_handler() skip cleanly (it logs a
+# warning and returns when CLAUDE_CODE_OAUTH_TOKEN is absent). Re-enable by
+# flipping this back to true.
 gardener:
-  enabled: true
+  enabled: false
   onepassword:
     itemPath: "vaults/k8s-homelab/items/litellm-claude-auth"
 
