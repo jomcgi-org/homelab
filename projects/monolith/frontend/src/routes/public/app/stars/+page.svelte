@@ -19,15 +19,18 @@
   // behaves exactly as before (no disclaimer, dark-hour colouring).
   let darkness = $derived(data.snapshot?.darkness ?? "astronomical");
 
-  // Mode: LIVE = the upcoming-forecast layer (per-night quality), markers only;
-  // HISTORICAL = the month-bucketed clear-dark-hours layer (stars v2), the
-  // box-cell heatmap. The toggle swaps the map's data source, the time control
-  // (night picker vs month picker), and whether the box-cell heatmap shows.
+  // Mode: LIVE = the upcoming-forecast layer (per-night quality); HISTORICAL =
+  // the month-bucketed clear-dark-hours layer (stars v2). Both render as the
+  // box-cell heatmap (see heatOn below). The toggle swaps the map's data source
+  // and the time control (night picker vs month picker).
   let mode = $state("live");
 
-  // The box-cell heatmap belongs to the historical layer only: LIVE is always
-  // markers, HISTORICAL is always the heatmap. StarsMap reads this resolved flag.
-  let heatOn = $derived(mode === "historical");
+  // Both layers render as the box-cell heatmap. The site grid is a dense ~4km
+  // mesh (thousands of sites), so plotting raw point markers piles them into
+  // unreadable blobs; the filled cells read cleanly at every zoom (ADR 009,
+  // mirroring /app/ships). StarsMap still opens the per-site card on a cell tap,
+  // so the live forecast windows table is unaffected. Always on, both modes.
+  const heatOn = true;
 
   // Night picker (LIVE): "I'm free Saturday, show me the map for Saturday night."
   // One chip per viewing night plus an "All" reset; picking a night filters the
