@@ -68,6 +68,12 @@ knowledge:
     # cluster.
     rewriteDiscardable: false
   headlessSync:
+    # Obsidian headless-sync sidecar. Off by default (ADR 006): note bodies
+    # are authoritative in Postgres (knowledge.notes.content) and raws live in
+    # SeaweedFS, so the sidecar's slow full-vault download on every pod start
+    # is no longer needed. When false the reconciler permanently defers (its
+    # .sync-ready sentinel is never written), so no disk scan/prune runs.
+    enabled: false
     image:
       repository: ghcr.io/jomcgi/homelab/projects/monolith/obsidian-image
       tag: latest

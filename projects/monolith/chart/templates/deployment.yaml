@@ -212,7 +212,7 @@ spec:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-        {{- if .Values.knowledge.enabled }}
+        {{- if and .Values.knowledge.enabled .Values.knowledge.headlessSync.enabled }}
         - name: obsidian
           image: "{{ .Values.knowledge.headlessSync.image.repository }}:{{ .Values.knowledge.headlessSync.image.tag }}"
           securityContext:
