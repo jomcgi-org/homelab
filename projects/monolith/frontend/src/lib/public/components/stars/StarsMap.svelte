@@ -1014,30 +1014,51 @@
     margin: 4px 0 12px;
   }
 
+  /* Primary action: a full-width filled button rather than a thin underlined
+     link, so it is a comfortable tap target (>=44px tall) on the mobile bottom
+     sheet and reads as the card's main action. Lifts on press with the same
+     neobrutalist translate + hard shadow as the night/month chips. */
   .card-link {
-    display: inline-block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 44px;
+    padding: 12px 14px;
+    background: var(--ink);
+    color: var(--paper);
+    border: 2px solid var(--ink);
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 3px;
-    transition: background 140ms ease;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-decoration: none;
+    text-align: center;
+    cursor: pointer;
+    transition:
+      transform 110ms ease,
+      box-shadow 110ms ease,
+      background 110ms ease,
+      color 110ms ease;
   }
 
   .card-link:hover,
   .card-link:focus-visible {
-    background: linear-gradient(transparent 62%, var(--accent) 62%);
-    text-decoration-color: var(--ink);
+    transform: translate(-2px, -2px);
+    box-shadow: 2px 2px 0 var(--ink);
+    background: var(--accent);
+    color: var(--ink);
+  }
+
+  .card-link:active {
+    transform: translate(-1px, -1px);
+    box-shadow: 1px 1px 0 var(--ink);
   }
 
   .card-link-arrow {
     font-size: 0.85em;
-    margin-left: 2px;
   }
 
   /* Marker legend, bottom-left, clear of the bottom-right zoom + attribution. */
