@@ -146,6 +146,7 @@ py_library(
         "@pip//sqlmodel",
         "@pip//timelength",
         "@pip//trafilatura",
+        "@pip//typer",
         "@pip//tzdata",
         "@pip//uvicorn",
         "@pip//websockets",
@@ -170,9 +171,13 @@ py_library(
 
 tar(
     name = "knowledge_tools_tar",
-    srcs = ["knowledge/tools/knowledge-search"],
+    srcs = [
+        "knowledge/tools/knowledge",
+        "knowledge/tools/knowledge-search",
+    ],
     mtree = [
         "./usr/local/bin/knowledge-search type=file content=$(execpath knowledge/tools/knowledge-search) mode=0755 uid=0 gid=0",
+        "./usr/local/bin/knowledge type=file content=$(execpath knowledge/tools/knowledge) mode=0755 uid=0 gid=0",
     ],
 )
 
@@ -2555,6 +2560,17 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "knowledge_cli_test",
+    srcs = ["knowledge/cli_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//typer",
     ],
 )
 
