@@ -854,38 +854,49 @@
     box-shadow: var(--shadow-hard);
   }
 
-  /* Close control: a full 44px square hit area (the glyph stays visually small
-     but the tap target meets the touch-size floor), sat in the top-right corner.
-     Lifts to the accent on hover/press so the affordance is obvious. */
+  /* Close control: a bordered paper square matching the map's zoom/attribution
+     chrome (a bare glyph read as a stray character), 40px so it stays an easy
+     tap target. Lifts with the neobrutalist translate + hard shadow, flipping to
+     the accent on hover/press. */
   .card-close {
     position: absolute;
-    top: 4px;
-    right: 4px;
+    top: 10px;
+    right: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
-    background: none;
-    border: none;
+    width: 40px;
+    height: 40px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
     font-family: var(--mono);
-    font-size: 24px;
+    font-size: 22px;
     line-height: 1;
     cursor: pointer;
     color: var(--ink);
-    transition: background 110ms ease;
+    transition:
+      transform 110ms ease,
+      box-shadow 110ms ease,
+      background 110ms ease;
   }
 
   .card-close:hover,
   .card-close:focus-visible {
+    transform: translate(-2px, -2px);
+    box-shadow: 2px 2px 0 var(--ink);
     background: var(--accent);
+  }
+
+  .card-close:active {
+    transform: translate(-1px, -1px);
+    box-shadow: 1px 1px 0 var(--ink);
   }
 
   .card-name {
     font-family: var(--serif);
     font-size: 26px;
     line-height: 1.05;
-    margin: 2px 44px 12px 0;
+    margin: 2px 48px 12px 0;
     word-break: break-word;
   }
 
