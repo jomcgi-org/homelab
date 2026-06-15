@@ -195,7 +195,8 @@ class TestSites:
         assert second.content == b""
 
     def test_empty_table(self, client):
-        # No sites and no hours: total_sites reflects the empty stars.sites table.
+        # No sites and no hours: total_sites reflects the empty stars.sites table,
+        # and with no kept hours at all the darkness mode is "none".
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         assert r.json() == {
@@ -203,6 +204,7 @@ class TestSites:
             "count": 0,
             "total_sites": 0,
             "nights": [],
+            "darkness": "none",
             "fetched_at": None,
         }
 
@@ -279,6 +281,73 @@ class TestSites:
         # Top-level nights is the sorted union of the per-site night keys.
         assert body["nights"] == sorted(set(night_clear_dark))
         assert body["nights"] == sorted(body["nights"])
+
+    def test_clear_twilight_at_least_clear_dark_and_dark_flag(self, client, session):
+        # A clear true-dark hour (sun -18) plus a clear twilight-only hour
+        # (sun -11). Twilight is the superset: clear_twilight_hours (2) >=
+        # clear_dark_hours (1). best_hours carries both, each tagged dark.
+        _seed_site(session, "galloway-forest")
+        session.add(_hour("galloway-forest", 1, sun=-18.0))
+        session.add(_hour("galloway-forest", 2, sun=-11.0))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        site = body["sites"][0]
+        assert site["clear_dark_hours"] == 1
+        assert site["clear_twilight_hours"] == 2
+        assert site["clear_twilight_hours"] >= site["clear_dark_hours"]
+        # best_hours shows the full clear-twilight superset, sorted by time, each
+        # tagged dark (true at -18, false at -11) with its sun elevation.
+        flags = {h["time"]: h["dark"] for h in site["best_hours"]}
+        assert flags[(CUTOFF + timedelta(hours=1)).isoformat()] is True
+        assert flags[(CUTOFF + timedelta(hours=2)).isoformat()] is False
+        assert all("sun_elevation_deg" in h for h in site["best_hours"])
+
+    def test_darkness_astronomical_when_any_dark_hour(self, client, session):
+        # Any upcoming true-dark hour (sun < -12) anywhere puts the page in
+        # astronomical mode, regardless of cloud (a dark-but-cloudy hour counts).
+        _seed_site(session, "galloway-forest")
+        session.add(_hour("galloway-forest", 1, sun=-13.0, cloud=80.0))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["darkness"] == "astronomical"
+
+    def test_darkness_twilight_when_only_twilight_hours(self, client, session):
+        # Midsummer: no hour reaches -12, but some are below the -10 floor. The
+        # page falls back to twilight; clear_dark is zero while clear_twilight
+        # carries the windows.
+        _seed_site(session, "galloway-forest")
+        session.add(_hour("galloway-forest", 1, sun=-11.0))
+        session.add(_hour("galloway-forest", 2, sun=-10.5))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["darkness"] == "twilight"
+        site = body["sites"][0]
+        assert site["clear_dark_hours"] == 0
+        assert site["clear_twilight_hours"] == 2
+        # In twilight mode the night chips key off the twilight breakdown.
+        assert body["nights"] == sorted(set(site["night_clear_twilight"]))
+
+    def test_darkness_none_when_no_kept_hours(self, client, session):
+        # A site exists but only has past hours -> no kept rows at all -> the
+        # page reports darkness "none" (not even twilight is available).
+        _seed_site(session, "galloway-forest")
+        session.add(_hour("galloway-forest", -1, sun=-18.0))
+        session.commit()
+
+        r = client.get("/api/stars/sites")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 0
+        assert body["darkness"] == "none"
 
 
 class TestHistory:

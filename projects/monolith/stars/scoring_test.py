@@ -3,14 +3,17 @@
 from stars.scoring import (
     CLEAR_CLOUD_MAX_PCT,
     NAUTICAL_DARK_DEG,
+    TWILIGHT_FLOOR_DEG,
     is_clear_dark_hour,
     is_dark_hour,
+    is_twilight_hour,
 )
 
 
 def test_thresholds_are_the_contract_values():
     assert NAUTICAL_DARK_DEG == -12.0
     assert CLEAR_CLOUD_MAX_PCT == 10.0
+    assert TWILIGHT_FLOOR_DEG == -10.0
 
 
 class TestIsDarkHour:
@@ -29,6 +32,35 @@ class TestIsDarkHour:
 
     def test_daytime_is_not_dark(self):
         assert is_dark_hour(0.0) is False
+
+
+class TestIsTwilightHour:
+    def test_exactly_minus_10_is_not_twilight(self):
+        # Strictly below -10, so the boundary itself does not count.
+        assert is_twilight_hour(-10.0) is False
+
+    def test_just_below_minus_10_is_twilight(self):
+        assert is_twilight_hour(-10.01) is True
+
+    def test_shallower_than_floor_is_not_twilight(self):
+        # Far-north midsummer, sun only reaches ~-8: nothing usable.
+        assert is_twilight_hour(-8.0) is False
+
+    def test_daytime_is_not_twilight(self):
+        assert is_twilight_hour(0.0) is False
+
+    def test_dark_implies_twilight(self):
+        # Every true-dark hour (sun < -12) is also a twilight hour (sun < -10):
+        # dark windows are a strict subset of twilight windows.
+        for sun in (-12.01, -13.0, -18.0, -30.0):
+            assert is_dark_hour(sun) is True
+            assert is_twilight_hour(sun) is True
+
+    def test_between_floor_and_dark_is_twilight_only(self):
+        # -12 <= sun < -10: twilight-only fallback, not true dark.
+        for sun in (-10.5, -11.0, -11.99):
+            assert is_twilight_hour(sun) is True
+            assert is_dark_hour(sun) is False
 
 
 class TestIsClearDarkHour:

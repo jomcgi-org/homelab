@@ -19,11 +19,17 @@
   // body renders. `heatVisible` toggles between the point markers and the
   // box-cell heatmap: when on, the circle markers hide and each site renders as
   // a coloured grid cell (ADR 009, mirroring /app/ships' fill-layer heatmap).
+  // `darknessMode` ("astronomical"|"twilight"|"none") is the page-level live
+  // darkness state. In "twilight" (the ~7-week midsummer window where Scotland
+  // gets no true dark) every site's clear_dark_hours is zero, so the live
+  // marker/cell value falls back to the wider clear_twilight_hours so the map
+  // still has a meaningful field to colour. LIVE only; ignored in historical.
   let {
     sites = [],
     activeNights = new Set(),
     nowMs = Date.now(),
     mode = "live",
+    darknessMode = "astronomical",
     heatVisible = false,
   } = $props();
 
@@ -162,6 +168,16 @@
     }),
   );
 
+  // Honest title for the live windows table: "clear dark hours" only when every
+  // shown hour is true dark (sun < -12). In the midsummer twilight fallback some
+  // or all hours are twilight-only, so the wider "clear windows" reads true. An
+  // older payload without per-hour `dark` flags (undefined) is treated as dark,
+  // keeping the original label.
+  let windowsAllDark = $derived(cardHours.every((h) => h.dark !== false));
+  let windowsTitle = $derived(
+    windowsAllDark ? "Upcoming clear dark hours" : "Upcoming clear windows",
+  );
+
   let mapsLink = $derived(
     selected
       ? `https://www.google.com/maps/search/?api=1&query=${selected.lat},${selected.lon}`
@@ -181,6 +197,14 @@
   function fmtSymbol(symbol) {
     // met.no symbol codes like "clearsky_night" -> "clearsky night".
     return symbol ? symbol.replace(/_/g, " ") : "n/a";
+  }
+
+  // Sun elevation as a signed whole-degree label (e.g. "-13 deg"), or "" when
+  // the payload predates the per-hour elevation field.
+  function fmtElev(deg) {
+    return typeof deg === "number" && Number.isFinite(deg)
+      ? `${Math.round(deg)} deg`
+      : "";
   }
 
   function fmtCoord(lat, lon) {
@@ -224,17 +248,23 @@
     };
   }
 
-  // Upcoming clear-dark-hour count this site reaches across the currently
-  // selected nights. Falls back to the site-level clear_dark_hours when the
-  // payload carries no per-night map (older build / CDN-cached response), so the
-  // map never blanks. With a single selected night, sites with no clear-dark
-  // hours that night return null and drop off the map (the night filter). LIVE
-  // only. night_clear_dark only holds nights with >= 1 clear-dark hour, so a
-  // missing key is correctly treated as zero (dropped under a single night).
+  // Upcoming clear-hour count this site reaches across the currently selected
+  // nights. Normally this is the clear-DARK count; in the midsummer "twilight"
+  // darkness mode (no true dark anywhere) it falls back to the wider clear-
+  // TWILIGHT count so the live field is not uniformly zero. Falls back to the
+  // site-level total when the payload carries no per-night map (older build /
+  // CDN-cached response), so the map never blanks. With a single selected night,
+  // sites with no qualifying hours that night return null and drop off the map
+  // (the night filter). LIVE only. The per-night maps only hold nights with >= 1
+  // qualifying hour, so a missing key is correctly treated as zero.
   function effectiveClearDark(site) {
-    const nd = site.night_clear_dark;
+    const twilight = darknessMode === "twilight";
+    const nd = twilight ? site.night_clear_twilight : site.night_clear_dark;
+    const total = twilight
+      ? (site.clear_twilight_hours ?? site.clear_dark_hours)
+      : site.clear_dark_hours;
     if (!nd || !activeNights || activeNights.size === 0) {
-      return site.clear_dark_hours ?? null;
+      return total ?? null;
     }
     let best = null;
     for (const night of activeNights) {
@@ -406,6 +436,13 @@
   $effect(() => {
     void activeNights;
     if (map && layerReady) pushData();
+  });
+
+  // Recolour when the page flips between dark and twilight darkness modes: the
+  // live field then derives from a different per-site count (dark vs twilight).
+  $effect(() => {
+    void darknessMode;
+    if (map && layerReady && mode === "live") pushData();
   });
 
   // Mode flip (live <-> historical) swaps what each feature means, so rebuild the
@@ -662,11 +699,12 @@
         </dl>
 
         {#if cardHours.length}
-          <p class="eyebrow card-windows-title">Upcoming clear dark hours</p>
+          <p class="eyebrow card-windows-title">{windowsTitle}</p>
           <table class="card-windows">
             <thead>
               <tr>
                 <th>Time</th>
+                <th>Phase</th>
                 <th>Cloud</th>
                 <th>Temp</th>
                 <th>Sky</th>
@@ -676,6 +714,18 @@
               {#each cardHours as h (h.time)}
                 <tr>
                   <td>{fmtTime(h.time)}</td>
+                  <td>
+                    <!-- True dark (sun < -12) vs twilight-only fallback
+                         (-12 .. -10), with the sun elevation so the window is
+                         honestly marked. `dark` undefined (older payload) reads
+                         as dark. -->
+                    <span class="phase" class:is-twilight={h.dark === false}
+                      >{h.dark === false ? "Twilight" : "Dark"}</span
+                    >
+                    {#if fmtElev(h.sun_elevation_deg)}
+                      <span class="phase-elev">{fmtElev(h.sun_elevation_deg)}</span>
+                    {/if}
+                  </td>
                   <td>{Math.round(h.cloud_area_fraction)}%</td>
                   <td>{Math.round(h.air_temperature)}C</td>
                   <td>{fmtSymbol(h.symbol)}</td>
@@ -684,7 +734,7 @@
             </tbody>
           </table>
         {:else}
-          <p class="card-empty">No upcoming clear dark hours for this site.</p>
+          <p class="card-empty">No upcoming clear windows for this site.</p>
         {/if}
       {/if}
 
@@ -887,6 +937,25 @@
   .card-windows td {
     padding: 4px 6px 4px 0;
     border-bottom: 1px dashed var(--rule-2);
+  }
+
+  /* Phase tag: true-dark windows read in ink, twilight-fallback windows in the
+     muted ink so the eye trusts the dark ones first. The sun elevation sits
+     under the tag, dimmer still, so the column stays narrow. */
+  .phase {
+    display: block;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .phase.is-twilight {
+    color: var(--ink-3);
+  }
+
+  .phase-elev {
+    display: block;
+    font-size: 10px;
+    color: var(--ink-3);
   }
 
   /* 12-month clear-dark-hours bar chart: a flat SVG block sitting in the card,

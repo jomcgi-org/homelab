@@ -17,6 +17,14 @@ cloud < 10%), not the old continuous quality Q = darkness x cloud x weather.
 ``clear_dark_hours`` is the count of upcoming clear-dark hours and drives the map
 ordering and marker colour on the live layer.
 
+For ~7 weeks each midsummer Scotland gets no astronomical darkness (the sun never
+drops past -12 deg), which would leave the live layer empty. The /sites endpoint
+adds a twilight fallback: it also reports ``clear_twilight_hours`` (clear hours
+down to a -10 deg floor) and a page-level ``darkness`` mode (astronomical /
+twilight / none) so the frontend can surface the darkest available windows with a
+disclaimer instead of showing nothing. The strict -12 metric and the historical
+climatology are unchanged; this only widens the live layer's fallback.
+
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/stars page is the public surface and the CDN fans out to viewers, per
 ADR 002. Conditional GETs short-circuit with a 304 via ETag.
@@ -39,7 +47,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from shared.forecast_freshness import top_of_hour
 from stars.models import Site, SiteHour, SiteMonthClimatology
-from stars.scoring import is_clear_dark_hour
+from stars.scoring import CLEAR_CLOUD_MAX_PCT, is_dark_hour, is_twilight_hour
 
 logger = logging.getLogger("stars")
 
@@ -137,6 +145,15 @@ def get_sites(
             max_fetched = row.fetched_at
         by_site.setdefault(row.site_id, []).append(row)
 
+    # Track, across all sites, whether any site has a true-dark hour (sun < -12,
+    # cloud-independent) and whether any kept hour exists at all (< -10). These
+    # drive the page-level ``darkness`` mode: astronomical dark is available,
+    # only twilight is available, or nothing is. Midsummer in Scotland the dark
+    # set is empty for ~7 weeks, so the twilight fallback is what keeps the live
+    # layer useful.
+    any_dark_hour = False
+    any_twilight_hour = False
+
     sites = []
     for site_id, hours in by_site.items():
         meta = by_id.get(site_id)
@@ -147,25 +164,49 @@ def get_sites(
             logger.debug("stars: skipping unknown site_id %s", site_id)
             continue
 
-        # The clear-dark hours among the upcoming dark hours are the windows
-        # worth showing; their count is the live headline metric.
-        clear_hours = [
+        # Clear hours split two ways. clear-DARK (sun < -12 AND cloud < 10) is
+        # the unchanged headline metric and drives ranking + history. clear-
+        # TWILIGHT (sun < -10 AND cloud < 10) is the wider summer fallback: every
+        # clear-dark hour is also a clear-twilight hour, so the twilight count is
+        # always >= the dark count. In a normal (dark) night they are equal; only
+        # in the midsummer no-true-dark window does twilight exceed dark.
+        clear_twilight = [
             h
             for h in hours
-            if is_clear_dark_hour(h.sun_elevation_deg, h.cloud_area_fraction)
+            if is_twilight_hour(h.sun_elevation_deg)
+            and h.cloud_area_fraction < CLEAR_CLOUD_MAX_PCT
         ]
+        clear_hours = [h for h in clear_twilight if is_dark_hour(h.sun_elevation_deg)]
         clear_dark_hours = len(clear_hours)
+        clear_twilight_hours = len(clear_twilight)
 
-        # Per-night count of clear-dark hours, so the map's night filter can
-        # recolour each marker by how many clear-dark hours the selected
-        # night(s) hold.
+        # Feed the page-level darkness mode. The elevation checks are cloud-
+        # independent on purpose: "is there any astronomical darkness (or any
+        # twilight) at all tonight" is a sky-geometry question, not a cloud one.
+        # Every kept row is already below the -10 floor, but check explicitly so
+        # the mode stays correct even against unexpected rows.
+        if any(is_dark_hour(h.sun_elevation_deg) for h in hours):
+            any_dark_hour = True
+        if any(is_twilight_hour(h.sun_elevation_deg) for h in hours):
+            any_twilight_hour = True
+
+        # Per-night counts so the map's night filter can recolour each marker by
+        # how many clear hours the selected night(s) hold. We keep both a
+        # clear-dark and a clear-twilight breakdown so the night filter still
+        # works in twilight mode (when every clear-dark count is zero).
         night_clear_dark: dict[str, int] = {}
         for h in clear_hours:
             key = _night_key(h.hour_time)
             night_clear_dark[key] = night_clear_dark.get(key, 0) + 1
+        night_clear_twilight: dict[str, int] = {}
+        for h in clear_twilight:
+            key = _night_key(h.hour_time)
+            night_clear_twilight[key] = night_clear_twilight.get(key, 0) + 1
 
-        # Display the upcoming clear-dark hours in chronological order, capped:
-        # a planner reads the night top to bottom.
+        # Display the upcoming clear windows in chronological order, capped: a
+        # planner reads the night top to bottom. We show the clear-twilight set
+        # (the superset) and tag each hour ``dark`` so the card can label true
+        # dark vs twilight-fallback windows, with the sun elevation alongside.
         best_hours = [
             {
                 "time": _iso(h.hour_time),
@@ -173,8 +214,10 @@ def get_sites(
                 "air_temperature": h.air_temperature,
                 "dew_spread": h.dew_spread,
                 "symbol": h.symbol,
+                "sun_elevation_deg": h.sun_elevation_deg,
+                "dark": is_dark_hour(h.sun_elevation_deg),
             }
-            for h in sorted(clear_hours, key=lambda h: h.hour_time)[:_DISPLAY_HOURS]
+            for h in sorted(clear_twilight, key=lambda h: h.hour_time)[:_DISPLAY_HOURS]
         ]
         sites.append(
             {
@@ -185,17 +228,42 @@ def get_sites(
                 "altitude_m": meta.altitude_m,
                 "lp_zone": meta.lp_zone,
                 "clear_dark_hours": clear_dark_hours,
+                "clear_twilight_hours": clear_twilight_hours,
                 "best_hours": best_hours,
                 "night_clear_dark": night_clear_dark,
+                "night_clear_twilight": night_clear_twilight,
             }
         )
 
-    sites.sort(key=lambda s: s["clear_dark_hours"], reverse=True)
+    # Sort by clear-dark first, then clear-twilight: in a normal night this is
+    # just the dark ordering, but in the midsummer twilight window (every
+    # clear_dark_hours == 0) the twilight count breaks the tie so the ranking is
+    # still meaningful (best windows in the darker south float to the top).
+    sites.sort(
+        key=lambda s: (s["clear_dark_hours"], s["clear_twilight_hours"]),
+        reverse=True,
+    )
+
+    # Page-level darkness mode, driving the frontend disclaimer:
+    #   "astronomical" - at least one site has a true-dark hour (sun < -12);
+    #   "twilight"     - no true dark anywhere, but some twilight windows exist;
+    #   "none"         - not even twilight (deep midsummer in the far north).
+    if any_dark_hour:
+        darkness = "astronomical"
+    elif any_twilight_hour:
+        darkness = "twilight"
+    else:
+        darkness = "none"
 
     # Union of nights present across all sites, ascending, so the frontend can
     # render one stable row of night-filter chips (a site missing a night just
-    # has no clear-dark hours for it).
-    nights = sorted({key for s in sites for key in s["night_clear_dark"]})
+    # has no qualifying hours for it). In twilight mode the dark per-night maps
+    # are all empty, so key the chips off the twilight breakdown the map colours
+    # by; otherwise this is the unchanged clear-dark night set.
+    night_field = (
+        "night_clear_twilight" if darkness == "twilight" else "night_clear_dark"
+    )
+    nights = sorted({key for s in sites for key in s[night_field]})
 
     # The ETag folds in the current clock hour so the CDN turns over hourly even
     # when fetched_at has not changed: as hours fall past the cutoff the payload
@@ -203,7 +271,8 @@ def get_sites(
     max_fetched_utc = _as_utc(max_fetched)
     etag = (
         f'"v2-{cutoff.isoformat()}-'
-        f'{max_fetched_utc.isoformat() if max_fetched_utc else "none"}-{len(sites)}"'
+        f"{max_fetched_utc.isoformat() if max_fetched_utc else 'none'}-"
+        f'{len(sites)}-{darkness}"'
     )
     headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
 
@@ -217,6 +286,7 @@ def get_sites(
         "count": len(sites),
         "total_sites": len(by_id),
         "nights": nights,
+        "darkness": darkness,
         "fetched_at": _iso(max_fetched),
     }
 

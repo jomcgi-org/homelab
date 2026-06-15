@@ -1,10 +1,11 @@
 """Unit tests for stars.forecast.score_location (stars v2).
 
-elevation() is monkeypatched per entry so the dark/daylight gate is fully
+elevation() is monkeypatched per entry so the twilight/daylight gate is fully
 deterministic and independent of the real ephemeris. score_location keeps every
-dark hour (sun below -12 deg) and tags each with is_clear (cloud < 10%); only
-daytime / not-dark hours are dropped. A dark-but-cloudy hour is kept (is_clear
-False) so the prune can still count it toward dark_hours.
+hour below the -10 deg twilight floor (the summer fallback), tags each with
+is_clear (cloud < 10%) and dark (sun < -12, true nautical dark); only hours
+brighter than -10 are dropped. A kept-but-cloudy hour is retained (is_clear
+False) so the read path can still count it toward the denominators.
 """
 
 import stars.forecast as forecast
@@ -67,6 +68,7 @@ _EXPECTED_KEYS = {
     "dew_spread",
     "symbol",
     "is_clear",
+    "dark",
 }
 
 
@@ -94,11 +96,50 @@ def test_score_location_keeps_all_dark_hours_sorted(monkeypatch):
     # 5% cloud under the 10% threshold -> clear.
     assert first["is_clear"] is True
 
+    # Deep-dark hours (sun -20) are flagged dark.
+    assert first["dark"] is True
+
     # The fully-clouded dark hour is retained but flagged not-clear.
     cloudy = hours[2]
     assert cloudy["time"] == "2026-06-14T00:00:00Z"
     assert cloudy["cloud_area_fraction"] == 100
     assert cloudy["is_clear"] is False
+    assert cloudy["dark"] is True
+
+
+def test_score_location_keeps_twilight_drops_below_floor(monkeypatch):
+    # The summer fallback: with no true dark, hours between the -10 floor and the
+    # -12 dark threshold are kept (dark=False); a true-dark hour is dark=True; an
+    # hour shallower than -10 is dropped entirely.
+    elev_by_hour = {
+        21: -9.0,  # shallower than the -10 floor -> dropped
+        22: -11.0,  # twilight: kept, dark=False
+        23: -13.0,  # true dark: kept, dark=True
+    }
+    monkeypatch.setattr(forecast, "elevation", lambda observer, t: elev_by_hour[t.hour])
+    fc = {
+        "properties": {
+            "timeseries": [
+                {"time": "2026-06-21T21:00:00Z", **_instant(5, 8, 2)},
+                {"time": "2026-06-21T22:00:00Z", **_instant(5, 8, 2)},
+                {"time": "2026-06-21T23:00:00Z", **_instant(5, 8, 2)},
+            ]
+        }
+    }
+    hours = forecast.score_location(_LOC, fc)
+
+    # The -9 hour is gone; the twilight and dark hours survive, sorted ascending.
+    assert [h["time"] for h in hours] == [
+        "2026-06-21T22:00:00Z",
+        "2026-06-21T23:00:00Z",
+    ]
+    twilight, dark = hours
+    assert twilight["sun_elevation_deg"] == -11.0
+    assert twilight["dark"] is False
+    # Still clear (cloud 5%), just not true dark.
+    assert twilight["is_clear"] is True
+    assert dark["sun_elevation_deg"] == -13.0
+    assert dark["dark"] is True
 
 
 def test_score_location_cloud_boundary_is_not_clear(monkeypatch):
