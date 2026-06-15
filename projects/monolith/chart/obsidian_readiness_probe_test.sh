@@ -48,9 +48,12 @@ else
 	pass "obsidian container absent when knowledge.enabled=false (default)"
 fi
 
-# Render with knowledge enabled for remaining tests
+# Render with knowledge AND the obsidian sidecar enabled for the remaining
+# tests. As of ADR 006 the sidecar is opt-in (headlessSync.enabled defaults
+# false), so both flags are needed to render it.
 RENDERED=$("$HELM" template monolith "$CHART_TGZ" \
 	--set knowledge.enabled=true \
+	--set knowledge.headlessSync.enabled=true \
 	--set knowledge.headlessSync.vaultName=test-vault)
 
 # ---------------------------------------------------------------------------
