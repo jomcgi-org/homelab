@@ -169,4 +169,3 @@ Builds on the `docs/security.md` baseline and inherits [ADR 004](../security/004
 | `projects/monolith/shared/scheduler.py` | The SKIP-LOCKED scheduler loop composed per binary |
 | `projects/monolith/app/architecture_test.py` | Existing convention enforcement FastMonolith makes structural |
 | [aspect_rules_py `py_library` / `py_venv_binary`](https://github.com/aspect-build/rules_py) | Build-graph mechanism for per-domain libraries and per-binary deps |
-</content>
