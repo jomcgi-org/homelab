@@ -165,4 +165,3 @@ Each step is independently shippable and CI-verified; the single private binary 
 | `projects/monolith/shared/scheduler.py` | SKIP-LOCKED loop composed per binary |
 | `projects/monolith/app/mcp_app.py` | Single MCP instance the framework takes ownership of |
 | `projects/monolith/app/architecture_test.py` | Convention enforcement extended for modules and `api.py` |
-</content>
