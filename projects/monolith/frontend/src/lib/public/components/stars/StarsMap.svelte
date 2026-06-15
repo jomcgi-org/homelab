@@ -611,10 +611,17 @@
 
   {#if selected}
     <aside class="card">
-      <button class="card-close" onclick={closeCard} aria-label="Close site card"
-        >&times;</button
-      >
-      <h2 class="card-name">{selected.name}</h2>
+      <!-- Header keeps the close control in normal flow (right-aligned via
+           margin-left:auto) so it always reserves its own height and can never
+           overlap the stats box, with or without a site name (grid sites have
+           none, which is why the absolutely-positioned button used to collide
+           with the cream stats box). -->
+      <header class="card-head">
+        {#if selected.name}<h2 class="card-name">{selected.name}</h2>{/if}
+        <button class="card-close" onclick={closeCard} aria-label="Close site card"
+          >&times;</button
+        >
+      </header>
 
       {#if mode === "historical"}
         <!-- Historical body: the clear-dark-hour count for the selected view
@@ -851,7 +858,15 @@
     padding: 18px;
     background: var(--paper);
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard);
+  }
+
+  /* Header row: site name (when present) on the left, close control pushed to
+     the right. Reserves the button's height in flow so content sits clear. */
+  .card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 12px;
   }
 
   /* Close control: a bordered paper square matching the map's zoom/attribution
@@ -859,9 +874,8 @@
      tap target. Lifts with the neobrutalist translate + hard shadow, flipping to
      the accent on hover/press. */
   .card-close {
-    position: absolute;
-    top: 10px;
-    right: 10px;
+    flex: 0 0 auto;
+    margin-left: auto;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -893,10 +907,11 @@
   }
 
   .card-name {
+    flex: 1 1 auto;
     font-family: var(--serif);
     font-size: 26px;
     line-height: 1.05;
-    margin: 2px 48px 12px 0;
+    margin: 0;
     word-break: break-word;
   }
 
