@@ -40,6 +40,8 @@ model rejects loudly at fetch time.
 | `libs/git_wrapper`             | `:git_wrapper`             | dune overlay drops ocaml-git; Git_wrapper.ml{,i} overlays swap the functor types for concrete digestif-backed equivalents and fail loudly in the object-store walkers (dispatch below)                 |
 | `src/target`                   | `:semgrep_core_target`     | dune overlay adds git_wrapper (Origin/Target reference it; upstream reached it transitively through lib_parsing, whose overlay measured it out); the `(env ...)` block is inert                        |
 | `src/core`                     | `:semgrep_core`            | translated as-is; the semgrep_core closure's keystone. yaml was the only name that gated it (dispatch below); the `(env ...)` -w 30 block is inert (warnings are not errors here); tests/ has its own dune and stays out via the non-recursive glob                                              |
+| `libs/fast_json`               | `:fast_json`               | translated as-is (Phase 9 wave 1); names lib_parsing/paths/yojson/ast_generic, all already resolved. Reaches commons' pcre through lib_parsing, so it rides `ladder_builds_cc`                                                                                                                  |
+| `src/typing`                   | `:semgrep_typing`          | translated as-is (Phase 9 wave 1; semgrep.typing); names commons/lib_parsing/parallelism/semgrep_core with a `(pps ppx_deriving.show ppx_profiling)` line, all resolved. The comment that it pulls no semgrep_parsing dep holds (parsers arrive via a tests() parameter, which stays out)        |
 
 ## libs/commons rejection dispatch
 
