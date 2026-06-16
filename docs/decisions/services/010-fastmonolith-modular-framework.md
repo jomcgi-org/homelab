@@ -9,64 +9,65 @@
 
 ## Problem
 
-The monolith is already a modular monolith by convention: each domain (`hikes`, `ships`, `stars`, `knowledge`, `home`, `chat`, `scheduler`, `agent`) is a package exposing `register(app)` and `on_startup_jobs(session)`, sharing only `shared/` and `app/`, with `app/architecture_test.py` enforcing some of those rules at test time. The conventions work, but they are conventions. Three things nothing structural prevents today:
+The monolith is already a modular monolith by convention: each domain (`hikes`, `ships`, `stars`, `knowledge`, `home`, `chat`, `scheduler`, `agent`) is a package exposing `register(app)` and `on_startup_jobs(session)`, sharing only `shared/` and `app/`, with `app/architecture_test.py` enforcing some of those rules at test time. The conventions work, but they are conventions. Three gaps:
 
-1. **Shared data.** Every domain reads and writes the same Postgres schema with the same credentials. A bug (or a compromise) in one domain can read or corrupt another's rows. The only real confidentiality boundary in the system, the one ADR 004 leans on, is database permissions, and today every domain has the same ones.
-2. **Cross-domain reach.** `chat` imports `knowledge`'s store directly. Nothing stops a domain depending on another's internals.
-3. **Deployment leakage.** [ADR 004](../security/004-public-read-only-service-isolation.md) decided to split the anonymous public surface into a separate read-only artifact, but as written it is a one-off: a second hand-authored entrypoint with a hand-maintained list of "public routers," guarded by a hand-rolled import-check test. ADR 004 itself flags the failure mode:
+1. **Shared data, shared credentials.** Every domain reads and writes the same Postgres schema as the same role. A bug or compromise in one domain can read or corrupt another's rows. Database permissions are the only real confidentiality control in the system (the one ADR 004 leans on), and today every domain has identical ones.
+2. **Cross-domain reach.** `chat` imports `knowledge`'s store directly. Nothing marks where one domain's surface ends and another's begins, so coupling accretes silently.
+3. **One bespoke composition.** [ADR 004](../security/004-public-read-only-service-isolation.md) decided to run a separate read-only public surface alongside the private monolith. Done as a one-off, that means two hand-authored entrypoints with two copies of the composition glue (lifespan, scheduler loop, OTel, MCP mount, DB engine, the `register()` sequence), which drift, and a hand-maintained list of which routers are "public."
 
-   > Shared-code refactor accidentally pulls private modules into the public artifact... add a build/import check (or test) asserting private modules are absent from `main_public`.
-
-That guard rots, and two entrypoints means two copies of the composition glue (lifespan, scheduler loop, OTel, MCP mount, DB engine, the `register()` sequence) that silently drift.
-
-We want each boundary to be a property of the data model, the build graph, and the type system, not of a reviewer remembering a convention; the wiring written once and reused by every deployment; and each domain independently buildable and testable, even though prod runs them composed.
+We want domain isolation to be structural (each domain owns its data, with an explicit interface for the rare cross-domain call), the public/private separation to be enforced by the runtime's actual capabilities rather than by remembering a convention, and the composition wiring written once and reused by both deployments.
 
 ---
 
 ## Decision
 
-Extract a small in-repo framework, **FastMonolith** (`projects/monolith/framework/`), that makes "compose a deployable binary from privilege-typed, data-isolated domain modules" a first-class operation enforced at three layers. ADR 004's public/private split becomes one instance of the general pattern.
+Extract a small in-repo framework, **FastMonolith** (`projects/monolith/framework/`), that composes the monolith into per-tier binaries from data-isolated domain modules. The design rests on two boundaries plus a thin composition layer.
 
-**Layer 1 (load-bearing): per-domain data isolation.** Each domain owns its own Postgres schema (`hikes`, `ships`, `knowledge`, ...). Grants are per role and per tier: a domain's role gets DML on its own schema only; the `public_reader` role (ADR 004) gets `SELECT` on public schemas and public views and nothing else. This is the strongest boundary because it is the only one that stops a process from *reading another domain's rows* regardless of code: Bazel visibility stops accidental imports, but only Postgres grants stop data access. It is therefore **step one** of the work, ahead of any code split. Because per-domain schemas make cross-domain data access impossible by default, the legitimate cross-domain reads that exist today (`chat` -> `knowledge`) must go through a **domain public interface** (`<domain>/api.py`), never another schema or another domain's internals.
+**Boundary 1: per-domain data isolation (the decoupling).** Each domain owns its own Postgres schema (`hikes`, `ships`, `knowledge`, ...). This is primarily a Postgres-side change, and the payoff is much less coupling: a domain can only touch its own tables, so the accidental shared-table dependencies that accrete today become impossible. Existing cross-domain data reads (`chat` -> `knowledge`) become the **exception, not the norm**, done only for convenience (saving a network hop) and only through that domain's published interface, never another schema.
 
-**Layer 2: build-graph boundary.** Each domain becomes its own Bazel `py_library` with two visibility tiers: `:<domain>_api` (a narrow, stable interface, widely visible) and `:<domain>` (internals, restricted to the domain's own targets, its tests, and the binaries). Cross-domain dependencies may only target `:_api`. The two production deployments are two `py_venv_binary` targets with different `deps`: the public binary lists only `tier=PUBLIC` libraries, so private domain code is *physically absent* from the public artifact, not merely unrouted. A `bazel cquery` test asserts the public binary's transitive closure contains no `tier=PRIVATE` library, replacing ADR 004's fragile import-check with a structural one a refactor cannot defeat.
+**Boundary 2: the runtime security context (the public/private separation).** What actually keeps the anonymous public surface safe is not which code is compiled in, it is what the running process can do:
 
-**Layer 3: runtime composition contract.** Each domain exports a `Module`: a frozen dataclass declaring `name`, `tier` (`PUBLIC`/`PRIVATE`), `schema`, its `register(app)` callable, and what it needs from the host (scheduled jobs, secrets, ClickHouse, MCP tool registration). A single `build_app(profile, modules)` function owns the FastAPI app, the combined lifespan, the scheduler loop, OTel, the MCP mount, and the database engine. It is the *only* place that wiring lives. `build_app` validates that every module's tier and required capabilities are permitted by the binary's `Profile` (a `PRIVATE` module in the public profile is a startup error) and binds the engine to the profile's role, so a module cannot open its own connection or reach a schema it was not granted.
+- The **public** runtime is injected with **no secrets or tokens**, and connects to Postgres as a **read-only role granted `SELECT` on public schemas and views only** (the `public_reader` role / read replica from ADR 004).
+- The **private** runtime gets the full secret set and a read-write role.
 
-Two cross-cutting concerns are resolved by the framework owning the shared machinery and composing it per binary, rather than forking it into each domain:
+Because the boundary is the credential set and the database grants, **code crossover between tiers is acceptable**: even if shared or private code is linked into the public binary, it is inert without tokens and cannot read private rows without the grant. We therefore do **not** build a build-graph exclusion test; isolation is a property of the deployment's capabilities, which hold regardless of code presence. The route surface still stays clean because the public binary only composes the public modules, so private routes are never registered (linked code != served routes).
 
-- **Scheduler.** The scheduler stays shared framework code, but the loop is started per binary and scans only the jobs of the modules composed into that binary. The public binary registers no jobs and runs no loop; a single-domain binary runs a loop over just that domain. Job rows are private-tier and isolated, but the loop is *not* duplicated into every domain. This keeps the working SKIP-LOCKED design and avoids re-introducing the duplication the framework exists to remove.
-- **MCP.** The framework owns one MCP server instance. `build_app` aggregates each composed module's optional `register_mcp` onto that single instance and mounts it once. "One MCP server, all tooling" is preserved, and it stays independently deployable because the aggregation is over whatever modules are present. MCP is a private-tier capability; the public binary mounts no MCP surface. A tool that needs another domain calls that domain's `api.py`, not its internals.
+**Composition: a thin `build_app(profile, modules)` shared by both binaries.** Each domain exports a `Module`: a frozen dataclass declaring `name`, `tier` (`PUBLIC`/`PRIVATE`), its owning `schema`, its `register(app)` callable, and what it needs from the host (scheduled jobs, secrets, ClickHouse, MCP). A single `build_app` owns the FastAPI app, the combined lifespan, the scheduler loop, OTel, the MCP mount, and the database engine, the only place that wiring lives. It binds the engine to the profile's role and validates that a module's declared needs (secrets, tier) fit the profile, so a public binary cannot be handed secrets it should not have. There are **two `py_venv_binary` targets** (`main_public`, `main_private`) composing different module sets; per-domain `py_library` targets exist for build/test modularity, not as a security wall.
 
-A domain that legitimately serves both tiers (today only `knowledge`) splits into `<domain>_core` (shared models/logic, no routes) plus `<domain>_public` and `<domain>_private` modules, keeping "module to tier" total.
+**`<domain>/api.py` is the cross-domain contract, designed to become a network API.** The only legal way for one domain to call another is its `api.py`. Every function there must be shaped like a future HTTP endpoint: serializable inputs and outputs (Pydantic models / plain data), no `Session` or ORM objects crossing the boundary. The in-process call today and a network call tomorrow then have identical signatures, so `api.py` is exactly the seam where a domain could later be cut out into its own deployable service. This single contract covers all cross-domain needs: `chat` -> `knowledge`, cross-domain MCP tools, anything.
+
+Two cross-cutting concerns stay shared framework code composed per binary, not forked into each domain:
+
+- **Scheduler.** The SKIP-LOCKED loop stays in `framework/`, but **job rows live per-domain**: each domain owns its scheduler tables in its own schema, and the loop, started once per binary, scans the composed domains' job tables. The public binary registers no jobs and runs no loop. This keeps domains isolated on the Postgres side without duplicating the loop.
+- **MCP.** The framework owns one MCP server instance; `build_app` aggregates each composed module's optional `register_mcp` onto it and mounts it once. "One MCP server, all tooling" is preserved; a standalone domain still exposes one server with just its tools. MCP is private-tier; the public binary mounts none.
+
+A domain that serves both tiers (today only `knowledge`) splits into `<domain>_core` (shared models/logic, no routes) plus `<domain>_public` and `<domain>_private` modules.
 
 | Aspect | Today | Decided (FastMonolith) |
 | ------ | ----- | ---------------------- |
-| Domain data | Shared schema, shared credentials | Per-domain schema, per-tier grants (Layer 1) |
-| Cross-domain access | Direct internal imports (`chat` -> `knowledge`) | Through `<domain>/api.py` only |
-| Module boundary | Convention + partial test | Per-domain `py_library`, split `:_api` / internals visibility |
-| Public/private exclusion | Hand-maintained router list + import-check test | Disjoint binary `deps`; private code absent from public artifact |
-| Privilege model | Implicit (which router got imported) | Explicit `tier` on each `Module`, validated by `build_app` |
-| Composition glue | One bespoke `main.py` (would be duplicated per ADR 004) | One `build_app`, reused by every binary |
-| Scheduler | One global loop over one jobs table | Shared loop composed per binary; jobs isolated, private-tier |
+| Domain data | Shared schema, shared role | Per-domain schema; each domain owns its tables |
+| Public/private separation | Ingress path match + backend filter | Runtime capability: no secrets + read-only public-only grant |
+| Code crossover between tiers | N/A | Acceptable; not relied on for security |
+| Cross-domain access | Direct internal imports | Exception, via `<domain>/api.py` (endpoint-shaped) only |
+| Composition glue | One bespoke `main.py` | One thin `build_app`, reused by both binaries |
+| Binaries | One | `main_public` + `main_private`, different module sets |
+| Scheduler | One global loop over one jobs table | Shared loop composed per binary; per-domain job tables |
 | MCP | Shared instance, import-side-effect registration | Framework-owned instance, `build_app` aggregates per module |
-| Individual deployability | Not possible | Any module set composes a binary (used for isolated CI) |
-| Boundary enforcement | Reviewer + runtime test | DB grants + `bazel cquery` test + `build_app` validation |
+| Individual deployability | Not possible | Any module set composes a binary; `api.py` is the cut point |
 
-This is deliberately *not* a heavyweight framework: no base classes domains inherit from, no DI container, no plugin auto-discovery. A module is plain data plus callables; the framework is a composition function plus Bazel visibility plus a schema-per-domain migration convention. The value is owning the wiring once and making the build graph and the database the enforcement.
+This is deliberately *not* a heavyweight framework: no base classes, no DI container, no plugin auto-discovery. A module is plain data plus callables; the framework is a thin composition function plus a schema-per-domain convention plus the `api.py` contract.
 
 ---
 
 ## Architecture
 
-### Three enforcement layers
+### The two boundaries
 
 ```mermaid
 graph TD
-    A[Layer 1: per-domain Postgres schema + per-tier grants] -->|process cannot read another domain's rows| B[Confidentiality, the load-bearing boundary]
-    C[Layer 2: per-domain py_library, split :_api / internals visibility] -->|cross-domain only via :_api; private libs absent from public binary| D[Code isolation + compile-time exclusion]
-    E[Layer 3: build_app validates tier + binds engine to profile role] -->|PRIVATE module in PUBLIC profile is a startup error| F[Runtime defense in depth]
-    G[bazel cquery test on public dep closure] -->|fails CI if a PRIVATE lib appears| D
+    A[Per-domain Postgres schema] -->|a domain can only touch its own tables| B[Decoupling: cross-domain access is the exception, via api.py]
+    C[Runtime security context per binary] -->|public: no secrets + read-only public-only grant| D[Public/private separation, independent of linked code]
+    E[Thin build_app, two binaries] -->|public composes only public modules| F[Private routes never registered on public]
 ```
 
 ### Composition model
@@ -96,42 +97,42 @@ graph TD
 
 ### Relationship to ADR 004
 
-FastMonolith does not change ADR 004's security model; it is the mechanism that implements it generically.
+FastMonolith implements ADR 004's public/private split as a reusable framework and keeps its decided security controls; it does not modify ADR 004.
 
 | ADR 004 control | FastMonolith expression |
 | --------------- | ----------------------- |
-| Separate composition `main_public.py` | `build_app(PUBLIC_PROFILE, public_modules)` |
-| Private routers absent from the binary | Public binary `deps` exclude `tier=PRIVATE` libraries |
-| "Add a build/import check" guard | `bazel cquery` test on the public binary's transitive deps |
-| `public_reader` role + public views | Per-domain schemas + per-tier grants (Layer 1); `PUBLIC_PROFILE` binds the engine to that role |
-| Read-only, no secrets | Profile declares the allowed secret set; `build_app` rejects modules needing more |
+| Separate public composition | `main_public = build_app(PUBLIC_PROFILE, public_modules)`, sharing one `build_app` with the private binary |
+| `public_reader` role + public views + read replica | `PUBLIC_PROFILE` binds the engine to that role/endpoint; per-domain schemas are what the grants are scoped to |
+| Public surface holds no secrets | `PUBLIC_PROFILE` injects no secrets; `build_app` rejects a module that requires any |
+| NetworkPolicy, SLO rollup job | Unchanged, consumed as decided |
 
-The Postgres read replica, NetworkPolicy, and SLO rollup job remain exactly as ADR 004 decided. FastMonolith generalizes the application and data layers so the split is structural rather than a bespoke second entrypoint.
+The one difference in emphasis: ADR 004 frames artifact separation as the mechanism that "removes the failure mode," and suggested a build/import check to keep private modules out of the public binary. FastMonolith instead treats the **runtime capability set (no secrets + read-only public-only grant) as the load-bearing control**, so it keeps the two-binary split for cleanliness but does not add the build-graph exclusion test, and tolerates code crossover. ADR 004's role, grant, replica, and NetworkPolicy layers all still hold under this framing.
 
 ---
 
 ## Alternatives Considered
 
-- **Keep ADR 004's bespoke `main_public.py` (no framework).** Rejected: duplicates the composition glue, rests the exclusion guarantee on a hand-maintained router list, and gives future domains no reusable path.
-- **Runtime feature flags / `PUBLIC_MODE` on one binary.** Rejected (as ADR 004 did): private code and secrets still ship in the artifact, so isolation becomes a config that can be set wrong.
-- **Code boundaries first, data isolation last.** Rejected: the data grant boundary is the only one that enforces confidentiality, so it leads. Splitting code while every domain still shares one schema and one credential set would ship the appearance of isolation without the substance.
-- **Separate database per domain (not schemas).** Rejected as too heavy: the CNPG cluster already hosts five databases; per-domain *schemas* with per-role grants give the same row/column isolation with far less operational cost. Revisit only if a domain must survive another's database being down.
-- **Scheduler loop forked into each domain.** Rejected: re-introduces the duplicated infra the framework exists to remove. The loop is shared framework code composed per binary; only the job *rows* are isolated.
-- **Per-domain MCP servers aggregated by a gateway.** Rejected for the in-process case: the goal is one MCP server exposing all tooling. The framework aggregates module `register_mcp` onto a single instance; a domain deployed standalone still exposes one server with just its tools.
-- **A heavyweight framework (base class, DI container, auto-discovery).** Rejected: re-couples every domain to the framework, the opposite of the goal, and over-engineered for a homelab.
-- **One production chart per domain.** Rejected as scope: prod runs the composed public and private binaries. Individual deployability is retained as a build/test capability.
+- **One image, `PROFILE` env, deployed twice.** Viable under the runtime-context framing (security would still come from secrets + grants), but two explicit binaries keep the composed surface obvious and were the chosen shape.
+- **Build-graph exclusion test (`bazel cquery` that private code is absent from the public binary).** Rejected as the security control: the boundary is the runtime capability set, not artifact contents. Code crossover is acceptable, so the test would add machinery without being the thing that keeps data safe.
+- **Code boundaries first, data isolation last.** Rejected: per-domain schemas are the decoupling that everything else builds on, so they lead.
+- **Separate database per domain (not schemas).** Rejected as too heavy: the CNPG cluster already hosts several databases; per-domain schemas with per-role grants give the isolation at far less cost.
+- **Scheduler loop forked into each domain.** Rejected: re-introduces the duplicated infra the framework removes. The loop is shared and composed per binary; only the job rows are per-domain.
+- **Per-domain MCP servers behind a gateway.** Rejected for the in-process case: the goal is one server exposing all tooling; `build_app` aggregates module tools onto a single instance.
+- **A heavyweight framework (base class, DI container, auto-discovery).** Rejected: re-couples every domain to the framework, the opposite of the goal.
+- **One production chart per domain.** Rejected as scope: prod runs the two composed binaries. Per-domain deployability is a build/test capability, with `api.py` as the eventual cut point.
 
 ---
 
 ## Security
 
-Builds on the `docs/security.md` baseline and inherits [ADR 004](../security/004-public-read-only-service-isolation.md)'s four-layer model. FastMonolith strengthens the data and build layers:
+Builds on the `docs/security.md` baseline and ADR 004. The load-bearing controls for the public/private boundary are runtime, not build-time:
 
-- **Confidentiality is database-enforced per domain.** Per-domain schemas plus per-tier grants mean a process can only read the schemas its role was granted. The public role sees public schemas and views only; a compromised domain cannot read another's rows even within the private binary.
-- **Compile-time exclusion is structural.** A `bazel cquery` test fails CI if any `tier=PRIVATE` library enters the public binary's closure, converting ADR 004's "remember to keep private modules out" into a build invariant.
-- **Defense in depth at startup.** `build_app` independently validates module tier and required secrets against the profile, and binds the engine to the profile's role, so even a mis-specified `deps` list cannot boot a public binary with private capabilities or broader grants.
-- **Cross-domain access is narrowed.** Only `<domain>/api.py` is cross-domain-visible; internals and schemas are not, so the attack surface between domains is an explicit, reviewable interface.
-- No deviations from `docs/security.md`; this ADR tightens the data, build, and runtime layers for the highest-risk surface.
+- **No secrets in the public runtime.** The public deployment is injected with no tokens or credentials; `build_app` rejects a public-profile module that declares a secret requirement.
+- **Read-only, public-only database grant.** The public runtime connects as a read-only role with `SELECT` on public schemas and views only (ADR 004's `public_reader` on the replica). It cannot write, and cannot read private rows, by database permission.
+- **Per-domain schemas scope the grants.** Because each domain owns a schema, grants are expressed per domain and per tier, making "what can the public role see" auditable.
+- **Code crossover is explicitly tolerated.** Private or shared code linked into the public binary is inert without tokens or grants, so isolation does not depend on proving code absence.
+- **Cross-domain access is an explicit, reviewable interface.** `<domain>/api.py` is the only cross-domain seam, endpoint-shaped and serializable.
+- No deviations from `docs/security.md`.
 
 ---
 
@@ -139,22 +140,20 @@ Builds on the `docs/security.md` baseline and inherits [ADR 004](../security/004
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| Per-domain schema migration is invasive (moving existing tables) | High | High | Lead with it as step one against the primary, one domain at a time, each verified by CI; tables move by schema rename, not data copy |
-| Cross-domain coupling surfaces late (e.g. undiscovered `chat`/`knowledge` reads) | Medium | Medium | Per-domain grants make every such read fail loudly during step one, forcing each onto `<domain>/api.py` before the code split |
-| `bazel cquery` boundary test is flaky or hard to express | Low | Medium | Tier is a tag on each `py_library`; prototype the query first, fall back to an aspect collecting a `TierInfo` provider |
-| Scheduler composition regresses the working SKIP-LOCKED loop | Medium | High | Keep the loop in `framework/` unchanged; only scope which jobs it scans by composed module. Cover with the existing scheduler tests plus a composition test |
-| `knowledge` `_core` leaks private logic into the public path | Medium | High | `_core` holds models and pure helpers only; per-tier grants remain the database-enforced backstop, so a leak still cannot read private rows as `public_reader` |
-| Framework abstraction ossifies | Low | Medium | Keep `Module` plain data and `build_app` thin; domains keep full control of routers, jobs, and their `api.py` |
+| Per-domain schema migration is invasive (moving existing tables) | High | High | Lead with it as step one, one domain at a time, each verified by CI; tables move by `SET SCHEMA` rename, not data copy |
+| Cross-domain coupling surfaces late | Medium | Medium | Per-domain grants make every cross-domain read fail loudly during step one, forcing each onto an `api.py` function |
+| `api.py` contracts drift from being endpoint-shaped (leak `Session`/ORM objects) | Medium | Medium | Lint/architecture test that `api.py` signatures are serializable; review treats `api.py` as a public API |
+| Code crossover lulls into shipping a secret-dependent path on public | Low | High | `build_app` validates the public profile injects no secrets and the role is read-only; a path needing either fails fast |
+| Scheduler composition regresses the working SKIP-LOCKED loop | Medium | High | Keep the loop in `framework/` unchanged; only scope which per-domain job tables it scans. Cover with existing scheduler tests plus a composition test |
+| `knowledge` `_core` leaks private logic into the public path | Medium | Medium | `_core` holds models and pure helpers only; the read-only public-only grant remains the backstop, so a leak still cannot read private rows |
 
 ---
 
 ## Open Questions
 
-1. **Scheduler jobs table layout.** One framework-owned `scheduler` schema granted private-only (simpler loop), or a jobs table per domain schema (cleanest isolation, loop does a UNION over composed schemas). Lean to the former since scheduling is inherently private-tier.
-2. **Cross-domain MCP tool placement.** A tool spanning domains is registered by one module but calls others via `api.py`. Confirm whether such tools live in the owning domain's module or in a thin composition-level `agent` module that may depend on multiple `:_api` targets.
-3. **Tier as a Bazel tag vs. a provider.** Whether `tier=PUBLIC|PRIVATE` is a `tags` entry keyed on by `cquery`, or a `TierInfo` provider via a thin macro. Decide when prototyping the boundary test.
-4. **`home/observability` tiering.** It serves a public main page (precomputed snapshots per ADR 004) and private detail. Confirm whether it splits like `knowledge` or collapses to a thin `home_public` reading only snapshot tables.
-5. **Schema ownership of shared reference data.** Any table read by several domains (if any exist beyond `knowledge` notes) needs an owning schema and an `api.py`; inventory during step one.
+1. **`home/observability` tiering.** It serves a public main page (precomputed snapshots per ADR 004) and private detail. Confirm whether it splits like `knowledge` or collapses to a thin `home_public` reading only snapshot tables.
+2. **Shared reference data ownership.** Any table read by several domains needs an owning schema and an `api.py`; inventory during step one.
+3. **`api.py` enforcement mechanism.** Whether the "serializable, endpoint-shaped" contract is enforced by an architecture test, a lint, or convention plus review.
 
 ---
 
@@ -162,10 +161,10 @@ Builds on the `docs/security.md` baseline and inherits [ADR 004](../security/004
 
 | Resource | Relevance |
 | -------- | --------- |
-| [ADR 004: Public Read-Only Service Isolation](../security/004-public-read-only-service-isolation.md) | The security model FastMonolith implements generically |
+| [ADR 004: Public Read-Only Service Isolation](../security/004-public-read-only-service-isolation.md) | The public/private security model FastMonolith implements as a framework |
 | [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md) | Public/private tier and hostname scheme the binaries sit behind |
 | `projects/monolith/app/main.py` | The composition glue `build_app` extracts and replaces |
 | `projects/monolith/app/mcp_app.py` | The single MCP instance `build_app` takes ownership of |
 | `projects/monolith/shared/scheduler.py` | The SKIP-LOCKED scheduler loop composed per binary |
-| `projects/monolith/app/architecture_test.py` | Existing convention enforcement FastMonolith makes structural |
-| [aspect_rules_py `py_library` / `py_venv_binary`](https://github.com/aspect-build/rules_py) | Build-graph mechanism for per-domain libraries and per-binary deps |
+| `projects/monolith/app/architecture_test.py` | Existing convention enforcement FastMonolith extends |
+| [aspect_rules_py `py_library` / `py_venv_binary`](https://github.com/aspect-build/rules_py) | Build-graph mechanism for per-domain libraries and the two binaries |

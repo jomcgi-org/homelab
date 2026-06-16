@@ -1,19 +1,18 @@
 # FastMonolith Framework — Implementation Design
 
-**Date:** 2026-06-15
+**Date:** 2026-06-15 (revised 2026-06-16)
 **ADR:** [services/010-fastmonolith-modular-framework](../decisions/services/010-fastmonolith-modular-framework.md)
 **Builds on:** [security/004-public-read-only-service-isolation](../decisions/security/004-public-read-only-service-isolation.md)
-**Branch:** `claude/monolith-framework-design-3wnz1w`
 
 ---
 
 ## Scope
 
-Extract a small in-repo framework (`projects/monolith/framework/`) that composes deployable FastAPI binaries from privilege-typed, data-isolated domain modules, and use it to ship ADR 004's public/private split as the first consumer. Three enforcement layers, led by data isolation:
+Extract a small in-repo framework (`projects/monolith/framework/`) that composes the monolith into two per-tier binaries from data-isolated domain modules, and use it to ship ADR 004's public/private split. The design rests on two boundaries plus a thin composition layer:
 
-1. **Data** — per-domain Postgres schema, per-tier grants (the load-bearing boundary; step one).
-2. **Build** — per-domain Bazel `py_library` with split `:_api` / internals visibility; disjoint binary `deps`.
-3. **Runtime** — one `build_app(profile, modules)` owning all wiring; composes scheduler and MCP per binary.
+1. **Data isolation**: per-domain Postgres schema (the decoupling; step one).
+2. **Runtime security context**: the public binary runs with no secrets and a read-only public-only DB grant (the public/private boundary). Code crossover between tiers is tolerated, so there is no build-graph exclusion test.
+3. **Composition**: one thin `build_app(profile, modules)` shared by `main_public` and `main_private`; scheduler and MCP composed per binary; `<domain>/api.py` as the endpoint-shaped cross-domain contract.
 
 Out of scope: per-domain production charts, separate databases per domain, any change to ADR 004's replica / NetworkPolicy / rollup decisions (consumed as-is).
 
@@ -21,7 +20,7 @@ Out of scope: per-domain production charts, separate databases per domain, any c
 
 `framework/` is intentionally tiny. Three concepts.
 
-### `Profile` — what a binary is allowed to do
+### `Profile`: what a binary's runtime can do
 
 ```python
 class Tier(enum.Enum):
@@ -34,7 +33,7 @@ class Profile:
     db_endpoint_env: str          # "DATABASE_URL" (private) / "DATABASE_RO_URL" (public)
     db_role: str                  # "monolith_app" / "public_reader"
     db_read_only: bool            # public: True -> engine sets default_transaction_read_only
-    allowed_secrets: frozenset[str]
+    allowed_secrets: frozenset[str]   # public: empty
     clickhouse_enabled: bool
     mcp_enabled: bool
 
@@ -42,7 +41,9 @@ PRIVATE_PROFILE = Profile(Tier.PRIVATE, "DATABASE_URL", "monolith_app", False, A
 PUBLIC_PROFILE  = Profile(Tier.PUBLIC,  "DATABASE_RO_URL", "public_reader", True, frozenset(), False, False)
 ```
 
-### `Module` — what a domain provides
+The profile is the runtime boundary: `PUBLIC_PROFILE` carries no secrets and a read-only role. The deployment reinforces it (the public pod simply does not mount the secret env / OnePasswordItems), so even linked private code has nothing to use.
+
+### `Module`: what a domain provides
 
 ```python
 @dataclasses.dataclass(frozen=True)
@@ -57,15 +58,15 @@ class Module:
     requires_clickhouse: bool = False
 ```
 
-Each domain exports `MODULE = Module(...)`, reusing its existing `register` / `on_startup_jobs` as the callables, so the wrapper is thin. Cross-domain logic is reached only through `<domain>/api.py`.
+Each domain exports `MODULE = Module(...)`, reusing its existing `register` / `on_startup_jobs`, so the wrapper is thin. Cross-domain logic is reached only through `<domain>/api.py`.
 
-### `build_app(profile, modules)` — the one composition root
+### `build_app(profile, modules)`: the one composition root
 
 Owns everything `app/main.py` does today, once:
 
 ```python
 def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
-    _validate(profile, modules)               # tier, secrets, capability checks (raises on mismatch)
+    _validate(profile, modules)               # secrets/capability checks (raises on mismatch)
     engine = _make_engine(profile)            # endpoint + role + read_only from the profile
     mcp = _new_mcp() if profile.mcp_enabled else None
     lifespan = _build_lifespan(profile, modules, engine, mcp)   # scheduler loop (composed), jobs, bot, ingest
@@ -82,9 +83,9 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     return app
 ```
 
-`_validate` raises if a module's `tier` is incompatible with the profile, if `requires_secrets` is not a subset of `profile.allowed_secrets`, or if a module needs ClickHouse/MCP the profile disables. The scheduler loop started in `_build_lifespan` scans only the jobs registered by the composed modules; the public binary registers none and runs no loop.
+`_validate` raises if `requires_secrets` is not a subset of `profile.allowed_secrets`, or if a module needs ClickHouse/MCP the profile disables, so a public binary fails fast rather than silently shipping a path that needs a secret it does not have. The scheduler loop in `_build_lifespan` scans only the job tables of the composed modules; the public binary registers none and runs no loop.
 
-The entrypoints become trivial and duplication-free:
+The entrypoints are trivial and duplication-free:
 
 ```python
 # app/main_private.py
@@ -93,67 +94,79 @@ app = build_app(PRIVATE_PROFILE, ALL_MODULES)
 app = build_app(PUBLIC_PROFILE, PUBLIC_MODULES)
 ```
 
-## Data isolation (Layer 1, step one)
+`PUBLIC_MODULES` composes only public modules, so private routes are never registered on the public binary even though shared/private code may be transitively linked.
 
-The substantive, load-bearing work. Each domain gets a Postgres schema and per-tier grants, landed against the primary before any code split.
+## Boundary 1: data isolation (step one)
 
-- **Schemas:** `hikes`, `ships`, `stars`, `knowledge`, `home`, `chat`, `scheduler`. Existing tables move into their owning schema by `ALTER TABLE ... SET SCHEMA` (rename, not data copy), in Atlas migrations on the primary.
-- **Grants:** `monolith_app` gets DML on all private + public schemas. `public_reader` (ADR 004) gets `SELECT` only on `hikes`, `ships`, `stars`, the `home` snapshot tables, and the `knowledge_public` view. No other grants; default-deny via `REVOKE ALL` then explicit grants.
-- **Cross-domain reads become loud failures.** Once `knowledge` tables are out of the default schema, `chat`'s direct store access fails until it goes through `knowledge/api.py`. That is the point: the grant boundary surfaces every cross-domain coupling during step one.
-- **Scheduler jobs** live in the `scheduler` schema, granted to `monolith_app` only (never `public_reader`). Open question 1 in the ADR: one shared jobs table vs. per-domain job tables; default is the shared `scheduler` schema for a simpler loop.
+The substantive, decoupling work. Each domain gets a Postgres schema and per-tier grants, landed against the primary before any code split.
 
-This step delivers real isolation inside the existing single binary, independent of the public/private split.
+- **Schemas:** `hikes`, `ships`, `stars`, `knowledge`, `home`, `chat`. Existing tables move into their owning schema by `ALTER TABLE ... SET SCHEMA` (rename, not data copy), in Atlas migrations on the primary.
+- **Per-domain scheduler tables:** each domain that schedules work owns its `*_jobs` table in its own schema (not one global jobs table). The shared loop scans the composed domains' job tables.
+- **Grants:** `monolith_app` gets DML on all schemas. `public_reader` (ADR 004) gets `SELECT` only on `hikes`, `ships`, `stars`, the `home` snapshot tables, and the `knowledge_public` view. Default-deny via `REVOKE ALL` then explicit grants. No scheduler tables for `public_reader`.
+- **Cross-domain reads become loud failures.** Once `knowledge` tables leave the default schema, `chat`'s direct store access fails until it goes through `knowledge/api.py`. That is the point: the grant boundary surfaces every cross-domain coupling here, at step one.
 
-## Bazel layout (Layer 2)
+This delivers real isolation inside the existing single binary, independent of the public/private split.
+
+## Boundary 2: runtime security context
+
+The public/private separation lives in the deployment, not the build:
+
+- The public Deployment injects **no secrets** (no `DISCORD_BOT_TOKEN`, `GITHUB_TOKEN`, `CLICKHOUSE_*`, `VAULT_*`, etc.) and points `DATABASE_RO_URL` at `monolith-pg-ro` as `public_reader`.
+- `PUBLIC_PROFILE` makes the engine read-only and `allowed_secrets` empty, so any module needing a secret fails `build_app` validation.
+- Therefore code crossover is safe: shared or private code linked into the public binary is inert without tokens and cannot read private rows without the grant. **No `cquery` exclusion test is built**: artifact contents are not the boundary.
+
+## `<domain>/api.py`: the cross-domain contract
+
+The only legal cross-domain seam, designed to become a network API:
+
+- Inputs and outputs are serializable (Pydantic models / plain data); no `Session` or ORM objects cross the boundary.
+- Signatures are identical whether called in-process (today, for convenience / saving a hop) or over HTTP (after a future domain extraction), so `api.py` is the cut point for making a domain its own service.
+- Covers every cross-domain need: `chat` -> `knowledge`, cross-domain MCP tools, etc. Cross-domain access is the exception, not the norm.
+
+## Bazel layout
+
+Per-domain `py_library` targets for build/test modularity (not a security wall):
 
 ```
 projects/monolith/
   framework/BUILD            # py_library "framework" (Profile, Module, build_app), wide visibility
-  hikes/BUILD                # "hikes_api" (wide vis); "hikes" internals (restricted), tags=["tier=public"]
-  ships/BUILD                # "ships_api"; "ships" tags=["tier=public"]
-  stars/BUILD                # "stars_api"; "stars" tags=["tier=public"]
-  knowledge/BUILD            # "knowledge_core"; "knowledge_api"; "knowledge_public" (public); "knowledge_private" (private)
-  home/BUILD                 # "home_public" (public); "home_private" (private)
-  chat/BUILD                 # "chat_api"; "chat" tags=["tier=private"]  (deps may include //...:knowledge_api)
-  scheduler/BUILD            # "scheduler" tags=["tier=private"]
-  agent/BUILD                # "agent" tags=["tier=private"]
+  hikes/BUILD                # "hikes_api" (wide vis); "hikes" internals
+  ships/BUILD ; stars/BUILD  # same shape
+  knowledge/BUILD            # "knowledge_core"; "knowledge_api"; "knowledge_public"; "knowledge_private"
+  home/BUILD                 # "home_public"; "home_private"
+  chat/BUILD                 # "chat_api"; "chat"  (deps may include //...:knowledge_api)
+  scheduler/BUILD ; agent/BUILD
   app/BUILD                  # py_venv_binary "main_private" (deps = all); "main_public" (deps = public only)
 ```
 
-Each domain's internals `py_library` restricts `visibility` to its own targets, its tests, and `//projects/monolith/app:*`; the `:_api` target is widely visible. Cross-domain deps may only reference `:_api`. `framework` and `shared` keep broad visibility.
-
-### Boundary test
-
-A `py_test`/`sh_test` runs `bazel cquery 'deps(//projects/monolith/app:main_public)'` and asserts no dep carries `tier=private`. Prototype the `tags` + cquery approach first; fall back to a `TierInfo` provider aspect if tags prove brittle (ADR open question 3).
+Cross-domain deps reference only `:_api`. Visibility keeps coupling honest (a domain's internals are not widely visible), but it is hygiene, not the security control, so it is not backed by a build-graph exclusion test.
 
 ## Testing both routes
 
 - **Per-domain** (existing `py_test` per domain): unchanged, now against the isolated `py_library`.
 - **`main_private_test.py`**: full route surface present; engine read-write.
-- **`main_public_test.py`**: only public route prefixes; representative private routes 404; `app.state.engine` read-only; no `/mcp` mount; `build_app(PUBLIC_PROFILE, [a_private_module])` raises.
-- **Boundary `cquery` test**: private libraries absent from the public binary's closure.
-- **Data grant test**: as `public_reader`, asserting a private table/row is not selectable (ADR 004's mandated test, now per-schema).
-- **`architecture_test.py`** extended: every domain exports a `MODULE` with a valid `Tier` and `schema`; cross-domain imports target only `:_api`; existing prefix checks retained.
+- **`main_public_test.py`**: only public route prefixes; representative private routes 404; `app.state.engine` read-only; no `/mcp` mount; `build_app(PUBLIC_PROFILE, [module_requiring_a_secret])` raises.
+- **Data grant test**: as `public_reader`, assert a private table/row is not selectable and writes are rejected (ADR 004's mandated test, now per-schema). This is the test that proves the boundary.
+- **`architecture_test.py`** extended: every domain exports a `MODULE` with a valid `Tier` and `schema`; cross-domain imports target only `:_api`; `api.py` signatures are serializable; existing prefix checks retained.
 
 ## Migration sequence
 
 Each step is independently shippable and CI-verified; the single private binary keeps working until the last step.
 
-1. **Per-domain schemas + grants (Layer 1).** Atlas migrations moving each domain's tables into its schema, per-tier grants, `public_reader` scoped to public schemas/views. Repoint each domain's queries to its schema. Resolve every cross-domain read onto a temporary `api.py`. Ship inside the existing binary; this is the load-bearing change.
+1. **Per-domain schemas + grants + per-domain scheduler tables (Boundary 1).** Atlas migrations moving each domain's tables into its schema, per-tier grants, `public_reader` scoped to public schemas/views. Repoint queries. Resolve every cross-domain read onto an `api.py` function. Ship inside the existing binary; this is the load-bearing change.
 2. **Introduce the framework, behavior-preserving.** Add `framework/` (`Profile`, `Module`, `build_app`). Rewrite `app/main.py` as `build_app(PRIVATE_PROFILE, ALL_MODULES)`. One binary still; verify the rendered app, scheduler, and MCP surface are identical.
-3. **Formalize `<domain>/api.py` + module objects.** Each domain exports `MODULE` and a stable `api.py`; extend `architecture_test.py`.
-4. **Split per-domain `py_library` targets (Layer 2)** with tier tags and split `:_api` / internals visibility. Bulk of the `BUILD` churn; domain by domain.
+3. **Formalize `<domain>/api.py` + module objects.** Each domain exports `MODULE` and a stable, serializable `api.py`; extend `architecture_test.py`.
+4. **Split per-domain `py_library` targets** with `:_api` / internals visibility. Domain by domain.
 5. **Split `knowledge`** into `knowledge_core` + `knowledge_public` + `knowledge_private`; resolve `home` into `home_public` / `home_private`.
-6. **Add `main_public`.** New entrypoint, `py_venv_binary`, apko image, public SvelteKit dist. Add the `cquery` boundary test and `main_public_test`.
-7. **Wire the public deployment (ADR 004 deliverables).** Point `PUBLIC_PROFILE` at `monolith-pg-ro` as `public_reader`; default-deny NetworkPolicy egress; SLO rollup job feeding `home_public`. Second Deployment in the chart for the public binary (one chart, two binaries).
-8. **Cleanup.** Rename `app/main.py` -> `app/main_private.py` if desired; document the module + `api.py` pattern for new domains in `docs/services.md` / `docs/contributing.md`.
+6. **Add `main_public`.** New entrypoint, `py_venv_binary`, apko image, public SvelteKit dist. Add `main_public_test`.
+7. **Wire the public deployment (ADR 004 deliverables).** Public Deployment with no secrets; `PUBLIC_PROFILE` at `monolith-pg-ro` as `public_reader`; default-deny NetworkPolicy egress; SLO rollup job feeding `home_public`. Second Deployment in the chart (one chart, two binaries).
+8. **Cleanup.** Rename `app/main.py` -> `app/main_private.py` if desired; document the module + `api.py` pattern in `docs/services.md` / `docs/contributing.md`.
 
 ## Open questions (carried from the ADR)
 
-1. Scheduler jobs: one shared `scheduler` schema vs. per-domain job tables.
-2. Cross-domain MCP tool placement: owning module vs. a thin composition-level `agent` module depending on multiple `:_api` targets.
-3. Tier as Bazel `tags` + cquery vs. a `TierInfo` provider aspect.
-4. `home/observability` split shape.
+1. `home/observability` split shape (full `_core`/`_public`/`_private` vs. a thin `home_public` reading only snapshot tables).
+2. Shared reference-data ownership: any table read by several domains needs an owning schema and an `api.py`; inventory during step one.
+3. `api.py` enforcement: architecture test vs. lint vs. convention plus review.
 
 ## References
 
