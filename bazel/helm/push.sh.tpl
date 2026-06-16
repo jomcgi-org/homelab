@@ -116,8 +116,12 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
     echo "Chart version unchanged at ${CURRENT_VERSION}"
   fi
 
-  # Re-package chart with semver-compatible pre-release tag for OCI push (PRs use ephemeral tags)
-  DATESTAMP="0.0.0-dev.$(date -u '+%Y%m%d%H%M%S').$(cd "$WORKSPACE" && git rev-parse --short HEAD)"
+  # Re-package chart with semver-compatible pre-release tag for OCI push (PRs use ephemeral tags).
+  # Prefix the short SHA with `g` (git-describe convention) so it is always an
+  # alphanumeric SemVer pre-release identifier. An all-numeric short SHA with a
+  # leading zero (e.g. 00303542) would otherwise be parsed as a numeric identifier,
+  # which SemVer forbids from having leading zeroes, and Helm rejects the version.
+  DATESTAMP="0.0.0-dev.$(date -u '+%Y%m%d%H%M%S').g$(cd "$WORKSPACE" && git rev-parse --short HEAD)"
   WORK_DIR=$(mktemp -d)
   tar -xzf "$CHART_TGZ" -C "$WORK_DIR"
   CHART_NAME=$(ls "$WORK_DIR")
