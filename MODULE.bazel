@@ -133,6 +133,7 @@ use_repo(
     "ocaml_pcre1_c",
     "ocaml_pcre2",
     "ocaml_pcre2_c",
+    "ocaml_ppx_blob",
     "ocaml_ppx_compare",
     "ocaml_ppx_derivers",
     "ocaml_ppx_deriving",
