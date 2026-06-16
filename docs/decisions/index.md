@@ -58,6 +58,7 @@ ADRs document significant architectural decisions and their context.
 | [002 - Semgrep Rule Generation via RL](security/002-semgrep-rule-generation-rl.md)             | RL-finetuned Qwen 3.5 9B for generating Semgrep rules from CVEs                        |
 | [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                              | User-space kernel isolation for agent sandbox pods via runsc                           |
 | [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets |
+| [005 - Public Chat Adversarial Hardening](security/005-public-chat-adversarial-hardening.md) | Defense-in-depth for anonymous GPU-backed chat: Turnstile sessions, reserved-headroom semaphore, server-side limits, DB-confined retrieval |
 
 ## Services
 
