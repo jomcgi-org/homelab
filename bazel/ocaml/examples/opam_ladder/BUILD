@@ -216,5 +216,11 @@ build_test(
         # so they live in the cc bucket; neither adds a lock entry.
         "@semgrep_src//:fast_json",
         "@semgrep_src//:semgrep_typing",
+        # Phase 9 wave 2: the languages/yaml parser trio. parser + generic
+        # link @ocaml_yaml//:yaml, so this is the second consumer of the yaml
+        # cc_library override (src/core was the first); all reach commons' pcre.
+        "@semgrep_src//:parser_yaml_ast",
+        "@semgrep_src//:parser_yaml_parser",
+        "@semgrep_src//:parser_yaml_ast_generic",
     ],
 )
