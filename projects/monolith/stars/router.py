@@ -38,8 +38,7 @@ been pruned yet is still excluded here.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlmodel import Session, select
@@ -53,17 +52,13 @@ logger = logging.getLogger("stars")
 
 router = APIRouter(prefix="/api/stars", tags=["stars"])
 
-# Cap each site's displayed hour list, so the payload stays light even with a
-# multi-day forecast horizon. clear_dark_hours still reports the full count.
-_DISPLAY_HOURS = 8
-
-# Dark hours run across midnight, so a viewing "night" is not a calendar day.
-# We label each night by its evening date in UK local time: shifting the local
-# clock back 12 h folds an evening and the following pre-dawn hours into one
-# night key, so the map's night filter groups hours the way a stargazer thinks
-# about them (one outing = one night).
-_LONDON = ZoneInfo("Europe/London")
-_NIGHT_SHIFT = timedelta(hours=12)
+# Cap each site's upcoming-window list. 25 is well above the ~8 the card shows at
+# once: the surplus is headroom so the client can drop already-elapsed hours and
+# still have future windows to list through a night. The map field, the night
+# buckets and the card all derive from this one array client-side, so a coloured
+# cell can never disagree with an empty card. clear_dark_hours /
+# clear_twilight_hours still report the full counts for ranking.
+_DISPLAY_HOURS = 25
 
 # Forecasts refresh hourly, so 30 min edge freshness with a 1 h SWR window is
 # plenty; max-age=0 makes the browser revalidate rather than hold a stale copy.
@@ -102,19 +97,6 @@ def _iso(value: datetime | None) -> str | None:
     """ISO-8601 string in UTC, or None. Keeps the JSON consistent across backends."""
     coerced = _as_utc(value)
     return coerced.isoformat() if coerced is not None else None
-
-
-def _night_key(hour_time: datetime) -> str:
-    """ISO date (YYYY-MM-DD) of the night a dark hour belongs to.
-
-    A night runs from one evening into the next morning, so labelling by the
-    calendar date would split a single outing at midnight. Convert to UK local
-    time and shift back 12 h before taking the date: evening hours keep their
-    own date and pre-dawn hours fold back onto the evening that opened the
-    night. The frontend formats this key into the chip label.
-    """
-    local = _as_utc(hour_time).astimezone(_LONDON)
-    return (local - _NIGHT_SHIFT).date().isoformat()
 
 
 @router.get("/sites")
@@ -190,31 +172,19 @@ def get_sites(
         if any(is_twilight_hour(h.sun_elevation_deg) for h in hours):
             any_twilight_hour = True
 
-        # Per-night counts so the map's night filter can recolour each marker by
-        # how many clear hours the selected night(s) hold. We keep both a
-        # clear-dark and a clear-twilight breakdown so the night filter still
-        # works in twilight mode (when every clear-dark count is zero).
-        night_clear_dark: dict[str, int] = {}
-        for h in clear_hours:
-            key = _night_key(h.hour_time)
-            night_clear_dark[key] = night_clear_dark.get(key, 0) + 1
-        night_clear_twilight: dict[str, int] = {}
-        for h in clear_twilight:
-            key = _night_key(h.hour_time)
-            night_clear_twilight[key] = night_clear_twilight.get(key, 0) + 1
-
-        # Display the upcoming clear windows in chronological order, capped: a
-        # planner reads the night top to bottom. We show the clear-twilight set
-        # (the superset) and tag each hour ``dark`` so the card can label true
-        # dark vs twilight-fallback windows, with the sun elevation alongside.
+        # The site's upcoming clear windows in chronological order, capped at
+        # _DISPLAY_HOURS. This is the clear-twilight superset, each hour tagged
+        # ``dark`` (true nautical dark, sun < -12) vs a twilight-only fallback
+        # hour. The live map field, the night-filter buckets and the card list
+        # all derive from this one array on the client, so the marker colour and
+        # the card can never disagree; the cap is the headroom that keeps the
+        # card from emptying mid-night as the earliest hours elapse. Only the
+        # fields the card renders are emitted (time / cloud / dark); the count
+        # headlines above carry the magnitudes.
         best_hours = [
             {
                 "time": _iso(h.hour_time),
                 "cloud_area_fraction": h.cloud_area_fraction,
-                "air_temperature": h.air_temperature,
-                "dew_spread": h.dew_spread,
-                "symbol": h.symbol,
-                "sun_elevation_deg": h.sun_elevation_deg,
                 "dark": is_dark_hour(h.sun_elevation_deg),
             }
             for h in sorted(clear_twilight, key=lambda h: h.hour_time)[:_DISPLAY_HOURS]
@@ -230,8 +200,6 @@ def get_sites(
                 "clear_dark_hours": clear_dark_hours,
                 "clear_twilight_hours": clear_twilight_hours,
                 "best_hours": best_hours,
-                "night_clear_dark": night_clear_dark,
-                "night_clear_twilight": night_clear_twilight,
             }
         )
 
@@ -255,16 +223,6 @@ def get_sites(
     else:
         darkness = "none"
 
-    # Union of nights present across all sites, ascending, so the frontend can
-    # render one stable row of night-filter chips (a site missing a night just
-    # has no qualifying hours for it). In twilight mode the dark per-night maps
-    # are all empty, so key the chips off the twilight breakdown the map colours
-    # by; otherwise this is the unchanged clear-dark night set.
-    night_field = (
-        "night_clear_twilight" if darkness == "twilight" else "night_clear_dark"
-    )
-    nights = sorted({key for s in sites for key in s[night_field]})
-
     # The ETag folds in the current clock hour so the CDN turns over hourly even
     # when fetched_at has not changed: as hours fall past the cutoff the payload
     # shrinks, and the cutoff token forces a revalidation at each hour boundary.
@@ -285,7 +243,6 @@ def get_sites(
         "sites": sites,
         "count": len(sites),
         "total_sites": len(by_id),
-        "nights": nights,
         "darkness": darkness,
         "fetched_at": _iso(max_fetched),
     }

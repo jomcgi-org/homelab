@@ -1,7 +1,12 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
-  import { relativeMax, monthBars } from "$lib/public/stars/heat.js";
+  import {
+    relativeMax,
+    monthBars,
+    liveWindows,
+    nightKey,
+  } from "$lib/public/stars/heat.js";
 
   // `sites` is the list to plot; clicking a dot opens the detail card. In LIVE
   // mode the rows carry per-night scores + upcoming clear-dark hours; in
@@ -85,6 +90,11 @@
   // (ShipsMap uses 0.9 over water; stars cells sit on land so go a touch lower).
   const CELL_FILL_OPACITY = 0.72;
 
+  // How many upcoming windows the detail card lists at once. best_hours ships
+  // more than this (see _DISPLAY_HOURS server-side) so the elapsed-filtered list
+  // still fills the card through a night as the earliest hours drop off.
+  const CARD_HOURS = 8;
+
   const SOURCE_ID = "sites"; // point features -> circle markers
   const LAYER_ID = "sites";
   const CELL_SOURCE = "sites-cells"; // square polygons -> fill heatmap
@@ -157,16 +167,11 @@
         ],
   );
 
-  // The selected site's hours, dropping any that have already elapsed (the hour
-  // is over once nowMs passes its end). LIVE only; historical rows carry no
-  // best_hours. The endpoint already prunes past hours server-side; this just
-  // keeps a long-open page honest between refreshes.
-  let cardHours = $derived(
-    (selected?.best_hours ?? []).filter((h) => {
-      const t = Date.parse(h.time);
-      return Number.isNaN(t) ? true : t + 3_600_000 > nowMs;
-    }),
-  );
+  // The selected site's upcoming windows for the card list: the same elapsed-
+  // filtered best_hours the map field is derived from (so a coloured cell always
+  // has card rows), capped at the handful the card shows at once. LIVE only;
+  // historical rows carry no best_hours.
+  let cardHours = $derived(liveWindows(selected, nowMs).slice(0, CARD_HOURS));
 
   // Group the live windows by London-local day so the list shows each day once
   // (a rowspan label) with its hours beneath, rather than repeating "Mon, Mon,
@@ -269,28 +274,32 @@
     };
   }
 
-  // Upcoming clear-hour count this site reaches across the currently selected
-  // nights. Normally this is the clear-DARK count; in the midsummer "twilight"
-  // darkness mode (no true dark anywhere) it falls back to the wider clear-
-  // TWILIGHT count so the live field is not uniformly zero. Falls back to the
-  // site-level total when the payload carries no per-night map (older build /
-  // CDN-cached response), so the map never blanks. With a single selected night,
-  // sites with no qualifying hours that night return null and drop off the map
-  // (the night filter). LIVE only. The per-night maps only hold nights with >= 1
-  // qualifying hour, so a missing key is correctly treated as zero.
+  // Upcoming clear-window count this site reaches across the currently selected
+  // nights, derived from the same best_hours array the card lists (so a coloured
+  // cell always has card rows). In astronomical mode only true-dark hours count
+  // toward the field; in the midsummer "twilight" mode the whole clear-twilight
+  // superset counts so the field is not uniformly zero. Hours with no `dark`
+  // flag (older payload) count as dark, preserving prior behaviour. With one or
+  // more selected nights the site takes its best single night's count; a site
+  // with no qualifying windows on the active nights returns null and drops off
+  // the map (the night filter). LIVE only.
   function effectiveClearDark(site) {
-    const twilight = darknessMode === "twilight";
-    const nd = twilight ? site.night_clear_twilight : site.night_clear_dark;
-    const total = twilight
-      ? (site.clear_twilight_hours ?? site.clear_dark_hours)
-      : site.clear_dark_hours;
-    if (!nd || !activeNights || activeNights.size === 0) {
-      return total ?? null;
+    const darkOnly = darknessMode !== "twilight";
+    const wins = liveWindows(site, nowMs).filter(
+      (h) => !darkOnly || h.dark !== false,
+    );
+    if (!activeNights || activeNights.size === 0) {
+      return wins.length || null;
+    }
+    const perNight = new Map();
+    for (const h of wins) {
+      const night = nightKey(h.time);
+      if (!activeNights.has(night)) continue;
+      perNight.set(night, (perNight.get(night) ?? 0) + 1);
     }
     let best = null;
-    for (const night of activeNights) {
-      const c = nd[night];
-      if (c != null && (best === null || c > best)) best = c;
+    for (const c of perNight.values()) {
+      if (best === null || c > best) best = c;
     }
     return best;
   }
@@ -463,6 +472,15 @@
   // live field then derives from a different per-site count (dark vs twilight).
   $effect(() => {
     void darknessMode;
+    if (map && layerReady && mode === "live") pushData();
+  });
+
+  // Recolour as the clock advances: the live field elapsed-filters best_hours,
+  // so a tick can drop a site whose last window has just passed. Keeps the
+  // markers in step with the card (which re-derives on nowMs), so a coloured
+  // cell never outlives its windows. LIVE only.
+  $effect(() => {
+    void nowMs;
     if (map && layerReady && mode === "live") pushData();
   });
 
