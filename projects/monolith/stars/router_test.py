@@ -203,7 +203,6 @@ class TestSites:
             "sites": [],
             "count": 0,
             "total_sites": 0,
-            "nights": [],
             "darkness": "none",
             "fetched_at": None,
         }
@@ -221,11 +220,12 @@ class TestSites:
         assert body["count"] == 1
         assert body["total_sites"] == 2
 
-    def test_best_hours_capped_at_eight(self, client, session):
-        # 12 future clear-dark hours; the count reports all 12 but the displayed
-        # list is capped at the earliest 8 by time.
+    def test_best_hours_capped_at_display_limit(self, client, session):
+        # 30 future clear-dark hours; the count reports all 30 but the displayed
+        # list is capped at the earliest 25 by time. The surplus over the ~8 the
+        # card shows is the headroom the client filters down from as hours elapse.
         _seed_site(session, "galloway-forest")
-        session.add_all([_hour("galloway-forest", i + 1) for i in range(12)])
+        session.add_all([_hour("galloway-forest", i + 1) for i in range(30)])
         session.commit()
 
         r = client.get("/api/stars/sites")
@@ -233,11 +233,11 @@ class TestSites:
         body = r.json()
         assert body["count"] == 1
         site = body["sites"][0]
-        assert site["clear_dark_hours"] == 12
+        assert site["clear_dark_hours"] == 30
         best_hours = site["best_hours"]
-        assert len(best_hours) == 8
-        # The earliest 8 hours by time (offsets 1..8).
-        expected = [(CUTOFF + timedelta(hours=i + 1)).isoformat() for i in range(8)]
+        assert len(best_hours) == 25
+        # The earliest 25 hours by time (offsets 1..25).
+        expected = [(CUTOFF + timedelta(hours=i + 1)).isoformat() for i in range(25)]
         assert [h["time"] for h in best_hours] == expected
 
     def test_best_hours_in_chronological_order(self, client, session):
@@ -260,10 +260,12 @@ class TestSites:
             (CUTOFF + timedelta(hours=3)).isoformat(),
         ]
 
-    def test_night_clear_dark_and_nights(self, client, session):
-        # Two nights' worth of clear-dark hours: each site exposes the per-night
-        # clear-dark count (keyed by the evening date), and the response lists
-        # the union of nights ascending for the filter chips.
+    def test_multi_night_hours_all_in_best_hours(self, client, session):
+        # Two nights' worth of clear-dark hours are all carried in best_hours
+        # (within the display cap), so the client can bucket them by night for
+        # the filter chips. The per-night maps and the top-level nights union are
+        # no longer computed server-side (the client derives them from these
+        # windows), so the payload carries neither.
         _seed_site(session, "galloway-forest")
         # Offsets chosen relative to a fixed cutoff so both nights are covered
         # regardless of when the suite runs.
@@ -275,12 +277,13 @@ class TestSites:
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
-        night_clear_dark = body["sites"][0]["night_clear_dark"]
-        # The per-night counts sum to the site's total clear-dark hours.
-        assert sum(night_clear_dark.values()) == 3
-        # Top-level nights is the sorted union of the per-site night keys.
-        assert body["nights"] == sorted(set(night_clear_dark))
-        assert body["nights"] == sorted(body["nights"])
+        site = body["sites"][0]
+        assert site["clear_dark_hours"] == 3
+        assert len(site["best_hours"]) == 3
+        # The server no longer emits per-night maps or a nights union.
+        assert "night_clear_dark" not in site
+        assert "night_clear_twilight" not in site
+        assert "nights" not in body
 
     def test_clear_twilight_at_least_clear_dark_and_dark_flag(self, client, session):
         # A clear true-dark hour (sun -18) plus a clear twilight-only hour
@@ -299,11 +302,15 @@ class TestSites:
         assert site["clear_twilight_hours"] == 2
         assert site["clear_twilight_hours"] >= site["clear_dark_hours"]
         # best_hours shows the full clear-twilight superset, sorted by time, each
-        # tagged dark (true at -18, false at -11) with its sun elevation.
+        # tagged dark (true at -18, false at -11).
         flags = {h["time"]: h["dark"] for h in site["best_hours"]}
         assert flags[(CUTOFF + timedelta(hours=1)).isoformat()] is True
         assert flags[(CUTOFF + timedelta(hours=2)).isoformat()] is False
-        assert all("sun_elevation_deg" in h for h in site["best_hours"])
+        # Each window carries only the fields the card renders: time, cloud, dark.
+        assert all(
+            set(h) == {"time", "cloud_area_fraction", "dark"}
+            for h in site["best_hours"]
+        )
 
     def test_darkness_astronomical_when_any_dark_hour(self, client, session):
         # Any upcoming true-dark hour (sun < -12) anywhere puts the page in
@@ -333,8 +340,6 @@ class TestSites:
         site = body["sites"][0]
         assert site["clear_dark_hours"] == 0
         assert site["clear_twilight_hours"] == 2
-        # In twilight mode the night chips key off the twilight breakdown.
-        assert body["nights"] == sorted(set(site["night_clear_twilight"]))
 
     def test_darkness_none_when_no_kept_hours(self, client, session):
         # A site exists but only has past hours -> no kept rows at all -> the

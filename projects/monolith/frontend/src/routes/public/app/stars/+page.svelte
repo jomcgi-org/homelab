@@ -2,9 +2,15 @@
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
-  import { monthLabel, monthShort } from "$lib/public/stars/heat.js";
+  import { monthLabel, monthShort, starsNights } from "$lib/public/stars/heat.js";
 
   let { data } = $props();
+
+  // A coarse "current time" signal: it advances the "updated Xm ago" label, the
+  // night-chip set, and StarsMap dropping hours that elapse on a long-open page
+  // (see the tick in onMount). Declared up top so the derivations below can read
+  // it.
+  let nowMs = $state(Date.now());
 
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
@@ -35,8 +41,12 @@
   // Night picker (LIVE): "I'm free Saturday, show me the map for Saturday night."
   // One chip per viewing night plus an "All" reset; picking a night filters the
   // map to that night and StarsMap recolours each marker by the score it reaches
-  // then. `nights` is the sorted union of evening dates the API returns.
-  let nights = $derived(data.snapshot?.nights ?? []);
+  // then. `nights` is the sorted union of upcoming evening dates, derived from
+  // the same windows the map colours by (and re-derived as nowMs advances, so a
+  // fully-elapsed night drops its chip). Empty unless we are in live mode.
+  let nights = $derived(
+    mode === "live" ? starsNights(sites, darkness, nowMs) : [],
+  );
   let selectedNight = $state("all"); // "all" or a night key
   let nightOpen = $state(false); // the night box is collapsed until tapped
 
@@ -156,11 +166,6 @@
   let topClearDark = $derived(
     sites.length ? Math.round(sites[0].clear_dark_hours ?? 0) : null,
   );
-
-  // A coarse "current time" signal: it advances the "updated Xm ago" label and
-  // lets StarsMap drop hours that elapse on a long-open page (see the tick in
-  // onMount).
-  let nowMs = $state(Date.now());
 
   // Relative age of the snapshot, mirroring the homepage's formatAgo (a local
   // helper, not a shared export). Parameterized on nowMs so it ticks.

@@ -5,6 +5,10 @@ import {
   monthBars,
   relativeMax,
   heatWeightExpression,
+  isUpcoming,
+  nightKey,
+  liveWindows,
+  starsNights,
 } from "./heat.js";
 
 describe("monthLabel / monthShort", () => {
@@ -92,5 +96,107 @@ describe("heatWeightExpression", () => {
       80,
       1,
     ]);
+  });
+});
+
+const NOW = Date.parse("2026-06-16T02:04:00Z");
+
+describe("isUpcoming", () => {
+  it("drops an hour once its clock hour has fully elapsed", () => {
+    // Starts 01:00, ends 02:00, which is before now (02:04): elapsed.
+    expect(isUpcoming("2026-06-16T01:00:00+00:00", NOW)).toBe(false);
+  });
+
+  it("keeps the in-progress hour and any future hour", () => {
+    // Starts 02:00, ends 03:00 > now: still upcoming.
+    expect(isUpcoming("2026-06-16T02:00:00+00:00", NOW)).toBe(true);
+    expect(isUpcoming("2026-06-16T05:00:00+00:00", NOW)).toBe(true);
+  });
+
+  it("is timezone-safe: an offset-bearing string parses as an absolute instant", () => {
+    // 03:00+01:00 == 02:00Z, in progress at 02:04Z.
+    expect(isUpcoming("2026-06-16T03:00:00+01:00", NOW)).toBe(true);
+  });
+
+  it("keeps an unparseable time rather than silently dropping it", () => {
+    expect(isUpcoming("not-a-date", NOW)).toBe(true);
+  });
+});
+
+describe("nightKey", () => {
+  it("folds pre-dawn hours back onto the evening that opened the night", () => {
+    // 01:00Z and the prior 22:00Z belong to the same viewing night.
+    expect(nightKey("2026-06-16T01:00:00+00:00")).toBe("2026-06-15");
+    expect(nightKey("2026-06-15T22:00:00+00:00")).toBe("2026-06-15");
+  });
+
+  it("rolls to the next night once past midday UK time", () => {
+    expect(nightKey("2026-06-16T12:00:00+00:00")).toBe("2026-06-16");
+  });
+
+  it("returns null for an unparseable time", () => {
+    expect(nightKey("nope")).toBe(null);
+  });
+});
+
+describe("liveWindows", () => {
+  const site = {
+    best_hours: [
+      { time: "2026-06-16T00:00:00+00:00", dark: true }, // elapsed
+      { time: "2026-06-16T03:00:00+00:00", dark: true }, // future dark
+      { time: "2026-06-17T01:00:00+00:00", dark: false }, // future twilight-only
+    ],
+  };
+
+  it("drops elapsed hours and keeps the clear-twilight superset (dark + twilight)", () => {
+    const wins = liveWindows(site, NOW);
+    expect(wins.map((h) => h.time)).toEqual([
+      "2026-06-16T03:00:00+00:00",
+      "2026-06-17T01:00:00+00:00",
+    ]);
+  });
+
+  it("tolerates a missing site / best_hours", () => {
+    expect(liveWindows(null, NOW)).toEqual([]);
+    expect(liveWindows({}, NOW)).toEqual([]);
+  });
+});
+
+describe("starsNights", () => {
+  const sites = [
+    {
+      best_hours: [
+        { time: "2026-06-16T00:00:00+00:00", dark: true }, // elapsed -> ignored
+        { time: "2026-06-16T03:00:00+00:00", dark: true }, // night 2026-06-15
+        { time: "2026-06-17T01:00:00+00:00", dark: false }, // night 2026-06-16, twilight
+      ],
+    },
+    {
+      best_hours: [
+        { time: "2026-06-16T04:00:00+00:00", dark: true }, // night 2026-06-15 (dupe)
+      ],
+    },
+  ];
+
+  it("unions upcoming nights from true-dark windows in astronomical mode", () => {
+    // The twilight-only window's night is excluded; the duplicate night folds.
+    expect(starsNights(sites, "astronomical", NOW)).toEqual(["2026-06-15"]);
+  });
+
+  it("includes twilight windows' nights in twilight mode", () => {
+    expect(starsNights(sites, "twilight", NOW)).toEqual([
+      "2026-06-15",
+      "2026-06-16",
+    ]);
+  });
+
+  it("treats hours with no dark flag as dark (older payload)", () => {
+    const legacy = [{ best_hours: [{ time: "2026-06-16T03:00:00+00:00" }] }];
+    expect(starsNights(legacy, "astronomical", NOW)).toEqual(["2026-06-15"]);
+  });
+
+  it("returns an empty list for no sites", () => {
+    expect(starsNights([], "twilight", NOW)).toEqual([]);
+    expect(starsNights(undefined, "twilight", NOW)).toEqual([]);
   });
 });

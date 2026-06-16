@@ -95,3 +95,58 @@ export function relativeMax(values, floor = 1) {
 export function heatWeightExpression(max) {
   return ["interpolate", ["linear"], ["get", "heat"], 0, 0, max, 1];
 }
+
+const HOUR_MS = 3_600_000;
+
+// A forecast hour is still "upcoming" until the end of its clock hour (its start
+// + 1 h) is in the future. Mirrors the server's read-time prune, applied on the
+// client so a long-open page drops hours that elapse between data refreshes.
+// `iso` carries a UTC offset, so Date.parse yields an absolute instant: this is
+// timezone-safe regardless of the viewer's locale (Vancouver or otherwise). An
+// unparseable time is kept rather than silently dropped.
+export function isUpcoming(iso, nowMs) {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? true : t + HOUR_MS > nowMs;
+}
+
+const NIGHT_SHIFT_MS = 12 * HOUR_MS;
+
+// The viewing-night key (YYYY-MM-DD) an hour belongs to, matching the server's
+// retired _night_key. A night runs from one evening into the next morning, so
+// shifting the instant back 12 h and taking its UK-local date folds the evening
+// and the following pre-dawn hours onto one key (one outing = one night).
+export function nightKey(iso) {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms - NIGHT_SHIFT_MS).toLocaleDateString("en-CA", {
+    timeZone: "Europe/London",
+  });
+}
+
+// A site's upcoming clear windows (the live layer): best_hours with already-
+// elapsed hours dropped. This is the clear-twilight superset the card lists; the
+// map field filters it further by darkness mode (see the component). Shared by
+// the map field, the night buckets and the card so a coloured cell always has
+// card rows. Returns a new array, never mutates the input.
+export function liveWindows(site, nowMs) {
+  return (site?.best_hours ?? []).filter((h) => isUpcoming(h.time, nowMs));
+}
+
+// The sorted union of upcoming viewing-night keys across all sites, for the
+// night-filter chips. Derived from the same windows the map colours by, so a
+// fully-elapsed night drops out and a chip can never offer a night with no
+// selectable windows. In astronomical mode only true-dark windows seed a night;
+// in the midsummer twilight fallback every clear-twilight window does. Hours with
+// no `dark` flag (older payload) count as dark, preserving prior behaviour.
+export function starsNights(sites, darkness, nowMs) {
+  const darkOnly = darkness !== "twilight";
+  const keys = new Set();
+  for (const site of sites ?? []) {
+    for (const h of liveWindows(site, nowMs)) {
+      if (darkOnly && h.dark === false) continue;
+      const key = nightKey(h.time);
+      if (key) keys.add(key);
+    }
+  }
+  return [...keys].sort();
+}
