@@ -78,6 +78,16 @@ bazel_query_retry() {
 	return "$rc"
 }
 
+# Keep only Bazel target labels from a query capture, dropping any bb-sidecar log
+# noise that lands on stdout when the BES endpoint is flaky. Those WRN/INF
+# "connection reset by peer" lines would otherwise pollute the query output and
+# break the diff against the grep-extracted labels, even though the build graph
+# (and the real target list) is unchanged. `|| true` so an empty match is not a
+# pipefail; genuine drift is still caught by the diff.
+filter_labels() {
+	grep -E '^(@[^/]*)?//' || true
+}
+
 # --- Validation 1: generate-push-all.sh ---
 
 echo "Validating generate-push-all.sh ..."
@@ -93,7 +103,7 @@ extract_targets_from_build bazel/images/BUILD >"$TMPDIR_VALIDATE/push_all_grep.t
 	bazel_query_retry 'kind("oci_push", //...)'
 	bazel_query_retry 'kind("apko_push", //...)'
 	bazel_query_retry 'kind("helm_push", //...)'
-} | LC_ALL=C sort >"$TMPDIR_VALIDATE/push_all_query.txt"
+} | filter_labels | LC_ALL=C sort >"$TMPDIR_VALIDATE/push_all_query.txt"
 
 compare_targets "push-all" "$TMPDIR_VALIDATE/push_all_grep.txt" "$TMPDIR_VALIDATE/push_all_query.txt"
 
@@ -109,7 +119,7 @@ extract_targets_from_build projects/websites/BUILD >"$TMPDIR_VALIDATE/push_pages
 
 # Run equivalent bazel query
 bazel_query_retry 'kind("wrangler_pages_push", //...)' |
-	LC_ALL=C sort >"$TMPDIR_VALIDATE/push_pages_query.txt"
+	filter_labels | LC_ALL=C sort >"$TMPDIR_VALIDATE/push_pages_query.txt"
 
 compare_targets "push-all-pages" "$TMPDIR_VALIDATE/push_pages_grep.txt" "$TMPDIR_VALIDATE/push_pages_query.txt"
 
