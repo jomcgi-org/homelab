@@ -211,5 +211,10 @@ build_test(
         # closes) reaches it AND commons' pcre.
         "@ocaml_yaml//:yaml",
         "@semgrep_src//:semgrep_core",
+        # Phase 9 wave 1: the cheapest src/parsing consumers. Both reach
+        # commons' pcre (fast_json through lib_parsing, typing directly),
+        # so they live in the cc bucket; neither adds a lock entry.
+        "@semgrep_src//:fast_json",
+        "@semgrep_src//:semgrep_typing",
     ],
 )

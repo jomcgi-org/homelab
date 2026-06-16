@@ -75,6 +75,12 @@ SEMGREP_SRC_DIRS = [
     # block is inert; the tests/ subdir has its own dune and stays out via
     # the non-recursive glob.
     "src/core",
+    # Phase 9 wave 1: the cheapest src/parsing consumers, both pure (no new
+    # lock entries). fast_json names lib_parsing/paths/yojson/ast_generic;
+    # typing names commons/lib_parsing/parallelism/semgrep_core with a
+    # ppx_deriving.show + ppx_profiling pps line. Both already resolved.
+    "libs/fast_json",
+    "src/typing",
 ]
 
 SEMGREP_LIBS = {
@@ -119,6 +125,10 @@ SEMGREP_LIBS = {
     "semgrep_core_target": ":semgrep_core_target",
     "semgrep.core": ":semgrep_core",
     "semgrep_core": ":semgrep_core",
+    # Phase 9 wave 1.
+    "fast_json": ":fast_json",
+    "semgrep.typing": ":semgrep_typing",
+    "semgrep_typing": ":semgrep_typing",
 }
 
 OVERLAYS = [
