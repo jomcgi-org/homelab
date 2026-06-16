@@ -16,6 +16,7 @@ snapshot short-circuit with a 304 via ETag.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -114,22 +115,49 @@ def _merge_cells(live, historical):
     return [(la, lo, c) for (la, lo), c in totals.items()]
 
 
-def _quantile_stops(counts, n=6):
-    """Up to n ascending, unique color breakpoints derived from the cell count
-    distribution, so the stepped ramp self-calibrates as all-time totals grow (a
-    fixed ramp would saturate to all-red). First stop is always 1. Empty -> []."""
+# The hot end of the color ramp is anchored on this percentile of the per-cell
+# counts, NOT the raw max. All-time vessel-days are heavily right-skewed: a
+# single port-approach cell can be tens of times busier than a normal lane, and
+# anchoring on it would stretch the scale so every shared channel washes down
+# into the cool end. Pinning the hot anchor at p99 means the top red is earned
+# only by the densest ~1% of cells (the genuinely shared channels); cells above
+# it all peg the top color, so "hot" reads as a truly shared path rather than
+# one outlier. With thousands of occupied cells, p99 sits well below a lone
+# mega-cell, so the outlier is excluded.
+_HOT_PERCENTILE = 0.99
+
+
+def _percentile(sorted_values, q):
+    """Nearest-rank percentile over a pre-sorted ascending list (non-empty)."""
+    idx = min(len(sorted_values) - 1, int(q * len(sorted_values)))
+    return sorted_values[idx]
+
+
+def _log_stops(counts, n=6):
+    """Up to n ascending, unique color breakpoints spaced LOGARITHMICALLY between
+    1 and the p99 cell count, so the stepped ramp self-calibrates as all-time
+    totals grow and the busy shipping lanes (the heavy right tail) get the full
+    palette instead of collapsing into one saturated bucket.
+
+    Linear/equal-frequency quantiles fail on this distribution: most cells sit at
+    count 1, so the low quantiles all land on 1 and dedup down to ~3 buckets,
+    crushing every lane into the top color. Geometric spacing to a p99 anchor
+    spreads the dynamic range where the interesting traffic actually lives. The
+    first stop is always 1; cells at or above the anchor share the hottest color.
+    Empty input -> []."""
     values = sorted(c for c in counts if c > 0)
     if not values:
         return []
-    raw = [1]
-    for i in range(1, n):
-        q = i / n
-        idx = min(len(values) - 1, int(q * len(values)))
-        raw.append(values[idx])
+    high = _percentile(values, _HOT_PERCENTILE)
+    if high <= 1:
+        return [1]  # nothing above the p99 anchor of 1: a single bucket
+    log_hi = math.log(high)
     out: list[int] = []
-    for v in raw:
+    for i in range(n):
+        # Geometric interpolation from 1 (exp 0) up to the p99 anchor.
+        v = int(round(math.exp(log_hi * i / (n - 1))))
         if not out or v > out[-1]:
-            out.append(int(v))
+            out.append(v)
     return out
 
 
@@ -234,7 +262,8 @@ def get_heat(response: Response, session: Session = Depends(get_session)):
     Sums the live 7-day rollup (HeatCell) with the all-time accumulator
     (HeatCellHistorical, banked at partition drop) per cell, so the map shows
     cumulative vessel-days rather than only the last 7 days. Returns data-derived
-    quantile color stops so the stepped ramp self-calibrates. SSR-only, CDN-cached.
+    log-spaced color stops (anchored on the p99 cell count) so the stepped ramp
+    self-calibrates and the busy lanes stay legible. SSR-only, CDN-cached.
     """
     live = [
         (c.lat_bin, c.lon_bin, c.count) for c in session.exec(select(HeatCell)).all()
@@ -245,7 +274,7 @@ def get_heat(response: Response, session: Session = Depends(get_session)):
     ]
     merged = _merge_cells(live, hist)
     cells = [[la, lo, c] for la, lo, c in merged]
-    stops = _quantile_stops([c for _, _, c in merged])
+    stops = _log_stops([c for _, _, c in merged])
 
     response.headers["Cache-Control"] = _HEAT_CACHE_CONTROL
     return {
