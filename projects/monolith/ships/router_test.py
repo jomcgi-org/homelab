@@ -24,7 +24,7 @@ from ships.models import (
     Position,
     Vessel,
 )
-from ships.router import _merge_cells, _parse_since, _quantile_stops, router
+from ships.router import _log_stops, _merge_cells, _parse_since, router
 
 T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -277,12 +277,31 @@ def test_merge_cells_sums_overlapping_bins():
     assert merged[(5, 6)] == 7
 
 
-def test_quantile_stops_ascending_unique_and_capped():
-    stops = _quantile_stops([1, 1, 1, 2, 5, 8, 13, 21, 34, 55, 89, 144])
+def test_log_stops_ascending_unique_and_capped():
+    stops = _log_stops([1, 1, 1, 2, 5, 8, 13, 21, 34, 55, 89, 144])
     assert stops == sorted(set(stops))
     assert len(stops) <= 6
-    assert stops[0] >= 1
+    assert stops[0] == 1
 
 
-def test_quantile_stops_empty():
-    assert _quantile_stops([]) == []
+def test_log_stops_empty():
+    assert _log_stops([]) == []
+
+
+def test_log_stops_spreads_skewed_traffic_and_ignores_outlier():
+    # The real shape: a mass of count-1 ocean cells, a busy-lane gradient, and
+    # one mega port-approach cell. Log spacing must NOT collapse to 2-3 buckets
+    # (the linear-quantile failure), and the hot end must track p99, not the
+    # 500000 outlier, so a shared channel reads hot without one cell stretching
+    # the scale.
+    counts = [1] * 900 + list(range(2, 100)) + [500000]
+    stops = _log_stops(counts)
+    assert stops[0] == 1
+    assert stops == sorted(set(stops))
+    assert len(stops) >= 4  # does not collapse like linear quantiles did
+    assert stops[-1] < 1000  # anchored on p99, well below the outlier
+
+
+def test_log_stops_all_ones_single_bucket():
+    # Every occupied cell seen exactly once: p99 anchor is 1, so a single bucket.
+    assert _log_stops([1, 1, 1, 1]) == [1]
