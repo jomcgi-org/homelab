@@ -1,4 +1,4 @@
-# Plan: STPA + future-BDD + `/goal` lifecycle
+# Plan: STPA + future-BDD + `/ship` lifecycle
 
 Status: in progress
 Date: 2026-06-16
@@ -6,7 +6,7 @@ Owner: Joe
 
 ## Goal
 
-Stand up an AI-development lifecycle that runs as `/goal "<feature>"` and drives a
+Stand up an AI-development lifecycle that runs as `/ship "<feature>"` and drives a
 feature from design to safety assessment, compacting context as it goes:
 
 1. plan / iterate on design
@@ -20,7 +20,11 @@ The lifecycle composes existing skills (`brainstorming`, `writing-plans`, `adr`,
 
 ## Design (settled)
 
-- **`/goal` is a skill** (agent orchestration), not a CI workflow.
+- **`/ship` is a skill** (agent orchestration), not a CI workflow. It does NOT
+  shadow the built-in `/goal`: it reuses built-in `/goal` for cross-turn
+  persistence and launches a Claude Code workflow per fan-out phase. (Workflows
+  take no mid-run input and cannot run git, so the clarify step and the review
+  gate stay in the `/ship` skill; each fan-out phase is its own workflow.)
 - **`bdd-future-feature` is a CI workflow** (a `buildbuddy.yaml` action) that runs
   `future`-tagged specs as a **non-required** check, so red specs can merge.
 - **`stpa` is a skill** (port of the loom STPA skill), deterministic JSON to jq
@@ -31,7 +35,7 @@ The lifecycle composes existing skills (`brainstorming`, `writing-plans`, `adr`,
 - **STPA placement:** colocated, one `STPA.md` per system
   (`projects/monolith/STPA.md`, `bazel/STPA.md`, ...). Logical and physical are
   two sections inside that one file, tagged via a `layer` field in the JSON.
-- **Merge cadence:** `/goal` auto-merges the low-risk phases on green (plan doc,
+- **Merge cadence:** `/ship` auto-merges the low-risk phases on green (plan doc,
   ADR, failing-BDD specs, STPA refresh: all docs/test-only, rebase auto-merge) but
   **pauses at the phase-4 implementation PR** for the repo-mandated code review,
   then resumes for STPA.
@@ -66,14 +70,19 @@ The lifecycle composes existing skills (`brainstorming`, `writing-plans`, `adr`,
     `--no-verify`).
   - Seed target: `projects/monolith/` first.
 
-### Task 3: `/goal` orchestrator skill
+### Task 3: `/ship` orchestrator skill
 
-- `.claude/skills/goal/SKILL.md`: the 5-phase conductor.
+- `.claude/skills/ship/SKILL.md`: the 5-phase conductor (named `ship`, not
+  `goal`, so it does not shadow the built-in `/goal`).
+  - Phase 0: clarify the direction interactively first (workflows take no mid-run
+    input), then proceed.
+  - Arms the built-in `/goal` completion condition for cross-turn persistence.
   - Each phase: produce artifact -> land PR -> gate on CI green.
-  - Resumable: read a small state marker; continue from first incomplete phase.
-  - Delegate heavy work to subagents (compaction).
+  - Resumable via the plan-doc ledger (durable across sessions; workflow resume is
+    same-session only).
+  - Fan-out phases run as workflows: phase 1 (multi-angle plan), phase 4 (parallel
+    implementation), phase 5 (one agent per touched system running `stpa`).
   - Auto-merge (rebase) phases 1, 2, 3, 5; pause at phase 4 for human review.
-  - Invokes the `stpa` skill against whichever system(s) the feature touched.
 
 ## Verification
 
