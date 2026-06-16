@@ -517,9 +517,7 @@ class TestGenLibrary:
             gen_library(stanza, "src", LIB_MAP)
 
     def test_preprocessor_deps_bare_atom_exits(self):
-        stanza = self._stanza(
-            "(library (name mylib) (preprocessor_deps foo.txt))"
-        )
+        stanza = self._stanza("(library (name mylib) (preprocessor_deps foo.txt))")
         with pytest.raises(SystemExit):
             gen_library(stanza, "src", LIB_MAP)
 
