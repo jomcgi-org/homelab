@@ -349,6 +349,37 @@
       : sorted[base] + (pos - base) * (next - sorted[base]);
   }
 
+  // Bounds framing the dense core (5th-95th percentile) of a snapshot, as a
+  // [[w, s], [e, n]] LngLatBoundsLike. The AIS feed is regionally clustered, so
+  // a handful of near-outliers would pull the full spread wide and leave the
+  // screen mostly empty water; trimming to the core lands the view on where the
+  // vessels actually are (the outliers still render, reachable by panning out).
+  // Returns null when there are no plottable fixes. Used both to seed the map's
+  // initial viewport at construction (so the world never flashes before the fit)
+  // and as the late fallback fit when the first snapshot arrives after mount.
+  function coreBounds(list) {
+    const lats = [];
+    const lons = [];
+    for (const v of list) {
+      if (!validLatLon(v.lat, v.lon)) continue;
+      lats.push(v.lat);
+      lons.push(v.lon);
+    }
+    if (!lats.length) return null;
+    lats.sort((a, b) => a - b);
+    lons.sort((a, b) => a - b);
+    const q = 0.05;
+    return [
+      [quantile(lons, q), quantile(lats, q)],
+      [quantile(lons, 1 - q), quantile(lats, 1 - q)],
+    ];
+  }
+
+  // Shared fitBounds tuning. maxZoom 12 lets a tight cluster fill the viewport
+  // instead of being capped far out; fitBounds only reaches it when the core
+  // really is that small, so a wider fleet still frames naturally.
+  const FIT_OPTIONS = { padding: 48, maxZoom: 12 };
+
   // Reset fleet state to snapshot truth whenever a new snapshot arrives, then
   // repaint. `vessels` is a fresh array on every invalidateAll.
   function syncVessels() {
@@ -376,32 +407,14 @@
 
     pushData();
 
+    // Late fallback fit: only reached when the map was created without a seed
+    // viewport (an empty snapshot at mount) and the first vessels arrived on a
+    // later refresh. The common path seeds the viewport at construction (see
+    // onMount), so didFit is already true and this is skipped, no snap.
     if (!didFit && seen.size > 0) {
-      const lats = [];
-      const lons = [];
-      for (const v of vessels) {
-        if (!validLatLon(v.lat, v.lon)) continue;
-        lats.push(v.lat);
-        lons.push(v.lon);
-      }
-      if (lats.length) {
-        lats.sort((a, b) => a - b);
-        lons.sort((a, b) => a - b);
-        // Frame the dense core of the fleet (5th-95th percentile) rather than
-        // its full spread: the AIS feed is regionally clustered, so a handful
-        // of near-outliers would otherwise pull the bounds wide and leave the
-        // screen mostly empty water. Trimming to the core lets the initial fit
-        // land on where the vessels actually are; the outliers still render as
-        // markers, reachable by panning/zooming out.
-        const q = 0.05;
-        const b = new maplibregl.LngLatBounds(
-          [quantile(lons, q), quantile(lats, q)],
-          [quantile(lons, 1 - q), quantile(lats, 1 - q)],
-        );
-        // maxZoom 12 (was 9) lets a tight cluster fill the viewport instead of
-        // being capped far out; fitBounds only reaches it when the core really
-        // is that small, so a wider fleet still frames naturally.
-        map.fitBounds(b, { padding: 48, maxZoom: 12, duration: 0 });
+      const b = coreBounds(vessels);
+      if (b) {
+        map.fitBounds(b, { ...FIT_OPTIONS, duration: 0 });
         didFit = true;
       }
     }
@@ -480,11 +493,21 @@
       maplibregl = (await import("maplibre-gl")).default;
       if (destroyed) return;
 
+      // Seed the initial viewport from the SSR snapshot so the map's first paint
+      // is already framed on the fleet. Without this the map opened at a whole-
+      // world view and only snapped to the fleet once syncVessels ran, so you'd
+      // see the world flash up and then jump-zoom in. The snapshot is present at
+      // mount (passed as a prop from the server load), so the framing is known
+      // before the map exists. Falls back to a wide world view only when the
+      // snapshot is empty; that late-arriving case is fit by syncVessels.
+      const seedBounds = coreBounds(vessels);
+
       map = new maplibregl.Map({
         container: mapContainer,
         style: BASEMAP_STYLE,
-        center: [0, 30],
-        zoom: 1.4,
+        ...(seedBounds
+          ? { bounds: seedBounds, fitBoundsOptions: FIT_OPTIONS }
+          : { center: [0, 30], zoom: 1.4 }),
         // Render the OSM/OpenMapTiles attribution as a compact "i" button
         // instead of letting the full credit line sprawl across the bottom of
         // the map (especially cramped on mobile). MapLibre opens this expanded
@@ -493,6 +516,9 @@
         // required credits.
         attributionControl: { compact: true },
       });
+      // The viewport is already framed on the fleet, so suppress the one-time
+      // fit in syncVessels (it would otherwise snap to the same bounds again).
+      if (seedBounds) didFit = true;
       map.addControl(
         new maplibregl.NavigationControl({ showCompass: false }),
         "bottom-right",
