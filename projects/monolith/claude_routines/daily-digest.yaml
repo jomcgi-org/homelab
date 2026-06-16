@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=./schema.json
 name: Daily Digest (follow-through)
 schedule:
-  cron: "0 7 * * *"
+  cron: "0 12 * * *" # 05:00 PDT (UTC-7); cron is UTC-only, so this is 04:00 once PST returns
 enabled: true
 model: claude-sonnet-4-6
 environment: Default
