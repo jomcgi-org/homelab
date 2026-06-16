@@ -222,5 +222,11 @@ build_test(
         "@semgrep_src//:parser_yaml_ast",
         "@semgrep_src//:parser_yaml_parser",
         "@semgrep_src//:parser_yaml_ast_generic",
+        # Phase 9 wave 3: src/il + src/analyzing, plus libs/ograph (src/il's
+        # one new internal dep). All reach commons' pcre, so the cc bucket;
+        # no new lock entry. ograph -> semgrep_core_il -> pfff_lang_GENERIC_analyze.
+        "@semgrep_src//:ograph",
+        "@semgrep_src//:semgrep_core_il",
+        "@semgrep_src//:pfff_lang_GENERIC_analyze",
     ],
 )
