@@ -99,6 +99,15 @@ SEMGREP_SRC_DIRS = [
     "libs/ograph",
     "src/il",
     "src/analyzing",
+    # Phase 9 wave 4: src/prefiltering. Names ast_generic/semgrep.core/
+    # semgrep.target (all translated) with a show/.eq/.ord/ppx_hash/
+    # ppx_profiling/ppx_sexp_conv pps line (all locked). Two atdgen (rule)
+    # pairs over Semgrep_prefilter.atd (-j -j-strict-fields / -t), the exact
+    # genrule shape src/configuring already translates. atdgen-runtime (the
+    # generated _j's dep) is locked and reaches it transitively through
+    # semgrep.core -> semgrep_interfaces, as upstream resolves it. No new
+    # externals.
+    "src/prefiltering",
 ]
 
 SEMGREP_LIBS = {
@@ -160,6 +169,9 @@ SEMGREP_LIBS = {
     "semgrep_core_il": ":semgrep_core_il",
     "pfff-lang_GENERIC-analyze": ":pfff_lang_GENERIC_analyze",
     "pfff_lang_GENERIC_analyze": ":pfff_lang_GENERIC_analyze",
+    # Phase 9 wave 4.
+    "semgrep.prefiltering": ":prefiltering",
+    "prefiltering": ":prefiltering",
 }
 
 OVERLAYS = [
