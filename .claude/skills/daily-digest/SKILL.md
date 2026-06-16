@@ -1,0 +1,127 @@
+---
+name: daily-digest
+description: >
+  Produce a prioritised digest of outstanding work, things you started but
+  have not finished, by scanning open ADRs, plans, and pull requests, then
+  post it to Discord. Use when the user asks "what should I follow through
+  on", "what's outstanding", "daily digest", or when the daily-digest
+  routine fires.
+---
+
+# Daily Digest: what to follow through on
+
+Scans three sources of in-flight work, ranks them by how close they are to
+"done but dropped", and posts a single Discord message. The framing is
+**follow-through**: surface the things Joe started and has not finished, not
+a generic backlog of everything that could ever be done.
+
+Run interactively with `/daily-digest`, or let the
+`projects/monolith/claude_routines/daily-digest.yaml` routine fire it on a
+schedule.
+
+## Sources
+
+| Source    | Where                                     | Signal of "outstanding"                                              |
+| --------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| **PRs**   | `gh pr list` (authored by Joe + review)   | open PRs that need an action from Joe to move forward                |
+| **Plans** | `docs/plans/*.md`                          | unchecked `- [ ]` tasks remaining in an implementation plan          |
+| **ADRs**  | `docs/decisions/<category>/*.md`           | `**Status:** Draft` (a decision still owed)                          |
+
+This skill is read-only. It never edits ADRs/plans, never pushes, never
+touches PRs. Its only side effect is one Discord message.
+
+## Workflow
+
+### 1. Gather pull requests
+
+```bash
+# PRs Joe opened that are still open
+gh pr list --author "@me" --state open \
+  --json number,title,url,isDraft,reviewDecision,mergeable,statusCheckRollup,updatedAt
+
+# PRs waiting on Joe's review
+gh pr list --search "review-requested:@me state:open" \
+  --json number,title,url,updatedAt
+```
+
+If `gh` is not authenticated or returns an error, do not fail the whole
+digest: skip the PR section, note "PRs unavailable" once, and continue with
+plans and ADRs.
+
+### 2. Gather plans with remaining work
+
+Scan `docs/plans/*.md` for files that still contain unchecked checkboxes
+(`- [ ]`). For each, capture the plan title (first `#` heading), the count of
+remaining vs total tasks, and the file's date prefix. Newer plans with many
+unchecked tasks rank higher; a plan that is almost entirely checked is nearly
+done and ranks lower.
+
+Plans with **no** checkboxes carry no completion signal: skip them rather than
+guess. If a plan looks stale (old date, but unchecked), a quick
+`git log -1 --format=%cr -- <plan>` tells you how recently it was touched, use
+that to decide whether it is genuinely live.
+
+### 3. Gather draft ADRs
+
+Find ADRs whose header line reads `**Status:** Draft`:
+
+```bash
+grep -rl "^\*\*Status:\*\* Draft" docs/decisions/
+```
+
+A Draft ADR is a decision Joe still owes, distinct from implementation work.
+
+### 4. Rank
+
+Sort into priority tiers. The tier, not a numeric score, is what gets
+surfaced, so keep the buckets sharp:
+
+| Tier              | What lands here                                                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| **P0 - finish**   | Open PR that is approved + mergeable but unmerged, OR failing CI, OR has review comments awaiting a reply. Almost done, one step from shipping. |
+| **P1 - in flight**| Plan with several unchecked tasks (an initiative actively underway); your own draft PRs.         |
+| **P2 - decide**   | Draft ADRs; plans whose only remainder is open questions.                                        |
+| **P3 - review**   | PRs requesting Joe's review.                                                                     |
+
+Within a tier, sort by most-recently-updated first. Cap the whole digest at
+~12 items; if more remain, append a `+N more` line per truncated tier.
+
+### 5. Post to Discord
+
+Call `mcp__homelab__monolith-monolith-agent-notify` **once** with a markdown
+message. Keep it under Discord's 2000-character limit. Shape:
+
+```
+**Daily digest, follow-through, <YYYY-MM-DD>**
+
+**P0 finish**
+- #123 Fix trace sampling, CI red on //projects/signoz, <url>
+- #119 Auth health check, approved + mergeable, just needs merge, <url>
+
+**P1 in flight**
+- Hikes into monolith, 4/11 tasks left, docs/plans/2026-06-13-hikes-into-monolith.md
+- #130 (draft) Per-PR preview envs, <url>
+
+**P2 decide**
+- ADR draft: NATS canonical event stream, docs/decisions/agents/016-...md
+
+**P3 review**
+- #131 Bump rules_apko, review requested, <url>
+```
+
+Set `level`:
+- `warn` if anything in P0 has been red/blocked for more than a couple of days,
+- otherwise `info`.
+
+If every source comes back empty (no open PRs, no plans with remaining tasks,
+no draft ADRs), post a single one-line `info`: "Daily digest: nothing
+outstanding, all clear." Do not stay silent, the absence of work is itself
+useful signal for a daily cadence.
+
+## Constraints
+
+- Read-only. No edits, commits, pushes, or PR mutations.
+- One Discord message per run. Never spam multiple notifies.
+- Prefer `gh` and local file reads; this skill needs no cluster access.
+- If a data source errors, degrade gracefully and report the rest, do not
+  abort the digest.
