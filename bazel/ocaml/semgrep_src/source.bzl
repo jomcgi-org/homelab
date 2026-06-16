@@ -123,6 +123,21 @@ SEMGREP_SRC_DIRS = [
     # (all translated) with a (pps ppx_profiling ppx_deriving.show) line, all
     # locked. Reaches commons' pcre, so ladder_builds_cc. No new externals.
     "src/naming",
+    # Phase 9 wave 7: the jsonnet source-to-generic chain plus libs/ojsonnet,
+    # the consumer that motivates it. The one new external is the grammar:
+    # tree-sitter-lang.jsonnet stamps into the lock from the
+    # languages/jsonnet/tree-sitter submodule commit (the tree-sitter-go
+    # pattern, but the jsonnet grammar HAS an external scanner). ast lands
+    # first (commons + lib_parsing), then tree-sitter (names parser_jsonnet.ast
+    # + the grammar), then generic (names parser_jsonnet.ast + ast_generic),
+    # then ojsonnet (names parser_jsonnet.tree_sitter). All pps lines are
+    # ppx_deriving.show (+ ojsonnet's ppx_profiling/ppx_deriving.ord/commons.ppx),
+    # all locked; `unix` is stdlib (the lib_map resolves it). The grammar chain
+    # rides ladder_builds_cc (no-arm64) like parser_go_tree_sitter.
+    "languages/jsonnet/ast",
+    "languages/jsonnet/tree-sitter",
+    "languages/jsonnet/generic",
+    "libs/ojsonnet",
 ]
 
 SEMGREP_LIBS = {
@@ -193,6 +208,15 @@ SEMGREP_LIBS = {
     # Phase 9 wave 6.
     "pfff-lang_GENERIC-naming": ":pfff_lang_GENERIC_naming",
     "pfff_lang_GENERIC_naming": ":pfff_lang_GENERIC_naming",
+    # Phase 9 wave 7.
+    "parser_jsonnet.ast": ":parser_jsonnet_ast",
+    "parser_jsonnet_ast": ":parser_jsonnet_ast",
+    "parser_jsonnet.tree_sitter": ":parser_jsonnet_tree_sitter",
+    "parser_jsonnet_tree_sitter": ":parser_jsonnet_tree_sitter",
+    "parser_jsonnet.ast_generic": ":parser_jsonnet_ast_generic",
+    "parser_jsonnet_ast_generic": ":parser_jsonnet_ast_generic",
+    # ojsonnet's dune has no (name ...), so dune name == public name.
+    "ojsonnet": ":ojsonnet",
 }
 
 OVERLAYS = [
