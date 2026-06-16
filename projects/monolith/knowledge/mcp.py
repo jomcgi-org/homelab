@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 import yaml
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db import get_engine
 from app.mcp_app import mcp
@@ -23,8 +23,9 @@ from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import approve_gap as _approve_gap
 from knowledge.gaps import list_review_queue, split_csv
-from knowledge.gardener import _slugify
-from knowledge.indexing import index_note_best_effort
+from knowledge.gardener import GARDENER_VERSION, _slugify
+from knowledge.indexing import index_note_best_effort, index_note_from_raw
+from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.notes import resolve_note_body
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
@@ -472,3 +473,262 @@ async def approve_research_gap(gap_id: int) -> dict:
             return _approve_gap(session, gap_id, vault_root)
         except ValueError as exc:
             return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Gardener decomposition tools (ADR 006 Phase 4c)
+#
+# The gardener is moving from an in-pod subprocess to a remote claude.ai
+# routine that drives decomposition over these MCP tools. New atoms are
+# FILELESS: written to Postgres only (no _processed file), because the
+# reconciler permanently defers without an Obsidian sidecar.
+# ---------------------------------------------------------------------------
+
+_ATOM_TYPES = frozenset({"atom", "fact", "active"})
+_VISIBILITIES = frozenset({"public", "private"})
+_ACTIVE_STATUSES = frozenset({"active", "someday", "blocked"})
+_ACTIVE_SIZES = frozenset({"small", "medium", "large", "unknown"})
+
+
+@mcp.tool
+async def list_raws_needing_decomposition(limit: int = 10) -> dict:
+    """List raw inputs the gardener still needs to decompose, fresh first.
+
+    Mirrors the in-pod gardener work queue: tier 1 is fresh raws with no
+    current-version provenance, tier 2 is retriable failed raws under the
+    retry ceiling. Use ``get_raw`` to read a raw body, then ``create_atom``
+    to emit atoms and ``record_provenance`` to close out raws that yield no
+    new notes or that fail.
+
+    Args:
+        limit: Maximum raws to return (default 10, clamped to 1 through 50).
+    """
+    limit = max(1, min(limit, 50))
+    with Session(get_engine()) as session:
+        raws = KnowledgeStore(session).raws_needing_decomposition(limit)
+        out = []
+        for raw in raws:
+            meta, _ = frontmatter.parse(raw.content)
+            title = meta.title or (raw.content.strip()[:60] or raw.raw_id)
+            out.append(
+                {
+                    "raw_id": raw.raw_id,
+                    "title": title,
+                    "source": raw.source,
+                    "created_at": raw.created_at,
+                }
+            )
+    return {"raws": out}
+
+
+@mcp.tool
+async def get_raw(raw_id: str) -> dict:
+    """Read a raw input markdown content by its ``raw_id``.
+
+    Returns the body the gardener should decompose into atoms. Reads
+    Postgres ``knowledge.raw_inputs.content`` for now, an S3 read replaces
+    this in ADR 006 Phase 4d.
+
+    Args:
+        raw_id: The stable raw input identifier.
+    """
+    with Session(get_engine()) as session:
+        row = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
+        if row is None:
+            return {"error": f"raw not found: {raw_id}"}
+        return {"raw_id": row.raw_id, "content": row.content, "source": row.source}
+
+
+@mcp.tool
+async def create_atom(
+    title: str,
+    body: str,
+    type: str,
+    visibility: str,
+    tags: list[str] | None = None,
+    aliases: list[str] | None = None,
+    edges: dict[str, list[str]] | None = None,
+    derived_from_raw: str | None = None,
+    status: str | None = None,
+    size: str | None = None,
+    due: str | None = None,
+    blocked_by: list[str] | None = None,
+) -> dict:
+    """Create a new knowledge atom, fileless, indexed straight into Postgres.
+
+    Validates the atom schema, slugifies the title into a stable ``note_id``
+    (resolving DB collisions with a numeric suffix), serializes frontmatter,
+    and indexes the note synchronously. When ``derived_from_raw`` resolves
+    to a raw input, an ``AtomRawProvenance`` row links the atom to its raw.
+
+    Validation failures return an error message and write nothing.
+
+    Args:
+        title: Human-readable note title (required).
+        body: Markdown body of the atom (required).
+        type: One of atom, fact, or active.
+        visibility: One of public or private.
+        tags: Optional list of tags.
+        aliases: Optional list of aliases.
+        edges: Optional typed edges, e.g. a derives_from list of note ids.
+        derived_from_raw: Optional raw_id to record provenance against.
+        status: Required for type active. One of active, someday, blocked.
+        size: Required for type active. One of small, medium, large, unknown.
+        due: Optional ISO due date (active notes only).
+        blocked_by: Optional list of blocking note_ids (active notes only).
+    """
+    if type not in _ATOM_TYPES:
+        return {"error": f"type must be one of atom, fact, active, got {type!r}"}
+    if visibility not in _VISIBILITIES:
+        return {"error": f"visibility must be public or private, got {visibility!r}"}
+    if type == "active":
+        if status not in _ACTIVE_STATUSES:
+            return {
+                "error": (
+                    "type=active requires status in active, someday, blocked, "
+                    f"got {status!r}"
+                )
+            }
+        if size not in _ACTIVE_SIZES:
+            return {
+                "error": (
+                    "type=active requires size in small, medium, large, unknown, "
+                    f"got {size!r}"
+                )
+            }
+    if edges:
+        for edge_type in edges:
+            if edge_type not in frontmatter._KNOWN_EDGE_TYPES:
+                valid = ", ".join(sorted(frontmatter._KNOWN_EDGE_TYPES))
+                return {
+                    "error": f"invalid edge type {edge_type!r}: must be one of {valid}"
+                }
+
+    with Session(get_engine()) as session:
+        store = KnowledgeStore(session)
+
+        # Resolve a unique note_id against the DB (fileless: no filesystem
+        # collision check). The slug stem becomes the stable id.
+        base = _slugify(title)
+        note_id = base
+        counter = 1
+        while store.get_note_by_id(note_id) is not None:
+            note_id = f"{base}-{counter}"
+            counter += 1
+
+        fm_dict: dict[str, object] = {
+            "id": note_id,
+            "title": title,
+            "type": type,
+            "visibility": visibility,
+        }
+        if derived_from_raw is not None:
+            fm_dict["derived_from_raw"] = derived_from_raw
+        if tags:
+            fm_dict["tags"] = list(tags)
+        if aliases:
+            fm_dict["aliases"] = list(aliases)
+        if edges:
+            fm_dict["edges"] = {k: list(v) for k, v in edges.items()}
+        if type == "active":
+            fm_dict["status"] = status
+            fm_dict["size"] = size
+            if due is not None:
+                fm_dict["due"] = due
+            if blocked_by:
+                fm_dict["blocked_by"] = list(blocked_by)
+
+        fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
+        raw = f"---\n{fm_str}---\n\n{body.strip()}\n"
+
+        await index_note_from_raw(
+            store,
+            EmbeddingClient(),
+            note_id=note_id,
+            rel_path=f"_processed/{note_id}.md",
+            raw=raw,
+        )
+
+        result: dict = {"note_id": note_id}
+        if derived_from_raw is not None:
+            raw_row = session.exec(
+                select(RawInput).where(RawInput.raw_id == derived_from_raw)
+            ).first()
+            if raw_row is None:
+                result["warning"] = (
+                    f"derived_from_raw {derived_from_raw!r} not found, "
+                    "provenance not recorded"
+                )
+            else:
+                session.add(
+                    AtomRawProvenance(
+                        raw_fk=raw_row.id,
+                        derived_note_id=note_id,
+                        gardener_version=GARDENER_VERSION,
+                    )
+                )
+                session.commit()
+
+    return result
+
+
+@mcp.tool
+async def record_provenance(
+    raw_id: str,
+    outcome: str,
+    error: str | None = None,
+) -> dict:
+    """Record a sentinel or failure provenance row for a decomposed raw.
+
+    Closes out a raw that the gardener processed but that produced no new
+    atoms (no-new-notes), or that failed (failed). A failed outcome
+    increments ``retry_count`` on the existing failure row (or inserts one
+    with ``retry_count=1``), so the retry ceiling in
+    ``raws_needing_decomposition`` is respected.
+
+    Args:
+        raw_id: The raw input that was processed.
+        outcome: Either no-new-notes or failed.
+        error: Optional error detail (only stored for a failed outcome).
+    """
+    if outcome not in ("no-new-notes", "failed"):
+        return {"error": f"outcome must be no-new-notes or failed, got {outcome!r}"}
+
+    with Session(get_engine()) as session:
+        row = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
+        if row is None:
+            return {"error": f"raw not found: {raw_id}"}
+
+        if outcome == "no-new-notes":
+            session.add(
+                AtomRawProvenance(
+                    raw_fk=row.id,
+                    derived_note_id="no-new-notes",
+                    gardener_version=GARDENER_VERSION,
+                )
+            )
+        else:
+            existing = session.exec(
+                select(AtomRawProvenance).where(
+                    AtomRawProvenance.raw_fk == row.id,
+                    AtomRawProvenance.derived_note_id == "failed",
+                )
+            ).first()
+            if existing is not None:
+                existing.retry_count += 1
+                existing.error = (error or "")[:500]
+                existing.gardener_version = GARDENER_VERSION
+                session.add(existing)
+            else:
+                session.add(
+                    AtomRawProvenance(
+                        raw_fk=row.id,
+                        derived_note_id="failed",
+                        gardener_version=GARDENER_VERSION,
+                        error=(error or "")[:500],
+                        retry_count=1,
+                    )
+                )
+        session.commit()
+
+    return {"recorded": outcome, "raw_id": raw_id}
