@@ -97,7 +97,10 @@ actions:
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           fi
 
-          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external
+          # -future excludes future-feature BDD specs (executable specs for
+          # not-yet-built features): those are intentionally red and must not
+          # gate merges. The non-required "BDD future features" action runs them.
+          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
           # OCaml multi-arch shard (ADR 006/008): the example/test ladder again,
           # targeting linux/arm64. Toolchain resolution routes ocaml actions to
@@ -120,6 +123,51 @@ actions:
           #   --platforms=//bazel/ocaml/platforms:linux_aarch64 \
           #   --build_tests_only \
           #   --test_tag_filters=-external,-no-arm64
+
+  # BDD future features — runs the `future`-tagged BDD specs: executable specs
+  # for features that are designed but not built yet (step 3 of the /goal
+  # lifecycle, "merge failing BDD tests"). This action is INFORMATIONAL and must
+  # NOT be listed as a required status check in GitHub branch protection, so a
+  # red run never blocks merge. Semantics:
+  #   - red   = specs failing -> feature is mid-build (the expected state).
+  #   - green = every future spec passes -> the feature is done: drop
+  #             `future = True` from the bdd_test target to promote the spec
+  #             back into the gating "Test" action.
+  # With no future-tagged specs in the tree, this no-ops green.
+  - name: "BDD future features"
+    container_image: "ubuntu-24.04"
+    max_retries: 1
+    resource_requests:
+      cpu: "6"
+      memory: "10GB"
+      disk: "60GB"
+    triggers:
+      push:
+        branches:
+          - "main"
+      pull_request:
+        branches:
+          - "*"
+        merge_with_base: false
+    steps:
+      - run: |
+          # Skip automated commits (no code to test)
+          AUTHOR="$(git log -1 --format='%an')"
+          if [ "$AUTHOR" = "argocd-image-updater" ]; then
+            echo "Skipping automated commit from $AUTHOR"
+            exit 0
+          fi
+          TARGETS="$(bazel query 'attr(tags, "\bfuture\b", tests(//...))' 2>/dev/null || true)"
+          if [ -z "$TARGETS" ]; then
+            echo "No future-feature BDD specs (nothing tagged 'future'). Nothing to run."
+            exit 0
+          fi
+          echo "Future-feature BDD specs:"
+          echo "$TARGETS"
+          # Unquoted on purpose: $TARGETS is a newline/space-separated label list.
+          # A non-zero exit here is the expected red-while-building signal and is
+          # non-blocking (this is not a required check).
+          bazel test $TARGETS --config=ci --deleted_packages=bazel/tools/python
 
   # Push images — runs in parallel with Test (no dependency).
   # PR images are tagged with the source branch name (not "main"),
