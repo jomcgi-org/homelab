@@ -141,6 +141,8 @@ For everything else, use `kubectl`. SigNoz observability (historical logs/traces
 | **Agent jobs**       | `monolith-monolith-agent-list-routine-jobs`, `monolith-monolith-agent-trigger-routine-job`, `monolith-monolith-agent-trigger-job`                                                                           |
 | **Alert / message Joe** | `monolith-monolith-agent-notify` posts a Discord message via the in-process bot (args: `message`, optional `level` of `info`/`warn`/`error`, optional `channel` from the allow-list). Defaults to the homelab channel. This is the way to reach Joe from a session (a finished long task, a blocked decision, a heads-up). Outbound only: it cannot read or list channels. Be sparing, one clear message, not a play-by-play. |
 
+**Ending a turn while blocked.** When you stop a turn waiting on Joe's input (an `AskUserQuestion` he hasn't answered, an approval you need before proceeding, or a decision only he can make) and he may be away from the session, send one `monolith-monolith-agent-notify` message so the blocker actually reaches him instead of sitting silently in a session he isn't watching. Keep it to a single line stating what you need and why you're stopped. Do not notify for routine turn endings where no decision is pending, and do not double-notify the same blocker.
+
 ## Kubernetes Operations (kubectl)
 
 **CRITICAL: This cluster is managed via GitOps.**
