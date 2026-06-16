@@ -47,17 +47,17 @@ Make **Postgres the source of truth for note bodies** and **a monolith-served no
 
 Postgres is the **destination** for note bodies, not an interim (the lakehouse this ADR originally preceded was withdrawn on 2026-06-14). Web-app data access still sits behind the thin `KnowledgeStore` interface, kept for testability and a clean read-path seam rather than as a hedge toward a future serving layer.
 
-| Aspect                  | Today (Obsidian)                                     | Decided (Postgres, destination)                                             |
-| ----------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------- |
-| **Editing surface**     | Obsidian app + paid Sync                             | Monolith notes web UI (Cloudflare Access)                                   |
-| **Note body of record** | `/vault/_processed/*.md` on disk                     | `knowledge.notes.content` in Postgres                                       |
-| **Raw ground truth**    | `/vault/_raw/*.md` + `raw_inputs.content` (Postgres) | `s3://knowledge-raws/<sha256>` (SeaweedFS, COSI)                            |
-| **Search**              | pgvector on `chunks`                                 | pgvector on `chunks` (unchanged)                                            |
-| **Gardener I/O**        | Claude Code against durable `/vault`                 | Claude Code via schema-enforced `knowledge` CLI -> Postgres (no filesystem) |
-| **Sync sidecar**        | `headless-sync` (Obsidian Sync)                      | none                                                                        |
-| **Vault volume**        | durable emptyDir/PVC, single replica                 | none; `RollingUpdate`, N replicas                                           |
-| **Backup**              | git push of `/vault`                                 | CNPG WAL + optional markdown git export                                     |
-| **Third-party egress**  | Obsidian cloud                                       | none                                                                        |
+| Aspect                  | Today (Obsidian)                                     | Decided (Postgres, destination)                                   |
+| ----------------------- | ---------------------------------------------------- | ----------------------------------------------------------------- |
+| **Editing surface**     | Obsidian app + paid Sync                             | Monolith notes web UI (Cloudflare Access)                         |
+| **Note body of record** | `/vault/_processed/*.md` on disk                     | `knowledge.notes.content` in Postgres                             |
+| **Raw ground truth**    | `/vault/_raw/*.md` + `raw_inputs.content` (Postgres) | `s3://knowledge/raws/<content_hash>.md` (SeaweedFS)               |
+| **Search**              | pgvector on `chunks`                                 | pgvector on `chunks` (unchanged)                                  |
+| **Gardener**            | in-pod `claude` subprocess against durable `/vault`  | remote claude.ai routines over MCP (gardener/distill/consolidate) |
+| **Sync sidecar**        | `headless-sync` (Obsidian Sync)                      | none                                                              |
+| **Vault volume**        | durable emptyDir/PVC, single replica                 | none; `RollingUpdate`, N replicas                                 |
+| **Backup**              | git push of `/vault`                                 | CNPG WAL + optional markdown git export                           |
+| **Third-party egress**  | Obsidian cloud                                       | none                                                              |
 
 ---
 
@@ -75,18 +75,20 @@ graph TB
     end
     IQ -->|raw markdown| PG
 
-    subgraph Gardener["knowledge.garden (scheduled)"]
-      CC["Claude Code subprocess"] -->|search / get / create-atom / edit / patch-edges| CLI["knowledge Typer CLI"]
-      CC -->|get-raw| CLI
+    subgraph Routines["Remote claude.ai routines (scheduled)"]
+      GARD["knowledge-gardener (hourly)"]
+      DIST["knowledge-distill (daily)"]
+      CONS["knowledge-consolidate (daily)"]
     end
-    CLI -->|same KnowledgeStore + indexing| PG
-    RAW[("SeaweedFS<br/>s3://knowledge-raws/&lt;sha256&gt;")] -->|get-raw| CLI
+    Routines -->|MCP: list_raws / get_raw / create_atom / edit_note / patch_edges| MCP["Monolith MCP gateway"]
+    MCP -->|KnowledgeStore + indexing| PG
+    RAW[("SeaweedFS<br/>s3://knowledge/raws/&lt;hash&gt;")] -->|get_raw| MCP
 
     PG -->|CNPG WAL / PITR| BK["backups"]
     PG -.->|optional periodic export| GIT["read-only markdown git mirror"]
 ```
 
-The only components that change are the ones Obsidian touched: the editing surface (new web UI), the body-of-record (now `knowledge.notes.content`), the raw ground truth (now `s3://knowledge-raws` via COSI), and the gardener's I/O (now the schema-enforced `knowledge` CLI, no filesystem). Chunking, embedding, pgvector search, edges, gaps, graph layout, and the scheduler are unchanged.
+The only components that change are the ones Obsidian touched: the editing surface (new web UI), the body-of-record (now `knowledge.notes.content`), the raw ground truth (now `s3://knowledge/raws`), and the gardener (now remote claude.ai routines over MCP, no in-pod subprocess or filesystem). Chunking, embedding, pgvector search, edges, gaps, graph layout, and the scheduler are unchanged.
 
 ---
 
