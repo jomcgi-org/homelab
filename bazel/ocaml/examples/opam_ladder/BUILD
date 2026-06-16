@@ -246,5 +246,17 @@ build_test(
         # commons/semgrep.core, hence the cc bucket; clean translate, no new
         # lock entry.
         "@semgrep_src//:pfff_lang_GENERIC_naming",
+        # Phase 9 wave 7: the jsonnet source-to-generic chain + libs/ojsonnet.
+        # All reach commons' pcre, and parser_jsonnet_tree_sitter links the
+        # jsonnet grammar cc_library, so they live in the cc bucket exactly
+        # like parser_go_tree_sitter above (ladder_builds_cc is already
+        # no-arm64; the grammar has no aarch64 C++ toolchain in CI). The
+        # grammar repo itself is exercised end to end by
+        # examples/treesitter_jsonnet, mirroring how go's grammar is only
+        # reached via examples/treesitter_go (not added to a ladder directly).
+        "@semgrep_src//:parser_jsonnet_ast",
+        "@semgrep_src//:parser_jsonnet_tree_sitter",
+        "@semgrep_src//:parser_jsonnet_ast_generic",
+        "@semgrep_src//:ojsonnet",
     ],
 )

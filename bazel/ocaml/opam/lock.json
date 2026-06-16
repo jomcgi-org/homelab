@@ -1057,6 +1057,20 @@
       }
     },
     {
+      "name": "tree-sitter-jsonnet",
+      "version": "90e1fbc",
+      "repo": "ocaml_tree_sitter_jsonnet",
+      "url": "https://github.com/returntocorp/semgrep-jsonnet/archive/90e1fbc65e25e1dbef85776777adb3cd53184ec5.tar.gz",
+      "sha256": "f994a1248a7774528262f464dbfd9015affb00766eed8136c7a7a11aadbd4b46",
+      "strip_prefix": "semgrep-jsonnet-90e1fbc65e25e1dbef85776777adb3cd53184ec5",
+      "type": "tar.gz",
+      "override": true,
+      "opam": false,
+      "libs": {
+        "tree-sitter-lang.jsonnet": "tree_sitter_jsonnet"
+      }
+    },
+    {
       "name": "base64",
       "version": "3.5.1",
       "repo": "ocaml_base64",
