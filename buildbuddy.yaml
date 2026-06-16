@@ -125,7 +125,7 @@ actions:
           #   --test_tag_filters=-external,-no-arm64
 
   # BDD future features — runs the `future`-tagged BDD specs: executable specs
-  # for features that are designed but not built yet (step 3 of the /goal
+  # for features that are designed but not built yet (step 3 of the /ship
   # lifecycle, "merge failing BDD tests"). This action is INFORMATIONAL and must
   # NOT be listed as a required status check in GitHub branch protection, so a
   # red run never blocks merge. Semantics:
