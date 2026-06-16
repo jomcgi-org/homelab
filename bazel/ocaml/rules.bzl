@@ -147,6 +147,7 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None
         args.add("--cppo-tool", ctx.executable.cppo.path)
     if getattr(ctx.attr, "preprocess", None):
         args.add("--ppx", ctx.executable.preprocess.path)
+
         # preprocess_data files are read by the ppx driver at preprocess time
         # (dune (preprocessor_deps ...)); only pass them when a ppx runs, since
         # nothing else reads them. getattr keeps the helper shared with the
