@@ -81,6 +81,14 @@ SEMGREP_SRC_DIRS = [
     # ppx_deriving.show + ppx_profiling pps line. Both already resolved.
     "libs/fast_json",
     "src/typing",
+    # Phase 9 wave 2: the languages/yaml parser trio, the first consumers of
+    # the yaml lock outside src/core (parser + generic name `yaml` directly).
+    # All three are clean translates (commons/lib_parsing/ast_generic internal,
+    # yaml locked, ppx_deriving.show pps locked); no menhir/lex/stubs. ast
+    # first, then parser (names ast), then generic (names both).
+    "languages/yaml/ast",
+    "languages/yaml/parser",
+    "languages/yaml/generic",
 ]
 
 SEMGREP_LIBS = {
@@ -129,6 +137,13 @@ SEMGREP_LIBS = {
     "fast_json": ":fast_json",
     "semgrep.typing": ":semgrep_typing",
     "semgrep_typing": ":semgrep_typing",
+    # Phase 9 wave 2.
+    "parser_yaml.ast": ":parser_yaml_ast",
+    "parser_yaml_ast": ":parser_yaml_ast",
+    "parser_yaml.parser": ":parser_yaml_parser",
+    "parser_yaml_parser": ":parser_yaml_parser",
+    "parser_yaml.ast_generic": ":parser_yaml_ast_generic",
+    "parser_yaml_ast_generic": ":parser_yaml_ast_generic",
 }
 
 OVERLAYS = [
