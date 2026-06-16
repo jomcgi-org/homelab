@@ -5,14 +5,14 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func
+from sqlalchemy import func, not_, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
 from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.gardener import _slugify
+from knowledge.gardener import GARDENER_VERSION, Gardener, _slugify
 from knowledge.links import Link
-from knowledge.models import Chunk, Gap, Note, NoteLink
+from knowledge.models import AtomRawProvenance, Chunk, Gap, Note, NoteLink, RawInput
 from shared.chunker import Chunk as ChunkPayload
 
 logger = logging.getLogger(__name__)
@@ -770,3 +770,74 @@ class KnowledgeStore:
             "resolved_at": gap.resolved_at,
             "pipeline_version": gap.pipeline_version,
         }
+
+    def raws_needing_decomposition(self, limit: int = 10) -> list[RawInput]:
+        """Return raws the gardener still needs to decompose, fresh first.
+
+        Lifts the exact tiering from ``Gardener._raws_needing_decomposition``
+        so the remote claude.ai routine (ADR 006 Phase 4c) sees the same work
+        queue the in-pod gardener used to.
+
+        Tier 1 (fresh): no current-version or pre-migration provenance at all.
+        Tier 2 (retriable): have a ``derived_note_id='failed'`` provenance row
+        with ``retry_count < Gardener._MAX_RETRIES`` and no successful
+        current-version provenance.
+
+        Returns ``(fresh + retriable)[:limit]``, preserving tier order.
+        """
+        # Subquery: raw_fk values that have current-version or pre-migration
+        # provenance (i.e. successfully handled or grandfathered).
+        handled_subq = (
+            select(AtomRawProvenance.raw_fk)
+            .where(AtomRawProvenance.raw_fk.is_not(None))
+            .where(
+                or_(
+                    AtomRawProvenance.gardener_version == GARDENER_VERSION,
+                    AtomRawProvenance.gardener_version == "pre-migration",
+                )
+            )
+            .where(
+                or_(
+                    AtomRawProvenance.derived_note_id.is_(None),
+                    AtomRawProvenance.derived_note_id != "failed",
+                )
+            )
+            .subquery()
+        )
+
+        # Subquery: raw_fk values that have a "failed" provenance row
+        # (regardless of retry_count: filtered in tier 2).
+        failed_subq = (
+            select(AtomRawProvenance.raw_fk)
+            .where(AtomRawProvenance.raw_fk.is_not(None))
+            .where(AtomRawProvenance.derived_note_id == "failed")
+            .subquery()
+        )
+
+        # Tier 1: fresh raws, not handled AND not failed.
+        fresh_stmt = (
+            select(RawInput)
+            .where(not_(RawInput.id.in_(select(handled_subq.c.raw_fk))))
+            .where(not_(RawInput.id.in_(select(failed_subq.c.raw_fk))))
+            .order_by(RawInput.created_at.asc().nullslast(), RawInput.id.asc())
+        )
+        fresh = list(self.session.exec(fresh_stmt).all())
+
+        # Tier 2: retriable failed raws have a "failed" row with
+        # retry_count < _MAX_RETRIES and no successful current-version prov.
+        retriable_subq = (
+            select(AtomRawProvenance.raw_fk)
+            .where(AtomRawProvenance.raw_fk.is_not(None))
+            .where(AtomRawProvenance.derived_note_id == "failed")
+            .where(AtomRawProvenance.retry_count < Gardener._MAX_RETRIES)
+            .subquery()
+        )
+        retriable_stmt = (
+            select(RawInput)
+            .where(RawInput.id.in_(select(retriable_subq.c.raw_fk)))
+            .where(not_(RawInput.id.in_(select(handled_subq.c.raw_fk))))
+            .order_by(RawInput.created_at.asc().nullslast(), RawInput.id.asc())
+        )
+        retriable = list(self.session.exec(retriable_stmt).all())
+
+        return (fresh + retriable)[:limit]

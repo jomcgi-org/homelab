@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from knowledge.gardener import GARDENER_VERSION
+from knowledge.models import AtomRawProvenance
 from knowledge.mcp import (
+    create_atom,
     create_note,
     delete_note,
     edit_note,
     get_daily_tasks,
     get_note,
+    get_raw,
     get_weekly_tasks,
+    list_raws_needing_decomposition,
     list_tasks,
+    record_provenance,
     search_knowledge,
     search_tasks,
     update_task,
@@ -687,3 +694,341 @@ class TestGetWeeklyTasks:
 
         assert len(result["tasks"]) == 1
         MockStore.return_value.list_tasks_weekly.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Gardener decomposition tool tests (ADR 006 Phase 4c)
+# ---------------------------------------------------------------------------
+
+
+def _result(value):
+    """Wrap a value as a SQLModel exec(...) result whose .first() returns it."""
+    r = MagicMock()
+    r.first.return_value = value
+    return r
+
+
+class TestListRawsNeedingDecomposition:
+    """Tests for the list_raws_needing_decomposition MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_returns_raws(self):
+        fake_raw = SimpleNamespace(
+            raw_id="r1",
+            content="---\ntitle: My Raw\n---\nbody text",
+            source="discord",
+            created_at="2026-01-01",
+        )
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.raws_needing_decomposition.return_value = [fake_raw]
+            result = await list_raws_needing_decomposition()
+
+        assert result["raws"] == [
+            {
+                "raw_id": "r1",
+                "title": "My Raw",
+                "source": "discord",
+                "created_at": "2026-01-01",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_clamps_limit(self):
+        mock_session = MagicMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.raws_needing_decomposition.return_value = []
+            await list_raws_needing_decomposition(limit=999)
+
+            MockStore.return_value.raws_needing_decomposition.assert_called_once_with(
+                50
+            )
+
+
+class TestGetRaw:
+    """Tests for the get_raw MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_found(self):
+        row = SimpleNamespace(raw_id="r1", content="hello world", source="discord")
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.return_value.first.return_value = row
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+        ):
+            result = await get_raw("r1")
+
+        assert result == {
+            "raw_id": "r1",
+            "content": "hello world",
+            "source": "discord",
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.return_value.first.return_value = None
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+        ):
+            result = await get_raw("nope")
+
+        assert "error" in result
+        assert "nope" in result["error"]
+
+
+class TestCreateAtom:
+    """Tests for the create_atom MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        index = AsyncMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
+            patch("knowledge.mcp.index_note_from_raw", index),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = None
+            result = await create_atom(
+                title="My Atom",
+                body="The body.",
+                type="atom",
+                visibility="public",
+                tags=["x"],
+            )
+
+        assert result == {"note_id": "my-atom"}
+        index.assert_awaited_once()
+        kwargs = index.call_args.kwargs
+        assert kwargs["note_id"] == "my-atom"
+        assert "visibility: public" in kwargs["raw"]
+        assert "The body." in kwargs["raw"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_type(self):
+        index = AsyncMock()
+        with patch("knowledge.mcp.index_note_from_raw", index):
+            result = await create_atom(
+                title="x", body="y", type="bogus", visibility="public"
+            )
+
+        assert "error" in result
+        index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_visibility(self):
+        index = AsyncMock()
+        with patch("knowledge.mcp.index_note_from_raw", index):
+            result = await create_atom(
+                title="x", body="y", type="atom", visibility="secret"
+            )
+
+        assert "error" in result
+        index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_active_requires_status_and_size(self):
+        index = AsyncMock()
+        with patch("knowledge.mcp.index_note_from_raw", index):
+            result = await create_atom(
+                title="x", body="y", type="active", visibility="public"
+            )
+
+        assert "error" in result
+        index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_active_with_status_and_size_ok(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        index = AsyncMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
+            patch("knowledge.mcp.index_note_from_raw", index),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = None
+            result = await create_atom(
+                title="Do The Thing",
+                body="task body",
+                type="active",
+                visibility="private",
+                status="active",
+                size="small",
+            )
+
+        assert result == {"note_id": "do-the-thing"}
+        kwargs = index.call_args.kwargs
+        assert "status: active" in kwargs["raw"]
+        assert "size: small" in kwargs["raw"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_edge_type(self):
+        index = AsyncMock()
+        with patch("knowledge.mcp.index_note_from_raw", index):
+            result = await create_atom(
+                title="x",
+                body="y",
+                type="atom",
+                visibility="public",
+                edges={"not_a_real_edge": ["target"]},
+            )
+
+        assert "error" in result
+        index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_collision_appends_suffix(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        index = AsyncMock()
+
+        def gnb(note_id):
+            return SAMPLE_NOTE if note_id == "my-atom" else None
+
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
+            patch("knowledge.mcp.index_note_from_raw", index),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.side_effect = gnb
+            result = await create_atom(
+                title="My Atom", body="b", type="atom", visibility="public"
+            )
+
+        assert result == {"note_id": "my-atom-1"}
+        assert index.call_args.kwargs["note_id"] == "my-atom-1"
+
+    @pytest.mark.asyncio
+    async def test_records_provenance_when_raw_resolves(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.return_value.first.return_value = SimpleNamespace(id=7)
+        index = AsyncMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
+            patch("knowledge.mcp.index_note_from_raw", index),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = None
+            result = await create_atom(
+                title="My Atom",
+                body="b",
+                type="atom",
+                visibility="public",
+                derived_from_raw="r1",
+            )
+
+        assert result == {"note_id": "my-atom"}
+        added = mock_session.add.call_args.args[0]
+        assert isinstance(added, AtomRawProvenance)
+        assert added.raw_fk == 7
+        assert added.derived_note_id == "my-atom"
+        assert added.gardener_version == GARDENER_VERSION
+        mock_session.commit.assert_called_once()
+
+
+class TestRecordProvenance:
+    """Tests for the record_provenance MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_outcome(self):
+        result = await record_provenance("r1", "weird")
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_raw_missing(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.return_value.first.return_value = None
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+        ):
+            result = await record_provenance("nope", "no-new-notes")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_no_new_notes(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.return_value.first.return_value = SimpleNamespace(id=3)
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+        ):
+            result = await record_provenance("r1", "no-new-notes")
+
+        assert result == {"recorded": "no-new-notes", "raw_id": "r1"}
+        added = mock_session.add.call_args.args[0]
+        assert isinstance(added, AtomRawProvenance)
+        assert added.raw_fk == 3
+        assert added.derived_note_id == "no-new-notes"
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_inserts_new_row(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.side_effect = [
+            _result(SimpleNamespace(id=4)),
+            _result(None),
+        ]
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+        ):
+            result = await record_provenance("r1", "failed", error="boom")
+
+        assert result == {"recorded": "failed", "raw_id": "r1"}
+        added = mock_session.add.call_args.args[0]
+        assert isinstance(added, AtomRawProvenance)
+        assert added.derived_note_id == "failed"
+        assert added.retry_count == 1
+        assert added.error == "boom"
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_increments_existing_row(self):
+        existing = SimpleNamespace(retry_count=2, error=None, gardener_version="old")
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        mock_session.exec.side_effect = [
+            _result(SimpleNamespace(id=5)),
+            _result(existing),
+        ]
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+        ):
+            result = await record_provenance("r1", "failed", error="again")
+
+        assert result == {"recorded": "failed", "raw_id": "r1"}
+        assert existing.retry_count == 3
+        assert existing.error == "again"
+        assert existing.gardener_version == GARDENER_VERSION
+        mock_session.add.assert_called_once_with(existing)
+        mock_session.commit.assert_called_once()
