@@ -89,6 +89,16 @@ SEMGREP_SRC_DIRS = [
     "languages/yaml/ast",
     "languages/yaml/parser",
     "languages/yaml/generic",
+    # Phase 9 wave 3: src/il + src/analyzing. src/analyzing names semgrep.il,
+    # so src/il lands first; src/il names `ograph` (libs/ograph, the
+    # deprecated object-graph lib: commons + collections, pure, no pps), so
+    # that internal dir lands ahead of both. ograph -> il -> analyzing, all
+    # reaching commons' pcre. src/il's pps adds ppx_deriving.eq/.ord and
+    # visitors.ppx to the show line; all locked (ast_generic already drives
+    # visitors). No new lock entries.
+    "libs/ograph",
+    "src/il",
+    "src/analyzing",
 ]
 
 SEMGREP_LIBS = {
@@ -144,6 +154,12 @@ SEMGREP_LIBS = {
     "parser_yaml_parser": ":parser_yaml_parser",
     "parser_yaml.ast_generic": ":parser_yaml_ast_generic",
     "parser_yaml_ast_generic": ":parser_yaml_ast_generic",
+    # Phase 9 wave 3.
+    "ograph": ":ograph",
+    "semgrep.il": ":semgrep_core_il",
+    "semgrep_core_il": ":semgrep_core_il",
+    "pfff-lang_GENERIC-analyze": ":pfff_lang_GENERIC_analyze",
+    "pfff_lang_GENERIC_analyze": ":pfff_lang_GENERIC_analyze",
 }
 
 OVERLAYS = [
