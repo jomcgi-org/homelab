@@ -486,6 +486,51 @@ class TestGenLibrary:
         with pytest.raises(SystemExit):
             gen_library(stanza, "src", LIB_MAP)
 
+    def test_preprocessor_deps_single_file(self):
+        # (preprocessor_deps (file X)) becomes a preprocess_data attr listing X
+        # src_dir-prefixed (the srcs convention) so the ppx pass can read it.
+        stanza = self._stanza(
+            "(library (name mylib) (preprocessor_deps (file default.semgrepignore)))"
+        )
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert 'preprocess_data = ["src/default.semgrepignore"],' in out
+
+    def test_preprocessor_deps_multiple_files(self):
+        stanza = self._stanza(
+            "(library (name mylib) (preprocessor_deps (file a.txt) (file b.txt)))"
+        )
+        out = gen_library(stanza, "d", LIB_MAP)
+        assert 'preprocess_data = ["d/a.txt", "d/b.txt"],' in out
+
+    def test_preprocessor_deps_absent_omits_attr(self):
+        stanza = self._stanza("(library (name mylib))")
+        out = gen_library(stanza, "src", LIB_MAP)
+        assert "preprocess_data" not in out
+
+    def test_preprocessor_deps_glob_files_exits(self):
+        # Only (file X) is modeled; (glob_files ...) would silently drop a
+        # preprocess input, so it rejects loudly.
+        stanza = self._stanza(
+            "(library (name mylib) (preprocessor_deps (glob_files *.inc)))"
+        )
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_preprocessor_deps_bare_atom_exits(self):
+        stanza = self._stanza(
+            "(library (name mylib) (preprocessor_deps foo.txt))"
+        )
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
+    def test_preprocessor_deps_parent_escape_exits(self):
+        # A parent-dir escape would land outside the package; reject it.
+        stanza = self._stanza(
+            "(library (name mylib) (preprocessor_deps (file ../x.txt)))"
+        )
+        with pytest.raises(SystemExit):
+            gen_library(stanza, "src", LIB_MAP)
+
     def test_kind_ppx_deriver_accepted(self):
         stanza = self._stanza("(library (name mylib) (kind ppx_deriver))")
         out = gen_library(stanza, "src", LIB_MAP)

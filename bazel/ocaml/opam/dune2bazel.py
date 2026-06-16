@@ -63,6 +63,13 @@ _SUPPORTED_LIBRARY_FIELDS = {
     "libraries",
     "wrapped",
     "preprocess",
+    # Files a (preprocess (pps ...)) rewriter reads at preprocess time
+    # (dune's (preprocessor_deps (file X) ...)). ppx_blob's [%blob "X"] embeds
+    # X's contents as a string literal during the ppx pass, so X must be staged
+    # as an input to the preprocess action. Modeled as a preprocess_data attr
+    # listing the file paths; only (file X) entries are supported (see
+    # _resolve_preprocessor_deps), everything else rejects loudly.
+    "preprocessor_deps",
     "kind",
     "flags",
     "ocamlopt_flags",
@@ -383,6 +390,50 @@ def _resolve_preprocess(stanza, name, lib_map, ppx_runtime_map):
     )
 
 
+def _resolve_preprocessor_deps(stanza, src_dir):
+    """Translate (preprocessor_deps (file X) ...) into preprocess_data paths.
+
+    dune stages these files as inputs to the (preprocess ...) action so a
+    rewriter can read them at preprocess time (ppx_blob's [%blob "X"] embeds
+    X's contents as a compile-time string). Returns the list of file paths
+    relative to the BUILD (src_dir-prefixed, the same convention as srcs), or
+    [] when the stanza is absent.
+
+    Only (file X) entries are modeled: those are the only form Semgrep's
+    targeting dune uses and the only one whose staging semantics map cleanly
+    onto a label_list of input files. (glob_files ...), (package ...), bare
+    atoms, and dune variables reject loudly rather than silently drop a
+    preprocess input (a missing blob file is a build error, not a no-op).
+    """
+    field = _field(stanza, "preprocessor_deps")
+    if field is None:
+        return []
+    paths = []
+    for item in field:
+        if not (
+            isinstance(item, list)
+            and len(item) == 2
+            and isinstance(item[0], tuple)
+            and item[0][1] == "file"
+        ):
+            sys.exit(
+                "dune2bazel: unsupported (preprocessor_deps ...) entry %r in "
+                "%s/dune; only (file X) is modeled (glob_files/package/variable "
+                "forms are not). Extend the translator or add an "
+                "opam/overrides/ BUILD." % (item, src_dir)
+            )
+        path = _atom(item[1])
+        if "%{" in path or path.startswith("/") or ".." in path.split("/"):
+            sys.exit(
+                "dune2bazel: unsupported (preprocessor_deps (file %s)) in "
+                "%s/dune; only a plain in-dir relative path is modeled (dune "
+                "variables, absolute paths, and parent-dir escapes are not)."
+                % (path, src_dir)
+            )
+        paths.append("%s/%s" % (src_dir, path))
+    return paths
+
+
 # The atdgen binary built from the locked atd source (the same target the
 # ocaml-tree-sitter-core override's hand-written genrules use). The rule
 # translation below only accepts `(run atdgen ...)`, so this is the one tool.
@@ -606,6 +657,7 @@ def gen_library(
     ppx_lines, preprocess, runtime_deps = _resolve_preprocess(
         stanza, name, lib_map, ppx_runtime_map or {}
     )
+    preprocess_data = _resolve_preprocessor_deps(stanza, src_dir)
 
     # (include_subdirs unqualified) pulls sources from subdirectories into the
     # same flat module namespace; the driver stages every source by basename,
@@ -629,6 +681,11 @@ def gen_library(
         lines.append("    wrapped = True,")
     if preprocess:
         lines.append('    preprocess = "%s",' % preprocess)
+    if preprocess_data:
+        lines.append(
+            "    preprocess_data = [%s],"
+            % ", ".join('"%s"' % d for d in preprocess_data)
+        )
     if runtime_deps:
         lines.append(
             "    preprocess_runtime_deps = [%s],"

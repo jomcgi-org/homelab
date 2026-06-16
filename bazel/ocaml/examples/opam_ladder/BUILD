@@ -73,6 +73,10 @@ build_test(
         "@ocaml_ppx_sexp_conv//:ppx_sexp_conv_lib",
         "@ocaml_ppx_hash//:ppx_hash",
         "@ocaml_ppx_hash//:ppx_hash_lib",
+        # Phase 9 wave 5: ppx_blob (a clean ppx_rewriter translate over the
+        # locked tarball; the [%blob ...] file embedder src/targeting names).
+        # examples/ppx_blob exercises it with preprocess_data end to end.
+        "@ocaml_ppx_blob//:ppx_blob",
         # Phase 8 wave D: first target out of the pinned Semgrep CE tree.
         "@semgrep_src//:collections",
         # Phase 8 wave A4: the libs/commons closure (see
@@ -232,5 +236,11 @@ build_test(
         # semgrep.core, hence the cc bucket; two atdgen rule pairs, no new
         # lock entry.
         "@semgrep_src//:prefiltering",
+        # Phase 9 wave 5: src/targeting. Reaches commons' pcre through
+        # commons/semgrep.core, hence the cc bucket. The first NEW external
+        # since yaml (ppx_blob, in the non-cc ladder above) and the first
+        # (preprocessor_deps (file X)) consumer: default.semgrepignore flows
+        # through the new preprocess_data attr so [%blob ...] resolves it.
+        "@semgrep_src//:semgrep_targeting",
     ],
 )

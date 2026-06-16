@@ -15,7 +15,7 @@ set -eu
 
 MODE="" NAME="" SYSROOT_TAR="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
-PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX=""
+PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
 MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
 CC_INCLUDES="" CC_ARCHIVES="" CC_LINKFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
@@ -39,6 +39,7 @@ while [ $# -gt 0 ]; do
 	--pp-arg) PP_ARGS="$PP_ARGS $2" && shift 2 ;;
 	--cppo-tool) CPPO_TOOL="$2" && shift 2 ;;
 	--ppx) PPX="$2" && shift 2 ;;
+	--ppx-data) PPX_DATA="$PPX_DATA $2" && shift 2 ;;
 	--menhir-tool) MENHIR_TOOL="$2" && shift 2 ;;
 	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" && shift 2 ;;
 	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" && shift 2 ;;
@@ -189,6 +190,13 @@ else
 fi
 mkdir -p "$WORK"
 for s in $SRCS; do cp "$s" "$WORK/$(basename "$s")"; done
+# preprocess_data files (dune (preprocessor_deps (file X))) are staged by
+# basename into $WORK alongside the sources. ppx_blob's [%blob "X"] resolves X
+# relative to the SOURCE FILE'S directory first (it reads pos_fname's dirname,
+# which is $WORK here since the ppx pass below invokes "$PPX --impl $WORK/foo.ml"),
+# then relative to the cwd. Staging X into $WORK means that source-dir-relative
+# lookup finds it regardless of the process cwd, so no cd dance is needed.
+for d in $PPX_DATA; do cp "$d" "$WORK/$(basename "$d")"; done
 INCFLAGS="-I $WORK $INCFLAGS"
 
 # --- Source generation pipeline ----------------------------------------------

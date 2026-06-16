@@ -108,6 +108,16 @@ SEMGREP_SRC_DIRS = [
     # semgrep.core -> semgrep_interfaces, as upstream resolves it. No new
     # externals.
     "src/prefiltering",
+    # Phase 9 wave 5: src/targeting. The first NEW external since yaml:
+    # ppx_blob (locked; a clean ppx_rewriter translate, no override). Names
+    # commons/fpath/glob/gitignore/git_wrapper/semgrep.target/semgrep.core
+    # (all translated/locked) with a show/yojson/.eq/ppx_hash/ppx_profiling/
+    # telemetry.ppx/commons.ppx/ppx_blob pps line. Carries the first
+    # (preprocessor_deps (file default.semgrepignore)) stanza, handled by the
+    # new translator preprocess_data feature: default.semgrepignore rides the
+    # shallow clone as a regular file and is staged into the ppx work dir so
+    # ppx_blob's [%blob "default.semgrepignore"] resolves at preprocess time.
+    "src/targeting",
 ]
 
 SEMGREP_LIBS = {
@@ -172,6 +182,9 @@ SEMGREP_LIBS = {
     # Phase 9 wave 4.
     "semgrep.prefiltering": ":prefiltering",
     "prefiltering": ":prefiltering",
+    # Phase 9 wave 5.
+    "semgrep.targeting": ":semgrep_targeting",
+    "semgrep_targeting": ":semgrep_targeting",
 }
 
 OVERLAYS = [
