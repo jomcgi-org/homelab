@@ -242,5 +242,9 @@ build_test(
         # (preprocessor_deps (file X)) consumer: default.semgrepignore flows
         # through the new preprocess_data attr so [%blob ...] resolves it.
         "@semgrep_src//:semgrep_targeting",
+        # Phase 9 wave 6: src/naming. Reaches commons' pcre through
+        # commons/semgrep.core, hence the cc bucket; clean translate, no new
+        # lock entry.
+        "@semgrep_src//:pfff_lang_GENERIC_naming",
     ],
 )

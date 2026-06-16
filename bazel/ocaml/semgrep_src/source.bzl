@@ -118,6 +118,11 @@ SEMGREP_SRC_DIRS = [
     # shallow clone as a regular file and is staged into the ppx work dir so
     # ppx_blob's [%blob "default.semgrepignore"] resolves at preprocess time.
     "src/targeting",
+    # Phase 9 wave 6: src/naming. Clean mechanical translate; names
+    # commons/ast_generic/semgrep.core/semgrep.typing/parser_javascript.ast
+    # (all translated) with a (pps ppx_profiling ppx_deriving.show) line, all
+    # locked. Reaches commons' pcre, so ladder_builds_cc. No new externals.
+    "src/naming",
 ]
 
 SEMGREP_LIBS = {
@@ -185,6 +190,9 @@ SEMGREP_LIBS = {
     # Phase 9 wave 5.
     "semgrep.targeting": ":semgrep_targeting",
     "semgrep_targeting": ":semgrep_targeting",
+    # Phase 9 wave 6.
+    "pfff-lang_GENERIC-naming": ":pfff_lang_GENERIC_naming",
+    "pfff_lang_GENERIC_naming": ":pfff_lang_GENERIC_naming",
 }
 
 OVERLAYS = [
