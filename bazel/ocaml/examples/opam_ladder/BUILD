@@ -228,5 +228,9 @@ build_test(
         "@semgrep_src//:ograph",
         "@semgrep_src//:semgrep_core_il",
         "@semgrep_src//:pfff_lang_GENERIC_analyze",
+        # Phase 9 wave 4: src/prefiltering. Reaches commons' pcre through
+        # semgrep.core, hence the cc bucket; two atdgen rule pairs, no new
+        # lock entry.
+        "@semgrep_src//:prefiltering",
     ],
 )
