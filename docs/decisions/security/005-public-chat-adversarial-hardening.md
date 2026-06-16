@@ -175,5 +175,3 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 | `projects/monolith/chat/summarizer.py` | Existing rolling-summary pattern reused for compaction |
 | [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/) | The admission challenge minting the session token |
 | `docs/security.md` | Defense-in-depth baseline this ADR extends |
-</content>
-</invoke>
