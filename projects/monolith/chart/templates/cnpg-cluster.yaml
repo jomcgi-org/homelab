@@ -22,6 +22,19 @@ spec:
       - name: vector
         image:
           reference: {{ .Values.postgres.pgvector.image }}
+  # Declarative roles. CNPG runs as a superuser, so it (not the app-role Atlas
+  # migrations) is what can CREATE the public_reader role. Its table/schema GRANTs
+  # live in chart/migrations/20260617000000_public_reader_role.sql; CNPG does not
+  # manage privileges. public_reader is the read-only identity for the Phase 5
+  # anonymous public service (ADR 004 security/004). It stays NOLOGIN here: no
+  # service consumes it yet, so a login credential (client-cert preferred) is added
+  # in Phase 5.
+  managed:
+    roles:
+      - name: public_reader
+        ensure: present
+        login: false
+        comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
   # Hosts five databases (monolith, temporal, temporal_visibility,
   # lakehouse, postgres); Temporal is connection-heavy. The prior 256Mi
   # limit OOMKilled the instance 359 times. 1Gi limit with shared_buffers
