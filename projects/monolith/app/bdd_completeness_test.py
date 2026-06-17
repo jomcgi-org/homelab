@@ -33,6 +33,9 @@ _PUBLIC_EXCLUSIONS: set[str] = {
     "home.register",
     "chat.register",
     "knowledge.register",
+    # register_public() is app wiring (Phase 5a public split), not a BDD route
+    "home.register_public",
+    "knowledge.register_public",
     # FastAPI class is re-exported by domains, not a domain function
     "home.FastAPI",
     "chat.FastAPI",

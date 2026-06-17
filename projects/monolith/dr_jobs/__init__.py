@@ -17,6 +17,11 @@ def register(app: FastAPI) -> None:
     app.include_router(router)
 
 
+def register_public(app: FastAPI) -> None:
+    """dr_jobs is a wholly public, read-only domain: reuse register."""
+    register(app)
+
+
 def on_startup_jobs(session: Session) -> None:
     """Register the daily NHS Scotland scrape job."""
     from scheduler.api import register_job
