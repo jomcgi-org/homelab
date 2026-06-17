@@ -4,9 +4,9 @@ Holds the two public knowledge endpoints so they can be mounted on the
 public-only app (``app.main_public``) without pulling in the private-route
 module (``knowledge.router``):
 
-- ``GET /api/knowledge/public/graph`` — public-only graph (public nodes,
+- ``GET /api/knowledge/public/graph``: public-only graph (public nodes,
   doubly-public edges).
-- ``GET /api/knowledge/public/notes/{note_id}`` — a single note iff its
+- ``GET /api/knowledge/public/notes/{note_id}``: a single note iff its
   effective visibility is ``public``.
 
 These handlers are also mounted on the private app (see ``knowledge.register``)
@@ -68,7 +68,7 @@ def get_public_graph(
             # subgraph by knowledge.service._run_public_layout_pass); fall
             # back to the full-graph positions if the public pass hasn't
             # populated this row yet, so a fresh deploy never serves NULL
-            # coords. Same shape consumed by /private/notes — keep both as
+            # coords. Same shape consumed by /private/notes, keep both as
             # nullable in the response, the client handles either.
             func.coalesce(Note.layout_x_public, Note.layout_x).label("x"),
             func.coalesce(Note.layout_y_public, Note.layout_y).label("y"),
@@ -147,9 +147,9 @@ def get_public_graph(
     return {
         "nodes": nodes,
         "edges": edges,
-        # Mirrors get_graph's response — StatusBar in the SvelteKit page
+        # Mirrors get_graph's response: the StatusBar in the SvelteKit page
         # reads this to display "indexed Xm ago". Previously omitted so
-        # the public page showed "indexed —" while the private one didn't.
+        # the public page showed no "indexed" stamp while the private one did.
         "indexed_at": indexed_at.isoformat() if indexed_at is not None else None,
     }
 
@@ -162,7 +162,7 @@ def get_public_note(
     """Return a single note iff its effective visibility is ``public``.
 
     The 404 response is identical for missing notes AND for notes that
-    exist but are private/null-visibility — the existence of a private
+    exist but are private/null-visibility, so the existence of a private
     note must never be observable. Body wikilinks targeting private
     notes are stripped to plain text via :func:`sanitize_public_body`;
     wikilinks targeting public notes are left intact for the frontend
@@ -172,7 +172,7 @@ def get_public_note(
         select(Note).where(Note.note_id == note_id).where(Note.deleted_at.is_(None))
     ).one_or_none()
     if note is None or effective_visibility(note) != "public":
-        # Identical 404 for missing and private — never expose existence.
+        # Identical 404 for missing and private: never expose existence.
         # The reason is logged but not surfaced in the response.
         reason = "not_found" if note is None else "private_gated"
         logger.info("public.note.404 note_id=%s reason=%s", note_id, reason)
@@ -185,14 +185,14 @@ def get_public_note(
     vault_root = get_vault_root()
     body = resolve_note_body(note.content, note.path, vault_root)
     if body is None:
-        # Same identical 404 — don't leak that the DB row exists but
+        # Same identical 404: don't leak that the DB row exists but
         # the body is unavailable.
         logger.info("public.note.404 note_id=%s reason=vault_file_missing", note_id)
         raise HTTPException(status_code=404, detail="Not Found")
 
     # Slugified ids of every non-public note. ``sanitize_public_body``
     # slugifies wikilink display text via ``visibility._slugify`` and
-    # drops the bracketing on any match — use the same helper here so
+    # drops the bracketing on any match; use the same helper here so
     # the sets compare consistently. Note: ``or_(... != 'public', ...
     # IS NULL)`` is required because in SQL ``NULL != 'public'`` is
     # ``NULL``, not true, so a bare ``!=`` would silently leave NULL-
