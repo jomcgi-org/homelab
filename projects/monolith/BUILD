@@ -13,6 +13,9 @@
 # gazelle:exclude stars
 # gazelle:exclude trips
 # gazelle:exclude dr_jobs
+# Hand-written bdd_test target (needs the real-Postgres harness), so keep gazelle
+# from generating a conflicting py_test for it.
+# gazelle:exclude public_reader_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
