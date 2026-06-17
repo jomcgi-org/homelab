@@ -127,7 +127,6 @@ class TestIngestRaw:
         assert raw.path == f"raws/{expected_id}.md"
         assert raw.source == "capture"
         assert raw.original_path == "https://example.com"
-        assert raw.content == content
         mock_upload.assert_called_once_with(expected_id, content)
 
         rows = db_session.exec(select(RawInput)).all()

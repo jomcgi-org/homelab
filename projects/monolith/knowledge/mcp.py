@@ -27,6 +27,7 @@ from knowledge.gardener import GARDENER_VERSION, _slugify
 from knowledge.indexing import index_note_best_effort, index_note_from_raw
 from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.notes import resolve_note_body
+from knowledge.raw_store import fetch_raw
 from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
@@ -508,12 +509,13 @@ async def list_raws_needing_decomposition(limit: int = 10) -> dict:
         raws = KnowledgeStore(session).raws_needing_decomposition(limit)
         out = []
         for raw in raws:
-            meta, _ = frontmatter.parse(raw.content)
-            title = meta.title or (raw.content.strip()[:60] or raw.raw_id)
+            # The body lives in S3 now (ADR 006 Phase 4d); this is a work-queue
+            # listing, so skip the per-row S3 fetch and use the stable raw_id as
+            # the display label. The gardener calls get_raw next to read the body.
             out.append(
                 {
                     "raw_id": raw.raw_id,
-                    "title": title,
+                    "title": raw.raw_id,
                     "source": raw.source,
                     "created_at": raw.created_at,
                 }
@@ -525,9 +527,9 @@ async def list_raws_needing_decomposition(limit: int = 10) -> dict:
 async def get_raw(raw_id: str) -> dict:
     """Read a raw input markdown content by its ``raw_id``.
 
-    Returns the body the gardener should decompose into atoms. Reads
-    Postgres ``knowledge.raw_inputs.content`` for now, an S3 read replaces
-    this in ADR 006 Phase 4d.
+    Returns the body the gardener should decompose into atoms, fetched from
+    object storage (``s3://knowledge/raws/<content_hash>.md``); the
+    ``raw_inputs`` row holds only metadata + the content hash (ADR 006 Phase 4d).
 
     Args:
         raw_id: The stable raw input identifier.
@@ -536,7 +538,12 @@ async def get_raw(raw_id: str) -> dict:
         row = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
         if row is None:
             return {"error": f"raw not found: {raw_id}"}
-        return {"raw_id": row.raw_id, "content": row.content, "source": row.source}
+        content_hash = row.content_hash
+        source = row.source
+    content = fetch_raw(content_hash)
+    if content is None:
+        return {"error": f"raw content not in object storage: {raw_id}"}
+    return {"raw_id": raw_id, "content": content, "source": source}
 
 
 @mcp.tool
