@@ -1699,8 +1699,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_scheduler_test",
-    srcs = ["shared/scheduler_test.py"],
+    name = "scheduler_test",
+    srcs = ["scheduler/scheduler_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1711,8 +1711,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_scheduler_loop_test",
-    srcs = ["shared/scheduler_loop_test.py"],
+    name = "scheduler_loop_test",
+    srcs = ["scheduler/scheduler_loop_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1723,8 +1723,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_scheduler_tick_missing_job_test",
-    srcs = ["shared/scheduler_tick_missing_job_test.py"],
+    name = "scheduler_tick_missing_job_test",
+    srcs = ["scheduler/scheduler_tick_missing_job_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1735,8 +1735,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_scheduler_claim_test",
-    srcs = ["shared/scheduler_claim_test.py"],
+    name = "scheduler_claim_test",
+    srcs = ["scheduler/scheduler_claim_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1746,8 +1746,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_scheduler_transitions_test",
-    srcs = ["shared/scheduler_transitions_test.py"],
+    name = "scheduler_transitions_test",
+    srcs = ["scheduler/scheduler_transitions_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1785,8 +1785,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_scheduler_loop_extra_test",
-    srcs = ["shared/scheduler_loop_extra_test.py"],
+    name = "scheduler_loop_extra_test",
+    srcs = ["scheduler/scheduler_loop_extra_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3242,11 +3242,11 @@ bdd_test(
 )
 
 bdd_test(
-    name = "shared_bdd_scheduler_test",
+    name = "scheduler_bdd_scheduler_test",
     srcs = [
-        "shared/tests/__init__.py",
-        "shared/tests/bdd_scheduler_test.py",
-        "shared/tests/conftest.py",
+        "scheduler/tests/__init__.py",
+        "scheduler/tests/bdd_scheduler_test.py",
+        "scheduler/tests/conftest.py",
     ],
 )
 
@@ -3258,7 +3258,7 @@ py_test(
         "app/bdd_completeness_test.py",
     ],
     data = glob(["*/tests/*_test.py"]),
-    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/shared/tests --ignore=projects/monolith/agent/tests"},
+    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests"},
     imports = ["."],
     tags = ["bdd"],
     deps = [

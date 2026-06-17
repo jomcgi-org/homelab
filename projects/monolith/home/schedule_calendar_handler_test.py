@@ -75,14 +75,14 @@ class TestOnStartupJobs:
     def test_calls_register_job_once(self):
         """on_startup_jobs() calls register_job() exactly once."""
         mock_session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
         mock_register.assert_called_once()
 
     def test_passes_session_to_register_job(self):
         """on_startup_jobs() forwards its session argument as the first positional arg."""
         mock_session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
         positional_args, _ = mock_register.call_args
         assert positional_args[0] is mock_session
@@ -90,7 +90,7 @@ class TestOnStartupJobs:
     def test_job_name_is_home_calendar_poll(self):
         """The registered job name is 'home.calendar_poll'."""
         mock_session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
         _, kwargs = mock_register.call_args
         assert kwargs["name"] == "home.calendar_poll"
@@ -98,7 +98,7 @@ class TestOnStartupJobs:
     def test_interval_secs_is_900(self):
         """Calendar poll runs every 900 seconds (15 minutes)."""
         mock_session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
         _, kwargs = mock_register.call_args
         assert kwargs["interval_secs"] == 900
@@ -106,7 +106,7 @@ class TestOnStartupJobs:
     def test_ttl_secs_is_120(self):
         """Calendar poll job TTL is 120 seconds."""
         mock_session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
         _, kwargs = mock_register.call_args
         assert kwargs["ttl_secs"] == 120
@@ -115,7 +115,7 @@ class TestOnStartupJobs:
     async def test_handler_delegates_to_calendar_poll_handler(self):
         """The registered handler wraps calendar_poll_handler."""
         mock_session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup_jobs(mock_session)
         _, kwargs = mock_register.call_args
         with patch("home.schedule.poll_calendar", new_callable=AsyncMock):

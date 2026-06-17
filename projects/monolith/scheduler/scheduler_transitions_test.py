@@ -1,4 +1,4 @@
-"""Unit tests for shared/scheduler.py — _complete_job, _fail_job, _release_lock.
+"""Unit tests for scheduler/api.py — _complete_job, _fail_job, _release_lock.
 
 These functions are pure SQLModel state transitions that work with any SQL
 backend; tested here with in-memory SQLite so no Postgres is required.
@@ -14,7 +14,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from shared.scheduler import ScheduledJob, _complete_job, _fail_job, _release_lock
+from scheduler.api import ScheduledJob, _complete_job, _fail_job, _release_lock
 
 
 # ---------------------------------------------------------------------------

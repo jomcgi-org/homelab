@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlmodel import Session
 
-from shared.scheduler import _registry, _run_claimed_job
+from scheduler.api import _registry, _run_claimed_job
 
 
 @pytest.fixture(autouse=True)
@@ -34,11 +34,11 @@ class TestRunClaimedJobMissingRow:
         mock_session.get.return_value = None  # row disappeared between claim and run
 
         with (
-            patch("shared.scheduler.get_engine"),
-            patch("shared.scheduler.Session") as mock_session_cls,
-            patch("shared.scheduler._complete_job") as mock_complete,
-            patch("shared.scheduler._fail_job") as mock_fail,
-            patch("shared.scheduler._release_lock") as mock_release,
+            patch("scheduler.api.get_engine"),
+            patch("scheduler.api.Session") as mock_session_cls,
+            patch("scheduler.api._complete_job") as mock_complete,
+            patch("scheduler.api._fail_job") as mock_fail,
+            patch("scheduler.api._release_lock") as mock_release,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=mock_session
@@ -58,8 +58,8 @@ class TestRunClaimedJobMissingRow:
         mock_session.get.return_value = None
 
         with (
-            patch("shared.scheduler.get_engine"),
-            patch("shared.scheduler.Session") as mock_session_cls,
+            patch("scheduler.api.get_engine"),
+            patch("scheduler.api.Session") as mock_session_cls,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=mock_session

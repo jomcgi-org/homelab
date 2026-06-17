@@ -27,7 +27,7 @@ class TestOnStartup:
     def test_registers_reconcile_and_backup_jobs(self):
         """on_startup registers reconcile and vault-backup jobs."""
         session = MagicMock()
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             on_startup(session)
         names = [call.kwargs["name"] for call in mock_register.call_args_list]
         assert "knowledge.reconcile" in names
@@ -433,7 +433,7 @@ class TestClassifyGapsHandler:
     @pytest.fixture(name="session")
     def session_fixture(self):
         """In-memory SQLite session with schema stripped (SQLite has no schemas)."""
-        from shared.scheduler import _registry
+        from scheduler.api import _registry
         from sqlmodel import Session, SQLModel, create_engine
         from sqlmodel.pool import StaticPool
 
@@ -462,7 +462,7 @@ class TestClassifyGapsHandler:
         """Startup registers knowledge.classify-gaps with a 1-minute tick."""
         from knowledge.gap_classifier import _CLASSIFY_TIMEOUT_SECS
         from knowledge.service import on_startup
-        from shared.scheduler import ScheduledJob
+        from scheduler.api import ScheduledJob
         from sqlmodel import select
 
         on_startup(session)
@@ -480,7 +480,7 @@ class TestClassifyGapsHandler:
     def test_on_startup_registers_research_gaps_job(self, session):
         """Startup registers knowledge.research-gaps with a daily tick."""
         from knowledge.service import on_startup
-        from shared.scheduler import ScheduledJob
+        from scheduler.api import ScheduledJob
         from sqlmodel import select
 
         on_startup(session)

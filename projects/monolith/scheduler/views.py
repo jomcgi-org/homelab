@@ -2,7 +2,7 @@
 
 The view model intentionally omits the lock columns (``locked_by``, ``locked_at``)
 from the underlying ``ScheduledJob`` SQLModel. Those are claim-machinery internals
-of ``shared.scheduler._claim_next_job``; surfacing them would invite tooling that
+of ``scheduler.api._claim_next_job``; surfacing them would invite tooling that
 races against the SKIP LOCKED claim.
 """
 

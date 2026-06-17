@@ -12,7 +12,7 @@ def register(app: FastAPI) -> None:
 
 
 def on_startup_jobs(session) -> None:
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
     from home.schedule import calendar_poll_handler
 
     register_job(

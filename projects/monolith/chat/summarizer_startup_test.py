@@ -11,7 +11,7 @@ import pytest
 
 from chat import summarizer
 from chat.changelog import ChangelogConfig
-from shared.scheduler import _registry
+from scheduler.api import _registry
 
 _TEST_CHANGELOG_CONFIGS = json.dumps(
     [
@@ -46,7 +46,7 @@ class TestOnStartupWithNullLlmCall:
             patch(
                 "chat.summarizer.build_llm_caller", return_value=fake_llm
             ) as mock_build,
-            patch("shared.scheduler.register_job"),
+            patch("scheduler.api.register_job"),
         ):
             summarizer.on_startup(session)  # no llm_call kwarg
 
@@ -59,7 +59,7 @@ class TestOnStartupWithNullLlmCall:
 
         with (
             patch("chat.summarizer.build_llm_caller", return_value=fake_llm),
-            patch("shared.scheduler.register_job") as mock_register,
+            patch("scheduler.api.register_job") as mock_register,
         ):
             summarizer.on_startup(session)
 
@@ -73,7 +73,7 @@ class TestOnStartupWithNullLlmCall:
 
         with (
             patch("chat.summarizer.build_llm_caller") as mock_build,
-            patch("shared.scheduler.register_job"),
+            patch("scheduler.api.register_job"),
         ):
             summarizer.on_startup(session, llm_call=provided_llm)
 
@@ -95,7 +95,7 @@ class TestChangelogHandlerReturnValue:
             captured_handlers[kw["name"]] = kw["handler"]
 
         with (
-            patch("shared.scheduler.register_job", side_effect=_capture_register),
+            patch("scheduler.api.register_job", side_effect=_capture_register),
             patch("chat.changelog.run_changelog_iteration", new_callable=AsyncMock),
             patch.dict("os.environ", {"CHANGELOG_CONFIGS": _TEST_CHANGELOG_CONFIGS}),
         ):
@@ -130,7 +130,7 @@ class TestChangelogHandlerReturnValue:
             captured_handlers[kw["name"]] = kw["handler"]
 
         with (
-            patch("shared.scheduler.register_job", side_effect=_capture_register),
+            patch("scheduler.api.register_job", side_effect=_capture_register),
             patch("chat.changelog.run_changelog_iteration", new_callable=AsyncMock),
             patch.dict("os.environ", {"CHANGELOG_CONFIGS": _TEST_CHANGELOG_CONFIGS}),
         ):
@@ -157,7 +157,7 @@ class TestChangelogHandlerReturnValue:
             captured_handlers[kw["name"]] = kw["handler"]
 
         with (
-            patch("shared.scheduler.register_job", side_effect=_capture_register),
+            patch("scheduler.api.register_job", side_effect=_capture_register),
             patch(
                 "chat.changelog.run_changelog_iteration", new_callable=AsyncMock
             ) as mock_iter,

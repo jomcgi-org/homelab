@@ -28,7 +28,7 @@ def test_on_startup_jobs_calls_register_job_four_times():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     assert mock_register.call_count == 4
 
@@ -38,7 +38,7 @@ def test_on_startup_jobs_correct_names():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     names = {c[1]["name"] for c in mock_register.call_args_list}
     assert names == {
@@ -54,7 +54,7 @@ def test_on_startup_jobs_load_climatology_interval():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["stars.load_climatology"]["interval_secs"] == 24 * 3600
@@ -65,7 +65,7 @@ def test_on_startup_jobs_passes_session_as_first_positional():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     for c in mock_register.call_args_list:
         assert c[0][0] is session
@@ -76,7 +76,7 @@ def test_on_startup_jobs_load_grid_interval():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["stars.load_grid"]["interval_secs"] == 6 * 3600
@@ -87,7 +87,7 @@ def test_on_startup_jobs_refresh_interval():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["stars.refresh"]["interval_secs"] == 3 * 3600
@@ -98,7 +98,7 @@ def test_on_startup_jobs_prune_hours_interval():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["stars.prune_hours"]["interval_secs"] == 3600
@@ -109,7 +109,7 @@ def test_on_startup_jobs_all_have_handlers():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     for c in mock_register.call_args_list:
         assert callable(c[1]["handler"])
@@ -120,7 +120,7 @@ def test_on_startup_jobs_all_have_ttl():
     import stars
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         stars.on_startup_jobs(session)
     for c in mock_register.call_args_list:
         assert c[1]["ttl_secs"] > 0

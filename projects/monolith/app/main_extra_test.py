@@ -40,7 +40,7 @@ def _lifespan_patches_no_discord():
         patch("app.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
-        patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         patch("ships.on_startup_jobs"),
         patch("hikes.on_startup_jobs"),
     ]
@@ -55,7 +55,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("app.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
-        patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
@@ -152,7 +152,7 @@ class TestLifespanRunSchedulerLoopException:
             patch("ships.on_startup_jobs"),
             patch("hikes.on_startup_jobs"),
             patch(
-                "shared.scheduler.run_scheduler_loop",
+                "scheduler.api.run_scheduler_loop",
                 new=failing_run_scheduler_loop,
             ),
         ):
@@ -183,7 +183,7 @@ class TestLifespanRunSchedulerLoopException:
             patch("ships.on_startup_jobs"),
             patch("hikes.on_startup_jobs"),
             patch(
-                "shared.scheduler.run_scheduler_loop",
+                "scheduler.api.run_scheduler_loop",
                 new=failing_run_scheduler_loop,
             ),
         ):

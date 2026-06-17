@@ -12,7 +12,7 @@ These tests cover the complementary cases:
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from shared.scheduler import run_scheduler_loop
+from scheduler.api import run_scheduler_loop
 
 
 class TestRunSchedulerLoopPollInterval:
@@ -28,10 +28,8 @@ class TestRunSchedulerLoopPollInterval:
                 raise KeyboardInterrupt
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch(
-                "shared.scheduler.asyncio.sleep", new_callable=AsyncMock
-            ) as mock_sleep,
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=42)
@@ -55,10 +53,8 @@ class TestRunSchedulerLoopPollInterval:
                 raise KeyboardInterrupt
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch(
-                "shared.scheduler.asyncio.sleep", new_callable=AsyncMock
-            ) as mock_sleep,
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop()  # no poll_interval arg
@@ -81,10 +77,8 @@ class TestRunSchedulerLoopPollInterval:
                 raise KeyboardInterrupt
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch(
-                "shared.scheduler.asyncio.sleep", new_callable=AsyncMock
-            ) as mock_sleep,
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=0)
@@ -107,8 +101,8 @@ class TestRunSchedulerLoopIterations:
                 raise KeyboardInterrupt
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch("shared.scheduler.asyncio.sleep", new_callable=AsyncMock),
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", new_callable=AsyncMock),
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=0)
@@ -132,8 +126,8 @@ class TestRunSchedulerLoopIterations:
             sleep_count += 1
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch("shared.scheduler.asyncio.sleep", side_effect=sleep_side_effect),
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", side_effect=sleep_side_effect),
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=0)
@@ -161,8 +155,8 @@ class TestRunSchedulerLoopIterations:
             sleep_count += 1
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch("shared.scheduler.asyncio.sleep", side_effect=sleep_side_effect),
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", side_effect=sleep_side_effect),
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=0)
@@ -189,8 +183,8 @@ class TestRunSchedulerLoopIterations:
             sleep_args_seen.append(interval)
 
         with (
-            patch("shared.scheduler.dispatch_due_jobs", side_effect=tick_side_effect),
-            patch("shared.scheduler.asyncio.sleep", side_effect=sleep_side_effect),
+            patch("scheduler.api.dispatch_due_jobs", side_effect=tick_side_effect),
+            patch("scheduler.api.asyncio.sleep", side_effect=sleep_side_effect),
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=15)

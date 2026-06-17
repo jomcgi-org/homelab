@@ -13,7 +13,7 @@ def register(app: FastAPI) -> None:
 
 def on_startup_jobs(session: Session) -> None:
     """Register ships scheduled jobs (partition maintenance, heatmap rollup)."""
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
     from ships.heat import heat_rollup_handler
     from ships.retention import partition_maintenance_handler
 

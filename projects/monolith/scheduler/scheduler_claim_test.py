@@ -1,4 +1,4 @@
-"""Tests for _claim_next_job() in shared/scheduler.py.
+"""Tests for _claim_next_job() in scheduler/api.py.
 
 The research identified that _claim_next_job() issues a PostgreSQL-specific
 UPDATE ... WHERE name = (SELECT ... FOR UPDATE SKIP LOCKED) ... RETURNING name
@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from sqlmodel import Session
 
-from shared.scheduler import _claim_next_job
+from scheduler.api import _claim_next_job
 
 
 # ---------------------------------------------------------------------------

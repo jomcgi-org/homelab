@@ -15,7 +15,7 @@ class TestPublicFunctions:
 
     @covers_public("home.on_startup_jobs")
     def test_on_startup_jobs_registers_job(self, session):
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             home.on_startup_jobs(session)
         mock_register.assert_called_once()
         _, kwargs = mock_register.call_args
