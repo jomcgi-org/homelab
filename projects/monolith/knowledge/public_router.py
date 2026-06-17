@@ -24,9 +24,8 @@ from sqlmodel import Session, select
 from app.db import get_session
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
-from knowledge.notes import resolve_note_body
+from knowledge.notes import get_vault_root, resolve_note_body
 from knowledge.public_models import PublicNote, PublicNoteLink
-from knowledge.service import get_vault_root
 from knowledge.store import GRAPH_NOTE_TYPES
 from knowledge.visibility import strip_private_wikilinks
 

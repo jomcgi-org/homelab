@@ -18,6 +18,7 @@ review UI can show context without a second round-trip per row.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,19 @@ from knowledge import frontmatter
 from knowledge.models import Note
 
 logger = logging.getLogger(__name__)
+
+# Vault-root resolution lives here (not in knowledge.service) so the light
+# public note path (knowledge.public_router) can resolve the vault root without
+# importing knowledge.service and its heavy write-path closure (reconciler,
+# layout, gap_stubs). knowledge.service re-exports these for back-compat.
+VAULT_ROOT_ENV = "VAULT_ROOT"
+DEFAULT_VAULT_ROOT = "/vault"
+
+
+def get_vault_root() -> Path:
+    """Resolve the vault root from the env (or default), as an absolute path."""
+    return Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
+
 
 # Snippet cap for the review-queue list calls. Was 200 chars when the
 # review page first shipped — too thin to evaluate a card in audit mode.

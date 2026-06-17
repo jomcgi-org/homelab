@@ -17,20 +17,22 @@ from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
 from knowledge.models import Gap, Note, NoteLink
+
+# Vault-root helpers moved to knowledge.notes (light module) so the public note
+# path can resolve the vault root without importing this heavy module. Re-export
+# them here for back-compat: drift_detector, mcp, and several tests still do
+# `from knowledge.service import VAULT_ROOT_ENV` / `get_vault_root`.
+from knowledge.notes import (  # noqa: F401 (re-exported for back-compat)
+    DEFAULT_VAULT_ROOT,
+    VAULT_ROOT_ENV,
+    get_vault_root,
+)
 from knowledge.reconciler import Reconciler
 from knowledge.store import KnowledgeStore
 from knowledge.visibility import public_notes_filter
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
-
-VAULT_ROOT_ENV = "VAULT_ROOT"
-DEFAULT_VAULT_ROOT = "/vault"
-
-
-def get_vault_root() -> Path:
-    """Resolve the vault root from the env (or default), as an absolute path."""
-    return Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
 
 
 # 5-minute reconcile cycle. _TTL_SECS is the lock-lease: a worker holding
