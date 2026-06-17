@@ -26,7 +26,15 @@ def on_startup_jobs(session: Session) -> None:
     register_job(
         session,
         name="dr_jobs.scrape_nhs",
-        interval_secs=86400,  # daily; NHS consultant posts turn over slowly
+        # Hourly: the scrape is cheap (one list call + ~one heavy detail page
+        # per matching job, a handful today) and JobTrain tolerates it easily.
+        # Hourly gets a new post (and its Discord ping) in front of the partner
+        # within the hour instead of up to a day, and dedup means re-seen jobs
+        # only bump last_seen_at, so a faster cadence never re-pings.
+        interval_secs=3600,
         handler=scrape_nhs_handler,
-        ttl_secs=3600,  # generous: each run fetches a heavy detail page per job
+        # A run fetches a few heavy detail pages but finishes in well under a
+        # minute; 10 min frees the lock promptly if a pod dies mid-scrape
+        # without ever overlapping the hourly tick.
+        ttl_secs=600,
     )
