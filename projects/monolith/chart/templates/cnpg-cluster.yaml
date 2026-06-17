@@ -35,11 +35,12 @@ spec:
         ensure: present
         login: false
         comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
-  # Hosts five databases (monolith, temporal, temporal_visibility,
-  # lakehouse, postgres); Temporal is connection-heavy. The prior 256Mi
-  # limit OOMKilled the instance 359 times. 1Gi limit with shared_buffers
-  # at 256MB (25% of limit) gives headroom for the working set plus
-  # per-connection work_mem.
+  # Hosts the monolith database (plus the default postgres maintenance db);
+  # the temporal/temporal_visibility/lakehouse databases were decommissioned
+  # 2026-06-14. The prior 256Mi limit OOMKilled the instance 359 times. 1Gi
+  # limit with shared_buffers at 256MB (25% of limit) gives headroom for the
+  # working set plus per-connection work_mem. Applies per instance, so the
+  # standby (instances: 2) gets the same budget.
   resources:
     requests:
       memory: "512Mi"
