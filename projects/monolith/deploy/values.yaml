@@ -14,7 +14,10 @@ frontend:
   otelCollectorUrl: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
 
 postgres:
-  instances: 1
+  # Two instances: a primary (-rw) plus a hot standby (-ro) for the Phase 5
+  # public read-only service (ADR 004 security/004) and for availability. CNPG
+  # auto-creates the -ro / -r services and streams replication.
+  instances: 2
   storage:
     size: 50Gi
 
