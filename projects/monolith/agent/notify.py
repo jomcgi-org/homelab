@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Literal
 
 from agent.config import load_settings
-from chat.bot import send_message
+from chat.api import send_message
 
 
 async def notify(
