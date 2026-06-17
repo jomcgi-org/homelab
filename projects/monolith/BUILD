@@ -244,6 +244,10 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/observability/topology_query.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
+    # The K8s API client wrapper. Only stats.py (excluded above) uses it, so it
+    # is not in the public closure; keep the cluster-API client out of the
+    # public artifact entirely (ADR 004: public holds no cluster access).
+    "home/observability/kubernetes.py",
 ]
 
 py_library(
