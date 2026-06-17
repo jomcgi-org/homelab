@@ -204,6 +204,35 @@ py_test(
     ],
 )
 
+# Reads every domain source file from disk (via rglob) to enforce that domains
+# only import each other through <domain>/api.py, so the scanned files must be
+# materialised as data (the same pattern as bdd_completeness_test).
+py_test(
+    name = "import_boundaries_test",
+    srcs = ["import_boundaries_test.py"],
+    data = glob(
+        include = [
+            "ships/**/*.py",
+            "stars/**/*.py",
+            "chat/**/*.py",
+            "knowledge/**/*.py",
+            "hikes/**/*.py",
+            "dr_jobs/**/*.py",
+            "trips/**/*.py",
+            "home/**/*.py",
+            "scheduler/**/*.py",
+            "agent/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
 py_test(
     name = "frontend_test",
     srcs = ["app/frontend_test.py"],

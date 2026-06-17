@@ -11,12 +11,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from knowledge.gardener import Gardener  # re-exported (dead-letter checks)
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
 if TYPE_CHECKING:
     from sqlmodel import Session
 
-__all__ = ["KnowledgeStore", "get_store", "search_notes", "get_embedding_client"]
+__all__ = [
+    "KnowledgeStore",
+    "Gardener",
+    "get_store",
+    "search_notes",
+    "get_embedding_client",
+]
 
 
 def search_notes(session: "Session", query_embedding: list[float], **kwargs):
