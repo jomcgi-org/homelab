@@ -2905,8 +2905,22 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_backend",
+        "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_raw_store_test",
+    srcs = ["knowledge/raw_store_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//pytest",
     ],
 )
 

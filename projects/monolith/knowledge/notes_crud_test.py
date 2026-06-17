@@ -83,36 +83,38 @@ def db_client(real_session, fake_embed_client, tmp_path, monkeypatch):
 
 
 class TestCreateNote:
-    """Tests for POST /api/knowledge/notes."""
+    """Tests for POST /api/knowledge/notes (fileless: raw_inputs + S3, ADR 006)."""
 
-    def test_create_note_writes_file(self, client, tmp_path):
-        """POST with content+title returns 201 and writes file with frontmatter."""
-        r = client.post(
-            "/api/knowledge/notes",
-            json={
-                "content": "This is my note content.",
-                "title": "My Test Note",
-                "source": "manual",
-                "tags": ["test", "example"],
-                "type": "note",
-            },
-        )
+    def test_create_note_returns_raw_id_and_calls_ingest_raw(self, client):
+        """POST returns 201 with {raw_id} and inserts a raw via ingest_raw."""
+        with patch("knowledge.router.ingest_raw") as mock_ingest:
+            mock_ingest.return_value = MagicMock(raw_id="deadbeef")
+            r = client.post(
+                "/api/knowledge/notes",
+                json={
+                    "content": "This is my note content.",
+                    "title": "My Test Note",
+                    "source": "manual",
+                    "tags": ["test", "example"],
+                    "type": "note",
+                },
+            )
 
         assert r.status_code == 201
-        body = r.json()
-        path = body.get("path", "")
-        assert path.endswith(".md")
+        assert r.json() == {"raw_id": "deadbeef"}
 
-        written = (tmp_path / path).read_text()
-        # Parse frontmatter (between --- delimiters)
-        parts = written.split("---\n")
-        assert len(parts) >= 3, f"Expected frontmatter delimiters, got: {written}"
+        mock_ingest.assert_called_once()
+        kwargs = mock_ingest.call_args.kwargs
+        assert kwargs["source"] == "manual"
+        content = kwargs["content"]
+        # Frontmatter + body assembled from the request fields.
+        parts = content.split("---\n")
+        assert len(parts) >= 3, f"Expected frontmatter delimiters, got: {content}"
         fm = yaml.safe_load(parts[1])
         assert fm["title"] == "My Test Note"
         assert fm["source"] == "manual"
         assert fm["tags"] == ["test", "example"]
         assert fm["type"] == "note"
-        # Content follows the frontmatter
         assert "This is my note content." in parts[2]
 
     def test_create_note_content_required(self, client):
@@ -132,35 +134,32 @@ class TestCreateNote:
         assert r.status_code == 400
         assert "content" in r.json().get("detail", "").lower()
 
-    def test_create_note_generates_title_from_content(self, client, tmp_path):
+    def test_create_note_generates_title_from_content(self, client):
         """POST without title uses first 60 chars of content as title."""
         content = "A short note about something interesting"
-        r = client.post(
-            "/api/knowledge/notes",
-            json={"content": content},
-        )
+        with patch("knowledge.router.ingest_raw") as mock_ingest:
+            mock_ingest.return_value = MagicMock(raw_id="abc123")
+            r = client.post(
+                "/api/knowledge/notes",
+                json={"content": content},
+            )
 
         assert r.status_code == 201
-        path = r.json().get("path", "")
-        written = (tmp_path / path).read_text()
-        parts = written.split("---\n")
-        fm = yaml.safe_load(parts[1])
+        built = mock_ingest.call_args.kwargs["content"]
+        fm = yaml.safe_load(built.split("---\n")[1])
         assert fm["title"] == content[:60]
 
-    def test_create_note_collision_appends_suffix(self, client, tmp_path):
-        """POST with title that collides gets a -1 suffix."""
-        # Pre-create the file at the expected slug path
-        (tmp_path / "my-note.md").write_text("existing")
-
-        r = client.post(
-            "/api/knowledge/notes",
-            json={"content": "New content", "title": "My Note"},
-        )
+    def test_create_note_defaults_source_to_capture(self, client):
+        """POST without source defaults the raw source to 'capture'."""
+        with patch("knowledge.router.ingest_raw") as mock_ingest:
+            mock_ingest.return_value = MagicMock(raw_id="xyz")
+            r = client.post(
+                "/api/knowledge/notes",
+                json={"content": "no source given"},
+            )
 
         assert r.status_code == 201
-        path = r.json().get("path", "")
-        assert path == "my-note-1.md"
-        assert (tmp_path / path).exists()
+        assert mock_ingest.call_args.kwargs["source"] == "capture"
 
 
 def _insert_note(session: Session, *, note_id: str, path: str) -> Note:
