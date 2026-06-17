@@ -1,0 +1,19 @@
+apiVersion: v2
+name: monolith-public
+description: Read-only public tier of the monolith (ADR 004 Phase 5), un-meshed and pruned
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: homelab
+keywords:
+  - public
+  - read-only
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"
+dependencies:
+  - name: homelab-library
+    version: "0.4.0"
+    repository: "file://../../shared/helm/homelab-library/chart"

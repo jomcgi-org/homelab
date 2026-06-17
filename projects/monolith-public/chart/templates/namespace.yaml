@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+    # Defense-in-depth opt-out from Kyverno's default Linkerd injection
+    # (inject-linkerd-namespace-annotation excludes namespaces labelled
+    # linkerd.io/inject: disabled). The pod annotation is the primary
+    # opt-out; this keeps the namespace itself un-meshed too.
+    linkerd.io/inject: disabled
+    # kubernetes.io/metadata.name is set automatically by the API server, but
+    # declaring it keeps the NetworkPolicy namespaceSelectors self-consistent.
+    kubernetes.io/metadata.name: {{ .Release.Namespace }}
