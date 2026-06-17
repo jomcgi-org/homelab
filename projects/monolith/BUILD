@@ -12,6 +12,7 @@
 # gazelle:exclude hikes
 # gazelle:exclude stars
 # gazelle:exclude trips
+# gazelle:exclude dr_jobs
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -46,6 +47,7 @@ py_venv_binary(
             "hikes/**/*.py",
             "stars/**/*.py",
             "trips/**/*.py",
+            "dr_jobs/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -107,6 +109,7 @@ py_library(
             "hikes/**/*.py",
             "stars/**/*.py",
             "trips/**/*.py",
+            "dr_jobs/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -2180,6 +2183,53 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "dr_jobs_models_test",
+    srcs = ["dr_jobs/models_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "dr_jobs_scraper_test",
+    srcs = ["dr_jobs/scraper_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "dr_jobs_router_test",
+    srcs = ["dr_jobs/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "dr_jobs_jobs_test",
+    srcs = ["dr_jobs/jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 
