@@ -230,6 +230,7 @@ py_test(
         ],
     ),
     imports = ["."],
+    deps = ["@pip//pytest"],
 )
 
 py_test(
