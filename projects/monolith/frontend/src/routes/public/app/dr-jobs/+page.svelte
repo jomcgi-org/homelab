@@ -245,10 +245,14 @@
     border: 0;
   }
 
-  /* Flat, sharp-bordered paper panels, matching the ships/hikes overlays. */
+  /* Chunky paper panels: 2px ink border, 8px radius, hard offset shadow, the
+     same "pop" the home/cv/engineering content pages use (not the deliberately
+     flat map overlays on /app/hikes + /app/ships). */
   .panel {
     background: var(--paper);
     border: 2px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-hard);
     padding: 14px;
   }
 
@@ -333,6 +337,9 @@
   .toggle {
     display: inline-flex;
     border: 2px solid var(--ink);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow-hard-sm);
   }
 
   .seg {
@@ -390,10 +397,21 @@
     align-items: stretch;
     justify-content: space-between;
     gap: 14px;
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  /* Brutalist lift: slide up-left to reveal a bigger offset shadow, the same
+     interaction as the engineering rail links. */
+  .card:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--ink);
   }
 
   .card.past {
     opacity: 0.72;
+    box-shadow: var(--shadow-hard-sm);
   }
 
   .card-main {
@@ -415,18 +433,20 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    padding: 2px 6px;
+    padding: 2px 8px;
     border: 1.5px solid var(--ink);
+    border-radius: 999px;
   }
 
+  /* Full-palette status pops, like the engineering page tags: green = fresh,
+     coral = urgency. Ink text on both for contrast against the bright fills. */
   .badge.new {
-    background: var(--accent);
+    background: var(--green);
   }
 
   .badge.soon {
-    background: var(--blue);
-    color: var(--paper);
-    border-color: var(--blue);
+    background: var(--coral);
+    color: var(--ink);
   }
 
   .badge.ref {
@@ -490,7 +510,7 @@
   }
 
   .close-rel.urgent {
-    color: var(--blue);
+    color: var(--coral);
     opacity: 1;
     font-weight: 700;
   }
