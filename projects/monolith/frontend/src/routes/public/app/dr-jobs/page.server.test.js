@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { load } from "./+page.server.js";
-import { STARS_SITES_CACHE_CONTROL } from "../../../../lib/cache-headers.js";
+import { DR_JOBS_LISTINGS_CACHE_CONTROL } from "../../../../lib/cache-headers.js";
 
 function makeHeaders(map = {}) {
   const lower = Object.fromEntries(
@@ -9,55 +9,54 @@ function makeHeaders(map = {}) {
   return { get: (name) => lower[name.toLowerCase()] ?? null };
 }
 
-const SNAPSHOT = { sites: [], count: 0, total_sites: 30, fetched_at: null };
+const LISTINGS = { jobs: [] };
 
-describe("/public/app/stars load", () => {
-  it("hits the SSR-only stars sites endpoint", async () => {
+describe("/public/app/dr-jobs load", () => {
+  it("hits the SSR-only dr-jobs listings endpoint", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: makeHeaders(),
-      json: async () => SNAPSHOT,
+      json: async () => LISTINGS,
     });
 
     await load({ fetch, setHeaders });
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const url = fetch.mock.calls[0][0];
-    expect(url).toMatch(/\/api\/stars\/sites$/);
+    expect(url).toMatch(/\/api\/dr-jobs\/listings$/);
   });
 
-  it("sets the shared sites cache-control header", async () => {
+  it("sets the shared listings cache-control header", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: makeHeaders(),
-      json: async () => SNAPSHOT,
+      json: async () => LISTINGS,
     });
 
     const result = await load({ fetch, setHeaders });
 
     expect(setHeaders).toHaveBeenCalledWith(
       expect.objectContaining({
-        "cache-control": STARS_SITES_CACHE_CONTROL,
+        "cache-control": DR_JOBS_LISTINGS_CACHE_CONTROL,
       }),
     );
-    // Byte-for-byte mirror of _SITES_CACHE_CONTROL in stars/router.py.
-    expect(STARS_SITES_CACHE_CONTROL).toBe(
+    // Byte-for-byte mirror of _LISTINGS_CACHE_CONTROL in dr_jobs/router.py.
+    expect(DR_JOBS_LISTINGS_CACHE_CONTROL).toBe(
       "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400",
     );
-    expect(result.snapshot).toEqual(SNAPSHOT);
+    expect(result.listings).toEqual(LISTINGS);
   });
 
-  it("versions the API ETag with the build version and forwards Last-Modified", async () => {
+  it("versions the API ETag with the build version so a layout deploy busts it", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: makeHeaders({
-        ETag: '"v1-2026-06-13T21:00:00+00:00-none-0"',
-        "Last-Modified": "Fri, 13 Jun 2026 21:00:00 GMT",
+        ETag: '"v1-2026-06-17-2026-06-17T05:00:00+00:00-6"',
       }),
-      json: async () => SNAPSHOT,
+      json: async () => LISTINGS,
     });
 
     await load({ fetch, setHeaders });
@@ -65,26 +64,26 @@ describe("/public/app/stars load", () => {
     expect(setHeaders).toHaveBeenCalledWith(
       expect.objectContaining({
         // Build version (testbuild, from the $app/environment stub) is spliced
-        // inside the quotes so a layout-only deploy busts the page validator.
-        etag: '"testbuild-v1-2026-06-13T21:00:00+00:00-none-0"',
-        "last-modified": "Fri, 13 Jun 2026 21:00:00 GMT",
+        // inside the quotes. Without this, a layout-only deploy leaves the
+        // data-derived ETag unchanged and browsers + the CDN keep 304-ing onto
+        // pre-deploy HTML (the bug this route hit).
+        etag: '"testbuild-v1-2026-06-17-2026-06-17T05:00:00+00:00-6"',
       }),
     );
   });
 
-  it("omits ETag and Last-Modified when the API does not return them", async () => {
+  it("omits ETag when the API does not return one", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: makeHeaders(),
-      json: async () => SNAPSHOT,
+      json: async () => LISTINGS,
     });
 
     await load({ fetch, setHeaders });
 
     const headers = setHeaders.mock.calls[0][0];
     expect(headers).not.toHaveProperty("etag");
-    expect(headers).not.toHaveProperty("last-modified");
   });
 
   it("throws a 503 when the backend fetch fails", async () => {

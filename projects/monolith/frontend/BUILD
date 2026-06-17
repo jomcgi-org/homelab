@@ -100,6 +100,9 @@ js_library(
         allow_empty = True,
     ) + [
         "vitest.config.js",
+        # Resolved by the $app/environment alias in vitest.config.js; lives
+        # outside src/ so it never reaches the app bundle.
+        "test/app-environment-stub.js",
     ],
     deps = [
         ":node_modules/vitest",
