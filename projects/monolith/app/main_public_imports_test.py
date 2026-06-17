@@ -33,6 +33,7 @@ FORBIDDEN_MODULES = [
     "chat",
     "agent",
     "scheduler",
+    "trips",
     # Private knowledge routers / write paths.
     "knowledge.router",
     "knowledge.tasks_router",
@@ -51,6 +52,7 @@ FORBIDDEN_MODULES = [
     "home.observability.rollup",
     "home.observability.stats",
     "home.schedule",
+    "home.schedule_router",
 ]
 
 # Snippet run in the child: import the public app, then dump every loaded module
