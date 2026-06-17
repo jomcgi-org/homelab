@@ -7,6 +7,7 @@ observability MCP tooling — keep the interface minimal and read-only.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from kubernetes_asyncio import client, config
@@ -111,11 +112,41 @@ class KubernetesClient:
             return None
         return result.get("status")
 
+    async def _node_rss_bytes(self, v1: "client.CoreV1Api", node: str) -> float | None:
+        """Anonymous resident memory for one node, from the kubelet Summary API.
+
+        Returns node.memory.rssBytes from /stats/summary, or None when the
+        summary (or the rssBytes field) is unavailable so the caller can fall
+        back. rssBytes excludes ALL file-backed page cache, unlike the
+        metrics-server "working set" which counts active page cache (e.g. the
+        multi-GB model-weight file reads on the GPU node) and overstates real
+        memory consumption by tens of GiB.
+        """
+        try:
+            raw = await v1.connect_get_node_proxy_with_path(
+                name=node, path="stats/summary"
+            )
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            rss = (data.get("node", {}).get("memory", {}) or {}).get("rssBytes")
+            return float(rss) if rss is not None else None
+        except Exception:
+            logger.warning(
+                "kubelet summary unavailable for node %s; falling back to "
+                "working-set memory",
+                node,
+                exc_info=False,
+            )
+            return None
+
     async def aggregate_node_resources(self) -> dict[str, float]:
-        """Sum CPU and memory across all nodes from the metrics API.
+        """Sum CPU and memory across all nodes.
 
         Returns cores and bytes. Capacity comes from node.status.allocatable
-        (what the scheduler can actually assign), not status.capacity.
+        (what the scheduler can actually assign), not status.capacity. CPU usage
+        comes from the metrics API. Memory "used" is anonymous RSS from the
+        kubelet Summary API (see _node_rss_bytes) rather than the metrics-server
+        working set, because working set includes reclaimable page cache and
+        wildly overstates real usage on nodes that mmap/read large files.
         """
         api = await self._ensure_client()
         v1 = client.CoreV1Api(api)
@@ -134,11 +165,23 @@ class KubernetesClient:
             cpu_cap += _parse_cpu(alloc.get("cpu", "0"))
             mem_cap += _parse_memory(alloc.get("memory", "0"))
 
-        cpu_used = mem_used = 0.0
+        # CPU usage and a per-node working-set fallback for memory.
+        cpu_used = 0.0
+        mem_ws_by_node: dict[str, float] = {}
         for item in metrics_resp.get("items", []):
             usage = item.get("usage", {})
             cpu_used += _parse_cpu(usage.get("cpu", "0"))
-            mem_used += _parse_memory(usage.get("memory", "0"))
+            name = item.get("metadata", {}).get("name", "")
+            mem_ws_by_node[name] = _parse_memory(usage.get("memory", "0"))
+
+        # Honest memory: kubelet rssBytes per node, fall back to working set on miss.
+        node_names = [n.metadata.name for n in nodes_resp.items]
+        rss_list = await asyncio.gather(
+            *(self._node_rss_bytes(v1, name) for name in node_names)
+        )
+        mem_used = 0.0
+        for name, rss in zip(node_names, rss_list):
+            mem_used += rss if rss is not None else mem_ws_by_node.get(name, 0.0)
 
         return {
             "cpu_used_cores": cpu_used,
