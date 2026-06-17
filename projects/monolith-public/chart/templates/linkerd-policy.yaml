@@ -1,0 +1,67 @@
+{{- if .Values.web.enabled }}
+# Linkerd-native network policy for the public service (ADR 004 Phase 5).
+#
+# The pod is meshed, so isolation is expressed with Linkerd's own policy CRDs
+# rather than a Kubernetes NetworkPolicy (which would need the proxy's 4143
+# inbound + control-plane egress allowances and is the footgun the cluster has
+# repeatedly hit). This regains mTLS and topology observability for the public
+# tier while still constraining who can reach it and where it can go.
+
+# A Server makes the app port deny-by-default: only traffic permitted by an
+# AuthorizationPolicy below may reach it. Linkerd auto-authorizes the kubelet
+# liveness/readiness probes declared on the pod, so /healthz keeps working.
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-web
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  port: {{ .Values.web.portName | default "http" }}
+---
+# Only the Cloudflare/Envoy gateway may call the public service. We authorize by
+# mesh identity using a wildcard over the gateway namespace's ServiceAccounts so
+# the rule survives the envoy data-plane SA's hash-suffixed name. The gateway is
+# meshed, so its proxy presents this identity over mTLS.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-gateway
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  identities:
+    - "*.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local"
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-allow-gateway
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: {{ include "monolith-public.fullname" . }}-web
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: {{ include "monolith-public.fullname" . }}-gateway
+---
+# Default-deny all off-cluster egress. The public service only needs in-cluster
+# Postgres (monolith-pg-ro) and DNS, which are cluster-network traffic and are
+# not governed by EgressNetwork, so a compromised pod cannot reach the internet.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: EgressNetwork
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-deny-egress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  trafficPolicy: Deny
+{{- end }}
