@@ -199,6 +199,141 @@ py3_image(
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
 )
 
+# ---------------------------------------------------------------------------
+# Public service (ADR 004 Phase 5): a pruned, read-only binary/image that runs
+# app/main_public.py. It deliberately excludes every private write-path domain
+# (agent/chat/scheduler/trips), the private entrypoints (app/main.py,
+# app/mcp_app.py), the private knowledge routers/write internals, and the
+# private home/observability writer + ClickHouse paths. Those modules are
+# PROVEN absent from app.main_public's runtime closure by
+# app/main_public_imports_test.py, so excluding their FILES cannot break the
+# public binary. Everything else (knowledge read API/store/models/public
+# routers, home read router/config/models, ships/stars/hikes/dr_jobs/shared)
+# stays in full. The pip deps mirror :monolith_backend wholesale: a missing
+# wheel would crash the public binary at startup, so trimming is a follow-up.
+_PUBLIC_PRUNE_EXCLUDE = [
+    # Standard excludes (mirror :monolith_backend / :main).
+    "**/*_test.py",
+    "**/test_*.py",
+    "*/tests/**/*.py",
+    "shared/testing/**/*.py",
+    "stars/grid_gen/**",
+    "trips/backfill/**",
+    # Whole private domains.
+    "agent/**",
+    "chat/**",
+    "scheduler/**",
+    "trips/**",
+    # Private entrypoint + MCP app.
+    "app/main.py",
+    "app/mcp_app.py",
+    # Private knowledge routers / write paths / heavy maintenance internals.
+    "knowledge/router.py",
+    "knowledge/tasks_router.py",
+    "knowledge/gaps.py",
+    "knowledge/ingest_queue.py",
+    "knowledge/mcp.py",
+    "knowledge/service.py",
+    "knowledge/reconciler.py",
+    "knowledge/layout.py",
+    # Private home scheduling + observability writer/ClickHouse paths.
+    "home/schedule.py",
+    "home/schedule_router.py",
+    "home/observability/clickhouse.py",
+    "home/observability/slo.py",
+    "home/observability/topology_query.py",
+    "home/observability/rollup.py",
+    "home/observability/stats.py",
+]
+
+py_library(
+    name = "monolith_public_backend",
+    srcs = glob(
+        [
+            "app/**/*.py",
+            "knowledge/**/*.py",
+            "home/**/*.py",
+            "shared/**/*.py",
+            "ships/**/*.py",
+            "hikes/**/*.py",
+            "stars/**/*.py",
+            "dr_jobs/**/*.py",
+        ],
+        exclude = _PUBLIC_PRUNE_EXCLUDE,
+    ),  # keep
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//discord_py",
+        "@pip//dulwich",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",  # explicit: overrides.txt strips lxml[html-clean] extra
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//pyyaml",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_venv_binary(
+    name = "main_public",
+    srcs = glob(
+        [
+            "app/**/*.py",
+            "knowledge/**/*.py",
+            "home/**/*.py",
+            "shared/**/*.py",
+            "ships/**/*.py",
+            "hikes/**/*.py",
+            "stars/**/*.py",
+            "dr_jobs/**/*.py",
+        ],
+        exclude = _PUBLIC_PRUNE_EXCLUDE,
+    ),  # keep
+    imports = ["."],  # keep
+    main = "app/main_public.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_public_backend"],  # keep
+)
+
+py3_image(
+    name = "image_public",
+    binary = "//projects/monolith:main_public",
+    env = {
+        # py3_image sets PYTHONPATH to the workspace root (_main/) but this
+        # project's sibling packages (app/, knowledge/) need the package directory
+        # on the path too, matching the imports = ["."] used by py_venv_binary.
+        "PYTHONPATH": "/projects/monolith/main_public.runfiles/_main:/projects/monolith/main_public.runfiles/_main/projects/monolith",
+        # The minimal ubuntu base image has no CA certificates; point OpenSSL
+        # at certifi's bundle so outbound HTTPS works.
+        "SSL_CERT_FILE": "/projects/monolith/main_public.runfiles/_main/projects/monolith/.main_public/lib/python3.13/site-packages/certifi/cacert.pem",
+    },
+    main = "app/main_public.py",
+    multiarch_tars = ["@claude_code//:tar"],
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
+)
+
 py_test(
     name = "markers_test",
     srcs = ["shared/testing/markers_test.py"],
