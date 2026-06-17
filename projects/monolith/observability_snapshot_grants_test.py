@@ -1,39 +1,67 @@
-"""Real-Postgres round-trip for the observability snapshots (ADR 004 Layer 4).
+"""Real-Postgres contract for the observability snapshots (ADR 004 Layer 4).
 
-Exercises the rollup writer's upsert against a real Postgres (the `pg` fixture
-applies every migration) and asserts public_reader can read the snapshot tables
-through the grants in 20260617010000_observability_snapshots.sql. Hand-written
-bdd_test (real DB), so excluded from gazelle.
+Asserts, against a real Postgres (the `pg` fixture applies every migration):
+  - the single-row upsert (same SQL the rollup writer runs) is idempotent, and
+  - public_reader can read both snapshot tables through the grants in
+    20260617010000_observability_snapshots.sql.
+
+Hand-written bdd_test (real DB), so excluded from gazelle. The rollup writer's
+build->write wiring is covered separately in home/observability/rollup_test.py.
 """
 
-import os
+import json
 
 from sqlmodel import Session, create_engine, text
 
-from app.db import get_engine
-from home.observability.rollup import _write_stats_snapshot, _write_topology_snapshot
+_UPSERT_TOPOLOGY = text(
+    """
+    INSERT INTO observability.topology_snapshot (id, payload, snapshot_at)
+    VALUES (1, :payload, now())
+    ON CONFLICT (id) DO UPDATE
+        SET payload = EXCLUDED.payload, snapshot_at = EXCLUDED.snapshot_at
+    """
+)
+_UPSERT_STATS = text(
+    """
+    INSERT INTO observability.stats_snapshot (id, payload, snapshot_at)
+    VALUES (1, :payload, now())
+    ON CONFLICT (id) DO UPDATE
+        SET payload = EXCLUDED.payload, snapshot_at = EXCLUDED.snapshot_at
+    """
+)
 
 
-def test_rollup_writer_upserts_and_public_reader_can_read(pg):
-    # Point the app engine (used by the writers) at the test Postgres.
-    os.environ["DATABASE_URL"] = pg.url.replace(
-        "postgresql+psycopg://", "postgresql://", 1
-    )
-    get_engine.cache_clear()
+def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
     engine = create_engine(pg.url)
     try:
-        # The writer is an idempotent single-row upsert: last write wins.
-        _write_topology_snapshot({"nodes": [{"id": "a"}], "groups": [], "edges": []})
-        _write_topology_snapshot({"nodes": [{"id": "b"}], "groups": [], "edges": []})
-        _write_stats_snapshot({"cluster": {"nodes": 4}})
-
         with Session(engine) as session:
-            row = session.execute(
-                text("SELECT payload FROM observability.topology_snapshot WHERE id = 1")
-            ).first()
-            assert row[0]["nodes"][0]["id"] == "b"
+            session.execute(
+                _UPSERT_TOPOLOGY,
+                {
+                    "payload": json.dumps(
+                        {"nodes": [{"id": "a"}], "groups": [], "edges": []}
+                    )
+                },
+            )
+            # Second upsert on the singleton row: last write wins, no duplicate.
+            session.execute(
+                _UPSERT_TOPOLOGY,
+                {
+                    "payload": json.dumps(
+                        {"nodes": [{"id": "b"}], "groups": [], "edges": []}
+                    )
+                },
+            )
+            session.execute(
+                _UPSERT_STATS, {"payload": json.dumps({"cluster": {"nodes": 4}})}
+            )
+            session.commit()
 
-        # public_reader (Phase 2 role) can read both snapshot tables.
+            count = session.execute(
+                text("SELECT count(*) FROM observability.topology_snapshot")
+            ).scalar_one()
+            assert count == 1
+
         with Session(engine) as session:
             session.execute(text("SET ROLE public_reader"))
             topo = session.execute(
@@ -46,4 +74,3 @@ def test_rollup_writer_upserts_and_public_reader_can_read(pg):
             assert stats[0]["cluster"]["nodes"] == 4
     finally:
         engine.dispose()
-        get_engine.cache_clear()

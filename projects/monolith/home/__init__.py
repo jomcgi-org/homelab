@@ -14,7 +14,6 @@ def register(app: FastAPI) -> None:
 def on_startup_jobs(session) -> None:
     from scheduler.api import register_job
     from home.schedule import calendar_poll_handler
-    from home.observability import rollup
 
     register_job(
         session,
@@ -23,7 +22,6 @@ def on_startup_jobs(session) -> None:
         handler=lambda _: calendar_poll_handler(),
         ttl_secs=120,
     )
-    rollup.register(session)
 
 
 def get_today_events() -> list[dict]:

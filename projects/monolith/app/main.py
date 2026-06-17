@@ -73,6 +73,10 @@ async def lifespan(app: FastAPI):
         stars.on_startup_jobs(session)
         dr_jobs.on_startup_jobs(session)
 
+        from home.observability import rollup as observability_rollup
+
+        observability_rollup.register(session)
+
     # Start Discord bot + chat jobs if configured
     bot = None
     bot_task = None
