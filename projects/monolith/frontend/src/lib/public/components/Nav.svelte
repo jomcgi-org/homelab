@@ -49,12 +49,6 @@
       desc: "Scotland dark-sky planner",
       href: "/app/stars",
     },
-    {
-      slug: "dr-jobs",
-      label: "Dr Jobs",
-      desc: "NHS Scotland anaesthetics consultant posts",
-      href: "/app/dr-jobs",
-    },
   ];
 
   const appsActive = $derived(apps.some((a) => a.slug === route));
