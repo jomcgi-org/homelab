@@ -63,10 +63,12 @@ web:
     pullPolicy: IfNotPresent
   containerPort: 8000
   portName: http
-  # Un-meshed by design (ADR 004 Phase 5): opt the pod out of Kyverno's default
-  # Linkerd injection.
+  # Meshed (ADR 004 Phase 5): the pod joins the Linkerd mesh so inbound is
+  # restricted by a native AuthorizationPolicy (only the gateway identity may
+  # call it) and off-cluster egress is denied by an EgressNetwork. See
+  # templates/linkerd-policy.yaml.
   podAnnotations:
-    linkerd.io/inject: disabled
+    linkerd.io/inject: enabled
   probes:
     liveness:
       path: /healthz
