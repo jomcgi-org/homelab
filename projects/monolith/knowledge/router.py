@@ -44,6 +44,7 @@ from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
     delete_note,
+    get_vault_root,
     list_notes_for_review,
     reset_note_visibility,
     resolve_note_body,
@@ -51,7 +52,6 @@ from knowledge.notes import (
     undelete_note,
     verify_note_visibility,
 )
-from knowledge.service import get_vault_root
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
