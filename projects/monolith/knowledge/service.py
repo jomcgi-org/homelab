@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 VAULT_ROOT_ENV = "VAULT_ROOT"
 DEFAULT_VAULT_ROOT = "/vault"
+
+
+def get_vault_root() -> Path:
+    """Resolve the vault root from the env (or default), as an absolute path."""
+    return Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
+
+
 # 5-minute reconcile cycle. _TTL_SECS is the lock-lease: a worker holding
 # the row past this is treated as crashed and the lock can be reclaimed.
 # We keep it generous (20m) so LLM-heavy handlers can finish without being
