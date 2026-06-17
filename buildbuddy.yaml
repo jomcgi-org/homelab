@@ -88,6 +88,15 @@ actions:
             echo "Skipping automated commit from $AUTHOR"
             exit 0
           fi
+
+          # Authenticate Docker Hub so rules_oci base-image manifest fetches
+          # (ubuntu, osgeo/gdal, python_base, ...) are not subject to the
+          # anonymous ~100-pull/6h quota, which 429s and aborts the build.
+          # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN set in BuildBuddy Settings → Secrets.
+          if [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external
 
           # OCaml multi-arch shard (ADR 006/008): the example/test ladder again,
@@ -142,6 +151,15 @@ actions:
 
           # GHCR_TOKEN set in BuildBuddy Settings → Secrets
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
+
+          # Authenticate Docker Hub too: rules_oci base-image fetches (ubuntu,
+          # osgeo/gdal, python_base, ...) hit the anonymous ~100-pull/6h quota
+          # and 429 without this. DOCKERHUB_USERNAME / DOCKERHUB_TOKEN set in
+          # BuildBuddy Settings → Secrets.
+          if [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+
           bazel run //bazel/images:push_all --config=ci --stamp
 
   # Push pages — runs on main only, in parallel with Test and Push images
