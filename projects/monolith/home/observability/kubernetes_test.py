@@ -172,10 +172,13 @@ async def test_aggregate_node_resources_falls_back_to_working_set(k8s_client):
     mock_v1.connect_get_node_proxy_with_path = AsyncMock(side_effect=_proxy)
 
     with (
-        patch("shared.kubernetes.config.load_incluster_config"),
-        patch("shared.kubernetes.ApiClient", return_value=mock_api),
-        patch("shared.kubernetes.client.CoreV1Api", return_value=mock_v1),
-        patch("shared.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+        patch("home.observability.kubernetes.config.load_incluster_config"),
+        patch("home.observability.kubernetes.ApiClient", return_value=mock_api),
+        patch("home.observability.kubernetes.client.CoreV1Api", return_value=mock_v1),
+        patch(
+            "home.observability.kubernetes.client.CustomObjectsApi",
+            return_value=mock_custom,
+        ),
     ):
         result = await k8s_client.aggregate_node_resources()
 
