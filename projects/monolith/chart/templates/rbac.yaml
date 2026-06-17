@@ -8,6 +8,11 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods"]
     verbs: ["list"]
+  # nodes/proxy lets the stats endpoint reach each kubelet's Summary API
+  # (/stats/summary) for honest rssBytes memory usage, not just working set.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["list"]

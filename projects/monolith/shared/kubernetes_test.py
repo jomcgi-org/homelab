@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -67,18 +68,31 @@ async def test_count_argocd_applications(k8s_client):
     assert count == 2
 
 
+def _node(name: str, allocatable: dict) -> MagicMock:
+    node = MagicMock()
+    node.metadata.name = name
+    node.status.allocatable = allocatable
+    return node
+
+
+def _summary_json(rss_mib: float) -> str:
+    """A minimal kubelet /stats/summary payload carrying node rssBytes."""
+    return json.dumps({"node": {"memory": {"rssBytes": rss_mib * 1024**2}}})
+
+
 @pytest.mark.asyncio
-async def test_aggregate_node_resources_sums_cpu_and_memory(k8s_client):
+async def test_aggregate_node_resources_uses_rss_not_working_set(k8s_client):
     mock_api = MagicMock()
     mock_v1 = MagicMock()
     mock_custom = MagicMock()
 
-    node_a = MagicMock()
-    node_a.status.allocatable = {"cpu": "16", "memory": "65536Mi"}
-    node_b = MagicMock()
-    node_b.status.allocatable = {"cpu": "8", "memory": "32768Mi"}
-    mock_v1.list_node = AsyncMock(return_value=MagicMock(items=[node_a, node_b]))
+    nodes = [
+        _node("node-a", {"cpu": "16", "memory": "65536Mi"}),
+        _node("node-b", {"cpu": "8", "memory": "32768Mi"}),
+    ]
+    mock_v1.list_node = AsyncMock(return_value=MagicMock(items=nodes))
 
+    # Metrics API reports inflated working-set memory (includes page cache).
     mock_custom.list_cluster_custom_object = AsyncMock(
         return_value={
             "items": [
@@ -94,6 +108,12 @@ async def test_aggregate_node_resources_sums_cpu_and_memory(k8s_client):
         }
     )
 
+    # Kubelet Summary API reports honest rssBytes (excludes page cache).
+    rss = {"node-a": 8192, "node-b": 4096}
+    mock_v1.connect_get_node_proxy_with_path = AsyncMock(
+        side_effect=lambda name, path: _summary_json(rss[name])
+    )
+
     with (
         patch("shared.kubernetes.config.load_incluster_config"),
         patch("shared.kubernetes.ApiClient", return_value=mock_api),
@@ -104,8 +124,57 @@ async def test_aggregate_node_resources_sums_cpu_and_memory(k8s_client):
 
     assert result["cpu_used_cores"] == pytest.approx(2.0)
     assert result["cpu_capacity_cores"] == pytest.approx(24.0)
-    assert result["memory_used_bytes"] == pytest.approx(30720 * 1024**2)
+    # Memory = rss sum (12288Mi), NOT the working-set sum (30720Mi).
+    assert result["memory_used_bytes"] == pytest.approx(12288 * 1024**2)
     assert result["memory_capacity_bytes"] == pytest.approx(98304 * 1024**2)
+
+
+@pytest.mark.asyncio
+async def test_aggregate_node_resources_falls_back_to_working_set(k8s_client):
+    """When the kubelet Summary API is unavailable, per-node memory falls back
+    to the metrics-server working-set value rather than dropping to zero."""
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    mock_custom = MagicMock()
+
+    nodes = [
+        _node("node-a", {"cpu": "16", "memory": "65536Mi"}),
+        _node("node-b", {"cpu": "8", "memory": "32768Mi"}),
+    ]
+    mock_v1.list_node = AsyncMock(return_value=MagicMock(items=nodes))
+    mock_custom.list_cluster_custom_object = AsyncMock(
+        return_value={
+            "items": [
+                {
+                    "metadata": {"name": "node-a"},
+                    "usage": {"cpu": "1500m", "memory": "20480Mi"},
+                },
+                {
+                    "metadata": {"name": "node-b"},
+                    "usage": {"cpu": "500m", "memory": "10240Mi"},
+                },
+            ]
+        }
+    )
+
+    # node-a summary fails (-> working set 20480Mi); node-b returns rss 4096Mi.
+    async def _proxy(name, path):
+        if name == "node-a":
+            raise RuntimeError("kubelet unreachable")
+        return _summary_json(4096)
+
+    mock_v1.connect_get_node_proxy_with_path = AsyncMock(side_effect=_proxy)
+
+    with (
+        patch("shared.kubernetes.config.load_incluster_config"),
+        patch("shared.kubernetes.ApiClient", return_value=mock_api),
+        patch("shared.kubernetes.client.CoreV1Api", return_value=mock_v1),
+        patch("shared.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.aggregate_node_resources()
+
+    # 20480Mi (node-a working-set fallback) + 4096Mi (node-b rss) = 24576Mi.
+    assert result["memory_used_bytes"] == pytest.approx(24576 * 1024**2)
 
 
 @pytest.mark.asyncio
