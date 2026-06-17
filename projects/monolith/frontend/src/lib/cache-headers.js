@@ -1,6 +1,26 @@
+import { version } from "$app/environment";
+
 const ONE_HOUR = 3_600;
 const ONE_DAY = 86_400;
 const ONE_YEAR = 31_536_000;
+
+// Fold the SvelteKit build version into a page ETag. A page's rendered HTML is a
+// function of (data x build): a layout-only deploy changes the HTML and its
+// hashed asset references but not the underlying data, so a data-derived ETag
+// stays fixed and both browsers and the CDN keep revalidating to a 304 against
+// pre-deploy HTML (see projects/monolith/dr_jobs/router.py for the data-side
+// ETag). Prefixing the build version busts the validator on any deploy that
+// changes the build, while still 304-ing cheaply when neither data nor build
+// moved. `version` is SvelteKit's per-build timestamp, so it changes iff the
+// frontend output changed (Bazel caches the build action otherwise).
+//
+// Returns undefined when there is no upstream ETag, so callers keep their
+// existing "set the header only if present" guard.
+export function versionedEtag(dataEtag) {
+  if (!dataEtag) return undefined;
+  const inner = dataEtag.replace(/^"|"$/g, "");
+  return `"${version}-${inner}"`;
+}
 
 // 60s fresh · 24h SWR (background refresh) · 1y SIE (cluster-down resilience)
 export const PAGE_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;

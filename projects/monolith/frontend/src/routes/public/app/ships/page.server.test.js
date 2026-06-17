@@ -49,7 +49,7 @@ describe("/public/app/ships load", () => {
     expect(result.snapshot).toEqual(SNAPSHOT);
   });
 
-  it("forwards ETag and Last-Modified from the API response", async () => {
+  it("versions the API ETag with the build version and forwards Last-Modified", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -64,7 +64,9 @@ describe("/public/app/ships load", () => {
 
     expect(setHeaders).toHaveBeenCalledWith(
       expect.objectContaining({
-        etag: '"2026-06-10T00:00:00+00:00-3"',
+        // Build version (testbuild, from the $app/environment stub) is spliced
+        // inside the quotes so a layout-only deploy busts the page validator.
+        etag: '"testbuild-2026-06-10T00:00:00+00:00-3"',
         "last-modified": "Wed, 10 Jun 2026 00:00:00 GMT",
       }),
     );

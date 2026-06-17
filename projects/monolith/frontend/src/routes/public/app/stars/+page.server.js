@@ -3,7 +3,10 @@ import { error } from "@sveltejs/kit";
 // config does not resolve the SvelteKit $lib alias. stars sits at the same
 // depth as ships/hikes (routes/public/app/stars), hence four ../ segments to
 // reach src/lib/. Mirrors hikes/+page.server.js.
-import { STARS_SITES_CACHE_CONTROL } from "../../../../lib/cache-headers.js";
+import {
+  STARS_SITES_CACHE_CONTROL,
+  versionedEtag,
+} from "../../../../lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
@@ -21,7 +24,7 @@ export async function load({ fetch, setHeaders }) {
   }
 
   const headers = { "cache-control": STARS_SITES_CACHE_CONTROL };
-  const etag = res.headers?.get?.("etag");
+  const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   const lastModified = res.headers?.get?.("last-modified");
   if (lastModified) headers["last-modified"] = lastModified;
