@@ -319,6 +319,19 @@ py_test(
 )
 
 py_test(
+    name = "main_public_routes_test",
+    srcs = ["app/main_public_routes_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+        "@pip//tzdata",
+    ],
+)
+
+py_test(
     name = "integration_test",
     size = "medium",
     srcs = ["app/integration_test.py"],
