@@ -149,48 +149,6 @@ async def vault_backup_handler() -> datetime | None:
     return None
 
 
-async def garden_handler(session: Session) -> datetime | None:
-    """Scheduler handler: run the knowledge vault gardener."""
-    if not _vault_sync_ready():
-        logger.info("knowledge.garden: vault sync not ready, deferring")
-        return None
-    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        logger.warning("knowledge.garden: CLAUDE_CODE_OAUTH_TOKEN not set, skipping")
-        return None
-
-    from knowledge.gardener import Gardener
-
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    try:
-        max_files = int(os.environ.get("GARDENER_MAX_FILES_PER_RUN", "10"))
-    except ValueError:
-        logger.warning(
-            "knowledge.garden: GARDENER_MAX_FILES_PER_RUN is not an integer, "
-            "falling back to default",
-        )
-        max_files = 10
-    gardener = Gardener(
-        vault_root=vault_root,
-        max_files_per_run=max_files,
-        session=session,
-    )
-    stats = await gardener.run()
-    extra = {
-        "resolved": stats.resolved,
-        "moved": stats.moved,
-        "deduped": stats.deduped,
-        "reconciled": stats.reconciled,
-        "ingested": stats.ingested,
-        "failed": stats.failed,
-        "gaps_discovered": stats.gaps_discovered,
-    }
-    if stats.ingested == 0 and stats.failed > 0:
-        logger.error("knowledge.garden complete (all failed)", extra=extra)
-    else:
-        logger.info("knowledge.garden complete", extra=extra)
-    return None
-
-
 def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
     """Compute layout positions for the current graph and persist them.
 
@@ -555,19 +513,10 @@ def on_startup(session: Session) -> None:
     from shared.scheduler import register_job
 
     # The scheduler claims one job per tick (LIMIT 1) and polls every 30s,
-    # so the two jobs always run in separate ticks — there is no hard
-    # ordering guarantee between them within a single cycle, and Postgres
-    # gives no tiebreaker for identical next_run_at values. Registration
-    # order is documentary rather than load-bearing. The eventual
-    # consistency is fine: any file the gardener writes to _processed/ is
-    # picked up by the reconciler on its next tick (~30s later).
-    register_job(
-        session,
-        name="knowledge.garden",
-        interval_secs=_INTERVAL_SECS,
-        handler=garden_handler,
-        ttl_secs=_TTL_SECS,
-    )
+    # so jobs always run in separate ticks. Registration order is
+    # documentary rather than load-bearing. The eventual consistency is
+    # fine: any file written to _processed/ is picked up by the reconciler
+    # on its next tick (~30s later).
     register_job(
         session,
         name="knowledge.reconcile",

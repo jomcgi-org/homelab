@@ -774,9 +774,8 @@ class KnowledgeStore:
     def raws_needing_decomposition(self, limit: int = 10) -> list[RawInput]:
         """Return raws the gardener still needs to decompose, fresh first.
 
-        Lifts the exact tiering from ``Gardener._raws_needing_decomposition``
-        so the remote claude.ai routine (ADR 006 Phase 4c) sees the same work
-        queue the in-pod gardener used to.
+        Lifts the exact tiering the retired in-pod gardener used (ADR 006
+        Phase 4c) so the remote claude.ai routine sees the same work queue.
 
         Tier 1 (fresh): no current-version or pre-migration provenance at all.
         Tier 2 (retriable): have a ``derived_note_id='failed'`` provenance row

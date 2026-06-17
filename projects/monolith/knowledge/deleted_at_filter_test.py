@@ -1,21 +1,22 @@
 """Tests proving soft-deleted rows are excluded by deleted_at.is_(None) filters.
 
-Covers the five code paths changed in commits 681b23a8b..83fbcec21:
+Covers the deleted_at code paths changed in commits 681b23a8b..83fbcec21:
 
 1. gaps.discover_gaps()                    — Gap.deleted_at.is_(None) guard
 2. gaps.classify_gaps()                    — Gap.deleted_at.is_(None) guard
-3. gardener._resolve_pending_provenance()  — Note.deleted_at.is_(None) guard
-4. gardener._distill_completed_tasks()     — Note.deleted_at.is_(None) guard
-5. reconciler._project_gap_frontmatter()   — Gap.deleted_at.is_(None) guard
-6. migrate_raw_bucketing._grandfather_atoms() — Note.deleted_at.is_(None) guard
-7. research_handler._sweep_and_select_candidates() — Gap.deleted_at.is_(None) guard
+3. reconciler._project_gap_frontmatter()   — Gap.deleted_at.is_(None) guard
+4. migrate_raw_bucketing._grandfather_atoms() — Note.deleted_at.is_(None) guard
+5. research_handler._sweep_and_select_candidates() — Gap.deleted_at.is_(None) guard
+
+(The gardener._resolve_pending_provenance and _distill_completed_tasks
+deleted_at guards were retired with the in-pod gardener; see ADR 006
+Phase 4c.)
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -23,7 +24,6 @@ from sqlmodel.pool import StaticPool
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gaps import GAPS_PIPELINE_VERSION, classify_gaps, discover_gaps
-from knowledge.gardener import GARDENER_VERSION, Gardener
 from knowledge.migrate_raw_bucketing import _grandfather_atoms
 from knowledge.models import AtomRawProvenance, Gap, Note, NoteLink, RawInput
 from knowledge.reconciler import _project_gap_frontmatter
@@ -226,131 +226,7 @@ class TestClassifyGapsDeletedAt:
 
 
 # ---------------------------------------------------------------------------
-# 3. gardener._resolve_pending_provenance — soft-deleted Note is not resolved.
-# ---------------------------------------------------------------------------
-
-
-class TestResolvePendingProvenanceDeletedAt:
-    def test_soft_deleted_note_is_not_resolved(
-        self, session: Session, tmp_path: Path
-    ) -> None:
-        """_resolve_pending_provenance must skip Notes with deleted_at set.
-
-        The filter on ~line 288 means a soft-deleted note's note_id lookup
-        returns None, so the pending AtomRawProvenance row stays unresolved
-        (derived_note_id is not cleared, resolved count stays 0).
-        """
-        # A soft-deleted atom note.
-        deleted_note = Note(
-            note_id="deleted-atom",
-            path="_processed/deleted-atom.md",
-            title="Deleted Atom",
-            content_hash="hash-deleted",
-            type="atom",
-            deleted_at=_NOW,
-        )
-        session.add(deleted_note)
-        session.commit()
-        session.refresh(deleted_note)
-
-        # Pending provenance: atom_fk=None, derived_note_id pointing at the
-        # deleted note.  raw_fk is set to satisfy the NOT NULL constraint
-        # (at least one of atom_fk/raw_fk must be non-None).
-        raw = _make_raw(session, "raw-for-provenance")
-        pending = AtomRawProvenance(
-            raw_fk=raw.id,
-            derived_note_id="deleted-atom",
-            gardener_version="v-test",
-        )
-        session.add(pending)
-        session.commit()
-        session.refresh(pending)
-
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        resolved = gardener._resolve_pending_provenance()
-
-        # The soft-deleted note must not match → row stays unresolved.
-        assert resolved == 0
-        session.refresh(pending)
-        assert pending.derived_note_id == "deleted-atom"
-        assert pending.atom_fk is None  # not linked to the deleted note
-
-    def test_live_note_is_resolved_normally(
-        self, session: Session, tmp_path: Path
-    ) -> None:
-        """Live notes must still be resolved (regression guard)."""
-        live_note = _make_note(session, "live-atom")
-        raw = _make_raw(session, "raw-live")
-        pending = AtomRawProvenance(
-            raw_fk=raw.id,
-            derived_note_id="live-atom",
-            gardener_version="v-test",
-        )
-        session.add(pending)
-        session.commit()
-        session.refresh(pending)
-
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        resolved = gardener._resolve_pending_provenance()
-
-        assert resolved == 1
-        # _resolve_pending_provenance modifies objects in-memory but does not
-        # commit; the production caller (garden()) commits afterward.  Commit
-        # here so session.refresh() reads the updated DB state.
-        session.commit()
-        session.refresh(pending)
-        assert pending.atom_fk == live_note.id
-        assert pending.derived_note_id is None
-
-
-# ---------------------------------------------------------------------------
-# 4. gardener._distill_completed_tasks — soft-deleted active Note is skipped.
-# ---------------------------------------------------------------------------
-
-
-class TestDistillCompletedTasksDeletedAt:
-    @pytest.mark.asyncio
-    async def test_soft_deleted_done_task_is_not_distilled(
-        self, session: Session, tmp_path: Path
-    ) -> None:
-        """_distill_completed_tasks must skip Notes with deleted_at set.
-
-        The filter on ~line 656 excludes soft-deleted notes from the active
-        tasks query, so a done task that has been soft-deleted should never
-        trigger distillation.
-        """
-        rel_path = "_processed/done-deleted.md"
-        vault_file = tmp_path / rel_path
-        vault_file.parent.mkdir(parents=True, exist_ok=True)
-        vault_file.write_text(
-            "---\nid: done-deleted\ntitle: Done Deleted\n"
-            "type: active\nstatus: done\n---\nBody.\n"
-        )
-        note = Note(
-            note_id="done-deleted",
-            path=rel_path,
-            title="Done Deleted",
-            content_hash="hash-done-deleted",
-            type="active",
-            extra={"status": "done"},
-            deleted_at=_NOW,
-        )
-        session.add(note)
-        session.commit()
-
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        mock_distill = AsyncMock()
-        gardener._distill_one = mock_distill  # type: ignore[method-assign]
-
-        distilled, failed = await gardener._distill_completed_tasks()
-
-        assert distilled == 0
-        assert failed == 0
-        mock_distill.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 5. reconciler._project_gap_frontmatter — soft-deleted Gap is not projected.
+# 3. reconciler._project_gap_frontmatter — soft-deleted Gap is not projected.
 # ---------------------------------------------------------------------------
 
 
@@ -391,7 +267,7 @@ class TestProjectGapFrontmatterDeletedAt:
 
 
 # ---------------------------------------------------------------------------
-# 6. migrate_raw_bucketing._grandfather_atoms — soft-deleted atom excluded.
+# 4. migrate_raw_bucketing._grandfather_atoms — soft-deleted atom excluded.
 # ---------------------------------------------------------------------------
 
 
@@ -440,7 +316,7 @@ class TestGrandfatherAtomsDeletedAt:
 
 
 # ---------------------------------------------------------------------------
-# 7. research_handler._sweep_and_select_candidates — soft-deleted Gap excluded.
+# 5. research_handler._sweep_and_select_candidates — soft-deleted Gap excluded.
 # ---------------------------------------------------------------------------
 
 
