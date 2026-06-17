@@ -471,8 +471,13 @@ py_test(
     name = "main_public_imports_test",
     srcs = ["app/main_public_imports_test.py"],
     imports = ["."],
+    # Depend on the PRUNED public library, not :monolith_backend. This makes the
+    # test a pre-deploy validator of the prune itself: if the public glob omits a
+    # file that app.main_public actually needs, the child import fails
+    # (returncode != 0) here in CI rather than only at pod startup. It still
+    # asserts the forbidden private modules are absent from the closure.
     deps = [
-        ":monolith_backend",
+        ":monolith_public_backend",
         "@pip//pytest",
     ],
 )
