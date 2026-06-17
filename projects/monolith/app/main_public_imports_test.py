@@ -51,6 +51,7 @@ FORBIDDEN_MODULES = [
     "home.observability.topology_query",
     "home.observability.rollup",
     "home.observability.stats",
+    "home.observability.kubernetes",
     "home.schedule",
     "home.schedule_router",
 ]
