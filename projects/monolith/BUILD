@@ -17,6 +17,7 @@
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
 # gazelle:exclude observability_snapshot_grants_test.py
+# gazelle:exclude public_knowledge_views_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -3252,6 +3253,14 @@ bdd_test(
 bdd_test(
     name = "observability_snapshot_grants_test",
     srcs = ["observability_snapshot_grants_test.py"],
+)
+
+# Real-Postgres test: the public_api knowledge views derive public-only rows,
+# public_reader can read them but not the knowledge schema, and the public
+# endpoints filter private targets / strip private wikilinks (ADR 004 5a').
+bdd_test(
+    name = "public_knowledge_views_test",
+    srcs = ["public_knowledge_views_test.py"],
 )
 
 bdd_test(
