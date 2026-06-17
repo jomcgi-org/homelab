@@ -220,21 +220,20 @@
     border: 2px solid var(--ink);
     color: var(--ink);
     cursor: pointer;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
+    transition: background 110ms ease;
   }
 
+  /* A select EXPANDS, so highlight it (accent fill) rather than lifting it off
+     the page; a raised/shadowed box reads as "floats above", contradicting the
+     list that drops below. Mirrors the .open "anchored, not lifted" intent. */
   .bsel-trigger:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
+    background: var(--accent);
   }
 
-  /* Brutalist focus: a hard offset stack, not the OS blue glow. */
+  /* Brutalist focus: the accent highlight, not the OS blue glow. */
   .bsel-trigger:focus-visible {
     outline: none;
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
+    background: var(--accent);
   }
 
   /* Open: keep the box "pressed in" (no lift) so it reads as anchored to the
