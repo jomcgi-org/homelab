@@ -19,8 +19,8 @@ import logging
 from sqlmodel import Session, text
 
 from app.db import get_engine
-from home.observability.router import build_topology
 from home.observability.stats import build_stats
+from home.observability.topology_query import build_topology
 from scheduler.api import register_job
 
 logger = logging.getLogger(__name__)
