@@ -528,8 +528,8 @@ async def get_raw(raw_id: str) -> dict:
     """Read a raw input markdown content by its ``raw_id``.
 
     Returns the body the gardener should decompose into atoms, fetched from
-    object storage (``s3://knowledge/raws/<content_hash>.md``); the
-    ``raw_inputs`` row holds only metadata + the content hash (ADR 006 Phase 4d).
+    object storage (``s3://knowledge/raws/<content_hash>.md``). The
+    ``raw_inputs`` row holds only metadata plus the content hash (ADR 006 Phase 4d).
 
     Args:
         raw_id: The stable raw input identifier.

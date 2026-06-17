@@ -92,9 +92,9 @@ def _insert_raw_input(
         text(
             """
             INSERT INTO knowledge.raw_inputs
-                (raw_id, path, source, content, content_hash)
+                (raw_id, path, source, content_hash)
             VALUES
-                (:raw_id, :path, :source, 'body', :content_hash)
+                (:raw_id, :path, :source, :content_hash)
             RETURNING id
             """
         ),
