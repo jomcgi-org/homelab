@@ -3710,6 +3710,13 @@ semgrep_target_test(
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
+        # Same acknowledged false-positives that :main_semgrep_test excludes;
+        # the pruned public binary includes the same flagged files
+        # (stars/grid.py guards endpoint_url with a scheme check;
+        # knowledge/profile.py has an intentional audit-date constant).
+        # semgrep-core ignores inline # nosemgrep, so exclude here. # keep
+        "boto3-endpoint-url-missing-scheme",  # keep
+        "test-hardcoded-past-timestamp",  # keep
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":main_public",
