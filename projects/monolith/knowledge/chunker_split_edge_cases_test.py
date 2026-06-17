@@ -1,6 +1,6 @@
-"""Coverage tests for shared/chunker.py gaps.
+"""Edge-case tests for knowledge/chunker.py header and word splitting.
 
-Fills gaps identified in the coverage review:
+Pins behaviour at the boundaries of the splitting logic:
 - Oversized fenced code block falls into the word-split path.
 - Trailing header with no body is silently dropped.
 - Heading-only document hits the sections=[] fallback and returns a chunk
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from shared.chunker import _split_by_headers, _split_paragraphs, chunk_markdown
+from knowledge.chunker import _split_by_headers, _split_paragraphs, chunk_markdown
 
 
 # ---------------------------------------------------------------------------

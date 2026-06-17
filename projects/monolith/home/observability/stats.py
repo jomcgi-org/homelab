@@ -25,7 +25,7 @@ from sqlalchemy import text
 
 from app.db import get_engine
 from home.observability.clickhouse import ClickHouseClient
-from shared.kubernetes import KubernetesClient
+from home.observability.kubernetes import KubernetesClient
 
 GITHUB_REPO = "jomcgi/homelab"
 ARGOCD_APP_NAME = "monolith"

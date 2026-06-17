@@ -1,6 +1,6 @@
 """Tests for the generic markdown chunker."""
 
-from shared.chunker import Chunk, chunk_markdown
+from knowledge.chunker import Chunk, chunk_markdown
 
 
 class TestChunkMarkdown:
