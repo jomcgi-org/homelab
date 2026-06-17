@@ -11,6 +11,11 @@ def register(app: FastAPI) -> None:
     app.include_router(router)
 
 
+def register_public(app: FastAPI) -> None:
+    """Ships is a wholly public, read-only domain: reuse register."""
+    register(app)
+
+
 def on_startup_jobs(session: Session) -> None:
     """Register ships scheduled jobs (partition maintenance, heatmap rollup)."""
     from scheduler.api import register_job

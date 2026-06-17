@@ -11,6 +11,13 @@ def register(app: FastAPI) -> None:
     app.include_router(observability_router)
 
 
+def register_public(app: FastAPI) -> None:
+    """Register only the public, read-only home routes (observability stats/topology)."""
+    from home.observability.router import router as observability_router
+
+    app.include_router(observability_router)
+
+
 def on_startup_jobs(session) -> None:
     from scheduler.api import register_job
     from home.schedule import calendar_poll_handler
