@@ -1,5 +1,6 @@
 """Unit tests for knowledge/router.py — /search and /notes endpoints."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from app.db import get_session
 from app.main import app
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
+from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.router import get_embedding_client
 from knowledge.service import VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
@@ -904,63 +906,68 @@ class TestGraphEndpoint:
         assert "s-maxage=3600" in second.headers["cache-control"]
 
 
+def _seed_public_note(
+    session,
+    *,
+    note_id,
+    title="T",
+    type="atom",
+    content=None,
+    indexed_at=None,
+    layout_x=None,
+    layout_y=None,
+    tags=None,
+    aliases=None,
+    path=None,
+):
+    """Insert a public_api.knowledge_notes view row (a plain SQLite table here)."""
+    note = PublicNote(
+        note_id=note_id,
+        title=title,
+        type=type,
+        content=content,
+        indexed_at=indexed_at or datetime.now(timezone.utc),
+        layout_x=layout_x,
+        layout_y=layout_y,
+        tags=tags or [],
+        aliases=aliases or [],
+        path=path or f"{note_id}.md",
+    )
+    session.add(note)
+    session.commit()
+    return note
+
+
+def _seed_public_link(session, *, source, target, kind="link", edge_type=None):
+    """Insert a public_api.knowledge_note_links view row."""
+    link = PublicNoteLink(source=source, target=target, kind=kind, edge_type=edge_type)
+    session.add(link)
+    session.commit()
+    return link
+
+
 class TestPublicGraphEndpoint:
     """Tests for GET /api/knowledge/public/graph.
 
-    Strict-visibility variant of /graph: only ``visibility='public'`` notes
-    appear as nodes, and edges are kept only when *both* endpoints are
-    public. Mirrors the cache-header / ETag contract of the private graph
-    so the CDN behaves identically.
+    Reads the ``public_api`` views (PublicNote / PublicNoteLink), which already
+    restrict to public, non-deleted rows at the DB layer. These handler tests
+    seed those view rows directly (the real_session fixture's schema-strip makes
+    them plain SQLite tables); the view's visibility/deleted derivation is
+    covered separately by the real-Postgres confidentiality test. What remains
+    exercised here is the handler logic: the type filter, the app-side target
+    resolution against the public node set, degree counting, and the cache/ETag
+    contract.
     """
 
-    def test_public_graph_only_public_nodes(self, real_session):
-        """Private/null-visibility notes are excluded from nodes; private
-        targets are excluded from edges even when the source is public."""
-        store = KnowledgeStore(real_session)
-        # pub-A links to pub-B (kept) and to priv-X (dropped: target private).
-        _upsert(
-            store,
-            note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
-            title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
-            links=[
-                Link(target="pub-B", display=None),
-                Link(target="priv-X", display=None),
-            ],
-        )
-        _upsert(
-            store,
-            note_id="pub-B",
-            path="pub-b.md",
-            content_hash="h-pb",
-            title="Pub B",
-            metadata=_meta(title="Pub B", type="atom", visibility="public"),
-            n_chunks=0,
-        )
-        _upsert(
-            store,
-            note_id="priv-X",
-            path="priv-x.md",
-            content_hash="h-px",
-            title="Priv X",
-            metadata=_meta(title="Priv X", type="atom", visibility="private"),
-            n_chunks=0,
-        )
-        # null-Y links to pub-B but is itself null-visibility → both the
-        # node and the edge must be dropped.
-        _upsert(
-            store,
-            note_id="null-Y",
-            path="null-y.md",
-            content_hash="h-ny",
-            title="Null Y",
-            metadata=_meta(title="Null Y", type="atom", visibility=None),
-            n_chunks=0,
-            links=[Link(target="pub-B", display=None)],
-        )
+    def test_public_graph_resolves_targets_against_public_set(self, real_session):
+        """Edges whose target is not in the public node set are dropped by the
+        handler's slug resolution, even though the source is public."""
+        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
+        _seed_public_note(real_session, note_id="pub-B", title="Pub B", type="atom")
+        # pub-A -> pub-B is kept; pub-A -> priv-X is dropped because priv-X is
+        # not in the (seeded) public node set.
+        _seed_public_link(real_session, source="pub-A", target="pub-B")
+        _seed_public_link(real_session, source="pub-A", target="priv-X")
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -976,31 +983,13 @@ class TestPublicGraphEndpoint:
         edge_pairs = {(e["source"], e["target"]) for e in body["edges"]}
         assert edge_pairs == {("pub-A", "pub-B")}
 
-    def test_public_graph_excludes_gap_stubs(self, real_session):
-        """Gap stub notes (type='gap', visibility=NULL) never appear in
-        the public graph regardless of how they're linked."""
-        store = KnowledgeStore(real_session)
-        # Public note that wikilinks to an unresolved gap stub.
-        _upsert(
-            store,
-            note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
-            title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
-            links=[Link(target="UnresolvedThing", display=None)],
-        )
-        # The gap stub the gardener would create — auto-generated, no
-        # explicit visibility, type='gap'.
-        _upsert(
-            store,
-            note_id="unresolved-thing",
-            path="_researching/unresolved-thing.md",
-            content_hash="h-ut",
-            title="UnresolvedThing",
-            metadata=_meta(title="UnresolvedThing", type="gap", visibility=None),
-            n_chunks=0,
+    def test_public_graph_excludes_non_renderable_types(self, real_session):
+        """Notes whose type is outside GRAPH_NOTE_TYPES never appear as nodes."""
+        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
+        # type='journal' is not in GRAPH_NOTE_TYPES, so the handler's type
+        # filter drops it.
+        _seed_public_note(
+            real_session, note_id="journal-1", title="Journal", type="journal"
         )
 
         app.dependency_overrides[get_session] = lambda: real_session
@@ -1012,20 +1001,11 @@ class TestPublicGraphEndpoint:
 
         body = res.json()
         node_ids = {n["id"] for n in body["nodes"]}
-        assert "unresolved-thing" not in node_ids
+        assert node_ids == {"pub-A"}
 
     def test_public_graph_cache_headers(self, real_session):
         """Public graph carries the same CDN cache directives as /graph."""
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
-            title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
-        )
+        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -1037,34 +1017,39 @@ class TestPublicGraphEndpoint:
         cc = res.headers.get("cache-control", "")
         assert "s-maxage=3600" in cc
         assert "stale-while-revalidate=86400" in cc
+        # Conditional GET prerequisites: a stable ETag and a Last-Modified.
+        assert res.headers["etag"]
+        assert res.headers["last-modified"]
+
+    def test_public_graph_304_on_matching_if_none_match(self, real_session):
+        """A matching If-None-Match yields an empty 304 with the same ETag."""
+        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            first = c.get("/api/knowledge/public/graph")
+            etag = first.headers["etag"]
+            second = c.get(
+                "/api/knowledge/public/graph", headers={"If-None-Match": etag}
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert second.status_code == 304
+        assert second.content == b""
+        assert second.headers["etag"] == etag
 
     def test_public_graph_etag_changes_when_public_set_mutates(self, real_session):
         """Adding a new public note invalidates the ETag (node-count
         component changes even if timestamps don't move enough)."""
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
-            title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
-        )
+        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
             c = TestClient(app, raise_server_exceptions=False)
             etag_a = c.get("/api/knowledge/public/graph").headers["etag"]
-            _upsert(
-                store,
-                note_id="pub-B",
-                path="pub-b.md",
-                content_hash="h-pb",
-                title="Pub B",
-                metadata=_meta(title="Pub B", type="atom", visibility="public"),
-                n_chunks=0,
-            )
+            _seed_public_note(real_session, note_id="pub-B", title="Pub B", type="atom")
             etag_b = c.get("/api/knowledge/public/graph").headers["etag"]
         finally:
             app.dependency_overrides.clear()
@@ -1072,20 +1057,8 @@ class TestPublicGraphEndpoint:
         assert etag_a != etag_b
 
     def test_public_graph_returns_indexed_at_in_body(self, real_session):
-        """StatusBar in the SvelteKit page reads data.graph.indexed_at;
-        the public endpoint previously emitted Last-Modified but omitted
-        the field from the JSON body, so the public /notes page showed
-        no indexed-at timestamp."""
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
-            title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
-        )
+        """StatusBar in the SvelteKit page reads data.graph.indexed_at."""
+        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -1096,28 +1069,12 @@ class TestPublicGraphEndpoint:
 
         body = res.json()
         assert "indexed_at" in body
-        # ISO 8601 string (the actual instant is non-deterministic, set
-        # at upsert time — just assert the field is populated and
-        # roundtrips through fromisoformat).
-        from datetime import datetime as _dt
-
-        parsed = _dt.fromisoformat(body["indexed_at"])
+        parsed = datetime.fromisoformat(body["indexed_at"])
         assert parsed.tzinfo is not None  # always UTC-aware
 
     def test_public_graph_indexed_at_null_when_no_public_notes(self, real_session):
         """Empty public set → indexed_at is JSON null (not missing), so
         the frontend can treat it as a known absence."""
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="priv-X",
-            path="priv-x.md",
-            content_hash="h-px",
-            title="Priv X",
-            metadata=_meta(title="Priv X", type="atom", visibility="private"),
-            n_chunks=0,
-        )
-
         app.dependency_overrides[get_session] = lambda: real_session
         try:
             c = TestClient(app, raise_server_exceptions=False)
@@ -1129,32 +1086,18 @@ class TestPublicGraphEndpoint:
         assert body["nodes"] == []
         assert body["indexed_at"] is None
 
-    def test_public_graph_prefers_public_layout_columns(self, real_session):
-        """When layout_x_public/y_public are set, the endpoint returns
-        them in preference to the full-graph layout_x/y."""
-        from knowledge.models import Note
-
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
+    def test_public_graph_returns_layout_coords(self, real_session):
+        """The handler returns the view's (already-coalesced) layout columns
+        verbatim as each node's x/y. The public-vs-full COALESCE itself now
+        lives in the view, so it is not re-tested here."""
+        _seed_public_note(
+            real_session,
             note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
             title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
+            type="atom",
+            layout_x=0.7,
+            layout_y=0.8,
         )
-        # Seed both columns with distinguishable values; endpoint must
-        # serve the *_public values.
-        note = real_session.scalars(
-            select(Note).where(Note.note_id == "pub-A", Note.deleted_at.is_(None))
-        ).one()
-        note.layout_x = 0.1
-        note.layout_y = 0.2
-        note.layout_x_public = 0.7
-        note.layout_y_public = 0.8
-        real_session.add(note)
-        real_session.commit()
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -1169,109 +1112,34 @@ class TestPublicGraphEndpoint:
         assert nodes[0]["x"] == 0.7
         assert nodes[0]["y"] == 0.8
 
-    def test_public_graph_falls_back_to_full_layout_when_public_null(
-        self, real_session
-    ):
-        """First-deploy safety: when the public layout pass hasn't yet
-        populated the new columns, the endpoint must serve the full-graph
-        layout via COALESCE so /notes doesn't render blank."""
-        from knowledge.models import Note
-
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="pub-A",
-            path="pub-a.md",
-            content_hash="h-pa",
-            title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
-        )
-        note = real_session.scalars(
-            select(Note).where(Note.note_id == "pub-A", Note.deleted_at.is_(None))
-        ).one()
-        note.layout_x = 0.1
-        note.layout_y = 0.2
-        # layout_x_public/y_public left NULL — simulates pre-first-pass.
-        real_session.add(note)
-        real_session.commit()
-
-        app.dependency_overrides[get_session] = lambda: real_session
-        try:
-            c = TestClient(app, raise_server_exceptions=False)
-            res = c.get("/api/knowledge/public/graph")
-        finally:
-            app.dependency_overrides.clear()
-
-        body = res.json()
-        nodes = body["nodes"]
-        assert len(nodes) == 1
-        assert nodes[0]["x"] == 0.1
-        assert nodes[0]["y"] == 0.2
-
-
-def _seed_public_note_file(
-    vault_dir,
-    *,
-    note_id: str,
-    body: str,
-    filename: str | None = None,
-) -> str:
-    """Write a body file under ``vault_dir`` and return its relative path.
-
-    The endpoint loads the body from disk via ``vault_root / note.path``,
-    so tests that exercise the served body must materialise the file.
-    """
-    rel_path = filename or f"{note_id}.md"
-    dest = vault_dir / rel_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Wrap in a minimal frontmatter terminator so frontmatter.parse()
-    # treats the supplied text as the body. Without the terminator, the
-    # whole file is body — which is also fine but explicit is better.
-    dest.write_text(f"---\nid: {note_id}\n---\n\n{body}")
-    return rel_path
-
 
 class TestPublicNoteEndpoint:
     """Tests for GET /api/knowledge/public/notes/{note_id}.
 
-    Strict-visibility per-note endpoint paired with /public/graph. Two
-    properties under explicit assertion:
+    Strict-visibility per-note endpoint paired with /public/graph. The
+    ``public_api`` view returns a row only when the note is public +
+    non-deleted, so the handler treats a private/deleted note exactly like a
+    missing one (covered against a real Postgres in
+    public_knowledge_views_test.py). These SQLite tests seed PublicNote rows
+    directly and exercise the handler logic:
 
-    1. Identical 404 response for missing AND for private notes — the
-       existence of a private note must never be observable.
-    2. Body wikilinks targeting private notes are stripped to plain
-       text via :func:`sanitize_public_body`; wikilinks targeting public
-       notes are left intact for the frontend to resolve.
+    1. Identical 404 for every note the view does not expose.
+    2. Body wikilinks to non-public targets are stripped to plain text via
+       :func:`strip_private_wikilinks`; wikilinks to public notes are kept.
     """
 
-    def test_public_note_200_for_public(self, real_session, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        path_a = _seed_public_note_file(
-            vault_dir, note_id="pub-A", body="Hello [[pub-B]] world."
-        )
-        path_b = _seed_public_note_file(vault_dir, note_id="pub-B", body="B body.")
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
+    def test_public_note_200_for_public(self, real_session):
+        # Body of record is Postgres content (ADR 006), so the view's
+        # ``content`` column is served directly without touching the vault.
+        _seed_public_note(
+            real_session,
             note_id="pub-A",
-            path=path_a,
-            content_hash="h-pa",
             title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
+            type="atom",
+            content="Hello [[pub-B]] world.",
         )
-        _upsert(
-            store,
-            note_id="pub-B",
-            path=path_b,
-            content_hash="h-pb",
-            title="Pub B",
-            metadata=_meta(title="Pub B", type="atom", visibility="public"),
-            n_chunks=0,
+        _seed_public_note(
+            real_session, note_id="pub-B", title="Pub B", type="atom", content="B body."
         )
 
         app.dependency_overrides[get_session] = lambda: real_session
@@ -1286,11 +1154,7 @@ class TestPublicNoteEndpoint:
         # Public-target wikilink left intact for the frontend to resolve.
         assert "[[pub-B]]" in body["body"]
 
-    def test_public_note_404_for_missing(self, real_session, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
+    def test_public_note_404_for_missing(self, real_session):
         app.dependency_overrides[get_session] = lambda: real_session
         try:
             c = TestClient(app, raise_server_exceptions=False)
@@ -1300,83 +1164,38 @@ class TestPublicNoteEndpoint:
 
         assert res.status_code == 404
 
-    def test_public_note_404_for_private_same_response_shape(
-        self, real_session, tmp_path, monkeypatch
-    ):
-        """Private and missing notes return byte-identical 404 payloads."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        path_priv = _seed_public_note_file(vault_dir, note_id="priv-X", body="secret.")
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+    def test_public_note_404_identical_for_all_misses(self, real_session):
+        """Every note the view does not expose (private, deleted, or simply
+        missing) returns a byte-identical 404, so existence is never leaked.
 
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="priv-X",
-            path=path_priv,
-            content_hash="h-px",
-            title="Priv X",
-            metadata=_meta(title="Priv X", type="atom", visibility="private"),
-            n_chunks=0,
-        )
-
+        In SQLite the view is materialized as a plain table seeded only with
+        public rows, so an unexposed note is indistinguishable from a missing
+        one here; the real-Postgres test asserts a genuinely private note 404s
+        identically."""
         app.dependency_overrides[get_session] = lambda: real_session
         try:
             c = TestClient(app, raise_server_exceptions=False)
-            res_priv = c.get("/api/knowledge/public/notes/priv-X")
-            res_miss = c.get("/api/knowledge/public/notes/does-not-exist")
+            res_a = c.get("/api/knowledge/public/notes/priv-X")
+            res_b = c.get("/api/knowledge/public/notes/does-not-exist")
         finally:
             app.dependency_overrides.clear()
 
-        assert res_priv.status_code == 404
-        assert res_miss.status_code == 404
-        # Identical body — never expose that priv-X exists.
-        assert res_priv.json() == res_miss.json()
+        assert res_a.status_code == 404
+        assert res_b.status_code == 404
+        assert res_a.json() == res_b.json()
 
-    def test_public_note_strips_private_wikilinks_from_body(
-        self, real_session, tmp_path, monkeypatch
-    ):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        path_a = _seed_public_note_file(
-            vault_dir,
+    def test_public_note_strips_private_wikilinks_from_body(self, real_session):
+        _seed_public_note(
+            real_session,
             note_id="pub-A",
-            body="See [[pub-B]] and avoid [[Some Colleague]].",
-        )
-        path_b = _seed_public_note_file(vault_dir, note_id="pub-B", body="B.")
-        path_priv = _seed_public_note_file(
-            vault_dir, note_id="some-colleague", body="private."
-        )
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
-            note_id="pub-A",
-            path=path_a,
-            content_hash="h-pa",
             title="Pub A",
-            metadata=_meta(title="Pub A", type="atom", visibility="public"),
-            n_chunks=0,
+            type="atom",
+            content="See [[pub-B]] and avoid [[Some Colleague]].",
         )
-        _upsert(
-            store,
-            note_id="pub-B",
-            path=path_b,
-            content_hash="h-pb",
-            title="Pub B",
-            metadata=_meta(title="Pub B", type="atom", visibility="public"),
-            n_chunks=0,
+        _seed_public_note(
+            real_session, note_id="pub-B", title="Pub B", type="atom", content="B."
         )
-        _upsert(
-            store,
-            note_id="some-colleague",
-            path=path_priv,
-            content_hash="h-sc",
-            title="Some Colleague",
-            metadata=_meta(title="Some Colleague", type="atom", visibility="private"),
-            n_chunks=0,
-        )
+        # "Some Colleague" is NOT a seeded public note, so the link is stripped.
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -1390,37 +1209,22 @@ class TestPublicNoteEndpoint:
         body = payload["body"]
         assert "[[pub-B]]" in body
         assert "[[Some Colleague]]" not in body
-        # Bracket text is preserved — sanitize_public_body strips the
-        # [[…]] wrapper but keeps the display text. See the design note
-        # in knowledge/visibility.py: the loud leak is the *graph edge*
-        # (already filtered by /public/graph), not the display string.
+        # Bracket text is preserved — strip_private_wikilinks drops the
+        # [[…]] wrapper but keeps the display text.
         assert "Some Colleague" in body
 
-    def test_public_note_response_excludes_internal_fields(
-        self, real_session, tmp_path, monkeypatch
-    ):
-        """The ``extra`` JSONB blob (arbitrary system metadata) is never
-        serialized into the public response — we serialize an explicit
-        whitelist of fields, not ``**note.dict()``."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        path_a = _seed_public_note_file(vault_dir, note_id="pub-A", body="Hello world.")
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
+    def test_public_note_response_excludes_internal_fields(self, real_session):
+        """The response is an explicit whitelist, so no internal columns leak.
 
-        store = KnowledgeStore(real_session)
-        _upsert(
-            store,
+        The view itself omits ``extra`` (and every other private column), and
+        the handler serializes a fixed field set rather than ``**note.dict()``.
+        """
+        _seed_public_note(
+            real_session,
             note_id="pub-A",
-            path=path_a,
-            content_hash="h-pa",
             title="Pub A",
-            metadata=_meta(
-                title="Pub A",
-                type="atom",
-                visibility="public",
-                extra={"internal_only": "secret"},
-            ),
-            n_chunks=0,
+            type="atom",
+            content="Hello world.",
         )
 
         app.dependency_overrides[get_session] = lambda: real_session
@@ -1432,5 +1236,12 @@ class TestPublicNoteEndpoint:
 
         assert res.status_code == 200
         body = res.json()
+        assert set(body.keys()) == {
+            "note_id",
+            "title",
+            "tags",
+            "aliases",
+            "indexed_at",
+            "body",
+        }
         assert "extra" not in body
-        assert "secret" not in str(body)
