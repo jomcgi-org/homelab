@@ -13,9 +13,10 @@
 # gazelle:exclude stars
 # gazelle:exclude trips
 # gazelle:exclude dr_jobs
-# Hand-written bdd_test target (needs the real-Postgres harness), so keep gazelle
-# from generating a conflicting py_test for it.
+# Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
+# from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
+# gazelle:exclude observability_snapshot_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -3161,6 +3162,17 @@ py_test(
 )
 
 py_test(
+    name = "home_observability_rollup_test",
+    srcs = ["home/observability/rollup_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "kubernetes_client_test",
     srcs = ["home/observability/kubernetes_test.py"],
     imports = ["."],
@@ -3220,6 +3232,13 @@ bdd_test(
 bdd_test(
     name = "public_reader_grants_test",
     srcs = ["public_reader_grants_test.py"],
+)
+
+# Real-Postgres test: the observability rollup writer upserts a snapshot and
+# public_reader can read it (ADR 004 Layer 4).
+bdd_test(
+    name = "observability_snapshot_grants_test",
+    srcs = ["observability_snapshot_grants_test.py"],
 )
 
 bdd_test(

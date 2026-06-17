@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlmodel import Session, text
 
+from app.db import get_session
 from home.observability.clickhouse import ClickHouseClient
 from home.observability.config import (
     EdgeConfig,
@@ -20,14 +21,11 @@ from home.observability.slo import (
     compute_budget,
     compute_status,
 )
-from home.observability.stats import get_cached_stats, warm_stats_cache
 from home.observability.topology_config import TOPOLOGY
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/home/observability", tags=["observability"])
 
-_cache: dict | None = None
-_cache_time: float = 0.0
 _ch_semaphore = asyncio.Semaphore(2)
 _CH_RETRIES = 1
 _CH_RETRY_DELAY = 1.0
@@ -238,31 +236,28 @@ async def build_topology() -> dict:
         await client.close()
 
 
-async def warm_cache() -> None:
-    """Build topology and populate the module cache. Called at startup."""
-    global _cache, _cache_time
-    logger.info("Warming topology cache...")
-    result = await build_topology()
-    _cache = result
-    _cache_time = time.monotonic()
-    logger.info("Topology cache warmed (%d nodes)", len(result.get("nodes", [])))
-
-
 @router.get("/stats", tags=["stats"])
-async def get_stats():
-    """Return public platform stats, cached for 24 hours."""
-    return await get_cached_stats()
+def get_stats(session: Session = Depends(get_session)):
+    """Return the latest precomputed stats snapshot (ADR 004).
+
+    The snapshot is refreshed by observability.stats_rollup; this read never
+    touches ClickHouse or the K8s API, so the public service can serve it from
+    the read replica with no extra credentials.
+    """
+    row = session.execute(
+        text("SELECT payload FROM observability.stats_snapshot WHERE id = 1")
+    ).first()
+    return row[0] if row else {}
 
 
 @router.get("/topology")
-async def get_topology():
-    """Return topology with live metrics, cached for cache_ttl seconds."""
-    global _cache, _cache_time
-    cfg = TOPOLOGY
-    now = time.monotonic()
-    if _cache is not None and (now - _cache_time) < cfg.cache_ttl:
-        return _cache
-    result = await build_topology()
-    _cache = result
-    _cache_time = now
-    return result
+def get_topology(session: Session = Depends(get_session)):
+    """Return the latest precomputed topology snapshot (ADR 004).
+
+    Refreshed by observability.topology_rollup. Returns an empty skeleton until
+    the first rollup has run (the public page tolerates this with fallback data).
+    """
+    row = session.execute(
+        text("SELECT payload FROM observability.topology_snapshot WHERE id = 1")
+    ).first()
+    return row[0] if row else {"groups": [], "nodes": [], "edges": []}
