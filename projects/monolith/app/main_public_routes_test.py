@@ -59,6 +59,34 @@ def test_healthz_present():
     assert "/healthz" in _paths()
 
 
+# Deny-by-default allowlist: every route on the public app must fall under one
+# of these prefixes. Unlike the negative assertions below (which forbid the
+# private prefixes we know about today), this catches a future domain mounted
+# under an unexpected prefix, so a new private surface cannot silently leak
+# into the public artifact.
+ALLOWED_PREFIXES = (
+    "/api/ships",
+    "/api/stars",
+    "/api/hikes",
+    "/api/dr-jobs",
+    "/api/knowledge/public",
+    "/api/home/observability",
+    "/healthz",
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+)
+
+
+def test_only_allowed_route_prefixes():
+    paths = _paths()
+    for p in paths:
+        assert p.startswith(ALLOWED_PREFIXES), (
+            f"path {p!r} is not in the public allowlist; "
+            "the public app must expose only public, read-only routes"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Negative assertions: these private paths MUST be absent.
 # ---------------------------------------------------------------------------
