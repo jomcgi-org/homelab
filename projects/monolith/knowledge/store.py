@@ -13,7 +13,7 @@ from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gardener import GARDENER_VERSION, Gardener, _slugify
 from knowledge.links import Link
 from knowledge.models import AtomRawProvenance, Chunk, Gap, Note, NoteLink, RawInput
-from shared.chunker import Chunk as ChunkPayload
+from knowledge.chunker import Chunk as ChunkPayload
 
 logger = logging.getLogger(__name__)
 

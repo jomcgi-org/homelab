@@ -21,7 +21,7 @@ from typing import Protocol
 from knowledge import frontmatter, links, wikilinks
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.store import KnowledgeStore
-from shared.chunker import chunk_markdown
+from knowledge.chunker import chunk_markdown
 
 logger = logging.getLogger(__name__)
 

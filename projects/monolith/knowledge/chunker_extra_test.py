@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from shared.chunker import (
+from knowledge.chunker import (
     _estimate_tokens,
     _split_by_headers,
     _split_paragraphs,

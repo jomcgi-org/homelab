@@ -1807,8 +1807,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_chunker_test",
-    srcs = ["shared/chunker_test.py"],
+    name = "knowledge_chunker_test",
+    srcs = ["knowledge/chunker_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1817,8 +1817,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_chunker_extra_test",
-    srcs = ["shared/chunker_extra_test.py"],
+    name = "knowledge_chunker_extra_test",
+    srcs = ["knowledge/chunker_extra_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -1827,8 +1827,8 @@ py_test(
 )
 
 py_test(
-    name = "shared_chunker_gaps_test",
-    srcs = ["shared/chunker_gaps_test.py"],
+    name = "knowledge_chunker_split_edge_cases_test",
+    srcs = ["knowledge/chunker_split_edge_cases_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -3130,7 +3130,7 @@ py_test(
 
 py_test(
     name = "kubernetes_client_test",
-    srcs = ["shared/kubernetes_test.py"],
+    srcs = ["home/observability/kubernetes_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
