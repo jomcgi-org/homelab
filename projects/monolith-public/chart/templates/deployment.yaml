@@ -1,0 +1,1 @@
+{{- include "homelab.deployment" (dict "context" . "component" "web") }}

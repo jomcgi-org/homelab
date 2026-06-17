@@ -1,0 +1,97 @@
+# Read-only public service (ADR 004 Phase 5). Un-meshed, no K8s API access,
+# connects to monolith-pg-ro as public_reader. The image tag is pinned by the
+# Bazel helm_images_values pipeline at build time; do not set a digest here.
+#
+# The Deployment, Service, and ServiceAccount are rendered from the
+# homelab-library templates (homelab.deployment / homelab.service /
+# homelab.serviceaccount), which read config from the "web" component key.
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecret:
+  enabled: false
+imagePullSecrets: []
+
+# Pod-level security: non-root 65532 with an fsGroup so the auto-mounted /tmp
+# emptyDir is writable under readOnlyRootFilesystem.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security: read-only root fs, no privilege escalation, drop all
+# capabilities.
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  # The public pod needs no Kubernetes API access, so do not mount a token.
+  automount: false
+  annotations: {}
+  name: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Name of the Secret that the OnePasswordItem below syncs the public_reader DB
+# credential into. The synced Secret name equals the OnePasswordItem
+# metadata.name, which must match the secretKeyRef in web.env below.
+databaseSecretName: monolith-public-db
+
+# 1Password sync. itemPath is set in deploy/values.yaml; left empty here so a
+# bare `helm template` does not emit a OnePasswordItem with a null path.
+onepassword:
+  itemPath: ""
+
+# "web" component consumed by the homelab-library deployment/service helpers.
+web:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/monolith/public-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  containerPort: 8000
+  portName: http
+  # Un-meshed by design (ADR 004 Phase 5): opt the pod out of Kyverno's default
+  # Linkerd injection.
+  podAnnotations:
+    linkerd.io/inject: disabled
+  probes:
+    liveness:
+      path: /healthz
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    readiness:
+      path: /healthz
+      initialDelaySeconds: 5
+      periodSeconds: 10
+  # DATABASE_URL is the only secret the public tier carries: the read-only
+  # public_reader credential on monolith-pg-ro, synced from 1Password. The
+  # secretKeyRef name must match databaseSecretName above.
+  env:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-db
+          key: uri
+  # Modest footprint: the public tier serves read-only cached snapshots.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 8000
