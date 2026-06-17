@@ -333,6 +333,16 @@ py_test(
 )
 
 py_test(
+    name = "main_public_imports_test",
+    srcs = ["app/main_public_imports_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "integration_test",
     size = "medium",
     srcs = ["app/integration_test.py"],

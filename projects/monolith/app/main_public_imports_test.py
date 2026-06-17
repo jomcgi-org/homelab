@@ -1,0 +1,98 @@
+"""Import-closure guard for the public app (ADR 004 Layer 1+4).
+
+The public service must ship a pruned image that does NOT contain the private
+write-path modules or the ClickHouse client/creds. This test imports
+``app.main_public`` in a FRESH subprocess (so module state leaked into
+``sys.modules`` by other tests in the same process cannot mask a regression) and
+asserts that none of the forbidden private modules ended up in the child's
+``sys.modules``.
+
+If this test fails, a module-level import somewhere in the public register chain
+re-introduced a private dependency: find the offending ``import`` and make it
+lazy (move it inside the function that needs it) rather than weakening the
+forbidden list below.
+
+``import pytest`` is intentional even though no fixtures are used: it keeps
+gazelle's dependency inference attaching ``@pip//pytest`` to this target.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring)
+
+# Private surface that must never land in the public import closure. Each entry
+# is matched as a module name OR a dotted prefix (so "chat" also forbids
+# "chat.anything").
+FORBIDDEN_MODULES = [
+    # Private domains.
+    "chat",
+    "agent",
+    "scheduler",
+    # Private knowledge routers / write paths.
+    "knowledge.router",
+    "knowledge.tasks_router",
+    "knowledge.gaps",
+    "knowledge.ingest_queue",
+    "knowledge.mcp",
+    # Heavy knowledge write/maintenance internals this refactor removed from
+    # the public closure.
+    "knowledge.service",
+    "knowledge.reconciler",
+    "knowledge.layout",
+    # ClickHouse client + writer path + private home paths.
+    "home.observability.clickhouse",
+    "home.observability.slo",
+    "home.observability.topology_query",
+    "home.observability.rollup",
+    "home.observability.stats",
+    "home.schedule",
+]
+
+# Snippet run in the child: import the public app, then dump every loaded module
+# name as JSON on stdout so the parent can assert on the closure.
+_SNIPPET = (
+    "import app.main_public; import json, sys; print(json.dumps(list(sys.modules)))"
+)
+
+
+def _loaded_modules() -> set[str]:
+    """Import ``app.main_public`` in a fresh process; return its sys.modules."""
+    env = dict(os.environ)
+    # Propagate the test runner's import roots so the child can import ``app``
+    # regardless of how the Bazel py launcher set up the parent's sys.path.
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", _SNIPPET],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        "child failed to import app.main_public:\n"
+        f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    )
+    return set(json.loads(proc.stdout.strip().splitlines()[-1]))
+
+
+def test_public_import_closure_excludes_private_modules() -> None:
+    """No forbidden private module is present in the public import closure."""
+    loaded = _loaded_modules()
+    offenders = sorted(
+        forbidden
+        for forbidden in FORBIDDEN_MODULES
+        if forbidden in loaded
+        or any(m == forbidden or m.startswith(forbidden + ".") for m in loaded)
+    )
+    assert not offenders, (
+        "app.main_public pulled forbidden private modules into its import "
+        f"closure: {offenders}. Make the offending import lazy (move it inside "
+        "the function that needs it); do not weaken FORBIDDEN_MODULES."
+    )
