@@ -198,7 +198,8 @@ class RawInput(SQLModel, table=True):
     path: str = Field(unique=True)
     source: str
     original_path: str | None = None
-    content: str
+    # ADR 006 Phase 4d: raw markdown lives in s3://knowledge/raws/<content_hash>.md,
+    # not Postgres. The column was dropped; fetch the body via raw_store.fetch_raw.
     content_hash: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     extra: dict[str, Any] = Field(default_factory=dict, sa_column=Column(_JSONB))

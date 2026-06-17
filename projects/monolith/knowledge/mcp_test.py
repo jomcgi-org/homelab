@@ -715,7 +715,6 @@ class TestListRawsNeedingDecomposition:
     async def test_returns_raws(self):
         fake_raw = SimpleNamespace(
             raw_id="r1",
-            content="---\ntitle: My Raw\n---\nbody text",
             source="discord",
             created_at="2026-01-01",
         )
@@ -731,7 +730,7 @@ class TestListRawsNeedingDecomposition:
         assert result["raws"] == [
             {
                 "raw_id": "r1",
-                "title": "My Raw",
+                "title": "r1",
                 "source": "discord",
                 "created_at": "2026-01-01",
             }
@@ -758,13 +757,14 @@ class TestGetRaw:
 
     @pytest.mark.asyncio
     async def test_found(self):
-        row = SimpleNamespace(raw_id="r1", content="hello world", source="discord")
+        row = SimpleNamespace(raw_id="r1", content_hash="r1", source="discord")
         mock_session = MagicMock()
         mock_session.__enter__.return_value = mock_session
         mock_session.exec.return_value.first.return_value = row
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
             patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.fetch_raw", return_value="hello world"),
         ):
             result = await get_raw("r1")
 

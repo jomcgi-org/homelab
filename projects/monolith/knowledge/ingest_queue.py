@@ -162,7 +162,6 @@ def ingest_raw(
         raw_id=raw_id,
         path=f"raws/{raw_id}.md",
         source=source,
-        content=content,
         content_hash=raw_id,
         original_path=original_url,
         extra=extra or {},
