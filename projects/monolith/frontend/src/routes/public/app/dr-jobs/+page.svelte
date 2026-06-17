@@ -255,13 +255,13 @@
     border: 2px solid var(--ink);
   }
 
-  /* Warm-tinted masthead, separated from the white row body by a 2px rule. */
+  /* Masthead: same white paper as the rows (no cream-on-cream tint), set off
+     from the row body only by the 2px rule. */
   .board-head {
     display: flex;
     flex-direction: column;
     gap: 9px;
     padding: 12px 14px;
-    background: var(--bg-elev);
     border-bottom: 2px solid var(--ink);
   }
 
