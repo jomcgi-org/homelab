@@ -19,22 +19,16 @@ import logging
 from email.utils import format_datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app.db import get_session
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
-from knowledge.models import Note, NoteLink
 from knowledge.notes import resolve_note_body
+from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.service import get_vault_root
 from knowledge.store import GRAPH_NOTE_TYPES
-from knowledge.visibility import (
-    effective_visibility,
-    public_notes_filter,
-    sanitize_public_body,
-)
-from knowledge.visibility import _slugify as _visibility_slugify
+from knowledge.visibility import strip_private_wikilinks
 
 logger = logging.getLogger(__name__)
 
@@ -49,52 +43,45 @@ def get_public_graph(
 ):
     """Public-only knowledge graph: only public nodes, only doubly-public edges.
 
-    Mirrors :func:`get_graph` but applies ``public_notes_filter()`` to both
-    ends of every edge so a private note can never appear as a node *or* a
-    target. Same Cache-Control + ETag semantics so the CDN treats this
-    payload identically.
+    Reads the ``public_api`` views (PublicNote / PublicNoteLink), which already
+    filter to public, non-deleted rows at the DB layer (the public service runs
+    as ``public_reader`` and cannot touch the knowledge schema). The view
+    enforces source-public on edges; the target end is still resolved app-side
+    against the public node set so a private/dangling target can never appear.
+    Same Cache-Control + ETag semantics so the CDN treats this payload
+    identically.
     """
-    # Only public notes whose type is in the renderable graph set. Gap
-    # stubs (type='gap') with NULL visibility are excluded by the
-    # visibility filter alone, but this also keeps the type filter
-    # consistent with get_graph().
+    # The view already restricts to public + non-deleted notes; keep the type
+    # filter so gap stubs (type='gap') and other non-renderable types stay out,
+    # matching get_graph().
     public_note_rows = session.execute(
         select(
-            Note.note_id,
-            Note.title,
-            Note.type,
-            Note.indexed_at,
-            # Prefer public-only layout positions (computed over the public
-            # subgraph by knowledge.service._run_public_layout_pass); fall
-            # back to the full-graph positions if the public pass hasn't
-            # populated this row yet, so a fresh deploy never serves NULL
-            # coords. Same shape consumed by /private/notes, keep both as
-            # nullable in the response, the client handles either.
-            func.coalesce(Note.layout_x_public, Note.layout_x).label("x"),
-            func.coalesce(Note.layout_y_public, Note.layout_y).label("y"),
-        )
-        .where(public_notes_filter())
-        .where(Note.type.in_(list(GRAPH_NOTE_TYPES)))
-        .where(Note.deleted_at.is_(None))
+            PublicNote.note_id,
+            PublicNote.title,
+            PublicNote.type,
+            PublicNote.indexed_at,
+            # The view already COALESCEs layout_x_public/layout_x (and y), so
+            # these columns are the public-preferred positions. Keep both
+            # nullable in the response; the client handles either.
+            PublicNote.layout_x.label("x"),
+            PublicNote.layout_y.label("y"),
+        ).where(PublicNote.type.in_(list(GRAPH_NOTE_TYPES)))
     ).all()
 
     public_note_ids = {row.note_id for row in public_note_rows}
     slug_to_note_id = {_slugify(nid): nid for nid in public_note_ids}
 
     if public_note_ids:
-        # Single SQL join enforces both-ends-public: source side via the
-        # join filter, target side via the IN clause against the resolved
-        # public slug set (mirrors get_graph's slug→canonical resolution).
+        # The view already enforces source-public + non-deleted on every link.
+        # The target end is resolved below against the public slug set (mirrors
+        # get_graph's slug->canonical resolution).
         link_rows = session.execute(
             select(
-                Note.note_id.label("source"),
-                NoteLink.target_id.label("target"),
-                NoteLink.kind,
-                NoteLink.edge_type,
+                PublicNoteLink.source,
+                PublicNoteLink.target,
+                PublicNoteLink.kind,
+                PublicNoteLink.edge_type,
             )
-            .join(Note, NoteLink.src_note_fk == Note.id)
-            .where(public_notes_filter())
-            .where(Note.deleted_at.is_(None))
         ).all()
     else:
         link_rows = []
@@ -163,19 +150,20 @@ def get_public_note(
 
     The 404 response is identical for missing notes AND for notes that
     exist but are private/null-visibility, so the existence of a private
-    note must never be observable. Body wikilinks targeting private
-    notes are stripped to plain text via :func:`sanitize_public_body`;
-    wikilinks targeting public notes are left intact for the frontend
-    renderer to resolve.
+    note must never be observable. The ``public_api`` view returns the row
+    only when it is public + non-deleted, so a private note is simply absent
+    and collapses into the same 404 as a missing one. Body wikilinks targeting
+    non-public notes are stripped to plain text via
+    :func:`strip_private_wikilinks`; wikilinks targeting public notes are left
+    intact for the frontend renderer to resolve.
     """
     note = session.exec(
-        select(Note).where(Note.note_id == note_id).where(Note.deleted_at.is_(None))
+        select(PublicNote).where(PublicNote.note_id == note_id)
     ).one_or_none()
-    if note is None or effective_visibility(note) != "public":
+    if note is None:
         # Identical 404 for missing and private: never expose existence.
         # The reason is logged but not surfaced in the response.
-        reason = "not_found" if note is None else "private_gated"
-        logger.info("public.note.404 note_id=%s reason=%s", note_id, reason)
+        logger.info("public.note.404 note_id=%s reason=not_found", note_id)
         raise HTTPException(status_code=404, detail="Not Found")
 
     # ADR 006 Phase 2: body of record is Postgres ``content``. The vault
@@ -190,22 +178,15 @@ def get_public_note(
         logger.info("public.note.404 note_id=%s reason=vault_file_missing", note_id)
         raise HTTPException(status_code=404, detail="Not Found")
 
-    # Slugified ids of every non-public note. ``sanitize_public_body``
-    # slugifies wikilink display text via ``visibility._slugify`` and
-    # drops the bracketing on any match; use the same helper here so
-    # the sets compare consistently. Note: ``or_(... != 'public', ...
-    # IS NULL)`` is required because in SQL ``NULL != 'public'`` is
-    # ``NULL``, not true, so a bare ``!=`` would silently leave NULL-
-    # visibility notes out of the private set.
-    private_slugs = {
-        _visibility_slugify(n.note_id)
-        for n in session.exec(
-            select(Note)
-            .where(or_(Note.visibility != "public", Note.visibility.is_(None)))
-            .where(Note.deleted_at.is_(None))
-        ).all()
-    }
-    sanitized = sanitize_public_body(body, private_slugs)
+    # The public service cannot enumerate private notes (it reads only the
+    # public_api views), so invert the sanitiser: keep wikilinks that resolve
+    # to a known public note, strip everything else (private targets and
+    # dangling links) to plain text. The view already excludes private +
+    # deleted rows, so this list is exactly the public note set.
+    # session.exec on a single-column select yields scalar values directly
+    # (SQLModel SelectOfScalar), so these are note_id strings, not Row tuples.
+    public_ids = list(session.exec(select(PublicNote.note_id)).all())
+    sanitized = strip_private_wikilinks(body, public_ids)
 
     indexed_at = _as_utc(note.indexed_at)
     logger.info("public.note.served note_id=%s", note_id)
