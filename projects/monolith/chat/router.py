@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from chat.backfill import run_backfill
 from chat.explorer import ExplorerDeps, create_explorer_agent
 from chat.sse import SSEEmitter
-from knowledge import get_store
+from knowledge.api import get_store
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
