@@ -183,9 +183,16 @@
           aria-selected={opt.value === value}
           onpointerenter={() => (activeIndex = i)}
           onpointerdown={(e) => {
-            e.preventDefault();
-            commit(i);
+            // Mouse only: prevent the mousedown from blurring the trigger so
+            // focus stays on the combobox. Do NOT preventDefault or commit on
+            // touch: committing here tears the list out of the DOM before the
+            // tap's synthesized click lands, so that click falls through to the
+            // job row beneath the dropdown (a ghost click that opened the job).
+            // Committing on click instead keeps the option mounted through the
+            // whole tap, so the click is consumed here and never reaches the row.
+            if (e.pointerType === "mouse") e.preventDefault();
           }}
+          onclick={() => commit(i)}
         >
           {#if opt.value === value}
             <span class="bsel-tick" aria-hidden="true">▸</span>
@@ -220,14 +227,22 @@
     border: 2px solid var(--ink);
     color: var(--ink);
     cursor: pointer;
+    /* Kill the translucent grey/blue flash mobile browsers paint on tap; the
+       brutalist controls own their own press feedback. */
+    -webkit-tap-highlight-color: transparent;
     transition: background 110ms ease;
   }
 
   /* A select EXPANDS, so highlight it (accent fill) rather than lifting it off
      the page; a raised/shadowed box reads as "floats above", contradicting the
-     list that drops below. Mirrors the .open "anchored, not lifted" intent. */
-  .bsel-trigger:hover {
-    background: var(--accent);
+     list that drops below. Mirrors the .open "anchored, not lifted" intent.
+     Hover-capable pointers only: touch browsers emulate :hover on tap and the
+     yellow wash sticks on the closed control after selecting, reading as an
+     unwanted highlight. */
+  @media (hover: hover) {
+    .bsel-trigger:hover {
+      background: var(--accent);
+    }
   }
 
   /* Brutalist focus: the accent highlight, not the OS blue glow. */
@@ -285,6 +300,7 @@
     padding: 7px 9px;
     color: var(--ink);
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
     border-bottom: 1px solid var(--cream);
   }
 

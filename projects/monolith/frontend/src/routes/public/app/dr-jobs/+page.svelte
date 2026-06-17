@@ -546,4 +546,51 @@
       text-align: left;
     }
   }
+
+  /* Desktop scale-up: the 680px mobile-first column gets lost in the middle of a
+     wide viewport ("tiny on a normal page"). Past the tablet breakpoint, widen
+     the sheet and step the dense-ledger type up a notch so it reads at a
+     comfortable desktop size. Mobile (< 768px) keeps the compact sizing that
+     already works. The location <select> sets its own size inside
+     BrutalistSelect (Svelte scoping puts it out of reach here). */
+  @media (min-width: 768px) {
+    .page {
+      padding: 32px 24px;
+    }
+    .board {
+      max-width: 940px;
+    }
+    .board-head {
+      gap: 11px;
+      padding: 16px 22px;
+    }
+    .crumb,
+    .stats,
+    .source {
+      font-size: 13px;
+    }
+    .seg {
+      font-size: 13px;
+      padding: 8px 16px;
+    }
+    .row {
+      padding: 13px 22px;
+    }
+    .r-title {
+      font-size: 17px;
+    }
+    .r-meta {
+      font-size: 13px;
+    }
+    .r-date {
+      font-size: 15px;
+    }
+    .r-rel {
+      font-size: 12px;
+    }
+    .empty {
+      font-size: 15px;
+      padding: 22px;
+    }
+  }
 </style>
