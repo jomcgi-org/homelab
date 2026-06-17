@@ -225,12 +225,12 @@
     min-height: 100dvh;
     background: var(--cream);
     color: var(--ink);
-    padding: 16px;
+    padding: 12px;
     max-width: 860px;
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 8px;
   }
 
   .sr-only {
@@ -245,21 +245,19 @@
     border: 0;
   }
 
-  /* Chunky paper panels: 2px ink border, 8px radius, hard offset shadow, the
-     same "pop" the home/cv/engineering content pages use (not the deliberately
-     flat map overlays on /app/hikes + /app/ships). */
+  /* Hard-edged paper panels: 2px ink border, sharp corners, NO resting shadow.
+     Shadows appear only on the hover lift below, matching the brutalist house
+     language (flat at rest, lifts off when you interact). */
   .panel {
     background: var(--paper);
     border: 2px solid var(--ink);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-hard);
-    padding: 14px;
+    padding: 12px;
   }
 
   .head {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
   }
 
   .crumb-row {
@@ -334,38 +332,44 @@
     gap: 12px;
   }
 
+  /* Two self-bordered boxes butted together (overlapping borders), no resting
+     shadow. Each lifts off leaving a hard shadow on hover. */
   .toggle {
     display: inline-flex;
-    border: 2px solid var(--ink);
-    border-radius: var(--radius);
-    overflow: hidden;
-    box-shadow: var(--shadow-hard-sm);
   }
 
   .seg {
+    position: relative;
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    padding: 8px 14px;
+    padding: 7px 14px;
     background: var(--paper);
     color: var(--ink);
-    border: 0;
+    border: 2px solid var(--ink);
     cursor: pointer;
-    transition: background 120ms ease;
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease,
+      background 120ms ease;
   }
 
+  /* Overlap the shared edge so the seam stays a single 2px hairline. */
   .seg + .seg {
-    border-left: 2px solid var(--ink);
+    margin-left: -2px;
   }
 
   .seg.active {
     background: var(--accent);
+    z-index: 1;
   }
 
-  .seg:hover:not(.active) {
-    background: var(--cream);
+  .seg:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: var(--shadow-hard);
+    z-index: 2;
   }
 
   .field {
@@ -389,35 +393,34 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .card {
     display: flex;
-    align-items: stretch;
+    align-items: center;
     justify-content: space-between;
-    gap: 14px;
+    gap: 12px;
+    padding: 10px 12px;
     transition:
       transform 120ms ease,
       box-shadow 120ms ease;
   }
 
-  /* Brutalist lift: slide up-left to reveal a bigger offset shadow, the same
-     interaction as the engineering rail links. */
+  /* Flat at rest (no shadow); lifts off leaving a hard shadow on hover. */
   .card:hover {
     transform: translate(-2px, -2px);
-    box-shadow: 6px 6px 0 var(--ink);
+    box-shadow: var(--shadow-hard);
   }
 
   .card.past {
     opacity: 0.72;
-    box-shadow: var(--shadow-hard-sm);
   }
 
   .card-main {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     min-width: 0;
   }
 
