@@ -26,14 +26,25 @@ spec:
   # migrations) is what can CREATE the public_reader role. Its table/schema GRANTs
   # live in chart/migrations/20260617000000_public_reader_role.sql; CNPG does not
   # manage privileges. public_reader is the read-only identity for the Phase 5
-  # anonymous public service (ADR 004 security/004). It stays NOLOGIN here: no
-  # service consumes it yet, so a login credential (client-cert preferred) is added
-  # in Phase 5.
+  # anonymous public service (ADR 004 security/004).
+  #
+  # Phase 5b: the role is now LOGIN, with its password set by CNPG from the
+  # basic-auth secret below. CNPG's passwordSecret requires a
+  # kubernetes.io/basic-auth secret (keys: username, password) labelled
+  # cnpg.io/reload, which the 1Password operator (Opaque only) cannot emit, so
+  # the secret is created out-of-band from the 1Password item
+  # k8s-homelab/public-reader-db. See deploy/public-reader-secret.md
+  # to (re)create it. The public service reads the SAME 1Password item via its
+  # own OnePasswordItem (Opaque is fine there); both stay consistent because the
+  # 1Password item is the single source of truth. This credential is low-value:
+  # read-only, public data only, scoped by the public_api views.
   managed:
     roles:
       - name: public_reader
         ensure: present
-        login: false
+        login: true
+        passwordSecret:
+          name: monolith-pg-public-reader
         comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
   # Hosts the monolith database (plus the default postgres maintenance db);
   # the temporal/temporal_visibility/lakehouse databases were decommissioned
