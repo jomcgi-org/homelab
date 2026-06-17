@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import Session
 
-from shared.scheduler import (
+from scheduler.api import (
     ScheduledJob,
     dispatch_due_jobs,
     register_job,

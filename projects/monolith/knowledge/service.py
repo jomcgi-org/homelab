@@ -510,7 +510,7 @@ def reconcile_external_in_review_stubs(session: Session) -> int:
 
 def on_startup(session: Session) -> None:
     """Register knowledge jobs with the scheduler."""
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
 
     # The scheduler claims one job per tick (LIMIT 1) and polls every 30s,
     # so jobs always run in separate ticks. Registration order is

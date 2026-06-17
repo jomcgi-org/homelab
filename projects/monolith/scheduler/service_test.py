@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from scheduler import service
-from shared.scheduler import ScheduledJob, _registry
+from scheduler.api import ScheduledJob, _registry
 
 
 @pytest.fixture(name="session")

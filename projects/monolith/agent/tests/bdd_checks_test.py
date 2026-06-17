@@ -176,7 +176,7 @@ class TestCheckStuckJobs:
 
 class TestCheckOrphanJobs:
     def test_returns_only_rows_without_handler(self, checks_db: Session) -> None:
-        from shared.scheduler import _registry
+        from scheduler.api import _registry
 
         # Seed two rows; register a handler for only one.
         _insert_scheduled_job(checks_db, name="known")

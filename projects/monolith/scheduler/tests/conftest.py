@@ -22,7 +22,7 @@ def scheduler_db(pg):
     os.environ["DATABASE_URL"] = raw_url
 
     from app.db import get_engine
-    from shared.scheduler import _registry
+    from scheduler.api import _registry
 
     get_engine.cache_clear()
     _registry.clear()

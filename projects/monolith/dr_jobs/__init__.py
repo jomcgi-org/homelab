@@ -19,7 +19,7 @@ def register(app: FastAPI) -> None:
 
 def on_startup_jobs(session: Session) -> None:
     """Register the daily NHS Scotland scrape job."""
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
 
     from dr_jobs.jobs import scrape_nhs_handler
 

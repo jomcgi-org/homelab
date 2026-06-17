@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from shared.scheduler import (
+from scheduler.api import (
     ScheduledJob,
     _complete_job,
     _fail_job,
@@ -226,9 +226,9 @@ class TestRunClaimedJob:
         mock_session.get.return_value = fake_job
 
         with (
-            patch("shared.scheduler.get_engine"),
-            patch("shared.scheduler.Session") as mock_session_cls,
-            patch("shared.scheduler._complete_job") as mock_complete,
+            patch("scheduler.api.get_engine"),
+            patch("scheduler.api.Session") as mock_session_cls,
+            patch("scheduler.api._complete_job") as mock_complete,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=mock_session
@@ -258,9 +258,9 @@ class TestRunClaimedJob:
         mock_session.get.return_value = fake_job
 
         with (
-            patch("shared.scheduler.get_engine"),
-            patch("shared.scheduler.Session") as mock_session_cls,
-            patch("shared.scheduler._fail_job") as mock_fail,
+            patch("scheduler.api.get_engine"),
+            patch("scheduler.api.Session") as mock_session_cls,
+            patch("scheduler.api._fail_job") as mock_fail,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=mock_session
@@ -286,9 +286,9 @@ class TestRunClaimedJob:
         mock_session.get.return_value = fake_job
 
         with (
-            patch("shared.scheduler.get_engine"),
-            patch("shared.scheduler.Session") as mock_session_cls,
-            patch("shared.scheduler._release_lock") as mock_release,
+            patch("scheduler.api.get_engine"),
+            patch("scheduler.api.Session") as mock_session_cls,
+            patch("scheduler.api._release_lock") as mock_release,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=mock_session
@@ -320,12 +320,8 @@ class TestRunSchedulerLoop:
             return 0
 
         with (
-            patch(
-                "shared.scheduler.dispatch_due_jobs", side_effect=dispatch_side_effect
-            ),
-            patch(
-                "shared.scheduler.asyncio.sleep", new_callable=AsyncMock
-            ) as mock_sleep,
+            patch("scheduler.api.dispatch_due_jobs", side_effect=dispatch_side_effect),
+            patch("scheduler.api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             with pytest.raises(KeyboardInterrupt):
                 await run_scheduler_loop(poll_interval=1)

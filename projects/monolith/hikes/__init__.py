@@ -13,7 +13,7 @@ def register(app: FastAPI) -> None:
 
 def on_startup_jobs(session: Session) -> None:
     """Register hikes scheduled jobs (scrape + forecast refresh + hourly prune)."""
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
     from hikes.jobs import (
         prune_windows_handler,
         refresh_forecasts_handler,

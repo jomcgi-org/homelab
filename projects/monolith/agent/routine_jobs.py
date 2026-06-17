@@ -1,7 +1,7 @@
 """Operations over ``claude_agent.routine_jobs`` — delegated work for cloud Routines.
 
 These functions back the ``monolith-agent-*-routine-job`` MCP tools. Unlike
-``shared.scheduler``'s ``scheduled_jobs`` (which is polled by the in-cluster
+``scheduler.api``'s ``scheduled_jobs`` (which is polled by the in-cluster
 tick loop), ``routine_jobs`` rows are only ever read or written by the MCP
 surface; cloud Routines claim, run, and complete them.
 """

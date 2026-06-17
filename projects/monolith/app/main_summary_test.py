@@ -49,7 +49,7 @@ def _lifespan_patches_with_discord(mock_bot):
         patch("app.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
-        patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         patch("chat.summarizer.on_startup"),
         patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
         patch("chat.bot.create_bot", return_value=mock_bot),
@@ -67,7 +67,7 @@ def _lifespan_patches_no_discord():
         patch("app.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch("home.on_startup_jobs"),
-        patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+        patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         patch("ships.on_startup_jobs"),
         patch("hikes.on_startup_jobs"),
     ]
@@ -100,7 +100,7 @@ class TestChatStartupHook:
             patch("home.on_startup_jobs"),
             patch("ships.on_startup_jobs"),
             patch("hikes.on_startup_jobs"),
-            patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+            patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
             patch("chat.summarizer.on_startup", mock_chat_startup),
             patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
             patch("chat.bot.create_bot", return_value=mock_bot),
@@ -185,7 +185,7 @@ class TestSummaryLoopLogging:
             patch("home.on_startup_jobs"),
             patch("ships.on_startup_jobs"),
             patch("hikes.on_startup_jobs"),
-            patch("shared.scheduler.run_scheduler_loop", new_callable=AsyncMock),
+            patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         ):
             async with lifespan(app):
                 pass

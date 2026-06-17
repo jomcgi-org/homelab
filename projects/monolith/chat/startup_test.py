@@ -5,7 +5,7 @@ import pytest
 
 from chat import summarizer
 from chat.changelog import ChangelogConfig
-from shared.scheduler import _registry
+from scheduler.api import _registry
 
 _TEST_CHANGELOG_CONFIGS = json.dumps(
     [
@@ -35,7 +35,7 @@ def test_on_startup_without_bot_skips_changelog():
     session = MagicMock()
     llm_call = AsyncMock()
 
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         summarizer.on_startup(session, llm_call=llm_call)
 
     assert mock_register.call_count == 1
@@ -50,7 +50,7 @@ def test_on_startup_with_bot_registers_changelog_per_config():
     llm_call = AsyncMock()
 
     with patch.dict("os.environ", {"CHANGELOG_CONFIGS": _TEST_CHANGELOG_CONFIGS}):
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             summarizer.on_startup(session, bot=bot, llm_call=llm_call)
 
     assert mock_register.call_count == 2
@@ -65,7 +65,7 @@ def test_on_startup_with_bot_no_configs_registers_only_summary():
     llm_call = AsyncMock()
 
     with patch.dict("os.environ", {"CHANGELOG_CONFIGS": "[]"}):
-        with patch("shared.scheduler.register_job") as mock_register:
+        with patch("scheduler.api.register_job") as mock_register:
             summarizer.on_startup(session, bot=bot, llm_call=llm_call)
 
     assert mock_register.call_count == 1
@@ -80,7 +80,7 @@ async def test_summary_handler_calls_generate_functions():
     llm_call = AsyncMock()
 
     with patch(
-        "shared.scheduler.register_job",
+        "scheduler.api.register_job",
         side_effect=lambda _s, **kw: _registry.__setitem__(kw["name"], kw["handler"]),
     ):
         summarizer.on_startup(session, llm_call=llm_call)
@@ -113,7 +113,7 @@ async def test_changelog_handler_calls_run_changelog_iteration():
     ) as mock_iter:
         with patch.dict("os.environ", {"CHANGELOG_CONFIGS": _TEST_CHANGELOG_CONFIGS}):
             with patch(
-                "shared.scheduler.register_job",
+                "scheduler.api.register_job",
                 side_effect=lambda _s, **kw: _registry.__setitem__(
                     kw["name"], kw["handler"]
                 ),

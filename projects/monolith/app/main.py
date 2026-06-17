@@ -56,7 +56,7 @@ def _log_task_exception(task: "asyncio.Task[object]") -> None:
 async def lifespan(app: FastAPI):
     from app.db import get_engine
     from knowledge.service import vault_backup_handler
-    from shared.scheduler import purge_stale_jobs, run_scheduler_loop
+    from scheduler.api import purge_stale_jobs, run_scheduler_loop
     from sqlmodel import Session
 
     app.state.bot = None

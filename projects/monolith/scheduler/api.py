@@ -1,4 +1,4 @@
-"""Postgres-backed job scheduler with distributed locking."""
+"""Scheduler domain API: Postgres-backed job scheduler with distributed locking."""
 
 import asyncio
 import logging
@@ -37,6 +37,16 @@ Handler = Callable[[Session], Awaitable[datetime | None]]
 
 # In-memory handler registry (populated at startup)
 _registry: dict[str, Handler] = {}
+
+
+def is_registered(name: str) -> bool:
+    """True if a handler is registered for name (public view of the registry)."""
+    return name in _registry
+
+
+def registered_names() -> list[str]:
+    """Names of all jobs with a registered handler."""
+    return list(_registry)
 
 
 def register_job(

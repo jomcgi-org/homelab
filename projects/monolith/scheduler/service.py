@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from scheduler.views import SchedulerJobView
-from shared.scheduler import ScheduledJob, _registry
+from scheduler.api import ScheduledJob, is_registered
 
 
 def _to_view(job: ScheduledJob) -> SchedulerJobView:
@@ -18,7 +18,7 @@ def _to_view(job: ScheduledJob) -> SchedulerJobView:
         next_run_at=job.next_run_at,
         last_run_at=job.last_run_at,
         last_status=job.last_status,
-        has_handler=job.name in _registry,
+        has_handler=is_registered(job.name),
     )
 
 
@@ -35,7 +35,7 @@ def get_job(session: Session, name: str) -> SchedulerJobView | None:
 def mark_for_immediate_run(session: Session, name: str) -> SchedulerJobView | None:
     """Set ``next_run_at = now()`` so the next scheduler tick claims the job.
 
-    Concurrency-safe by construction: ``shared.scheduler._claim_next_job`` uses
+    Concurrency-safe by construction: ``scheduler.api._claim_next_job`` uses
     ``SELECT ... FOR UPDATE SKIP LOCKED``. If a tick is mid-flight on the same row,
     this UPDATE blocks until the tick commits, then runs against the freshly
     released row. No application-level lock check is needed.

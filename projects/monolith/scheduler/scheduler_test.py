@@ -1,4 +1,4 @@
-"""Unit tests for shared/scheduler.py — ScheduledJob model + register_job()."""
+"""Unit tests for scheduler/api.py — ScheduledJob model + register_job()."""
 
 from datetime import datetime, timezone
 
@@ -6,7 +6,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from shared.scheduler import ScheduledJob, _registry, register_job
+from scheduler.api import ScheduledJob, _registry, register_job
 
 
 # ---------------------------------------------------------------------------

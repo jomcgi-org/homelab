@@ -19,7 +19,7 @@ def register(app: FastAPI) -> None:
 
 
 def on_startup_jobs(session: Session) -> None:
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
     from stars.grid import load_climatology_handler, load_grid_handler
     from stars.jobs import prune_hours_handler, refresh_handler
 

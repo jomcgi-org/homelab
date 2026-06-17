@@ -217,7 +217,7 @@ def on_startup(
     llm_call: Callable[[str], Awaitable[str]] | None = None,
 ) -> None:
     """Register chat jobs with the scheduler."""
-    from shared.scheduler import register_job
+    from scheduler.api import register_job
 
     if llm_call is None:
         llm_call = build_llm_caller()

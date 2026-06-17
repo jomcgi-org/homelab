@@ -28,7 +28,7 @@ def test_on_startup_jobs_calls_register_job_three_times():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     assert mock_register.call_count == 3
 
@@ -38,7 +38,7 @@ def test_on_startup_jobs_correct_names():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     names = {c[1]["name"] for c in mock_register.call_args_list}
     assert names == {
@@ -53,7 +53,7 @@ def test_on_startup_jobs_passes_session_as_first_positional():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     for c in mock_register.call_args_list:
         assert c[0][0] is session
@@ -64,7 +64,7 @@ def test_on_startup_jobs_scrape_walks_interval():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["hikes.scrape_walks"]["interval_secs"] == 7 * 86400
@@ -75,7 +75,7 @@ def test_on_startup_jobs_refresh_forecasts_interval():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["hikes.refresh_forecasts"]["interval_secs"] == 2 * 3600
@@ -86,7 +86,7 @@ def test_on_startup_jobs_prune_windows_interval():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     by_name = {c[1]["name"]: c[1] for c in mock_register.call_args_list}
     assert by_name["hikes.prune_windows"]["interval_secs"] == 3600
@@ -97,7 +97,7 @@ def test_on_startup_jobs_all_have_handlers():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     for c in mock_register.call_args_list:
         assert callable(c[1]["handler"])
@@ -108,7 +108,7 @@ def test_on_startup_jobs_all_have_ttl():
     import hikes
 
     session = MagicMock()
-    with patch("shared.scheduler.register_job") as mock_register:
+    with patch("scheduler.api.register_job") as mock_register:
         hikes.on_startup_jobs(session)
     for c in mock_register.call_args_list:
         assert c[1]["ttl_secs"] > 0

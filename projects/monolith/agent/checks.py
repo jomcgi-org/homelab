@@ -68,13 +68,14 @@ def check_stuck_jobs(threshold_mins: int = 10) -> list[dict]:
 def check_orphan_jobs() -> list[dict]:
     """Return scheduler rows whose ``name`` has no registered handler.
 
-    Reads the in-process ``shared.scheduler._registry`` once, so this
-    only sees handlers wired by the running monolith. Useful for
-    spotting rows left behind by removed handlers.
+    Reads the in-process scheduler registry once (via
+    ``scheduler.api.registered_names``), so this only sees handlers wired
+    by the running monolith. Useful for spotting rows left behind by
+    removed handlers.
     """
-    from shared.scheduler import _registry
+    from scheduler.api import registered_names
 
-    registered = set(_registry.keys())
+    registered = set(registered_names())
     sql = text(
         """
         SELECT name, interval_secs, next_run_at, last_run_at, last_status,
