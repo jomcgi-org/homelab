@@ -65,7 +65,7 @@
     const n = daysUntil(iso);
     if (n === null) return "";
     if (n < 0) return "closed";
-    if (n === 0) return "today";
+    if (n === 0) return "closes today";
     if (n === 1) return "1 day left";
     return `${n} days left`;
   }
@@ -96,8 +96,8 @@
   }
 
   onMount(() => {
-    // The scrape is daily, so a slow refresh is plenty; this keeps an open tab
-    // from drifting if it sits for hours. Re-runs the SSR load (no client poll).
+    // The scrape is hourly; this keeps an open tab from drifting if it sits for
+    // a long time. Re-runs the SSR load (no client poll).
     const refresh = setInterval(() => invalidateAll(), 30 * 60_000);
     return () => clearInterval(refresh);
   });
@@ -107,57 +107,60 @@
   <title>NHS Scotland anaesthetics consultant jobs</title>
   <meta
     name="description"
-    content="Aggregated NHS Scotland consultant and locum consultant anaesthetics vacancies, refreshed daily from apply.jobs.scot.nhs.uk."
+    content="Aggregated NHS Scotland consultant and locum consultant anaesthetics vacancies, refreshed hourly from apply.jobs.scot.nhs.uk."
   />
 </svelte:head>
 
-<div class="jobs-page">
+<div class="page">
   <h1 class="sr-only">NHS Scotland anaesthetics consultant vacancies</h1>
 
-  <header class="head panel">
-    <div class="crumb-row">
-      <nav class="crumb" aria-label="Breadcrumb">
-        <a class="crumb-home" href="https://jomcgi.dev/"
-          >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
-        >
-        <span class="crumb-sep">/</span>
-        <span class="crumb-name">dr-jobs</span>
-      </nav>
-      <p class="stats">
-        {liveJobs.length} live &middot; {historyJobs.length} past
-      </p>
-    </div>
-
-    <p class="lede">
-      NHS Scotland consultant &amp; locum consultant anaesthetics posts, scraped
-      daily from
-      <a href="https://apply.jobs.scot.nhs.uk/Home/Job" rel="external"
-        >apply.jobs.scot.nhs.uk</a
-      >.
-    </p>
-
-    <div class="controls">
-      <div class="toggle" role="group" aria-label="Show live or past jobs">
-        <button
-          class="seg"
-          class:active={view === "live"}
-          aria-pressed={view === "live"}
-          onclick={() => (view = "live")}
-        >
-          Live ({liveJobs.length})
-        </button>
-        <button
-          class="seg"
-          class:active={view === "history"}
-          aria-pressed={view === "history"}
-          onclick={() => (view = "history")}
-        >
-          History ({historyJobs.length})
-        </button>
+  <!-- One bordered data-sheet: header band on top, hairline-divided job rows
+       below. No floating boxes, no resting shadows. -->
+  <div class="board">
+    <header class="board-head">
+      <div class="crumb-row">
+        <nav class="crumb" aria-label="Breadcrumb">
+          <a class="crumb-home" href="https://jomcgi.dev/"
+            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
+            ></a
+          >
+          <span class="crumb-sep">/</span>
+          <span class="crumb-name">dr-jobs</span>
+        </nav>
+        <p class="stats">
+          <strong>{liveJobs.length}</strong> live
+          <span class="stats-sep">&middot;</span>
+          {historyJobs.length} past
+        </p>
       </div>
 
-      <div class="field">
-        <span class="field-label" id="town-label">Location</span>
+      <p class="source">
+        NHS Scotland consultant &amp; locum consultant anaesthetics, hourly from
+        <a href="https://apply.jobs.scot.nhs.uk/Home/Job" rel="external"
+          >apply.jobs.scot.nhs.uk</a
+        >
+      </p>
+
+      <div class="controls">
+        <div class="toggle" role="group" aria-label="Show live or past jobs">
+          <button
+            class="seg"
+            class:active={view === "live"}
+            aria-pressed={view === "live"}
+            onclick={() => (view = "live")}
+          >
+            Live ({liveJobs.length})
+          </button>
+          <button
+            class="seg"
+            class:active={view === "history"}
+            aria-pressed={view === "history"}
+            onclick={() => (view = "history")}
+          >
+            History ({historyJobs.length})
+          </button>
+        </div>
+
         <BrutalistSelect
           options={townOptions}
           bind:value={town}
@@ -165,72 +168,70 @@
           id="dr-jobs-town"
         />
       </div>
-    </div>
-  </header>
+    </header>
 
-  {#if visible.length === 0}
-    <p class="empty panel">
-      {#if view === "live"}
-        No live anaesthetics consultant posts right now. Try History for recent
-        listings.
-      {:else}
-        No past listings recorded yet.
-      {/if}
-    </p>
-  {:else}
-    <ul class="cards">
-      {#each visible as j (j.job_id)}
-        <li class="card panel" class:past={!j.is_live}>
-          <div class="card-main">
-            <div class="badges">
-              {#if j.is_live && isNew(j)}
-                <span class="badge new">New</span>
-              {/if}
-              {#if j.is_live && isClosingSoon(j.closing_date)}
-                <span class="badge soon">Closing soon</span>
-              {/if}
-              {#if j.reference}
-                <span class="badge ref">{j.reference}</span>
-              {/if}
-            </div>
-            <a class="title" href={j.url} target="_blank" rel="noopener">
-              {cleanTitle(j)}
+    {#if visible.length === 0}
+      <p class="empty">
+        {#if view === "live"}
+          No live anaesthetics consultant posts right now. Try History for recent
+          listings.
+        {:else}
+          No past listings recorded yet.
+        {/if}
+      </p>
+    {:else}
+      <ul class="rows">
+        {#each visible as j (j.job_id)}
+          <li>
+            <a
+              class="row"
+              class:past={!j.is_live}
+              href={j.url}
+              target="_blank"
+              rel="noopener"
+              aria-label={`${cleanTitle(j)}${j.town ? `, ${j.town}` : ""}, closes ${fmtDate(j.closing_date)}`}
+            >
+              <span class="r-body">
+                <span class="r-head">
+                  <span class="r-title">{cleanTitle(j)}</span>
+                  {#if j.is_live && isNew(j)}
+                    <span class="badge new">New</span>
+                  {/if}
+                  {#if j.reference}
+                    <span class="badge ref">{j.reference}</span>
+                  {/if}
+                </span>
+                <span class="r-meta">
+                  {#if j.town}<span>{j.town}</span>{/if}
+                  {#if j.employment_type}<span class="dot">&middot;</span><span
+                      >{j.employment_type}</span
+                    >{/if}
+                  {#if j.salary_band}<span class="dot">&middot;</span><span
+                      >{j.salary_band}</span
+                    >{/if}
+                </span>
+              </span>
+              <span class="r-when">
+                <span class="r-date">{fmtDate(j.closing_date)}</span>
+                <span class="r-rel" class:urgent={isClosingSoon(j.closing_date)}>
+                  {closesLabel(j.closing_date)}
+                </span>
+              </span>
             </a>
-            <p class="meta">
-              {#if j.town}<span>{j.town}{j.postcode ? ` ${j.postcode}` : ""}</span
-                >{/if}
-              {#if j.employment_type}<span class="dot">&middot;</span><span
-                  >{j.employment_type}</span
-                >{/if}
-              {#if j.salary_band}<span class="dot">&middot;</span><span
-                  >{j.salary_band}</span
-                >{/if}
-            </p>
-          </div>
-          <div class="card-side">
-            <span class="close-date">{fmtDate(j.closing_date)}</span>
-            <span class="close-rel" class:urgent={isClosingSoon(j.closing_date)}>
-              {closesLabel(j.closing_date)}
-            </span>
-          </div>
-        </li>
-      {/each}
-    </ul>
-  {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
 </div>
 
 <style>
-  .jobs-page {
+  .page {
     min-height: 100vh;
     min-height: 100dvh;
     background: var(--cream);
     color: var(--ink);
-    padding: 12px;
-    max-width: 860px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    padding: 16px 12px;
   }
 
   .sr-only {
@@ -245,19 +246,23 @@
     border: 0;
   }
 
-  /* Hard-edged paper panels: 2px ink border, sharp corners, NO resting shadow.
-     Shadows appear only on the hover lift below, matching the brutalist house
-     language (flat at rest, lifts off when you interact). */
-  .panel {
+  /* The whole app is one hard-edged sheet: 2px ink border, sharp corners, no
+     shadow. Narrow column so the dense rows do not sprawl. */
+  .board {
+    max-width: 680px;
+    margin: 0 auto;
     background: var(--paper);
     border: 2px solid var(--ink);
-    padding: 12px;
   }
 
-  .head {
+  /* Warm-tinted masthead, separated from the white row body by a 2px rule. */
+  .board-head {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 9px;
+    padding: 12px 14px;
+    background: var(--bg-elev);
+    border-bottom: 2px solid var(--ink);
   }
 
   .crumb-row {
@@ -299,26 +304,33 @@
     font-size: 0.85em;
   }
 
-  .crumb-sep,
-  .crumb-name {
-    color: var(--ink);
-  }
-
   .stats {
+    margin: 0;
     font-family: var(--mono);
     font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+
+  .stats strong {
+    color: var(--ink);
     font-weight: 700;
-    letter-spacing: 0.06em;
-    margin: 0;
   }
 
-  .lede {
-    margin: 0;
-    font-size: 14px;
-    line-height: 1.5;
+  .stats-sep {
+    opacity: 0.5;
   }
 
-  .lede a {
+  .source {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--ink-3);
+  }
+
+  .source a {
     color: var(--ink);
     text-decoration: underline;
     text-decoration-color: var(--blue);
@@ -329,11 +341,12 @@
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
-    gap: 12px;
+    gap: 10px;
+    margin-top: 1px;
   }
 
-  /* Two self-bordered boxes butted together (overlapping borders), no resting
-     shadow. Each lifts off leaving a hard shadow on hover. */
+  /* LIVE / HISTORY: two self-bordered boxes, flat at rest, that lift off
+     leaving a hard shadow on hover (they ARE clickable, unlike the rows). */
   .toggle {
     display: inline-flex;
   }
@@ -345,7 +358,7 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    padding: 7px 14px;
+    padding: 7px 13px;
     background: var(--paper);
     color: var(--ink);
     border: 2px solid var(--ink);
@@ -356,7 +369,6 @@
       background 120ms ease;
   }
 
-  /* Overlap the shared edge so the seam stays a single 2px hairline. */
   .seg + .seg {
     margin-left: -2px;
   }
@@ -372,84 +384,140 @@
     z-index: 2;
   }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 180px;
-  }
-
-  .field-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .cards {
+  /* Job rows: a hairline-divided ledger. Each row is a whole-row link, so the
+     feedback is a flat accent wash on hover (NOT a lift, which would imply a
+     box that pops but goes nowhere). */
+  .rows {
     list-style: none;
     margin: 0;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
   }
 
-  .card {
+  .rows li + li {
+    border-top: 2px solid var(--ink);
+  }
+
+  .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 10px 12px;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease;
+    gap: 16px;
+    padding: 9px 14px;
+    text-decoration: none;
+    color: var(--ink);
+    transition: background 100ms ease;
   }
 
-  /* Flat at rest (no shadow); lifts off leaving a hard shadow on hover. */
-  .card:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
+  .row:hover,
+  .row:focus-visible {
+    background: var(--accent);
+    outline: none;
   }
 
-  .card.past {
-    opacity: 0.72;
+  .row.past {
+    opacity: 0.55;
   }
 
-  .card-main {
+  .r-body {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
   }
 
-  .badges {
+  .r-head {
     display: flex;
+    align-items: baseline;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 7px;
   }
 
+  .r-title {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+    text-decoration: underline;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+  }
+
+  .row:hover .r-title,
+  .row:focus-visible .r-title {
+    text-decoration-color: var(--ink);
+  }
+
+  .r-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+
+  .row:hover .r-meta,
+  .row:focus-visible .r-meta {
+    color: var(--ink);
+  }
+
+  .r-meta .dot {
+    opacity: 0.5;
+  }
+
+  .r-when {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+    text-align: right;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .r-date {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .r-rel {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    color: var(--ink-3);
+  }
+
+  .row:hover .r-rel,
+  .row:focus-visible .r-rel {
+    color: var(--ink);
+  }
+
+  .r-rel.urgent {
+    color: var(--coral);
+    font-weight: 700;
+  }
+
+  .row:hover .r-rel.urgent,
+  .row:focus-visible .r-rel.urgent {
+    color: var(--ink);
+  }
+
+  /* Status pills: green = fresh, outline = board reference. */
   .badge {
     font-family: var(--mono);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    padding: 2px 8px;
+    padding: 1px 7px;
     border: 1.5px solid var(--ink);
     border-radius: 999px;
+    white-space: nowrap;
   }
 
-  /* Full-palette status pops, like the engineering page tags: green = fresh,
-     coral = urgency. Ink text on both for contrast against the bright fills. */
   .badge.new {
     background: var(--green);
-  }
-
-  .badge.soon {
-    background: var(--coral);
-    color: var(--ink);
   }
 
   .badge.ref {
@@ -457,81 +525,25 @@
     color: var(--ink);
   }
 
-  .title {
-    font-size: 16px;
-    font-weight: 700;
-    line-height: 1.3;
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 2px;
-  }
-
-  .title:hover,
-  .title:focus-visible {
-    background: linear-gradient(transparent 60%, var(--accent) 60%);
-    text-decoration-color: var(--ink);
-  }
-
-  .meta {
-    margin: 0;
-    font-size: 13px;
-    color: var(--ink);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: baseline;
-  }
-
-  .meta .dot {
-    opacity: 0.5;
-  }
-
-  .card-side {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    justify-content: center;
-    gap: 2px;
-    text-align: right;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .close-date {
-    font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  .close-rel {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    opacity: 0.7;
-  }
-
-  .close-rel.urgent {
-    color: var(--coral);
-    opacity: 1;
-    font-weight: 700;
-  }
-
   .empty {
-    font-size: 14px;
+    margin: 0;
+    padding: 16px 14px;
+    font-size: 13px;
     line-height: 1.5;
+    color: var(--ink-3);
   }
 
-  @media (max-width: 540px) {
-    .card {
+  @media (max-width: 460px) {
+    .row {
       flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
     }
-    .card-side {
-      align-items: flex-start;
-      text-align: left;
+    .r-when {
       flex-direction: row;
+      align-items: baseline;
       gap: 8px;
+      text-align: left;
     }
   }
 </style>
