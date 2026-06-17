@@ -2,22 +2,11 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from home.observability import stats
-
-
-@pytest.fixture(autouse=True)
-def _reset_cache():
-    """Clear module-level cache between tests."""
-    stats._cache = None
-    stats._cache_time = 0.0
-    yield
-    stats._cache = None
-    stats._cache_time = 0.0
 
 
 def _mock_k8s_client():
@@ -175,33 +164,6 @@ async def test_query_deploy_returns_partial_when_one_source_fails():
 
     assert "latest_commit_sha" not in result
     assert result["deployed_at"] == "2026-04-25T10:05:00Z"
-
-
-@pytest.mark.asyncio
-async def test_get_cached_stats_uses_cache():
-    fake_stats = {"cluster": {}, "cached_at": "test"}
-    stats._cache = fake_stats
-    stats._cache_time = time.monotonic()
-
-    result = await stats.get_cached_stats()
-    assert result is fake_stats
-
-
-@pytest.mark.asyncio
-async def test_get_cached_stats_refreshes_after_ttl():
-    fake_stats = {"cluster": {}, "cached_at": "old"}
-    stats._cache = fake_stats
-    stats._cache_time = time.monotonic() - stats._CACHE_TTL - 1
-
-    new_stats = {"cluster": {}, "cached_at": "new"}
-    with patch(
-        "home.observability.stats.build_stats",
-        new_callable=AsyncMock,
-        return_value=new_stats,
-    ):
-        result = await stats.get_cached_stats()
-
-    assert result["cached_at"] == "new"
 
 
 @pytest.mark.asyncio

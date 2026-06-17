@@ -18,7 +18,7 @@ import knowledge
 import scheduler
 import ships
 import stars
-from home.observability.router import warm_cache, warm_stats_cache
+from home.observability.rollup import prime_snapshots
 
 configure_logging()
 logger = logging.getLogger("monolith.main")
@@ -155,19 +155,10 @@ async def lifespan(app: FastAPI):
         sweep_task.add_done_callback(_log_task_exception)
         logger.info("Message lock sweep started (30s interval)")
 
-    # Block readiness until initial topology data is loaded from ClickHouse.
-    # This ensures the frontend SLO page always has data on first request.
-    try:
-        await warm_cache()
-    except Exception:
-        logger.exception("Initial topology cache warm failed — continuing anyway")
-
-    # Warm the public stats cache (k8s + knowledge counts).
-    # Non-blocking: failures are logged but don't prevent startup.
-    try:
-        await warm_stats_cache()
-    except Exception:
-        logger.exception("Initial stats cache warm failed — continuing anyway")
+    # Prime the observability snapshots (topology + stats) once at startup so the
+    # first request has data; the scheduled rollup jobs refresh them thereafter.
+    # Best-effort: failures are logged and the scheduler retries (ADR 004 Layer 4).
+    await prime_snapshots()
 
     logger.info("Monolith started")
     yield

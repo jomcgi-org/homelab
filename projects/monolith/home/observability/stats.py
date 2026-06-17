@@ -8,8 +8,9 @@ Gathers data from four sources:
 3. PostgreSQL — knowledge.notes, knowledge.chunks, knowledge.raw_inputs counts.
 4. GitHub API — latest commit on main (unauthenticated; public repo).
 
-Cached for 60 seconds so live metrics (CPU/mem/GPU) feel current without
-hammering ClickHouse or the metrics-server on every page load.
+build_stats() assembles the payload; the observability.stats_rollup job snapshots
+it into Postgres (ADR 004) so the read endpoint never calls ClickHouse or the K8s
+API. Kept here because it is the only ClickHouse/K8s caller for stats.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime, timezone
 
 import httpx
@@ -31,10 +31,6 @@ GITHUB_REPO = "jomcgi/homelab"
 ARGOCD_APP_NAME = "monolith"
 
 logger = logging.getLogger(__name__)
-
-_CACHE_TTL = 60  # seconds — live CPU/mem/GPU should not be stale by more than a minute
-_cache: dict | None = None
-_cache_time: float = 0.0
 
 
 _GPU_UTIL_QUERY = """\
@@ -242,28 +238,3 @@ async def build_stats() -> dict:
         },
         "cached_at": datetime.now(timezone.utc).isoformat(),
     }
-
-
-async def warm_stats_cache() -> None:
-    """Build stats and populate the module cache. Called at startup."""
-    global _cache, _cache_time
-    logger.info("Warming stats cache...")
-    try:
-        result = await build_stats()
-        _cache = result
-        _cache_time = time.monotonic()
-        logger.info("Stats cache warmed")
-    except Exception:
-        logger.exception("Stats cache warm failed — will retry on first request")
-
-
-async def get_cached_stats() -> dict:
-    """Return stats, using cache if within TTL."""
-    global _cache, _cache_time
-    now = time.monotonic()
-    if _cache is not None and (now - _cache_time) < _CACHE_TTL:
-        return _cache
-    result = await build_stats()
-    _cache = result
-    _cache_time = now
-    return result

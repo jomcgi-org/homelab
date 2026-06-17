@@ -1,93 +1,74 @@
-import pytest
-from unittest.mock import AsyncMock, patch
+"""Tests for the observability read endpoints.
+
+After ADR 004 Layer 4 the endpoints no longer call ClickHouse: they read a
+precomputed snapshot row from Postgres. These tests override the DB session so
+they assert the read-and-return behaviour without a database. The ClickHouse
+build logic is covered by stats_test / topology_config_test / slo_test, and the
+write + grant round-trip by observability_snapshot_grants_test (real Postgres).
+"""
+
+from unittest.mock import MagicMock
+
 from fastapi.testclient import TestClient
 
+from app.db import get_session
 from app.main import app
 
 
-@pytest.fixture
-def mock_topology():
-    """Minimal topology response matching existing JSON shape."""
-    return {
-        "groups": [
-            {
-                "id": "testgroup",
-                "label": "TEST GROUP",
-                "tier": "critical",
-                "status": "healthy",
-                "description": "test",
-                "children": ["child_a"],
-                "brief": "100%",
-                "slo": {"target": 99.0, "current": 100.0},
-                "budget": {
-                    "consumed": 0,
-                    "elapsed": 100,
-                    "remaining": "432.0 min",
-                    "window": "30d",
-                },
-                "metrics": [],
-            }
-        ],
-        "nodes": [
-            {
-                "id": "child_a",
-                "label": "CHILD A",
-                "tier": "critical",
-                "group": "testgroup",
-                "status": "healthy",
-                "description": "a child",
-                "brief": "100%",
-                "slo": {"target": 99.0, "current": 100.0},
-                "budget": {
-                    "consumed": 0,
-                    "elapsed": 100,
-                    "remaining": "432.0 min",
-                    "window": "30d",
-                },
-                "metrics": [{"k": "rps", "v": "1.5"}],
-            }
-        ],
-        "edges": [{"from": "ext", "to": "child_a"}],
-    }
+def _session_returning(row):
+    """Fake session whose snapshot SELECT yields ``row`` (a 1-tuple or None)."""
+    session = MagicMock()
+    result = MagicMock()
+    result.first.return_value = row
+    session.execute.return_value = result
+    return session
 
 
-@pytest.fixture(autouse=True)
-def _reset_cache():
-    """Clear the module-level cache between tests."""
-    import home.observability.router as mod
-
-    mod._cache = None
-    mod._cache_time = 0.0
+def _with_session(row):
+    app.dependency_overrides[get_session] = lambda: _session_returning(row)
 
 
-def test_get_topology_returns_json(mock_topology):
-    mock_build = AsyncMock(return_value=mock_topology)
-    with patch("home.observability.router.build_topology", mock_build):
-        client = TestClient(app)
-        resp = client.get("/api/home/observability/topology")
+def _clear():
+    app.dependency_overrides.pop(get_session, None)
+
+
+def test_topology_returns_snapshot_payload():
+    payload = {"groups": [], "nodes": [{"id": "x"}], "edges": []}
+    _with_session((payload,))
+    try:
+        resp = TestClient(app).get("/api/home/observability/topology")
         assert resp.status_code == 200
-        data = resp.json()
-        assert "groups" in data
-        assert "nodes" in data
-        assert "edges" in data
+        assert resp.json() == payload
+    finally:
+        _clear()
 
 
-def test_topology_has_slo_fields(mock_topology):
-    mock_build = AsyncMock(return_value=mock_topology)
-    with patch("home.observability.router.build_topology", mock_build):
-        client = TestClient(app)
-        resp = client.get("/api/home/observability/topology")
-        data = resp.json()
-        node = data["nodes"][0]
-        assert "slo" in node
-        assert "status" in node
-        assert "brief" in node
+def test_topology_empty_skeleton_when_no_snapshot():
+    _with_session(None)
+    try:
+        resp = TestClient(app).get("/api/home/observability/topology")
+        assert resp.status_code == 200
+        assert resp.json() == {"groups": [], "nodes": [], "edges": []}
+    finally:
+        _clear()
 
 
-def test_topology_cached(mock_topology):
-    mock_build = AsyncMock(return_value=mock_topology)
-    with patch("home.observability.router.build_topology", mock_build):
-        client = TestClient(app)
-        client.get("/api/home/observability/topology")
-        client.get("/api/home/observability/topology")
-        assert mock_build.call_count == 1
+def test_stats_returns_snapshot_payload():
+    payload = {"cluster": {"nodes": 4}, "gpu": {"utilization_pct": 50.0}}
+    _with_session((payload,))
+    try:
+        resp = TestClient(app).get("/api/home/observability/stats")
+        assert resp.status_code == 200
+        assert resp.json() == payload
+    finally:
+        _clear()
+
+
+def test_stats_empty_when_no_snapshot():
+    _with_session(None)
+    try:
+        resp = TestClient(app).get("/api/home/observability/stats")
+        assert resp.status_code == 200
+        assert resp.json() == {}
+    finally:
+        _clear()
