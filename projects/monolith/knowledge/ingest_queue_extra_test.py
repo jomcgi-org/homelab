@@ -1,4 +1,4 @@
-"""Extra unit tests for ingest_queue: _extract_video_id, _write_raw_md, ingest_handler.
+"""Extra unit tests for ingest_queue: _extract_video_id, ingest_handler.
 
 Covers edge cases and paths not exercised by ingest_queue_test.py:
 
@@ -8,21 +8,15 @@ _extract_video_id:
   - query param fallback (v= in arbitrary position)
   - invalid URL raises ValueError
 
-_write_raw_md:
-  - writes correct frontmatter (title, source, original_url) and body
-  - file is created under _raw/ and parent dirs are created
-
 ingest_handler:
   - empty queue returns None without touching session
-  - successful youtube ingest calls fetcher + write + commit
-  - successful webpage ingest calls fetcher + write + commit
+  - successful youtube ingest calls fetcher + ingest_raw + commit
+  - successful webpage ingest calls fetcher + ingest_raw + commit
   - failed fetch triggers rollback + failed-status update + commit
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +24,6 @@ import pytest
 from knowledge.ingest_queue import (
     IngestQueueItem,
     _extract_video_id,
-    _write_raw_md,
     ingest_handler,
 )
 
@@ -82,86 +75,6 @@ class TestExtractVideoId:
         """Empty string raises ValueError."""
         with pytest.raises(ValueError, match="cannot extract video ID"):
             _extract_video_id("")
-
-
-# ---------------------------------------------------------------------------
-# _write_raw_md
-# ---------------------------------------------------------------------------
-
-
-class TestWriteRawMd:
-    _NOW = datetime(2026, 4, 11, 12, 0, 0, tzinfo=timezone.utc)
-
-    def _call(self, vault_root, **kw):
-        kwargs = dict(
-            vault_root=vault_root,
-            title="Test Title",
-            body="Body content here.",
-            source_type="youtube",
-            original_url="https://youtube.com/watch?v=abc123",
-            now=self._NOW,
-        )
-        kwargs.update(kw)
-        return _write_raw_md(**kwargs)
-
-    def test_returns_path_object(self, tmp_path):
-        result = self._call(tmp_path)
-        assert isinstance(result, Path)
-
-    def test_file_exists_after_write(self, tmp_path):
-        result = self._call(tmp_path)
-        assert result.exists()
-
-    def test_file_is_under_raw_directory(self, tmp_path):
-        result = self._call(tmp_path)
-        assert str(result).startswith(str(tmp_path / "_raw"))
-
-    def test_creates_parent_directories(self, tmp_path):
-        """Parent dirs under _raw/ are created even if they don't exist."""
-        result = self._call(tmp_path)
-        assert result.parent.is_dir()
-        assert (tmp_path / "_raw").is_dir()
-
-    def test_frontmatter_contains_title(self, tmp_path):
-        result = self._call(tmp_path, title="My Video Title")
-        content = result.read_text(encoding="utf-8")
-        assert 'title: "My Video Title"' in content
-
-    def test_frontmatter_contains_source_type(self, tmp_path):
-        result = self._call(tmp_path, source_type="webpage")
-        content = result.read_text(encoding="utf-8")
-        assert "source: webpage" in content
-
-    def test_frontmatter_contains_original_url(self, tmp_path):
-        url = "https://example.com/some/article"
-        result = self._call(tmp_path, original_url=url)
-        content = result.read_text(encoding="utf-8")
-        assert f"original_url: {url}" in content
-
-    def test_body_written_after_frontmatter(self, tmp_path):
-        result = self._call(tmp_path, body="This is the transcript body.")
-        content = result.read_text(encoding="utf-8")
-        assert "This is the transcript body." in content
-
-    def test_frontmatter_delimited_by_triple_dash(self, tmp_path):
-        result = self._call(tmp_path)
-        content = result.read_text(encoding="utf-8")
-        # Standard YAML frontmatter block
-        assert content.startswith("---\n")
-        # Second --- closes the block
-        assert "\n---\n" in content
-
-    def test_same_content_same_path(self, tmp_path):
-        """Deterministic: same inputs produce the same output path."""
-        path1 = self._call(tmp_path, title="Stable", body="Content")
-        path2 = self._call(
-            tmp_path,
-            title="Stable",
-            body="Content",
-            source_type="youtube",
-            original_url="https://youtube.com/watch?v=abc123",
-        )
-        assert path1 == path2
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +139,7 @@ class TestIngestHandler:
         with (
             patch("knowledge.ingest_queue._claim_one", return_value=item),
             patch("knowledge.ingest_queue.fetch_youtube_transcript", mock_fetch),
-            patch(
-                "knowledge.ingest_queue._write_raw_md", return_value=tmp_path / "out.md"
-            ),
+            patch("knowledge.ingest_queue.ingest_raw"),
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
@@ -245,9 +156,7 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_youtube_transcript",
                 AsyncMock(return_value=("Title", "body")),
             ),
-            patch(
-                "knowledge.ingest_queue._write_raw_md", return_value=tmp_path / "out.md"
-            ),
+            patch("knowledge.ingest_queue.ingest_raw"),
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)
@@ -268,9 +177,7 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_youtube_transcript",
                 AsyncMock(return_value=("Title", "body")),
             ),
-            patch(
-                "knowledge.ingest_queue._write_raw_md", return_value=tmp_path / "out.md"
-            ),
+            patch("knowledge.ingest_queue.ingest_raw"),
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
@@ -288,9 +195,7 @@ class TestIngestHandler:
         with (
             patch("knowledge.ingest_queue._claim_one", return_value=item),
             patch("knowledge.ingest_queue.fetch_webpage", mock_fetch),
-            patch(
-                "knowledge.ingest_queue._write_raw_md", return_value=tmp_path / "out.md"
-            ),
+            patch("knowledge.ingest_queue.ingest_raw"),
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
@@ -307,9 +212,7 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_webpage",
                 AsyncMock(return_value=("Title", "body")),
             ),
-            patch(
-                "knowledge.ingest_queue._write_raw_md", return_value=tmp_path / "out.md"
-            ),
+            patch("knowledge.ingest_queue.ingest_raw"),
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)
@@ -383,9 +286,7 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_webpage",
                 AsyncMock(return_value=("Title", "body")),
             ),
-            patch(
-                "knowledge.ingest_queue._write_raw_md", return_value=tmp_path / "out.md"
-            ),
+            patch("knowledge.ingest_queue.ingest_raw"),
             patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)

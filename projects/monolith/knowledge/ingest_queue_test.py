@@ -1,13 +1,20 @@
 """Tests for the URL ingest queue."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
+
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel.pool import StaticPool
 
 from knowledge.ingest_queue import (
     IngestQueueItem,
     fetch_youtube_transcript,
     fetch_webpage,
+    ingest_handler,
+    ingest_raw,
 )
+from knowledge.models import RawInput
+from knowledge.raw_paths import compute_raw_id
 
 
 def test_ingest_queue_item_defaults():
@@ -72,3 +79,100 @@ async def test_fetch_webpage_handles_no_content():
         mock_traf.extract.return_value = None
         with pytest.raises(RuntimeError, match="no content extracted"):
             await fetch_webpage("https://example.com/empty")
+
+
+@pytest.fixture()
+def db_session():
+    """Real SQLite session with schema= overrides stripped for create_all().
+
+    Mirrors notes_crud_test.real_session: the knowledge tables declare a
+    Postgres schema, which SQLite can't honour, so strip and restore them.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as s:
+            yield s
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
+class TestIngestRaw:
+    """ingest_raw: fileless raw_inputs + S3 insert (ADR 006 Phase 4c-4)."""
+
+    def test_inserts_raw_input_and_uploads(self, db_session):
+        content = "---\ntitle: Hello\n---\n\nBody\n"
+        with patch("knowledge.ingest_queue.upload_raw") as mock_upload:
+            raw = ingest_raw(
+                db_session,
+                content=content,
+                source="capture",
+                original_url="https://example.com",
+            )
+
+        expected_id = compute_raw_id(content)
+        assert raw.raw_id == expected_id
+        assert raw.content_hash == expected_id
+        assert raw.path == f"raws/{expected_id}.md"
+        assert raw.source == "capture"
+        assert raw.original_path == "https://example.com"
+        assert raw.content == content
+        mock_upload.assert_called_once_with(expected_id, content)
+
+        rows = db_session.exec(select(RawInput)).all()
+        assert len(rows) == 1
+        assert rows[0].raw_id == expected_id
+
+    def test_dedup_returns_existing_no_duplicate(self, db_session):
+        content = "same content"
+        with patch("knowledge.ingest_queue.upload_raw") as mock_upload:
+            first = ingest_raw(db_session, content=content, source="capture")
+            second = ingest_raw(db_session, content=content, source="capture")
+
+        assert first.id == second.id
+        # Upload only happens on the first (novel) insert.
+        assert mock_upload.call_count == 1
+        rows = db_session.exec(select(RawInput)).all()
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_handler_calls_ingest_raw_with_built_content():
+    """ingest_handler fetches, assembles frontmatter+body, and calls ingest_raw."""
+    item = IngestQueueItem(url="https://example.com/article", source_type="webpage")
+    item.id = 7
+    session = MagicMock()
+
+    with (
+        patch("knowledge.ingest_queue._claim_one", return_value=item),
+        patch(
+            "knowledge.ingest_queue.fetch_webpage",
+            new=AsyncMock(return_value=("Page Title", "page body")),
+        ),
+        patch("knowledge.ingest_queue.ingest_raw") as mock_ingest,
+        patch(
+            "knowledge.ingest_queue._mark_queue_done", return_value=None
+        ) as mock_done,
+    ):
+        await ingest_handler(session)
+
+    mock_ingest.assert_called_once()
+    kwargs = mock_ingest.call_args.kwargs
+    assert kwargs["source"] == "webpage"
+    assert kwargs["original_url"] == "https://example.com/article"
+    content = kwargs["content"]
+    assert 'title: "Page Title"' in content
+    assert "source: webpage" in content
+    assert "page body" in content
+    mock_done.assert_called_once()

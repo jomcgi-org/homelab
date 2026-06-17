@@ -42,7 +42,7 @@ from knowledge.gaps import (
 )
 from knowledge.gardener import Gardener, _slugify
 from knowledge.indexing import index_note_best_effort
-from knowledge.ingest_queue import IngestQueueItem
+from knowledge.ingest_queue import IngestQueueItem, ingest_raw
 from knowledge.models import AtomRawProvenance, Note, NoteLink, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
@@ -549,16 +549,19 @@ class CreateNoteRequest(BaseModel):
 
 
 @router.post("/notes", status_code=201)
-def create_note(data: CreateNoteRequest) -> dict:
-    """Capture a new markdown note as a vault-root drop.
+def create_note(
+    data: CreateNoteRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Capture a new markdown note straight into the raw-input pipeline.
 
-    This is a capture path, not direct graph-note creation: the drop is
-    swept into ``_raw/`` by ``raw_ingest`` and decomposed into ``_processed``
-    atoms by the gardener, so its content reaches Postgres via
-    ``raw_inputs`` (and the resulting atoms via the reconciler). It is
-    therefore intentionally NOT indexed into ``knowledge.notes`` here — only
-    ``edit_note``, which mutates an existing ``_processed`` note, indexes
-    synchronously (ADR 006 Phase 3).
+    This is a capture path, not direct graph-note creation: the frontmatter +
+    body is inserted as a ``knowledge.raw_inputs`` row (with the markdown body
+    uploaded to ``s3://knowledge/raws/<raw_id>.md``), no files. The gardener
+    routine later decomposes it into ``_processed`` atoms, so its content
+    reaches the graph via the gardener. It is therefore intentionally NOT
+    indexed into ``knowledge.notes`` here. Only ``edit_note``, which mutates an
+    existing ``_processed`` note, indexes synchronously (ADR 006 Phase 3).
     """
     content = data.content.strip()
     if not content:
@@ -578,22 +581,8 @@ def create_note(data: CreateNoteRequest) -> dict:
     fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
     file_content = f"---\n{fm_str}---\n\n{content}\n"
 
-    vault_root = _get_vault_root()
-    slug = _slugify(title)
-    filename = f"{slug}.md"
-
-    # Handle collisions
-    dest = vault_root / filename
-    counter = 1
-    while dest.exists():
-        filename = f"{slug}-{counter}.md"
-        dest = vault_root / filename
-        counter += 1
-
-    dest.write_text(
-        file_content
-    )  # nosemgrep: tainted-path-traversal-stdlib-fastapi (dest always confined to vault_root via / operator)
-    return {"path": filename}
+    raw = ingest_raw(session, content=file_content, source=data.source or "capture")
+    return {"raw_id": raw.raw_id}
 
 
 @router.get("/dead-letter")
