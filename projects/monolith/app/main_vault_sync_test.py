@@ -25,6 +25,8 @@ async def test_lifespan_calls_clone_vault():
         patch("hikes.on_startup_jobs"),
         patch("stars.on_startup_jobs"),
         patch("dr_jobs.on_startup_jobs"),
+        patch("home.observability.rollup.register"),
+        patch("app.main.prime_snapshots", new_callable=AsyncMock),
     ):
         from app.main import lifespan, app
 
