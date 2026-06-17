@@ -9,9 +9,8 @@ import pytest
 from sqlmodel import select
 
 from knowledge import service
-from knowledge.gardener import GardenStats
 from knowledge.reconciler import ReconcileStats
-from knowledge.service import garden_handler, on_startup
+from knowledge.service import on_startup
 
 # Save a reference before autouse fixture patches it.
 _real_vault_sync_ready = service._vault_sync_ready
@@ -25,33 +24,14 @@ def _vault_sync_ready_by_default():
 
 
 class TestOnStartup:
-    def test_registers_garden_and_reconcile_jobs(self):
-        """on_startup registers garden, reconcile, and vault-backup jobs."""
+    def test_registers_reconcile_and_backup_jobs(self):
+        """on_startup registers reconcile and vault-backup jobs."""
         session = MagicMock()
         with patch("shared.scheduler.register_job") as mock_register:
             on_startup(session)
         names = [call.kwargs["name"] for call in mock_register.call_args_list]
-        assert "knowledge.garden" in names
         assert "knowledge.reconcile" in names
         assert "knowledge.vault-backup" in names
-
-    def test_garden_registered_before_reconcile(self):
-        """Documentary convention: knowledge.garden is registered first.
-
-        The scheduler claims one job per tick and polls every 30s, so
-        registration order has no runtime effect — the two jobs always
-        run in separate ticks. This test encodes the team convention of
-        listing producers before consumers in on_startup so that reading
-        the code top-to-bottom follows the data flow.
-        """
-        session = MagicMock()
-        order: list[str] = []
-        with patch(
-            "shared.scheduler.register_job",
-            side_effect=lambda *a, **kw: order.append(kw["name"]),
-        ):
-            on_startup(session)
-        assert order.index("knowledge.garden") < order.index("knowledge.reconcile")
 
 
 class TestReconcileHandler:
@@ -165,109 +145,6 @@ class TestReconcileHandler:
             await service.reconcile_handler(session)
 
         MockStore.assert_called_once_with(session=session)
-
-
-class TestGardenHandler:
-    @pytest.mark.asyncio
-    async def test_skips_when_oauth_token_unset(self, monkeypatch, caplog):
-        """garden_handler returns None and logs a warning when token is absent.
-
-        When CLAUDE_CODE_OAUTH_TOKEN is not set, garden_handler returns None
-        immediately before the deferred `from knowledge.gardener import Gardener`
-        is ever reached.  The observable effects are the return value and the
-        warning log entry.
-        """
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        session = MagicMock()
-        with caplog.at_level(logging.WARNING, logger="knowledge.service"):
-            result = await garden_handler(session)
-        assert result is None
-        warning_messages = [
-            r.message for r in caplog.records if r.levelno == logging.WARNING
-        ]
-        assert any("CLAUDE_CODE_OAUTH_TOKEN" in msg for msg in warning_messages)
-
-    @pytest.mark.asyncio
-    async def test_runs_gardener_when_token_set(self, monkeypatch, tmp_path):
-        """garden_handler constructs Gardener(vault_root, max_files_per_run) and awaits run()."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ot-test")
-        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
-        session = MagicMock()
-        gardener_instance = MagicMock()
-        gardener_instance.run = AsyncMock(
-            return_value=GardenStats(ingested=2, failed=0)
-        )
-        with patch(
-            "knowledge.gardener.Gardener", return_value=gardener_instance
-        ) as mock_gardener:
-            result = await garden_handler(session)
-        assert result is None
-        mock_gardener.assert_called_once()
-        kwargs = mock_gardener.call_args.kwargs
-        assert kwargs["vault_root"] == tmp_path
-        assert kwargs["max_files_per_run"] == 10
-        assert kwargs["session"] is session
-        assert "anthropic_client" not in kwargs
-        assert "store" not in kwargs
-        assert "embed_client" not in kwargs
-        gardener_instance.run.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_logs_error_when_all_ingests_failed(
-        self, monkeypatch, tmp_path, caplog
-    ):
-        """When every ingest failed, the completion log is promoted to ERROR."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ot-test")
-        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
-        session = MagicMock()
-        gardener_instance = MagicMock()
-        gardener_instance.run = AsyncMock(
-            return_value=GardenStats(ingested=0, failed=3)
-        )
-        with (
-            patch("knowledge.gardener.Gardener", return_value=gardener_instance),
-            caplog.at_level(logging.ERROR, logger="knowledge.service"),
-        ):
-            await garden_handler(session)
-        error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
-        assert len(error_records) == 1
-        assert "all failed" in error_records[0].message
-
-    @pytest.mark.asyncio
-    async def test_honors_max_files_env_override(self, monkeypatch, tmp_path):
-        """GARDENER_MAX_FILES_PER_RUN env var overrides the default cap."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "ot-test")
-        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
-        monkeypatch.setenv("GARDENER_MAX_FILES_PER_RUN", "25")
-        session = MagicMock()
-        gardener_instance = MagicMock()
-        gardener_instance.run = AsyncMock(
-            return_value=GardenStats(ingested=0, failed=0)
-        )
-        with patch(
-            "knowledge.gardener.Gardener", return_value=gardener_instance
-        ) as mock_gardener:
-            await garden_handler(session)
-        assert mock_gardener.call_args.kwargs["max_files_per_run"] == 25
-
-    @pytest.mark.asyncio
-    async def test_invalid_max_files_env_falls_back_to_default(
-        self, monkeypatch, tmp_path
-    ):
-        """GARDENER_MAX_FILES_PER_RUN set to a non-integer falls back to the default of 10."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
-        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
-        monkeypatch.setenv("GARDENER_MAX_FILES_PER_RUN", "notanumber")
-        session = MagicMock()
-        gardener_instance = MagicMock()
-        gardener_instance.run = AsyncMock(
-            return_value=GardenStats(ingested=0, failed=0)
-        )
-        with patch(
-            "knowledge.gardener.Gardener", return_value=gardener_instance
-        ) as mock_gardener:
-            await garden_handler(session)
-        assert mock_gardener.call_args.kwargs["max_files_per_run"] == 10
 
 
 class TestCloneVault:
@@ -478,16 +355,6 @@ class TestVaultSyncGate:
         with patch("knowledge.service._vault_sync_ready", return_value=False):
             with caplog.at_level(logging.INFO, logger="knowledge.service"):
                 result = await service.reconcile_handler(MagicMock())
-        assert result is None
-        assert any(
-            "vault sync not ready" in m for m in [r.message for r in caplog.records]
-        )
-
-    @pytest.mark.asyncio
-    async def test_garden_defers_when_sync_not_ready(self, caplog):
-        with patch("knowledge.service._vault_sync_ready", return_value=False):
-            with caplog.at_level(logging.INFO, logger="knowledge.service"):
-                result = await service.garden_handler(MagicMock())
         assert result is None
         assert any(
             "vault sync not ready" in m for m in [r.message for r in caplog.records]

@@ -10,21 +10,12 @@ reconciler.py
   - _write_back_id: CRLF (\\r\\n) frontmatter branch
   - _pre_sync_links: exception is swallowed and never blocks reconcile
 
-gardener.py
-  - _raws_needing_decomposition: returns [] when session is None
-  - _resolve_pending_provenance: returns 0 when session is None
-  - run(): skips reconcile_raw_phase when session is None
-  - _backfill_provenance_from_notes: returns 0 when session is None
-  - _backfill_provenance_from_notes: inserts sentinel for unhandled raws
-  - _backfill_provenance_from_notes: skips raws with existing provenance
-  - _backfill_provenance_from_notes: returns 0 when no derived_from_raw notes
-
-raw_ingest.py
-  - reconcile_raw_phase: indexed_at auto-populated on mirror Note rows
-    (commit 7bd4a9f: set indexed_at on mirror Note rows for raw inputs)
-  - reconcile_raw_phase: original_path extracted from frontmatter extra
-  - reconcile_raw_phase: OSError during file read is logged and skipped
-  - _infer_source: explicit meta.source value is returned as-is
+store.py – raws_needing_decomposition (tiering lifted from the retired
+in-pod gardener; the decomposition itself now runs as a remote claude.ai
+routine, see ADR 006 Phase 4c)
+  - exhausted retries (retry_count >= _MAX_RETRIES) are excluded
+  - retriable failures (retry_count < _MAX_RETRIES) are included
+  - a successful current-version provenance row wins over a failed row
 
 migrate_raw_bucketing.py
   - _strip_frontmatter_keys: bad YAML returns original content
@@ -42,9 +33,7 @@ migrate_raw_bucketing.py
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -339,243 +328,6 @@ class TestPreSyncLinksException:
 
 
 # ---------------------------------------------------------------------------
-# gardener.py – _raws_needing_decomposition: session=None
-# ---------------------------------------------------------------------------
-
-
-class TestRawsNeedingDecompositionNoSession:
-    def test_returns_empty_list_when_session_is_none(self, tmp_path):
-        """_raws_needing_decomposition returns [] immediately when session=None
-        (no DB access attempted)."""
-        from knowledge.gardener import Gardener
-
-        gardener = Gardener(vault_root=tmp_path, session=None)
-        result = gardener._raws_needing_decomposition()
-        assert result == []
-
-
-# ---------------------------------------------------------------------------
-# gardener.py – _resolve_pending_provenance: session=None
-# ---------------------------------------------------------------------------
-
-
-class TestResolvePendingProvenanceNoSession:
-    def test_returns_zero_when_session_is_none(self, tmp_path):
-        """_resolve_pending_provenance returns 0 immediately when session=None
-        (no DB access attempted)."""
-        from knowledge.gardener import Gardener
-
-        gardener = Gardener(vault_root=tmp_path, session=None)
-        result = gardener._resolve_pending_provenance()
-        assert result == 0
-
-
-# ---------------------------------------------------------------------------
-# gardener.py – run(): reconcile_raw_phase skipped when session=None
-# ---------------------------------------------------------------------------
-
-
-class TestGardenerRunNoSession:
-    @pytest.mark.asyncio
-    async def test_run_skips_reconcile_raw_phase_when_session_is_none(self, tmp_path):
-        """When session=None, run() must not call reconcile_raw_phase (which
-        requires a Session). move_phase is still executed."""
-        from knowledge.gardener import Gardener
-
-        # Drop a file in the vault root so move_phase has something to process.
-        _write(tmp_path / "inbox" / "note.md", "---\ntitle: T\n---\nBody.")
-
-        gardener = Gardener(vault_root=tmp_path, session=None)
-        # No session → _ingest_one would need a DB; no raws in the DB either.
-        with patch("knowledge.raw_ingest.reconcile_raw_phase") as mock_reconcile:
-            stats = await gardener.run()
-
-        # reconcile_raw_phase must NOT have been called.
-        mock_reconcile.assert_not_called()
-        # move_phase ran: the inbox file was moved into _raw/.
-        assert not (tmp_path / "inbox" / "note.md").exists()
-        assert stats.moved == 1
-
-    @pytest.mark.asyncio
-    async def test_run_with_no_session_returns_zero_ingested(self, tmp_path):
-        """With session=None there are no RawInput rows, so ingested==0."""
-        from knowledge.gardener import Gardener
-
-        gardener = Gardener(vault_root=tmp_path, session=None)
-        stats = await gardener.run()
-        assert stats.ingested == 0
-        assert stats.failed == 0
-        assert stats.reconciled == 0
-
-
-# ---------------------------------------------------------------------------
-# raw_ingest.py – reconcile_raw_phase: indexed_at on mirror Note rows
-# (commit 7bd4a9f: set indexed_at on mirror Note rows for raw inputs)
-# ---------------------------------------------------------------------------
-
-
-class TestReconcileRawPhaseIndexedAt:
-    """Mirror Note rows created by reconcile_raw_phase must have indexed_at
-    auto-populated via the default_factory (not left as NULL)."""
-
-    def test_mirror_note_indexed_at_is_set(self, tmp_path, session):
-        from knowledge.raw_ingest import reconcile_raw_phase
-
-        raw_file = tmp_path / "_raw" / "2026" / "04" / "10" / "abc1-test.md"
-        _write(raw_file, "---\ntitle: Test\nsource: vault-drop\n---\nBody.")
-
-        reconcile_raw_phase(vault_root=tmp_path, session=session)
-        session.commit()
-
-        notes = session.exec(select(Note).where(Note.type == "raw")).all()
-        assert len(notes) == 1
-        assert notes[0].indexed_at is not None
-        assert isinstance(notes[0].indexed_at, datetime)
-
-    def test_mirror_note_indexed_at_is_recent(self, tmp_path, session):
-        """indexed_at is a recent datetime (within the current run window).
-
-        SQLite strips tzinfo on read-back, so we compare against naive UTC
-        bounds. The model's default_factory uses datetime.now(timezone.utc)
-        but SQLite returns naive datetimes.
-        """
-        from knowledge.raw_ingest import reconcile_raw_phase
-
-        before = datetime.now(timezone.utc).replace(tzinfo=None)
-        raw_file = tmp_path / "_raw" / "2026" / "04" / "10" / "abc2-utc.md"
-        _write(raw_file, "---\ntitle: UTC\n---\nBody.")
-
-        reconcile_raw_phase(vault_root=tmp_path, session=session)
-        session.commit()
-
-        notes = session.exec(select(Note).where(Note.type == "raw")).all()
-        indexed_at = notes[0].indexed_at
-        # Strip tzinfo since SQLite returns naive datetimes.
-        indexed_naive = (
-            indexed_at.replace(tzinfo=None) if indexed_at.tzinfo else indexed_at
-        )
-        after = datetime.now(timezone.utc).replace(tzinfo=None)
-        assert before <= indexed_naive <= after
-
-
-# ---------------------------------------------------------------------------
-# raw_ingest.py – reconcile_raw_phase: original_path from frontmatter extra
-# ---------------------------------------------------------------------------
-
-
-class TestReconcileRawPhaseOriginalPath:
-    """When a raw file's frontmatter contains original_path in extra fields,
-    reconcile_raw_phase stores it on the RawInput row."""
-
-    def test_original_path_extracted_from_frontmatter_extra(self, tmp_path, session):
-        from knowledge.raw_ingest import reconcile_raw_phase
-
-        raw_file = tmp_path / "_raw" / "grandfathered" / "abc1-orig.md"
-        _write(
-            raw_file,
-            "---\ntitle: Orig\noriginal_path: inbox/my-note.md\n---\nBody.",
-        )
-
-        reconcile_raw_phase(vault_root=tmp_path, session=session)
-        session.commit()
-
-        rows = session.exec(select(RawInput)).all()
-        assert len(rows) == 1
-        assert rows[0].original_path == "inbox/my-note.md"
-
-    def test_original_path_is_none_when_absent(self, tmp_path, session):
-        """When original_path is not in frontmatter, the field stays None."""
-        from knowledge.raw_ingest import reconcile_raw_phase
-
-        raw_file = tmp_path / "_raw" / "2026" / "04" / "10" / "abc1-no-orig.md"
-        _write(raw_file, "---\ntitle: No Orig\n---\nBody.")
-
-        reconcile_raw_phase(vault_root=tmp_path, session=session)
-        session.commit()
-
-        rows = session.exec(select(RawInput)).all()
-        assert len(rows) == 1
-        assert rows[0].original_path is None
-
-
-# ---------------------------------------------------------------------------
-# raw_ingest.py – reconcile_raw_phase: OSError during file read
-# ---------------------------------------------------------------------------
-
-
-class TestReconcileRawPhaseReadError:
-    """An OSError while reading a raw file is logged as a warning and the
-    file is skipped — reconcile_raw_phase continues with the remaining files."""
-
-    def test_oserror_on_read_skips_file_and_continues(self, tmp_path, session, caplog):
-        from knowledge.raw_ingest import reconcile_raw_phase
-
-        bad = tmp_path / "_raw" / "2026" / "04" / "10" / "abc1-bad.md"
-        good = tmp_path / "_raw" / "2026" / "04" / "10" / "abc2-good.md"
-        _write(bad, "---\ntitle: Bad\n---\nContent.")
-        _write(good, "---\ntitle: Good\n---\nContent.")
-
-        original_read_text = Path.read_text
-
-        def raise_on_bad(p: Path, *a, **kw) -> str:
-            if p == bad:
-                raise OSError("permission denied")
-            return original_read_text(p, *a, **kw)
-
-        with (
-            patch.object(Path, "read_text", raise_on_bad),
-            caplog.at_level(logging.WARNING, logger="monolith.knowledge.raw_ingest"),
-        ):
-            stats = reconcile_raw_phase(vault_root=tmp_path, session=session)
-        session.commit()
-
-        # Good file was inserted; bad file was skipped.
-        assert stats.inserted == 1
-        rows = session.exec(select(RawInput)).all()
-        assert len(rows) == 1
-        assert rows[0].path.endswith("abc2-good.md")
-        # Warning was logged for the bad file.
-        assert any("failed to read" in r.message for r in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# raw_ingest.py – _infer_source: explicit meta.source
-# ---------------------------------------------------------------------------
-
-
-class TestInferSource:
-    """_infer_source returns the explicit meta.source value when it is set,
-    regardless of the path structure."""
-
-    def test_explicit_source_returned_as_is(self):
-        from knowledge.raw_ingest import _infer_source
-
-        result = _infer_source("custom-importer", ("_raw", "2026", "04", "10"))
-        assert result == "custom-importer"
-
-    def test_explicit_source_takes_priority_over_grandfathered_path(self):
-        """Even a grandfathered path does not override an explicit meta.source."""
-        from knowledge.raw_ingest import _infer_source
-        from knowledge.raw_paths import GRANDFATHERED_SUBDIR
-
-        result = _infer_source("webhook", ("_raw", GRANDFATHERED_SUBDIR, "file.md"))
-        assert result == "webhook"
-
-    def test_none_source_with_grandfathered_path_returns_grandfathered(self):
-        from knowledge.raw_ingest import _infer_source
-        from knowledge.raw_paths import GRANDFATHERED_SUBDIR
-
-        result = _infer_source(None, ("_raw", GRANDFATHERED_SUBDIR, "file.md"))
-        assert result == "grandfathered"
-
-    def test_none_source_with_dated_path_returns_vault_drop(self):
-        from knowledge.raw_ingest import _infer_source
-
-        result = _infer_source(None, ("_raw", "2026", "04", "10", "file.md"))
-        assert result == "vault-drop"
-
-
-# ---------------------------------------------------------------------------
 # migrate_raw_bucketing.py – _strip_frontmatter_keys: edge cases
 # ---------------------------------------------------------------------------
 
@@ -854,147 +606,18 @@ class TestWriteBackIdNoBranch:
 
 
 # ---------------------------------------------------------------------------
-# gardener.py – _record_failed_provenance: session=None returns early
-# ---------------------------------------------------------------------------
-
-
-class TestRecordFailedProvenanceNoSession:
-    """_record_failed_provenance returns immediately when session is None,
-    without raising or attempting any database access."""
-
-    def test_returns_none_when_session_is_none(self, tmp_path):
-        """Calling _record_failed_provenance with session=None must not raise."""
-        from knowledge.gardener import Gardener
-        from knowledge.models import RawInput
-
-        gardener = Gardener(vault_root=tmp_path, session=None)
-
-        # A raw row with a fake id — session is None so no DB call happens.
-        fake_raw = RawInput(
-            raw_id="test-raw",
-            path="_raw/2026/04/10/abc1-test.md",
-            source="vault-drop",
-            content="body",
-            content_hash="h1",
-        )
-        # Assign a fake integer id so the method doesn't blow up trying to
-        # query by id.
-        fake_raw.id = 42
-
-        exc = RuntimeError("subprocess failed")
-        # Must return without raising.
-        result = gardener._record_failed_provenance(fake_raw, exc)
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# gardener.py – _record_failed_provenance: error truncated to 500 chars
-# ---------------------------------------------------------------------------
-
-
-class TestRecordFailedProvenanceErrorTruncation:
-    """Errors longer than 500 characters must be truncated to exactly 500 chars
-    when stored in the provenance row."""
-
-    def test_long_error_is_truncated_on_first_failure(self, tmp_path, session):
-        """A 600-char error is stored as 500 chars when creating a new row."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
-
-        raw = RawInput(
-            raw_id="trunc-raw",
-            path="_raw/2026/04/10/abc1-trunc.md",
-            source="vault-drop",
-            content="body",
-            content_hash="h1",
-        )
-        session.add(raw)
-        session.commit()
-        session.refresh(raw)
-
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        long_error = "x" * 600
-        gardener._record_failed_provenance(raw, RuntimeError(long_error))
-
-        prov = session.exec(
-            select(AtomRawProvenance).where(AtomRawProvenance.raw_fk == raw.id)
-        ).first()
-        assert prov is not None
-        assert len(prov.error) == 500
-        assert prov.error == "x" * 500
-
-    def test_long_error_is_truncated_on_retry(self, tmp_path, session):
-        """When updating an existing 'failed' row, the error is truncated too."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
-
-        raw = RawInput(
-            raw_id="trunc-retry-raw",
-            path="_raw/2026/04/10/abc2-trunc.md",
-            source="vault-drop",
-            content="body",
-            content_hash="h2",
-        )
-        session.add(raw)
-        session.commit()
-        session.refresh(raw)
-
-        # Pre-insert an existing failed provenance row.
-        prov = AtomRawProvenance(
-            raw_fk=raw.id,
-            derived_note_id="failed",
-            gardener_version=GARDENER_VERSION,
-            error="short error",
-            retry_count=1,
-        )
-        session.add(prov)
-        session.commit()
-        session.refresh(prov)
-
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        long_error = "y" * 700
-        gardener._record_failed_provenance(raw, RuntimeError(long_error))
-
-        session.refresh(prov)
-        assert len(prov.error) == 500
-        assert prov.error == "y" * 500
-        assert prov.retry_count == 2
-
-    def test_short_error_is_stored_as_is(self, tmp_path, session):
-        """Errors shorter than 500 chars are stored verbatim."""
-        from knowledge.gardener import Gardener
-
-        raw = RawInput(
-            raw_id="short-err-raw",
-            path="_raw/2026/04/10/abc3-short.md",
-            source="vault-drop",
-            content="body",
-            content_hash="h3",
-        )
-        session.add(raw)
-        session.commit()
-        session.refresh(raw)
-
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        gardener._record_failed_provenance(raw, RuntimeError("short"))
-
-        prov = session.exec(
-            select(AtomRawProvenance).where(AtomRawProvenance.raw_fk == raw.id)
-        ).first()
-        assert prov is not None
-        assert prov.error == "short"
-
-
-# ---------------------------------------------------------------------------
-# gardener.py – _raws_needing_decomposition: exhausted retries are excluded
+# store.py – raws_needing_decomposition: exhausted retries are excluded
 # ---------------------------------------------------------------------------
 
 
 class TestRawsNeedingDecompositionExhaustedRetries:
     """A raw with retry_count >= Gardener._MAX_RETRIES must NOT appear in
-    _raws_needing_decomposition() — it belongs in the dead letter queue."""
+    raws_needing_decomposition() — it belongs in the dead letter queue."""
 
     def test_exhausted_raw_is_excluded(self, tmp_path, session):
         """Raw with retry_count == _MAX_RETRIES is excluded."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
+        from knowledge.gardener import GARDENER_VERSION, Gardener
+        from knowledge.store import KnowledgeStore
 
         raw = RawInput(
             raw_id="exhausted-raw",
@@ -1017,15 +640,15 @@ class TestRawsNeedingDecompositionExhaustedRetries:
         session.add(prov)
         session.commit()
 
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        result = gardener._raws_needing_decomposition()
+        result = KnowledgeStore(session).raws_needing_decomposition()
 
         ids = [r.id for r in result]
         assert raw.id not in ids
 
     def test_over_limit_raw_is_excluded(self, tmp_path, session):
         """Raw with retry_count > _MAX_RETRIES is also excluded."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
+        from knowledge.gardener import GARDENER_VERSION, Gardener
+        from knowledge.store import KnowledgeStore
 
         raw = RawInput(
             raw_id="over-limit-raw",
@@ -1048,15 +671,15 @@ class TestRawsNeedingDecompositionExhaustedRetries:
         session.add(prov)
         session.commit()
 
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        result = gardener._raws_needing_decomposition()
+        result = KnowledgeStore(session).raws_needing_decomposition()
 
         ids = [r.id for r in result]
         assert raw.id not in ids
 
     def test_under_limit_raw_is_included(self, tmp_path, session):
         """Raw with retry_count < _MAX_RETRIES IS included (retriable tier)."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
+        from knowledge.gardener import GARDENER_VERSION, Gardener
+        from knowledge.store import KnowledgeStore
 
         raw = RawInput(
             raw_id="retriable-raw",
@@ -1079,29 +702,29 @@ class TestRawsNeedingDecompositionExhaustedRetries:
         session.add(prov)
         session.commit()
 
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        result = gardener._raws_needing_decomposition()
+        result = KnowledgeStore(session).raws_needing_decomposition()
 
         ids = [r.id for r in result]
         assert raw.id in ids
 
 
 # ---------------------------------------------------------------------------
-# gardener.py – _raws_needing_decomposition: successful provenance wins over failed
+# store.py – raws_needing_decomposition: successful provenance wins over failed
 # ---------------------------------------------------------------------------
 
 
 class TestRawsNeedingDecompositionSuccessfulProvenanceWins:
     """When a raw has BOTH a 'failed' provenance row AND a successful
     current-version provenance row, the successful one wins — the raw must
-    NOT appear in _raws_needing_decomposition()."""
+    NOT appear in raws_needing_decomposition()."""
 
     def test_successful_provenance_excludes_raw_despite_failed_row(
         self, tmp_path, session
     ):
         """Raw with both a 'failed' row and a current-version success row is
         excluded from decomposition (success wins)."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
+        from knowledge.gardener import GARDENER_VERSION
+        from knowledge.store import KnowledgeStore
 
         raw = RawInput(
             raw_id="mixed-prov-raw",
@@ -1134,8 +757,7 @@ class TestRawsNeedingDecompositionSuccessfulProvenanceWins:
         session.add(success_prov)
         session.commit()
 
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        result = gardener._raws_needing_decomposition()
+        result = KnowledgeStore(session).raws_needing_decomposition()
 
         ids = [r.id for r in result]
         assert raw.id not in ids
@@ -1143,7 +765,8 @@ class TestRawsNeedingDecompositionSuccessfulProvenanceWins:
     def test_only_failed_row_without_success_is_retriable(self, tmp_path, session):
         """Control: same raw with only a failed row (no success) IS returned
         when retry_count is below the limit."""
-        from knowledge.gardener import Gardener, GARDENER_VERSION
+        from knowledge.gardener import GARDENER_VERSION
+        from knowledge.store import KnowledgeStore
 
         raw = RawInput(
             raw_id="only-failed-raw",
@@ -1166,8 +789,7 @@ class TestRawsNeedingDecompositionSuccessfulProvenanceWins:
         session.add(failed_prov)
         session.commit()
 
-        gardener = Gardener(vault_root=tmp_path, session=session)
-        result = gardener._raws_needing_decomposition()
+        result = KnowledgeStore(session).raws_needing_decomposition()
 
         ids = [r.id for r in result]
         assert raw.id in ids

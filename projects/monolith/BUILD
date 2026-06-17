@@ -13,7 +13,6 @@
 # gazelle:exclude stars
 # gazelle:exclude trips
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
-load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
@@ -153,7 +152,6 @@ py_library(
         "@pip//sqlmodel",
         "@pip//timelength",
         "@pip//trafilatura",
-        "@pip//typer",
         "@pip//tzdata",
         "@pip//uvicorn",
         "@pip//websockets",
@@ -176,18 +174,6 @@ py_library(
     ],
 )
 
-tar(
-    name = "knowledge_tools_tar",
-    srcs = [
-        "knowledge/tools/knowledge",
-        "knowledge/tools/knowledge-search",
-    ],
-    mtree = [
-        "./usr/local/bin/knowledge-search type=file content=$(execpath knowledge/tools/knowledge-search) mode=0755 uid=0 gid=0",
-        "./usr/local/bin/knowledge type=file content=$(execpath knowledge/tools/knowledge) mode=0755 uid=0 gid=0",
-    ],
-)
-
 py3_image(
     name = "image",
     binary = "//projects/monolith:main",
@@ -203,7 +189,6 @@ py3_image(
     main = "app/main.py",
     multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
-    tars = [":knowledge_tools_tar"],
 )
 
 py_test(
@@ -2003,36 +1988,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_backend",
-        "@pip//pgvector",
         "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "gardener_distill_test",
-    srcs = ["knowledge/gardener_distill_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "gardener_consolidation_test",
-    srcs = ["knowledge/gardener_consolidation_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -2524,19 +2480,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gardener_coverage_test",
-    srcs = ["knowledge/gardener_coverage_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_service_coverage_test",
     srcs = ["knowledge/service_coverage_test.py"],
     imports = ["."],
@@ -2555,29 +2498,6 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_search_test",
-    srcs = ["knowledge/knowledge_search_test.py"],
-    data = ["knowledge/tools/knowledge-search"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "knowledge_cli_test",
-    srcs = ["knowledge/cli_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//typer",
     ],
 )
 
@@ -2682,18 +2602,6 @@ py_test(
 py_test(
     name = "knowledge_store_optional_metadata_test",
     srcs = ["knowledge/store_optional_metadata_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_raw_ingest_test",
-    srcs = ["knowledge/raw_ingest_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2958,16 +2866,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_raw_ingest_discover_test",
-    srcs = ["knowledge/raw_ingest_discover_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "knowledge_ingest_queue_webpage_title_test",
     srcs = ["knowledge/ingest_queue_webpage_title_test.py"],
     imports = ["."],
@@ -2975,16 +2873,6 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "knowledge_raw_ingest_move_phase_oserror_test",
-    srcs = ["knowledge/raw_ingest_move_phase_oserror_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
     ],
 )
 
