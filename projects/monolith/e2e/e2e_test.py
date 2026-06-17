@@ -40,15 +40,15 @@ class TestHealthz:
 
 class TestNotesAPI:
     def test_create_note(self, client, tmp_path, monkeypatch):
-        """POST returns 201 and writes file to vault."""
+        """POST returns 201 and ingests a raw_inputs row (file-less, ADR 006)."""
         monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
         response = client.post(
             "/api/knowledge/notes",
             json={"content": "Test fleeting note", "title": "Test Note"},
         )
         assert response.status_code == 201
-        path = response.json().get("path", "")
-        assert path.endswith(".md")
+        raw_id = response.json().get("raw_id", "")
+        assert len(raw_id) == 64  # sha256 hex content hash
 
     def test_empty_content_returns_400(self, client, tmp_path, monkeypatch):
         """Empty content returns 400."""

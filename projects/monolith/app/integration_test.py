@@ -118,15 +118,15 @@ def test_get_schedule_today_returns_list(client):
 
 
 def test_post_note_returns_201(client, tmp_path, monkeypatch):
-    """POST /api/knowledge/notes with content → 201 and file written to vault."""
+    """POST /api/knowledge/notes with content -> 201 and a raw_inputs row (file-less)."""
     monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
     response = client.post(
         "/api/knowledge/notes",
         json={"content": "test note", "title": "Test Note"},
     )
     assert response.status_code == 201
-    path = response.json().get("path", "")
-    assert path.endswith(".md")
+    raw_id = response.json().get("raw_id", "")
+    assert len(raw_id) == 64  # sha256 hex content hash
 
 
 def test_post_note_empty_content_returns_400(client, tmp_path, monkeypatch):
