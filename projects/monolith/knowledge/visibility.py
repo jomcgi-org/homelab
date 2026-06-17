@@ -72,6 +72,25 @@ def sanitize_public_body(body: str, private_target_ids: Iterable[str]) -> str:
     return _WIKILINK_RE.sub(_replace, body)
 
 
+def strip_private_wikilinks(body: str, public_note_ids: Iterable[str]) -> str:
+    """Strip every wikilink whose target is NOT a known public note.
+
+    The public service cannot enumerate private notes (it reads only the
+    public_api views), so this inverts sanitize_public_body: keep wikilinks
+    that resolve to a public note, strip everything else (private targets and
+    dangling links to non-existent notes) to plain display text.
+    """
+    public = {_slugify(nid) for nid in public_note_ids}
+
+    def _replace(match: "re.Match[str]") -> str:
+        display = match.group(1)
+        if _slugify(display) in public:
+            return match.group(0)
+        return display
+
+    return _WIKILINK_RE.sub(_replace, body)
+
+
 def public_notes_filter() -> ColumnElement[bool]:
     """SQLAlchemy clause selecting only public notes.
 
