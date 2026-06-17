@@ -147,7 +147,7 @@ async def _send_digest(new_vacancies: list[dict]) -> None:
     """Post the new-jobs digest to Discord. Never raises (a notify failure must
     not fail an otherwise-successful scrape)."""
     try:
-        from agent.notify import notify
+        from agent.api import notify
 
         await notify(build_digest(new_vacancies), channel=DISCORD_CHANNEL_ID)
     except Exception:  # noqa: BLE001 - best-effort side channel

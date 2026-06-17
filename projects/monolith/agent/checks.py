@@ -110,7 +110,7 @@ def check_dead_letters(limit: int = 20) -> list[dict]:
     ``atom_raw_provenance`` row has ``derived_note_id = 'failed'`` and
     ``retry_count >= Gardener._MAX_RETRIES`` (currently 3).
     """
-    from knowledge.gardener import Gardener
+    from knowledge.api import Gardener
 
     sql = text(
         """
