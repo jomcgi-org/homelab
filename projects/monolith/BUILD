@@ -17,7 +17,7 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
@@ -230,7 +230,6 @@ py_test(
         ],
     ),
     imports = ["."],
-    deps = ["@pip//pytest"],
 )
 
 py_test(
@@ -3488,4 +3487,16 @@ py_test(
         ":trips_backfill_lib",
         "@pip//pytest",
     ],
+)
+
+semgrep_test(
+    name = "import_boundaries_test_semgrep_test",
+    srcs = ["import_boundaries_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
