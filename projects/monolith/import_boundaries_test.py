@@ -12,6 +12,8 @@ See docs/decisions/platform/008-monolith-module-boundaries.md.
 import ast
 import pathlib
 
+import pytest
+
 DOMAINS = {
     "ships",
     "stars",
@@ -75,6 +77,7 @@ def _violations() -> list[str]:
 
 def test_no_cross_domain_internal_imports():
     violations = _violations()
-    assert not violations, "Cross-domain boundary violations:\n" + "\n".join(
-        sorted(violations)
-    )
+    if violations:
+        pytest.fail(
+            "Cross-domain boundary violations:\n" + "\n".join(sorted(violations))
+        )
