@@ -1,13 +1,19 @@
-"""Knowledge domain — knowledge graph CRUD, search, tasks, and dead-letter management."""
+"""Knowledge domain: knowledge graph CRUD, search, tasks, and dead-letter management.
+
+The cross-domain public surface lives in ``knowledge.api``; its callables are
+re-exported here so the public-function coverage contract (see
+``app/bdd_completeness_test.py``) keeps tracking them under their
+``knowledge.*`` names. Other domains must import from ``knowledge.api``
+(enforced by ``import_boundaries_test``), never from these internals.
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from fastapi import FastAPI
 
-if TYPE_CHECKING:
-    from sqlmodel import Session
+from knowledge.api import get_embedding_client, get_store, search_notes
+
+__all__ = ["register", "search_notes", "get_store", "get_embedding_client"]
 
 
 def register(app: FastAPI) -> None:
@@ -17,26 +23,3 @@ def register(app: FastAPI) -> None:
 
     app.include_router(router)
     app.include_router(tasks_router)
-
-
-def search_notes(session: "Session", query_embedding: list[float], **kwargs):
-    """Search knowledge notes by embedding similarity."""
-    from knowledge.store import KnowledgeStore
-
-    return KnowledgeStore(session).search_notes_with_context(
-        query_embedding=query_embedding, **kwargs
-    )
-
-
-def get_store(session: "Session"):
-    """Return a KnowledgeStore instance for the given session."""
-    from knowledge.store import KnowledgeStore
-
-    return KnowledgeStore(session)
-
-
-def get_embedding_client():
-    """Return an embedding client instance (DI seam for tests)."""
-    from shared.embedding import EmbeddingClient
-
-    return EmbeddingClient()

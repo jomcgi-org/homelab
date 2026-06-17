@@ -8,7 +8,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from chat.sse import SSEEmitter
-from knowledge.store import KnowledgeStore
+from knowledge.api import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
 SYSTEM_PROMPT = """\
