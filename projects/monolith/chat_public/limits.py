@@ -16,12 +16,6 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
-from datetime import datetime, timedelta, timezone
-
-from sqlalchemy import func
-from sqlmodel import Session, select
-
-from chat_public.models import ChatSession
 
 # --------------------------------------------------------------------------
 # Config knobs (ADR 005 / plan Phase 0 starting values). One place only.
@@ -43,19 +37,12 @@ MAX_SESSION_TOKENS = int(os.environ.get("CHAT_PUBLIC_MAX_SESSION_TOKENS", "32000
 # is treated as expired and cannot be used for another turn.
 SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "1800"))
 
-# Per-IP session-mint cap: the most sessions one (hashed) client IP may create in
-# the trailing window below (ADR 005 layer 2, per-IP). This is the backend
-# counter that complements Envoy's per-IP rate limit, so one IP cannot mint
-# sessions without bound. The forwarded CF-Connecting-IP is trusted only because
-# the backend is structurally reachable solely from the SSR mesh identity (see
-# the -web Server + AuthorizationPolicy in the monolith-public linkerd-policy),
-# so no untrusted peer can spoof it.
-PER_IP_MINT_RATE = int(os.environ.get("CHAT_PUBLIC_PER_IP_MINT_RATE", "5"))
-
-# Trailing window for the per-IP mint cap, in seconds (default 1 hour).
-IP_MINT_WINDOW_SECONDS = int(
-    os.environ.get("CHAT_PUBLIC_IP_MINT_WINDOW_SECONDS", "3600")
-)
+# No per-IP session-mint cap: Turnstile is anonymous proof-of-humanity, not a
+# user identity, and a per-IP cap mostly penalises NAT-shared legitimate users
+# without stopping IP-rotating abusers. The real protections are aggregate (the
+# global circuit breaker below + the Phase 3 reserved-headroom semaphore) plus
+# the per-session budgets above. ip_hash is still stored (see sessions.py) for
+# reactive abuse forensics and targeted blocking, not a pre-emptive cap.
 
 # Global circuit-breaker ceiling: the maximum number of public message/inference
 # calls in flight across this process at once (ADR 005 layer 2, global backstop).
@@ -71,8 +58,8 @@ class LimitExceeded(Exception):
     ``code`` is a stable machine string the router maps to an HTTP status and a
     "busy"/"limit" SSE event; ``message`` is a human-readable reason. It covers
     both the per-session budgets (char_cap / max_turns / max_session_tokens) and
-    the admission/shed controls (turnstile_failed / ip_mint_rate / busy), so the
-    router has one rejection channel.
+    the admission/shed controls (turnstile_failed / busy), so the router has one
+    rejection channel.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -105,34 +92,6 @@ def check_session_tokens(total_tokens: int) -> None:
         raise LimitExceeded(
             "max_session_tokens",
             f"This conversation has reached its {MAX_SESSION_TOKENS} token limit.",
-        )
-
-
-def check_ip_mint_rate(db: Session, ip_hash: str | None) -> None:
-    """Reject session creation once a hashed IP has minted too many sessions.
-
-    Counts sessions already created with the same ``ip_hash`` inside the trailing
-    window and rejects over ``PER_IP_MINT_RATE``. The IP is keyed by its salted
-    hash only (the raw IP is never stored). A None ip_hash (no forwarded IP, e.g.
-    local dev) skips the check, since there is nothing to key on.
-    """
-    if not ip_hash:
-        return
-    window_start = datetime.now(timezone.utc) - timedelta(
-        seconds=IP_MINT_WINDOW_SECONDS
-    )
-    count = db.exec(
-        select(func.count())
-        .select_from(ChatSession)
-        .where(
-            ChatSession.ip_hash == ip_hash,
-            ChatSession.created_at >= window_start,
-        )
-    ).one()
-    if count >= PER_IP_MINT_RATE:
-        raise LimitExceeded(
-            "ip_mint_rate",
-            "Too many chat sessions from this network. Please try again later.",
         )
 
 

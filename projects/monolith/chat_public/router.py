@@ -85,18 +85,18 @@ async def create_chat_session(
 ) -> SessionCreateResponse:
     """Verify the Turnstile token and open a server-side session.
 
-    Admission order: (1) siteverify the forwarded Turnstile token (no valid
-    token, no session); (2) enforce the per-IP session-mint cap on the forwarded
-    client IP, hashed. Only then is a row opened. Returns the opaque session id;
-    SSR stores it in an httpOnly cookie. The row, not the cookie, is the
-    authority for every later budget.
+    Admission: siteverify the forwarded Turnstile token (no valid token, no
+    session). Only then is a row opened. Returns the opaque session id; SSR
+    stores it in an httpOnly cookie. The row, not the cookie, is the authority
+    for every later budget.
 
     The real client IP arrives in the Cloudflare ``CF-Connecting-IP`` header,
-    forwarded by SSR. The backend trusts it because it is reachable ONLY from the
-    SSR mesh identity: the ``-web`` Linkerd Server + AuthorizationPolicy (see the
-    monolith-public linkerd-policy) authorize only the frontend ServiceAccount,
-    so any request reaching this handler came from SSR. The IP is stored only as
-    a salted hash, never raw.
+    forwarded by SSR, and is stored only as a salted hash for reactive abuse
+    forensics (there is no per-IP mint cap; see limits.py). The backend trusts
+    the header because it is reachable ONLY from the SSR mesh identity: the
+    ``-web`` Linkerd Server + AuthorizationPolicy (see the monolith-public
+    linkerd-policy) authorize only the frontend ServiceAccount, so any request
+    reaching this handler came from SSR.
     """
     result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
     if not result.success:
@@ -108,20 +108,13 @@ async def create_chat_session(
             },
         )
 
-    try:
-        session = sessions.create_session(
-            db,
-            turnstile_outcome=result.outcome,
-            ip=cf_connecting_ip,
-            country=cf_ipcountry,
-            user_agent=user_agent,
-        )
-    except limits.LimitExceeded as exc:
-        raise HTTPException(
-            status_code=_limit_status(exc.code),
-            detail={"code": exc.code, "message": exc.message},
-        ) from exc
-
+    session = sessions.create_session(
+        db,
+        turnstile_outcome=result.outcome,
+        ip=cf_connecting_ip,
+        country=cf_ipcountry,
+        user_agent=user_agent,
+    )
     logger.info("chat_public.session.created turn_limit=%d", limits.MAX_TURNS)
     return SessionCreateResponse(session_id=session.id)
 

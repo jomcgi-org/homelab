@@ -64,16 +64,14 @@ def create_session(
 
     Turnstile siteverify runs in the router (it is async network IO, see
     chat_public.turnstile.siteverify); this function is only reached once the
-    challenge passed, and records the verified ``turnstile_outcome``. It enforces
-    the per-IP session-mint cap before inserting (raising limits.LimitExceeded on
-    breach) so one network cannot mint sessions without bound.
+    challenge passed, and records the verified ``turnstile_outcome``.
 
     The opaque id is generated server-side from a CSPRNG, so the client cannot
-    forge or guess one. The IP is stored only as a salted hash, never raw; that
-    same hash keys the per-IP mint cap.
+    forge or guess one. The IP is stored only as a salted hash, never raw.
     """
+    # ip_hash is retained for reactive abuse forensics and targeted blocking,
+    # not a pre-emptive per-IP cap (dropped: see limits.py rationale).
     ip_hash = hash_value(ip, IP_HASH_SALT)
-    limits.check_ip_mint_rate(db, ip_hash)
     session = ChatSession(
         id=secrets.token_urlsafe(32),
         ip_hash=ip_hash,
