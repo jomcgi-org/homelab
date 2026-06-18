@@ -71,6 +71,12 @@ ALLOWED_PREFIXES = (
     "/api/dr-jobs",
     "/api/knowledge/public",
     "/api/home/observability",
+    # Internal-only public chat API. It is mounted on the public binary but is
+    # deliberately kept off the public HTTPRoute (see
+    # projects/monolith-public/chart/httproute_public_test.py): it is reachable
+    # only in-cluster from the SSR front door over Linkerd mTLS, never directly
+    # from the internet.
+    "/internal/chat",
     "/healthz",
     "/openapi.json",
     "/docs",
