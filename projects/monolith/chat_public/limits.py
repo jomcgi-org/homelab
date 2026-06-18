@@ -98,12 +98,18 @@ def check_session_tokens(total_tokens: int) -> None:
 class _CircuitBreaker:
     """An in-process counter of in-flight public message/inference calls.
 
-    ADR 005 layer 2 wants this global ceiling to be effective cluster-wide; a
-    process-local counter is the simplest thing that is correct for a single
-    replica and unit-testable now. Phase 3 wires the real reserved-headroom
-    semaphore in front of vLLM, at which point this becomes (or is replaced by)
-    the cluster-aware control. Deliberately NOT a Postgres-backed distributed
-    counter: that is over-engineering for the current single-replica shape.
+    This is a process-local counter: it bounds in-flight turns PER REPLICA. A
+    distributed counter is deliberately NOT used; per-pod is fine at this scale as
+    long as the AGGREGATE is sized sensibly. The web component has an HPA, so the
+    cluster-wide public in-flight ceiling is GLOBAL_MAX_CONCURRENT * replicas.
+
+    PHASE 3 SIZING RULE (not a re-architecture): when real vLLM inference is wired
+    behind the reserved-headroom semaphore, choose GLOBAL_MAX_CONCURRENT and the
+    inference-bearing replica count together so that
+        GLOBAL_MAX_CONCURRENT * web.maxReplicas + reserved_trusted <= max_num_seqs
+    (vLLM batch capacity). That keeps decode slots reserved for the Discord bot,
+    private chat, and agents per ADR 005, with a simple per-pod limit. In Phase 2
+    the message path spends no GPU, so the exact value is not yet load-bearing.
 
     A threading.Lock (not asyncio) is used because the Phase-2 message endpoint
     is a sync FastAPI handler dispatched to the threadpool, so concurrent turns

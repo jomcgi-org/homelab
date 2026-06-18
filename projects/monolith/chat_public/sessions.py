@@ -77,7 +77,7 @@ def create_session(
         ip_hash=ip_hash,
         turnstile_outcome=turnstile_outcome,
         country=country,
-        user_agent_hash=hash_value(user_agent),
+        user_agent_hash=hash_value(user_agent, IP_HASH_SALT),
         status="active",
     )
     db.add(session)
