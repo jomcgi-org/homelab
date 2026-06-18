@@ -28,9 +28,8 @@ Usage:
 
 Once you find params you like, copy them into
 ``projects/monolith/deploy/values.yaml`` and trigger
-``homelab scheduler jobs run-now knowledge.reconcile`` to apply without
-waiting for the next reconcile cycle (the layout pass runs as the last
-step of every reconcile).
+``homelab scheduler jobs run-now knowledge.layout`` to apply without
+waiting for the next layout cycle.
 """
 
 from __future__ import annotations
