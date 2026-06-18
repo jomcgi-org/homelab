@@ -8,10 +8,10 @@ from sqlmodel.pool import StaticPool
 from knowledge.models import RepoDoc, RepoDocChunk
 from knowledge.repo_docs import (
     ManifestEntry,
-    ReconcilePlan,
-    apply_reconcile,
+    apply_deletions,
     load_manifest,
     plan_reconcile,
+    upsert_doc,
 )
 
 
@@ -93,13 +93,11 @@ def test_plan_reconcile_detects_changed_hash(session):
     assert {e.path for e, _ in plan.to_upsert} == {"c.md"}
 
 
-def test_apply_reconcile_inserts_and_embeds(session):
+def test_upsert_doc_inserts(session):
     entry = _entry("docs/x.md", "# X\n\nalpha", "h")
     chunks = [{"index": 0, "section_header": "# X", "text": "alpha"}]
-    plan = ReconcilePlan(to_upsert=[(entry, chunks)], to_delete=[])
-    vectors_by_path = {"docs/x.md": [[0.2] * 1024]}
 
-    apply_reconcile(session, plan, vectors_by_path)
+    upsert_doc(session, entry, chunks, [[0.2] * 1024])
 
     doc = session.query(RepoDoc).filter_by(path="docs/x.md").one()
     assert doc.content_hash == "h"
@@ -107,24 +105,17 @@ def test_apply_reconcile_inserts_and_embeds(session):
     assert len(rows) == 1 and len(rows[0].embedding) == 1024
 
 
-def test_apply_reconcile_replaces_chunks_on_change(session):
+def test_upsert_doc_replaces_chunks_on_change(session):
     e1 = _entry("y.md", "# Y\n\nv1", "h1")
-    apply_reconcile(
-        session,
-        ReconcilePlan(
-            to_upsert=[(e1, [{"index": 0, "section_header": "", "text": "v1"}])],
-            to_delete=[],
-        ),
-        {"y.md": [[0.1] * 1024]},
+    upsert_doc(
+        session, e1, [{"index": 0, "section_header": "", "text": "v1"}], [[0.1] * 1024]
     )
     e2 = _entry("y.md", "# Y\n\nv2 longer", "h2")
-    apply_reconcile(
+    upsert_doc(
         session,
-        ReconcilePlan(
-            to_upsert=[(e2, [{"index": 0, "section_header": "", "text": "v2 longer"}])],
-            to_delete=[],
-        ),
-        {"y.md": [[0.9] * 1024]},
+        e2,
+        [{"index": 0, "section_header": "", "text": "v2 longer"}],
+        [[0.9] * 1024],
     )
     doc = session.query(RepoDoc).filter_by(path="y.md").one()
     rows = session.query(RepoDocChunk).filter_by(repo_doc_fk=doc.id).all()
@@ -132,17 +123,37 @@ def test_apply_reconcile_replaces_chunks_on_change(session):
     assert len(rows) == 1 and rows[0].chunk_text == "v2 longer"
 
 
-def test_apply_reconcile_deletes_vanished_doc_and_chunks(session):
+def test_apply_deletions_removes_doc_and_chunks(session):
     e = _entry("z.md", "# Z\n\nzz", "h")
-    apply_reconcile(
-        session,
-        ReconcilePlan(
-            to_upsert=[(e, [{"index": 0, "section_header": "", "text": "zz"}])],
-            to_delete=[],
-        ),
-        {"z.md": [[0.3] * 1024]},
+    upsert_doc(
+        session, e, [{"index": 0, "section_header": "", "text": "zz"}], [[0.3] * 1024]
     )
     doc_id = session.query(RepoDoc).filter_by(path="z.md").one().id
-    apply_reconcile(session, ReconcilePlan(to_upsert=[], to_delete=["z.md"]), {})
+
+    assert apply_deletions(session, ["z.md"]) == 1
+
     assert session.query(RepoDoc).filter_by(path="z.md").first() is None
     assert session.query(RepoDocChunk).filter_by(repo_doc_fk=doc_id).count() == 0
+
+
+def test_reconcile_resumes_from_committed_docs(session):
+    # Per-doc commit makes a backfill resumable: simulate a run that committed
+    # doc A and was then interrupted (pod rollout) before doc B. The next run's
+    # plan must skip the already-committed A and only do B.
+    upsert_doc(
+        session,
+        _entry("a.md", "# A\n\nalpha", "ha"),
+        [{"index": 0, "section_header": "", "text": "alpha"}],
+        [[0.4] * 1024],
+    )
+
+    plan = plan_reconcile(
+        session,
+        [
+            _entry("a.md", "# A\n\nalpha", "ha"),  # unchanged -> already committed
+            _entry("b.md", "# B\n\nbeta", "hb"),  # new -> still needs work
+        ],
+    )
+
+    assert {e.path for e, _ in plan.to_upsert} == {"b.md"}
+    assert plan.to_delete == []

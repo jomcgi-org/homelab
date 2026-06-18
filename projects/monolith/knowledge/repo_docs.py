@@ -68,13 +68,6 @@ class ReconcilePlan:
     to_delete: list[str]
 
 
-@dataclass
-class ReconcileStats:
-    upserted: int
-    deleted: int
-    unchanged: int
-
-
 def _title_for(entry: ManifestEntry) -> str:
     # The generator already derived the title; trust it (fallback already applied).
     return entry.title
@@ -104,65 +97,63 @@ def plan_reconcile(session, entries: list[ManifestEntry]) -> ReconcilePlan:
     return ReconcilePlan(to_upsert=to_upsert, to_delete=to_delete)
 
 
-def apply_reconcile(
-    session, plan: ReconcilePlan, vectors_by_path: dict[str, list[list[float]]]
-) -> ReconcileStats:
-    """Apply the plan in one transaction: delete vanished docs (+ their chunks),
-    and upsert changed/new docs replacing their chunk set. ``vectors_by_path``
-    holds one embedding per chunk, in chunk order, keyed by doc path.
+def apply_deletions(session, paths: list[str]) -> int:
+    """Delete vanished docs (and their chunks) in one committed transaction.
+
+    Kept separate from the per-doc upserts so deletions are durable immediately,
+    independent of the upsert loop. Returns the number of docs deleted.
     """
     from knowledge.models import RepoDoc, RepoDocChunk
 
     deleted = 0
-    for path in plan.to_delete:
+    for path in paths:
         doc = session.query(RepoDoc).filter_by(path=path).first()
         if doc is None:
             continue
         session.query(RepoDocChunk).filter_by(repo_doc_fk=doc.id).delete()
         session.delete(doc)
         deleted += 1
-
-    # First pass: resolve every doc (insert-or-update) and clear the chunk set
-    # of changed docs. New docs are collected and added in one ``add_all`` after
-    # the loop rather than ``session.add`` per iteration: this whole reconcile is
-    # a single transaction, so the per-iteration savepoint that semgrep
-    # session-add-in-loop would otherwise want is the wrong shape here.
-    new_docs: list = []
-    resolved: list = []  # (entry, doc, chunks) in plan order, doc id assigned below
-    for entry, chunks in plan.to_upsert:
-        doc = session.query(RepoDoc).filter_by(path=entry.path).first()
-        if doc is None:
-            doc = RepoDoc(
-                path=entry.path, content_hash=entry.sha256, title=_title_for(entry)
-            )
-            new_docs.append(doc)
-        else:
-            doc.content_hash = entry.sha256
-            doc.title = _title_for(entry)
-            session.query(RepoDocChunk).filter_by(repo_doc_fk=doc.id).delete()
-        resolved.append((entry, doc, chunks))
-    session.add_all(new_docs)
-    session.flush()  # assign ids to the new docs before building chunk FKs
-
-    # Second pass: build the replacement chunk rows for every resolved doc and
-    # insert them in one batch (add_all, not add-in-loop).
-    chunk_rows: list = []
-    for entry, doc, chunks in resolved:
-        vectors = vectors_by_path.get(entry.path) or []
-        chunk_rows.extend(
-            RepoDocChunk(
-                repo_doc_fk=doc.id,
-                chunk_index=c["index"],
-                section_header=c["section_header"],
-                chunk_text=c["text"],
-                embedding=vectors[i] if i < len(vectors) else [0.0] * 1024,
-            )
-            for i, c in enumerate(chunks)
-        )
-    session.add_all(chunk_rows)
-
     session.commit()
-    return ReconcileStats(upserted=len(plan.to_upsert), deleted=deleted, unchanged=0)
+    return deleted
+
+
+def upsert_doc(
+    session, entry: ManifestEntry, chunks: list[Chunk], vectors: list[list[float]]
+) -> None:
+    """Insert-or-replace a single doc and its chunk set, committed on its own.
+
+    Per-doc commit is what makes the reconcile resumable: a run interrupted by a
+    pod rollout mid-backfill leaves every already-committed doc in place, and the
+    next run's hash diff (``plan_reconcile``) skips those and continues from the
+    remainder, instead of re-embedding all docs from scratch. ``vectors`` must
+    line up 1:1 with ``chunks`` (the caller guarantees this).
+    """
+    from knowledge.models import RepoDoc, RepoDocChunk
+
+    doc = session.query(RepoDoc).filter_by(path=entry.path).first()
+    if doc is None:
+        doc = RepoDoc(
+            path=entry.path, content_hash=entry.sha256, title=_title_for(entry)
+        )
+        session.add(doc)
+    else:
+        doc.content_hash = entry.sha256
+        doc.title = _title_for(entry)
+        session.query(RepoDocChunk).filter_by(repo_doc_fk=doc.id).delete()
+    session.flush()  # assign doc.id for a new doc before building chunk FKs
+
+    rows = [
+        RepoDocChunk(
+            repo_doc_fk=doc.id,
+            chunk_index=c["index"],
+            section_header=c["section_header"],
+            chunk_text=c["text"],
+            embedding=vectors[i],
+        )
+        for i, c in enumerate(chunks)
+    ]
+    session.add_all(rows)
+    session.commit()
 
 
 def _plan_in_thread(entries: list[ManifestEntry]) -> ReconcilePlan:
@@ -174,13 +165,22 @@ def _plan_in_thread(entries: list[ManifestEntry]) -> ReconcilePlan:
         return plan_reconcile(session, entries)
 
 
-def _apply_in_thread(plan: ReconcilePlan, vectors_by_path) -> ReconcileStats:
+def _delete_in_thread(paths: list[str]) -> int:
     from sqlmodel import Session
 
     from app.db import get_engine
 
     with Session(get_engine()) as session:
-        return apply_reconcile(session, plan, vectors_by_path)
+        return apply_deletions(session, paths)
+
+
+def _upsert_doc_in_thread(entry: ManifestEntry, chunks, vectors) -> None:
+    from sqlmodel import Session
+
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        upsert_doc(session, entry, chunks, vectors)
 
 
 async def repo_docs_reconcile_handler(session) -> datetime | None:
@@ -200,18 +200,28 @@ async def repo_docs_reconcile_handler(session) -> datetime | None:
         logger.info("repo_docs: nothing to reconcile (manifest unchanged)")
         return None
 
+    # Deletions first, in one committed transaction.
+    deleted = 0
+    if plan.to_delete:
+        deleted = await asyncio.to_thread(_delete_in_thread, plan.to_delete)
+
+    # Then embed and commit each doc on its own: embedding (network) is awaited
+    # here, and the single-doc DB write goes through its own threaded session.
+    # Committing per doc keeps a large backfill resumable across a pod rollout.
     client = EmbeddingClient()
-    vectors_by_path: dict[str, list[list[float]]] = {}
+    upserted = 0
+    failed = 0
     for entry, chunks in plan.to_upsert:
         texts = [c["text"] for c in chunks]
         try:
             vectors = await client.embed_batch(texts)
         except Exception:  # noqa: BLE001 - skip this doc; next run retries it
             logger.exception("repo_docs: embedding failed for %s; skipping", entry.path)
+            failed += 1
             continue
-        # A short return would otherwise zero-pad the trailing chunks (a zero
-        # vector poisons cosine retrieval), so drop the whole doc on a count
-        # mismatch; its hash stays unchanged and the next run retries it.
+        # A short return would zero-pad trailing chunks (a zero vector poisons
+        # cosine retrieval), so skip the doc on a count mismatch; its hash stays
+        # unchanged and the next run retries it.
         if len(vectors) != len(texts):
             logger.error(
                 "repo_docs: embedder returned %d vectors for %d chunks of %s; skipping",
@@ -219,15 +229,15 @@ async def repo_docs_reconcile_handler(session) -> datetime | None:
                 len(texts),
                 entry.path,
             )
+            failed += 1
             continue
-        vectors_by_path[entry.path] = vectors
+        await asyncio.to_thread(_upsert_doc_in_thread, entry, chunks, vectors)
+        upserted += 1
 
-    # Drop upserts whose embedding failed/mismatched so we never persist zero
-    # vectors; their hash stays unchanged in the DB so the next run retries them.
-    plan.to_upsert = [(e, c) for (e, c) in plan.to_upsert if e.path in vectors_by_path]
-
-    stats = await asyncio.to_thread(_apply_in_thread, plan, vectors_by_path)
     logger.info(
-        "repo_docs: reconciled upserted=%d deleted=%d", stats.upserted, stats.deleted
+        "repo_docs: reconciled upserted=%d deleted=%d failed=%d",
+        upserted,
+        deleted,
+        failed,
     )
     return None
