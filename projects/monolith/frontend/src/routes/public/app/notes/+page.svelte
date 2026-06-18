@@ -79,10 +79,9 @@
   // well (TSA / Alert Fatigue / Hexagonal Architecture / Production Readiness
   // Review notes).
   const EXAMPLES = [
-    "What is the TSA method?",
-    "How do you think about alert fatigue?",
-    "Explain hexagonal architecture",
-    "What is a production readiness review?",
+    "Where is this model running?",
+    "What is STPA?",
+    "Why use Bazel in a homelab?",
   ];
 
   const noticeIsBusy = $derived(notice?.kind === "busy");
@@ -224,19 +223,13 @@
   <details class="explainer">
     <summary class="explainer-summary">
       <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
-      <span class="explainer-hint">an open model on my own cluster, no tools</span>
+      <span class="explainer-hint">An open model on my own cluster, no tools.</span>
       <span class="explainer-mark" aria-hidden="true">+</span>
     </summary>
     <div class="explainer-body">
       <p>
-        An open model running on my own cluster answers your questions. It is
-        grounded only on my public notes, pulled in by retrieval over the
-        knowledge graph, so it talks about what I have actually written.
-      </p>
-      <p>
-        It has no tools and cannot act: it only reads those notes and writes
-        text back into this chat. Replies can be wrong, and every note it reads
-        is public by design.
+        Agents research topics and write them into my knowledge graph. This
+        model answers from that graph, nothing else. Answers can be wrong.
       </p>
     </div>
   </details>
@@ -276,13 +269,6 @@
         </span>
         {#if admitted}
           <div class="chat-box-actions">
-            <button
-              type="button"
-              class="bar-btn"
-              onclick={() => showGraph(null)}
-            >
-              DEEP DIVE
-            </button>
             <button type="button" class="bar-btn" onclick={newChat}>
               NEW CHAT
             </button>
@@ -473,12 +459,12 @@
     border: 0;
   }
 
-  /* ── top explainer banner (coral, inviting, collapsible) ─────── */
+  /* ── top explainer (white callout with a coral left accent bar) ─ */
   .explainer {
     flex: none;
     border: 2px solid var(--ink);
-    background: var(--coral);
-    box-shadow: var(--shadow-hard-sm);
+    border-left: 6px solid var(--coral);
+    background: var(--paper);
   }
   .explainer-summary {
     display: flex;
@@ -544,8 +530,8 @@
   }
 
   /* ── view toggle ────────────────────────────────────────────── */
-  /* Two separate brutalist boxes (not a segmented control) so the inactive
-     tab can lift on hover the way every other box on the site does. */
+  /* Two separate brutalist boxes (not a segmented control). Flat: the inactive
+     tab signals hover with a background change, not a hard offset shadow. */
   .view-toggle {
     display: inline-flex;
     gap: 12px;
@@ -560,22 +546,13 @@
     background: var(--paper);
     color: var(--ink);
     cursor: pointer;
-    box-shadow: var(--shadow-hard-sm);
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease,
-      background 120ms ease;
+    transition: background 120ms ease;
   }
   .view-toggle-btn.on {
     background: var(--accent);
   }
   .view-toggle-btn:hover:not(.on) {
-    transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
-  }
-  .view-toggle-btn:active:not(.on) {
-    transform: none;
-    box-shadow: var(--shadow-hard-sm);
+    background: var(--bg-elev);
   }
 
   /* ── chat box shell ─────────────────────────────────────────── */
@@ -587,7 +564,6 @@
     width: 100%;
     border: 2px solid var(--ink);
     background: var(--paper);
-    box-shadow: var(--shadow-hard-lg);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -636,17 +612,10 @@
     background: var(--paper);
     color: var(--ink);
     cursor: pointer;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease;
+    transition: background 120ms ease;
   }
   .bar-btn:hover {
-    transform: translate(-1px, -1px);
-    box-shadow: var(--shadow-hard-sm);
-  }
-  .bar-btn:active {
-    transform: none;
-    box-shadow: none;
+    background: var(--bg-elev);
   }
 
   /* ── transcript ─────────────────────────────────────────────── */
@@ -660,13 +629,16 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    background: var(--bg-elev);
+    background: var(--paper);
   }
 
   /* gate + empty */
+  /* Top-aligned (not centered): the starter chips and the gate sit near the top
+     of the transcript so they land at eyeline, with a little breathing room
+     under the bar rather than floating in the middle of the panel. */
   .chat-gate,
   .chat-empty {
-    margin: auto 0;
+    margin: 8px 0 0;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -696,15 +668,10 @@
     border: 1.5px solid var(--ink);
     background: var(--paper);
     cursor: pointer;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease,
-      background 120ms ease;
+    transition: background 120ms ease;
   }
   .chat-example:hover {
     background: var(--accent);
-    transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard-sm);
   }
 
   /* turns */
@@ -898,13 +865,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease;
+    transition: background 120ms ease;
   }
   .touched-chip:hover {
-    transform: translate(-1px, -1px);
-    box-shadow: var(--shadow-hard-sm);
+    background: var(--accent);
   }
 
   /* ── notice ─────────────────────────────────────────────────── */
@@ -956,18 +920,15 @@
     border-radius: 0;
     background: var(--paper);
     color: var(--ink);
-    transition:
-      border-color 120ms ease,
-      box-shadow 120ms ease;
+    transition: border-color 120ms ease;
   }
-  /* Single, crisp brutalist focus: the border goes solid ink and the hard
-     offset shadow appears. Override the global :focus-visible outline so we do
-     not get the doubled / offset blue ring on top of the border. */
+  /* Flat brutalist focus: the border simply goes solid ink. Override the global
+     :focus-visible outline so we do not get the doubled / offset blue ring on
+     top of the border. */
   .chat-input textarea:focus,
   .chat-input textarea:focus-visible {
     outline: none;
     border-color: var(--ink);
-    box-shadow: var(--shadow-hard-sm);
   }
   .chat-input textarea:disabled {
     opacity: 0.6;
@@ -998,17 +959,10 @@
     background: var(--blue);
     color: var(--ink);
     cursor: pointer;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease;
+    transition: filter 120ms ease;
   }
   .chat-send:hover:not(:disabled) {
-    transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
-  }
-  .chat-send:active:not(:disabled) {
-    transform: none;
-    box-shadow: none;
+    filter: brightness(0.94);
   }
   .chat-send:disabled {
     opacity: 0.5;
@@ -1022,7 +976,6 @@
     width: 100%;
     border: 2px solid var(--ink);
     background: var(--bg);
-    box-shadow: var(--shadow-hard-lg);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1042,7 +995,6 @@
     border: 2px solid var(--ink);
     background: var(--accent);
     cursor: pointer;
-    box-shadow: var(--shadow-hard-sm);
   }
 
   @media (max-width: 640px) {
