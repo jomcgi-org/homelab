@@ -76,8 +76,8 @@ py_venv_binary(
         ],
     ),  # keep
     data = [
-        ":frontend_dist",
         "knowledge/repo_docs_manifest.ndjson",
+        ":frontend_dist",
     ],
     imports = ["."],  # keep
     main = "app/main.py",
@@ -113,8 +113,8 @@ py_venv_binary(
 # Wired into the `format` multirun so the manifest stays in sync on every run.
 py_venv_binary(
     name = "gen_repo_docs_manifest",
-    main = "knowledge/tools/gen_repo_docs_manifest.py",
     imports = ["."],  # keep
+    main = "knowledge/tools/gen_repo_docs_manifest.py",
     visibility = ["//:__subpackages__"],
 )
 
@@ -3728,4 +3728,16 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":main_public",
+)
+
+semgrep_target_test(
+    name = "gen_repo_docs_manifest_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":gen_repo_docs_manifest",
 )
