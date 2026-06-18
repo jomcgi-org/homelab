@@ -91,11 +91,12 @@ chatPublic:
   maxSessionTokens: 32000
   # Session / cookie TTL in seconds (the SSR cookie maxAge mirrors this).
   sessionTtlSeconds: 1800
-  # Global circuit-breaker ceiling: max in-flight public message/inference calls
-  # at once (ADR 005 layer 2 backstop). Starts at 1, matching the Phase-3
-  # reserved-headroom semaphore intent; validate at load test. Mirrored as
+  # CLUSTER-WIDE ceiling: max in-flight public inference calls at once across ALL
+  # replicas (ADR 005 layer 2+3). Enforced via Postgres advisory locks, not a
+  # per-pod counter, so it holds as the backend scales out. vLLM max_num_seqs=3,
+  # reserve 1 slot for trusted callers, so public = 2. Mirrored as
   # CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT on web.env below.
-  globalMaxConcurrent: 1
+  globalMaxConcurrent: 2
   # Turnstile siteverify HTTP timeout (seconds): keep short so a slow/unreachable
   # Cloudflare fails closed quickly. Mirrored as TURNSTILE_TIMEOUT_SECONDS below.
   turnstileTimeoutSeconds: 5
@@ -207,8 +208,12 @@ web:
       value: "32000"
     - name: CHAT_PUBLIC_SESSION_TTL_SECONDS
       value: "1800"
+    # CLUSTER-WIDE cap on concurrent public inference calls (not per-pod): the
+    # limiter is enforced via Postgres advisory locks, so this is the aggregate
+    # ceiling across ALL replicas. vLLM max_num_seqs=3, reserve 1 slot for
+    # trusted callers (Discord / private chat / agents), so public = 2.
     - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
-      value: "1"
+      value: "2"
     # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / Phase 3).
     # In-cluster service URL literal (NOT a secret); mirrors chatPublic.inferenceUrl
     # above (Helm values cannot self-reference). The backend refuses to call
@@ -268,21 +273,21 @@ web:
     type: ClusterIP
     port: 8000
   # HPA (CPU-based, since memory is sticky for Python and would never scale
-  # down). maxReplicas is pinned to 1 as the GPU-reservation gate (ADR 005
-  # layer 3 / Phase 4c): public chat concurrency to the shared vLLM is
-  # per-pod (CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT above, default 1), so aggregate
-  # public concurrency is per_pod * maxReplicas. The reservation sizing rule is
-  #   per_pod * maxReplicas + reserved_trusted <= vLLM max_num_seqs
-  # i.e. 1 * 1 + 2 <= 3, reserving 2 of the 3 decode slots for the Discord bot,
+  # down). The GPU reservation is now enforced by a CLUSTER-WIDE limiter
+  # (CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT above, via Postgres advisory locks), NOT
+  # by pinning replicas, so the backend can scale out for the cheap cached read
+  # path while public inference stays capped in aggregate. The reservation
+  # sizing rule is
+  #   GLOBAL_MAX_CONCURRENT (cluster-wide) + reserved_trusted <= vLLM max_num_seqs
+  # i.e. 2 + 1 <= 3, reserving 1 of the 3 decode slots for the Discord bot,
   # private /explore chat, and the agent platform so a public flood can never
-  # starve a trusted caller. Tradeoff: this also caps the cheap cached read path
-  # (this backend serves the public read endpoints too) at a single replica;
-  # correctness of the reservation wins over read burst for launch. Phase 6's
-  # load test tunes per_pod / maxReplicas / reserved against real traffic.
+  # starve a trusted caller regardless of how many replicas are running. Phase
+  # 6's load test tunes GLOBAL_MAX_CONCURRENT / maxReplicas / reserved against
+  # real traffic.
   autoscaling:
     enabled: true
     minReplicas: 1
-    maxReplicas: 1
+    maxReplicas: 3
     targetCPUUtilizationPercentage: 60
 
 # "frontend" component (ADR 004 Phase 5d): the public-only SvelteKit SSR

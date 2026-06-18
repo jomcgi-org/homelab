@@ -13,9 +13,11 @@ the old value (per CLAUDE.md).
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import os
 import threading
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Config knobs (ADR 005 / plan Phase 0 starting values). One place only.
@@ -44,21 +46,29 @@ SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "180
 # the per-session budgets above. ip_hash is still stored (see sessions.py) for
 # reactive abuse forensics and targeted blocking, not a pre-emptive cap.
 
-# Global circuit-breaker ceiling: the maximum number of public message/inference
-# calls in flight across this process at once (ADR 005 layer 2, global backstop).
-# Default 1 matches the Phase-0 reserved-headroom semaphore intent (start at 1,
-# validate at load test). Over the ceiling the message path sheds with a "busy"
-# event rather than spending a slot.
+# Global in-flight ceiling: the maximum number of public inference calls in
+# flight at once, across the WHOLE cluster (ADR 005 layer 2+3). Over the ceiling
+# the message path sheds with a "busy" event rather than spending a slot.
 #
-# This is ALSO the reserved-headroom GPU-isolation control (ADR 005 layer 3): it
-# is per-pod (deliberately, see _CircuitBreaker) and bounds how many public
+# This is the reserved-headroom GPU-isolation control: it bounds how many public
 # requests are in flight to the shared vLLM at once, leaving decode slots for the
-# Discord bot, private chat, and the agent platform. Phase 6 (load test) tunes
-# the final reservation; the sizing rule is
-#     GLOBAL_MAX_CONCURRENT * web.maxReplicas + reserved_trusted <= max_num_seqs
-# (vLLM batch capacity, today max_num_seqs=3). Per-pod is Joe's decision: do NOT
-# make it a distributed counter.
-GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "1"))
+# Discord bot, private chat, and the agent platform. It is now CLUSTER-WIDE, not
+# per-pod: the public web backend's HPA can scale to several replicas, so a
+# per-pod counter would multiply public load on the shared GPU and starve trusted
+# callers. The ceiling is enforced in Postgres (advisory locks, see acquire_slot)
+# so it holds across every replica; the in-process _CircuitBreaker below is only
+# the single-process fallback for the SQLite dev/test path.
+#
+# SIZING RULE (reserved-headroom): public aggregate in-flight inference is capped
+# at GLOBAL_MAX_CONCURRENT across ALL pods, and the remaining vLLM decode slots
+# are reserved for trusted callers. Today max_num_seqs=3 and we reserve 1, so the
+# public cluster-wide cap is 2.
+GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "2"))
+
+# Advisory-lock namespace (classid) for the GPU limiter. A stable app-specific
+# magic so these locks never collide with any other advisory lock; the objid is
+# the slot index in [0, GLOBAL_MAX_CONCURRENT).
+_ADVISORY_CLASSID = int(os.environ.get("CHAT_PUBLIC_ADVISORY_CLASSID", "1129270594"))
 
 # --------------------------------------------------------------------------
 # Compaction knobs (ADR 005 layer 4 / plan Phase 3). When the live context
@@ -153,24 +163,17 @@ def check_session_tokens(total_tokens: int) -> None:
 
 
 class _CircuitBreaker:
-    """An in-process counter of in-flight public message/inference calls.
+    """In-process counter of in-flight public inference calls (FALLBACK path).
 
-    This is a process-local counter: it bounds in-flight turns PER REPLICA. A
-    distributed counter is deliberately NOT used; per-pod is fine at this scale as
-    long as the AGGREGATE is sized sensibly. The web component has an HPA, so the
-    cluster-wide public in-flight ceiling is GLOBAL_MAX_CONCURRENT * replicas.
-
-    SIZING RULE (reserved-headroom, ADR 005 layer 3): choose GLOBAL_MAX_CONCURRENT
-    and the inference-bearing replica count together so that
-        GLOBAL_MAX_CONCURRENT * web.maxReplicas + reserved_trusted <= max_num_seqs
-    (vLLM batch capacity, today max_num_seqs=3). That keeps decode slots reserved
-    for the Discord bot, private chat, and agents, with a simple per-pod limit.
-    Final reservation tuning is a Phase 6 load-test concern.
+    The cluster-wide ceiling is enforced in Postgres (advisory locks, see
+    acquire_slot). This process-local counter is only the single-process fallback
+    for the SQLite dev/test path, where there is no Postgres to hold an advisory
+    lock and the process is the whole cluster anyway.
 
     A threading.Lock (not asyncio) is used so the counter is correct whether it is
-    touched from the event loop (the Phase 3 async streaming path acquires/releases
-    around the whole generation) or from a threadpool worker. try_acquire/release
-    are non-blocking and hold no lock across IO, so calling them from async code is
+    touched from the event loop (the async streaming path acquires/releases around
+    the whole generation) or from a threadpool worker. try_acquire/release are
+    non-blocking and hold no lock across IO, so calling them from async code is
     safe and never blocks the loop.
     """
 
@@ -197,46 +200,106 @@ class _CircuitBreaker:
             return self._inflight
 
 
-# Module-global breaker, sized from the env ceiling at import.
+# Module-global in-process breaker (SQLite dev/test fallback only), sized from
+# the env ceiling at import. The cluster-wide ceiling is the Postgres advisory
+# locks in acquire_slot; this counter is never used on the Postgres path.
 _breaker = _CircuitBreaker(GLOBAL_MAX_CONCURRENT)
 
 
 def current_inflight() -> int:
-    """In-flight public call count, for observability and tests."""
+    """In-flight count on the in-process fallback breaker (dev/test gauge)."""
     return _breaker.inflight
 
 
-def try_acquire_slot() -> bool:
-    """Try to take a global in-flight slot. False when the ceiling is reached.
+class _LocalSlot:
+    """A held in-process slot (SQLite dev/test path): release decrements the
+    in-process breaker."""
 
-    The async streaming path (router._turn_stream) acquires the slot at the start
-    of the SSE generator and releases it in a finally, so the slot is held for the
-    ENTIRE generation, not just while the handler is building the response. This
-    is the Phase 3 fix for the earlier release-before-stream behaviour: a public
-    request occupies a reserved-headroom slot for exactly as long as it is on the
-    GPU. The module global is looked up dynamically so tests can swap _breaker.
+    def __init__(self, breaker: _CircuitBreaker) -> None:
+        self._breaker = breaker
+
+    def release(self) -> None:
+        self._breaker.release()
+
+
+class _AdvisorySlot:
+    """A held cluster-wide slot: a Postgres session-level advisory lock on a
+    dedicated connection.
+
+    Crash-safety: a session-level advisory lock is held only for the lifetime of
+    its connection. If the pod crashes mid-stream the connection drops and
+    Postgres releases the lock automatically, so a slot is never permanently
+    leaked. On a clean release we unlock and then invalidate the connection, so a
+    pooled connection can never carry a stale advisory lock back into the pool.
     """
-    return _breaker.try_acquire()
+
+    def __init__(self, conn, objid: int) -> None:
+        self._conn = conn
+        self._objid = objid
+
+    def release(self) -> None:
+        try:
+            self._conn.exec_driver_sql("SELECT pg_advisory_unlock_all()")
+        except Exception:  # noqa: BLE001 - invalidate still drops the lock
+            logger.warning(
+                "chat_public.slot.unlock_failed; invalidating connection",
+                exc_info=True,
+            )
+        finally:
+            # invalidate() drops the physical connection so no pooled connection
+            # can carry a still-held advisory lock; close() returns the wrapper.
+            self._conn.invalidate()
+            self._conn.close()
 
 
-def release_slot() -> None:
-    """Release a previously acquired global in-flight slot."""
-    _breaker.release()
-
-
-@contextlib.contextmanager
-def inflight_slot():
-    """Context-manager form of try_acquire_slot/release_slot.
-
-    Raises ``LimitExceeded("busy")`` when the global ceiling is already reached,
-    so a synchronous caller sheds without spending a slot, and releases on exit.
-    The async streaming path uses try_acquire_slot/release_slot directly so the
-    slot can be held across the SSE generator's lifetime rather than just a
-    ``with`` block.
-    """
-    if not try_acquire_slot():
-        raise LimitExceeded("busy", BUSY_MESSAGE)
+def _acquire_advisory_slot(bind) -> _AdvisorySlot | None:
+    """Grab any free cluster-wide slot via pg_try_advisory_lock, or None if all
+    GLOBAL_MAX_CONCURRENT slots are held. The acquiring connection is held by the
+    returned handle for the whole stream and released in release_slot."""
+    # AUTOCOMMIT so the long-lived lock connection never sits idle-in-transaction
+    # for the duration of a stream; the advisory lock is session-scoped, so it is
+    # held by the connection regardless of transaction state.
+    conn = bind.connect().execution_options(isolation_level="AUTOCOMMIT")
     try:
-        yield
-    finally:
-        release_slot()
+        for objid in range(GLOBAL_MAX_CONCURRENT):
+            got = conn.exec_driver_sql(
+                "SELECT pg_try_advisory_lock(%s, %s)", (_ADVISORY_CLASSID, objid)
+            ).scalar()
+            if got:
+                return _AdvisorySlot(conn, objid)
+        # Every slot is held elsewhere: we acquired none, so just drop our probe
+        # connection and shed.
+        conn.close()
+        return None
+    except Exception:
+        conn.close()
+        raise
+
+
+def acquire_slot(db):
+    """Acquire a global in-flight GPU slot, or return None when the ceiling is hit.
+
+    Cluster-wide via Postgres advisory locks on the public_writer chat engine
+    (the engine behind ``db``); falls back to the in-process breaker on the SQLite
+    path (single-process dev/tests). The slot is held by the caller for the whole
+    SSE stream and freed via release_slot in a finally. A Postgres/limiter error
+    fails CLOSED (shed busy) rather than running ungoverned inference.
+    """
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        try:
+            return _acquire_advisory_slot(bind)
+        except Exception:  # noqa: BLE001 - fail closed: shed rather than run ungoverned
+            logger.warning(
+                "chat_public.slot.acquire_failed; shedding as busy", exc_info=True
+            )
+            return None
+    if _breaker.try_acquire():
+        return _LocalSlot(_breaker)
+    return None
+
+
+def release_slot(slot) -> None:
+    """Release a previously acquired slot handle (no-op for None)."""
+    if slot is not None:
+        slot.release()

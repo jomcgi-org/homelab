@@ -28,8 +28,9 @@
   // - /cv (any host) → "cv"
   // - any other URL on public.jomcgi.dev → "home"
   // - everything else → no active state
-  // Notes now lives under /app/notes, which suppresses the layout nav (it
-  // renders its own with route="notes"), so it needs no detection here.
+  // Notes lives under /app/notes: like the other /app/* apps it is full-screen
+  // and renders no site nav at all (the global nav is suppressed above), so it
+  // needs no active-state detection here.
   let activeRoute = $derived.by(() => {
     const host = $page.url.hostname;
     const path = $page.url.pathname;

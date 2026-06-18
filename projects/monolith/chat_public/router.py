@@ -274,28 +274,32 @@ async def _turn_stream(
     event is emitted for each retrieved public note BEFORE the token stream, so the
     overlay can highlight them; the touched-node set IS the retrieved-note set.
 
-    Before any GPU work, an in-process response cache is consulted (keyed by the
-    normalized message + a prompt/model version + a public-notes watermark). A hit
-    replays the stored answer immediately over the same SSE path WITHOUT calling
-    vLLM and WITHOUT taking a reserved-headroom slot (a cached hit does no GPU
-    work, so it must never be shed as busy or consume a slot). A cache hit is
-    still a real turn: it is persisted to the transcript and the counters advance.
-    The cache is global only because the public web backend runs at
-    maxReplicas=1; if it ever scales out this becomes per-pod and a shared cache
-    (or precompute) is the Phase 6 follow-up (see chat_public.cache).
+    Before any GPU work, a durable response cache is consulted (a Postgres table,
+    keyed by the normalized message + a prompt/model version + a public-notes
+    watermark). A hit replays the stored answer immediately over the same SSE path
+    WITHOUT calling vLLM and WITHOUT taking a GPU slot (a cached hit does no GPU
+    work, so it must never be shed as busy or consume a slot, and cached starters
+    scale freely across every replica). A cache hit is still a real turn: it is
+    persisted to the transcript and the counters advance. The cache is durable +
+    shared across pods, so it survives restarts and works once the public backend
+    scales past one replica (see chat_public.cache).
     """
     # Cache lookup happens AFTER the per-session budget checks (run in the
     # handler before this generator) and BEFORE the GPU slot, so a hit still
     # respects per-session limits yet is never shed as busy.
     cache_key, cached = cache.lookup(
-        read_db, message, _system_prompt(), inference.MODEL
+        db, read_db, message, _system_prompt(), inference.MODEL
     )
     if cached is not None:
         async for frame in _replay_cached(db, session, message, cached):
             yield frame
         return
 
-    if not limits.try_acquire_slot():
+    # The shared, cluster-wide GPU slot is acquired only on a cache MISS (real
+    # inference). It is held for the whole stream and released in the finally; a
+    # pod crash drops the advisory-lock connection so Postgres frees the slot.
+    slot = limits.acquire_slot(db)
+    if slot is None:
         logger.info("chat_public.message.shed reason=busy")
         yield format_sse("busy", {"code": "busy", "message": limits.BUSY_MESSAGE})
         return
@@ -362,6 +366,7 @@ async def _turn_stream(
         # disabled for this turn and we simply do not store.
         if cache_key is not None:
             cache.store(
+                db,
                 cache_key,
                 reply,
                 [{"id": n.note_id, "title": n.title} for n in retrieved],
@@ -395,7 +400,7 @@ async def _turn_stream(
             },
         )
     finally:
-        limits.release_slot()
+        limits.release_slot(slot)
 
 
 async def _replay_cached(

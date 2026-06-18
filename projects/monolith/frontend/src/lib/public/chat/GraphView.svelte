@@ -156,8 +156,11 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    height: 76vh;
-    min-height: 540px;
+    /* Fills the full-screen view-area on /app/notes (the parent makes this a
+       flex:1 item); the height:100% resolves against that flex height. */
+    flex: 1;
+    min-height: 0;
+    height: 100%;
     font-family: var(--mono);
     color: var(--ink);
   }
@@ -250,9 +253,6 @@
   }
 
   @media (max-width: 640px) {
-    .graph-view {
-      height: 78vh;
-    }
     .graph-hover {
       display: none;
     }
