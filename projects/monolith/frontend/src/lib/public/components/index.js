@@ -5,3 +5,4 @@ export { default as Marquee } from "./Marquee.svelte";
 export { default as Stamp } from "./Stamp.svelte";
 export { default as Footer } from "./Footer.svelte";
 export { default as ScrollCta } from "./ScrollCta.svelte";
+export { default as TurnstileGate } from "./TurnstileGate.svelte";

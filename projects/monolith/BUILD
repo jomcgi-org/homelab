@@ -21,6 +21,7 @@
 # gazelle:exclude public_knowledge_views_test.py
 # gazelle:exclude chat_public_grants_test.py
 # gazelle:exclude public_httproute_chat_guard_test.py
+# gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -2386,6 +2387,36 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (chat_public is gazelle-excluded): Phase 2 admission + abuse
+# controls (Turnstile siteverify failure -> 403, global circuit-breaker shed via
+# the busy SSE event, salted ip_hash storage).
+py_test(
+    name = "chat_public_phase2_test",
+    srcs = ["chat_public/phase2_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Guard (ADR 005): the Turnstile secret stays in the backend; the frontend
+# carries only the public site-key literal. Reads the monolith-public chart's
+# values.yaml via a cross-package data dep (no Helm toolchain needed).
+py_test(
+    name = "public_turnstile_secret_isolation_test",
+    srcs = ["public_turnstile_secret_isolation_test.py"],
+    data = ["//projects/monolith-public/chart:chart_values"],
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 

@@ -19,6 +19,14 @@ publicWriter:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/public-writer-db"
 
+# Public chat Turnstile admission (ADR 005, Phase 2): sync the Cloudflare
+# Turnstile item into the monolith-public-turnstile Secret (keys SITE_KEY /
+# SECRET_KEY / IP_HASH_SALT). The backend uses SECRET_KEY + IP_HASH_SALT via
+# secretKeyRef; the public SITE_KEY is a values literal handed to the frontend.
+turnstile:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/cloudflare-turnstile"
+
 # Phase 5e cutover: serve the public hostname from this isolated service.
 cfIngress:
   public:

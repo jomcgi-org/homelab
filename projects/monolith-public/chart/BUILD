@@ -10,6 +10,16 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+# Guard (ADR 005): the Turnstile *secret* must stay in the backend ("web"); the
+# frontend may reference only the public site-key literal. The test asserting
+# this lives in the Python-native //projects/monolith package and reads this
+# chart's values.yaml via the filegroup below.
+filegroup(
+    name = "chart_values",
+    srcs = ["values.yaml"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     images = {

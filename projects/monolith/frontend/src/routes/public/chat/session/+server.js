@@ -15,8 +15,9 @@ const SESSION_COOKIE = "cps";
 const SESSION_COOKIE_MAX_AGE = 1800;
 
 export async function POST({ request, cookies }) {
-  // Optional Turnstile token forwarded by the client. Phase 1 stub-accepts any
-  // or none; real siteverify (in the FastAPI backend) lands in Phase 2.
+  // Turnstile token forwarded by the client widget. The FastAPI backend runs
+  // siteverify (the Turnstile secret lives there, never in SSR); no valid
+  // token, no session (the backend returns 403 turnstile_failed).
   let turnstileToken = null;
   try {
     const body = await request.json();
@@ -24,18 +25,24 @@ export async function POST({ request, cookies }) {
       turnstileToken = body.turnstile_token;
     }
   } catch {
-    // A missing or empty body is fine in Phase 1.
+    // A missing or empty body falls through: the backend treats an absent token
+    // as a failed challenge in production (it only stub-accepts when its secret
+    // is unset, i.e. dev/test).
   }
 
-  // Forward coarse geo + user-agent for the backend's pseudonymous session row.
-  // TODO(Phase 2): also forward the Cloudflare CF-Connecting-IP so the backend
-  // can key its per-IP session-mint limiter. The backend trusts that header
-  // only on connections bearing SSR's Linkerd identity.
+  // Forward coarse geo + user-agent for the backend's pseudonymous session row,
+  // plus the real client IP from Cloudflare's CF-Connecting-IP header so the
+  // backend can salt-and-hash it (ip_hash, for reactive abuse forensics). The
+  // backend trusts CF-Connecting-IP only on connections bearing SSR's Linkerd
+  // identity (the -web Server + AuthorizationPolicy authorize only the frontend
+  // ServiceAccount), so a direct caller cannot spoof it.
   const headers = { "content-type": "application/json" };
   const country = request.headers.get("cf-ipcountry");
   if (country) headers["CF-IPCountry"] = country;
   const userAgent = request.headers.get("user-agent");
   if (userAgent) headers["User-Agent"] = userAgent;
+  const connectingIp = request.headers.get("cf-connecting-ip");
+  if (connectingIp) headers["CF-Connecting-IP"] = connectingIp;
 
   const resp = await fetch(`${CHAT_API_BASE}/internal/chat/session`, {
     method: "POST",

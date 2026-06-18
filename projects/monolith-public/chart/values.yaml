@@ -91,6 +91,33 @@ chatPublic:
   maxSessionTokens: 32000
   # Session / cookie TTL in seconds (the SSR cookie maxAge mirrors this).
   sessionTtlSeconds: 1800
+  # Global circuit-breaker ceiling: max in-flight public message/inference calls
+  # at once (ADR 005 layer 2 backstop). Starts at 1, matching the Phase-3
+  # reserved-headroom semaphore intent; validate at load test. Mirrored as
+  # CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT on web.env below.
+  globalMaxConcurrent: 1
+  # Turnstile siteverify HTTP timeout (seconds): keep short so a slow/unreachable
+  # Cloudflare fails closed quickly. Mirrored as TURNSTILE_TIMEOUT_SECONDS below.
+  turnstileTimeoutSeconds: 5
+
+# Cloudflare Turnstile admission (ADR 005 layer 1). The SECRET is backend-only:
+# siteverify runs in the "web" FastAPI binary, so TURNSTILE_SECRET_KEY (and the
+# IP-hash salt) are sourced via secretKeyRef from the OnePasswordItem synced
+# below; the frontend MUST NEVER reference this secret. The site KEY is public by
+# design (it only identifies the widget), so it is a plain values literal handed
+# to the frontend as TURNSTILE_SITE_KEY, not a secretKeyRef. onepassword.itemPath
+# is set in deploy/values.yaml and left empty here so a bare `helm template` does
+# not emit a OnePasswordItem with a null path.
+turnstile:
+  # Public Turnstile site key. SSOT for frontend.env TURNSTILE_SITE_KEY below
+  # (Helm values cannot self-reference, so the literal is repeated there).
+  siteKey: "0x4AAAAAADm59tvOGWo09IYc"
+  # Name of the Opaque Secret the OnePasswordItem syncs the Turnstile fields into
+  # (keys SITE_KEY / SECRET_KEY / IP_HASH_SALT, mapped from the 1Password field
+  # labels). Backend secretKeyRefs in web.env reference this name.
+  secretName: monolith-public-turnstile
+  onepassword:
+    itemPath: ""
 
 # "web" component consumed by the homelab-library deployment/service helpers.
 web:
@@ -147,9 +174,25 @@ web:
       value: "32000"
     - name: CHAT_PUBLIC_SESSION_TTL_SECONDS
       value: "1800"
-    # TODO(Phase 2): TURNSTILE_SECRET_KEY for siteverify, sourced from the
-    # OnePasswordItem vaults/k8s-homelab/items/cloudflare-turnstile (field
-    # SECRET_KEY). The secret lives in the backend only, never in the frontend.
+    - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
+      value: "1"
+    # Turnstile siteverify (ADR 005 layer 1): the SECRET is backend-only. Sourced
+    # via secretKeyRef from the monolith-public-turnstile Secret (key SECRET_KEY),
+    # synced from the cloudflare-turnstile 1Password item. Never in the frontend.
+    - name: TURNSTILE_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-turnstile
+          key: SECRET_KEY
+    - name: TURNSTILE_TIMEOUT_SECONDS
+      value: "5"
+    # Salt mixed into the stored ip_hash so it is not a bare sha256 of a guessable
+    # IP. Backend-only, from the same Turnstile 1Password item (key IP_HASH_SALT).
+    - name: CHAT_PUBLIC_IP_HASH_SALT
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-turnstile
+          key: IP_HASH_SALT
   # CPU request is sized so the HPA's per-container CPU utilization is a
   # meaningful signal (idle is ~1m). Memory request covers the FastAPI baseline
   # (~110Mi idle: SQLModel + psycopg + pgvector + the knowledge internals); the
@@ -213,10 +256,12 @@ frontend:
     # at this address over in-cluster mTLS (ADR 005, Phase 1).
     - name: CHAT_API_BASE
       value: "http://monolith-public-web:8000"
-    # TODO(Phase 2): TURNSTILE_SITE_KEY (public site key) for the SSR-rendered
-    # Turnstile widget, sourced from the OnePasswordItem
-    # vaults/k8s-homelab/items/cloudflare-turnstile (field SITE_KEY). The site
-    # key is public by design; the secret key stays on the backend only.
+    # Public Turnstile site key for the SSR-rendered widget (ADR 005 layer 1).
+    # PUBLIC by design (it only identifies the widget), so it is a plain literal,
+    # NOT a secretKeyRef: the frontend must never reference the Turnstile secret.
+    # Mirrors turnstile.siteKey above (Helm values cannot self-reference).
+    - name: TURNSTILE_SITE_KEY
+      value: "0x4AAAAAADm59tvOGWo09IYc"
     - name: OTEL_COLLECTOR_HTTP_URL
       value: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
   # SSR Node needs more headroom than the read-only backend. CPU request sized
