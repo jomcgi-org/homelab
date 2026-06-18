@@ -76,10 +76,14 @@
   let touchedMap = $state(new Map());
   let touched = $derived([...touchedMap.values()]);
 
+  // Starters that map to Joe's dense public notes, so they retrieve and ground
+  // well (TSA / Alert Fatigue / Hexagonal Architecture / Production Readiness
+  // Review notes).
   const EXAMPLES = [
-    "What is Loom?",
-    "How does the public chat stay safe?",
-    "What runs on the homelab cluster?",
+    "What is the TSA method?",
+    "How do you think about alert fatigue?",
+    "Explain hexagonal architecture",
+    "What is a production readiness review?",
   ];
 
   const noticeIsBusy = $derived(notice?.kind === "busy");

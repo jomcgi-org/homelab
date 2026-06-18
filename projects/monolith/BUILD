@@ -2418,6 +2418,23 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): Phase 5 in-process response
+# cache (repeated identical message hits the cache and skips vLLM; a changed
+# notes watermark or prompt/model version misses; a cache hit still emits
+# token+done and persists the turn).
+py_test(
+    name = "chat_public_phase5_test",
+    srcs = ["chat_public/phase5_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Guard (ADR 005): the Turnstile secret stays in the backend; the frontend
 # carries only the public site-key literal. Reads the monolith-public chart's
 # values.yaml via a cross-package data dep (no Helm toolchain needed).
