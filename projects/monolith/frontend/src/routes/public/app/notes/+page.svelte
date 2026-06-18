@@ -588,9 +588,10 @@
     background: var(--blue);
   }
   .chat-box-status {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    padding: 3px 9px;
     border: 1.5px solid var(--ink);
     background: var(--paper);
   }
@@ -604,10 +605,10 @@
   }
   .bar-btn {
     font-family: var(--mono);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.1em;
-    padding: 5px 11px;
+    letter-spacing: 0.14em;
+    padding: 3px 9px;
     border: 1.5px solid var(--ink);
     background: var(--paper);
     color: var(--ink);
