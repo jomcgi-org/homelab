@@ -67,11 +67,13 @@
   });
 
   function renderReply(text) {
-    // Model output is untrusted: renderMarkdown escapes &<> so no raw HTML
-    // from the model reaches the DOM (the dedicated sanitization + CSP pass is
-    // Phase 4c). An empty title map means [[wikilinks]] render as inert text,
-    // which is correct: navigation happens through the graph overlay, not the
-    // reply body.
+    // Model output is untrusted (ADR 005 layer 8). renderMarkdown HTML-escapes
+    // &<> on every path and emits no raw HTML, links, or javascript:/data:
+    // URLs, so injected markup renders as inert text and never reaches the DOM
+    // as live nodes (covered by markdown.test.js XSS cases). The strict CSP
+    // (src/lib/csp.js, no inline script) is the independent second line. An
+    // empty title map means [[wikilinks]] render as inert text, which is
+    // correct: navigation happens through the graph overlay, not the reply body.
     return renderMarkdown(text ?? "", new Map());
   }
 
