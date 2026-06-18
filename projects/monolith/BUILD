@@ -1,5 +1,6 @@
 # gazelle:exclude agent
 # gazelle:exclude chat
+# gazelle:exclude chat_public
 # gazelle:exclude app
 # gazelle:exclude e2e
 # gazelle:exclude knowledge
@@ -44,6 +45,7 @@ py_venv_binary(
             "agent/**/*.py",
             "app/**/*.py",
             "chat/**/*.py",
+            "chat_public/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "scheduler/**/*.py",
@@ -106,6 +108,7 @@ py_library(
             "agent/**/*.py",
             "app/**/*.py",
             "chat/**/*.py",
+            "chat_public/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "scheduler/**/*.py",
@@ -262,6 +265,7 @@ py_library(
             "hikes/**/*.py",
             "stars/**/*.py",
             "dr_jobs/**/*.py",
+            "chat_public/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -312,6 +316,7 @@ py_venv_binary(
             "hikes/**/*.py",
             "stars/**/*.py",
             "dr_jobs/**/*.py",
+            "chat_public/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -359,6 +364,7 @@ py_test(
             "ships/**/*.py",
             "stars/**/*.py",
             "chat/**/*.py",
+            "chat_public/**/*.py",
             "knowledge/**/*.py",
             "hikes/**/*.py",
             "dr_jobs/**/*.py",
