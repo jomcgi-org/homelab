@@ -24,7 +24,7 @@ These were open questions; here are the settled answers so no task re-litigates 
 
 5. **Chunk, don't whole-file embed.** Reuse `knowledge/chunker.py::chunk_markdown` (heading-aware, code-fence-safe), one embedding per chunk, mirroring `knowledge/indexing.py`.
 
-6. **pgvector type parity:** mirror the existing `knowledge.models.Chunk` exactly — `embedding: list[float] = Field(sa_column=Column(Vector(1024)))` plus the `@field_validator("embedding", mode="before")` JSON-string parser. That pattern already round-trips through the SQLite `create_all` test fixtures, so the new chunk table inherits the same behaviour for free.
+6. **pgvector type parity:** mirror the existing `knowledge.models.Chunk` exactly, `embedding: list[float] = Field(sa_column=Column(Vector(1024)))` plus the `@field_validator("embedding", mode="before")` JSON-string parser. That pattern already round-trips through the SQLite `create_all` test fixtures, so the new chunk table inherits the same behaviour for free.
 
 7. **`note_id = 'repo:' || path` is safe.** `chat_public/router.py:276` emits a `node_touched` SSE event per retrieved note by id; the graph overlay silently skips ids that don't match a graph node. Grounding uses only `title` + `chunk_text` (`router.py:70`). So synthetic `repo:` ids degrade gracefully.
 
@@ -45,7 +45,7 @@ These were open questions; here are the settled answers so no task re-litigates 
 - Modify: `projects/monolith/knowledge/api.py` (export reconcile entrypoint)
 - Modify: `projects/monolith/app/main.py` (call `knowledge.on_startup_jobs`)
 - Modify: `bazel/tools/format/BUILD` (add generator to `format` multirun)
-- Modify: `projects/monolith/BUILD` (generator target, manifest in `:main` data, hand-registered tests — `# gazelle:exclude knowledge`)
+- Modify: `projects/monolith/BUILD` (generator target, manifest in `:main` data, hand-registered tests, `# gazelle:exclude knowledge`)
 - Modify: `projects/monolith/chart/migrations/atlas.sum`
 - Modify: `projects/monolith/public_api_chunks_grants_test.py` (real-pg view-union test)
 - Modify: `projects/monolith/chart/Chart.yaml` + `projects/monolith/deploy/application.yaml` (version bump)
@@ -55,7 +55,7 @@ These were open questions; here are the settled answers so no task re-litigates 
 
 ---
 
-## Task 1: Isolated tables — `RepoDoc` + `RepoDocChunk` models
+## Task 1: Isolated tables, `RepoDoc` + `RepoDocChunk` models
 
 **Files:**
 
@@ -91,11 +91,11 @@ def test_repo_doc_and_chunk_roundtrip(real_session):
     assert doc.path == "docs/security.md"
 ```
 
-(Use whatever the in-repo SQLite session fixture is named — match the other tests in `models_test.py`, e.g. `real_session` / `session`.)
+(Use whatever the in-repo SQLite session fixture is named, match the other tests in `models_test.py`, e.g. `real_session` / `session`.)
 
 **Step 2: Run to verify it fails**
 
-CI (push) — expected: `ImportError: cannot import name 'RepoDoc'`.
+CI (push), expected: `ImportError: cannot import name 'RepoDoc'`.
 
 **Step 3: Implement the models**
 
@@ -110,7 +110,7 @@ class RepoDoc(SQLModel, table=True):
     reconstructable rows. Identified by repo-relative ``path``; ``content_hash``
     is the change-detection key driving the reconcile job.
 
-    Mirrors chart/migrations/20260618120000_repo_docs.sql — keep in sync.
+    Mirrors chart/migrations/20260618120000_repo_docs.sql, keep in sync.
     """
 
     __tablename__ = "repo_docs"
@@ -127,7 +127,7 @@ class RepoDocChunk(SQLModel, table=True):
     """One embedded chunk of a RepoDoc. Mirrors knowledge.Chunk's embedding
     column exactly so it round-trips through the SQLite create_all fixtures.
 
-    Mirrors chart/migrations/20260618120000_repo_docs.sql — keep in sync.
+    Mirrors chart/migrations/20260618120000_repo_docs.sql, keep in sync.
     """
 
     __tablename__ = "repo_doc_chunks"
@@ -225,7 +225,7 @@ def test_build_manifest_lines_sorted_ndjson(tmp_path: Path):
     assert len(objs[0]["sha256"]) == 64
 ```
 
-**Step 2: Run to verify it fails** (push) — `ModuleNotFoundError`.
+**Step 2: Run to verify it fails** (push), `ModuleNotFoundError`.
 
 **Step 3: Implement the generator**
 
@@ -334,9 +334,9 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-> Decision: `_INCLUDE_GLOBS` includes `docs/**/*.md` (covers `docs/decisions/` ADRs and `docs/plans/`). If you later find plan/scratch docs add noise, narrow it — but include them for now; they are useful grounding.
+> Decision: `_INCLUDE_GLOBS` includes `docs/**/*.md` (covers `docs/decisions/` ADRs and `docs/plans/`). If you later find plan/scratch docs add noise, narrow it, but include them for now; they are useful grounding.
 
-**Step 4: Run to verify it passes** (push) — PASS.
+**Step 4: Run to verify it passes** (push), PASS.
 
 **Step 5: Commit**
 
@@ -353,7 +353,7 @@ git commit -m "feat(knowledge): add repo-docs manifest generator"
 **Files:**
 
 - Modify: `bazel/tools/format/BUILD` (add target to the `format` multirun)
-- Modify: `projects/monolith/BUILD` (define `gen_repo_docs_manifest` binary; hand-register the two new tests — recall `# gazelle:exclude knowledge`)
+- Modify: `projects/monolith/BUILD` (define `gen_repo_docs_manifest` binary; hand-register the two new tests, recall `# gazelle:exclude knowledge`)
 - Create (generated): `projects/monolith/knowledge/repo_docs_manifest.ndjson`
 
 **Step 1: Define the generator binary** in `projects/monolith/BUILD` (near the other `py_venv_binary` tool targets like `add_visibility_field`):
@@ -367,7 +367,7 @@ py_venv_binary(
 )
 ```
 
-**Step 2: Hand-register the new unit tests** in `projects/monolith/BUILD` (mirror an existing knowledge `py_test`/`py_pytest_test` entry — copy the exact macro + deps another knowledge test uses, e.g. the one for `models_test`). Add entries for `repo_docs_test` (Task 5) and `gen_repo_docs_manifest_test` (Task 2). Because of `# gazelle:exclude knowledge`, gazelle will NOT generate these — they must be written by hand, matching a sibling test's structure exactly.
+**Step 2: Hand-register the new unit tests** in `projects/monolith/BUILD` (mirror an existing knowledge `py_test`/`py_pytest_test` entry, copy the exact macro + deps another knowledge test uses, e.g. the one for `models_test`). Add entries for `repo_docs_test` (Task 5) and `gen_repo_docs_manifest_test` (Task 2). Because of `# gazelle:exclude knowledge`, gazelle will NOT generate these, they must be written by hand, matching a sibling test's structure exactly.
 
 **Step 3: Add the generator to the `format` multirun** in `bazel/tools/format/BUILD`:
 
@@ -837,9 +837,9 @@ Add `"on_startup_jobs"` to `knowledge/__init__.py`'s `__all__`.
         knowledge.on_startup_jobs(session)
 ```
 
-(Confirm `knowledge` is imported in `main.py` — it is, given `knowledge.register(app)` at line 206.)
+(Confirm `knowledge` is imported in `main.py`, it is, given `knowledge.register(app)` at line 206.)
 
-**Step 4: Export via `knowledge.api`** if the import-boundary test requires cross-domain visibility. The handler is only referenced inside the `knowledge` package + `app/main.py` (which may import internals freely — verify against `import_boundaries_test`). If `app/main.py` is treated as a separate domain by that test, re-export `on_startup_jobs` is already on the package; nothing else is needed. Do NOT add `repo_docs` internals to `api.py` unless the boundary test fails on push — keep the surface minimal.
+**Step 4: Export via `knowledge.api`** if the import-boundary test requires cross-domain visibility. The handler is only referenced inside the `knowledge` package + `app/main.py` (which may import internals freely, verify against `import_boundaries_test`). If `app/main.py` is treated as a separate domain by that test, re-export `on_startup_jobs` is already on the package; nothing else is needed. Do NOT add `repo_docs` internals to `api.py` unless the boundary test fails on push, keep the surface minimal.
 
 **Step 5: Verify on push.** Expected CI signal: `main_public_imports_test` still passes (no scheduler in public), `import_boundaries_test` passes, semgrep `no-sync-session-in-async-def` / `no-session-in-to-thread` pass (the handler does no sync session work and passes only plain data into `to_thread`).
 
@@ -853,7 +853,7 @@ git commit -m "feat(knowledge): private-only repo-docs reconcile scheduler job"
 
 ---
 
-## Task 7: Migration — tables + view union
+## Task 7: Migration, tables + view union
 
 **Files:**
 
@@ -922,7 +922,7 @@ GRANT SELECT ON public_api.knowledge_chunks TO public_reader;
 
 > The repo-doc base tables need no direct `public_reader` GRANT: the view is not `security_invoker`, so it reads `knowledge.*` with the owner's privileges (same pattern as the existing public_api views). `public_reader` only ever selects the view.
 
-**Step 2: Update `atlas.sum`.** Regenerate the migration directory hash the same way the prior migrations did (the file ends in an `atlas.sum` with a hash line per migration). Use the repo's Atlas tooling — check how `20260618000000_dr_jobs_public_reader_grant.sql` was hashed (likely `atlas migrate hash --dir file://projects/monolith/chart/migrations`). If Atlas is not vendored locally, push and let CI surface the expected sum, then paste it in; the Atlas operator validates `atlas.sum` against the file set at apply time, and CI's migration lint will fail loudly with the expected hash if it is wrong. Do not hand-edit hash bytes blindly.
+**Step 2: Update `atlas.sum`.** Regenerate the migration directory hash the same way the prior migrations did (the file ends in an `atlas.sum` with a hash line per migration). Use the repo's Atlas tooling, check how `20260618000000_dr_jobs_public_reader_grant.sql` was hashed (likely `atlas migrate hash --dir file://projects/monolith/chart/migrations`). If Atlas is not vendored locally, push and let CI surface the expected sum, then paste it in; the Atlas operator validates `atlas.sum` against the file set at apply time, and CI's migration lint will fail loudly with the expected hash if it is wrong. Do not hand-edit hash bytes blindly.
 
 **Step 3: Commit**
 
@@ -983,7 +983,7 @@ gh pr checks <number> --watch
 
 **Step 2: Diagnose any red CI** by quoting the actual failure (`mcp__buildbuddy__get_invocation` with the commit SHA → `get_target` → `get_log`). Likely first-failure suspects, in order:
 
-- Hand-registered BUILD test entries missing/mismatched (gazelle won't help — `# gazelle:exclude knowledge`).
+- Hand-registered BUILD test entries missing/mismatched (gazelle won't help, `# gazelle:exclude knowledge`).
 - `atlas.sum` mismatch (paste the expected hash CI prints).
 - Semgrep on the async handler (re-check: no sync `session.*` calls in the `async def`; only plain data into `to_thread`).
 - `main_public_imports_test` if anything pulled the scheduler/reconcile into the public import graph.
