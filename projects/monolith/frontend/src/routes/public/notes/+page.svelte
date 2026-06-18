@@ -67,7 +67,7 @@
       {edges}
       onSelect={selectNode}
       onClose={() => (selectedId = null)}
-      apiBase="/api/knowledge/public/notes"
+      apiBase="/notes/body"
     />
   </div>
 </div>
@@ -77,8 +77,8 @@
     height: calc(100vh - 48px);
     display: flex;
     flex-direction: column;
-    background: #f1ebdc;
-    color: #141414;
+    background: var(--bg);
+    color: var(--ink);
     font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
     font-size: 13px;
     line-height: 1.45;
