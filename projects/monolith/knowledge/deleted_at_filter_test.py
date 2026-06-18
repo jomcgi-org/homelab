@@ -1,33 +1,26 @@
 """Tests proving soft-deleted rows are excluded by deleted_at.is_(None) filters.
 
-Covers the deleted_at code paths changed in commits 681b23a8b..83fbcec21:
+Covers the surviving deleted_at code paths:
 
-1. gaps.discover_gaps()                    — Gap.deleted_at.is_(None) guard
-2. gaps.classify_gaps()                    — Gap.deleted_at.is_(None) guard
-3. reconciler._project_gap_frontmatter()   — Gap.deleted_at.is_(None) guard
-4. migrate_raw_bucketing._grandfather_atoms() — Note.deleted_at.is_(None) guard
-5. research_handler._sweep_and_select_candidates() — Gap.deleted_at.is_(None) guard
+1. gaps.discover_gaps()                        — Gap.deleted_at.is_(None) guard
+2. gaps.classify_gaps()                        — Gap.deleted_at.is_(None) guard
+3. migrate_raw_bucketing._grandfather_atoms()  — Note.deleted_at.is_(None) guard
 
-(The gardener._resolve_pending_provenance and _distill_completed_tasks
-deleted_at guards were retired with the in-pod gardener; see ADR 006
-Phase 4c.)
+(The reconciler and research_handler deleted_at guards were retired with
+the vault decommission; see ADR 006 and the fileless gap loop.)
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gaps import GAPS_PIPELINE_VERSION, classify_gaps, discover_gaps
 from knowledge.migrate_raw_bucketing import _grandfather_atoms
-from knowledge.models import AtomRawProvenance, Gap, Note, NoteLink, RawInput
-from knowledge.reconciler import _project_gap_frontmatter
-from knowledge.research_handler import _sweep_and_select_candidates
+from knowledge.models import AtomRawProvenance, Gap, Note, NoteLink
 
 
 # ---------------------------------------------------------------------------
@@ -57,28 +50,6 @@ def session_fixture():
                 table.schema = original_schemas[table.name]
 
 
-@pytest.fixture(name="engine")
-def engine_fixture():
-    """Engine-level fixture required by _sweep_and_select_candidates."""
-    _engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(_engine)
-        yield _engine
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
-
-
 _NOW = datetime(2026, 5, 26, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -99,20 +70,6 @@ def _make_note(session: Session, note_id: str, *, type: str = "atom") -> Note:
     session.commit()
     session.refresh(note)
     return note
-
-
-def _make_raw(session: Session, raw_id: str) -> RawInput:
-    raw = RawInput(
-        raw_id=raw_id,
-        path=f"_raw/2026/05/26/{raw_id}.md",
-        source="test",
-        content="Body.",
-        content_hash=f"hash-raw-{raw_id}",
-    )
-    session.add(raw)
-    session.commit()
-    session.refresh(raw)
-    return raw
 
 
 def _add_link(session: Session, *, src_fk: int, target_id: str) -> None:
@@ -136,20 +93,14 @@ def _add_link(session: Session, *, src_fk: int, target_id: str) -> None:
 
 class TestDiscoverGapsDeletedAt:
     def test_soft_deleted_gap_does_not_block_rediscovery(
-        self, session: Session, tmp_path: Path
+        self, session: Session
     ) -> None:
         """A soft-deleted Gap for one term must not interfere with discovery of
         a different unresolved term.
 
         discover_gaps filters deleted_at.is_(None) when loading existing Gap
-        rows (~line 224).  Soft-deleted rows are excluded from
-        ``existing_by_note_id`` so they don't occupy slots for other terms,
-        and are excluded from ``gap_candidates`` so they are never tombstoned.
-
-        Note: a soft-deleted Gap *cannot* be re-inserted under the same
-        note_id / term due to the UniqueConstraint on both columns.  The
-        filter's value lies in preventing tombstoning and in not letting a
-        stale soft-deleted row shadow an unrelated fresh discovery.
+        rows. Soft-deleted rows are excluded from ``existing_by_note_id`` so
+        they don't occupy slots for other terms.
         """
         src = _make_note(session, "source-note")
         # Link to a FRESH term that has no existing Gap row (live or deleted).
@@ -168,9 +119,7 @@ class TestDiscoverGapsDeletedAt:
         session.add(soft_deleted)
         session.commit()
 
-        # discover_gaps must discover "brand-new-term" and return created=1,
-        # unaffected by the soft-deleted gap for the unrelated term.
-        created = discover_gaps(session, tmp_path)
+        created = discover_gaps(session)
 
         assert created == 1
         live_gaps = (
@@ -187,18 +136,12 @@ class TestDiscoverGapsDeletedAt:
 
 class TestClassifyGapsDeletedAt:
     def test_soft_deleted_discovered_gap_is_not_classified(
-        self, session: Session, tmp_path: Path
+        self, session: Session
     ) -> None:
-        """classify_gaps must not process gaps whose deleted_at is set.
-
-        The filter on ~line 407 selects only live (deleted_at IS NULL) rows
-        in state='discovered'.  A soft-deleted discovered gap must stay
-        unclassified.
-        """
-        # Insert one live gap via discover_gaps and one soft-deleted gap.
+        """classify_gaps must not process gaps whose deleted_at is set."""
         live_src = _make_note(session, "live-src")
         _add_link(session, src_fk=live_src.id, target_id="live-term")
-        discover_gaps(session, tmp_path)  # creates live Gap for "live-term"
+        discover_gaps(session)  # creates live Gap for "live-term"
 
         deleted_gap = Gap(
             term="deleted-term",
@@ -226,58 +169,13 @@ class TestClassifyGapsDeletedAt:
 
 
 # ---------------------------------------------------------------------------
-# 3. reconciler._project_gap_frontmatter — soft-deleted Gap is not projected.
-# ---------------------------------------------------------------------------
-
-
-class TestProjectGapFrontmatterDeletedAt:
-    def test_soft_deleted_gap_is_treated_as_missing(self, session: Session) -> None:
-        """_project_gap_frontmatter must return early when the Gap is soft-deleted.
-
-        The select on ~line 444 filters Gap.deleted_at.is_(None), so a
-        soft-deleted Gap row will not be found and the function treats it as
-        "stub without a Gap row" (early return).  The gap's state must remain
-        unchanged.
-        """
-        gap = Gap(
-            term="deleted-gap",
-            context="",
-            note_id="deleted-gap",
-            pipeline_version=GAPS_PIPELINE_VERSION,
-            state="discovered",
-            deleted_at=_NOW,
-        )
-        session.add(gap)
-        session.commit()
-        session.refresh(gap)
-
-        meta = ParsedFrontmatter(
-            note_id="deleted-gap",
-            type="gap",
-            status="classified",
-            extra={"gap_class": "external"},
-        )
-
-        # Must not raise and must not modify the soft-deleted gap row.
-        _project_gap_frontmatter(session, "deleted-gap", meta)
-
-        session.refresh(gap)
-        assert gap.state == "discovered"  # unchanged — soft-deleted row ignored
-        assert gap.gap_class is None  # not projected
-
-
-# ---------------------------------------------------------------------------
-# 4. migrate_raw_bucketing._grandfather_atoms — soft-deleted atom excluded.
+# 3. migrate_raw_bucketing._grandfather_atoms — soft-deleted atom excluded.
 # ---------------------------------------------------------------------------
 
 
 class TestGrandfatherAtomsDeletedAt:
     def test_soft_deleted_atom_is_not_grandfathered(self, session: Session) -> None:
-        """_grandfather_atoms must skip Notes with deleted_at set.
-
-        The filter on ~line 133 selects only live (deleted_at IS NULL) atoms.
-        A soft-deleted atom must not receive a pre-migration provenance row.
-        """
+        """_grandfather_atoms must skip Notes with deleted_at set."""
         deleted_atom = Note(
             note_id="deleted-atom",
             path="_processed/deleted-atom.md",
@@ -313,55 +211,3 @@ class TestGrandfatherAtomsDeletedAt:
             select(AtomRawProvenance).where(AtomRawProvenance.atom_fk == live_atom.id)
         ).all()
         assert len(prov) == 1
-
-
-# ---------------------------------------------------------------------------
-# 5. research_handler._sweep_and_select_candidates — soft-deleted Gap excluded.
-# ---------------------------------------------------------------------------
-
-
-class TestSweepAndSelectCandidatesDeletedAt:
-    def test_soft_deleted_external_classified_gap_is_not_selected(self, engine) -> None:
-        """_sweep_and_select_candidates must not return soft-deleted gaps.
-
-        The filter on ~line 142 includes Gap.deleted_at.is_(None).  A gap
-        that matches gap_class='external', state='classified' but has
-        deleted_at set must not appear in the candidates list.
-        """
-        with Session(engine) as session:
-            deleted_gap = Gap(
-                term="soft-deleted-external",
-                context="",
-                gap_class="external",
-                state="classified",
-                note_id="soft-deleted-external",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                deleted_at=_NOW,
-            )
-            session.add(deleted_gap)
-            session.commit()
-
-        _stuck_count, candidates = _sweep_and_select_candidates(engine)
-
-        candidate_ids = [g.note_id for g in candidates]
-        assert "soft-deleted-external" not in candidate_ids
-
-    def test_live_external_classified_gap_is_still_selected(self, engine) -> None:
-        """Live eligible gaps must still be returned (regression guard)."""
-        with Session(engine) as session:
-            live_gap = Gap(
-                term="live-external",
-                context="",
-                gap_class="external",
-                state="classified",
-                note_id="live-external",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                deleted_at=None,
-            )
-            session.add(live_gap)
-            session.commit()
-
-        _stuck_count, candidates = _sweep_and_select_candidates(engine)
-
-        candidate_ids = [g.note_id for g in candidates]
-        assert "live-external" in candidate_ids

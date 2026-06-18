@@ -941,18 +941,6 @@ py_test(
 )
 
 py_test(
-    name = "main_vault_sync_test",
-    srcs = ["app/main_vault_sync_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
     name = "store_integrity_test",
     srcs = ["chat/store_integrity_test.py"],
     imports = ["."],
@@ -2669,20 +2657,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gap_end_to_end_test",
-    srcs = ["knowledge/gap_end_to_end_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_gap_logic_test",
     srcs = ["knowledge/gap_logic_test.py"],
     imports = ["."],
@@ -2732,17 +2706,6 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_service_coverage_test",
-    srcs = ["knowledge/service_coverage_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 
@@ -2994,19 +2957,6 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pyyaml",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_gaps_helpers_test",
-    srcs = ["knowledge/gaps_helpers_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )

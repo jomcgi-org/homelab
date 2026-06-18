@@ -12,13 +12,10 @@ create false-positive Gap rows -- the loop that previously sent
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gaps import discover_gaps
 from knowledge.models import Gap, Note, NoteLink
 
@@ -80,9 +77,7 @@ def _add_body_link(session: Session, *, src_fk: int, target_id: str) -> None:
     session.commit()
 
 
-def test_raw_wikilink_resolves_to_existing_slug_note(
-    session: Session, tmp_path: Path
-) -> None:
+def test_raw_wikilink_resolves_to_existing_slug_note(session: Session) -> None:
     """A ``[[Title Case]]`` wikilink to a note with ``note_id="title-case"``
     must NOT produce a Gap row.
 
@@ -95,21 +90,16 @@ def test_raw_wikilink_resolves_to_existing_slug_note(
     # Target stored in raw form, as ``links.extract`` emits it.
     _add_body_link(session, src_fk=src.id, target_id="Steve Krug")
 
-    discover_gaps(session, tmp_path)
+    discover_gaps(session)
 
     rows = session.execute(select(Gap)).scalars().all()
     assert rows == [], (
         "Expected no Gap (resolves to existing 'steve-krug'), got: "
         f"{[(r.term, r.note_id) for r in rows]}"
     )
-    assert not (tmp_path / RESEARCHING_DIR / "steve-krug.md").exists(), (
-        "stub must not be written for a resolvable wikilink"
-    )
 
 
-def test_raw_wikilink_resolves_via_existing_alias(
-    session: Session, tmp_path: Path
-) -> None:
+def test_raw_wikilink_resolves_via_existing_alias(session: Session) -> None:
     """``[[Bayes' Theorem]]`` should resolve to a canonical atom that
     carries ``Bayes' Theorem`` in its aliases, even though the wikilink
     text doesn't slug-match the canonical ``note_id``.
@@ -123,7 +113,7 @@ def test_raw_wikilink_resolves_via_existing_alias(
     src = _make_atom(session, "src", title="Source")
     _add_body_link(session, src_fk=src.id, target_id="Bayes' Theorem")
 
-    discover_gaps(session, tmp_path)
+    discover_gaps(session)
 
     rows = session.execute(select(Gap)).scalars().all()
     assert rows == [], (
@@ -132,15 +122,13 @@ def test_raw_wikilink_resolves_via_existing_alias(
     )
 
 
-def test_raw_wikilink_with_no_match_still_creates_gap(
-    session: Session, tmp_path: Path
-) -> None:
+def test_raw_wikilink_with_no_match_still_creates_gap(session: Session) -> None:
     """Sanity check: when the slugified wikilink doesn't match any existing
     note or alias, the gap is correctly created."""
     src = _make_atom(session, "src", title="Source")
     _add_body_link(session, src_fk=src.id, target_id="Genuinely Novel Term")
 
-    discover_gaps(session, tmp_path)
+    discover_gaps(session)
 
     rows = session.execute(select(Gap)).scalars().all()
     assert len(rows) == 1

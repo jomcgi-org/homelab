@@ -43,7 +43,6 @@ FORBIDDEN_MODULES = [
     # Heavy knowledge write/maintenance internals this refactor removed from
     # the public closure.
     "knowledge.service",
-    "knowledge.reconciler",
     "knowledge.layout",
     # ClickHouse client + writer path + private home paths.
     "home.observability.clickhouse",

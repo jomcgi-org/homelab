@@ -25,7 +25,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from knowledge.models import Note
-from knowledge.service import VAULT_ROOT_ENV
+from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture
