@@ -23,6 +23,7 @@ from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import approve_gap as _approve_gap
 from knowledge.gaps import list_review_queue, resolve_gaps_for_note, split_csv
+from knowledge.gaps import set_gap_class as _set_gap_class
 from knowledge.gardener import GARDENER_VERSION, _slugify
 from knowledge.indexing import index_note_best_effort, index_note_from_raw
 from knowledge.models import AtomRawProvenance, RawInput
@@ -471,6 +472,27 @@ async def approve_research_gap(gap_id: int) -> dict:
     with Session(get_engine()) as session:
         try:
             return _approve_gap(session, gap_id, vault_root)
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+
+@mcp.tool
+async def set_gap_class(gap_id: int, gap_class: str) -> dict:
+    """Classify a discovered gap and transition its state fileless.
+
+    Use this from the classification routine to route a gap to one of
+    external, internal, hybrid, or parked. The gap must currently be in
+    state discovered. External gaps stay discovered so the research routine
+    can pull them, internal and hybrid gaps move to in_review for a user
+    answer, and parked gaps become terminal.
+
+    Args:
+        gap_id: The id of a gap currently in state discovered.
+        gap_class: One of external, internal, hybrid, or parked.
+    """
+    with Session(get_engine()) as session:
+        try:
+            return _set_gap_class(session, gap_id, gap_class)
         except ValueError as exc:
             return {"error": str(exc)}
 

@@ -2690,6 +2690,19 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_gap_set_class_test",
+    srcs = ["knowledge/gap_set_class_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_gap_answer_fileless_test",
     srcs = ["knowledge/gap_answer_fileless_test.py"],
     imports = ["."],
