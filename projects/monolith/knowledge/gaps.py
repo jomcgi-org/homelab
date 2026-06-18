@@ -75,6 +75,82 @@ _USER_REVIEW_CLASSES = {"internal", "hybrid", "external"}
 # Valid classifier outputs — mirrors the CHECK constraint on gaps.gap_class.
 _VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
 
+# Non-terminal gap states the commit hook is allowed to close. A gap in one
+# of these states is still "open" (awaiting research or a user answer); once
+# an atom defining its term lands, the gap is resolved. Terminal states
+# (committed/rejected/parked) are left untouched.
+_OPEN_GAP_STATES = (
+    "discovered",
+    "classified",
+    "in_review",
+    "researching",
+    "researched",
+)
+
+# The only gap_class values that may legally accompany state='committed' under
+# the Postgres CHECK ``gaps_state_class_combo``. Gaps with gap_class NULL or
+# 'parked' MUST NOT be committed: SQLite test fixtures do not enforce the
+# CHECK, so an unguarded commit passes CI and 500s in prod.
+_COMMITTABLE_CLASSES = ("external", "internal", "hybrid")
+
+
+def resolve_gaps_for_note(
+    session: Session,
+    *,
+    note_id: str,
+    title: str,
+    aliases: list[str] | None,
+) -> list[int]:
+    """Commit open gaps whose term now resolves to this note.
+
+    Called after a note is indexed (create_atom / gardener / research routine).
+    Matches ``gap.term`` (slug-normalized via the same ``_slugify`` used
+    elsewhere in this module) against the note's ``note_id``, slugified
+    ``title``, and slugified ``aliases``. Only commits gaps whose ``gap_class``
+    is in the CHECK-combo legal set (external/internal/hybrid); gaps with
+    NULL or 'parked' class are left open because committing them violates
+    ``gaps_state_class_combo`` on Postgres (which SQLite does not catch).
+
+    On match, sets ``state='committed'``, ``note_id=<this note>``,
+    ``resolved_at=now(utc)``, ``human_verified=False``. Commits the session
+    if any gap changed. Returns the list of committed gap ids.
+    """
+    candidates = {note_id, _slugify(title)}
+    for alias in aliases or []:
+        candidates.add(_slugify(alias))
+
+    rows = (
+        session.execute(
+            select(Gap).where(
+                Gap.deleted_at.is_(None),
+                Gap.state.in_(_OPEN_GAP_STATES),
+                Gap.gap_class.in_(_COMMITTABLE_CLASSES),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    committed: list[int] = []
+    now = datetime.now(timezone.utc)
+    for gap in rows:
+        if _slugify(gap.term) in candidates:
+            gap.state = "committed"
+            gap.note_id = note_id
+            gap.resolved_at = now
+            gap.human_verified = False
+            committed.append(gap.id)
+
+    if committed:
+        session.commit()
+        logger.info(
+            "gaps.resolve_gaps_for_note: committed %d gap(s) for note_id=%s: %s",
+            len(committed),
+            note_id,
+            committed,
+        )
+    return committed
+
 
 def _rewrite_sources(
     session: Session,
