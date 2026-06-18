@@ -11,6 +11,7 @@ transitions.
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +19,12 @@ from sqlmodel import Session, select
 
 from chat_public import limits
 from chat_public.models import ChatMessage, ChatSession
+
+# Optional salt mixed into the IP/user-agent hash so the stored pseudonym is not
+# a bare sha256 of a guessable value (an attacker cannot precompute a rainbow
+# table of IP hashes without the salt). No default: empty salt is acceptable for
+# dev/test; production injects one via CHAT_PUBLIC_IP_HASH_SALT.
+IP_HASH_SALT = os.environ.get("CHAT_PUBLIC_IP_HASH_SALT", "")
 
 
 def _utcnow() -> datetime:
@@ -33,50 +40,44 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt
 
 
-def hash_value(value: str | None) -> str | None:
+def hash_value(value: str | None, salt: str = "") -> str | None:
     """Hash an IP or user-agent for pseudonymous storage. Never store the raw.
 
     Returns None for an absent value so the column stays NULL rather than a
-    hash of the empty string.
+    hash of the empty string. An optional salt is prepended before hashing so the
+    stored pseudonym is not a bare sha256 of a guessable value.
     """
     if not value:
         return None
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def verify_turnstile(token: str | None, ip: str | None) -> bool:
-    """Verify a Cloudflare Turnstile token against siteverify.
-
-    Phase 1 seam: this is a stubbed-accept. The real siteverify call (with the
-    Turnstile secret from a OnePasswordItem, run in this FastAPI binary, never
-    in SSR) lands in Phase 2. Returning True here lets the session and limit
-    machinery be built and tested without the live challenge.
-
-    TODO(Phase 2): call https://challenges.cloudflare.com/turnstile/v0/siteverify
-    with the secret + token + remote IP and return its success flag; reject on
-    failure so no verified session is minted without a solved challenge.
-    """
-    return True
+    return hashlib.sha256((salt + value).encode("utf-8")).hexdigest()
 
 
 def create_session(
     db: Session,
     *,
-    turnstile_token: str | None = None,
+    turnstile_outcome: str = "passed",
     ip: str | None = None,
     country: str | None = None,
     user_agent: str | None = None,
 ) -> ChatSession:
-    """Verify the (stubbed) Turnstile token and open a server-side session row.
+    """Open a server-side session row for an already-admitted request.
+
+    Turnstile siteverify runs in the router (it is async network IO, see
+    chat_public.turnstile.siteverify); this function is only reached once the
+    challenge passed, and records the verified ``turnstile_outcome``. It enforces
+    the per-IP session-mint cap before inserting (raising limits.LimitExceeded on
+    breach) so one network cannot mint sessions without bound.
 
     The opaque id is generated server-side from a CSPRNG, so the client cannot
-    forge or guess one. Pseudonymous details are stored hashed.
+    forge or guess one. The IP is stored only as a salted hash, never raw; that
+    same hash keys the per-IP mint cap.
     """
-    outcome = "passed" if verify_turnstile(turnstile_token, ip) else "failed"
+    ip_hash = hash_value(ip, IP_HASH_SALT)
+    limits.check_ip_mint_rate(db, ip_hash)
     session = ChatSession(
         id=secrets.token_urlsafe(32),
-        ip_hash=hash_value(ip),
-        turnstile_outcome=outcome,
+        ip_hash=ip_hash,
+        turnstile_outcome=turnstile_outcome,
         country=country,
         user_agent_hash=hash_value(user_agent),
         status="active",

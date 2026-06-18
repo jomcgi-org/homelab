@@ -30,6 +30,48 @@ metadata:
 spec:
   trafficPolicy: Deny
 ---
+# THE ONE SANCTIONED EGRESS WIDENING (ADR 005, Public Chat V3 Phase 2). REVIEW
+# THIS CAREFULLY.
+#
+# Public chat verifies Cloudflare Turnstile tokens by calling siteverify
+# (https://challenges.cloudflare.com/turnstile/v0/siteverify) from the backend.
+# That is the FIRST and ONLY off-cluster egress from this otherwise default-deny
+# namespace (the EgressNetwork above denies all external traffic). Without an
+# explicit allow the siteverify call is BLOCKED and no session can ever be
+# minted.
+#
+# The allow is a Gateway API TLSRoute (not HTTPRoute): the outbound call is TLS
+# to an external host, so Linkerd matches it by the SNI hostname in the
+# ClientHello. parentRefs binds it to the deny-all EgressNetwork; the single
+# hostname + port 443 scope means this opens challenges.cloudflare.com and
+# nothing else. An RCE in the public path still cannot reach any other internet
+# host. The CRD is served at gateway.networking.k8s.io/v1alpha2 and is present in
+# the cluster (tlsroutes.gateway.networking.k8s.io); Linkerd's policy controller
+# has RBAC over tlsroutes (see the linkerd-control-plane destination-rbac).
+#
+# If this single host ever needs to change, this is the only rule to touch; do
+# not broaden it to a wildcard.
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-allow-turnstile-egress
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "monolith-public.fullname" . }}-deny-egress
+      kind: EgressNetwork
+      group: policy.linkerd.io
+      namespace: {{ .Release.Namespace }}
+      port: 443
+  hostnames:
+    - challenges.cloudflare.com
+  rules:
+    - backendRefs:
+        - name: {{ include "monolith-public.fullname" . }}-deny-egress
+          kind: EgressNetwork
+          group: policy.linkerd.io
+---
 # The Cloudflare/Envoy gateway identity. We authorize by mesh identity using a
 # wildcard over the gateway namespace's ServiceAccounts so the rule survives the
 # envoy data-plane SA's hash-suffixed name. The gateway is meshed, so its proxy

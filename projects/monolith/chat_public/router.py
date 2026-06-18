@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from chat_public import limits, sessions
+from chat_public import limits, sessions, turnstile
 from chat_public.db import get_chat_session
 from chat_public.sse import SSEEmitter
 
@@ -45,8 +45,9 @@ def _estimate_tokens(text: str) -> int:
 
 
 class SessionCreateRequest(BaseModel):
-    # Turnstile token forwarded by SSR. Verification is stubbed in Phase 1
-    # (sessions.verify_turnstile), real siteverify in Phase 2.
+    # Turnstile token forwarded by SSR (the value the browser widget produced).
+    # Verified here via real siteverify (chat_public.turnstile.siteverify); no
+    # valid token, no session.
     turnstile_token: str | None = None
 
 
@@ -64,32 +65,63 @@ class MessageRequest(BaseModel):
 def _limit_status(code: str) -> int:
     """Map a LimitExceeded code to an HTTP status.
 
-    char_cap is malformed input (400); the budget ceilings are quota
-    exhaustion (429).
+    char_cap is malformed input (400); a failed challenge is forbidden (403);
+    the budget/rate ceilings are quota exhaustion (429).
     """
-    return 400 if code == "char_cap" else 429
+    if code == "char_cap":
+        return 400
+    if code == "turnstile_failed":
+        return 403
+    return 429
 
 
 @router.post("/session", response_model=SessionCreateResponse)
-def create_chat_session(
+async def create_chat_session(
     payload: SessionCreateRequest = Body(default_factory=SessionCreateRequest),
     db: Session = Depends(get_chat_session),
     cf_ipcountry: str | None = Header(default=None, alias="CF-IPCountry"),
+    cf_connecting_ip: str | None = Header(default=None, alias="CF-Connecting-IP"),
     user_agent: str | None = Header(default=None, alias="User-Agent"),
 ) -> SessionCreateResponse:
-    """Verify the (stubbed) Turnstile token and open a server-side session.
+    """Verify the Turnstile token and open a server-side session.
 
-    Returns the opaque session id; SSR stores it in an httpOnly cookie. The
-    row, not the cookie, is the authority for every later budget. The real
-    client IP (for hashing) is forwarded by SSR in Phase 2; Phase 1 stores only
-    coarse country and a user-agent hash.
+    Admission order: (1) siteverify the forwarded Turnstile token (no valid
+    token, no session); (2) enforce the per-IP session-mint cap on the forwarded
+    client IP, hashed. Only then is a row opened. Returns the opaque session id;
+    SSR stores it in an httpOnly cookie. The row, not the cookie, is the
+    authority for every later budget.
+
+    The real client IP arrives in the Cloudflare ``CF-Connecting-IP`` header,
+    forwarded by SSR. The backend trusts it because it is reachable ONLY from the
+    SSR mesh identity: the ``-web`` Linkerd Server + AuthorizationPolicy (see the
+    monolith-public linkerd-policy) authorize only the frontend ServiceAccount,
+    so any request reaching this handler came from SSR. The IP is stored only as
+    a salted hash, never raw.
     """
-    session = sessions.create_session(
-        db,
-        turnstile_token=payload.turnstile_token,
-        country=cf_ipcountry,
-        user_agent=user_agent,
-    )
+    result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
+    if not result.success:
+        raise HTTPException(
+            status_code=_limit_status("turnstile_failed"),
+            detail={
+                "code": "turnstile_failed",
+                "message": "Challenge verification failed. Please try again.",
+            },
+        )
+
+    try:
+        session = sessions.create_session(
+            db,
+            turnstile_outcome=result.outcome,
+            ip=cf_connecting_ip,
+            country=cf_ipcountry,
+            user_agent=user_agent,
+        )
+    except limits.LimitExceeded as exc:
+        raise HTTPException(
+            status_code=_limit_status(exc.code),
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
     logger.info("chat_public.session.created turn_limit=%d", limits.MAX_TURNS)
     return SessionCreateResponse(session_id=session.id)
 
@@ -124,11 +156,34 @@ def post_chat_message(
             detail={"code": exc.code, "message": exc.message},
         ) from exc
 
-    # Persist the user message, then the canned assistant reply, then bump the
-    # per-session counters. All client-supplied history (if any) is ignored.
-    user_tokens = _estimate_tokens(payload.message)
+    # Global circuit breaker (ADR 005 layer 2): acquire an in-flight slot before
+    # spending any inference. Over the global ceiling the turn is shed with a
+    # "busy" SSE event and NOTHING is persisted (no user message, no counter
+    # bump), so a shed turn is free. The breaker is delivered as a 200 SSE event
+    # rather than a 4xx/5xx status so it flows through the SSR SSE passthrough
+    # unchanged (a non-2xx would be relayed as JSON, not a stream event).
+    try:
+        with limits.inflight_slot():
+            return _serve_turn(db, session, payload.message)
+    except limits.LimitExceeded as exc:
+        if exc.code != "busy":
+            raise
+        emitter = SSEEmitter()
+        emitter.emit("busy", {"code": "busy", "message": exc.message})
+        emitter.close()
+        logger.info("chat_public.message.shed reason=busy")
+        return StreamingResponse(emitter.stream(), media_type="text/event-stream")
+
+
+def _serve_turn(db: Session, session, message: str) -> StreamingResponse:
+    """Persist one turn and stream the (canned, Phase 2) assistant reply.
+
+    Runs while a global in-flight slot is held. All client-supplied history (if
+    any) is ignored; the session row is the sole transcript.
+    """
+    user_tokens = _estimate_tokens(message)
     sessions.append_message(
-        db, session, role="user", content=payload.message, tokens=user_tokens
+        db, session, role="user", content=message, tokens=user_tokens
     )
 
     reply = _CANNED_RESPONSE
