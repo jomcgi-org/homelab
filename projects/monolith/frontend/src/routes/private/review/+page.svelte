@@ -72,17 +72,15 @@
   function endpointFor(tab, mode, action, item) {
     if (tab === "gaps") {
       if (mode === "pending") {
-        // External gaps consume Sonnet web-research tokens, so "yes" must
-        // hit the new /approve endpoint (in_review -> classified, which
-        // re-arms the daily research cron). Internal/hybrid stay on
-        // /verify because there's no auto-pipeline behind them — the
-        // user's affirmative is just an acknowledgement.
-        const yesPath =
-          item.gap_class === "external"
-            ? `/api/knowledge/gaps/${item.id}/approve`
-            : `/api/knowledge/gaps/${item.id}/verify`;
+        // Gaps reaching the pending queue are internal/hybrid awaiting an
+        // answer (external gaps stay 'discovered' for the research routine
+        // and never surface here). "yes" is an acknowledgement -> /verify;
+        // "no" rejects.
         return {
-          path: action === "yes" ? yesPath : `/api/knowledge/gaps/${item.id}/reject`,
+          path:
+            action === "yes"
+              ? `/api/knowledge/gaps/${item.id}/verify`
+              : `/api/knowledge/gaps/${item.id}/reject`,
         };
       }
       return {
