@@ -5,13 +5,15 @@ mirroring bazel/images/generate-home-cluster.sh) and writes one NDJSON line per
 indexed markdown file, sorted by repo-relative path, to
 projects/monolith/knowledge/repo_docs_manifest.ndjson.
 
-Run manually when indexed docs change:
-`bazel run //projects/monolith:gen_repo_docs_manifest`, then commit the diff. It
-is intentionally NOT in the `//bazel/tools/format:format` multirun: that aggregate
-drives only sh_binary generators, and a py_venv_binary does not resolve its main
-module under rules_multirun (wiring auto-regen via a hermetic interpreter is a
-follow-up). The private monolith's reconcile job reads the committed manifest from
-the image, so a stale manifest only delays indexing of newly changed docs.
+When indexed docs change, regenerate and commit the manifest:
+`bazel run //projects/monolith:gen_repo_docs_manifest`. CI enforces this:
+bazel/images/validate-generate-scripts.sh (run in the Format check action)
+regenerates the manifest and fails the build if it differs from what is committed,
+with the regen command in the error. The generator is intentionally NOT in the
+`//bazel/tools/format:format` multirun: that aggregate drives only sh_binary
+generators, and a py_venv_binary does not resolve its main module under
+rules_multirun. The private monolith's reconcile job reads the committed manifest
+from the image.
 """
 
 from __future__ import annotations

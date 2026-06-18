@@ -135,6 +135,37 @@ else
 	fi
 fi
 
+# --- Validation 4: repo-docs knowledge-graph manifest ---
+#
+# projects/monolith/knowledge/repo_docs_manifest.ndjson is a committed snapshot of
+# the repo's markdown (docs/, project READMEs, CLAUDE.md files), baked into the
+# monolith image and ingested into the knowledge graph for public-chat grounding.
+# It is produced by a py_venv_binary (hermetic python, no system python3 needed),
+# not the format multirun, so regenerate it here and fail if it drifts from what is
+# committed. This stops a doc change from silently going unindexed.
+
+echo "Validating repo-docs manifest ..."
+
+REPO_DOCS_MANIFEST=projects/monolith/knowledge/repo_docs_manifest.ndjson
+if bazel run //projects/monolith:gen_repo_docs_manifest >/dev/null 2>"$TMPDIR_VALIDATE/gen_repo_docs.err"; then
+	if git diff --quiet -- "$REPO_DOCS_MANIFEST"; then
+		echo "  repo-docs-manifest: PASS"
+	else
+		echo "  repo-docs-manifest: FAIL"
+		echo "    $REPO_DOCS_MANIFEST is out of date with the repo's markdown."
+		echo "    Regenerate it and commit the result:"
+		echo "      bazel run //projects/monolith:gen_repo_docs_manifest"
+		echo "      git add $REPO_DOCS_MANIFEST && git commit"
+		FAILED=1
+		# Restore the committed version so later format steps see a clean tree.
+		git checkout -- "$REPO_DOCS_MANIFEST" 2>/dev/null || true
+	fi
+else
+	echo "  repo-docs-manifest: FAIL (generator did not run)"
+	sed 's/^/    /' "$TMPDIR_VALIDATE/gen_repo_docs.err"
+	FAILED=1
+fi
+
 # --- Summary ---
 
 echo ""
