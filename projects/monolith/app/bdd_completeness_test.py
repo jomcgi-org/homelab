@@ -36,6 +36,8 @@ _PUBLIC_EXCLUSIONS: set[str] = {
     # register_public() is app wiring (Phase 5a public split), not a BDD route
     "home.register_public",
     "knowledge.register_public",
+    # on_startup_jobs() is scheduler-registration wiring, not a BDD route
+    "knowledge.on_startup_jobs",
     # FastAPI class is re-exported by domains, not a domain function
     "home.FastAPI",
     "chat.FastAPI",

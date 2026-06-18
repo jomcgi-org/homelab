@@ -9,10 +9,17 @@ re-exported here so the public-function coverage contract (see
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import FastAPI
-from sqlmodel import Session
 
 from knowledge.api import get_embedding_client, get_store, search_notes
+
+if TYPE_CHECKING:
+    # Type-only import so ``Session`` does not leak into the knowledge package
+    # namespace (the bdd_completeness_test coverage contract scans public
+    # callables). The annotation below is a string under future annotations.
+    from sqlmodel import Session
 
 __all__ = [
     "register",
