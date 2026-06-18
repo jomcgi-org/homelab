@@ -8,10 +8,12 @@ scheduler wiring; the public binary never runs the reconcile.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from knowledge.chunker import Chunk, chunk_markdown
@@ -161,3 +163,58 @@ def apply_reconcile(
 
     session.commit()
     return ReconcileStats(upserted=len(plan.to_upsert), deleted=deleted, unchanged=0)
+
+
+def _plan_in_thread(entries: list[ManifestEntry]) -> ReconcilePlan:
+    from sqlmodel import Session
+
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        return plan_reconcile(session, entries)
+
+
+def _apply_in_thread(plan: ReconcilePlan, vectors_by_path) -> ReconcileStats:
+    from sqlmodel import Session
+
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        return apply_reconcile(session, plan, vectors_by_path)
+
+
+async def repo_docs_reconcile_handler(session) -> datetime | None:
+    """Scheduler handler (private binary only). Diff the baked manifest against the
+    DB, embed the changed docs' chunks, and apply. The ``session`` arg is the
+    scheduler's loop session and is intentionally NOT used for I/O here (semgrep
+    no-session-in-to-thread): every DB touch happens in its own threaded session.
+    """
+    from shared.embedding import EmbeddingClient
+
+    entries = load_manifest()
+    if not entries:
+        return None
+
+    plan = await asyncio.to_thread(_plan_in_thread, entries)
+    if not plan.to_upsert and not plan.to_delete:
+        logger.info("repo_docs: nothing to reconcile (manifest unchanged)")
+        return None
+
+    client = EmbeddingClient()
+    vectors_by_path: dict[str, list[list[float]]] = {}
+    for entry, chunks in plan.to_upsert:
+        texts = [c["text"] for c in chunks]
+        try:
+            vectors_by_path[entry.path] = await client.embed_batch(texts)
+        except Exception:  # noqa: BLE001 - skip this doc; next run retries it
+            logger.exception("repo_docs: embedding failed for %s; skipping", entry.path)
+
+    # Drop upserts whose embedding failed so we never persist zero-vectors; their
+    # hash stays unchanged in the DB so the next run retries them.
+    plan.to_upsert = [(e, c) for (e, c) in plan.to_upsert if e.path in vectors_by_path]
+
+    stats = await asyncio.to_thread(_apply_in_thread, plan, vectors_by_path)
+    logger.info(
+        "repo_docs: reconciled upserted=%d deleted=%d", stats.upserted, stats.deleted
+    )
+    return None

@@ -10,12 +10,14 @@ re-exported here so the public-function coverage contract (see
 from __future__ import annotations
 
 from fastapi import FastAPI
+from sqlmodel import Session
 
 from knowledge.api import get_embedding_client, get_store, search_notes
 
 __all__ = [
     "register",
     "register_public",
+    "on_startup_jobs",
     "search_notes",
     "get_store",
     "get_embedding_client",
@@ -40,3 +42,22 @@ def register_public(app: FastAPI) -> None:
     from knowledge.public_router import router as public_router
 
     app.include_router(public_router)
+
+
+def on_startup_jobs(session: Session) -> None:
+    """Register knowledge scheduled jobs (private binary only).
+
+    The public binary never calls this (app/main_public.py runs no scheduler),
+    so the repo-docs reconcile, which writes the knowledge schema, only ever runs
+    where there is write access.
+    """
+    from knowledge.repo_docs import repo_docs_reconcile_handler
+    from scheduler.api import register_job
+
+    register_job(
+        session,
+        name="knowledge.repo_docs_reconcile",
+        interval_secs=21600,  # 6h; no-op hash compare between deploys
+        handler=repo_docs_reconcile_handler,
+        ttl_secs=1800,
+    )
