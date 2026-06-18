@@ -217,23 +217,11 @@
 <h1 class="sr-only">Chat with my knowledge graph</h1>
 
 <main class="chat-app">
-  <!-- Slim explainer banner pinned to the TOP (coral, inviting, collapsible):
-       the security posture (open model, no tools, public notes) up front rather
-       than buried at the bottom. -->
-  <details class="explainer">
-    <summary class="explainer-summary">
-      <span class="explainer-mark" aria-hidden="true">+</span>
-      <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
-      <span class="explainer-hint">An open model on my own cluster, no tools.</span>
-    </summary>
-    <div class="explainer-body">
-      <p>
-        Agents research topics and write them into my knowledge graph. This
-        model answers from that graph, nothing else. Answers can be wrong.
-      </p>
-    </div>
-  </details>
-
+  <!-- Header row: the CHAT | GRAPH view toggle on the left, and the collapsible
+       "HOW DOES THIS WORK?" explainer right after it. The explainer is sized to
+       its own text (not a full-width banner); expanding it opens a content-width
+       popover under the summary so it never shoves the layout. The security
+       posture (open model, no tools, public notes) stays up front, neutral. -->
   <div class="app-toolbar">
     <div class="view-toggle" role="tablist" aria-label="Notes view">
       <button
@@ -257,6 +245,20 @@
         GRAPH
       </button>
     </div>
+
+    <details class="explainer">
+      <summary class="explainer-summary">
+        <span class="explainer-mark" aria-hidden="true">+</span>
+        <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
+        <span class="explainer-hint">An open model on my own cluster, no tools.</span>
+      </summary>
+      <div class="explainer-body">
+        <p>
+          Agents research topics and write them into my knowledge graph. This
+          model answers from that graph, nothing else. Answers can be wrong.
+        </p>
+      </div>
+    </details>
   </div>
 
   <div class="view-area">
@@ -266,6 +268,9 @@
         <span class="chat-box-tag">PUBLIC CHAT</span>
         <span class="chat-box-status" class:on={admitted}>
           {admitted ? "SESSION OPEN" : "LOCKED"}
+        </span>
+        <span class="chat-box-hint">
+          Ask anything about my notes, projects, or how this homelab is built.
         </span>
         {#if admitted}
           <div class="chat-box-actions">
@@ -294,10 +299,6 @@
           </div>
         {:else if messages.length === 0 && !sending}
           <div class="chat-empty">
-            <p class="chat-empty-copy">
-              Ask anything about my notes, projects, or how this homelab is
-              built.
-            </p>
             <div class="chat-examples">
               {#each EXAMPLES as ex}
                 <button
@@ -459,23 +460,38 @@
     border: 0;
   }
 
-  /* ── top explainer (white callout with a coral left accent bar) ─ */
+  /* ── toolbar (view toggle + inline explainer on one row) ─────── */
+  .app-toolbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  /* ── inline explainer (neutral disclosure, sized to its text) ── */
+  /* Sits to the right of the CHAT | GRAPH toggle. The collapsed summary is just
+     wide enough for its text; expanding opens a content-width popover under the
+     summary (absolute, so it does not shove the toolbar or the chat surface).
+     Neutral: ink-on-paper with a plain border, no coral. */
   .explainer {
     flex: none;
+    position: relative;
     border: 2px solid var(--ink);
-    border-left: 6px solid var(--coral);
     background: var(--paper);
   }
   .explainer-summary {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 11px 16px;
+    gap: 10px;
+    padding: 9px 14px;
     cursor: pointer;
     list-style: none;
   }
   .explainer-summary::-webkit-details-marker {
     display: none;
+  }
+  .explainer-summary:hover {
+    background: var(--bg-elev);
   }
   .explainer-eyebrow {
     font-size: 11px;
@@ -485,10 +501,9 @@
   .explainer-hint {
     font-size: 11px;
     color: var(--ink-2);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* +/x mark on the LEFT of the summary; rotates to an x on expand. */
   .explainer-mark {
     font-size: 18px;
     line-height: 1;
@@ -498,24 +513,25 @@
   .explainer[open] .explainer-mark {
     transform: rotate(45deg);
   }
+  /* Content-width popover, not a full-bleed banner. max-content lets it hug the
+     text up to a readable cap, and the viewport clamp keeps it on-screen. */
   .explainer-body {
-    padding: 4px 16px 16px;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    width: max-content;
+    max-width: min(64ch, calc(100vw - 48px));
+    padding: 14px 16px;
     background: var(--paper);
-    border-top: 2px solid var(--ink);
+    border: 2px solid var(--ink);
+    box-shadow: var(--shadow-hard-sm);
   }
   .explainer-body p {
     font-size: 12px;
     line-height: 1.6;
     color: var(--ink-2);
-    max-width: 72ch;
-    margin: 12px 0 0;
-  }
-
-  /* ── toolbar ────────────────────────────────────────────────── */
-  .app-toolbar {
-    flex: none;
-    display: flex;
-    align-items: center;
+    margin: 0;
   }
 
   /* ── view + chat surface fill the rest of the viewport ──────── */
@@ -598,6 +614,18 @@
   .chat-box-status.on {
     background: var(--green);
   }
+  /* Muted helper text to the right of the status. Truncates rather than wraps,
+     and drops out on narrow screens so the bar never overflows. */
+  .chat-box-hint {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--ink-3);
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .chat-box-actions {
     display: flex;
     gap: 8px;
@@ -650,8 +678,7 @@
     font-weight: 700;
     letter-spacing: 0.16em;
   }
-  .chat-gate-copy,
-  .chat-empty-copy {
+  .chat-gate-copy {
     font-size: 13px;
     line-height: 1.6;
     color: var(--ink-2);
@@ -662,17 +689,30 @@
     flex-wrap: wrap;
     gap: 10px;
   }
+  /* Inviting, tappable suggestions: a soft blue fill with a bolder blue left
+     edge so they read as calls to action, not plain outlines. Hover lifts with
+     a hard offset shadow and flips to the yellow accent. Still brutalist: ink
+     border, mono, full contrast. */
   .chat-example {
     font-family: var(--mono);
     font-size: 12px;
+    font-weight: 700;
     padding: 9px 13px;
     border: 1.5px solid var(--ink);
-    background: var(--paper);
+    border-left-width: 5px;
+    border-left-color: var(--blue);
+    background: color-mix(in srgb, var(--blue) 22%, var(--paper));
+    color: var(--ink);
     cursor: pointer;
-    transition: background 120ms ease;
+    transition:
+      background 120ms ease,
+      transform 120ms ease,
+      box-shadow 120ms ease;
   }
   .chat-example:hover {
     background: var(--accent);
+    transform: translate(-1px, -1px);
+    box-shadow: var(--shadow-hard-sm);
   }
 
   /* turns */
@@ -1005,6 +1045,9 @@
         calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
     }
     .explainer-hint {
+      display: none;
+    }
+    .chat-box-hint {
       display: none;
     }
     .chat-transcript {
