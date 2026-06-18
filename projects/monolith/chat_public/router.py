@@ -25,7 +25,15 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.db import get_session
-from chat_public import inference, limits, retrieval, sessions, summarizer, turnstile
+from chat_public import (
+    cache,
+    inference,
+    limits,
+    retrieval,
+    sessions,
+    summarizer,
+    turnstile,
+)
 from chat_public.db import get_chat_session
 from chat_public.models import ChatMessage, ChatSession
 from chat_public.retrieval import RetrievedNote
@@ -265,7 +273,28 @@ async def _turn_stream(
     and grounds the turn on public notes only (DB-enforced). A ``node_touched`` SSE
     event is emitted for each retrieved public note BEFORE the token stream, so the
     overlay can highlight them; the touched-node set IS the retrieved-note set.
+
+    Before any GPU work, an in-process response cache is consulted (keyed by the
+    normalized message + a prompt/model version + a public-notes watermark). A hit
+    replays the stored answer immediately over the same SSE path WITHOUT calling
+    vLLM and WITHOUT taking a reserved-headroom slot (a cached hit does no GPU
+    work, so it must never be shed as busy or consume a slot). A cache hit is
+    still a real turn: it is persisted to the transcript and the counters advance.
+    The cache is global only because the public web backend runs at
+    maxReplicas=1; if it ever scales out this becomes per-pod and a shared cache
+    (or precompute) is the Phase 6 follow-up (see chat_public.cache).
     """
+    # Cache lookup happens AFTER the per-session budget checks (run in the
+    # handler before this generator) and BEFORE the GPU slot, so a hit still
+    # respects per-session limits yet is never shed as busy.
+    cache_key, cached = cache.lookup(
+        read_db, message, _system_prompt(), inference.MODEL
+    )
+    if cached is not None:
+        async for frame in _replay_cached(db, session, message, cached):
+            yield frame
+        return
+
     if not limits.try_acquire_slot():
         logger.info("chat_public.message.shed reason=busy")
         yield format_sse("busy", {"code": "busy", "message": limits.BUSY_MESSAGE})
@@ -328,6 +357,16 @@ async def _turn_stream(
         )
         sessions.record_turn(db, session, tokens=turn_tokens)
 
+        # Store the completed answer for future identical turns. Only when the key
+        # is available (a watermark could be computed); otherwise caching is
+        # disabled for this turn and we simply do not store.
+        if cache_key is not None:
+            cache.store(
+                cache_key,
+                reply,
+                [{"id": n.note_id, "title": n.title} for n in retrieved],
+            )
+
         yield format_sse(
             "done",
             {
@@ -357,3 +396,66 @@ async def _turn_stream(
         )
     finally:
         limits.release_slot()
+
+
+async def _replay_cached(
+    db: Session, session: ChatSession, message: str, cached: cache.CachedResponse
+):
+    """Replay a cached answer over the SSE path: node_touched, token, done.
+
+    No GPU work and no reserved-headroom slot is involved (the answer is already
+    computed). The turn is still persisted to the server-authoritative transcript
+    and the per-session counters advance, exactly like a generated turn. Token
+    accounting falls back to the char-based estimate (there was no model usage),
+    so the per-session token budget still moves on a cache hit.
+    """
+    try:
+        # Repaint the same grounded nodes the original answer touched, before the
+        # text, mirroring the generated-turn ordering.
+        for note in cached.touched:
+            yield format_sse("node_touched", {"id": note["id"], "title": note["title"]})
+
+        sessions.append_message(
+            db,
+            session,
+            role="user",
+            content=message,
+            tokens=limits.estimate_tokens(message),
+        )
+
+        # The whole cached reply is replayed as a single token frame; the SSE
+        # contract is identical to the streamed path from the client's view.
+        yield format_sse("token", {"text": cached.text})
+
+        reply_tokens = limits.estimate_tokens(cached.text)
+        sessions.append_message(
+            db,
+            session,
+            role="assistant",
+            content=cached.text,
+            tokens=reply_tokens,
+        )
+        turn_tokens = limits.estimate_tokens(message) + reply_tokens
+        sessions.record_turn(db, session, tokens=turn_tokens)
+
+        yield format_sse(
+            "done",
+            {
+                "turn_count": session.turn_count,
+                "total_tokens": session.total_tokens,
+            },
+        )
+        logger.info(
+            "chat_public.message.cache_hit turn=%d total_tokens=%d",
+            session.turn_count,
+            session.total_tokens,
+        )
+    except Exception:
+        logger.exception("chat_public.message.cache_hit.error session=%s", session.id)
+        yield format_sse(
+            "error",
+            {
+                "code": "error",
+                "message": "Something went wrong generating a reply. Please try again.",
+            },
+        )

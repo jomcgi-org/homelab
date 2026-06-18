@@ -140,17 +140,10 @@
         onClose={() => (selectedId = null)}
         apiBase="/app/notes/body"
       />
-      {#if selectedId == null}
-        <!-- Empty state: nothing is selected on entry, so the detail panel is
-             a quiet placeholder until the visitor hovers (bar) or clicks a
-             node. No note is ever auto-opened (ADR 005, Phase 4 polish). -->
-        <aside class="note-placeholder">
-          <div class="note-placeholder-eyebrow">NOTE</div>
-          <p class="note-placeholder-copy">
-            Hover a node to see its title, or click one to read the note here.
-          </p>
-        </aside>
-      {/if}
+      <!-- No empty-state box on the default view: the toolbar already shows the
+           "hover a node" hint, and NotePanel overlays only once a node is
+           clicked, so the default view is just the graph canvas + search +
+           legend (no shadowed floating box). -->
     {/if}
   </div>
 </div>
@@ -239,30 +232,6 @@
     50% {
       opacity: 1;
     }
-  }
-  /* Empty-state panel: same placement as NotePanel's `.panel`, but quiet and
-     token-styled. Visible only while nothing is selected. */
-  .note-placeholder {
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    width: min(420px, 42vw);
-    background: var(--paper);
-    border: 1.5px solid var(--ink);
-    box-shadow: var(--shadow-hard);
-    padding: 16px 18px;
-    z-index: 6;
-  }
-  .note-placeholder-eyebrow {
-    font-size: 9px;
-    letter-spacing: 0.16em;
-    color: var(--ink-3);
-    margin-bottom: 6px;
-  }
-  .note-placeholder-copy {
-    font-size: 12px;
-    line-height: 1.55;
-    color: var(--ink-3);
   }
   .graph-error-copy {
     font-size: 13px;
