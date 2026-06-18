@@ -18,6 +18,15 @@ class SSEEmitter:
 
     Producers call emit() to push events. The endpoint iterates stream() to
     drain them as text/event-stream lines.
+
+    TODO(Phase 3): in Phase 1 the message endpoint is synchronous and fully
+    pre-populates the queue (canned echo) before stream() is ever awaited, so
+    there is no concurrent producer and asyncio.Queue's thread-safety is moot.
+    When real vLLM token streaming lands, tokens arrive incrementally from an
+    async context: make the endpoint async and await the model stream directly,
+    or push from the threadpool via loop.call_soon_threadsafe(). Do not keep
+    calling put_nowait() from a sync threadpool while stream() is awaited in the
+    event loop; that pattern is not safe under a live producer.
     """
 
     def __init__(self) -> None:
