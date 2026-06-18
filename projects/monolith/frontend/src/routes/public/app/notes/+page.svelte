@@ -222,9 +222,9 @@
        than buried at the bottom. -->
   <details class="explainer">
     <summary class="explainer-summary">
+      <span class="explainer-mark" aria-hidden="true">+</span>
       <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
       <span class="explainer-hint">An open model on my own cluster, no tools.</span>
-      <span class="explainer-mark" aria-hidden="true">+</span>
     </summary>
     <div class="explainer-body">
       <p>
@@ -490,9 +490,9 @@
     white-space: nowrap;
   }
   .explainer-mark {
-    margin-left: auto;
     font-size: 18px;
     line-height: 1;
+    color: var(--ink-3);
     transition: transform 150ms ease;
   }
   .explainer[open] .explainer-mark {

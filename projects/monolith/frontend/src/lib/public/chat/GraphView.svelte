@@ -152,7 +152,6 @@
   .graph-view {
     border: 2px solid var(--ink);
     background: var(--bg);
-    box-shadow: var(--shadow-hard-lg);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -249,7 +248,15 @@
     border: 2px solid var(--ink);
     background: var(--accent);
     cursor: pointer;
-    box-shadow: var(--shadow-hard-sm);
+  }
+
+  /* Flatten the reused graph chrome within this view (the shared components
+     carry a hard 4px offset shadow); scoped here so the private notes graph is
+     untouched and NotePanel does not need editing. */
+  .graph-view :global(.search),
+  .graph-view :global(.legend),
+  .graph-view :global(.panel) {
+    box-shadow: none;
   }
 
   @media (max-width: 640px) {
