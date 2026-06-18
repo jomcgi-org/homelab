@@ -110,10 +110,13 @@ py_venv_binary(
 
 # Stdlib-only generator: walks the repo tree (under BUILD_WORKSPACE_DIRECTORY
 # when run via `bazel run`) and writes the committed repo-docs manifest NDJSON.
-# Wired into the `format` multirun so the manifest stays in sync on every run.
+# Regenerates projects/monolith/knowledge/repo_docs_manifest.ndjson. Run via
+# `bazel run //projects/monolith:gen_repo_docs_manifest`; the manifest staleness
+# check in bazel/images/validate-generate-scripts.sh runs it in CI. No `imports`
+# attr: it is a standalone stdlib script (like add_visibility_field), and
+# imports = ["."] would repoint the venv main and break `bazel run`.
 py_venv_binary(
     name = "gen_repo_docs_manifest",
-    imports = ["."],  # keep
     main = "knowledge/tools/gen_repo_docs_manifest.py",
     visibility = ["//:__subpackages__"],
 )
