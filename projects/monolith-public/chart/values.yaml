@@ -1,6 +1,8 @@
-# Read-only public service (ADR 004 Phase 5). Un-meshed, no K8s API access,
-# connects to monolith-pg-ro as public_reader. The image tag is pinned by the
-# Bazel helm_images_values pipeline at build time; do not set a digest here.
+# Read-only public service (ADR 004 Phase 5). Linkerd-meshed (isolation via
+# Server/AuthorizationPolicy/EgressNetwork, see templates/linkerd-policy.yaml),
+# no K8s API access (automountServiceAccountToken false), connects to
+# monolith-pg-ro as public_reader. The image tag is pinned by the Bazel
+# helm_images_values pipeline at build time; do not set a digest here.
 #
 # The Deployment, Service, and ServiceAccount are rendered from the
 # homelab-library templates (homelab.deployment / homelab.service /
