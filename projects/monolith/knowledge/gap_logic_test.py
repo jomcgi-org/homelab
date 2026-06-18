@@ -10,7 +10,6 @@ fills the remaining coverage:
 * Phase-A discardable-stub rewriting with KNOWLEDGE_GAPS_REWRITE_DISCARDABLE
 * Phase-B tombstoning of discardable gaps with no remaining source refs
 * ``classify_gaps`` edge case: no pending gaps + no classifier (no warning)
-* ``answer_gap`` multiple-collision suffix (-2, -3 …)
 
 Fixture style mirrors ``gap_lifecycle_test.py``:
   - in-memory SQLite with schema-strip (no real Postgres needed)
@@ -32,7 +31,6 @@ from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gaps import (
     GAPS_PIPELINE_VERSION,
     _rewrite_sources,
-    answer_gap,
     classify_gaps,
     discover_gaps,
     list_review_queue,
@@ -761,70 +759,3 @@ class TestListReviewQueueEdgeCases:
         queue = list_review_queue(session)
         assert [row["term"] for row in queue] == ["ext"]
         assert queue[0]["gap_class"] == "external"
-
-
-# ---------------------------------------------------------------------------
-# answer_gap - collision suffix escalation
-# ---------------------------------------------------------------------------
-
-
-class TestAnswerGapCollisionSuffix:
-    """Multi-level filename collision resolution (-1, -2, ...)."""
-
-    def _seed_gap(self, session: Session, term: str) -> int:
-        gap = Gap(
-            term=term,
-            context="",
-            gap_class="internal",
-            state="in_review",
-            pipeline_version=GAPS_PIPELINE_VERSION,
-        )
-        session.add(gap)
-        session.commit()
-        session.refresh(gap)
-        return gap.id
-
-    def test_second_collision_gets_minus_two_suffix(self, session, tmp_path):
-        """When both slug.md and slug-1.md exist, answer_gap must use slug-2.md."""
-        gap_id = self._seed_gap(session, "Multi Level")
-
-        processed = tmp_path / "_processed"
-        processed.mkdir(parents=True)
-        (processed / "multi-level.md").write_text("first")
-        (processed / "multi-level-1.md").write_text("second")
-
-        result = answer_gap(session, gap_id, "the answer", tmp_path)
-
-        assert result["note_id"] == "multi-level-2"
-        assert result["path"] == "_processed/multi-level-2.md"
-        assert (processed / "multi-level-2.md").is_file()
-        # Original files untouched.
-        assert (processed / "multi-level.md").read_text() == "first"
-        assert (processed / "multi-level-1.md").read_text() == "second"
-
-    def test_no_collision_uses_bare_slug(self, session, tmp_path):
-        """Happy path: no pre-existing file -> bare slug.md used."""
-        gap_id = self._seed_gap(session, "Fresh Term")
-
-        result = answer_gap(session, gap_id, "some answer", tmp_path)
-
-        assert result["note_id"] == "fresh-term"
-        assert result["path"] == "_processed/fresh-term.md"
-
-    def test_frontmatter_id_matches_filename_stem_after_collision(
-        self, session, tmp_path
-    ):
-        """The ``id`` in frontmatter must equal the collision-resolved stem."""
-        gap_id = self._seed_gap(session, "Clash")
-
-        processed = tmp_path / "_processed"
-        processed.mkdir(parents=True)
-        (processed / "clash.md").write_text("existing")
-
-        result = answer_gap(session, gap_id, "content", tmp_path)
-
-        file_path = tmp_path / result["path"]
-        _, fm_block, _ = file_path.read_text().split("---\n", 2)
-        fm = yaml.safe_load(fm_block)
-        # id in frontmatter must match the collision-resolved note_id.
-        assert fm["id"] == result["note_id"]  # "clash-1", not "clash"

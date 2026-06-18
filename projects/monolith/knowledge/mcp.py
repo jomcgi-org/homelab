@@ -438,20 +438,19 @@ async def get_review_queue() -> dict:
 
 @mcp.tool
 async def answer_gap(gap_id: int, answer: str) -> dict:
-    """Answer an in-review gap, emitting a personal-tier atom in the vault.
+    """Answer an in-review gap, emitting a personal-tier atom fileless.
 
-    Writes a new markdown file under ``<vault>/_processed/`` with
-    ``source_tier: personal`` and marks the gap as committed.
+    Indexes a new atom straight into Postgres with source_tier personal and
+    visibility private, then marks the gap as committed. No filesystem.
 
     Args:
-        gap_id: The id of a gap currently in ``state='in_review'``.
+        gap_id: The id of a gap currently in state in_review.
         answer: The user's answer text. May not contain a frontmatter
-            terminator (a line containing only ``---``).
+            terminator (a line containing only three dashes).
     """
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
     with Session(get_engine()) as session:
         try:
-            return _answer_gap(session, gap_id, answer, vault_root)
+            return await _answer_gap(session, gap_id, answer)
         except ValueError as exc:
             return {"error": str(exc)}
 
@@ -546,6 +545,83 @@ async def get_raw(raw_id: str) -> dict:
     return {"raw_id": raw_id, "content": content, "source": source}
 
 
+async def _index_atom(
+    session: Session,
+    *,
+    title: str,
+    body: str,
+    type: str,
+    visibility: str,
+    source_tier: str | None = None,
+    tags: list[str] | None = None,
+    aliases: list[str] | None = None,
+    edges: dict[str, list[str]] | None = None,
+    derived_from_raw: str | None = None,
+    status: str | None = None,
+    size: str | None = None,
+    due: str | None = None,
+    blocked_by: list[str] | None = None,
+) -> str:
+    """Build and index a fileless atom into Postgres, returning its note_id.
+
+    The shared core behind both create_atom (gardener and research routine)
+    and answer_gap (user-answered gaps). Resolves a DB-unique note_id from the
+    slugified title, serializes frontmatter, and indexes the note under the
+    open session. source_tier is emitted only when provided (create_atom never
+    sets it, answer_gap sets personal).
+
+    The caller owns the gap-resolution step (resolve_gaps_for_note): it lives
+    in create_atom only, so callers that manage their own gap state
+    (answer_gap) do not double-resolve.
+    """
+    store = KnowledgeStore(session)
+
+    # Resolve a unique note_id against the DB (fileless: no filesystem
+    # collision check). The slug stem becomes the stable id.
+    base = _slugify(title)
+    note_id = base
+    counter = 1
+    while store.get_note_by_id(note_id) is not None:
+        note_id = f"{base}-{counter}"
+        counter += 1
+
+    fm_dict: dict[str, object] = {
+        "id": note_id,
+        "title": title,
+        "type": type,
+        "visibility": visibility,
+    }
+    if source_tier is not None:
+        fm_dict["source_tier"] = source_tier
+    if derived_from_raw is not None:
+        fm_dict["derived_from_raw"] = derived_from_raw
+    if tags:
+        fm_dict["tags"] = list(tags)
+    if aliases:
+        fm_dict["aliases"] = list(aliases)
+    if edges:
+        fm_dict["edges"] = {k: list(v) for k, v in edges.items()}
+    if type == "active":
+        fm_dict["status"] = status
+        fm_dict["size"] = size
+        if due is not None:
+            fm_dict["due"] = due
+        if blocked_by:
+            fm_dict["blocked_by"] = list(blocked_by)
+
+    fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
+    raw = f"---\n{fm_str}---\n\n{body.strip()}\n"
+
+    await index_note_from_raw(
+        store,
+        EmbeddingClient(),
+        note_id=note_id,
+        rel_path=f"_processed/{note_id}.md",
+        raw=raw,
+    )
+    return note_id
+
+
 @mcp.tool
 async def create_atom(
     title: str,
@@ -612,52 +688,27 @@ async def create_atom(
                 }
 
     with Session(get_engine()) as session:
-        store = KnowledgeStore(session)
-
-        # Resolve a unique note_id against the DB (fileless: no filesystem
-        # collision check). The slug stem becomes the stable id.
-        base = _slugify(title)
-        note_id = base
-        counter = 1
-        while store.get_note_by_id(note_id) is not None:
-            note_id = f"{base}-{counter}"
-            counter += 1
-
-        fm_dict: dict[str, object] = {
-            "id": note_id,
-            "title": title,
-            "type": type,
-            "visibility": visibility,
-        }
-        if derived_from_raw is not None:
-            fm_dict["derived_from_raw"] = derived_from_raw
-        if tags:
-            fm_dict["tags"] = list(tags)
-        if aliases:
-            fm_dict["aliases"] = list(aliases)
-        if edges:
-            fm_dict["edges"] = {k: list(v) for k, v in edges.items()}
-        if type == "active":
-            fm_dict["status"] = status
-            fm_dict["size"] = size
-            if due is not None:
-                fm_dict["due"] = due
-            if blocked_by:
-                fm_dict["blocked_by"] = list(blocked_by)
-
-        fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
-        raw = f"---\n{fm_str}---\n\n{body.strip()}\n"
-
-        await index_note_from_raw(
-            store,
-            EmbeddingClient(),
-            note_id=note_id,
-            rel_path=f"_processed/{note_id}.md",
-            raw=raw,
+        note_id = await _index_atom(
+            session,
+            title=title,
+            body=body,
+            type=type,
+            visibility=visibility,
+            tags=tags,
+            aliases=aliases,
+            edges=edges,
+            derived_from_raw=derived_from_raw,
+            status=status,
+            size=size,
+            due=due,
+            blocked_by=blocked_by,
         )
 
         # Close any open gap whose term this atom now defines (research
         # routine + gardener both land here). Same session as the index.
+        # NOTE: this stays in create_atom, NOT in _index_atom, because
+        # answer_gap drives its own gap-state transition and must not
+        # double-resolve through the shared index helper.
         resolve_gaps_for_note(
             session,
             note_id=note_id,

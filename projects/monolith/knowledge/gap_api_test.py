@@ -7,9 +7,9 @@ Uses the same in-memory SQLite + TestClient fixture pattern as
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
@@ -254,7 +254,7 @@ class TestReviewQueue:
 class TestAnswerGap:
     """POST /api/knowledge/gaps/{gap_id}/answer."""
 
-    def test_happy_path_writes_file(self, client, session, tmp_path):
+    def test_happy_path_commits_gap_fileless(self, client, session):
         src = _make_source_note(session)
         gap = _make_gap(
             session,
@@ -264,33 +264,32 @@ class TestAnswerGap:
             gap_class="internal",
         )
 
-        r = client.post(
-            f"/api/knowledge/gaps/{gap.id}/answer",
-            json={"answer": "Linkerd uses per-pod sidecars on port 4143."},
-        )
+        # The atom build+index is the shared fileless core; mock it so the
+        # endpoint stays a unit test (no embeddings, no network) and assert
+        # the gap commit + response shape.
+        index = AsyncMock(return_value="linkerd-mtls")
+        with patch("knowledge.mcp._index_atom", index):
+            r = client.post(
+                f"/api/knowledge/gaps/{gap.id}/answer",
+                json={"answer": "Linkerd uses per-pod sidecars on port 4143."},
+            )
 
         assert r.status_code == 200
         body = r.json()
-        assert body["gap_id"] == gap.id
-        assert body["note_id"] == "linkerd-mtls"
-        assert body["path"] == "_processed/linkerd-mtls.md"
+        assert body == {"gap_id": gap.id, "note_id": "linkerd-mtls"}
 
-        written = (tmp_path / body["path"]).read_text()
-        _, fm_block, note_body = written.split("---\n", 2)
-        fm = yaml.safe_load(fm_block)
-        assert fm == {
-            "id": "linkerd-mtls",
-            "title": "Linkerd mTLS",
-            "type": "atom",
-            "source_tier": "personal",
-            "visibility": "private",
-        }
-        assert "Linkerd uses per-pod sidecars" in note_body
+        index.assert_awaited_once()
+        kwargs = index.call_args.kwargs
+        assert kwargs["title"] == "Linkerd mTLS"
+        assert kwargs["visibility"] == "private"
+        assert kwargs["source_tier"] == "personal"
+        assert "Linkerd uses per-pod sidecars" in kwargs["body"]
 
         # Refresh in-session view — gap should be committed.
         session.expire_all()
         reloaded = session.get(Gap, gap.id)
         assert reloaded.state == "committed"
+        assert reloaded.note_id == "linkerd-mtls"
 
     def test_unknown_gap_id_returns_404(self, client):
         r = client.post(

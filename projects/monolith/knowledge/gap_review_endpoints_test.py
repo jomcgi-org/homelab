@@ -9,6 +9,7 @@ Uses the same in-memory SQLite + ``TestClient`` pattern as
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -519,7 +520,8 @@ class TestReviewQueueModes:
 
 
 class TestAnswerGapSetsHumanVerified:
-    def test_answer_sets_human_verified_true(self, session, tmp_path):
+    @pytest.mark.asyncio
+    async def test_answer_sets_human_verified_true(self, session):
         """Direct call to answer_gap (no HTTP) must mark human_verified."""
         _make_source_note(session)
         gap = _make_gap(
@@ -530,7 +532,10 @@ class TestAnswerGapSetsHumanVerified:
             human_verified=False,
         )
 
-        answer_gap(session, gap.id, "user-written answer", tmp_path)
+        with patch(
+            "knowledge.mcp._index_atom", AsyncMock(return_value="answer-verifies")
+        ):
+            await answer_gap(session, gap.id, "user-written answer")
 
         session.expire_all()
         reloaded = session.get(Gap, gap.id)

@@ -492,15 +492,14 @@ def _map_gap_error(exc: ValueError) -> HTTPException:
 
 
 @router.post("/gaps/{gap_id}/answer")
-def answer_gap_endpoint(
+async def answer_gap_endpoint(
     gap_id: int,
     data: AnswerGapRequest,
     session: Session = Depends(get_session),
 ) -> dict:
     """Commit a user answer for a gap and emit a personal-tier atom."""
-    vault_root = get_vault_root()
     try:
-        return answer_gap(session, gap_id, data.answer, vault_root)
+        return await answer_gap(session, gap_id, data.answer)
     except ValueError as exc:
         # TODO(post-mvp): refactor gaps.py to raise typed exceptions
         # (GapNotFoundError, GapWrongStateError, GapAnswerRejectedError) so this

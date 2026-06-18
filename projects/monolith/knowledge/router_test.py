@@ -600,7 +600,6 @@ class TestAnswerGapEndpoint:
         expected = {
             "gap_id": 1,
             "note_id": "linkerd-mtls",
-            "path": "_processed/linkerd-mtls.md",
         }
         with patch("knowledge.router.answer_gap") as mock_answer:
             mock_answer.return_value = expected
@@ -615,14 +614,14 @@ class TestAnswerGapEndpoint:
     def test_answer_and_gap_id_forwarded_to_answer_gap(self, note_client):
         """gap_id and answer string are forwarded positionally to answer_gap."""
         with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.return_value = {"gap_id": 42, "note_id": "x", "path": "x.md"}
+            mock_answer.return_value = {"gap_id": 42, "note_id": "x"}
             note_client.post(
                 "/api/knowledge/gaps/42/answer",
                 json={"answer": "my answer text"},
             )
 
             args, _ = mock_answer.call_args
-            # answer_gap(session, gap_id, answer, vault_root)
+            # answer_gap(session, gap_id, answer)
             assert args[1] == 42
             assert args[2] == "my answer text"
 

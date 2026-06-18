@@ -7,10 +7,9 @@ tools run their real ``Session(get_engine())`` path.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-import yaml
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
@@ -237,8 +236,7 @@ class TestReviewQueueTool:
 
 class TestAnswerGapTool:
     @pytest.mark.asyncio
-    async def test_happy_path(self, session, patched_engine, tmp_path, monkeypatch):
-        monkeypatch.setenv("VAULT_ROOT", str(tmp_path))
+    async def test_happy_path(self, session, patched_engine):
         src = _make_source_note(session)
         gap = _make_gap(
             session,
@@ -248,22 +246,24 @@ class TestAnswerGapTool:
             gap_class="internal",
         )
 
-        result = await answer_gap(gap.id, "Linkerd uses per-pod sidecars on 4143.")
+        # The fileless atom build+index is the shared core; mock it so this
+        # stays a unit test (no embeddings) and assert the gap commit + the
+        # personal/private framing passed through.
+        index = AsyncMock(return_value="linkerd-mtls")
+        with patch("knowledge.mcp._index_atom", index):
+            result = await answer_gap(gap.id, "Linkerd uses per-pod sidecars on 4143.")
 
-        assert result["gap_id"] == gap.id
-        assert result["note_id"] == "linkerd-mtls"
-        assert result["path"] == "_processed/linkerd-mtls.md"
-
-        written = (tmp_path / result["path"]).read_text()
-        _, fm_block, body = written.split("---\n", 2)
-        fm = yaml.safe_load(fm_block)
-        assert fm["id"] == "linkerd-mtls"
-        assert fm["source_tier"] == "personal"
-        assert "Linkerd uses per-pod sidecars" in body
+        assert result == {"gap_id": gap.id, "note_id": "linkerd-mtls"}
+        index.assert_awaited_once()
+        kwargs = index.call_args.kwargs
+        assert kwargs["source_tier"] == "personal"
+        assert kwargs["visibility"] == "private"
+        assert kwargs["title"] == "Linkerd mTLS"
 
         session.expire_all()
         reloaded = session.get(Gap, gap.id)
         assert reloaded.state == "committed"
+        assert reloaded.note_id == "linkerd-mtls"
 
     @pytest.mark.asyncio
     async def test_unknown_id_returns_error_dict(

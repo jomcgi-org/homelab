@@ -5,7 +5,7 @@ Exercises all components in one flow:
   mock classifier           → simulates Claude editing stub frontmatter
   _project_gap_frontmatter  → projects frontmatter → DB (gap_class, state, version)
   list_review_queue         → surfaces the classified gap
-  answer_gap                → writes atom + deletes stub + commits Gap
+  answer_gap                → indexes atom fileless + commits Gap
 
 The only mock is the classifier itself (we don't spawn claude subprocesses
 in tests). Everything else uses real SQLite + real filesystem.
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
@@ -84,9 +85,10 @@ def _classifier_mock(stub: Path, gap_class: str, *, status: str) -> None:
     stub.write_text(f"---\n{new_fm}---\n{body}")
 
 
-def test_full_gap_cycle(session: Session, tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_full_gap_cycle(session: Session, tmp_path: Path) -> None:
     """Drive a single gap through the full lifecycle and assert the
-    terminal state: atom present, stub absent, Gap committed."""
+    terminal state: atom indexed fileless, Gap committed."""
     # Step 1: Seed a source note referencing an unresolved [[wikilink]].
     source = Note(
         note_id="source",
@@ -148,33 +150,29 @@ def test_full_gap_cycle(session: Session, tmp_path: Path) -> None:
     assert queue[0]["term"] == "linkerd-mtls"
     assert queue[0]["gap_class"] == "internal"
 
-    # Step 6: User answers the gap via answer_gap.
-    result = answer_gap(
-        session,
-        gap.id,
-        "Linkerd mTLS provides mutual TLS authentication between meshed services.",
-        tmp_path,
-    )
+    # Step 6: User answers the gap via answer_gap (fileless). The shared
+    # atom build+index core is mocked so this stays a DB-only integration
+    # test; the contract under test here is the gap-state transition.
+    index = AsyncMock(return_value="linkerd-mtls")
+    with patch("knowledge.mcp._index_atom", index):
+        result = await answer_gap(
+            session,
+            gap.id,
+            "Linkerd mTLS provides mutual TLS authentication between meshed services.",
+        )
 
-    assert result["gap_id"] == gap.id
-    assert result["note_id"] == "linkerd-mtls"
-    assert result["path"] == "_processed/linkerd-mtls.md"
+    assert result == {"gap_id": gap.id, "note_id": "linkerd-mtls"}
 
-    # Terminal assertions:
-    # 1. Atom exists at _processed/linkerd-mtls.md with source_tier: personal
-    atom_path = tmp_path / "_processed" / "linkerd-mtls.md"
-    assert atom_path.is_file()
-    atom_text = atom_path.read_text()
-    atom_fm = yaml.safe_load(atom_text.split("---\n", 2)[1])
-    assert atom_fm["source_tier"] == "personal"
-    assert atom_fm["id"] == "linkerd-mtls"
-    assert atom_fm["type"] == "atom"
+    # The atom was built with the personal/private framing.
+    index.assert_awaited_once()
+    kwargs = index.call_args.kwargs
+    assert kwargs["source_tier"] == "personal"
+    assert kwargs["visibility"] == "private"
+    assert kwargs["title"] == "linkerd-mtls"
 
-    # 2. Stub deleted (Task 8's cleanup)
-    assert not stub_path.exists()
-
-    # 3. Gap is committed with resolved_at set
+    # Terminal assertion: Gap is committed with note_id + resolved_at set.
     session.refresh(gap)
     assert gap.state == "committed"
+    assert gap.note_id == "linkerd-mtls"
     assert gap.answer is not None
     assert gap.resolved_at is not None
