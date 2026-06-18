@@ -54,6 +54,7 @@ multirun(
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
         "//projects/monolith/frontend:image.push",
+        "//projects/monolith/frontend:image_public.push",
         "//projects/monolith/obsidian-image:image.push",
         "//projects/monolith:image.push",
         "//projects/monolith:image_public.push",
