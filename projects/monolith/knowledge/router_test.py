@@ -1,12 +1,11 @@
 """Unit tests for knowledge/router.py — /search and /notes endpoints."""
 
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from app.db import get_session
@@ -15,7 +14,7 @@ from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
 from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.router import get_embedding_client
-from knowledge.service import VAULT_ROOT_ENV
+from knowledge.notes import VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
 
 FAKE_EMBEDDING = [0.1] * 1024
@@ -540,15 +539,13 @@ class TestReviewQueueEndpoint:
             mock_queue.return_value = []
             note_client.get("/api/knowledge/gaps/review-queue")
 
-            # vault_root kwarg added to support stub_body reading off disk
-            # in _gap_to_dict; assert it's forwarded but don't pin its
-            # exact value (vault root is env-derived).
+            # The gap review-queue is pure-DB now; no vault_root kwarg.
             mock_queue.assert_called_once()
             call = mock_queue.call_args
             assert call.args == (fake_session,)
             assert call.kwargs.get("mode") == "pending"
             assert call.kwargs.get("limit") == 50
-            assert "vault_root" in call.kwargs
+            assert "vault_root" not in call.kwargs
 
     def test_mode_audit_forwarded(self, note_client, fake_session):
         """mode=audit is forwarded to list_gaps_for_review."""
@@ -561,7 +558,7 @@ class TestReviewQueueEndpoint:
             assert call.args == (fake_session,)
             assert call.kwargs.get("mode") == "audit"
             assert call.kwargs.get("limit") == 50
-            assert "vault_root" in call.kwargs
+            assert "vault_root" not in call.kwargs
 
     def test_invalid_mode_rejected(self, note_client):
         """mode= must be one of pending|audit (FastAPI Literal validation)."""
@@ -695,74 +692,6 @@ class TestAnswerGapEndpoint:
             )
 
         assert r.json().get("detail") == msg
-
-
-class TestApproveGapEndpoint:
-    """Tests for POST /api/knowledge/gaps/{gap_id}/approve.
-
-    The endpoint delegates to approve_gap() and maps ValueError messages
-    to specific HTTP status codes via the shared _map_gap_error helper:
-      - "Gap not found"        → 404
-      - "expected 'in_review'" → 409 (wrong state)
-      - "expected 'external'"  → 409 (wrong class)
-      - any other ValueError   → 400
-    """
-
-    def test_happy_path_returns_approve_gap_result(self, note_client, fake_session):
-        """Successful approve_gap() result is returned directly; (session, gap_id,
-        vault_root) forwarded. Endpoint now resolves vault_root from env so
-        approve_gap can sync the stub's status field — see the v2 gating fix."""
-        expected = {
-            "id": 1,
-            "state": "classified",
-            "gap_class": "external",
-            "human_verified": True,
-        }
-        with patch("knowledge.router.approve_gap") as mock_approve:
-            mock_approve.return_value = expected
-            r = note_client.post("/api/knowledge/gaps/1/approve")
-
-        assert r.status_code == 200
-        assert r.json() == expected
-        # vault_root is resolved by _get_vault_root() at request time; we
-        # only need to confirm the positional forwarding shape, not the
-        # exact path string.
-        mock_approve.assert_called_once()
-        call_args = mock_approve.call_args
-        assert call_args.args[0] is fake_session
-        assert call_args.args[1] == 1
-        assert isinstance(call_args.args[2], Path)
-
-    def test_unknown_id_returns_404(self, note_client):
-        """ValueError containing 'Gap not found' maps to HTTP 404."""
-        with patch("knowledge.router.approve_gap") as mock_approve:
-            mock_approve.side_effect = ValueError("Gap not found: id=999999")
-            r = note_client.post("/api/knowledge/gaps/999999/approve")
-
-        assert r.status_code == 404
-        assert "Gap not found" in r.json().get("detail", "")
-
-    def test_wrong_state_returns_409(self, note_client):
-        """ValueError containing 'expected in_review' maps to HTTP 409."""
-        with patch("knowledge.router.approve_gap") as mock_approve:
-            mock_approve.side_effect = ValueError(
-                "Gap 1 is in state 'classified', expected 'in_review'"
-            )
-            r = note_client.post("/api/knowledge/gaps/1/approve")
-
-        assert r.status_code == 409
-        assert "expected 'in_review'" in r.json().get("detail", "")
-
-    def test_wrong_class_returns_409(self, note_client):
-        """ValueError containing 'expected external' maps to HTTP 409."""
-        with patch("knowledge.router.approve_gap") as mock_approve:
-            mock_approve.side_effect = ValueError(
-                "Gap 1 has gap_class 'internal', expected 'external'"
-            )
-            r = note_client.post("/api/knowledge/gaps/1/approve")
-
-        assert r.status_code == 409
-        assert "expected 'external'" in r.json().get("detail", "")
 
 
 # The _meta/_upsert helpers below mirror the equivalents in store_test.py

@@ -16,7 +16,6 @@ from sqlmodel.pool import StaticPool
 from knowledge.gaps import GAPS_PIPELINE_VERSION
 from knowledge.mcp import (
     answer_gap,
-    approve_research_gap,
     get_review_queue,
     list_gaps,
 )
@@ -309,49 +308,3 @@ class TestAnswerGapTool:
         result = await answer_gap(gap.id, "foo\n---\nbar")
         assert "error" in result
         assert "frontmatter terminator" in result["error"]
-
-
-class TestApproveResearchGapTool:
-    @pytest.mark.asyncio
-    async def test_happy_path(self, session, patched_engine):
-        """approve_research_gap flips in_review external -> classified."""
-        src = _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="merkle-tree",
-            source_fk=src.id,
-            state="in_review",
-            gap_class="external",
-        )
-
-        result = await approve_research_gap(gap.id)
-
-        assert "error" not in result
-        assert result["state"] == "classified"
-
-        session.expire_all()
-        reloaded = session.get(Gap, gap.id)
-        assert reloaded.state == "classified"
-        assert reloaded.human_verified is True
-
-    @pytest.mark.asyncio
-    async def test_unknown_id_returns_error_dict(self, patched_engine):
-        result = await approve_research_gap(9999)
-        assert "error" in result
-        assert "Gap not found" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_wrong_class_returns_error_dict(self, session, patched_engine):
-        """Internal/hybrid gaps cannot be approved; tool returns error dict."""
-        src = _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="my-therapist",
-            source_fk=src.id,
-            state="in_review",
-            gap_class="internal",
-        )
-
-        result = await approve_research_gap(gap.id)
-        assert "error" in result
-        assert "expected 'external'" in result["error"]

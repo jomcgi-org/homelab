@@ -51,11 +51,8 @@ class TestComputeLayout:
     # removed because FA2 doesn't have a stable orientation on small
     # graphs — the cluster can rotate/reflect between passes even when
     # seeded with the previous output, so any small-graph drift threshold
-    # is fragile. The integration test
-    # ``test_reconcile_handler_preserves_positions_across_no_op_cycles``
-    # in service_test.py exercises the same property end-to-end on a
-    # realistic fixture, which is where the practical "no teleporting"
-    # contract actually lives.
+    # is fragile. The layout-handler integration tests in service_test.py
+    # exercise the pass end-to-end on a realistic fixture.
 
     def test_compute_layout_places_new_node_finitely(self):
         """A newcomer joining a prior-positioned graph gets a finite (x, y)."""

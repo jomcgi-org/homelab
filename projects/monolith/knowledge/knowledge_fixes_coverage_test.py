@@ -6,10 +6,6 @@ store.py
   - upsert_note: note_id fallback lookup when path changes mid-cycle
     (commit 57b1049: handle note_id collision when path changes during upsert)
 
-reconciler.py
-  - _write_back_id: CRLF (\\r\\n) frontmatter branch
-  - _pre_sync_links: exception is swallowed and never blocks reconcile
-
 store.py – raws_needing_decomposition (tiering lifted from the retired
 in-pod gardener; the decomposition itself now runs as a remote claude.ai
 routine, see ADR 006 Phase 4c)
@@ -27,7 +23,6 @@ migrate_raw_bucketing.py
   - _grandfather_atoms: inserts pre-migration sentinel for each atom
   - _grandfather_atoms: idempotent — skips atoms that already have a sentinel
   - _grandfather_atoms: handles fact and active note types
-  - _write_back_id (reconciler): no-frontmatter else branch uses LF and prepends block
 """
 
 from __future__ import annotations
@@ -178,153 +173,6 @@ class TestUpsertNoteNoteIdFallback:
         chunks = session.exec(select(Chunk)).all()
         assert len(chunks) == 1
         assert chunks[0].chunk_text == "new chunk"
-
-
-# ---------------------------------------------------------------------------
-# reconciler.py – _write_back_id: CRLF frontmatter branch
-# ---------------------------------------------------------------------------
-
-
-class TestWriteBackIdCRLF:
-    """_write_back_id preserves CRLF line endings when the frontmatter
-    block opens with '---\\r\\n'."""
-
-    def test_crlf_frontmatter_inserts_id_with_crlf(self, tmp_path):
-        from unittest.mock import MagicMock
-        from knowledge.reconciler import Reconciler
-
-        rec = Reconciler(
-            store=MagicMock(),
-            embed_client=MagicMock(),
-            vault_root=tmp_path,
-        )
-        note_file = tmp_path / "crlf_note.md"
-        # Windows-style line endings in frontmatter
-        raw = "---\r\ntitle: CRLF Note\r\n---\r\nBody text.\r\n"
-        note_file.write_bytes(raw.encode("utf-8"))
-
-        new_raw, new_hash = rec._write_back_id(note_file, raw, "crlf-note")
-
-        # The id line must be inserted using CRLF.
-        assert "---\r\nid: crlf-note\r\n" in new_raw
-        # Original content must be preserved.
-        assert "title: CRLF Note" in new_raw
-        assert "Body text." in new_raw
-        # Hash must match the new content.
-        import hashlib
-
-        expected_hash = hashlib.sha256(new_raw.encode("utf-8")).hexdigest()
-        assert new_hash == expected_hash
-        # File updated on disk.
-        assert note_file.read_bytes() == new_raw.encode("utf-8")
-
-    def test_crlf_frontmatter_not_mixed_with_lf(self, tmp_path):
-        """The injected id line must use \\r\\n, not \\n, so no CRLF/LF mixing."""
-        from unittest.mock import MagicMock
-        from knowledge.reconciler import Reconciler
-
-        rec = Reconciler(
-            store=MagicMock(),
-            embed_client=MagicMock(),
-            vault_root=tmp_path,
-        )
-        note_file = tmp_path / "crlf2.md"
-        raw = "---\r\ntitle: Mixed\r\n---\r\nBody.\r\n"
-        note_file.write_bytes(raw.encode("utf-8"))
-
-        new_raw, _ = rec._write_back_id(note_file, raw, "mixed-note")
-
-        # There must be no bare LF (i.e. LF not preceded by CR) in the header.
-        lines = new_raw.split("\r\n")
-        # Every line split by CRLF must not itself contain a bare LF.
-        for line in lines:
-            assert "\n" not in line, f"Bare LF found in line: {line!r}"
-
-
-# ---------------------------------------------------------------------------
-# reconciler.py – _pre_sync_links: exception must not block reconcile
-# ---------------------------------------------------------------------------
-
-
-class TestPreSyncLinksException:
-    """Per-file exceptions inside _pre_sync_links are swallowed by its
-    internal try/except — the method is best-effort and must log a warning
-    but never propagate to the caller."""
-
-    def test_per_file_exception_is_swallowed_and_logged(
-        self, session, tmp_path, caplog
-    ):
-        """When _read_text raises for one file, _pre_sync_links logs a
-        warning and does not propagate the exception."""
-        from unittest.mock import AsyncMock
-        from knowledge.reconciler import Reconciler
-        from knowledge.store import KnowledgeStore
-
-        processed = tmp_path / "_processed"
-        processed.mkdir()
-        (processed / "bad.md").write_text(
-            "---\nid: bad\ntitle: Bad\n---\nBody.", encoding="utf-8"
-        )
-
-        rec = Reconciler(
-            store=KnowledgeStore(session=session),
-            embed_client=AsyncMock(),
-            vault_root=tmp_path,
-        )
-
-        original_read_text = rec._read_text
-
-        def raise_for_bad(path: Path) -> str:
-            if "bad.md" in str(path):
-                raise OSError("simulated read error")
-            return original_read_text(path)
-
-        rec._read_text = raise_for_bad  # type: ignore[method-assign]
-
-        with caplog.at_level(logging.WARNING, logger="monolith.knowledge.reconciler"):
-            # Must not raise
-            rec._pre_sync_links()
-
-        assert any("failed to pre-sync links" in r.message for r in caplog.records)
-
-    def test_per_file_exception_does_not_affect_other_files(self, session, tmp_path):
-        """A per-file exception in _pre_sync_links does not affect other
-        files in the same pass — the loop continues normally."""
-        from unittest.mock import AsyncMock
-        from knowledge.reconciler import Reconciler
-        from knowledge.store import KnowledgeStore
-
-        processed = tmp_path / "_processed"
-        processed.mkdir()
-        (processed / "bad.md").write_text(
-            "---\nid: bad\ntitle: Bad\n---\nBody.", encoding="utf-8"
-        )
-        (processed / "good.md").write_text(
-            "---\nid: good\ntitle: Good\n---\nBody.", encoding="utf-8"
-        )
-
-        rec = Reconciler(
-            store=KnowledgeStore(session=session),
-            embed_client=AsyncMock(),
-            vault_root=tmp_path,
-        )
-
-        original_read_text = rec._read_text
-        read_count = {"n": 0}
-
-        def raise_for_bad(path: Path) -> str:
-            if "bad.md" in str(path):
-                raise OSError("simulated read error")
-            read_count["n"] += 1
-            return original_read_text(path)
-
-        rec._read_text = raise_for_bad  # type: ignore[method-assign]
-
-        # Must not raise and must have read the good file.
-        rec._pre_sync_links()
-        assert read_count["n"] >= 1, (
-            "good.md must have been read despite bad.md failing"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -547,62 +395,6 @@ class TestGrandfatherAtoms:
 
         result = _grandfather_atoms(session)
         assert result == 0
-
-
-# ---------------------------------------------------------------------------
-# reconciler.py – _write_back_id: no-frontmatter else branch
-# ---------------------------------------------------------------------------
-
-
-class TestWriteBackIdNoBranch:
-    """_write_back_id prepends a new YAML frontmatter block when the file has
-    no existing frontmatter (the else branch).  This complements the CRLF
-    branch tested in TestWriteBackIdCRLF."""
-
-    def test_no_frontmatter_prepends_yaml_block(self, tmp_path):
-        """When raw does not start with '---', a new frontmatter block is
-        prepended using LF line endings."""
-        from unittest.mock import MagicMock
-        from knowledge.reconciler import Reconciler
-        import hashlib
-
-        rec = Reconciler(
-            store=MagicMock(),
-            embed_client=MagicMock(),
-            vault_root=tmp_path,
-        )
-        note_file = tmp_path / "bare.md"
-        raw = "Just plain text.\nNo frontmatter at all.\n"
-        note_file.write_text(raw, encoding="utf-8")
-
-        new_raw, new_hash = rec._write_back_id(note_file, raw, "my-note-id")
-
-        assert new_raw.startswith("---\nid: my-note-id\n---\n")
-        assert "Just plain text." in new_raw
-        # Hash must match the new content
-        expected_hash = hashlib.sha256(new_raw.encode("utf-8")).hexdigest()
-        assert new_hash == expected_hash
-        # File on disk updated
-        assert note_file.read_text(encoding="utf-8") == new_raw
-
-    def test_no_frontmatter_uses_lf_not_crlf(self, tmp_path):
-        """The else branch defaults to LF, not CRLF."""
-        from unittest.mock import MagicMock
-        from knowledge.reconciler import Reconciler
-
-        rec = Reconciler(
-            store=MagicMock(),
-            embed_client=MagicMock(),
-            vault_root=tmp_path,
-        )
-        note_file = tmp_path / "plain.md"
-        raw = "Plain content."
-        note_file.write_text(raw, encoding="utf-8")
-
-        new_raw, _ = rec._write_back_id(note_file, raw, "plain-id")
-
-        assert "\r\n" not in new_raw
-        assert new_raw.startswith("---\n")
 
 
 # ---------------------------------------------------------------------------

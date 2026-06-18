@@ -19,11 +19,10 @@ from sqlmodel.pool import StaticPool
 from knowledge.gaps import (
     GAPS_PIPELINE_VERSION,
     answer_gap,
-    approve_gap,
     list_gaps_for_review,
 )
 from knowledge.models import Gap, Note
-from knowledge.service import VAULT_ROOT_ENV
+from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture
@@ -130,22 +129,6 @@ class TestRejectGap:
         assert reloaded.human_verified is True
         assert reloaded.resolved_at is not None
 
-    def test_tombstones_stub_if_present(self, client, session, tmp_path):
-        from knowledge.gap_stubs import RESEARCHING_DIR
-
-        _make_source_note(session)
-        gap = _make_gap(session, term="Stubbed Term", state="in_review")
-
-        stub_dir = tmp_path / RESEARCHING_DIR
-        stub_dir.mkdir(parents=True, exist_ok=True)
-        stub_path = stub_dir / "stubbed-term.md"
-        stub_path.write_text("---\nid: stubbed-term\n---\n\nstub body\n")
-        assert stub_path.exists()
-
-        r = client.post(f"/api/knowledge/gaps/{gap.id}/reject")
-        assert r.status_code == 200
-        assert not stub_path.exists()
-
     def test_missing_stub_is_tolerated(self, client, session):
         """Stub absence does not break rejection — same semantics as answer_gap."""
         _make_source_note(session)
@@ -170,100 +153,6 @@ class TestRejectGap:
     def test_unknown_gap_id_returns_404(self, client):
         r = client.post("/api/knowledge/gaps/9999/reject")
         assert r.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# approve_gap — gate external research behind explicit user approval.
-# ---------------------------------------------------------------------------
-
-
-class TestApproveGap:
-    def test_approve_gap_flips_in_review_external_to_classified(
-        self, session, tmp_path
-    ):
-        """Happy path: in_review + external -> classified, human_verified=True."""
-        gap = _make_gap(
-            session, term="linkerd-mtls", state="in_review", gap_class="external"
-        )
-        result = approve_gap(session, gap.id, tmp_path)
-        session.refresh(gap)
-        assert gap.state == "classified"
-        assert gap.human_verified is True
-        assert result["state"] == "classified"
-
-    def test_approve_gap_rejects_unknown_id(self, session, tmp_path):
-        """Unknown gap_id -> ValueError('Gap not found ...')."""
-        with pytest.raises(ValueError, match="Gap not found"):
-            approve_gap(session, 999_999, tmp_path)
-
-    def test_approve_gap_rejects_wrong_state(self, session, tmp_path):
-        """state != 'in_review' -> ValueError("expected 'in_review'")."""
-        gap = _make_gap(session, term="x", state="classified", gap_class="external")
-        with pytest.raises(ValueError, match="expected 'in_review'"):
-            approve_gap(session, gap.id, tmp_path)
-
-    def test_approve_gap_rejects_internal_class(self, session, tmp_path):
-        """gap_class != 'external' -> ValueError("expected 'external'")."""
-        gap = _make_gap(
-            session, term="my-therapist", state="in_review", gap_class="internal"
-        )
-        with pytest.raises(ValueError, match="expected 'external'"):
-            approve_gap(session, gap.id, tmp_path)
-
-    def test_approve_gap_rejects_hybrid_class(self, session, tmp_path):
-        """Hybrid is user-answerable, not auto-researchable; reject approval."""
-        gap = _make_gap(
-            session,
-            term="my-neovim-config",
-            state="in_review",
-            gap_class="hybrid",
-        )
-        with pytest.raises(ValueError, match="expected 'external'"):
-            approve_gap(session, gap.id, tmp_path)
-
-    def test_approve_gap_idempotency_second_call_rejected(self, session, tmp_path):
-        """Once approved (state=classified), a second approve raises the
-        wrong-state error — the gap must be re-routed through the cron, not
-        re-approved.
-        """
-        gap = _make_gap(session, term="x", state="in_review", gap_class="external")
-        approve_gap(session, gap.id, tmp_path)
-        with pytest.raises(ValueError, match="expected 'in_review'"):
-            approve_gap(session, gap.id, tmp_path)
-
-    def test_approve_gap_writes_stub_status_to_classified(self, session, tmp_path):
-        """approve_gap must update the stub's `status` field so the next
-        reconciler tick doesn't revert the DB row.
-        """
-        from knowledge.gap_stubs import RESEARCHING_DIR
-        from knowledge.gardener import _slugify
-
-        gap = _make_gap(
-            session, term="merkle-tree", state="in_review", gap_class="external"
-        )
-        # Seed the stub with status=in_review, matching what the v2
-        # classifier writes.
-        slug = _slugify(gap.term)
-        stub_dir = tmp_path / RESEARCHING_DIR
-        stub_dir.mkdir(parents=True, exist_ok=True)
-        stub = stub_dir / f"{slug}.md"
-        stub.write_text(
-            "---\n"
-            f"id: {slug}\n"
-            "title: Merkle Tree\n"
-            "gap_class: external\n"
-            "status: in_review\n"
-            "---\nbody\n"
-        )
-
-        approve_gap(session, gap.id, tmp_path)
-
-        text = stub.read_text()
-        assert "status: classified" in text, (
-            f"approve_gap must rewrite stub status to classified; got:\n{text}"
-        )
-        # The gap_class line should still be there — we only changed status.
-        assert "gap_class: external" in text
 
 
 # ---------------------------------------------------------------------------
@@ -607,28 +496,6 @@ class TestSoftDeleteGap:
         r1 = client.get("/api/knowledge/gaps/review-queue")
         assert gap.id not in [g["id"] for g in r1.json().get("gaps", [])]
 
-    def test_delete_hard_removes_stub_file(self, client, session, tmp_path):
-        from knowledge.gap_stubs import RESEARCHING_DIR
-
-        _make_source_note(session)
-        gap = _make_gap(
-            session,
-            term="Stubbed Doom",
-            state="in_review",
-            gap_class="internal",
-        )
-
-        stub_dir = tmp_path / RESEARCHING_DIR
-        stub_dir.mkdir(parents=True, exist_ok=True)
-        # _slugify("Stubbed Doom") = "stubbed-doom"
-        stub_path = stub_dir / "stubbed-doom.md"
-        stub_path.write_text("---\nid: stubbed-doom\n---\n\nstub body\n")
-        assert stub_path.exists()
-
-        r = client.delete(f"/api/knowledge/gaps/{gap.id}")
-        assert r.status_code == 200
-        assert not stub_path.exists()
-
     def test_delete_is_idempotent(self, client, session):
         _make_source_note(session)
         gap = _make_gap(
@@ -719,8 +586,8 @@ class TestGapReviewQueueDictShape:
 
     The original /private/review page asked the user to evaluate gaps
     from only `term`/`gap_class`/`state` — too thin to actually decide.
-    The dict now includes `referenced_by_count`, `stub_body`,
-    `research_attempts`, and `answer` so the UI can render in-place.
+    The dict now includes `referenced_by_count`, `research_attempts`, and
+    `answer` so the UI can render in-place.
     """
 
     def test_dict_includes_new_audit_fields(self, client, session, tmp_path):
@@ -750,11 +617,9 @@ class TestGapReviewQueueDictShape:
             "referenced_by_count",
             "research_attempts",
             "answer",
-            "stub_body",
             "deleted_at",
         }
-        # No stub on disk so stub_body is None; no inbound links so count is 0.
-        assert item["stub_body"] is None
+        # No inbound links so count is 0.
         assert item["referenced_by_count"] == 0
 
     def test_referenced_by_count_reflects_note_links(self, client, session, tmp_path):
@@ -802,26 +667,3 @@ class TestGapReviewQueueDictShape:
         assert r.status_code == 200
         item = r.json().get("gaps", [])[0]
         assert item["referenced_by_count"] == 2
-
-    def test_stub_body_read_from_researching_dir(self, client, session, tmp_path):
-        from knowledge.gap_stubs import RESEARCHING_DIR
-
-        _make_source_note(session)
-        _make_gap(
-            session,
-            term="With Stub",
-            state="in_review",
-            gap_class="internal",
-        )
-        stub_dir = tmp_path / RESEARCHING_DIR
-        stub_dir.mkdir(parents=True, exist_ok=True)
-        # _slugify("With Stub") = "with-stub"
-        (stub_dir / "with-stub.md").write_text(
-            "---\nid: with-stub\n---\n\nthe stub body content\n"
-        )
-
-        r = client.get("/api/knowledge/gaps/review-queue?mode=pending")
-        assert r.status_code == 200
-        item = r.json().get("gaps", [])[0]
-        assert item["stub_body"] is not None
-        assert "the stub body content" in item["stub_body"]

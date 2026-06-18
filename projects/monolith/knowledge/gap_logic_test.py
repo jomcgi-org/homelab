@@ -1,36 +1,28 @@
-"""Unit tests for knowledge.gaps — split_csv, _rewrite_sources, and full
-lifecycle scenarios not covered by gap_lifecycle_test.py.
+"""Unit tests for knowledge.gaps — split_csv and edge-case coverage.
 
-Gap lifecycle happy-path and basic error tests live in
-``gap_lifecycle_test.py`` (registered separately in BUILD). This file
-fills the remaining coverage:
+Gap lifecycle happy-path tests live in ``gap_lifecycle_test.py`` and
+fileless detection in ``gap_discover_fileless_test.py`` (both registered
+separately in BUILD). This file fills the remaining coverage:
 
 * ``split_csv`` — all paths including None / empty / whitespace edge cases
-* ``_rewrite_sources`` — direct unit tests for dry_run mode and OSError paths
-* Phase-A discardable-stub rewriting with KNOWLEDGE_GAPS_REWRITE_DISCARDABLE
-* Phase-B tombstoning of discardable gaps with no remaining source refs
-* ``classify_gaps`` edge case: no pending gaps + no classifier (no warning)
+* ``discover_gaps`` slug-folding + type='gap' exclusion edge cases
+* ``classify_gaps`` edge cases (legacy injected-classifier helper)
+* ``list_review_queue`` return-shape / filtering guarantees
 
-Fixture style mirrors ``gap_lifecycle_test.py``:
-  - in-memory SQLite with schema-strip (no real Postgres needed)
-  - real filesystem via pytest ``tmp_path``
+Fixture style mirrors ``gap_lifecycle_test.py``: in-memory SQLite with
+schema-strip (no real Postgres needed).
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-import yaml
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gaps import (
     GAPS_PIPELINE_VERSION,
-    _rewrite_sources,
     classify_gaps,
     discover_gaps,
     list_review_queue,
@@ -100,26 +92,6 @@ def _add_body_link(session: Session, *, src_fk: int, target_id: str) -> None:
     session.commit()
 
 
-def _write_stub(tmp_path: Path, slug: str, *, triaged: str | None = None) -> Path:
-    """Write a minimal gap stub, optionally with a triaged marker."""
-    path = tmp_path / RESEARCHING_DIR / f"{slug}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fm_lines = [f"id: {slug}", "type: gap", "status: discovered"]
-    if triaged:
-        fm_lines.append(f"triaged: {triaged}")
-    fm = "\n".join(fm_lines)
-    path.write_text(f"---\n{fm}\n---\n\n")
-    return path
-
-
-def _write_source_file(tmp_path: Path, note_id: str, body: str) -> Path:
-    """Write a source note body to disk under _processed/."""
-    path = tmp_path / "_processed" / f"{note_id}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body)
-    return path
-
-
 # ---------------------------------------------------------------------------
 # split_csv
 # ---------------------------------------------------------------------------
@@ -175,406 +147,6 @@ class TestSplitCsv:
 
 
 # ---------------------------------------------------------------------------
-# _rewrite_sources (direct unit tests)
-# ---------------------------------------------------------------------------
-
-
-class TestRewriteSources:
-    """Direct unit tests for the _rewrite_sources internal helper.
-
-    Exercises dry_run mode and error paths without going through the full
-    discover_gaps -> Phase-A codepath.
-    """
-
-    def test_dry_run_does_not_write_file(self, session, tmp_path):
-        """dry_run=True: count is returned but the file is not modified."""
-        src = _make_note(session, "src", rel_path="_processed/src.md")
-        body = "---\nid: src\ntype: atom\n---\n\nWe use [[Gap Concept]] here.\n"
-        src_path = _write_source_file(tmp_path, "src", body)
-
-        count = _rewrite_sources(
-            session,
-            tmp_path,
-            "gap-concept",
-            [src.note_id],
-            dry_run=True,
-        )
-
-        assert count == 1
-        # File must be unchanged.
-        assert src_path.read_text() == body
-
-    def test_live_run_writes_file(self, session, tmp_path):
-        """dry_run=False: file is updated, count is returned."""
-        src = _make_note(session, "src", rel_path="_processed/src.md")
-        body = "---\nid: src\ntype: atom\n---\n\nWe use [[Gap Concept]] here.\n"
-        src_path = _write_source_file(tmp_path, "src", body)
-
-        count = _rewrite_sources(
-            session,
-            tmp_path,
-            "gap-concept",
-            [src.note_id],
-            dry_run=False,
-        )
-
-        assert count == 1
-        new_body = src_path.read_text()
-        assert "[[Gap Concept]]" not in new_body
-        assert "We use Gap Concept here." in new_body
-
-    def test_returns_zero_when_no_matching_notes(self, session, tmp_path):
-        """Requesting rewrite for note_ids that don't exist in DB -> 0."""
-        count = _rewrite_sources(
-            session,
-            tmp_path,
-            "gap-concept",
-            ["nonexistent-note-id"],
-            dry_run=False,
-        )
-        assert count == 0
-
-    def test_returns_zero_when_no_wikilinks_in_body(self, session, tmp_path):
-        """Body contains no [[Gap Concept]] link -> unlinkify_if_changed returns None
-        -> count is not incremented."""
-        src = _make_note(session, "src", rel_path="_processed/src.md")
-        body = "---\nid: src\ntype: atom\n---\n\nNo wikilinks here at all.\n"
-        _write_source_file(tmp_path, "src", body)
-
-        count = _rewrite_sources(
-            session,
-            tmp_path,
-            "gap-concept",
-            [src.note_id],
-            dry_run=False,
-        )
-        assert count == 0
-
-    def test_oserror_on_read_is_skipped_and_logged(self, session, tmp_path, caplog):
-        """FileNotFoundError while reading a source note is logged and skipped.
-        The loop continues for other notes; the missing file is not counted.
-        """
-        src = _make_note(session, "src", rel_path="_processed/src.md")
-        # Deliberately do NOT create the file on disk.
-
-        with caplog.at_level(logging.WARNING, logger="knowledge.gaps"):
-            count = _rewrite_sources(
-                session,
-                tmp_path,
-                "gap-concept",
-                [src.note_id],
-                dry_run=False,
-            )
-
-        assert count == 0
-        assert any("could not read" in r.getMessage() for r in caplog.records)
-
-    def test_oserror_on_write_is_logged_and_not_counted(
-        self, session, tmp_path, caplog
-    ):
-        """OSError on write: the note is NOT counted as rewritten."""
-        src = _make_note(session, "src", rel_path="_processed/src.md")
-        body = "---\nid: src\ntype: atom\n---\n\nWe use [[Gap Concept]] here.\n"
-        _write_source_file(tmp_path, "src", body)
-
-        real_write = Path.write_text
-
-        def patched_write(self, data, *args, **kwargs):
-            if "src.md" in str(self):
-                raise OSError("simulated write error")
-            return real_write(self, data, *args, **kwargs)
-
-        with patch.object(Path, "write_text", patched_write):
-            with caplog.at_level(logging.WARNING, logger="knowledge.gaps"):
-                count = _rewrite_sources(
-                    session,
-                    tmp_path,
-                    "gap-concept",
-                    [src.note_id],
-                    dry_run=False,
-                )
-
-        assert count == 0
-        assert any("write failed" in r.getMessage() for r in caplog.records)
-
-    def test_multiple_sources_partial_failure(self, session, tmp_path):
-        """With two source notes, a read failure on one does not block the other."""
-        src_ok = _make_note(session, "src-ok", rel_path="_processed/src-ok.md")
-        src_bad = _make_note(session, "src-bad", rel_path="_processed/src-bad.md")
-        # Only write the good source file.
-        body = "---\nid: src-ok\ntype: atom\n---\n\nWe use [[Gap Concept]] here.\n"
-        _write_source_file(tmp_path, "src-ok", body)
-        # src-bad is absent on disk.
-
-        count = _rewrite_sources(
-            session,
-            tmp_path,
-            "gap-concept",
-            [src_ok.note_id, src_bad.note_id],
-            dry_run=False,
-        )
-
-        # Only the one successful rewrite counts.
-        assert count == 1
-
-
-# ---------------------------------------------------------------------------
-# discover_gaps - Phase A: discardable-stub rewriting
-# ---------------------------------------------------------------------------
-
-
-class TestDiscoverGapsPhaseA:
-    """Phase A: stub with triaged: discardable -> sources rewritten, write_stub
-    skipped. Mirrors gap_discardable_rewrite_test.py which is not registered
-    in the BUILD file."""
-
-    def test_live_rewrite_when_flag_on(self, monkeypatch, session, tmp_path):
-        """KNOWLEDGE_GAPS_REWRITE_DISCARDABLE=1 + discardable stub -> source
-        notes are rewritten in-place; write_stub is NOT called for this slug."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        src_body = (
-            "---\nid: src\ntitle: Src\ntype: atom\n---\n\n"
-            "We use [[Gone Concept]] often.\n"
-        )
-        src_path = _write_source_file(tmp_path, "src", src_body)
-        stub_path = _write_stub(tmp_path, "gone-concept", triaged="discardable")
-        src = _make_note(session, "src", rel_path="_processed/src.md", title="Src")
-        _add_body_link(session, src_fk=src.id, target_id="gone-concept")
-
-        discover_gaps(session, tmp_path)
-
-        # Source body updated.
-        rewritten = src_path.read_text()
-        assert "[[Gone Concept]]" not in rewritten
-        assert "We use Gone Concept often." in rewritten
-
-        # write_stub was skipped for this slug — referenced_by never added.
-        fm = yaml.safe_load(stub_path.read_text().split("---\n", 2)[1])
-        assert "referenced_by" not in fm
-
-    def test_dry_run_when_flag_off(self, monkeypatch, session, tmp_path):
-        """Without the flag the source file is NOT modified."""
-        monkeypatch.delenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", raising=False)
-        body = (
-            "---\nid: src\ntitle: Src\ntype: atom\n---\n\n"
-            "We use [[Gone Concept]] often.\n"
-        )
-        src_path = _write_source_file(tmp_path, "src", body)
-        _write_stub(tmp_path, "gone-concept", triaged="discardable")
-        src = _make_note(session, "src", rel_path="_processed/src.md", title="Src")
-        _add_body_link(session, src_fk=src.id, target_id="gone-concept")
-
-        discover_gaps(session, tmp_path)
-
-        assert src_path.read_text() == body
-
-    def test_non_discardable_stub_normal_path(self, monkeypatch, session, tmp_path):
-        """A stub without triaged: discardable proceeds through the normal
-        write_stub path and creates a gap row."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        src = _make_note(session, "src", title="Src")
-        _add_body_link(session, src_fk=src.id, target_id="real-concept")
-
-        count = discover_gaps(session, tmp_path)
-
-        assert count == 1
-        rows = (
-            session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
-        )
-        assert len(rows) == 1
-        assert rows[0].term == "real-concept"
-
-    def test_stub_indexed_as_gap_note_still_fires_phase_a(
-        self, monkeypatch, session, tmp_path
-    ):
-        """Regression: the reconciler indexes stubs as Note(type='gap'). The
-        fix excludes type='gap' Notes from existing_note_ids so Phase A still
-        sees those wikilinks as unresolved."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        src_body = (
-            "---\nid: src\ntitle: Src\ntype: atom\n---\n\nWe use [[Throwaway]] often.\n"
-        )
-        src_path = _write_source_file(tmp_path, "src", src_body)
-        _write_stub(tmp_path, "throwaway", triaged="discardable")
-        src = _make_note(session, "src", rel_path="_processed/src.md", title="Src")
-        # Simulate reconciler indexing the stub as a type='gap' Note.
-        gap_note = Note(
-            note_id="throwaway",
-            path=f"{RESEARCHING_DIR}/throwaway.md",
-            title="throwaway",
-            content_hash="stub-throwaway",
-            type="gap",
-        )
-        session.add(gap_note)
-        session.commit()
-        _add_body_link(session, src_fk=src.id, target_id="throwaway")
-
-        discover_gaps(session, tmp_path)
-
-        rewritten = src_path.read_text()
-        assert "[[Throwaway]]" not in rewritten
-        assert "We use Throwaway often." in rewritten
-
-
-# ---------------------------------------------------------------------------
-# discover_gaps - Phase B: tombstoning
-# ---------------------------------------------------------------------------
-
-
-class TestDiscoverGapsPhaseB:
-    """Phase B: orphan discardable gaps (no remaining source refs) are deleted."""
-
-    def test_tombstones_gap_and_stub_when_refs_gone(
-        self, monkeypatch, session, tmp_path
-    ):
-        """Gap row + discardable stub with zero source refs -> both deleted."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        session.add(
-            Gap(
-                term="gone-term",
-                note_id="gone-term",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                state="discovered",
-            )
-        )
-        session.commit()
-        stub_path = _write_stub(tmp_path, "gone-term", triaged="discardable")
-
-        discover_gaps(session, tmp_path)
-
-        rows = (
-            session.execute(
-                select(Gap).where(Gap.note_id == "gone-term", Gap.deleted_at.is_(None))
-            )
-            .scalars()
-            .all()
-        )
-        assert rows == []
-        assert not stub_path.exists()
-
-    def test_does_not_tombstone_keep_marked_stub(self, monkeypatch, session, tmp_path):
-        """triaged: keep -> preserved even with no source refs."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        session.add(
-            Gap(
-                term="kept-term",
-                note_id="kept-term",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                state="discovered",
-            )
-        )
-        session.commit()
-        stub_path = _write_stub(tmp_path, "kept-term", triaged="keep")
-
-        discover_gaps(session, tmp_path)
-
-        rows = (
-            session.execute(
-                select(Gap).where(Gap.note_id == "kept-term", Gap.deleted_at.is_(None))
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-        assert stub_path.exists()
-
-    def test_does_not_tombstone_unmarked_stub(self, monkeypatch, session, tmp_path):
-        """A stub without any triage marker is preserved."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        session.add(
-            Gap(
-                term="unmarked-term",
-                note_id="unmarked-term",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                state="discovered",
-            )
-        )
-        session.commit()
-        stub_path = _write_stub(tmp_path, "unmarked-term", triaged=None)
-
-        discover_gaps(session, tmp_path)
-
-        rows = (
-            session.execute(
-                select(Gap).where(
-                    Gap.note_id == "unmarked-term", Gap.deleted_at.is_(None)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-        assert stub_path.exists()
-
-    def test_does_not_tombstone_when_missing_stub_file(
-        self, monkeypatch, session, tmp_path
-    ):
-        """Orphan Gap row with no stub file: is_discardable returns False, row
-        is preserved (data drift case)."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        session.add(
-            Gap(
-                term="ghost",
-                note_id="ghost",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                state="discovered",
-            )
-        )
-        session.commit()
-        # No stub written.
-
-        discover_gaps(session, tmp_path)
-
-        rows = (
-            session.execute(
-                select(Gap).where(Gap.note_id == "ghost", Gap.deleted_at.is_(None))
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-
-    def test_does_not_tombstone_when_refs_still_present(
-        self, monkeypatch, session, tmp_path
-    ):
-        """Even with triaged: discardable, an active source ref prevents tombstoning
-        in the same cycle (Phase A rewrites first; tombstone waits for next cycle)."""
-        monkeypatch.setenv("KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", "1")
-        session.add(
-            Gap(
-                term="active-discard",
-                note_id="active-discard",
-                pipeline_version=GAPS_PIPELINE_VERSION,
-                state="discovered",
-            )
-        )
-        session.commit()
-        stub_path = _write_stub(tmp_path, "active-discard", triaged="discardable")
-        src_body = (
-            "---\nid: src\ntitle: Src\ntype: atom\n---\n\n"
-            "We use [[Active Discard]] often.\n"
-        )
-        _write_source_file(tmp_path, "src", src_body)
-        src = _make_note(session, "src", rel_path="_processed/src.md", title="Src")
-        _add_body_link(session, src_fk=src.id, target_id="active-discard")
-
-        discover_gaps(session, tmp_path)
-
-        # Gap row and stub still exist.
-        rows = (
-            session.execute(
-                select(Gap).where(
-                    Gap.note_id == "active-discard", Gap.deleted_at.is_(None)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-        assert stub_path.exists()
-
-
-# ---------------------------------------------------------------------------
 # discover_gaps - slug folding edge cases
 # ---------------------------------------------------------------------------
 
@@ -582,15 +154,14 @@ class TestDiscoverGapsPhaseB:
 class TestDiscoverGapsSlugFolding:
     """Two distinct terms that hash to the same slug collapse into one Gap row."""
 
-    def test_two_terms_same_slug_produce_one_gap(self, session, tmp_path):
-        """e.g. 'Foo Bar' and 'foo-bar' both slug to 'foo-bar'."""
+    def test_two_terms_same_slug_produce_one_gap(self, session):
+        """e.g. 'Outside-In TDD' and 'Outside In TDD' both slug to 'outside-in-tdd'."""
         src_a = _make_note(session, "src-a", title="Source A")
         src_b = _make_note(session, "src-b", title="Source B")
-        # Both terms slugify to "outside-in-tdd".
         _add_body_link(session, src_fk=src_a.id, target_id="Outside-In TDD")
         _add_body_link(session, src_fk=src_b.id, target_id="Outside In TDD")
 
-        discover_gaps(session, tmp_path)
+        discover_gaps(session)
 
         rows = (
             session.execute(
@@ -605,13 +176,13 @@ class TestDiscoverGapsSlugFolding:
             f"Expected 1 Gap, got {len(rows)}: {[r.term for r in rows]}"
         )
 
-    def test_gap_stubs_excluded_from_resolved_note_ids(self, session, tmp_path):
-        """Notes of type='gap' (stubs) are excluded from existing_note_ids so
-        wikilinks that point at a stub slug are still seen as unresolved."""
-        # Index a stub as a type='gap' Note.
+    def test_gap_notes_excluded_from_resolved_note_ids(self, session):
+        """Notes of type='gap' (legacy stubs indexed as notes) are excluded
+        from existing_note_ids so wikilinks pointing at such a slug are still
+        seen as unresolved."""
         stub_note = Note(
             note_id="stub-slug",
-            path=f"{RESEARCHING_DIR}/stub-slug.md",
+            path="_researching/stub-slug.md",
             title="stub-slug",
             content_hash="stub-hash",
             type="gap",
@@ -622,10 +193,10 @@ class TestDiscoverGapsSlugFolding:
         src = _make_note(session, "src", title="Src")
         _add_body_link(session, src_fk=src.id, target_id="stub-slug")
 
-        count = discover_gaps(session, tmp_path)
+        count = discover_gaps(session)
 
-        # The wikilink pointing at the gap stub is NOT resolved — a new Gap
-        # row must be inserted.
+        # The wikilink pointing at the gap-typed note is NOT resolved — a new
+        # Gap row must be inserted.
         assert count == 1
         rows = (
             session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
@@ -655,13 +226,11 @@ class TestClassifyGapsEdgeCases:
             "gaps awaiting classification" in r.getMessage() for r in caplog.records
         )
 
-    def test_none_classifier_with_pending_gaps_logs_warning(
-        self, session, tmp_path, caplog
-    ):
+    def test_none_classifier_with_pending_gaps_logs_warning(self, session, caplog):
         """With pending gaps and no classifier, exactly one warning is logged."""
         src = _make_note(session, "s", title="S")
         _add_body_link(session, src_fk=src.id, target_id="pending-term")
-        discover_gaps(session, tmp_path)
+        discover_gaps(session)
 
         with caplog.at_level(logging.WARNING, logger="knowledge.gaps"):
             result = classify_gaps(session, classifier=None)
@@ -671,13 +240,11 @@ class TestClassifyGapsEdgeCases:
             "gaps awaiting classification" in r.getMessage() for r in caplog.records
         )
 
-    def test_invalid_classifier_output_falls_back_to_internal(
-        self, session, tmp_path, caplog
-    ):
+    def test_invalid_classifier_output_falls_back_to_internal(self, session, caplog):
         """Privacy-conservative fallback: bogus classifier output -> internal."""
         src = _make_note(session, "s", title="S")
         _add_body_link(session, src_fk=src.id, target_id="mystery")
-        discover_gaps(session, tmp_path)
+        discover_gaps(session)
 
         def classifier(term: str, _ctx: str) -> str:
             return "bogus-class"
@@ -690,11 +257,11 @@ class TestClassifyGapsEdgeCases:
         assert gap.gap_class == "internal"
         assert gap.state == "in_review"
 
-    def test_classify_sets_classified_at_timestamp(self, session, tmp_path):
+    def test_classify_sets_classified_at_timestamp(self, session):
         """classified_at must be set on every classified gap."""
         src = _make_note(session, "s", title="S")
         _add_body_link(session, src_fk=src.id, target_id="term")
-        discover_gaps(session, tmp_path)
+        discover_gaps(session)
 
         classify_gaps(session, classifier=lambda t, c: "external")
 
@@ -740,11 +307,11 @@ class TestListReviewQueueEdgeCases:
         assert item["gap_class"] == "internal"
 
     def test_includes_external_in_review_gaps(self, session):
-        """state=in_review + gap_class=external MUST appear in the queue
-        so the user can approve auto-research (v2 cutover). Regression
-        guard: before v2 this test asserted the *opposite* — external
-        was filtered out of the queue. v2 makes external user-actionable
-        via approve_gap, so it joins internal/hybrid in the pending lane.
+        """state=in_review + gap_class=external appears in the queue.
+
+        External gaps normally stay 'discovered' for the research routine, but
+        the queue filter still admits in_review external rows (e.g. a manually
+        reopened gap) alongside internal/hybrid.
         """
         gap = Gap(
             term="ext",

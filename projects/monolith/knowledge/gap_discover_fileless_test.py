@@ -179,3 +179,47 @@ def test_frontmatter_edges_are_not_gaps(session) -> None:
 
     assert discover_gaps(session) == 0
     assert _live_gaps(session) == []
+
+
+def test_slug_collisions_collapse_into_one_gap(session) -> None:
+    """Two distinct terms slugging to the same note_id produce one Gap row.
+
+    Without the slug fold, the second INSERT would trip UNIQUE(note_id).
+    """
+    src_a = _make_note(session, "src-a", title="Source A")
+    src_b = _make_note(session, "src-b", title="Source B")
+    _add_body_link(session, src_fk=src_a.id, target_id="Outside-In TDD")
+    _add_body_link(session, src_fk=src_b.id, target_id="Outside In TDD")
+
+    discover_gaps(session)
+
+    rows = (
+        session.execute(
+            select(Gap).where(Gap.note_id == "outside-in-tdd", Gap.deleted_at.is_(None))
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, f"expected one Gap per note_id, got {[r.term for r in rows]}"
+
+
+def test_legacy_null_note_id_is_backfilled(session) -> None:
+    """A live gap with note_id IS NULL gets its slug backfilled, not duplicated."""
+    src = _make_note(session, "source-note", title="Source Note")
+    session.add(
+        Gap(
+            term="orphan",
+            context="Source Note",
+            note_id=None,
+            pipeline_version=GAPS_PIPELINE_VERSION,
+            state="discovered",
+        )
+    )
+    session.commit()
+    _add_body_link(session, src_fk=src.id, target_id="orphan")
+
+    discover_gaps(session)
+
+    gaps = _live_gaps(session)
+    assert len(gaps) == 1
+    assert gaps[0].note_id == "orphan"

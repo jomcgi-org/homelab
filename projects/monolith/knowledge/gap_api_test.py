@@ -16,7 +16,7 @@ from sqlmodel.pool import StaticPool
 
 from knowledge.gaps import GAPS_PIPELINE_VERSION
 from knowledge.models import Gap, Note
-from knowledge.service import VAULT_ROOT_ENV
+from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture

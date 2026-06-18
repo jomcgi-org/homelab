@@ -13,7 +13,7 @@ from app.db import get_session
 from app.main import app
 from knowledge.models import Note
 from knowledge.router import get_embedding_client
-from knowledge.service import VAULT_ROOT_ENV
+from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture()
