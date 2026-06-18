@@ -44,7 +44,7 @@ describe("/public/chat/session POST", () => {
     expect(JSON.stringify(body)).not.toContain("opaque-session-id-123");
   });
 
-  it("forwards the turnstile token and coarse geo to the internal API", async () => {
+  it("forwards the turnstile token, coarse geo, and client IP to the internal API", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ session_id: "sid" }),
@@ -53,7 +53,11 @@ describe("/public/chat/session POST", () => {
     const cookies = { set: vi.fn() };
     const request = {
       json: async () => ({ turnstile_token: "tok-abc" }),
-      headers: makeHeaders({ "cf-ipcountry": "GB", "user-agent": "UA/1" }),
+      headers: makeHeaders({
+        "cf-ipcountry": "GB",
+        "user-agent": "UA/1",
+        "cf-connecting-ip": "203.0.113.7",
+      }),
     };
 
     await POST({ request, cookies });
@@ -63,6 +67,24 @@ describe("/public/chat/session POST", () => {
     expect(JSON.parse(init.body)).toEqual({ turnstile_token: "tok-abc" });
     expect(init.headers["CF-IPCountry"]).toBe("GB");
     expect(init.headers["User-Agent"]).toBe("UA/1");
+    // The real client IP is forwarded so the backend can salt-and-hash it
+    // (ip_hash); the backend trusts this header only from SSR's mesh identity.
+    expect(init.headers["CF-Connecting-IP"]).toBe("203.0.113.7");
+  });
+
+  it("omits CF-Connecting-IP when the client IP header is absent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ session_id: "sid" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const cookies = { set: vi.fn() };
+    const request = { json: async () => ({}), headers: makeHeaders() };
+
+    await POST({ request, cookies });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["CF-Connecting-IP"]).toBeUndefined();
   });
 
   it("relays the upstream status when the internal API rejects", async () => {
