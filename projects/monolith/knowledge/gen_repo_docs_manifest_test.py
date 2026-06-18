@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 
 from knowledge.tools.gen_repo_docs_manifest import (
-    derive_title,
-    iter_doc_paths,
+    _should_index,
     build_manifest_lines,
+    derive_title,
 )
 
 
@@ -16,25 +16,22 @@ def test_derive_title_falls_back_to_path():
     assert derive_title("no heading here", "docs/x.md") == "docs/x.md"
 
 
-def test_iter_doc_paths_includes_and_excludes(tmp_path: Path):
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "a.md").write_text("# A")
-    (tmp_path / "projects" / "svc").mkdir(parents=True)
-    (tmp_path / "projects" / "svc" / "README.md").write_text("# R")
-    (tmp_path / "CLAUDE.md").write_text("# Root")
-    # excluded noise
-    (tmp_path / "node_modules").mkdir()
-    (tmp_path / "node_modules" / "z.md").write_text("# Z")
-    (tmp_path / "projects" / "svc" / "frontend").mkdir()
-    (tmp_path / "projects" / "svc" / "frontend" / "build").mkdir()
-    (tmp_path / "projects" / "svc" / "frontend" / "build" / "g.md").write_text("# G")
-
-    paths = set(iter_doc_paths(tmp_path))
-    assert "docs/a.md" in paths
-    assert "projects/svc/README.md" in paths
-    assert "CLAUDE.md" in paths
-    assert "node_modules/z.md" not in paths
-    assert "projects/svc/frontend/build/g.md" not in paths
+def test_should_index_includes_and_excludes():
+    # Included: *.md under docs/ or projects/, and any CLAUDE.md.
+    assert _should_index("docs/a.md")
+    assert _should_index("docs/decisions/004.md")
+    assert _should_index("projects/svc/README.md")
+    assert _should_index("CLAUDE.md")
+    assert _should_index(".claude/CLAUDE.md")
+    assert _should_index("projects/monolith/CLAUDE.md")
+    # Excluded: wrong extension, outside the indexed dirs, or a noise segment.
+    assert not _should_index("projects/svc/notes.txt")
+    assert not _should_index("README.md")  # repo-root, not under docs/ or projects/
+    assert not _should_index("src/x.md")
+    assert not _should_index("projects/svc/node_modules/z.md")
+    assert not _should_index("projects/svc/frontend/build/g.md")
+    # The generated manifest never indexes itself.
+    assert not _should_index("projects/monolith/knowledge/repo_docs_manifest.ndjson")
 
 
 def test_build_manifest_lines_sorted_ndjson(tmp_path: Path):
@@ -42,7 +39,9 @@ def test_build_manifest_lines_sorted_ndjson(tmp_path: Path):
     (tmp_path / "docs" / "b.md").write_text("# B\n\nbeta")
     (tmp_path / "docs" / "a.md").write_text("# A\n\nalpha")
 
-    lines = build_manifest_lines(tmp_path)
+    # build_manifest_lines takes an explicit path list (discovery is git-driven
+    # and tested separately), and sorts for a stable, diff-friendly manifest.
+    lines = build_manifest_lines(tmp_path, ["docs/b.md", "docs/a.md"])
     objs = [json.loads(line) for line in lines]
     assert [o["path"] for o in objs] == ["docs/a.md", "docs/b.md"]  # sorted
     assert objs[0]["title"] == "A"

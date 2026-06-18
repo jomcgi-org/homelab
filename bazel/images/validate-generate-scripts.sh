@@ -147,10 +147,10 @@ fi
 echo "Validating repo-docs manifest ..."
 
 REPO_DOCS_MANIFEST=projects/monolith/knowledge/repo_docs_manifest.ndjson
-# --config=ci so the generator builds with the same platform/toolchain as the
-# rest of the format run; without it, bazel discards the analysis cache and can
-# select a wrong-arch venv tool, failing the build before the generator runs.
-if bazel run --config=ci //projects/monolith:gen_repo_docs_manifest >/dev/null 2>"$TMPDIR_VALIDATE/gen_repo_docs.err"; then
+# Run the generator directly with python3 (it is pure stdlib + git ls-files), not
+# `bazel run`: the py_venv_binary launcher does not resolve its main module in the
+# CI runner. git-driven discovery keeps the output identical to a local run.
+if python3 projects/monolith/knowledge/tools/gen_repo_docs_manifest.py >/dev/null 2>"$TMPDIR_VALIDATE/gen_repo_docs.err"; then
 	if git diff --quiet -- "$REPO_DOCS_MANIFEST"; then
 		echo "  repo-docs-manifest: PASS"
 	else

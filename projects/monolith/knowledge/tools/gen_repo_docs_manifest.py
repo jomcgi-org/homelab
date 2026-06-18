@@ -1,19 +1,17 @@
 """Generate the repo-docs manifest baked into the monolith image.
 
-Walks the working tree (under BUILD_WORKSPACE_DIRECTORY when run via `bazel run`,
-mirroring bazel/images/generate-home-cluster.sh) and writes one NDJSON line per
-indexed markdown file, sorted by repo-relative path, to
-projects/monolith/knowledge/repo_docs_manifest.ndjson.
+Lists the repo's tracked markdown via ``git ls-files`` and writes one NDJSON line
+per indexed file, sorted by repo-relative path, to
+projects/monolith/knowledge/repo_docs_manifest.ndjson. Using git (not a filesystem
+walk) makes the output deterministic across platforms and Python versions and
+never picks up untracked files or build artifacts under symlinked bazel-out/ dirs.
 
 When indexed docs change, regenerate and commit the manifest:
-`bazel run //projects/monolith:gen_repo_docs_manifest`. CI enforces this:
-bazel/images/validate-generate-scripts.sh (run in the Format check action)
-regenerates the manifest and fails the build if it differs from what is committed,
-with the regen command in the error. The generator is intentionally NOT in the
-`//bazel/tools/format:format` multirun: that aggregate drives only sh_binary
-generators, and a py_venv_binary does not resolve its main module under
-rules_multirun. The private monolith's reconcile job reads the committed manifest
-from the image.
+`bazel run //projects/monolith:gen_repo_docs_manifest` (or run this script with
+any python3). CI enforces freshness: bazel/images/validate-generate-scripts.sh
+(run in the Format check action) regenerates the manifest and fails the build if
+it differs from what is committed, with the regen command in the error. The
+private monolith's reconcile job reads the committed manifest from the image.
 """
 
 from __future__ import annotations
@@ -22,15 +20,15 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
-from typing import Iterator
 
 MANIFEST_REL = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
 
-# Top-level dir prefixes / filenames we index.
-_INCLUDE_GLOBS = ("docs/**/*.md", "projects/**/*.md")
-_INCLUDE_NAMES = ("CLAUDE.md",)  # matched by name anywhere (root + nested)
+# We index *.md under these top-level prefixes, plus any CLAUDE.md anywhere.
+_INCLUDE_DIRS = ("docs/", "projects/")
+_INCLUDE_NAMES = ("CLAUDE.md",)  # indexed anywhere (root + nested)
 
 # Path segments that mark generated / vendored / irrelevant trees. All entries
 # are slash-wrapped so they match whole path segments via the ``/{rel_path}/``
@@ -60,30 +58,34 @@ def _excluded(rel_path: str) -> bool:
     return any(seg in p for seg in _EXCLUDE_SEGMENTS) or rel_path == MANIFEST_REL
 
 
-def iter_doc_paths(root: Path) -> Iterator[str]:
-    seen: set[str] = set()
-    for pattern in _INCLUDE_GLOBS:
-        for fp in root.glob(pattern):
-            if not fp.is_file():
-                continue
-            rel = fp.relative_to(root).as_posix()
-            if not _excluded(rel):
-                seen.add(rel)
-    # Named files anywhere (root + nested), which the project-globs may miss at
-    # the repo root (e.g. CLAUDE.md).
-    for name in _INCLUDE_NAMES:
-        for fp in root.rglob(name):
-            if not fp.is_file():
-                continue
-            rel = fp.relative_to(root).as_posix()
-            if not _excluded(rel):
-                seen.add(rel)
-    yield from sorted(seen)
+def _should_index(rel_path: str) -> bool:
+    """True if a repo-relative path belongs in the manifest (pure predicate)."""
+    if _excluded(rel_path):
+        return False
+    if rel_path.rsplit("/", 1)[-1] in _INCLUDE_NAMES:
+        return True
+    return rel_path.endswith(".md") and rel_path.startswith(_INCLUDE_DIRS)
 
 
-def build_manifest_lines(root: Path) -> list[str]:
+def iter_doc_paths(root: Path) -> list[str]:
+    """Tracked markdown paths to index, sorted. Uses ``git ls-files`` so the set
+    is exactly the committed files (deterministic, no symlinked build artifacts).
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    paths = (p for p in result.stdout.split("\0") if p)
+    return sorted({p for p in paths if _should_index(p)})
+
+
+def build_manifest_lines(root: Path, paths: list[str]) -> list[str]:
     lines: list[str] = []
-    for rel in iter_doc_paths(root):
+    for rel in sorted(paths):
         content = (root / rel).read_text(encoding="utf-8")
         sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
         obj = {
@@ -101,7 +103,7 @@ def main() -> int:
     root = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd())
     out = root / MANIFEST_REL
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = build_manifest_lines(root)
+    lines = build_manifest_lines(root, iter_doc_paths(root))
     out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     print(f"wrote {len(lines)} docs to {MANIFEST_REL}")
     return 0
