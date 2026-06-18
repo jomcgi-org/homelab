@@ -156,6 +156,52 @@ class Chunk(SQLModel, table=True):
         return v
 
 
+class RepoDoc(SQLModel, table=True):
+    """A repo markdown file indexed for public-chat grounding.
+
+    Isolated from ``Note`` on purpose: the gardener and gap loop operate over
+    ``knowledge.notes`` and must never touch these machine-synced, fully
+    reconstructable rows. Identified by repo-relative ``path``; ``content_hash``
+    is the change-detection key driving the reconcile job.
+
+    Mirrors chart/migrations/20260618120000_repo_docs.sql - keep in sync.
+    """
+
+    __tablename__ = "repo_docs"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    path: str = Field(sa_column=Column(String, nullable=False, unique=True))
+    content_hash: str
+    title: str
+    indexed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RepoDocChunk(SQLModel, table=True):
+    """One embedded chunk of a RepoDoc. Mirrors knowledge.Chunk's embedding
+    column exactly so it round-trips through the SQLite create_all fixtures.
+
+    Mirrors chart/migrations/20260618120000_repo_docs.sql - keep in sync.
+    """
+
+    __tablename__ = "repo_doc_chunks"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    repo_doc_fk: int = Field(foreign_key="knowledge.repo_docs.id")
+    chunk_index: int
+    section_header: str = ""
+    chunk_text: str
+    embedding: list[float] = Field(sa_column=Column(Vector(1024)))
+
+    @field_validator("embedding", mode="before")
+    @classmethod
+    def _parse_embedding(cls, v: object) -> object:
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+
+
 class NoteLink(SQLModel, table=True):
     __tablename__ = "note_links"
     __table_args__ = {"schema": "knowledge", "extend_existing": True}
