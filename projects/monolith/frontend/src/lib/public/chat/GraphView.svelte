@@ -19,6 +19,10 @@
   import NotePanel from "$lib/components/notes/NotePanel.svelte";
   import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
   import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
+  import {
+    initialGraphSelection,
+    selectionForFocus,
+  } from "$lib/public/chat/chat-state.js";
 
   /** @type {{
    *   touched?: { id: any, title: string }[],
@@ -45,14 +49,18 @@
   });
 
   let searchTerm = $state("");
-  let selectedId = $state(null);
+  // Nothing is selected on entry: a fresh graph shows the "hover a node"
+  // placeholder, never an auto-selected note (ADR 005, Phase 4 polish).
+  let selectedId = $state(initialGraphSelection());
   let zoom = $state(1);
   let hoverTitle = $state("");
 
   // A chip click on the chat side passes a focusId; mirror it into the panel
-  // selection so the graph zooms to that node and expands its body.
+  // selection so the graph zooms to that node and expands its body. A null
+  // focusId (the GRAPH tab / DEEP DIVE) leaves the panel empty.
   $effect(() => {
-    if (focusId != null) selectedId = focusId;
+    const sel = selectionForFocus(focusId);
+    if (sel != null) selectedId = sel;
   });
 
   async function loadGraph() {
@@ -132,6 +140,17 @@
         onClose={() => (selectedId = null)}
         apiBase="/app/notes/body"
       />
+      {#if selectedId == null}
+        <!-- Empty state: nothing is selected on entry, so the detail panel is
+             a quiet placeholder until the visitor hovers (bar) or clicks a
+             node. No note is ever auto-opened (ADR 005, Phase 4 polish). -->
+        <aside class="note-placeholder">
+          <div class="note-placeholder-eyebrow">NOTE</div>
+          <p class="note-placeholder-copy">
+            Hover a node to see its title, or click one to read the note here.
+          </p>
+        </aside>
+      {/if}
     {/if}
   </div>
 </div>
@@ -144,8 +163,8 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    height: 70vh;
-    min-height: 420px;
+    height: 76vh;
+    min-height: 540px;
     font-family: var(--mono);
     color: var(--ink);
   }
@@ -220,6 +239,30 @@
     50% {
       opacity: 1;
     }
+  }
+  /* Empty-state panel: same placement as NotePanel's `.panel`, but quiet and
+     token-styled. Visible only while nothing is selected. */
+  .note-placeholder {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: min(420px, 42vw);
+    background: var(--paper);
+    border: 1.5px solid var(--ink);
+    box-shadow: var(--shadow-hard);
+    padding: 16px 18px;
+    z-index: 6;
+  }
+  .note-placeholder-eyebrow {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+    margin-bottom: 6px;
+  }
+  .note-placeholder-copy {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink-3);
   }
   .graph-error-copy {
     font-size: 13px;
