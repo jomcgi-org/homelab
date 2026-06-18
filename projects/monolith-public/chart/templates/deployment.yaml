@@ -1,1 +1,3 @@
 {{- include "homelab.deployment" (dict "context" . "component" "web") }}
+---
+{{- include "homelab.deployment" (dict "context" . "component" "frontend") }}

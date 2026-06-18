@@ -21,5 +21,5 @@ dependencies:
     repository: "oci://ghcr.io/jomcgi/homelab/charts"
     version: "1.0.0-RC-1"
   - name: homelab-library
-    version: "0.4.0"
+    version: "0.5.0"
     repository: "file://../../../shared/helm/homelab-library/chart"

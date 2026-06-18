@@ -97,3 +97,52 @@ web:
   service:
     type: ClusterIP
     port: 8000
+
+# "frontend" component (ADR 004 Phase 5d): the public-only SvelteKit SSR
+# renderer, built from the private-route-free source tree. It is a separate
+# meshed pod that server-renders the public pages and calls the backend "web"
+# component over in-cluster mTLS via API_BASE. It carries no secrets.
+frontend:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/monolith/public-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  containerPort: 3000
+  portName: http
+  # Meshed: inherits the namespace's Linkerd injection. A native Server +
+  # AuthorizationPolicy (templates/linkerd-policy.yaml) restricts inbound to the
+  # gateway identity only.
+  podAnnotations:
+    linkerd.io/inject: enabled
+  # The SSR Node server has no HTTP health endpoint, so probe the TCP port.
+  # Linkerd auto-authorizes kubelet probes even with the deny-by-default Server.
+  probes:
+    liveness:
+      tcpSocket: true
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    readiness:
+      tcpSocket: true
+      initialDelaySeconds: 3
+      periodSeconds: 5
+  # No secrets. API_BASE points at the backend "web" Service (in-cluster).
+  # OTEL_COLLECTOR_HTTP_URL lets the same-origin /otel proxy forward browser
+  # traces to the in-cluster SigNoz collector (cross-namespace, in-cluster, so
+  # the EgressNetwork off-cluster deny does not apply).
+  env:
+    - name: API_BASE
+      value: "http://monolith-public-web:8000"
+    - name: OTEL_COLLECTOR_HTTP_URL
+      value: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
+  # SSR Node needs more headroom than the read-only backend.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 3000
