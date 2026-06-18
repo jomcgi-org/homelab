@@ -151,7 +151,7 @@
 <style>
   .graph-view {
     border: 2px solid var(--ink);
-    background: var(--bg);
+    background: var(--paper);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -257,6 +257,12 @@
   .graph-view :global(.legend),
   .graph-view :global(.panel) {
     box-shadow: none;
+  }
+  /* Whiten the graph canvas: the shared stage is a cream parchment that reads as
+     cream-on-cream against the page. Scoped so the private notes graph keeps its
+     parchment. */
+  .graph-view :global(.stage) {
+    background: var(--paper);
   }
 
   @media (max-width: 640px) {
