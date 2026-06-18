@@ -71,6 +71,7 @@ async def lifespan(app: FastAPI):
         hikes.on_startup_jobs(session)
         stars.on_startup_jobs(session)
         dr_jobs.on_startup_jobs(session)
+        knowledge.on_startup_jobs(session)
 
         from home.observability import rollup as observability_rollup
 
