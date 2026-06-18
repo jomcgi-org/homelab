@@ -205,12 +205,25 @@ async def repo_docs_reconcile_handler(session) -> datetime | None:
     for entry, chunks in plan.to_upsert:
         texts = [c["text"] for c in chunks]
         try:
-            vectors_by_path[entry.path] = await client.embed_batch(texts)
+            vectors = await client.embed_batch(texts)
         except Exception:  # noqa: BLE001 - skip this doc; next run retries it
             logger.exception("repo_docs: embedding failed for %s; skipping", entry.path)
+            continue
+        # A short return would otherwise zero-pad the trailing chunks (a zero
+        # vector poisons cosine retrieval), so drop the whole doc on a count
+        # mismatch; its hash stays unchanged and the next run retries it.
+        if len(vectors) != len(texts):
+            logger.error(
+                "repo_docs: embedder returned %d vectors for %d chunks of %s; skipping",
+                len(vectors),
+                len(texts),
+                entry.path,
+            )
+            continue
+        vectors_by_path[entry.path] = vectors
 
-    # Drop upserts whose embedding failed so we never persist zero-vectors; their
-    # hash stays unchanged in the DB so the next run retries them.
+    # Drop upserts whose embedding failed/mismatched so we never persist zero
+    # vectors; their hash stays unchanged in the DB so the next run retries them.
     plan.to_upsert = [(e, c) for (e, c) in plan.to_upsert if e.path in vectors_by_path]
 
     stats = await asyncio.to_thread(_apply_in_thread, plan, vectors_by_path)

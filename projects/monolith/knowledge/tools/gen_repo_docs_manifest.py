@@ -26,15 +26,18 @@ MANIFEST_REL = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
 _INCLUDE_GLOBS = ("docs/**/*.md", "projects/**/*.md")
 _INCLUDE_NAMES = ("CLAUDE.md",)  # matched by name anywhere (root + nested)
 
-# Path segments that mark generated / vendored / irrelevant trees.
+# Path segments that mark generated / vendored / irrelevant trees. All entries
+# are slash-wrapped so they match whole path segments via the ``/{rel_path}/``
+# trick in ``_excluded``, never bare substrings (so e.g. ``docs/vendoring.md`` or
+# ``.github/*.md`` are not dropped by a ``vendor`` / ``.git`` substring match).
 _EXCLUDE_SEGMENTS = (
-    "node_modules",
-    ".git",
-    "_trash",
+    "/node_modules/",
+    "/.git/",
+    "/_trash/",
     "/build/",
     "/dist/",
     "/.svelte-kit/",
-    "vendor",
+    "/vendor/",
 )
 
 
