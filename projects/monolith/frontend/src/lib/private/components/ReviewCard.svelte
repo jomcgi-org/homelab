@@ -151,7 +151,7 @@
     {#if mode === "pending"}
       <button class="action action--keep" onclick={() => onDecide("yes")}>
         {#if tab === "gaps"}
-          {item.gap_class === "external" ? "Approve (y)" : "Keep (y)"}
+          Keep (y)
         {:else}
           Public (y)
         {/if}
