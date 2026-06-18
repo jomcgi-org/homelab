@@ -24,10 +24,40 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from chat_public import limits, sessions
+from chat_public import inference, limits, sessions
 from chat_public.db import get_chat_session
 from chat_public.models import ChatMessage, ChatSession
-from chat_public.router import _CANNED_RESPONSE, _estimate_tokens, router
+from chat_public.router import router
+
+# Fixed reply the fake vLLM streams, so SSE-shape tests do not need a live model.
+_FAKE_REPLY = "Hello! This is a streamed reply."
+_FAKE_PROMPT_TOKENS = 12
+_FAKE_COMPLETION_TOKENS = 8
+
+
+def _fake_stream(
+    reply: str = _FAKE_REPLY,
+    *,
+    prompt_tokens: int = _FAKE_PROMPT_TOKENS,
+    completion_tokens: int = _FAKE_COMPLETION_TOKENS,
+):
+    """Build a stand-in for ``inference.stream_chat``.
+
+    Returns an async generator function with the same signature that yields a
+    couple of ``TokenDelta`` chunks (to exercise incremental streaming) then a
+    single ``Usage`` with fixed real counts. Monkeypatch it onto
+    ``chat_public.inference.stream_chat`` to test the message path with no GPU.
+    """
+
+    async def _gen(messages, *, max_tokens):
+        mid = len(reply) // 2
+        yield inference.TokenDelta(text=reply[:mid])
+        yield inference.TokenDelta(text=reply[mid:])
+        yield inference.Usage(
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+        )
+
+    return _gen
 
 
 @pytest.fixture(name="session")
@@ -205,7 +235,8 @@ def test_session_token_ceiling_rejected(client, session):
 # ---------------------------------------------------------------------------
 
 
-def test_valid_message_streams_sse_and_persists_turn(client, session):
+def test_valid_message_streams_sse_and_persists_turn(client, session, monkeypatch):
+    monkeypatch.setattr(inference, "stream_chat", _fake_stream())
     row = _new_session(session)
     resp = client.post(
         "/internal/chat/message",
@@ -215,22 +246,23 @@ def test_valid_message_streams_sse_and_persists_turn(client, session):
     assert resp.headers["content-type"].startswith("text/event-stream")
 
     frames = _parse_sse(resp.text)
-    # A token frame then a done frame.
-    assert frames[0]["type"] == "token"
-    assert frames[0]["data"]["text"] == _CANNED_RESPONSE
+    # Token frames stream the reply incrementally, then a single done frame.
+    token_frames = [f for f in frames if f["type"] == "token"]
+    assert token_frames
+    streamed = "".join(f["data"]["text"] for f in token_frames)
+    assert streamed == _FAKE_REPLY
     done = next(f for f in frames if f["type"] == "done")
     assert done["data"]["turn_count"] == 1
 
-    user_tokens = _estimate_tokens("hello there")
-    reply_tokens = min(_estimate_tokens(_CANNED_RESPONSE), limits.MAX_OUTPUT_TOKENS)
-    expected_total = user_tokens + reply_tokens
+    # total_tokens is the model's real per-turn usage (prompt + completion).
+    expected_total = _FAKE_PROMPT_TOKENS + _FAKE_COMPLETION_TOKENS
     assert done["data"]["total_tokens"] == expected_total
 
     # Transcript: one user message then one assistant reply; counters bumped.
     messages = session.exec(select(ChatMessage).order_by(ChatMessage.id)).all()
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[0].content == "hello there"
-    assert messages[1].content == _CANNED_RESPONSE
+    assert messages[1].content == _FAKE_REPLY
     session.refresh(row)
     assert row.turn_count == 1
     assert row.total_tokens == expected_total
@@ -241,7 +273,8 @@ def test_valid_message_streams_sse_and_persists_turn(client, session):
 # ---------------------------------------------------------------------------
 
 
-def test_injected_history_is_ignored(client, session):
+def test_injected_history_is_ignored(client, session, monkeypatch):
+    monkeypatch.setattr(inference, "stream_chat", _fake_stream())
     row = _new_session(session)
     resp = client.post(
         "/internal/chat/message",

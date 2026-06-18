@@ -11,14 +11,18 @@ transitions.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
 from chat_public import limits
 from chat_public.models import ChatMessage, ChatSession
+
+logger = logging.getLogger(__name__)
 
 # Optional salt mixed into the IP/user-agent hash so the stored pseudonym is not
 # a bare sha256 of a guessable value (an attacker cannot precompute a rainbow
@@ -157,3 +161,71 @@ def record_turn(
     session.last_seen_at = _utcnow()
     db.add(session)
     db.commit()
+
+
+def get_transcript(db: Session, session: ChatSession) -> list[ChatMessage]:
+    """All stored transcript messages for a session, oldest first.
+
+    The server-authoritative history (the browser never sends history). Used to
+    build the model context and to decide compaction.
+    """
+    return list(
+        db.exec(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session.id)
+            .order_by(ChatMessage.id)
+        ).all()
+    )
+
+
+async def compact_if_needed(
+    db: Session,
+    session: ChatSession,
+    transcript: list[ChatMessage],
+    *,
+    summarize: Callable[[str | None, list[ChatMessage]], Awaitable[str]],
+) -> tuple[str | None, list[ChatMessage]]:
+    """Fold older turns into the rolling summary when the context is large.
+
+    Returns ``(summary, tail)``: the summary text to prepend (or None) and the
+    transcript messages to send verbatim. When the estimated live context (the
+    current summary plus the full transcript) crosses the compaction trigger,
+    everything older than the recent tail is summarised via ``summarize`` (which
+    calls vLLM under the in-flight slot the caller already holds), the new summary
+    is persisted to ``session.rolling_summary``, and only the recent tail is
+    returned. Below the trigger the existing summary and full transcript pass
+    through unchanged.
+
+    ``transcript`` is the history BEFORE the current user message; the new
+    message is appended to the model context by the caller, not here.
+
+    The decision deliberately re-folds the older messages each time it triggers
+    (no high-water column): a public session is hard-capped at limits.MAX_TURNS
+    turns, so the older set is small and bounded, and re-folding keeps the schema
+    unchanged. Frequency is naturally capped because after a compaction the live
+    context is summary + tail, which stays below the trigger.
+    """
+    summary = session.rolling_summary
+    keep = limits.COMPACTION_KEEP_MESSAGES
+
+    estimated = limits.estimate_tokens(summary or "") + sum(
+        limits.estimate_tokens(m.content) for m in transcript
+    )
+    if not limits.should_compact(estimated) or len(transcript) <= keep:
+        return summary, transcript
+
+    older = transcript[:-keep] if keep else list(transcript)
+    recent = transcript[-keep:] if keep else []
+
+    new_summary = await summarize(summary, older)
+    session.rolling_summary = new_summary
+    session.last_seen_at = _utcnow()
+    db.add(session)
+    db.commit()
+    logger.info(
+        "chat_public.compaction folded=%d kept=%d est_tokens=%d",
+        len(older),
+        len(recent),
+        estimated,
+    )
+    return new_summary, recent
