@@ -1,0 +1,71 @@
+"""SQLModel definitions for the chat_public schema (ADR 005).
+
+Mirrors chart/migrations/20260617030000_chat_public.sql. The CHECK constraints
+are declared on the models (in addition to the migration) so SQLite-backed unit
+tests using ``SQLModel.metadata.create_all()`` enforce them too (per CLAUDE.md
+sqlite-fixture rule); the migration owns the production DDL.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import CheckConstraint
+from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class ChatSession(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    """An anonymous public-chat session. The row, not the cookie, is the budget
+    authority (ADR 005 layer 1+4)."""
+
+    __tablename__ = "sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'expired', 'purged')",
+            name="sessions_status_chk",
+        ),
+        CheckConstraint("turn_count >= 0", name="sessions_turn_count_nonneg_chk"),
+        CheckConstraint("total_tokens >= 0", name="sessions_total_tokens_nonneg_chk"),
+        {"schema": "chat_public", "extend_existing": True},
+    )
+
+    # Opaque, client-unforgeable id (set server-side, never derived from input).
+    id: str = Field(primary_key=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    last_seen_at: datetime = Field(default_factory=_utcnow)
+    turn_count: int = Field(default=0)
+    total_tokens: int = Field(default=0)
+    # Pseudonymous user/session details: hashes and coarse geo only, never raw
+    # IP or PII.
+    ip_hash: str | None = Field(default=None)
+    turnstile_outcome: str | None = Field(default=None)
+    country: str | None = Field(default=None)
+    user_agent_hash: str | None = Field(default=None)
+    status: str = Field(default="active")
+    rolling_summary: str | None = Field(default=None)
+
+
+class ChatMessage(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    """One transcript message. Server-authoritative: the browser never sends
+    history, so this table is the sole record of the conversation."""
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system')",
+            name="messages_role_chk",
+        ),
+        CheckConstraint("tokens >= 0", name="messages_tokens_nonneg_chk"),
+        {"schema": "chat_public", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(foreign_key="chat_public.sessions.id", index=True)
+    role: str
+    content: str
+    tokens: int = Field(default=0)
+    created_at: datetime = Field(default_factory=_utcnow)

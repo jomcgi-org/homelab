@@ -14,6 +14,7 @@ query private tables today and will 500 as ``public_reader`` until Phase 5a'.
 
 from __future__ import annotations
 
+import chat_public
 import dr_jobs
 import hikes
 import home
@@ -33,6 +34,7 @@ hikes.register_public(app)
 dr_jobs.register_public(app)
 knowledge.register_public(app)
 home.register_public(app)
+chat_public.register_public(app)
 
 
 @app.get("/healthz")

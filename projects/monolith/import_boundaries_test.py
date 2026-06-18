@@ -18,6 +18,7 @@ DOMAINS = {
     "ships",
     "stars",
     "chat",
+    "chat_public",
     "knowledge",
     "hikes",
     "dr_jobs",
