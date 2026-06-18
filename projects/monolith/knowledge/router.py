@@ -27,7 +27,6 @@ from app.db import get_session
 from knowledge import frontmatter
 from knowledge.gaps import (
     answer_gap,
-    approve_gap,
     delete_gap,
     list_gaps_for_review,
     reject_gap,
@@ -453,16 +452,9 @@ def get_review_queue_endpoint(
     ``human_verified=False``, most-recently-resolved first.
 
     Each row carries the richer review-dict shape: ``referenced_by_count``
-    (how many notes link at the term), ``research_attempts``, ``answer``,
-    plus a ``stub_body`` read from ``_researching/<slug>.md`` so the
-    audit UI can render in-place without a per-row round-trip.
+    (how many notes link at the term), ``research_attempts``, ``answer``.
     """
-    vault_root = get_vault_root()
-    return {
-        "gaps": list_gaps_for_review(
-            session, mode=mode, limit=limit, vault_root=vault_root
-        )
-    }
+    return {"gaps": list_gaps_for_review(session, mode=mode, limit=limit)}
 
 
 def _map_gap_error(exc: ValueError) -> HTTPException:
@@ -513,29 +505,9 @@ def reject_gap_endpoint(
     gap_id: int,
     session: Session = Depends(get_session),
 ) -> dict:
-    """Reject a pending gap. Transitions in_review → rejected and tombstones the stub."""
-    vault_root = get_vault_root()
+    """Reject a pending gap. Transitions in_review → rejected (pure DB)."""
     try:
-        return reject_gap(session, gap_id, vault_root)
-    except ValueError as exc:
-        raise _map_gap_error(exc) from exc
-
-
-@router.post("/gaps/{gap_id}/approve")
-def approve_gap_endpoint(
-    gap_id: int,
-    session: Session = Depends(get_session),
-) -> dict:
-    """Approve an external gap for auto-research.
-
-    Transitions ``in_review`` → ``classified`` so the daily research
-    cron's sweep picks it up. Also writes the stub's ``status`` field
-    to ``classified`` so the next reconciler tick doesn't revert the
-    Gap row. Only valid for ``gap_class='external'``.
-    """
-    vault_root = get_vault_root()
-    try:
-        return approve_gap(session, gap_id, vault_root)
+        return reject_gap(session, gap_id)
     except ValueError as exc:
         raise _map_gap_error(exc) from exc
 
@@ -569,10 +541,9 @@ def delete_gap_endpoint(
     gap_id: int,
     session: Session = Depends(get_session),
 ) -> dict:
-    """Soft-delete a gap. Hard-deletes the stub file; regenerable on undelete."""
-    vault_root = get_vault_root()
+    """Soft-delete a gap (pure DB); reappears in queries on undelete."""
     try:
-        return delete_gap(session, gap_id, vault_root)
+        return delete_gap(session, gap_id)
     except ValueError as exc:
         raise _map_gap_error(exc) from exc
 
