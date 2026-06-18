@@ -16,6 +16,10 @@ Optional values (with defaults):
   probes.liveness.path ("/health"), probes.readiness.path ("/health"),
   probes.liveness.exec ([]) — if set, uses exec probe instead of httpGet,
   probes.readiness.exec ([]) — same for readiness,
+  probes.liveness.tcpSocket (false) — if true, uses a tcpSocket probe on the
+                  container port instead of httpGet (for servers with no HTTP
+                  health endpoint). exec takes precedence over tcpSocket.
+  probes.readiness.tcpSocket (false) — same for readiness,
   env ([]), resources ({}), volumes ([]), volumeMounts ([]),
   podAnnotations ({}), podSecurityContext (falls back to global),
   securityContext (falls back to global)
@@ -87,6 +91,9 @@ spec:
             exec:
               command:
                 {{- toYaml (dig "probes" "liveness" "exec" (list) $vals) | nindent 16 }}
+            {{- else if (dig "probes" "liveness" "tcpSocket" nil $vals) }}
+            tcpSocket:
+              port: {{ $vals.portName | default "http" }}
             {{- else }}
             httpGet:
               path: {{ dig "probes" "liveness" "path" "/health" $vals }}
@@ -101,6 +108,9 @@ spec:
             exec:
               command:
                 {{- toYaml (dig "probes" "readiness" "exec" (list) $vals) | nindent 16 }}
+            {{- else if (dig "probes" "readiness" "tcpSocket" nil $vals) }}
+            tcpSocket:
+              port: {{ $vals.portName | default "http" }}
             {{- else }}
             httpGet:
               path: {{ dig "probes" "readiness" "path" "/health" $vals }}
