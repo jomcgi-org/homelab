@@ -13,6 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
+from app.db import get_engine
 from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
@@ -66,6 +67,11 @@ _RESEARCH_TTL_SECS = (
 # regressions without burning cycles.
 _DRIFT_INTERVAL_SECS = 86400
 _DRIFT_TTL_SECS = 600  # 10min ceiling on a single scan
+# Fileless gap discovery: a quick Postgres scan of note_links for unresolved
+# wikilinks. 5-minute cadence matches the other knowledge jobs; the scan is
+# cheap so a 10-minute lock-lease is ample headroom.
+_DISCOVER_INTERVAL_SECS = 300
+_DISCOVER_TTL_SECS = 600
 _GIT_READY_SENTINEL = ".git-ready"
 _SYNC_READY_SENTINEL = ".sync-ready"
 _GIT_AUTHOR = b"vault-backup <vault-backup@monolith.local>"
@@ -453,6 +459,35 @@ async def research_gaps_handler(session: Session) -> datetime | None:
     return None
 
 
+def _discover_gaps_sync_core() -> int:
+    """Run fileless gap discovery in its own session (for ``to_thread``).
+
+    Opens a fresh ``Session(get_engine())`` because SQLAlchemy sessions are
+    not thread-safe: the scheduler's loop-thread session must never be passed
+    into a worker thread (semgrep ``no-session-in-to-thread``). Returns the
+    number of Gap rows inserted/resurrected this cycle.
+    """
+    from knowledge.gaps import discover_gaps
+
+    with Session(get_engine()) as session:
+        return discover_gaps(session)
+
+
+async def discover_gaps_handler(session: Session) -> datetime | None:
+    """Scheduler handler: scan note_links for unresolved wikilinks (fileless).
+
+    Delegates all DB work to ``_discover_gaps_sync_core`` on a worker thread
+    so the loop-thread session is never shared. The scheduler's ``session``
+    argument is intentionally unused: the sync core owns its own session.
+
+    Returns None so the scheduler advances by the default interval.
+    """
+    del session  # sync core opens its own session; never shared into to_thread
+    inserted = await asyncio.to_thread(_discover_gaps_sync_core)
+    logger.info("knowledge.discover-gaps: inserted %d gap(s)", inserted)
+    return None
+
+
 def reconcile_external_in_review_stubs(session: Session) -> int:
     """One-shot, idempotent: bring external in_review stubs into sync with DB.
 
@@ -563,6 +598,13 @@ def on_startup(session: Session) -> None:
         interval_secs=_RESEARCH_INTERVAL_SECS,
         handler=research_gaps_handler,
         ttl_secs=_RESEARCH_TTL_SECS,
+    )
+    register_job(
+        session,
+        name="knowledge.discover-gaps",
+        interval_secs=_DISCOVER_INTERVAL_SECS,
+        handler=discover_gaps_handler,
+        ttl_secs=_DISCOVER_TTL_SECS,
     )
 
     from knowledge.drift_detector import detect_drift_handler
