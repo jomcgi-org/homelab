@@ -34,9 +34,9 @@
     searchTerm = "",
     activeClusters = new Set(),
     // The set of node ids a public-chat turn grounded on (ADR 005). When
-    // supplied (the chat graph overlay), these nodes get a distinct accent
+    // supplied (the /app/notes graph view), these nodes get a distinct accent
     // halo + always-on label so "the nodes your chat touched" read at a glance.
-    // Empty on the standalone /notes/graph page, where this pass is a no-op.
+    // Empty on the private /notes graph, where this pass is a no-op.
     touchedIds = new Set(),
     onNodeClick = () => {},
     onNodeHover = () => {},

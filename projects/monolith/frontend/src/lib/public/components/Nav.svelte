@@ -2,14 +2,13 @@
   /** @type {{ route?: string, isPrivate?: boolean }} */
   let { route = "home", isPrivate = false } = $props();
 
-  // NOTES, ENGINEERING, and CV are same-host relative URLs so they
-  // resolve to jomcgi.dev/* from the public homepage and to
-  // private.jomcgi.dev/* from the private dashboard, without
-  // bouncing public visitors into the auth-gated private surface.
-  // HOME always points at the public site.
+  // ENGINEERING and CV are same-host relative URLs so they resolve to
+  // jomcgi.dev/* from the public homepage and to private.jomcgi.dev/* from the
+  // private dashboard, without bouncing public visitors into the auth-gated
+  // private surface. HOME always points at the public site. Notes is no longer
+  // a top-level link: it moved under the APPS dropdown alongside the other apps.
   const publicItems = [
     { slug: "home", label: "HOME", href: "https://jomcgi.dev/" },
-    { slug: "notes", label: "NOTES", href: "/notes" },
     { slug: "engineering", label: "ENGINEERING", href: "/engineering" },
     { slug: "cv", label: "CV", href: "/cv" },
   ];
@@ -48,6 +47,12 @@
       label: "Stars",
       desc: "Scotland dark-sky planner",
       href: "/app/stars",
+    },
+    {
+      slug: "notes",
+      label: "Notes",
+      desc: "Ask my knowledge graph",
+      href: "/app/notes",
     },
   ];
 
@@ -186,6 +191,23 @@
                             d="M18.5 3 L19 5 L21 5.5 L19 6 L18.5 8 L18 6 L16 5.5 L18 5 Z"
                             fill="currentColor"
                             stroke="none"
+                          />
+                        </svg>
+                      {:else if app.slug === "notes"}
+                        <svg width="22" height="22" viewBox="0 0 24 24">
+                          <path
+                            d="M4 19 V5 A1 1 0 0 1 5 4 H17 L20 7 V19 A1 1 0 0 1 19 20 H5 A1 1 0 0 1 4 19 Z"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linejoin="round"
+                          />
+                          <path
+                            d="M7 9 H15 M7 12 H15 M7 15 H12"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
                           />
                         </svg>
                       {/if}
@@ -375,6 +397,15 @@
   .md-apps-item[data-app="stars"]:hover .md-apps-icon,
   .md-apps-item[data-app="stars"]:focus-visible .md-apps-icon {
     background: #b14fff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+
+  .md-apps-item[data-app="notes"]:hover,
+  .md-apps-item[data-app="notes"]:focus-visible {
+    background: #fff6da; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="notes"]:hover .md-apps-icon,
+  .md-apps-item[data-app="notes"]:focus-visible .md-apps-icon {
+    background: #ffd84d; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
   .md-apps-icon {

@@ -1,14 +1,13 @@
 import { PUBLIC_BASE } from "$lib/public/seo.js";
 
 // Crawl manifest for the public tier. Paths are the public-facing URLs
-// (PUBLIC_BASE + path), not the gateway-internal /public/* form. /notes is the
-// chat front door; /notes/graph is the standalone browsable graph (no per-note
-// URLs, so each appears once).
+// (PUBLIC_BASE + path), not the gateway-internal /public/* form. /app/notes is
+// the chat front door, with an in-page graph view (no separate URL, and no
+// per-note URLs, so it appears once).
 const PAGES = [
   { path: "/", priority: "1.0" },
   { path: "/cv", priority: "0.9" },
-  { path: "/notes", priority: "0.7" },
-  { path: "/notes/graph", priority: "0.6" },
+  { path: "/app/notes", priority: "0.7" },
 ];
 
 export function GET() {

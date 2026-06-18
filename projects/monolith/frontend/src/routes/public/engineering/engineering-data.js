@@ -107,7 +107,7 @@ export const projects = [
       },
     ],
     links: [
-      { label: "Browse the notes", href: "/notes" },
+      { label: "Browse the notes", href: "/app/notes" },
       {
         label: "projects/monolith/knowledge",
         href: "https://github.com/jomcgi/homelab/tree/main/projects/monolith/knowledge",

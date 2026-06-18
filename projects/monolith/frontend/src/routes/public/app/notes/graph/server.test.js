@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { load } from "./+page.server.js";
+import { GET } from "./+server.js";
 
 function makeHeaders(map = {}) {
   const lower = Object.fromEntries(
@@ -8,7 +8,7 @@ function makeHeaders(map = {}) {
   return { get: (name) => lower[name.toLowerCase()] ?? null };
 }
 
-describe("/public/notes load", () => {
+describe("/public/app/notes/graph GET", () => {
   it("hits the visibility-filtered public graph endpoint", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
@@ -17,32 +17,33 @@ describe("/public/notes load", () => {
       json: async () => ({ nodes: [], edges: [], indexed_at: null }),
     });
 
-    await load({ fetch, setHeaders });
+    await GET({ fetch, setHeaders });
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const url = fetch.mock.calls[0][0];
     expect(url).toMatch(/\/api\/knowledge\/public\/graph$/);
-    // Belt-and-braces: must NEVER fall back to the unfiltered private endpoint
-    // — that would leak private nodes onto public.jomcgi.dev.
+    // Belt-and-braces: must NEVER fall back to the unfiltered private endpoint,
+    // which would leak private nodes onto public.jomcgi.dev.
     expect(url).not.toMatch(/\/api\/knowledge\/graph$/);
   });
 
-  it("sets a 1h s-maxage cache-control header", async () => {
+  it("sets a 1h s-maxage cache-control header and returns the graph JSON", async () => {
     const setHeaders = vi.fn();
+    const graph = { nodes: [], edges: [], indexed_at: null };
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: makeHeaders(),
-      json: async () => ({ nodes: [], edges: [], indexed_at: null }),
+      json: async () => graph,
     });
 
-    const result = await load({ fetch, setHeaders });
+    const res = await GET({ fetch, setHeaders });
 
     expect(setHeaders).toHaveBeenCalledWith(
       expect.objectContaining({
         "cache-control": expect.stringContaining("s-maxage=3600"),
       }),
     );
-    expect(result.graph).toEqual({ nodes: [], edges: [], indexed_at: null });
+    expect(await res.json()).toEqual(graph);
   });
 
   it("versions the API ETag with the build version and forwards Last-Modified", async () => {
@@ -56,12 +57,12 @@ describe("/public/notes load", () => {
       json: async () => ({ nodes: [], edges: [], indexed_at: null }),
     });
 
-    await load({ fetch, setHeaders });
+    await GET({ fetch, setHeaders });
 
     expect(setHeaders).toHaveBeenCalledWith(
       expect.objectContaining({
         // Build version (testbuild, from the $app/environment stub) is spliced
-        // inside the quotes so a layout-only deploy busts the page validator.
+        // inside the quotes so a layout-only deploy busts the validator.
         etag: '"testbuild-abc-3"',
         "last-modified": "Mon, 27 Apr 2026 12:00:00 GMT",
       }),
@@ -76,7 +77,7 @@ describe("/public/notes load", () => {
       json: async () => ({ nodes: [], edges: [], indexed_at: null }),
     });
 
-    await load({ fetch, setHeaders });
+    await GET({ fetch, setHeaders });
 
     const headers = setHeaders.mock.calls[0][0];
     expect(headers).not.toHaveProperty("etag");
@@ -87,6 +88,6 @@ describe("/public/notes load", () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({ ok: false, status: 502 });
 
-    await expect(load({ fetch, setHeaders })).rejects.toThrow();
+    await expect(GET({ fetch, setHeaders })).rejects.toThrow();
   });
 });
