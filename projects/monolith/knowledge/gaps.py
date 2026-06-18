@@ -1001,6 +1001,76 @@ def _is_tombstone_answer(answer: str) -> bool:
     return after[:1] in (" ", "—", "-", "")
 
 
+def _load_gap_for_answer(session: Session, gap_id: int) -> Gap:
+    """Load an answerable gap, enforcing the in_review precondition (sync).
+
+    Split out of :func:`answer_gap` so no raw ``session.*`` call sits in the
+    async body (semgrep ``no-sync-session-in-async-def``). A gap in
+    ``state='in_review'`` always carries ``gap_class`` in
+    (internal, hybrid, external) under the ``gaps_state_class_combo`` CHECK, so
+    this guard is what keeps the later commit legal.
+
+    Raises:
+        ValueError: if ``gap_id`` is unknown or the gap is not in
+            ``state='in_review'``.
+    """
+    gap = session.get(Gap, gap_id)
+    if gap is None or gap.deleted_at is not None:
+        raise ValueError(f"Gap not found: id={gap_id}")
+    if gap.state != "in_review":
+        raise ValueError(
+            f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
+        )
+    return gap
+
+
+def _reject_via_tombstone(session: Session, gap_id: int, answer: str) -> dict:
+    """Close a gap via the Tombstone convention: rejected, no atom (sync).
+
+    Split out of :func:`answer_gap` to keep ``session.*`` mutations and the
+    commit out of the async body. ``answer`` is accepted for call-site
+    symmetry; the Tombstone branch deliberately records no answer body.
+    """
+    del answer  # Tombstone gaps store no answer body (behavior preserved).
+    gap = session.get(Gap, gap_id)
+    gap.state = "rejected"
+    gap.human_verified = True
+    gap.resolved_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(gap)
+    logger.info("gaps.answer_gap: tombstoned gap_id=%d term=%r", gap_id, gap.term)
+    return _gap_to_dict(gap, session=session)
+
+
+def _finalize_answered_gap(
+    session: Session, gap_id: int, answer: str, note_id: str
+) -> dict:
+    """Mark an answered gap committed against its new atom (sync).
+
+    Split out of :func:`answer_gap` to keep ``session.*`` mutations and the
+    commit out of the async body.
+    """
+    gap = session.get(Gap, gap_id)
+    gap.answer = answer
+    gap.state = "committed"
+    gap.note_id = note_id
+    gap.resolved_at = datetime.now(timezone.utc)
+    # User-initiated answer is itself a verification - keeps the
+    # /private/review audit queue's "human has looked at this" semantics
+    # consistent with reject_gap and verify_gap.
+    gap.human_verified = True
+    session.commit()
+    logger.info(
+        "gaps.answer_gap: committed gap_id=%d as note_id=%s",
+        gap_id,
+        note_id,
+    )
+    return {
+        "gap_id": gap_id,
+        "note_id": note_id,
+    }
+
+
 async def answer_gap(
     session: Session,
     gap_id: int,
@@ -1018,20 +1088,20 @@ async def answer_gap(
 
     A gap in ``state='in_review'`` always carries ``gap_class`` in
     (internal, hybrid, external) under the ``gaps_state_class_combo`` Postgres
-    CHECK, so committing it is legal; the in_review precondition below is the
-    in-code guard that upholds that invariant.
+    CHECK, so committing it is legal; the in_review precondition (enforced in
+    :func:`_load_gap_for_answer`) is the in-code guard that upholds that
+    invariant.
+
+    All database-session calls live in the sync helpers
+    (:func:`_load_gap_for_answer`, :func:`_reject_via_tombstone`,
+    :func:`_finalize_answered_gap`) so none sit in this async body, matching
+    how ``create_atom`` passes semgrep ``no-sync-session-in-async-def``.
 
     Raises:
         ValueError: if ``gap_id`` is unknown or the gap is not in
             ``state='in_review'``.
     """
-    gap = session.get(Gap, gap_id)
-    if gap is None or gap.deleted_at is not None:
-        raise ValueError(f"Gap not found: id={gap_id}")
-    if gap.state != "in_review":
-        raise ValueError(
-            f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
-        )
+    gap = _load_gap_for_answer(session, gap_id)
     if "\n---\n" in f"\n{answer}\n":
         raise ValueError(
             "answer may not contain a frontmatter terminator ('---' on its own line)"
@@ -1043,13 +1113,7 @@ async def answer_gap(
         # NO atom created. Honors the marker text the user has been typing for
         # months (2026-05-28 vault audit found 14 zombie atoms produced by the
         # answer-and-then-create-atom path on Tombstone-prefixed answers).
-        gap.state = "rejected"
-        gap.human_verified = True
-        gap.resolved_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(gap)
-        logger.info("gaps.answer_gap: tombstoned gap_id=%d term=%r", gap_id, gap.term)
-        return _gap_to_dict(gap, session=session)
+        return _reject_via_tombstone(session, gap_id, answer)
 
     # Local import breaks the knowledge.mcp <-> knowledge.gaps cycle: mcp
     # imports answer_gap, so answer_gap reaches back for the shared index
@@ -1069,26 +1133,7 @@ async def answer_gap(
         visibility="private",
         source_tier="personal",
     )
-
-    gap.answer = answer
-    gap.state = "committed"
-    gap.note_id = note_id
-    gap.resolved_at = datetime.now(timezone.utc)
-    # User-initiated answer is itself a verification - keeps the
-    # /private/review audit queue's "human has looked at this" semantics
-    # consistent with reject_gap and verify_gap.
-    gap.human_verified = True
-    session.commit()
-
-    logger.info(
-        "gaps.answer_gap: committed gap_id=%d as note_id=%s",
-        gap_id,
-        note_id,
-    )
-    return {
-        "gap_id": gap_id,
-        "note_id": note_id,
-    }
+    return _finalize_answered_gap(session, gap_id, answer, note_id)
 
 
 def delete_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
