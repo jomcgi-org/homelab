@@ -66,6 +66,76 @@ def _seed(engine) -> None:
         session.commit()
 
 
+def _seed_repo_doc(engine) -> None:
+    """Seed one repo doc + chunk (the machine-synced, public-grounding tier).
+
+    Runs as the migration/owner role like _seed above. Idempotent via ON CONFLICT
+    and a NOT EXISTS guard so the shared session-scoped Postgres stays reusable.
+    """
+    with Session(engine) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO knowledge.repo_docs (path, content_hash, title)
+                VALUES ('docs/test-repo-doc.md', 'rh1', 'Test Repo Doc')
+                ON CONFLICT (path) DO NOTHING
+                """
+            )
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO knowledge.repo_doc_chunks
+                    (repo_doc_fk, chunk_index, section_header, chunk_text, embedding)
+                SELECT id, 0, 'Intro', :ctext, CAST(:emb AS vector)
+                FROM knowledge.repo_docs
+                WHERE path = 'docs/test-repo-doc.md'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM knowledge.repo_doc_chunks rc
+                      WHERE rc.repo_doc_fk = knowledge.repo_docs.id
+                        AND rc.chunk_index = 0
+                  )
+                """
+            ),
+            {"ctext": "REPO DOC grounding text", "emb": _EMB},
+        )
+        session.commit()
+
+
+def test_public_chunk_view_includes_repo_docs(pg):
+    """As public_reader, the chunk view also returns repo-doc chunks surfaced via the
+    UNION ALL: a synthetic note_id 'repo:'||path, the doc title, the chunk text, and a
+    1024-dim embedding. The private note's chunk text stays unreachable through the
+    same view (confinement holds across both arms of the union)."""
+    engine = create_engine(pg.url)
+    _seed(engine)
+    _seed_repo_doc(engine)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE public_reader"))
+            row = session.execute(
+                text(
+                    "SELECT note_id, title, chunk_text, vector_dims(embedding) "
+                    "FROM public_api.knowledge_chunks "
+                    "WHERE note_id = 'repo:docs/test-repo-doc.md'"
+                )
+            ).one()
+            assert row[0] == "repo:docs/test-repo-doc.md"
+            assert row[1] == "Test Repo Doc"
+            assert row[2] == "REPO DOC grounding text"
+            assert row[3] == 1024
+            # The private note's chunk text remains unreachable via the same view.
+            chunk_texts = [
+                r[0]
+                for r in session.execute(
+                    text("SELECT chunk_text FROM public_api.knowledge_chunks")
+                ).all()
+            ]
+            assert "PRIVATE secret chunk text" not in chunk_texts
+    finally:
+        engine.dispose()
+
+
 def test_public_chunk_view_exposes_only_public_note_chunks(pg):
     """As public_reader, the chunk view returns the public note's chunk and NOT the
     private note's chunk (its text never appears), even though both exist in the
