@@ -147,7 +147,10 @@ fi
 echo "Validating repo-docs manifest ..."
 
 REPO_DOCS_MANIFEST=projects/monolith/knowledge/repo_docs_manifest.ndjson
-if bazel run //projects/monolith:gen_repo_docs_manifest >/dev/null 2>"$TMPDIR_VALIDATE/gen_repo_docs.err"; then
+# --config=ci so the generator builds with the same platform/toolchain as the
+# rest of the format run; without it, bazel discards the analysis cache and can
+# select a wrong-arch venv tool, failing the build before the generator runs.
+if bazel run --config=ci //projects/monolith:gen_repo_docs_manifest >/dev/null 2>"$TMPDIR_VALIDATE/gen_repo_docs.err"; then
 	if git diff --quiet -- "$REPO_DOCS_MANIFEST"; then
 		echo "  repo-docs-manifest: PASS"
 	else
