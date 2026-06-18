@@ -21,15 +21,13 @@ from app.mcp_app import mcp
 from knowledge import frontmatter
 from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap
-from knowledge.gaps import approve_gap as _approve_gap
 from knowledge.gaps import list_review_queue, resolve_gaps_for_note, split_csv
 from knowledge.gaps import set_gap_class as _set_gap_class
 from knowledge.gardener import GARDENER_VERSION, _slugify
 from knowledge.indexing import index_note_best_effort, index_note_from_raw
 from knowledge.models import AtomRawProvenance, RawInput
-from knowledge.notes import resolve_note_body
+from knowledge.notes import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV, resolve_note_body
 from knowledge.raw_store import fetch_raw
-from knowledge.service import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
@@ -452,26 +450,6 @@ async def answer_gap(gap_id: int, answer: str) -> dict:
     with Session(get_engine()) as session:
         try:
             return await _answer_gap(session, gap_id, answer)
-        except ValueError as exc:
-            return {"error": str(exc)}
-
-
-@mcp.tool
-async def approve_research_gap(gap_id: int) -> dict:
-    """Approve an external gap for auto-research.
-
-    Use this from the pending review queue when an external gap is worth
-    Sonnet web-research tokens. Internal and hybrid gaps must be answered
-    via answer_gap instead, approval rejects them.
-
-    Args:
-        gap_id: The id of a gap currently in state in_review with
-            gap_class external.
-    """
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-    with Session(get_engine()) as session:
-        try:
-            return _approve_gap(session, gap_id, vault_root)
         except ValueError as exc:
             return {"error": str(exc)}
 
