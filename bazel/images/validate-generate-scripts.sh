@@ -153,6 +153,14 @@ if bazel run //projects/monolith:gen_repo_docs_manifest >/dev/null 2>"$TMPDIR_VA
 	else
 		echo "  repo-docs-manifest: FAIL"
 		echo "    $REPO_DOCS_MANIFEST is out of date with the repo's markdown."
+		# Diagnostic: which doc PATHS the regen added/removed vs what is committed.
+		# Each manifest line is one sort_keys JSON object: {"content":..,"path":..,..}
+		_extract_paths() { sed 's/.*, "path": "\([^"]*\)", "sha256":.*/\1/'; }
+		git show "HEAD:$REPO_DOCS_MANIFEST" | _extract_paths | LC_ALL=C sort >"$TMPDIR_VALIDATE/rd_committed.txt"
+		_extract_paths <"$REPO_DOCS_MANIFEST" | LC_ALL=C sort >"$TMPDIR_VALIDATE/rd_regen.txt"
+		echo "    committed_lines=$(wc -l <"$TMPDIR_VALIDATE/rd_committed.txt") regen_lines=$(wc -l <"$TMPDIR_VALIDATE/rd_regen.txt")"
+		echo "    paths only in regen (+) / only in committed (-):"
+		comm -3 "$TMPDIR_VALIDATE/rd_committed.txt" "$TMPDIR_VALIDATE/rd_regen.txt" | sed 's/^\t/      +/; s/^\([^ +]\)/      -\1/' | head -40
 		echo "    Regenerate it and commit the result:"
 		echo "      bazel run //projects/monolith:gen_repo_docs_manifest"
 		echo "      git add $REPO_DOCS_MANIFEST && git commit"
