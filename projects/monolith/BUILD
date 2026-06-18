@@ -2690,6 +2690,20 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_gap_answer_fileless_test",
+    srcs = ["knowledge/gap_answer_fileless_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_deleted_at_filter_test",
     srcs = ["knowledge/deleted_at_filter_test.py"],
     imports = ["."],
@@ -2710,6 +2724,7 @@ py_test(
         ":monolith_backend",
         "@pip//pgvector",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
@@ -3064,6 +3079,7 @@ py_test(
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],

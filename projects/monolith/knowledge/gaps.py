@@ -950,22 +950,25 @@ def _is_tombstone_answer(answer: str) -> bool:
     return after[:1] in (" ", "—", "-", "")
 
 
-def answer_gap(
+async def answer_gap(
     session: Session,
     gap_id: int,
     answer: str,
-    vault_root: Path,
 ) -> dict:
-    """Commit a user answer: emit a personal-tier atom, mark gap committed.
+    """Commit a user answer fileless: emit a personal-tier atom, mark committed.
 
-    The new atom is written to ``<vault_root>/_processed/<slug>.md`` with
-    frontmatter ``source_tier: personal`` so downstream consumers can
-    distinguish user-authored atoms from gardener-derived ones. Filename
-    collisions are resolved by appending ``-1``, ``-2``, etc. — same
-    pattern as :func:`knowledge.router.create_note`.
+    Routes the answer through the shared fileless index helper
+    (:func:`knowledge.mcp._index_atom`), the same core ``create_atom`` uses, so
+    the atom lands straight in Postgres with ``source_tier: personal`` and
+    ``visibility: private``. No filesystem, no reconciler.
 
-    The new file is *not* reconciled into the DB here; the reconciler
-    picks it up on its next tick. This matches ``create_note``'s contract.
+    The ``Tombstone`` answer convention closes the gap as ``rejected`` with no
+    atom created (see :func:`_is_tombstone_answer`).
+
+    A gap in ``state='in_review'`` always carries ``gap_class`` in
+    (internal, hybrid, external) under the ``gaps_state_class_combo`` Postgres
+    CHECK, so committing it is legal; the in_review precondition below is the
+    in-code guard that upholds that invariant.
 
     Raises:
         ValueError: if ``gap_id`` is unknown or the gap is not in
@@ -984,90 +987,55 @@ def answer_gap(
         )
 
     if _is_tombstone_answer(answer):
-        # User convention: "Tombstone — <reason>" means "this gap doesn't
-        # deserve a content atom". Route to reject_gap semantics: gap is
-        # closed, stub removed, NO atom file written. Honors the marker
-        # text the user has been typing for months that the system never
-        # acted on (2026-05-28 vault audit found 14 zombie atoms produced
-        # by the answer-and-then-create-atom path on Tombstone-prefixed
-        # answers).
+        # User convention: "Tombstone - <reason>" means "this gap doesn't
+        # deserve a content atom". Route to reject semantics: gap is closed,
+        # NO atom created. Honors the marker text the user has been typing for
+        # months (2026-05-28 vault audit found 14 zombie atoms produced by the
+        # answer-and-then-create-atom path on Tombstone-prefixed answers).
         gap.state = "rejected"
         gap.human_verified = True
         gap.resolved_at = datetime.now(timezone.utc)
-        _remove_stub_if_present(vault_root, gap, action="tombstoned")
         session.commit()
         session.refresh(gap)
         logger.info("gaps.answer_gap: tombstoned gap_id=%d term=%r", gap_id, gap.term)
         return _gap_to_dict(gap, session=session)
 
-    processed_root = vault_root / "_processed"
-    processed_root.mkdir(parents=True, exist_ok=True)
+    # Local import breaks the knowledge.mcp <-> knowledge.gaps cycle: mcp
+    # imports answer_gap, so answer_gap reaches back for the shared index
+    # helper only at call time. The new atom defaults to visibility private:
+    # gap answers are typically Joe writing about his own context (people,
+    # projects, personal decisions); the visibility-review queue flips the
+    # minority that should be public. Public-default would be riskier because
+    # the body is user-supplied free-form text. See profile.py's
+    # ASYMMETRIC_ERROR_PREFERENCE: 'private' is the right error direction.
+    from knowledge.mcp import _index_atom
 
-    slug = _slugify(gap.term)
-    filename = f"{slug}.md"
-    dest = processed_root / filename
-    counter = 1
-    while dest.exists():
-        filename = f"{slug}-{counter}.md"
-        dest = processed_root / filename
-        counter += 1
-
-    # The id in frontmatter must match the final filename stem so the
-    # reconciler resolves the file to a stable note_id.
-    note_id = filename[:-3]  # strip .md
-    fm = {
-        "id": note_id,
-        "title": gap.term,
-        "type": "atom",
-        "source_tier": "personal",
-        # User-typed gap answers default private. Joe writes about his own
-        # context (people, projects, personal decisions) more often than
-        # generic knowledge; the visibility-review queue flips the minority
-        # that should be public. Public-default would be riskier here because
-        # the body is user-supplied free-form text. See profile.py's
-        # ASYMMETRIC_ERROR_PREFERENCE: 'private' is the right error direction.
-        "visibility": "private",
-    }
-    fm_str = yaml.dump(fm, default_flow_style=False, sort_keys=False)
-    file_content = f"---\n{fm_str}---\n\n{answer}\n"
-    dest.write_text(file_content)
-
-    # Remove the stub — its purpose ends once the atom exists. Missing
-    # stub is tolerated (user may have hand-deleted it; the atom-at-
-    # _processed/ write above is the actual source of truth now). Use
-    # the base slug, NOT the collision-suffixed atom note_id — stubs are
-    # always created at _researching/<base-slug>.md.
-    stub_path = vault_root / RESEARCHING_DIR / f"{slug}.md"
-    if stub_path.is_file():
-        stub_path.unlink()
-        logger.info(
-            "gaps.answer_gap: removed stub %s for committed gap_id=%d",
-            stub_path.relative_to(vault_root),
-            gap_id,
-        )
+    note_id = await _index_atom(
+        session,
+        title=gap.term,
+        body=answer,
+        type="atom",
+        visibility="private",
+        source_tier="personal",
+    )
 
     gap.answer = answer
     gap.state = "committed"
+    gap.note_id = note_id
     gap.resolved_at = datetime.now(timezone.utc)
-    # User-initiated answer is itself a verification — keeps the
+    # User-initiated answer is itself a verification - keeps the
     # /private/review audit queue's "human has looked at this" semantics
     # consistent with reject_gap and verify_gap.
     gap.human_verified = True
-    # TODO(task-3): make file-write + DB-commit transactional (e.g. write to
-    # <dest>.tmp, commit DB, rename). Today a commit failure after write leaves
-    # an orphan file that a retry resolves to <slug>-1.md.
     session.commit()
 
-    relative_path = dest.relative_to(vault_root)
     logger.info(
-        "gaps.answer_gap: committed gap_id=%d as note_id=%s path=%s",
+        "gaps.answer_gap: committed gap_id=%d as note_id=%s",
         gap_id,
         note_id,
-        relative_path,
     )
     return {
         "gap_id": gap_id,
-        "path": str(relative_path),
         "note_id": note_id,
     }
 
