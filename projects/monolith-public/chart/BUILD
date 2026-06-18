@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "helm_chart")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Guard (ADR 005): the public HTTPRoute must never route chat or the internal
@@ -8,7 +9,6 @@ py_test(
     srcs = ["httproute_public_test.py"],
     data = ["templates/httproute-public.yaml"],
     imports = ["."],
-    deps = ["@pip//pytest"],
 )
 
 helm_chart(
@@ -20,4 +20,10 @@ helm_chart(
     lint = False,
     publish = True,
     visibility = ["//overlays:__subpackages__"],
+)
+
+semgrep_test(
+    name = "httproute_public_test_semgrep_test",
+    srcs = ["httproute_public_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
