@@ -724,6 +724,9 @@
     align-self: flex-start;
     max-width: 100%;
     width: 100%;
+    /* Let the flex item shrink below its content's intrinsic width so long
+       tokens/code wrap instead of forcing horizontal overflow of the page. */
+    min-width: 0;
   }
   .turn-tag {
     font-size: 9px;
@@ -741,7 +744,16 @@
   .turn-md {
     font-size: 13px;
     line-height: 1.6;
+    min-width: 0;
+    overflow-wrap: anywhere;
     word-break: break-word;
+  }
+  /* Code / preformatted blocks from the model must wrap, not run off the page. */
+  .turn-md :global(pre),
+  .turn-md :global(code) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-width: 100%;
   }
   .turn-md :global(p) {
     margin: 0 0 9px;
