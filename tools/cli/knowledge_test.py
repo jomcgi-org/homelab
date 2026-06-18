@@ -12,8 +12,8 @@ from typer.testing import CliRunner
 
 from knowledge.gardener import Gardener
 from knowledge.models import AtomRawProvenance, RawInput
+from knowledge.notes import VAULT_ROOT_ENV
 from knowledge.router import get_embedding_client
-from knowledge.service import VAULT_ROOT_ENV
 from tools.cli.main import app
 
 

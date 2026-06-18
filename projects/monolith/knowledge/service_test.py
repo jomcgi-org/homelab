@@ -8,7 +8,7 @@ fileless gap discovery handler and the pure-Postgres graph layout pass.
 
 import logging
 import math
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -86,26 +86,26 @@ def _link(session: Session, *, src_fk: int, target_id: str) -> None:
 
 
 class TestOnStartup:
-    def test_registers_fileless_jobs(self, session):
-        from scheduler.api import ScheduledJob
+    def _registered_names(self) -> set[str]:
+        """Run on_startup with register_job patched; return the job names.
 
-        on_startup(session)
+        Patches ``scheduler.api.register_job`` (the name on_startup imports at
+        call time) so the test never touches the schema-qualified
+        ``scheduler.scheduled_jobs`` table, which the SQLite create_all fixture
+        cannot resolve.
+        """
+        with patch("scheduler.api.register_job") as mock_register:
+            on_startup(MagicMock())
+        return {call.kwargs["name"] for call in mock_register.call_args_list}
 
-        names = {
-            row.name for row in session.execute(select(ScheduledJob)).scalars().all()
-        }
+    def test_registers_fileless_jobs(self):
+        names = self._registered_names()
         assert "knowledge.layout" in names
         assert "knowledge.ingest" in names
         assert "knowledge.discover-gaps" in names
 
-    def test_does_not_register_vault_jobs(self, session):
-        from scheduler.api import ScheduledJob
-
-        on_startup(session)
-
-        names = {
-            row.name for row in session.execute(select(ScheduledJob)).scalars().all()
-        }
+    def test_does_not_register_vault_jobs(self):
+        names = self._registered_names()
         for removed in (
             "knowledge.reconcile",
             "knowledge.vault-backup",
