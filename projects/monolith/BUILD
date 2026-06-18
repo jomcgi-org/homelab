@@ -75,7 +75,10 @@ py_venv_binary(
             "trips/backfill/**",
         ],
     ),  # keep
-    data = [":frontend_dist"],
+    data = [
+        ":frontend_dist",
+        "knowledge/repo_docs_manifest.ndjson",
+    ],
     imports = ["."],  # keep
     main = "app/main.py",
     visibility = ["//:__subpackages__"],
@@ -102,6 +105,16 @@ py_venv_binary(
 py_venv_binary(
     name = "classify_visibility_backfill",
     main = "knowledge/tools/classify_visibility_backfill.py",
+    visibility = ["//:__subpackages__"],
+)
+
+# Stdlib-only generator: walks the repo tree (under BUILD_WORKSPACE_DIRECTORY
+# when run via `bazel run`) and writes the committed repo-docs manifest NDJSON.
+# Wired into the `format` multirun so the manifest stays in sync on every run.
+py_venv_binary(
+    name = "gen_repo_docs_manifest",
+    main = "knowledge/tools/gen_repo_docs_manifest.py",
+    imports = ["."],  # keep
     visibility = ["//:__subpackages__"],
 )
 
@@ -2154,6 +2167,16 @@ py_test(
 py_test(
     name = "knowledge_tools_classify_visibility_backfill_test",
     srcs = ["knowledge/tools/classify_visibility_backfill_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "knowledge_gen_repo_docs_manifest_test",
+    srcs = ["knowledge/gen_repo_docs_manifest_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
