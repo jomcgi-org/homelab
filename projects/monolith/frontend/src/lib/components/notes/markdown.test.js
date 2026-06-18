@@ -92,4 +92,78 @@ describe("renderMarkdown", () => {
       /<td><em>.*On Writing Well.*<\/em>\s*\(Zinsser\)<\/td>/,
     );
   });
+
+  // XSS neutralization (ADR 005 layer 8 / Phase 4c). renderMarkdown is the
+  // renderer for BOTH untrusted public-chat model output (titleMap empty) and
+  // note bodies (titleMap from trusted graph nodes). It HTML-escapes &<> on
+  // every path and emits no raw HTML, so injected markup cannot reach the DOM
+  // as live nodes. These assert the neutralization holds; the strict CSP
+  // (src/lib/csp.js) is the independent second line of defense.
+  describe("neutralizes injected HTML/script", () => {
+    // Empty titleMap mirrors how model replies are rendered (renderReply).
+    const noMap = new Map();
+
+    it("escapes <script> in model output", () => {
+      const html = renderMarkdown("<script>alert(1)</script>", noMap);
+      expect(html).not.toMatch(/<script>/i);
+      expect(html).toContain("&lt;script&gt;");
+    });
+
+    it("escapes an <img onerror=...> payload", () => {
+      const html = renderMarkdown('<img src=x onerror="alert(1)">', noMap);
+      expect(html).not.toMatch(/<img/i);
+      expect(html).not.toContain("onerror");
+      expect(html).toContain("&lt;img");
+    });
+
+    it("escapes <iframe>, <object>, and <embed>", () => {
+      for (const tag of ["iframe", "object", "embed"]) {
+        const html = renderMarkdown(`<${tag} src=//evil></${tag}>`, noMap);
+        expect(html).not.toMatch(new RegExp(`<${tag}`, "i"));
+        expect(html).toContain(`&lt;${tag}`);
+      }
+    });
+
+    it("does not turn a [text](javascript:...) link into an anchor", () => {
+      // The renderer has no inline-link grammar, so a markdown link with a
+      // javascript: URL renders as inert escaped text, never an <a href>.
+      const html = renderMarkdown("[click](javascript:alert(1))", noMap);
+      expect(html).not.toContain("href");
+      expect(html).not.toContain("javascript:alert");
+      expect(html).toContain("[click](javascript:alert(1))");
+    });
+
+    it("does not emit a data: URL anchor", () => {
+      const html = renderMarkdown(
+        "[x](data:text/html,<script>alert(1)</script>)",
+        noMap,
+      );
+      expect(html).not.toContain("href");
+      expect(html).not.toMatch(/<script>/i);
+    });
+
+    it("escapes HTML smuggled inside a tag-span wrapper", () => {
+      // The tag-span protection preserves the fixed <span class="tag"> wrapper
+      // but its inner content is still escaped (esc runs after the sentinel
+      // swap), so an injected <img onerror> inside it cannot execute.
+      const html = renderMarkdown(
+        '<span class="tag"><img src=x onerror=alert(1)></span>',
+        noMap,
+      );
+      expect(html).not.toMatch(/<img/i);
+      expect(html).not.toContain("onerror=alert");
+      expect(html).toContain("&lt;img");
+    });
+
+    it("escapes injected HTML inside a note body (titleMap present)", () => {
+      // Note bodies render with a populated titleMap; injection must still be
+      // neutralized on that path.
+      const html = renderMarkdown(
+        "before <img src=x onerror=alert(1)> after",
+        titleMap,
+      );
+      expect(html).not.toMatch(/<img/i);
+      expect(html).not.toContain("onerror");
+    });
+  });
 });

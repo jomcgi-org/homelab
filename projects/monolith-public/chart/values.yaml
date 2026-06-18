@@ -267,12 +267,22 @@ web:
   service:
     type: ClusterIP
     port: 8000
-  # HPA: steady moderate load sits ~30% on one pod; burst to 3 (CPU-based, since
-  # memory is sticky for Python and would never scale down).
+  # HPA (CPU-based, since memory is sticky for Python and would never scale
+  # down). maxReplicas is pinned to 1 as the GPU-reservation gate (ADR 005
+  # layer 3 / Phase 4c): public chat concurrency to the shared vLLM is
+  # per-pod (CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT above, default 1), so aggregate
+  # public concurrency is per_pod * maxReplicas. The reservation sizing rule is
+  #   per_pod * maxReplicas + reserved_trusted <= vLLM max_num_seqs
+  # i.e. 1 * 1 + 2 <= 3, reserving 2 of the 3 decode slots for the Discord bot,
+  # private /explore chat, and the agent platform so a public flood can never
+  # starve a trusted caller. Tradeoff: this also caps the cheap cached read path
+  # (this backend serves the public read endpoints too) at a single replica;
+  # correctness of the reservation wins over read burst for launch. Phase 6's
+  # load test tunes per_pod / maxReplicas / reserved against real traffic.
   autoscaling:
     enabled: true
     minReplicas: 1
-    maxReplicas: 3
+    maxReplicas: 1
     targetCPUUtilizationPercentage: 60
 
 # "frontend" component (ADR 004 Phase 5d): the public-only SvelteKit SSR
