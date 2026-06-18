@@ -25,6 +25,7 @@
    *   selectedId?: string | null,
    *   searchTerm?: string,
    *   activeClusters?: Set<string>,
+   *   touchedIds?: Set<string>,
    * }} */
   let {
     nodes = [],
@@ -32,6 +33,11 @@
     selectedId = null,
     searchTerm = "",
     activeClusters = new Set(),
+    // The set of node ids a public-chat turn grounded on (ADR 005). When
+    // supplied (the chat graph overlay), these nodes get a distinct accent
+    // halo + always-on label so "the nodes your chat touched" read at a glance.
+    // Empty on the standalone /notes/graph page, where this pass is a no-op.
+    touchedIds = new Set(),
     onNodeClick = () => {},
     onNodeHover = () => {},
     onZoom = () => {},
@@ -280,6 +286,28 @@
       ctx.stroke();
     }
 
+    // Touched-node halo (chat overlay). Drawn BEFORE the node fill so the
+    // accent disc reads as a ring around the node, with a bold ink outline for
+    // the flat-ink brutalist language. Same visibility gates as the node pass
+    // so a halo never floats over a hidden node.
+    if (touchedIds && touchedIds.size) {
+      for (const n of simNodes) {
+        if (!touchedIds.has(n.id)) continue;
+        if (!activeClusters.has(n.cluster)) continue;
+        if (filtering && !matchSet.has(n.id)) continue;
+        const hr = n.r + 5 / transform.k;
+        ctx.fillStyle = "#FFDE01";
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, hr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#141414";
+        ctx.lineWidth = Math.max(1, 1.4 / transform.k);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, hr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
     // Nodes. Thin stroke so the cluster colour fill dominates visually
     // — at the prototype's 3.2px radius a 1.2px stroke ate most of the
     // disk, making nodes read as black dots.
@@ -344,6 +372,12 @@
       add(selectedNode);
       const neigh = neighborsOf.get(selectedNode.id);
       if (neigh) for (const id of neigh) add(byId.get(id));
+    }
+    // Touched nodes (chat overlay) always carry a label so the grounded set is
+    // legible without zooming in. add() already gates on activeClusters; the
+    // greedy collision pass below still lets the selected node win.
+    if (touchedIds && touchedIds.size) {
+      for (const id of touchedIds) add(byId.get(id));
     }
     // hovered is intentionally excluded from the candidate list. If we
     // added it here, its label box would claim space in `placed` and
@@ -795,6 +829,16 @@
     if (!ctx) return;
     render();
   });
+
+  // Touched-set changes (a new chat turn grounds on a new set of public nodes)
+  // are a render-time overlay, same as the cluster mask: no layout reflow, just
+  // repaint the halos + labels. Reading `.size` registers the Set as a
+  // dependency without deep-tracking its members.
+  $effect(() => {
+    touchedIds?.size; // dependency
+    if (!ctx) return;
+    render();
+  });
 </script>
 
 <div class="stage" bind:this={stage}>
@@ -811,7 +855,7 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #f1ebdc;
+    background: #f1ebdc; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
   .stage::before {
     content: "";

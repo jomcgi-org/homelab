@@ -1,0 +1,91 @@
+<script>
+  import KnowledgeGraph from "$lib/components/notes/KnowledgeGraph.svelte";
+  import NotePanel from "$lib/components/notes/NotePanel.svelte";
+  import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
+  import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
+  import StatusBar from "$lib/components/notes/StatusBar.svelte";
+
+  let { data } = $props();
+
+  let nodes = $derived(data.graph.nodes);
+  let edges = $derived(data.graph.edges);
+  let indexedAt = $derived(data.graph.indexed_at);
+  let nodesWithDegree = $derived(nodes);
+
+  let activeClusters = $state(
+    new Set(data.graph.nodes.map((n) => n.type).filter(Boolean)),
+  );
+  let searchTerm = $state("");
+  let selectedId = $state(null);
+  let zoom = $state(1);
+  let hoverTitle = $state("—");
+
+  let clusterCount = $derived(activeClusters.size);
+
+  function toggleCluster(type) {
+    const next = new Set(activeClusters);
+    next.has(type) ? next.delete(type) : next.add(type);
+    activeClusters = next;
+  }
+
+  function selectNode(id) {
+    selectedId = id;
+  }
+</script>
+
+<div class="notes-root">
+  <StatusBar
+    nodeCount={nodes.length}
+    edgeCount={edges.length}
+    {clusterCount}
+    {zoom}
+    {hoverTitle}
+    {indexedAt}
+  />
+
+  <div class="notes-stage">
+    <KnowledgeGraph
+      nodes={nodesWithDegree}
+      {edges}
+      {selectedId}
+      {searchTerm}
+      {activeClusters}
+      onNodeClick={(e) => selectNode(e.id)}
+      onNodeHover={(e) => (hoverTitle = e.title ?? "—")}
+      onZoom={(k) => (zoom = k)}
+    />
+
+    <GraphSearch value={searchTerm} onChange={(v) => (searchTerm = v)} />
+    <GraphLegend
+      nodes={nodesWithDegree}
+      {activeClusters}
+      onToggle={toggleCluster}
+    />
+    <NotePanel
+      {selectedId}
+      nodes={nodesWithDegree}
+      {edges}
+      onSelect={selectNode}
+      onClose={() => (selectedId = null)}
+      apiBase="/notes/body"
+    />
+  </div>
+</div>
+
+<style>
+  .notes-root {
+    height: calc(100vh - 48px);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .notes-stage {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+</style>

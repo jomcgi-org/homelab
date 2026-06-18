@@ -2,7 +2,7 @@ import { error } from "@sveltejs/kit";
 import {
   NOTES_PAGE_CACHE_CONTROL,
   versionedEtag,
-} from "../../../lib/cache-headers.js";
+} from "../../../../lib/cache-headers.js";
 
 // The localhost fallback is the established convention across every public
 // +page.server.js proxy (ships/stars/notes/body); prod sets API_BASE via
@@ -10,18 +10,11 @@ import {
 // nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
-// The public Turnstile site key gates the chat landing (ADR 005). It is PUBLIC
-// by design (it identifies the widget, not a credential); the Turnstile *secret*
-// never enters the frontend, only the FastAPI backend. Read from the
-// environment, mirroring how the chat route exposes it.
-const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || "";
-
-// Mirrors private/notes/+page.server.js, but hits the visibility-filtered
-// public endpoint. The backend enforces `visibility = 'public'` on both
-// nodes and edges (both-ends-public), so we just pass the payload through.
-// The public notes landing is now the neo-brutalist chat front door (ADR 005):
-// the graph ships with the page for the deep-dive overlay, and the site key
-// gates the "start chatting" challenge.
+// Standalone full-screen public knowledge graph. Same visibility-filtered
+// endpoint and cache posture as the /notes landing load; kept as its own route
+// so the graph stays directly linkable after /notes became the chat front door
+// (ADR 005). The backend enforces `visibility = 'public'` on both nodes and
+// edges (both-ends-public), so we just pass the payload through.
 export async function load({ fetch, setHeaders }) {
   const res = await fetch(`${API_BASE}/api/knowledge/public/graph`, {
     signal: AbortSignal.timeout(10_000),
@@ -37,5 +30,5 @@ export async function load({ fetch, setHeaders }) {
   if (lastModified) headers["last-modified"] = lastModified;
   setHeaders(headers);
 
-  return { graph: await res.json(), turnstileSiteKey: TURNSTILE_SITE_KEY };
+  return { graph: await res.json() };
 }
