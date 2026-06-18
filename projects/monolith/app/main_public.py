@@ -14,6 +14,8 @@ query private tables today and will 500 as ``public_reader`` until Phase 5a'.
 
 from __future__ import annotations
 
+import logging
+
 import chat_public
 import dr_jobs
 import hikes
@@ -21,10 +23,15 @@ import home
 import knowledge
 import ships
 import stars
+from app.db import get_engine
 from app.log import configure_logging
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from sqlmodel import Session, text
 
 configure_logging()
+
+logger = logging.getLogger("monolith_public")
 
 app = FastAPI(title="Monolith Public")
 
@@ -39,6 +46,27 @@ chat_public.register_public(app)
 
 @app.get("/healthz")
 def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/api/health")
+def api_health():
+    """Deep health for the public tier, reached via the frontend /health proxy.
+
+    The backend is never internet-reachable, so the externally assertable signal
+    is jomcgi.dev/health, which proxies here in-cluster. Unlike /healthz (process
+    up only), this runs SELECT 1 to confirm the read replica is reachable and the
+    public_reader role can execute a query, the class of failure that left the
+    process green while /app/dr-jobs 503'd. Returns a clean 503 rather than
+    raising, so a DB outage logs once per probe instead of a traceback, and the
+    frontend gets a machine-readable status either way.
+    """
+    try:
+        with Session(get_engine()) as session:
+            session.execute(text("SELECT 1"))
+    except Exception:
+        logger.exception("public health check failed")
+        return JSONResponse({"status": "unhealthy"}, status_code=503)
     return {"status": "ok"}
 
 
