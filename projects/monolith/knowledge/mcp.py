@@ -22,7 +22,7 @@ from knowledge import frontmatter
 from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import approve_gap as _approve_gap
-from knowledge.gaps import list_review_queue, split_csv
+from knowledge.gaps import list_review_queue, resolve_gaps_for_note, split_csv
 from knowledge.gardener import GARDENER_VERSION, _slugify
 from knowledge.indexing import index_note_best_effort, index_note_from_raw
 from knowledge.models import AtomRawProvenance, RawInput
@@ -654,6 +654,15 @@ async def create_atom(
             note_id=note_id,
             rel_path=f"_processed/{note_id}.md",
             raw=raw,
+        )
+
+        # Close any open gap whose term this atom now defines (research
+        # routine + gardener both land here). Same session as the index.
+        resolve_gaps_for_note(
+            session,
+            note_id=note_id,
+            title=title,
+            aliases=aliases or [],
         )
 
         result: dict = {"note_id": note_id}

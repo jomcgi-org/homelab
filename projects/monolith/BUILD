@@ -2677,6 +2677,19 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_gap_commit_hook_test",
+    srcs = ["knowledge/gap_commit_hook_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_deleted_at_filter_test",
     srcs = ["knowledge/deleted_at_filter_test.py"],
     imports = ["."],
