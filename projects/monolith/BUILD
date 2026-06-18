@@ -19,6 +19,7 @@
 # gazelle:exclude public_reader_grants_test.py
 # gazelle:exclude observability_snapshot_grants_test.py
 # gazelle:exclude public_knowledge_views_test.py
+# gazelle:exclude chat_public_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -2372,6 +2373,21 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): fast SQLite + TestClient
+# unit tests for the public-chat session lifecycle, budgets, and SSE shape.
+py_test(
+    name = "chat_public_router_test",
+    srcs = ["chat_public/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "hikes_jobs_test",
     srcs = ["hikes/jobs_test.py"],
@@ -3421,6 +3437,14 @@ bdd_test(
 bdd_test(
     name = "public_knowledge_views_test",
     srcs = ["public_knowledge_views_test.py"],
+)
+
+# Real-Postgres test: the chat_public write role can DML only its own schema,
+# is denied other schemas, and public_reader can never write chat_public
+# (ADR 005). Uses the bdd_test harness for the pg fixture + applied migrations.
+bdd_test(
+    name = "chat_public_grants_test",
+    srcs = ["chat_public_grants_test.py"],
 )
 
 bdd_test(
