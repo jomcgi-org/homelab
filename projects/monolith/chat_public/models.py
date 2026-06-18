@@ -85,7 +85,7 @@ class ChatResponseCache(
     (normalized_message, prompt_version, notes_watermark). The component parts are
     stored alongside for debuggability; ``touched`` is the node_touched grounding
     list replayed on a hit. Mirrors
-    chart/migrations/20260619000000_chat_public_response_cache.sql.
+    chart/migrations/20260619010000_chat_public_response_cache.sql.
     """
 
     __tablename__ = "response_cache"

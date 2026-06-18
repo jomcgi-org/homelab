@@ -210,8 +210,8 @@ def store(db: Session, key: CacheKey, response_text: str, touched: list[dict]) -
     streamed), so it is logged and swallowed.
     """
     table = ChatResponseCache.__table__
-    insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
-    stmt = insert(table).values(
+    insert_fn = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
+    stmt = insert_fn(table).values(
         cache_key=key.cache_key,
         normalized_message=key.normalized_message,
         prompt_version=key.prompt_version,
