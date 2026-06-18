@@ -2406,6 +2406,22 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): Phase 3 real inference +
+# compaction (streaming SSE shape, server-fixed system prompt, real-usage token
+# ceiling, rolling-summary compaction, in-flight slot release after stream).
+py_test(
+    name = "chat_public_phase3_test",
+    srcs = ["chat_public/phase3_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Guard (ADR 005): the Turnstile secret stays in the backend; the frontend
 # carries only the public site-key literal. Reads the monolith-public chart's
 # values.yaml via a cross-package data dep (no Helm toolchain needed).

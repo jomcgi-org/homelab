@@ -99,6 +99,28 @@ chatPublic:
   # Turnstile siteverify HTTP timeout (seconds): keep short so a slow/unreachable
   # Cloudflare fails closed quickly. Mirrored as TURNSTILE_TIMEOUT_SECONDS below.
   turnstileTimeoutSeconds: 5
+  # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / V3 Phase 3).
+  # In-cluster OpenAI-compatible service DNS on the vLLM HTTP port; the backend
+  # streams text-only turns from here (NO tools). This is a plain values literal
+  # (an in-cluster service URL, not a secret), mirrored as CHAT_PUBLIC_INFERENCE_URL
+  # on web.env below. The inference pods are unmeshed and in-cluster, so the public
+  # EgressNetwork off-cluster deny does not block this.
+  inferenceUrl: "http://inference.inference.svc.cluster.local:8080"
+  # Compaction knobs (ADR 005 layer 4 / V3 Phase 3): when the live context
+  # (system prompt + rolling summary + recent turns) approaches a fraction of the
+  # model window, older turns are folded into the session rolling summary so each
+  # request stays bounded. Mirrored as the CHAT_PUBLIC_* env on web.env below.
+  # Usable context window of the shared model, in tokens (compaction is sized as a
+  # fraction of this; keep at or below the real vLLM context length).
+  modelWindowTokens: 32768
+  # Fraction of the model window at which compaction triggers.
+  compactionTrigger: 0.70
+  # How many most-recent transcript messages are kept verbatim after a compaction
+  # (everything older is folded into the rolling summary). ~3 turns.
+  compactionKeepMessages: 6
+  # Max tokens the rolling-summary generation may emit (a summary is short and
+  # spends GPU under the same in-flight slot as a turn, so cap it tightly).
+  summaryMaxTokens: 512
 
 # Cloudflare Turnstile admission (ADR 005 layer 1). The SECRET is backend-only:
 # siteverify runs in the "web" FastAPI binary, so TURNSTILE_SECRET_KEY (and the
@@ -176,6 +198,22 @@ web:
       value: "1800"
     - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
       value: "1"
+    # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / Phase 3).
+    # In-cluster service URL literal (NOT a secret); mirrors chatPublic.inferenceUrl
+    # above (Helm values cannot self-reference). The backend refuses to call
+    # inference if this is unset (no hardcoded service URL in code).
+    - name: CHAT_PUBLIC_INFERENCE_URL
+      value: "http://inference.inference.svc.cluster.local:8080"
+    # Compaction knobs (ADR 005 layer 4 / Phase 3). Mirror the chatPublic block
+    # above (Helm values cannot self-reference, so they are repeated as literals).
+    - name: CHAT_PUBLIC_MODEL_WINDOW_TOKENS
+      value: "32768"
+    - name: CHAT_PUBLIC_COMPACTION_TRIGGER
+      value: "0.70"
+    - name: CHAT_PUBLIC_COMPACTION_KEEP_MESSAGES
+      value: "6"
+    - name: CHAT_PUBLIC_SUMMARY_MAX_TOKENS
+      value: "512"
     # Turnstile siteverify (ADR 005 layer 1): the SECRET is backend-only. Sourced
     # via secretKeyRef from the monolith-public-turnstile Secret (key SECRET_KEY),
     # synced from the cloudflare-turnstile 1Password item. Never in the frontend.
