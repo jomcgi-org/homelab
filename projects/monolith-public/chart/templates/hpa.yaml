@@ -1,0 +1,31 @@
+{{- range $component := list "web" "frontend" }}
+{{- $vals := index $.Values $component }}
+{{- if and $vals.enabled $vals.autoscaling $vals.autoscaling.enabled }}
+# HPA for the {{ $component }} component. Scales on the app container's CPU
+# (ContainerResource, GA in k8s 1.27+) so the linkerd-proxy sidecar's CPU does
+# not dilute the signal. CPU, not memory: Node/Python hold memory after a spike,
+# so a memory-based HPA would never scale back down.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "monolith-public.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "monolith-public.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "monolith-public.fullname" $ }}-{{ $component }}
+  minReplicas: {{ $vals.autoscaling.minReplicas }}
+  maxReplicas: {{ $vals.autoscaling.maxReplicas }}
+  metrics:
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: {{ $component }}
+        target:
+          type: Utilization
+          averageUtilization: {{ $vals.autoscaling.targetCPUUtilizationPercentage }}
+---
+{{- end }}
+{{- end }}

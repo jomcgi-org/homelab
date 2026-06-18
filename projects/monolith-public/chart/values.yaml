@@ -89,16 +89,27 @@ web:
         secretKeyRef:
           name: monolith-public-db
           key: uri
-  # Modest footprint: the public tier serves read-only cached snapshots.
+  # CPU request is sized so the HPA's per-container CPU utilization is a
+  # meaningful signal (idle is ~1m). Memory request covers the FastAPI baseline
+  # (~110Mi idle: SQLModel + psycopg + pgvector + the knowledge internals); the
+  # old 64Mi request was below actual. No CPU limit: let it burst (the HPA scales
+  # out on sustained CPU rather than throttling).
   resources:
     requests:
-      cpu: 25m
-      memory: 64Mi
+      cpu: 100m
+      memory: 160Mi
     limits:
-      memory: 256Mi
+      memory: 384Mi
   service:
     type: ClusterIP
     port: 8000
+  # HPA: steady moderate load sits ~30% on one pod; burst to 3 (CPU-based, since
+  # memory is sticky for Python and would never scale down).
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 60
 
 # "frontend" component (ADR 004 Phase 5d): the public-only SvelteKit SSR
 # renderer, built from the private-route-free source tree. It is a separate
@@ -138,16 +149,24 @@ frontend:
       value: "http://monolith-public-web:8000"
     - name: OTEL_COLLECTOR_HTTP_URL
       value: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
-  # SSR Node needs more headroom than the read-only backend.
+  # SSR Node needs more headroom than the read-only backend. CPU request sized
+  # for a meaningful HPA signal (Node SSR is CPU-bound under concurrent renders).
+  # Memory request keeps headroom above the ~37Mi idle baseline for load spikes.
   resources:
     requests:
-      cpu: 25m
+      cpu: 100m
       memory: 128Mi
     limits:
       memory: 512Mi
   service:
     type: ClusterIP
     port: 3000
+  # HPA: steady moderate load sits ~30% on one pod; burst to 3 (CPU-based).
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 60
 
 # Public ingress (ADR 004 Phase 5e). Defaults off; enabled in deploy/values.yaml
 # for the cutover of the public hostname to this service. The frontend serves

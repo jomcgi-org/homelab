@@ -9,7 +9,7 @@ spec:
     # Chart from OCI registry (pushed by CI via Bazel helm_push)
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith-public
-      targetRevision: 0.3.1
+      targetRevision: 0.4.0
       helm:
         releaseName: monolith-public
         valueFiles:
@@ -21,6 +21,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith-public
+  # The HPA owns replica counts; without this, selfHeal would revert the
+  # Deployments to the chart's replicas and fight the autoscaler.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true
