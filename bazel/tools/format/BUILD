@@ -52,6 +52,7 @@ multirun(
         "//bazel/images:generate-push-all",
         "//bazel/images:generate-push-all-pages",
         "//projects/monolith:generate-routes",
+        "//projects/monolith:gen_repo_docs_manifest",
         ":format_code",
         "//:gazelle",
     ],
