@@ -1,5 +1,9 @@
 import { json } from "@sveltejs/kit";
-import { HEALTH_CACHE_CONTROL } from "$lib/cache-headers.js";
+// Relative (not $lib): vitest loads this module directly via server.test.js and
+// its plain node config does not resolve the SvelteKit $lib alias. Mirrors the
+// dr-jobs +page.server.js note. From routes/public/health/ that is three ../ to
+// reach src/lib/.
+import { HEALTH_CACHE_CONTROL } from "../../../lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
