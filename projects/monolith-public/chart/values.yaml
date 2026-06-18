@@ -148,3 +148,18 @@ frontend:
   service:
     type: ClusterIP
     port: 3000
+
+# Public ingress (ADR 004 Phase 5e). Defaults off; enabled in deploy/values.yaml
+# for the cutover of the public hostname to this service. The frontend serves
+# pages (/_app/ + /), the backend serves /api.
+cfIngress:
+  public:
+    enabled: false
+    tier: public
+    hostname: ""
+    gateway:
+      name: cloudflare-ingress
+      namespace: envoy-gateway-system
+    rateLimit:
+      requests: 100
+      unit: Minute

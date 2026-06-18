@@ -9,3 +9,9 @@ onepassword:
   itemPath: "vaults/k8s-homelab/items/public-reader-db"
 
 databaseSecretName: monolith-public-db
+
+# Phase 5e cutover: serve the public hostname from this isolated service.
+cfIngress:
+  public:
+    enabled: true
+    hostname: jomcgi.dev

@@ -31,7 +31,10 @@ clickhouse:
 
 cfIngress:
   public:
-    enabled: true
+    # Phase 5e cutover (ADR 004): jomcgi.dev is now served by the isolated
+    # monolith-public service. Disabled here so the old monolith pod stops
+    # claiming the public hostname. Re-enable to roll back the cutover.
+    enabled: false
     tier: public
     hostname: jomcgi.dev
     servicePort: 3000

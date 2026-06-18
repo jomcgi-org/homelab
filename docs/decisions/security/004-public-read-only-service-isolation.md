@@ -1,8 +1,9 @@
 # ADR 004: Public Read-Only Service Isolation
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-06-14
+**Accepted:** 2026-06-18
 **Relates to:** [ADR 001: Cloudflare + Envoy Gateway](../networking/001-cloudflare-envoy-gateway.md), [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
 
 ---
@@ -43,7 +44,7 @@ Four layers, each enforcing a distinct boundary:
 
 **4. Decouple the public path from ClickHouse via a rollup job.** A scheduled job on the private monolith (every ~15 minutes, matching the current topology cache TTL) runs the ClickHouse SLO, Linkerd edge, and GPU queries and writes precomputed snapshots into Postgres (`observability.node_slo_snapshot`, `observability.edge_linkerd_snapshot`, `observability.gpu_snapshot`). Those tables live on the primary and replicate to the standby; the public service reads them from the replica. The public artifact drops `CLICKHOUSE_URL` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` and the ClickHouse client entirely, and the request-time ClickHouse fan-out plus the `Semaphore(2)` bottleneck leaves the public hot path.
 
-**Postgres is authoritative for served note content.** The public read path reads note bodies from Postgres, never the Vault filesystem. The gardener continues reconciling the git-backed Vault into Postgres; this records Postgres as authoritative for *served* content, not a full inversion that demotes the Vault as the editing source of truth. With this resolved, the public service's entire dependency set is the read replica.
+**Postgres is authoritative for served note content.** The public read path reads note bodies from Postgres, never the Vault filesystem. The gardener continues reconciling the git-backed Vault into Postgres; this records Postgres as authoritative for _served_ content, not a full inversion that demotes the Vault as the editing source of truth. With this resolved, the public service's entire dependency set is the read replica.
 
 ### The critical distinction: the replica is not a confidentiality boundary
 
@@ -56,16 +57,16 @@ Both controls are required and do different jobs. Layer 3 must never be mistaken
 
 ### Before / After
 
-| Aspect | Today | Decided |
-| ------ | ----- | ------- |
-| Public process | Shares pod and backend with private app | Separate service, own image |
-| Public code surface | Full backend present on `localhost:8000` | Only read routers compiled in |
-| Public/private boundary | Ingress path match + backend filter | Separate artifact + DB role/views |
-| Public DB access | Same role as private (read/write, all rows) | `public_reader`, read-only, public views only |
-| Public secrets | Inherits all backend secrets | None |
-| Public data source | Primary, ClickHouse at request time | Read replica only |
-| SLO/stats tiles | Request-time ClickHouse, `Semaphore(2)` | Precomputed snapshots read from replica |
-| Scheduler write impact | Shares primary with public reads | Isolated to primary; public reads standby |
+| Aspect                  | Today                                       | Decided                                       |
+| ----------------------- | ------------------------------------------- | --------------------------------------------- |
+| Public process          | Shares pod and backend with private app     | Separate service, own image                   |
+| Public code surface     | Full backend present on `localhost:8000`    | Only read routers compiled in                 |
+| Public/private boundary | Ingress path match + backend filter         | Separate artifact + DB role/views             |
+| Public DB access        | Same role as private (read/write, all rows) | `public_reader`, read-only, public views only |
+| Public secrets          | Inherits all backend secrets                | None                                          |
+| Public data source      | Primary, ClickHouse at request time         | Read replica only                             |
+| SLO/stats tiles         | Request-time ClickHouse, `Semaphore(2)`     | Precomputed snapshots read from replica       |
+| Scheduler write impact  | Shares primary with public reads            | Isolated to primary; public reads standby     |
 
 ---
 
@@ -144,14 +145,14 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 
 ## Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-| ---- | ---------- | ------ | ---------- |
-| Replica mistaken for a confidentiality boundary | Medium | High | This ADR documents the distinction; the `public_reader` role plus public views are the confidentiality control and are mandatory independent of the replica |
-| Second CNPG instance pressures a memory-tight node (1Gi limit, prior OOMKills) | Medium | High | Verify node memory headroom before `instances: 2`; the replica duplicates all five databases' storage, so confirm storage budget too |
-| Replication lag serves stale public reads | High | Low | Public data is eventually-consistent by nature (hikes/ships/stars/notes); acceptable. Never point private read-your-writes paths at the standby |
-| Public view drifts from the real `visibility` semantics | Low | High | Define `knowledge_public` in a primary migration alongside the gardener's visibility logic; cover with a test asserting private rows are not selectable as `public_reader` |
-| SLO rollup job lag leaves the main page stale | Low | Low | 15-minute cadence matches today's cache TTL; the page already tolerates 15-minute-old topology |
-| Shared-code refactor accidentally pulls private modules into the public artifact | Medium | High | Public entrypoint imports only read routers; add a build/import check (or test) asserting private modules are absent from `main_public` |
+| Risk                                                                             | Likelihood | Impact | Mitigation                                                                                                                                                                 |
+| -------------------------------------------------------------------------------- | ---------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Replica mistaken for a confidentiality boundary                                  | Medium     | High   | This ADR documents the distinction; the `public_reader` role plus public views are the confidentiality control and are mandatory independent of the replica                |
+| Second CNPG instance pressures a memory-tight node (1Gi limit, prior OOMKills)   | Medium     | High   | Verify node memory headroom before `instances: 2`; the replica duplicates all five databases' storage, so confirm storage budget too                                       |
+| Replication lag serves stale public reads                                        | High       | Low    | Public data is eventually-consistent by nature (hikes/ships/stars/notes); acceptable. Never point private read-your-writes paths at the standby                            |
+| Public view drifts from the real `visibility` semantics                          | Low        | High   | Define `knowledge_public` in a primary migration alongside the gardener's visibility logic; cover with a test asserting private rows are not selectable as `public_reader` |
+| SLO rollup job lag leaves the main page stale                                    | Low        | Low    | 15-minute cadence matches today's cache TTL; the page already tolerates 15-minute-old topology                                                                             |
+| Shared-code refactor accidentally pulls private modules into the public artifact | Medium     | High   | Public entrypoint imports only read routers; add a build/import check (or test) asserting private modules are absent from `main_public`                                    |
 
 ---
 
@@ -164,11 +165,11 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 
 ## References
 
-| Resource | Relevance |
-| -------- | --------- |
-| [ADR 001: Cloudflare + Envoy Gateway](../networking/001-cloudflare-envoy-gateway.md) | Ingress foundation this isolation sits behind |
-| [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md) | Public/private tier model and hostname scheme |
-| [ADR 001: Obsidian Vault to Monolith Migration](../platform/001-obsidian-vault-monolith-migration.md) | Context for Postgres as the served-content store for notes |
-| [ADR 006: Obsidian Decommission, Postgres Interim](../platform/006-obsidian-decommission-postgres-interim.md) | Context for Postgres authority over note content |
-| [CloudNativePG replicas and `-ro` service](https://cloudnative-pg.io/documentation/current/replica_cluster/) | Streaming standby and read-only service endpoint behavior |
-| `docs/security.md` | Defense-in-depth baseline this ADR extends |
+| Resource                                                                                                      | Relevance                                                  |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [ADR 001: Cloudflare + Envoy Gateway](../networking/001-cloudflare-envoy-gateway.md)                          | Ingress foundation this isolation sits behind              |
+| [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)                            | Public/private tier model and hostname scheme              |
+| [ADR 001: Obsidian Vault to Monolith Migration](../platform/001-obsidian-vault-monolith-migration.md)         | Context for Postgres as the served-content store for notes |
+| [ADR 006: Obsidian Decommission, Postgres Interim](../platform/006-obsidian-decommission-postgres-interim.md) | Context for Postgres authority over note content           |
+| [CloudNativePG replicas and `-ro` service](https://cloudnative-pg.io/documentation/current/replica_cluster/)  | Streaming standby and read-only service endpoint behavior  |
+| `docs/security.md`                                                                                            | Defense-in-depth baseline this ADR extends                 |
