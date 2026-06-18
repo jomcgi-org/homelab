@@ -17,35 +17,35 @@ This rides on the public/private split. Two cases:
 - **If ADR 004 / ADR 010 have landed:** `chat_public` is a new PUBLIC-tier module composed into the existing public binary, and the public SvelteKit SSR app is the front door. Preferred.
 - **If they have not:** the chat still ships in the public binary, but the plan must not regress the isolation ADR 004 specifies. Do not co-locate public chat in the private monolith "for now"; that bakes in the exact co-residency ADR 004 removes. If the split is not ready, land a minimal public binary first.
 
-Confirm this before Phase 1. Everything below assumes the chat is a PUBLIC-tier module with the `public_reader` role, a dedicated `chat_public` write role, and a default-deny egress policy already in place.
+Confirm this before Phase 1. Everything below assumes the chat is a PUBLIC-tier module with the `public_reader` role, a dedicated `public_writer` write role, and a default-deny egress policy already in place.
 
 ## Locked-in decisions (from ADR 005)
 
-| Decision | Choice |
-| -------- | ------ |
-| Front door | SvelteKit SSR is the only public origin; the chat API is internal (ClusterIP, Linkerd mTLS), never on the public HTTPRoute |
-| GPU sharing | Reserved-headroom semaphore on the shared `inference` endpoint; trusted slots protected |
-| Abuse defense | SSR front door + Cloudflare Turnstile; opaque `httpOnly` session cookie over a server-side row; per-session + per-IP + global budgets |
-| State | Server-side sessions; server-authoritative max turns / char cap; compaction via rolling summary |
-| Data scope | Note retrieval over the public view via read-only `public_reader`; session/transcript writes via a dedicated `chat_public` role on the primary |
-| Retention | Persist transcripts + pseudonymous user/session details in Postgres `chat_public`; TTL + on-demand takedown; SigNoz metrics-only (no chat content) |
-| Model authority | No tools, fixed server-side prompt, text in / text out |
+| Decision        | Choice                                                                                                                                             |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Front door      | SvelteKit SSR is the only public origin; the chat API is internal (ClusterIP, Linkerd mTLS), never on the public HTTPRoute                         |
+| GPU sharing     | Reserved-headroom semaphore on the shared `inference` endpoint; trusted slots protected                                                            |
+| Abuse defense   | SSR front door + Cloudflare Turnstile; opaque `httpOnly` session cookie over a server-side row; per-session + per-IP + global budgets              |
+| State           | Server-side sessions; server-authoritative max turns / char cap; compaction via rolling summary                                                    |
+| Data scope      | Note retrieval over the public view via read-only `public_reader`; session/transcript writes via the dedicated `public_writer` role on the primary |
+| Retention       | Persist transcripts + pseudonymous user/session details in Postgres `chat_public`; TTL + on-demand takedown; SigNoz metrics-only (no chat content) |
+| Model authority | No tools, fixed server-side prompt, text in / text out                                                                                             |
 
 ## Parameters to set in Phase 0 (then assert in tests)
 
 These are the tuning knobs ADR 005 deliberately left open. Pick starting values, put them in `values.yaml`, and grep the test tree when changing them (per CLAUDE.md):
 
-| Knob | Starting point (tune at load test) |
-| ---- | ---------------------------------- |
-| Per-message character cap | generous, e.g. 8000 chars |
-| Max turns per session | e.g. 20 |
-| Max output tokens per turn | e.g. 1024 |
-| Max total tokens per session | e.g. 32000 (one context worth) |
-| Compaction trigger | when live context exceeds ~70% of the model window |
-| Public semaphore size | `max_num_seqs` minus reserved trusted headroom (today `max_num_seqs`=3, so start at 1, validate) |
-| Per-IP session mint rate | e.g. 5 / hour |
-| Global concurrent public inferences | e.g. equal to the semaphore; the circuit breaker trips above it |
-| Session / cookie TTL | short, e.g. 30 min |
+| Knob                                | Starting point (tune at load test)                                                               |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Per-message character cap           | generous, e.g. 8000 chars                                                                        |
+| Max turns per session               | e.g. 20                                                                                          |
+| Max output tokens per turn          | e.g. 1024                                                                                        |
+| Max total tokens per session        | e.g. 32000 (one context worth)                                                                   |
+| Compaction trigger                  | when live context exceeds ~70% of the model window                                               |
+| Public semaphore size               | `max_num_seqs` minus reserved trusted headroom (today `max_num_seqs`=3, so start at 1, validate) |
+| Per-IP session mint rate            | e.g. 5 / hour                                                                                    |
+| Global concurrent public inferences | e.g. equal to the semaphore; the circuit breaker trips above it                                  |
+| Session / cookie TTL                | short, e.g. 30 min                                                                               |
 
 ## Phases
 
@@ -62,7 +62,7 @@ Stand up the module with no GPU yet, so the session and limit machinery can be b
 
 - New module `projects/monolith/chat_public/` (PUBLIC tier per ADR 010): `module.py` (the `Module` descriptor, `tier=PUBLIC`, `schema="chat_public"`), `router.py`, `models.py`, `sessions.py`, `limits.py`. Routes mount under an internal prefix (e.g. `/internal/chat/*`) and are **not** added to the public HTTPRoute.
 - SSR BFF routes in the public SvelteKit app under `routes/public/` (`+server.ts`): a session-create route and a message route that proxy to the internal chat API over in-cluster service DNS, set/read the opaque `httpOnly` `Secure` `SameSite` session cookie, and stream the SSE response straight through unbuffered. The browser only ever talks to SSR.
-- Migration `chart/migrations/<ts>_chat_public.sql`: `chat_public` schema; `sessions` table holding the pseudonymous user/session details (id, created_at, last_seen_at, turn_count, total_tokens, ip_hash, turnstile_outcome, country from `CF-IPCountry`, user_agent_hash, status); `messages` table holding the transcript (session_id, role, content, tokens, created_at). No raw IP or PII is stored, only hashes and coarse geo. Grants: a dedicated `chat_public` role with DML on the `chat_public` schema only, writing to the **primary** (this is the first public-tier write path); `public_reader` stays read-only and is the note-retrieval path, never a writer.
+- Migration `chart/migrations/<ts>_chat_public.sql`: `chat_public` schema; `sessions` table holding the pseudonymous user/session details (id, created_at, last_seen_at, turn_count, total_tokens, ip_hash, turnstile_outcome, country from `CF-IPCountry`, user_agent_hash, status); `messages` table holding the transcript (session_id, role, content, tokens, created_at). No raw IP or PII is stored, only hashes and coarse geo. Grants: a dedicated `public_writer` role with DML on the `chat_public` schema only, writing to the **primary** (this is the first public-tier write path); `public_reader` stays read-only and is the note-retrieval path, never a writer.
 - Session create: verify a Turnstile token (stubbed-accept in Phase 1, real in Phase 2), open a session row, return an opaque session id the SSR route stores in the cookie. No signed-token scheme; the row is the authority.
 - Message: accept the cookie's session id + a single user message; enforce char cap, max turns, and per-session token ceiling server-side; for now echo a canned response over SSE (reuse `chat/sse.py` transport).
 - `limits.py` is the single home for every budget check; no scattered `if len(x) > ...` anywhere else (mirror the `visibility.py` discipline from V1).
@@ -118,7 +118,7 @@ Tests: TTL job removes rows past policy and nothing newer; on-demand purge by se
 - [ ] The chat API is not on the public HTTPRoute; SSR is the sole public origin for chat.
 - [ ] New egress is limited to SSR-to-internal-chat-API, chat-binary-to-inference, and chat-binary-to-Postgres-primary for the `chat_public` schema; default-deny otherwise.
 - [ ] Forwarded `CF-Connecting-IP` is trusted only from SSR's Linkerd identity.
-- [ ] Retrieval is `public_reader` + public view; a private note is provably unretrievable; `public_reader` stays read-only (writes use the dedicated `chat_public` role).
+- [ ] Retrieval is `public_reader` + public view; a private note is provably unretrievable; `public_reader` stays read-only (writes use the dedicated `public_writer` role).
 - [ ] The model has no tools; the system prompt is server-fixed and not user-overridable.
 - [ ] Model output and note bodies render as sanitized markdown under a strict CSP.
 - [ ] Turnstile siteverify runs in the FastAPI binary (secret an `OnePasswordItem`, not in SSR); IP and Turnstile correlates stored hashed.

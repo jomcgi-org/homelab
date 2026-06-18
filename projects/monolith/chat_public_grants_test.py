@@ -1,10 +1,11 @@
-"""Phase 1 (ADR 005): the chat_public write role is scoped to its own schema.
+"""Phase 1 (ADR 005): the public_writer role is scoped to the chat_public schema.
 
 Exercises the GRANTs from chart/migrations/20260617030000_chat_public.sql against
 a real Postgres (the `pg` fixture applies every migration), using SET ROLE so no
 login credential is needed. The point of the role split is the database half of
-the read/write isolation: the chat write role may DML its own schema and nothing
-else, and the read-only public_reader role may never write the chat schema.
+the read/write isolation: the public_writer role may DML the chat_public schema
+and nothing else, and the read-only public_reader role may never write that
+schema.
 
 Hand-written bdd_test (real DB), so excluded from gazelle and registered by hand
 in projects/monolith/BUILD.
@@ -14,14 +15,14 @@ import pytest
 from sqlmodel import Session, create_engine, text
 
 
-def test_chat_public_role_can_dml_its_own_schema(pg):
-    """SET ROLE chat_public; round-trip a session + message (INSERT/SELECT/
-    UPDATE/DELETE). Run inside a transaction that is rolled back, so the
-    session-scoped Postgres stays clean for other tests."""
+def test_public_writer_role_can_dml_chat_public_schema(pg):
+    """SET ROLE public_writer; round-trip a session + message (INSERT/SELECT/
+    UPDATE/DELETE) on the chat_public schema. Run inside a transaction that is
+    rolled back, so the session-scoped Postgres stays clean for other tests."""
     engine = create_engine(pg.url)
     try:
         with Session(engine) as session:
-            session.execute(text("SET ROLE chat_public"))
+            session.execute(text("SET ROLE public_writer"))
 
             session.execute(
                 text(
@@ -72,13 +73,13 @@ def test_chat_public_role_can_dml_its_own_schema(pg):
         engine.dispose()
 
 
-def test_chat_public_role_denied_on_other_schemas(pg):
+def test_public_writer_role_denied_on_other_schemas(pg):
     """The write role is scoped to chat_public only: reading another schema
     (knowledge.notes) raises permission denied."""
     engine = create_engine(pg.url)
     try:
         with Session(engine) as session:
-            session.execute(text("SET ROLE chat_public"))
+            session.execute(text("SET ROLE public_writer"))
             with pytest.raises(Exception) as exc:
                 session.execute(text("SELECT note_id FROM knowledge.notes")).all()
             assert "permission denied" in str(exc.value).lower()

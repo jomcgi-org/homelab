@@ -2,11 +2,12 @@
 --
 -- This is the first PUBLIC-tier write path. Sessions, the pseudonymous
 -- user/session details, and the transcript live here and are written by a
--- dedicated `chat_public` role on the Postgres primary, distinct from the
+-- dedicated `public_writer` role on the Postgres primary, distinct from the
 -- read-only `public_reader` role (which stays the note-retrieval path and is
--- never a writer). The role gets DML on this one schema and nothing else, so a
--- compromise of the public chat path can write its own sessions and read public
--- notes, and nothing more.
+-- never a writer). public_writer is the generic public-tier write identity, so
+-- future public-tier write paths can reuse it; today it gets DML on this one
+-- schema and nothing else, so a compromise of the public chat path can write
+-- its own sessions and read public notes, and nothing more.
 --
 -- No raw IP or PII is stored: only hashes (ip_hash, user_agent_hash), a coarse
 -- country code (from the Cloudflare CF-IPCountry header), and the Turnstile
@@ -62,8 +63,8 @@ CREATE INDEX messages_session_time ON chat_public.messages (session_id, created_
 -- object granted.
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'chat_public') THEN
-        CREATE ROLE chat_public NOLOGIN;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'public_writer') THEN
+        CREATE ROLE public_writer NOLOGIN;
     END IF;
 END $$;
 
@@ -71,10 +72,10 @@ END $$;
 -- covers tables a future migration adds to this schema, so the grant does not
 -- silently rot. The role is never granted any other schema (knowledge, ships,
 -- hikes, stars, home, etc.).
-GRANT USAGE ON SCHEMA chat_public TO chat_public;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA chat_public TO chat_public;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA chat_public TO chat_public;
+GRANT USAGE ON SCHEMA chat_public TO public_writer;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA chat_public TO public_writer;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA chat_public TO public_writer;
 ALTER DEFAULT PRIVILEGES IN SCHEMA chat_public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chat_public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO public_writer;
 ALTER DEFAULT PRIVILEGES IN SCHEMA chat_public
-    GRANT USAGE, SELECT ON SEQUENCES TO chat_public;
+    GRANT USAGE, SELECT ON SEQUENCES TO public_writer;

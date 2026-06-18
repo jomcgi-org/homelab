@@ -13,7 +13,7 @@ The public surface is gaining a chat: the landing page of the public notes app i
 
 A public, anonymous, internet-facing endpoint that spends GPU on demand is a qualitatively different surface from the read-only JSON endpoints ADR 004 isolated. Every other public route is a cheap point read against a replica. Chat is expensive, stateful, generative, and adversarial by default. The specific threats:
 
-1. **GPU exhaustion (the headline availability threat).** The Qwen vLLM runs on a single 24GB GPU with `max_num_seqs` of 3, and it is *shared*: the Discord bot, the private `/explore` chat, and the agent platform all call the same endpoint. An anonymous flood of long, max-token public requests can saturate the decode slots and starve those trusted workloads. The public surface must never be able to degrade the private one.
+1. **GPU exhaustion (the headline availability threat).** The Qwen vLLM runs on a single 24GB GPU with `max_num_seqs` of 3, and it is _shared_: the Discord bot, the private `/explore` chat, and the agent platform all call the same endpoint. An anonymous flood of long, max-token public requests can saturate the decode slots and starve those trusted workloads. The public surface must never be able to degrade the private one.
 2. **Compute and token amplification.** Short of full denial of service, an attacker can burn GPU-seconds: maximal prompts, forced max-output-tokens, many turns, many parallel sessions. The requested "generous character limit and max turns" multiplies the per-conversation cost ceiling, so it has to be bounded explicitly rather than left open.
 3. **Data exfiltration through retrieval.** The chat grounds on the knowledge graph. If retrieval can reach private notes, it leaks the exact PII (colleagues, employers, job search, personal life) that the visibility work exists to protect. Confinement to the public subset must be a database property, not a prompt instruction.
 4. **Prompt injection and jailbreak.** A user will try to override the system prompt, extract it, impersonate, or coax reputationally or legally damaging output attributable to the site. We cannot prevent a determined user from making a text model say off-brand things; we can bound the blast radius so that saying them achieves nothing privileged.
@@ -22,7 +22,7 @@ A public, anonymous, internet-facing endpoint that spends GPU on demand is a qua
 7. **Untrusted generative output rendered in a rich overlay.** The overlay renders model output and note bodies. Model output is untrusted; rendered as raw HTML it is stored/reflected XSS.
 8. **A growing store of anonymous user-submitted content.** Persisting transcripts (the chosen retention posture) accumulates content we did not author, including potential PII and abusive material, which carries privacy and legal-takedown obligations.
 
-The decision is *not* whether to expose chat (V3 is committed) but the control stack that makes an anonymous, GPU-backed, RAG-grounded endpoint safe to operate.
+The decision is _not_ whether to expose chat (V3 is committed) but the control stack that makes an anonymous, GPU-backed, RAG-grounded endpoint safe to operate.
 
 ---
 
@@ -34,13 +34,13 @@ Ship public chat as a new **PUBLIC-tier domain module** (`chat_public`) composed
 
 **2. Budgets: per-session, per-IP, and a global ceiling.** Three nested limits. Per-session: max turns, a generous per-message character cap, a max output-tokens-per-turn, and a max total-tokens-per-session. Per-IP: Envoy local rate limiting (existing) plus a backend counter, so one IP cannot mint sessions without bound. Global: a cluster-wide token/concurrency budget for the entire public chat surface, a circuit breaker so that even a coordinated swarm of solved challenges cannot exceed an aggregate ceiling. The global budget is the backstop that holds when layers 1 and 2 are partially defeated.
 
-**3. GPU isolation: a reserved-headroom semaphore.** Public chat acquires a slot from a bounded concurrency semaphore sized *below* the vLLM batch capacity, deliberately reserving decode slots for the Discord bot, private chat, and the agent platform. Sizing rule: `public_concurrency + reserved_trusted_headroom <= max_num_seqs`. When the public semaphore is full, public requests queue briefly (bounded) and then shed load with a friendly "busy" state, and they never block a trusted caller. This is a client-side admission control in front of vLLM's own scheduler, defense in depth: even if the public surface is flooded, trusted workloads keep their reserved slots. A dedicated public model was considered and rejected (see Alternatives); the semaphore is simpler and sufficient until contention is observed.
+**3. GPU isolation: a reserved-headroom semaphore.** Public chat acquires a slot from a bounded concurrency semaphore sized _below_ the vLLM batch capacity, deliberately reserving decode slots for the Discord bot, private chat, and the agent platform. Sizing rule: `public_concurrency + reserved_trusted_headroom <= max_num_seqs`. When the public semaphore is full, public requests queue briefly (bounded) and then shed load with a friendly "busy" state, and they never block a trusted caller. This is a client-side admission control in front of vLLM's own scheduler, defense in depth: even if the public surface is flooded, trusted workloads keep their reserved slots. A dedicated public model was considered and rejected (see Alternatives); the semaphore is simpler and sufficient until contention is observed.
 
 **4. Server-side conversation state and compaction.** The session row holds the conversation; the browser sends only its session cookie and the new message (through the SSR proxy), never history. The server enforces max turns and the character cap authoritatively, and runs compaction: when the running context approaches a token budget, older turns are summarized into a rolling summary (reusing the existing `chat/summarizer.py` pattern) so the live context stays bounded turn over turn. Compaction is what keeps per-request GPU cost flat as a conversation grows, and server-authoritative history is what makes the turn and length limits un-bypassable. A client that forges or replays history achieves nothing because the server ignores client-supplied history entirely.
 
-Sessions, transcripts, and the pseudonymous user/session details are the first public-tier *writes*: they go to the module's own `chat_public` schema on the Postgres primary through a dedicated `chat_public` role with DML on that one schema, distinct from ADR 004's read-only `public_reader`, which remains the path for note retrieval against the public view. ADR 004's pure-reader assumption still holds for every other public surface; chat narrows the exception to a single schema it alone owns, so a compromise of the chat path can write its own sessions and read public notes, and nothing more.
+Sessions, transcripts, and the pseudonymous user/session details are the first public-tier _writes_: they go to the module's own `chat_public` schema on the Postgres primary through the dedicated `public_writer` role with DML on that one schema, distinct from ADR 004's read-only `public_reader`, which remains the path for note retrieval against the public view. ADR 004's pure-reader assumption still holds for every other public surface; chat narrows the exception to a single schema it alone owns, so a compromise of the chat path can write its own sessions and read public notes, and nothing more.
 
-**5. Retrieval confined to the public subset by the database.** Grounding retrieval runs only over the public knowledge graph, the same `COALESCE(visibility,'private')='public'` predicate the public read endpoints use, enforced by the `public_reader` role and public views from ADR 004 / ADR 010, never by a sentence in the system prompt. The overlay's "nodes your chat touched" set *is* the set of public nodes retrieved. Private notes are physically unreadable by the public binary's role, so a perfect jailbreak still cannot surface one. Retrieved note text is injected as clearly delimited data, never as instructions, and the model has no tools, so retrieved content cannot act.
+**5. Retrieval confined to the public subset by the database.** Grounding retrieval runs only over the public knowledge graph, the same `COALESCE(visibility,'private')='public'` predicate the public read endpoints use, enforced by the `public_reader` role and public views from ADR 004 / ADR 010, never by a sentence in the system prompt. The overlay's "nodes your chat touched" set _is_ the set of public nodes retrieved. Private notes are physically unreadable by the public binary's role, so a perfect jailbreak still cannot surface one. Retrieved note text is injected as clearly delimited data, never as instructions, and the model has no tools, so retrieved content cannot act.
 
 **6. Output posture: low blast radius, not prompt-based defense.** The system prompt is fixed server-side, the model is text-in/text-out with no tools and no function-calling, and it can reach nothing private. We explicitly do **not** treat prompt instructions as a security boundary. Jailbreak resistance is structural: a fully jailbroken model can emit off-brand text and nothing else. Residual reputational risk is mitigated by a constrained, clearly-scoped persona, transcript review with purge, and an optional lightweight content filter, not by trying to win the prompt-injection arms race.
 
@@ -50,19 +50,19 @@ Sessions, transcripts, and the pseudonymous user/session details are the first p
 
 ### Before / After
 
-| Aspect | A public read endpoint today | Public chat (decided) |
-| ------ | ---------------------------- | --------------------- |
-| Cost per request | One indexed point read on a replica | GPU inference, bounded by semaphore + budgets |
-| Public exposure | API directly on the public HTTPRoute | SSR front door only; chat API internal (ClusterIP, mTLS) |
-| Identity | None needed (cacheable) | Turnstile-bound session, opaque httpOnly cookie over a server-side row |
-| Abuse limit | Envoy per-IP rate limit | Per-session + per-IP + global ceiling |
-| GPU sharing | N/A | Reserved-headroom semaphore, trusted slots protected |
-| State | Stateless | Server-side session, compaction, server-authoritative limits |
-| Data scope | `public` view via `public_reader` | Same view via `public_reader`; retrieval cannot see private |
-| Model authority | N/A | No tools, text-only, fixed server-side prompt |
-| Egress | Postgres `-ro` + DNS | Adds inference service only |
-| Output handling | JSON | Sanitized markdown + CSP in the overlay |
-| User content | None stored | Transcripts persisted with mandatory purge tooling |
+| Aspect           | A public read endpoint today         | Public chat (decided)                                                  |
+| ---------------- | ------------------------------------ | ---------------------------------------------------------------------- |
+| Cost per request | One indexed point read on a replica  | GPU inference, bounded by semaphore + budgets                          |
+| Public exposure  | API directly on the public HTTPRoute | SSR front door only; chat API internal (ClusterIP, mTLS)               |
+| Identity         | None needed (cacheable)              | Turnstile-bound session, opaque httpOnly cookie over a server-side row |
+| Abuse limit      | Envoy per-IP rate limit              | Per-session + per-IP + global ceiling                                  |
+| GPU sharing      | N/A                                  | Reserved-headroom semaphore, trusted slots protected                   |
+| State            | Stateless                            | Server-side session, compaction, server-authoritative limits           |
+| Data scope       | `public` view via `public_reader`    | Same view via `public_reader`; retrieval cannot see private            |
+| Model authority  | N/A                                  | No tools, text-only, fixed server-side prompt                          |
+| Egress           | Postgres `-ro` + DNS                 | Adds inference service only                                            |
+| Output handling  | JSON                                 | Sanitized markdown + CSP in the overlay                                |
+| User content     | None stored                          | Transcripts persisted with mandatory purge tooling                     |
 
 ---
 
@@ -135,7 +135,7 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 
 - **New anonymous compute surface.** Unlike every other public route, chat spends GPU per request. The reserved-headroom semaphore plus the three-tier budget plus the global ceiling are the controls that keep that spend bounded and keep trusted workloads whole.
 - **SSR is the only public origin for chat.** The chat API is never added to the public HTTPRoute; it is a ClusterIP reached from the SSR app over Linkerd mTLS. There is no internet path that skips the Turnstile-gated SSR front door. The default-deny egress policy from ADR 004 is extended with a single allow to the inference service (and embeddings if used) from the chat binary, and SSR egress allows only the internal chat API. These are the only widenings and must be reviewed as such.
-- **The Turnstile secret stays in the backend, not in SSR.** Consistent with ADR 004's "public SSR holds no backend secrets," siteverify runs in the FastAPI binary; SSR forwards the user's Turnstile token and holds no secret. The Turnstile *site* key is public by design; the *secret* key is an `OnePasswordItem` scoped to verification only, not a backend or model credential.
+- **The Turnstile secret stays in the backend, not in SSR.** Consistent with ADR 004's "public SSR holds no backend secrets," siteverify runs in the FastAPI binary; SSR forwards the user's Turnstile token and holds no secret. The Turnstile _site_ key is public by design; the _secret_ key is an `OnePasswordItem` scoped to verification only, not a backend or model credential.
 - **Forwarded client IP is trusted only from SSR.** Because SSR is now the API's client, the real client IP (Cloudflare `CF-Connecting-IP`) is forwarded SSR-to-API for per-IP limiting and hashing. The API trusts that header only on connections carrying SSR's Linkerd identity, never from any other peer, so a direct caller cannot spoof an IP even if the API were reachable.
 - **Confidentiality stays database-enforced.** Retrieval uses `public_reader` and the public view; the model has no path to private rows. This is consistent with ADR 004 and ADR 010 and is not weakened by any prompt content.
 - **Untrusted output is sanitized.** Model output and note bodies render as sanitized markdown under a strict CSP. No raw HTML from model output reaches the DOM.
@@ -145,20 +145,20 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 
 ## Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-| ---- | ---------- | ------ | ---------- |
-| Semaphore mis-sized, public traffic still starves trusted workloads | Medium | High | Size conservatively below `max_num_seqs`; alert on public queue depth and on trusted-caller inference latency; load test the reservation before launch |
-| Turnstile defeated by solver farms / token replay | Medium | Medium | Tokens short-lived and server-signed, bound to a session; per-session and global budgets cap damage even with valid tokens; monitor solve-to-abuse ratio |
-| Jailbreak produces reputationally damaging output | High | Medium | Blast radius is structurally low (no tools, no private data); constrained persona; sanitized render; transcript review + purge; optional content filter; accept residual |
-| Retrieval leaks a private note | Low | High | `public_reader` role + public view make private rows physically unreadable; cover with a test asserting a private note is not retrievable as `public_reader`; same guarantee as ADR 004 |
-| Indirect injection embedded in note content steers the model | Low | Low | Notes are Joe's own public notes; retrieved text is delimited data, the model has no tools, so a steered model still cannot act |
-| Transcript store accumulates PII / abusive content (indefinite retention) | High | Medium | Mandatory purge job + on-demand takedown by session/IP-hash + documented policy + private-tier-only access; ship purge tooling with the feature, not after |
-| XSS via model output rendered in the overlay | Medium | High | Sanitized markdown only, strict CSP, no raw HTML from model output; cover the renderer with injection test cases |
-| Compaction summarization adds its own GPU load | Medium | Low | Summaries run under the same semaphore and budget; cap summary frequency; a summary is far cheaper than an unbounded growing context |
-| Embeddings GPU contention from public retrieval | Medium | Medium | Apply the reserved-headroom treatment to `inference-embeddings` too, or cache/precompute public-note embeddings so retrieval is a vector read, not a GPU call |
-| Global ceiling set so low it blocks legitimate use, or so high it permits abuse | Medium | Medium | Start conservative, expose budget counters in dashboards, tune from real traffic; budgets are config, not code |
-| Forwarded client IP spoofed, defeating per-IP limits | Low | Medium | The API trusts `CF-Connecting-IP` only on connections bearing SSR's Linkerd identity; the chat API is not internet-reachable, so no untrusted peer can set it |
-| SSE proxying through SvelteKit SSR adds latency or buffers the stream | Medium | Low | SvelteKit streams `Response` bodies; pass the SSE through unbuffered and verify token-by-token delivery in the load test |
+| Risk                                                                            | Likelihood | Impact | Mitigation                                                                                                                                                                              |
+| ------------------------------------------------------------------------------- | ---------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Semaphore mis-sized, public traffic still starves trusted workloads             | Medium     | High   | Size conservatively below `max_num_seqs`; alert on public queue depth and on trusted-caller inference latency; load test the reservation before launch                                  |
+| Turnstile defeated by solver farms / token replay                               | Medium     | Medium | Tokens short-lived and server-signed, bound to a session; per-session and global budgets cap damage even with valid tokens; monitor solve-to-abuse ratio                                |
+| Jailbreak produces reputationally damaging output                               | High       | Medium | Blast radius is structurally low (no tools, no private data); constrained persona; sanitized render; transcript review + purge; optional content filter; accept residual                |
+| Retrieval leaks a private note                                                  | Low        | High   | `public_reader` role + public view make private rows physically unreadable; cover with a test asserting a private note is not retrievable as `public_reader`; same guarantee as ADR 004 |
+| Indirect injection embedded in note content steers the model                    | Low        | Low    | Notes are Joe's own public notes; retrieved text is delimited data, the model has no tools, so a steered model still cannot act                                                         |
+| Transcript store accumulates PII / abusive content (indefinite retention)       | High       | Medium | Mandatory purge job + on-demand takedown by session/IP-hash + documented policy + private-tier-only access; ship purge tooling with the feature, not after                              |
+| XSS via model output rendered in the overlay                                    | Medium     | High   | Sanitized markdown only, strict CSP, no raw HTML from model output; cover the renderer with injection test cases                                                                        |
+| Compaction summarization adds its own GPU load                                  | Medium     | Low    | Summaries run under the same semaphore and budget; cap summary frequency; a summary is far cheaper than an unbounded growing context                                                    |
+| Embeddings GPU contention from public retrieval                                 | Medium     | Medium | Apply the reserved-headroom treatment to `inference-embeddings` too, or cache/precompute public-note embeddings so retrieval is a vector read, not a GPU call                           |
+| Global ceiling set so low it blocks legitimate use, or so high it permits abuse | Medium     | Medium | Start conservative, expose budget counters in dashboards, tune from real traffic; budgets are config, not code                                                                          |
+| Forwarded client IP spoofed, defeating per-IP limits                            | Low        | Medium | The API trusts `CF-Connecting-IP` only on connections bearing SSR's Linkerd identity; the chat API is not internet-reachable, so no untrusted peer can set it                           |
+| SSE proxying through SvelteKit SSR adds latency or buffers the stream           | Medium     | Low    | SvelteKit streams `Response` bodies; pass the SSE through unbuffered and verify token-by-token delivery in the load test                                                                |
 
 ---
 
@@ -175,14 +175,14 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 
 ## References
 
-| Resource | Relevance |
-| -------- | --------- |
-| [ADR 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md) | The isolated public service this chat module is composed into; source of `public_reader`, public views, replica, and default-deny egress |
+| Resource                                                                                     | Relevance                                                                                                                                            |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [ADR 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md)     | The isolated public service this chat module is composed into; source of `public_reader`, public views, replica, and default-deny egress             |
 | [ADR 010: FastMonolith Modular Framework](../services/010-fastmonolith-modular-framework.md) | The module/tier/profile mechanism that makes `chat_public` a PUBLIC-tier module composed into the public binary, with private code physically absent |
-| [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md) | Public hostname and tier the chat sits behind |
-| `docs/plans/2026-05-07-public-notes-visibility-design.md` | V1/V2 visibility work; this is the deferred V3 chat surface |
-| `docs/plans/2026-06-16-public-chat-v3-plan.md` | Implementation plan for this decision |
-| `projects/agent_platform/inference/deploy/values-prod.yaml` | The shared Qwen vLLM the semaphore reserves headroom against |
-| `projects/monolith/chat/summarizer.py` | Existing rolling-summary pattern reused for compaction |
-| [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/) | The admission challenge minting the session token |
-| `docs/security.md` | Defense-in-depth baseline this ADR extends |
+| [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)           | Public hostname and tier the chat sits behind                                                                                                        |
+| `docs/plans/2026-05-07-public-notes-visibility-design.md`                                    | V1/V2 visibility work; this is the deferred V3 chat surface                                                                                          |
+| `docs/plans/2026-06-16-public-chat-v3-plan.md`                                               | Implementation plan for this decision                                                                                                                |
+| `projects/agent_platform/inference/deploy/values-prod.yaml`                                  | The shared Qwen vLLM the semaphore reserves headroom against                                                                                         |
+| `projects/monolith/chat/summarizer.py`                                                       | Existing rolling-summary pattern reused for compaction                                                                                               |
+| [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)                         | The admission challenge minting the session token                                                                                                    |
+| `docs/security.md`                                                                           | Defense-in-depth baseline this ADR extends                                                                                                           |

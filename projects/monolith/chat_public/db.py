@@ -3,8 +3,8 @@
 The public binary's default engine (``app.db``) connects as the read-only
 ``public_reader`` role to the read replica ``monolith-pg-ro``. Session and
 transcript WRITES must NOT go through it. This module owns a SECOND engine bound
-to ``CHAT_PUBLIC_DATABASE_URL``, which points at the Postgres PRIMARY
-(``monolith-pg-rw``) as the dedicated ``chat_public`` role (DML on the
+to ``PUBLIC_WRITER_DATABASE_URL``, which points at the Postgres PRIMARY
+(``monolith-pg-rw``) as the dedicated ``public_writer`` role (DML on the
 ``chat_public`` schema only). Keeping the two engines separate is the database
 half of the read/write split: a bug in chat_public cannot turn the public read
 tier into a writer, and the chat write role cannot read any other schema.
@@ -22,17 +22,19 @@ from sqlmodel import Session, create_engine
 
 # CNPG hands out postgresql://; SQLAlchemy needs the psycopg v3 driver suffix.
 # Rewrite the scheme to postgresql+psycopg:// (same as app.db). The default is a
-# local dev URL; production injects the real primary + chat_public credentials.
+# local dev URL; production injects the real primary + public_writer credentials.
 _raw_url = os.environ.get(
-    "CHAT_PUBLIC_DATABASE_URL",
-    "postgresql://chat_public:chat_public@localhost:5432/monolith",
+    "PUBLIC_WRITER_DATABASE_URL",
+    "postgresql://public_writer:public_writer@localhost:5432/monolith",
 )
-CHAT_PUBLIC_DATABASE_URL = _raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
+PUBLIC_WRITER_DATABASE_URL = _raw_url.replace(
+    "postgresql://", "postgresql+psycopg://", 1
+)
 
 
 @lru_cache(maxsize=1)
 def get_chat_engine():
-    return create_engine(CHAT_PUBLIC_DATABASE_URL)
+    return create_engine(PUBLIC_WRITER_DATABASE_URL)
 
 
 def get_chat_session():
