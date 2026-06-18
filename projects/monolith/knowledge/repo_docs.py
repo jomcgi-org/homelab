@@ -231,7 +231,15 @@ async def repo_docs_reconcile_handler(session) -> datetime | None:
             )
             failed += 1
             continue
-        await asyncio.to_thread(_upsert_doc_in_thread, entry, chunks, vectors)
+        try:
+            await asyncio.to_thread(_upsert_doc_in_thread, entry, chunks, vectors)
+        except Exception:  # noqa: BLE001 - isolate a bad doc; never abort the run
+            # One doc's DB error (e.g. a stray byte Postgres rejects) must not
+            # sink the whole backfill. Skip it; its hash stays unchanged so the
+            # next run retries, and the other docs still commit per-doc.
+            logger.exception("repo_docs: upsert failed for %s; skipping", entry.path)
+            failed += 1
+            continue
         upserted += 1
 
     logger.info(
