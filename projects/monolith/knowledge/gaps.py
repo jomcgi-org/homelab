@@ -931,6 +931,57 @@ def approve_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
     return _gap_to_dict(gap, session=session)
 
 
+def set_gap_class(session: Session, gap_id: int, gap_class: str) -> dict:
+    """Classify a discovered gap fileless and transition its state legally.
+
+    Drives the claude.ai classification routine: it reads discovered,
+    NULL-class gaps, applies the privacy rubric, and writes the decision
+    back through this function. Every transition keeps the (state, gap_class)
+    pair legal under the Postgres ``gaps_state_class_combo`` CHECK, which
+    SQLite test fixtures do not enforce, so this transition logic is the
+    only guard against an illegal pair reaching prod.
+
+    Transitions from ``state='discovered'``:
+        * ``external`` -> leave ``state='discovered'`` (the research routine
+          pulls discovered and in_review external gaps, there is no
+          intermediate state).
+        * ``internal`` / ``hybrid`` -> ``state='in_review'`` (ready for a
+          user answer via :func:`answer_gap`).
+        * ``parked`` -> ``state='parked'`` and ``resolved_at=now(utc)``
+          (terminal SKIP category).
+
+    Raises:
+        ValueError: if ``gap_class`` is not one of external/internal/hybrid/
+            parked, if ``gap_id`` is unknown, or if the gap is not in
+            ``state='discovered'`` (a non-discovered gap is already
+            classified or in flight).
+    """
+    if gap_class not in _VALID_GAP_CLASSES:
+        raise ValueError(f"invalid gap_class: {gap_class!r}")
+    gap = _get_gap_or_raise(session, gap_id)
+    if gap.state != "discovered":
+        raise ValueError(
+            f"Gap id={gap_id} is in state={gap.state!r}, expected 'discovered'"
+        )
+
+    gap.gap_class = gap_class
+    if gap_class in ("internal", "hybrid"):
+        gap.state = "in_review"
+    elif gap_class == "parked":
+        gap.state = "parked"
+        gap.resolved_at = datetime.now(timezone.utc)
+    # external: leave state='discovered' for the research routine to pull.
+    session.commit()
+    session.refresh(gap)
+    logger.info(
+        "gaps.set_gap_class: gap_id=%d class=%s state=%s",
+        gap_id,
+        gap_class,
+        gap.state,
+    )
+    return _gap_to_dict(gap, session=session)
+
+
 def _is_tombstone_answer(answer: str) -> bool:
     """Detect the user's 'Tombstone — ...' convention on a gap answer.
 
