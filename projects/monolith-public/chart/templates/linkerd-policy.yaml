@@ -61,9 +61,10 @@ spec:
       app.kubernetes.io/component: web
   port: {{ .Values.web.portName | default "http" }}
 ---
-# Clients allowed to reach the backend: the gateway (direct public API reads)
-# and the frontend SSR pod (which fetches data via API_BASE). identities is OR
-# semantics, so a single MeshTLSAuthentication with both is the clean shape.
+# The ONLY client allowed to reach the backend is the frontend SSR pod (which
+# fetches data via API_BASE, both for +page.server.js renders and the
+# /notes/body proxy). The gateway never reaches the backend directly: there is
+# no /api ingress rule, so the public backend is not internet-reachable at all.
 # The frontend shares this release's ServiceAccount, so its mesh identity is
 # <serviceAccountName>.<namespace>.serviceaccount.identity.linkerd.cluster.local.
 apiVersion: policy.linkerd.io/v1alpha1
@@ -74,7 +75,6 @@ metadata:
     {{- include "monolith-public.labels" . | nindent 4 }}
 spec:
   identities:
-    - "*.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local"
     - "{{ include "monolith-public.serviceAccountName" . }}.{{ .Release.Namespace }}.serviceaccount.identity.linkerd.cluster.local"
 ---
 apiVersion: policy.linkerd.io/v1alpha1

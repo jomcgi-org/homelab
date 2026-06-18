@@ -27,23 +27,14 @@ spec:
           port: {{ .Values.frontend.service.port | int }}
       timeouts:
         request: 60s
-    # Public knowledge API, narrowly scoped to /api/knowledge/public/* (the only
-    # /api path the browser calls directly; the rest is SSR-fetched in-pod). This
-    # mirrors the ingress-layer belt-and-braces of the private monolith chart and
-    # keeps the public surface minimal at the routing layer, even though the
-    # backend (main_public) mounts only public routes and public_reader + the
-    # public_api views are the confidentiality boundary regardless.
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /api/knowledge/public
-      backendRefs:
-        - name: {{ include "monolith-public.fullname" . }}-web
-          port: {{ .Values.web.service.port | int }}
-      timeouts:
-        request: 30s
-    # Everything else to the frontend SSR (the reroute hook maps the apex host
-    # to /public internally).
+    # NO /api rule: the public backend is never internet-reachable. Every
+    # backend read is server-side (SSR +page.server.js or a frontend +server.js
+    # proxy, e.g. /notes/body/<id>, ships/stars heat/track), so the browser only
+    # ever talks to the frontend. The gateway routes solely to the frontend; the
+    # backend is reached only by the frontend in-cluster over mTLS.
+    #
+    # Everything to the frontend SSR (the reroute hook maps the apex host to
+    # /public internally).
     - matches:
         - path:
             type: PathPrefix
