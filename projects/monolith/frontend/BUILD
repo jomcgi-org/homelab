@@ -136,12 +136,12 @@ js_run_binary(
     srcs = [":src_public"],
     args = ["build"],
     chdir = package_name(),
+    env = {"SVELTE_OUT_DIR": "build_public"},
     # Distinct out dir (svelte.config reads SVELTE_OUT_DIR) so this action does
     # not collide with :build's "build" output in the same package.
     # build_tar_public remaps it to /app/build at image time, so the runtime
     # path is unchanged.
     out_dirs = ["build_public"],
-    env = {"SVELTE_OUT_DIR": "build_public"},
     tool = ":vite",
     visibility = ["//projects/monolith:__pkg__"],
 )
