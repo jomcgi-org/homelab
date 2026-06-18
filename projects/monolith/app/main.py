@@ -55,7 +55,6 @@ def _log_task_exception(task: "asyncio.Task[object]") -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.db import get_engine
-    from knowledge.service import vault_backup_handler
     from scheduler.api import purge_stale_jobs, run_scheduler_loop
     from sqlmodel import Session
 
@@ -99,12 +98,6 @@ async def lifespan(app: FastAPI):
         bot_task = asyncio.create_task(_start_bot_when_ready())
         bot_task.add_done_callback(_log_task_exception)
         logger.info("Discord bot starting")
-
-    # Pre-seed the vault with a fast git clone so the reconciler never sees
-    # an empty vault and prunes the DB on pod restart.
-    from knowledge.service import clone_vault
-
-    await clone_vault()
 
     # Purge stale jobs from DB (e.g. removed changelog channels)
     with Session(get_engine()) as session:
@@ -185,12 +178,6 @@ async def lifespan(app: FastAPI):
     # asyncio.create_task into a non-awaitable mock.
     app.state.ships_stop.set()
     app.state.ships_task.cancel()
-
-    # Best-effort vault backup — preserve any uncommitted changes before the pod dies.
-    try:
-        await vault_backup_handler()
-    except Exception:
-        logger.warning("Shutdown vault backup failed", exc_info=True)
 
     if _tracer_provider is not None:
         _tracer_provider.shutdown()

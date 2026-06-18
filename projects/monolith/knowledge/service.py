@@ -2,166 +2,35 @@
 
 import asyncio
 import logging
-import os
 import time
 from datetime import datetime
-from pathlib import Path
-
-from dulwich import porcelain
 
 from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 from app.db import get_engine
-from knowledge.gap_stubs import RESEARCHING_DIR
 from knowledge.gardener import _slugify
 from knowledge.layout import EdgeRef, LayoutParams, NodePos, compute_layout
-from knowledge.models import Gap, Note, NoteLink
-
-# Vault-root helpers moved to knowledge.notes (light module) so the public note
-# path can resolve the vault root without importing this heavy module. Re-export
-# them here for back-compat: drift_detector, mcp, and several tests still do
-# `from knowledge.service import VAULT_ROOT_ENV` / `get_vault_root`.
-from knowledge.notes import (  # noqa: F401 (re-exported for back-compat)
-    DEFAULT_VAULT_ROOT,
-    VAULT_ROOT_ENV,
-    get_vault_root,
-)
-from knowledge.reconciler import Reconciler
-from knowledge.store import KnowledgeStore
+from knowledge.models import Note, NoteLink
 from knowledge.visibility import public_notes_filter
-from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
 
-# 5-minute reconcile cycle. _TTL_SECS is the lock-lease: a worker holding
-# the row past this is treated as crashed and the lock can be reclaimed.
-# We keep it generous (20m) so LLM-heavy handlers can finish without being
+# Layout refresh cadence. _TTL_SECS is the lock-lease: a worker holding the
+# row past this is treated as crashed and the lock can be reclaimed. We keep
+# it generous (20m) so the CPU-bound layout pass can finish without being
 # preempted; the tradeoff is slower recovery if a pod actually dies mid-job.
 _INTERVAL_SECS = 300
 _TTL_SECS = 1200
-_BACKUP_INTERVAL_SECS = 900  # 15 minutes
-_BACKUP_TTL_SECS = 1200  # 20 minute lock-lease (git push can be slow)
 _INGEST_INTERVAL_SECS = 300
 _INGEST_TTL_SECS = 1200
-_CLASSIFY_INTERVAL_SECS = 60  # 1-minute tick
-# Scheduler reclaims jobs whose lock-lease exceeds ttl_secs. Must comfortably
-# exceed gap_classifier._CLASSIFY_TIMEOUT_SECS (300s) — otherwise a long-
-# running classifier subprocess would have its lock reclaimed mid-flight,
-# risking a second replica racing Edit calls on the same stubs.
-_CLASSIFY_TTL_SECS = 360  # 300s subprocess timeout + 60s headroom
-_CLASSIFY_BATCH_SIZE = 10
-_RESEARCH_INTERVAL_SECS = 900  # every 15 minutes
-_RESEARCH_TTL_SECS = (
-    # 20min lock-lease (Sonnet research runs can be slow with web tools).
-    # Exceeds the 15min interval intentionally: if a research tick takes
-    # longer than the interval, the next tick simply waits until the lock
-    # expires rather than racing against the in-flight run.
-    1200
-)
-# Drift detector compares DB visibility column vs file frontmatter for
-# every non-deleted note. Daily cadence: drift is rare and a full scan
-# of ~5000 notes runs in well under a minute, so once a day catches
-# regressions without burning cycles.
-_DRIFT_INTERVAL_SECS = 86400
-_DRIFT_TTL_SECS = 600  # 10min ceiling on a single scan
 # Fileless gap discovery: a quick Postgres scan of note_links for unresolved
 # wikilinks. 5-minute cadence matches the other knowledge jobs; the scan is
 # cheap so a 10-minute lock-lease is ample headroom.
 _DISCOVER_INTERVAL_SECS = 300
 _DISCOVER_TTL_SECS = 600
-_GIT_READY_SENTINEL = ".git-ready"
-_SYNC_READY_SENTINEL = ".sync-ready"
-_GIT_AUTHOR = b"vault-backup <vault-backup@monolith.local>"
-
-
-def _vault_sync_ready() -> bool:
-    """Return True if the obsidian sidecar has completed its initial sync."""
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    return (vault_root / _SYNC_READY_SENTINEL).exists()
-
-
-async def clone_vault() -> None:
-    """Clone the vault repo to pre-seed the emptyDir volume.
-
-    Skips if VAULT_GIT_REMOTE is not set or if the vault already has a .git dir.
-    Always writes a .git-ready sentinel so the obsidian sidecar can start.
-    """
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    try:
-        remote = os.environ.get("VAULT_GIT_REMOTE", "")
-        if not remote:
-            logger.info("VAULT_GIT_REMOTE not set, skipping clone")
-            return
-
-        if (vault_root / ".git").exists():
-            logger.info("Vault at %s already initialised, skipping clone", vault_root)
-            return
-
-        token = os.environ.get("GITHUB_TOKEN", "")
-        clone_kwargs: dict = {
-            "source": remote,
-            "target": str(vault_root),
-            "depth": 1,
-        }
-        if token:
-            clone_kwargs["username"] = "x-access-token"
-            clone_kwargs["password"] = token
-
-        try:
-            porcelain.clone(**clone_kwargs)
-            logger.info("Vault cloned from git to %s", vault_root)
-        except Exception as exc:
-            logger.warning("Vault clone failed, proceeding without pre-seed: %s", exc)
-    finally:
-        vault_root.mkdir(parents=True, exist_ok=True)
-        (vault_root / _GIT_READY_SENTINEL).touch()
-
-
-def _has_changes(vault_root: Path) -> bool:
-    """Check if the vault has any uncommitted or untracked changes."""
-    status = porcelain.status(str(vault_root))
-    has_staged = any(status.staged.get(k) for k in ("add", "delete", "modify"))
-    return has_staged or bool(status.unstaged) or bool(status.untracked)
-
-
-async def vault_backup_handler() -> datetime | None:
-    """Commit and push vault changes to GitHub (best-effort).
-
-    Called by the scheduler and during shutdown.
-    """
-    if not _vault_sync_ready():
-        logger.info("knowledge.vault-backup: vault sync not ready, deferring")
-        return None
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    if not (vault_root / ".git").exists():
-        logger.info("knowledge.vault-backup: no .git dir, skipping")
-        return None
-
-    if not _has_changes(vault_root):
-        logger.info("knowledge.vault-backup: no changes to commit")
-        return None
-
-    try:
-        porcelain.add(str(vault_root))
-        porcelain.commit(
-            str(vault_root),
-            message=b"sync: vault backup",
-            author=_GIT_AUTHOR,
-            committer=_GIT_AUTHOR,
-        )
-        token = os.environ.get("GITHUB_TOKEN", "")
-        push_kwargs: dict = {}
-        if token:
-            push_kwargs["username"] = "x-access-token"
-            push_kwargs["password"] = token
-        porcelain.push(str(vault_root), **push_kwargs)
-        logger.info("knowledge.vault-backup: committed and pushed")
-    except Exception as exc:
-        logger.warning("knowledge.vault-backup: push failed: %s", exc)
-    return None
 
 
 def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
@@ -203,10 +72,10 @@ def _run_layout_pass(engine: Engine) -> tuple[int, int, int]:
         note_id_set = set(fk_to_note_id.values())
         # Mirror ``KnowledgeStore.get_graph``'s slug-normalize-then-resolve
         # logic. Body wikilinks store ``target_id`` as raw user-typed text
-        # (``"Steve Krug"``); gap stubs and ``_processed`` notes carry
-        # ``note_id`` in slug form. Without this normalization FA2 treats
-        # gap edges as missing and the gap nodes get no position from
-        # ``compute_layout`` (the API then drops them as orphans).
+        # (``"Steve Krug"``); resolved notes carry ``note_id`` in slug form.
+        # Without this normalization FA2 treats those edges as missing and
+        # the nodes get no position from ``compute_layout`` (the API then
+        # drops them as orphans).
         slug_to_note_id = {_slugify(nid): nid for nid in note_id_set}
         edges: list[EdgeRef] = []
         for r in edge_rows:
@@ -301,47 +170,29 @@ def _run_public_layout_pass(engine: Engine) -> tuple[int, int, int]:
         return len(nodes), len(edges), len(positions)
 
 
-async def reconcile_handler(session: Session) -> datetime | None:
-    """Scheduler handler: run the knowledge vault reconciler."""
-    if not _vault_sync_ready():
-        logger.info("knowledge.reconcile: vault sync not ready, deferring")
-        return None
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    reconciler = Reconciler(
-        store=KnowledgeStore(session=session),
-        embed_client=EmbeddingClient(),
-        vault_root=vault_root,
-    )
-    stats = await reconciler.run()
-    logger.info(
-        "knowledge.reconcile complete",
-        extra={
-            "upserted": stats.upserted,
-            "deleted": stats.deleted,
-            "unchanged": stats.unchanged,
-            "failed": stats.failed,
-            "skipped_locked": stats.skipped_locked,
-        },
-    )
+async def layout_handler(session: Session) -> datetime | None:
+    """Scheduler handler: recompute graph layout positions (full + public).
 
-    # Persist reconciler upserts before the layout step so the layout
-    # pass — which opens its own session in a worker thread — sees the
-    # upserts via the committed snapshot. Offload the commit itself off
-    # the loop so the COMMIT round-trip doesn't block /healthz.
-    await asyncio.to_thread(session.commit)
+    Formerly hosted inside the vault reconciler; the reconciler is gone
+    (the vault is decommissioned, ADR 006) but the layout pass is pure
+    Postgres and still drives the knowledge-graph node positions.
 
-    # Dispatch the layout pass to a worker thread. ``compute_layout`` is
-    # CPU-bound (FA2 + the hard-collide pass); running it on the asyncio
-    # loop blocked uvicorn for >20s on the live graph and tripped the
-    # ``/healthz`` liveness probe, which surfaced as 5xx on the notes
-    # page. ``_run_layout_pass`` opens its own SQLAlchemy session bound
-    # to the caller's engine — engines are thread-safe, sessions are not.
+    ``compute_layout`` is CPU-bound (FA2 + the hard-collide pass); running
+    it on the asyncio loop blocked uvicorn for >20s on the live graph and
+    tripped the ``/healthz`` liveness probe. Both passes are dispatched to a
+    worker thread via ``asyncio.to_thread``. ``_run_layout_pass`` /
+    ``_run_public_layout_pass`` open their own SQLAlchemy session bound to
+    the caller's engine — engines are thread-safe, sessions are not, so we
+    pass ``session.get_bind()`` (the engine) and never the session itself.
+    """
+    engine = session.get_bind()
+
     start = time.perf_counter()
     try:
         node_count, edge_count, positioned = await asyncio.to_thread(
-            _run_layout_pass, session.get_bind()
+            _run_layout_pass, engine
         )
-    except Exception:  # noqa: BLE001 — layout failure must not affect reconcile result
+    except Exception:  # noqa: BLE001 — layout failure must not crash the scheduler
         logger.exception("knowledge.layout: pass failed")
     else:
         logger.info(
@@ -364,7 +215,7 @@ async def reconcile_handler(session: Session) -> datetime | None:
             public_node_count,
             public_edge_count,
             public_positioned,
-        ) = await asyncio.to_thread(_run_public_layout_pass, session.get_bind())
+        ) = await asyncio.to_thread(_run_public_layout_pass, engine)
     except Exception:  # noqa: BLE001 — same isolation rule as the full-graph pass
         logger.exception("knowledge.layout: public pass failed")
     else:
@@ -378,84 +229,6 @@ async def reconcile_handler(session: Session) -> datetime | None:
             },
         )
 
-    return None
-
-
-async def classify_gaps_handler(session: Session) -> datetime | None:
-    """Scheduler handler: classify a batch of gap stubs via Claude subprocess.
-
-    Globs _researching/*.md for stubs with no gap_class set, takes up to
-    _CLASSIFY_BATCH_SIZE of them, and calls classify_stubs. Claude edits
-    the stub frontmatter in place; the reconciler projects the edits into
-    the Gap table on its next tick.
-
-    Returns None (matches the repo's scheduler contract).
-    """
-    if not _vault_sync_ready():
-        logger.info("knowledge.classify-gaps: vault sync not ready, deferring")
-        return None
-    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        logger.warning(
-            "knowledge.classify-gaps: CLAUDE_CODE_OAUTH_TOKEN not set, skipping"
-        )
-        return None
-
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    researching_dir = vault_root / "_researching"
-    if not researching_dir.is_dir():
-        logger.info("knowledge.classify-gaps: no _researching/ directory yet, skipping")
-        return None
-
-    from knowledge.gap_classifier import classify_stubs
-    from knowledge.gap_stubs import parse_stub_frontmatter
-
-    pending: list[Path] = []
-    for stub in sorted(researching_dir.glob("*.md")):
-        try:
-            meta = parse_stub_frontmatter(stub)
-        except Exception:
-            logger.warning(
-                "knowledge.classify-gaps: failed to parse %s, skipping",
-                stub,
-                exc_info=True,
-            )
-            continue
-        if meta.get("gap_class") is None:
-            pending.append(stub)
-        if len(pending) >= _CLASSIFY_BATCH_SIZE:
-            break
-
-    if not pending:
-        logger.info("knowledge.classify-gaps: no pending stubs")
-        return None
-
-    stats = await classify_stubs(pending)
-    logger.info(
-        "knowledge.classify-gaps complete",
-        extra={
-            "stubs_processed": stats.stubs_processed,
-            "duration_ms": stats.duration_ms,
-        },
-    )
-    return None
-
-
-async def research_gaps_handler(session: Session) -> datetime | None:
-    """Scheduler handler: drain the external research pipeline by one batch."""
-    if not _vault_sync_ready():
-        logger.info("knowledge.research-gaps: vault sync not ready, deferring")
-        return None
-    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        logger.warning(
-            "knowledge.research-gaps: CLAUDE_CODE_OAUTH_TOKEN not set, skipping"
-        )
-        return None
-
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-
-    from knowledge.research_handler import research_gaps_handler as _impl
-
-    await _impl(session=session, vault_root=vault_root)
     return None
 
 
@@ -488,92 +261,24 @@ async def discover_gaps_handler(session: Session) -> datetime | None:
     return None
 
 
-def reconcile_external_in_review_stubs(session: Session) -> int:
-    """One-shot, idempotent: bring external in_review stubs into sync with DB.
-
-    The v2 cutover migration (``20260524000000_gate_external_research.sql``)
-    flips ~210 ``gap_class='external' AND state='classified'`` rows to
-    ``state='in_review'`` so they queue up for user approval. But each
-    of those rows still has a stub at ``_researching/<slug>.md`` whose
-    frontmatter says ``status: classified`` (written by the v1 classifier),
-    which the reconciler would project back onto the Gap row on its
-    next tick, undoing the migration. This function rewrites the stub
-    frontmatter to ``status: in_review`` for any such row.
-
-    Idempotent: after first run, the WHERE matches nothing and the
-    function is a no-op. Safe to call on every monolith startup —
-    walking ~210 stubs once at boot is cheap.
-
-    Returns the count of stubs rewritten (0 on subsequent boots).
-    """
-    if not _vault_sync_ready():
-        logger.info(
-            "knowledge.reconcile_external_in_review_stubs: vault sync not ready, "
-            "deferring"
-        )
-        return 0
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT))
-    from knowledge.gaps import _set_stub_status
-
-    rows = (
-        session.execute(
-            select(Gap)
-            .where(Gap.deleted_at.is_(None))
-            .where(Gap.gap_class == "external")
-            .where(Gap.state == "in_review")
-        )
-        .scalars()
-        .all()
-    )
-    rewritten = 0
-    for gap in rows:
-        try:
-            before_mtime = None
-            slug = _slugify(gap.term)
-            stub = vault_root / RESEARCHING_DIR / f"{slug}.md"
-            if stub.exists():
-                before_mtime = stub.stat().st_mtime
-            _set_stub_status(vault_root, gap, "in_review")
-            if stub.exists() and stub.stat().st_mtime != before_mtime:
-                rewritten += 1
-        except Exception:
-            logger.warning(
-                "knowledge.reconcile_external_in_review_stubs: failed for "
-                "gap_id=%d term=%r; skipping",
-                gap.id,
-                gap.term,
-                exc_info=True,
-            )
-    if rewritten:
-        logger.info(
-            "knowledge.reconcile_external_in_review_stubs: rewrote %d stubs",
-            rewritten,
-        )
-    return rewritten
-
-
 def on_startup(session: Session) -> None:
-    """Register knowledge jobs with the scheduler."""
+    """Register knowledge jobs with the scheduler.
+
+    All vault-coupled jobs (reconcile, vault-backup, classify-gaps,
+    research-gaps, detect-drift) were removed with the Obsidian
+    decommission (ADR 006); the gap loop is now fully fileless and the
+    surviving jobs operate purely on Postgres / S3.
+    ``purge_unregistered_jobs`` drops the orphaned ScheduledJob rows for
+    the deregistered handlers on the next startup.
+    """
     from scheduler.api import register_job
 
-    # The scheduler claims one job per tick (LIMIT 1) and polls every 30s,
-    # so jobs always run in separate ticks. Registration order is
-    # documentary rather than load-bearing. The eventual consistency is
-    # fine: any file written to _processed/ is picked up by the reconciler
-    # on its next tick (~30s later).
     register_job(
         session,
-        name="knowledge.reconcile",
+        name="knowledge.layout",
         interval_secs=_INTERVAL_SECS,
-        handler=reconcile_handler,
+        handler=layout_handler,
         ttl_secs=_TTL_SECS,
-    )
-    register_job(
-        session,
-        name="knowledge.vault-backup",
-        interval_secs=_BACKUP_INTERVAL_SECS,
-        handler=lambda _: vault_backup_handler(),
-        ttl_secs=_BACKUP_TTL_SECS,
     )
 
     from knowledge.ingest_queue import ingest_handler
@@ -587,36 +292,8 @@ def on_startup(session: Session) -> None:
     )
     register_job(
         session,
-        name="knowledge.classify-gaps",
-        interval_secs=_CLASSIFY_INTERVAL_SECS,
-        handler=classify_gaps_handler,
-        ttl_secs=_CLASSIFY_TTL_SECS,
-    )
-    register_job(
-        session,
-        name="knowledge.research-gaps",
-        interval_secs=_RESEARCH_INTERVAL_SECS,
-        handler=research_gaps_handler,
-        ttl_secs=_RESEARCH_TTL_SECS,
-    )
-    register_job(
-        session,
         name="knowledge.discover-gaps",
         interval_secs=_DISCOVER_INTERVAL_SECS,
         handler=discover_gaps_handler,
         ttl_secs=_DISCOVER_TTL_SECS,
     )
-
-    from knowledge.drift_detector import detect_drift_handler
-
-    register_job(
-        session,
-        name="knowledge.detect-drift",
-        interval_secs=_DRIFT_INTERVAL_SECS,
-        handler=detect_drift_handler,
-        ttl_secs=_DRIFT_TTL_SECS,
-    )
-
-    # One-shot stub reconciliation for the v2 gating migration. Cheap
-    # (one SELECT + per-row file writes) and idempotent after first run.
-    reconcile_external_in_review_stubs(session)
