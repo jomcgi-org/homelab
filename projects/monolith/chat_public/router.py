@@ -296,7 +296,7 @@ async def _turn_stream(
     # transient empty generation that got cached) is treated as a miss so the
     # turn regenerates and re-stores a real answer, rather than replaying nothing
     # forever. Belt-and-braces with the store-side guard below.
-    if cached is not None and cached.response_text.strip():
+    if cached is not None and cached.text.strip():
         async for frame in _replay_cached(db, session, message, cached):
             yield frame
         return
