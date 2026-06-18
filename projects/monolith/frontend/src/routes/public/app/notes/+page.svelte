@@ -10,7 +10,6 @@
   // Chat is the default view. A Chat | Graph toggle switches to the graph view,
   // which is LAZY: the heavy KnowledgeGraph component and its data are only
   // imported/fetched on the first switch, never on the initial chat load.
-  import { Nav } from "$lib/public/components";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import {
@@ -214,43 +213,61 @@
   />
 </svelte:head>
 
-<Nav route="notes" />
+<!-- Visually hidden heading: the full-screen app has no big serif title (the
+     PUBLIC CHAT bar is the in-app header), but keep a real h1 for SEO + a11y. -->
+<h1 class="sr-only">Chat with my knowledge graph</h1>
 
-<main class="chat-page">
-  <header class="chat-intro">
-    <p class="eyebrow">ASK THE GRAPH</p>
-    <h1 class="chat-headline">Chat with my knowledge graph</h1>
-    <p class="chat-sub">
-      A chat box wired to my public notes. Ask a question and an in-cluster
-      model answers, grounded only on the notes it is allowed to see. Switch to
-      the graph to watch which nodes the conversation touched.
-    </p>
-  </header>
+<main class="chat-app">
+  <!-- Slim explainer banner pinned to the TOP (coral, inviting, collapsible):
+       the security posture (open model, no tools, public notes) up front rather
+       than buried at the bottom. -->
+  <details class="explainer">
+    <summary class="explainer-summary">
+      <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
+      <span class="explainer-hint">an open model on my own cluster, no tools</span>
+      <span class="explainer-mark" aria-hidden="true">+</span>
+    </summary>
+    <div class="explainer-body">
+      <p>
+        An open model running on my own cluster answers your questions. It is
+        grounded only on my public notes, pulled in by retrieval over the
+        knowledge graph, so it talks about what I have actually written.
+      </p>
+      <p>
+        It has no tools and cannot act: it only reads those notes and writes
+        text back into this chat. Replies can be wrong, and every note it reads
+        is public by design.
+      </p>
+    </div>
+  </details>
 
-  <div class="view-toggle" role="tablist" aria-label="Notes view">
-    <button
-      type="button"
-      class="view-toggle-btn"
-      class:on={view === "chat"}
-      role="tab"
-      aria-selected={view === "chat"}
-      onclick={showChat}
-    >
-      CHAT
-    </button>
-    <button
-      type="button"
-      class="view-toggle-btn"
-      class:on={view === "graph"}
-      role="tab"
-      aria-selected={view === "graph"}
-      onclick={() => showGraph(null)}
-    >
-      GRAPH
-    </button>
+  <div class="app-toolbar">
+    <div class="view-toggle" role="tablist" aria-label="Notes view">
+      <button
+        type="button"
+        class="view-toggle-btn"
+        class:on={view === "chat"}
+        role="tab"
+        aria-selected={view === "chat"}
+        onclick={showChat}
+      >
+        CHAT
+      </button>
+      <button
+        type="button"
+        class="view-toggle-btn"
+        class:on={view === "graph"}
+        role="tab"
+        aria-selected={view === "graph"}
+        onclick={() => showGraph(null)}
+      >
+        GRAPH
+      </button>
+    </div>
   </div>
 
-  {#if view === "chat"}
+  <div class="view-area">
+    {#if view === "chat"}
     <section class="chat-box">
       <div class="chat-box-bar">
         <span class="chat-box-tag">PUBLIC CHAT</span>
@@ -419,54 +436,111 @@
       </p>
     </section>
   {/if}
-
-  <details class="chat-explainer">
-    <summary class="chat-explainer-summary">
-      <span>HOW DOES THIS WORK?</span>
-      <span class="chat-explainer-mark" aria-hidden="true">+</span>
-    </summary>
-    <div class="chat-explainer-body">
-      <p>
-        An open model running on my own cluster answers your questions. It is
-        grounded only on my public notes, pulled in by retrieval over the
-        knowledge graph, so it talks about what I have actually written.
-      </p>
-      <p>
-        It has no tools and cannot act: it only reads those notes and writes
-        text back into this chat. Replies can be wrong, and every note it reads
-        is public by design.
-      </p>
-    </div>
-  </details>
+  </div>
 </main>
 
 <style>
-  .chat-page {
-    max-width: 1080px;
-    margin: 0 auto;
-    padding: 40px 24px 64px;
+  /* ── full-screen app shell ──────────────────────────────────── */
+  /* No site nav on /app/* routes (same convention as /app/ships): this page
+     owns the whole viewport. A flex column with generous gaps so the explainer,
+     toolbar, and the chat/graph surface sit apart and breathe. 100dvh tracks
+     the dynamic mobile viewport; the safe-area insets keep it off the notch and
+     the home indicator. */
+  .chat-app {
+    box-sizing: border-box;
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: calc(24px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right))
+      calc(24px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
+    overflow: hidden;
     font-family: var(--mono);
     color: var(--ink);
+    background: var(--bg);
   }
 
-  /* ── intro ──────────────────────────────────────────────────── */
-  .chat-intro {
-    margin-bottom: 18px;
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
   }
-  .chat-headline {
-    font-family: var(--serif);
-    font-weight: 400;
-    font-size: clamp(2.4rem, 6vw, 3.6rem);
-    line-height: 0.98;
-    letter-spacing: -0.02em;
-    margin: 8px 0 14px;
+
+  /* ── top explainer banner (coral, inviting, collapsible) ─────── */
+  .explainer {
+    flex: none;
+    border: 2px solid var(--ink);
+    background: var(--coral);
+    box-shadow: var(--shadow-hard-sm);
   }
-  .chat-sub {
-    font-family: var(--mono);
-    font-size: 13px;
+  .explainer-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 16px;
+    cursor: pointer;
+    list-style: none;
+  }
+  .explainer-summary::-webkit-details-marker {
+    display: none;
+  }
+  .explainer-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+  .explainer-hint {
+    font-size: 11px;
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .explainer-mark {
+    margin-left: auto;
+    font-size: 18px;
+    line-height: 1;
+    transition: transform 150ms ease;
+  }
+  .explainer[open] .explainer-mark {
+    transform: rotate(45deg);
+  }
+  .explainer-body {
+    padding: 4px 16px 16px;
+    background: var(--paper);
+    border-top: 2px solid var(--ink);
+  }
+  .explainer-body p {
+    font-size: 12px;
     line-height: 1.6;
     color: var(--ink-2);
-    max-width: 60ch;
+    max-width: 72ch;
+    margin: 12px 0 0;
+  }
+
+  /* ── toolbar ────────────────────────────────────────────────── */
+  .app-toolbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+  }
+
+  /* ── view + chat surface fill the rest of the viewport ──────── */
+  .view-area {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .view-area > :global(.graph-view) {
+    flex: 1;
+    min-height: 0;
   }
 
   /* ── view toggle ────────────────────────────────────────────── */
@@ -474,8 +548,7 @@
      tab can lift on hover the way every other box on the site does. */
   .view-toggle {
     display: inline-flex;
-    gap: 10px;
-    margin-bottom: 18px;
+    gap: 12px;
   }
   .view-toggle-btn {
     font-family: var(--mono);
@@ -506,7 +579,12 @@
   }
 
   /* ── chat box shell ─────────────────────────────────────────── */
+  /* Fills the view-area (flex:1) so the chat surface is the full-screen app;
+     the transcript scrolls internally and the input stays pinned. */
   .chat-box {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     border: 2px solid var(--ink);
     background: var(--paper);
     box-shadow: var(--shadow-hard-lg);
@@ -514,18 +592,24 @@
     flex-direction: column;
     overflow: hidden;
   }
+  /* The in-app header bar (PUBLIC CHAT / status / actions). Kept neutral paper
+     so yellow is not the dominant colour; the PUBLIC CHAT tag carries a blue
+     chip and the status carries green for variety. */
   .chat-box-bar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    background: var(--accent);
+    gap: 12px;
+    padding: 12px 18px;
+    background: var(--paper);
     border-bottom: 2px solid var(--ink);
   }
   .chat-box-tag {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.14em;
+    padding: 3px 9px;
+    border: 1.5px solid var(--ink);
+    background: var(--blue);
   }
   .chat-box-status {
     font-size: 10px;
@@ -570,13 +654,12 @@
      while the input row below stays pinned to the bottom of the box. */
   .chat-transcript {
     flex: 1;
-    min-height: 62vh;
-    max-height: 74vh;
+    min-height: 0;
     overflow-y: auto;
-    padding: 18px;
+    padding: 24px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 18px;
     background: var(--bg-elev);
   }
 
@@ -604,12 +687,12 @@
   .chat-examples {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
   }
   .chat-example {
     font-family: var(--mono);
     font-size: 12px;
-    padding: 8px 12px;
+    padding: 9px 13px;
     border: 1.5px solid var(--ink);
     background: var(--paper);
     cursor: pointer;
@@ -797,7 +880,7 @@
     font-size: 11px;
     padding: 3px 8px;
     border: 1.5px solid var(--ink);
-    background: var(--accent);
+    background: var(--blue);
     cursor: pointer;
     max-width: 100%;
     overflow: hidden;
@@ -922,10 +1005,12 @@
 
   /* ── graph fallback (loading / error before the lazy view) ──── */
   .graph-fallback {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     border: 2px solid var(--ink);
     background: var(--bg);
     box-shadow: var(--shadow-hard-lg);
-    min-height: 420px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -948,59 +1033,18 @@
     box-shadow: var(--shadow-hard-sm);
   }
 
-  /* ── explainer (expandable "how does this work?") ───────────── */
-  .chat-explainer {
-    margin-top: 18px;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    box-shadow: var(--shadow-hard-sm);
-  }
-  .chat-explainer-summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 11px 14px;
-    cursor: pointer;
-    list-style: none;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-  }
-  .chat-explainer-summary::-webkit-details-marker {
-    display: none;
-  }
-  .chat-explainer-summary:hover {
-    background: var(--bg-elev);
-  }
-  .chat-explainer-mark {
-    font-size: 16px;
-    line-height: 1;
-    transition: transform 150ms ease;
-  }
-  .chat-explainer[open] .chat-explainer-mark {
-    transform: rotate(45deg);
-  }
-  .chat-explainer-body {
-    padding: 0 14px 14px;
-    border-top: 1.5px dashed var(--ink);
-  }
-  .chat-explainer-body p {
-    font-size: 12px;
-    line-height: 1.6;
-    color: var(--ink-2);
-    max-width: 68ch;
-    margin: 12px 0 0;
-  }
-
   @media (max-width: 640px) {
-    .chat-page {
-      padding: 24px 14px 48px;
+    .chat-app {
+      gap: 12px;
+      padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+        calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+    }
+    .explainer-hint {
+      display: none;
     }
     .chat-transcript {
-      min-height: 56vh;
-      max-height: 70vh;
-      padding: 14px;
+      padding: 16px;
+      gap: 14px;
     }
     .turn-user {
       max-width: 95%;

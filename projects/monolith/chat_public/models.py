@@ -10,8 +10,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint
+from sqlalchemy import JSON, CheckConstraint, Column
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+# Postgres uses JSONB (matching the migration); SQLite-backed unit tests fall
+# back to JSON so SQLModel.metadata.create_all() can build the table.
+_JSONB = JSONB().with_variant(JSON(), "sqlite")
 
 
 def _utcnow() -> datetime:
@@ -69,3 +74,31 @@ class ChatMessage(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without
     content: str
     tokens: int = Field(default=0)
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ChatResponseCache(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
+    """A durable, cross-pod cache of public-chat answers (ADR 005 follow-up).
+
+    A simple key/value row: ``cache_key`` is a hash of
+    (normalized_message, prompt_version, notes_watermark). The component parts are
+    stored alongside for debuggability; ``touched`` is the node_touched grounding
+    list replayed on a hit. Mirrors
+    chart/migrations/20260619000000_chat_public_response_cache.sql.
+    """
+
+    __tablename__ = "response_cache"
+    __table_args__ = (
+        CheckConstraint("hit_count >= 0", name="response_cache_hit_count_nonneg_chk"),
+        {"schema": "chat_public", "extend_existing": True},
+    )
+
+    cache_key: str = Field(primary_key=True)
+    normalized_message: str
+    prompt_version: str
+    notes_watermark: str
+    response_text: str
+    touched: list = Field(default_factory=list, sa_column=Column(_JSONB))
+    created_at: datetime = Field(default_factory=_utcnow)
+    hit_count: int = Field(default=0)
