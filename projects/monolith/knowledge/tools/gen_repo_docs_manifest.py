@@ -86,7 +86,10 @@ def iter_doc_paths(root: Path) -> list[str]:
 def build_manifest_lines(root: Path, paths: list[str]) -> list[str]:
     lines: list[str] = []
     for rel in sorted(paths):
-        content = (root / rel).read_text(encoding="utf-8")
+        # Strip NUL bytes: a doc may contain 0x00, which Postgres TEXT columns
+        # reject on insert (the reconcile would fail). Drop them so chunk_text is
+        # always storable; the hash is taken over the cleaned content.
+        content = (root / rel).read_text(encoding="utf-8").replace("\x00", "")
         sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
         obj = {
             "path": rel,
