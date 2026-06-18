@@ -106,6 +106,17 @@ chatPublic:
   # on web.env below. The inference pods are unmeshed and in-cluster, so the public
   # EgressNetwork off-cluster deny does not block this.
   inferenceUrl: "http://inference.inference.svc.cluster.local:8080"
+  # Public-graph retrieval (ADR 005 layer 5 / V3 Phase 4a). The turn is grounded
+  # on public notes only by embedding the live query and cosine-searching the
+  # public_api.knowledge_chunks view as public_reader. Confinement is the view, not
+  # a prompt rule. Mirrored as the env on web.env below (Helm cannot self-reference).
+  # In-cluster embeddings endpoint (voyage-4-nano via llama.cpp). Plain values
+  # literal (in-cluster service URL, not a secret); unmeshed + in-cluster, so the
+  # public off-cluster EgressNetwork deny does not block it. Mirrored as EMBEDDING_URL.
+  embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
+  # How many distinct public notes a turn grounds on (the overlay's touched set).
+  # Mirrored as CHAT_PUBLIC_RETRIEVAL_K below.
+  retrievalK: 6
   # Compaction knobs (ADR 005 layer 4 / V3 Phase 3): when the live context
   # (system prompt + rolling summary + recent turns) approaches a fraction of the
   # model window, older turns are folded into the session rolling summary so each
@@ -204,6 +215,17 @@ web:
     # inference if this is unset (no hardcoded service URL in code).
     - name: CHAT_PUBLIC_INFERENCE_URL
       value: "http://inference.inference.svc.cluster.local:8080"
+    # Public-graph retrieval (ADR 005 layer 5 / Phase 4a). EMBEDDING_URL is the
+    # in-cluster embeddings endpoint the retrieval path embeds the live query
+    # against; CHAT_PUBLIC_RETRIEVAL_K is the number of distinct public notes a
+    # turn grounds on. Both mirror the chatPublic block above (Helm values cannot
+    # self-reference). EMBEDDING_URL is an in-cluster service URL literal, NOT a
+    # code default and NOT a secret; the endpoint is unmeshed + in-cluster so the
+    # public EgressNetwork off-cluster deny does not block it.
+    - name: EMBEDDING_URL
+      value: "http://inference-embeddings.inference.svc.cluster.local:8080"
+    - name: CHAT_PUBLIC_RETRIEVAL_K
+      value: "6"
     # Compaction knobs (ADR 005 layer 4 / Phase 3). Mirror the chatPublic block
     # above (Helm values cannot self-reference, so they are repeated as literals).
     - name: CHAT_PUBLIC_MODEL_WINDOW_TOKENS

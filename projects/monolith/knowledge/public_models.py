@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column
 from sqlmodel import Field, SQLModel
 
@@ -55,3 +56,27 @@ class PublicNoteLink(SQLModel, table=True):
     target: str
     kind: str
     edge_type: str | None = None
+
+
+class PublicChunk(SQLModel, table=True):
+    """Maps to the public_api.knowledge_chunks view (chunks of public notes).
+
+    Created by migration 20260617040000. It joins knowledge.chunks to
+    knowledge.notes and exposes only chunks of public, non-deleted notes, so the
+    public-chat retrieval path (running as public_reader) can run a pgvector cosine
+    search over public embeddings without any access to the knowledge schema.
+
+    The view has no primary key; (note_id, chunk_index) is unique per row, so the
+    pair is declared as a composite key purely to let the ORM map rows. It is never
+    enforced (the model is never CREATEd in production: the migration owns the DDL).
+    """
+
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = {"schema": "public_api", "extend_existing": True}
+
+    note_id: str = Field(primary_key=True)
+    chunk_index: int = Field(primary_key=True)
+    title: str
+    section_header: str = ""
+    chunk_text: str
+    embedding: list[float] = Field(sa_column=Column(Vector(1024)))

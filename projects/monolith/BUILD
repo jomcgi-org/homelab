@@ -2363,6 +2363,24 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): Phase 4a public-graph
+# retrieval (mocked embedding + chunk search): delimited retrieved-context block,
+# no-tools inference payload, node_touched-per-note SSE before tokens, empty
+# retrieval still streams, and retrieve() embed+map+fail-open behaviour.
+py_test(
+    name = "chat_public_phase4_test",
+    srcs = ["chat_public/phase4_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Guard (ADR 005): the Turnstile secret stays in the backend; the frontend
 # carries only the public site-key literal. Reads the monolith-public chart's
 # values.yaml via a cross-package data dep (no Helm toolchain needed).
@@ -3355,6 +3373,14 @@ bdd_test(
 bdd_test(
     name = "chat_public_grants_test",
     srcs = ["chat_public_grants_test.py"],
+)
+
+# Real-Postgres test: the public_api.knowledge_chunks view exposes only chunks of
+# public, non-deleted notes, public_reader can read the view but not the underlying
+# knowledge.chunks table, so public-chat retrieval is DB-confined (ADR 005 layer 5).
+bdd_test(
+    name = "public_api_chunks_grants_test",
+    srcs = ["public_api_chunks_grants_test.py"],
 )
 
 bdd_test(
