@@ -2,7 +2,7 @@ apiVersion: v2
 name: monolith-public
 description: Read-only public tier of the monolith (ADR 004 Phase 5), Linkerd-meshed and pruned
 type: application
-version: 0.2.2
+version: 0.3.0
 appVersion: "0.1.0"
 maintainers:
   - name: homelab
@@ -17,3 +17,6 @@ dependencies:
   - name: homelab-library
     version: "0.5.0"
     repository: "file://../../shared/helm/homelab-library/chart"
+  - name: cf-ingress
+    version: 0.1.0
+    repository: "file://../../platform/cf-ingress-library"
