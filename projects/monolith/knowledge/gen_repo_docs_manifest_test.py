@@ -47,3 +47,14 @@ def test_build_manifest_lines_sorted_ndjson(tmp_path: Path):
     assert objs[0]["title"] == "A"
     assert objs[0]["content"] == "# A\n\nalpha"
     assert len(objs[0]["sha256"]) == 64
+
+
+def test_build_manifest_lines_strips_nul_bytes(tmp_path: Path):
+    # A doc with a NUL byte must not reach the manifest: Postgres TEXT columns
+    # reject 0x00 and the reconcile insert would fail.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "n.md").write_text("# N\n\nbe\x00fore")
+
+    obj = json.loads(build_manifest_lines(tmp_path, ["docs/n.md"])[0])
+    assert "\x00" not in obj["content"]
+    assert obj["content"] == "# N\n\nbefore"
