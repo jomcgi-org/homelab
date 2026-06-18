@@ -29,6 +29,13 @@
   // admitted (session cookie set); "error" = admission rejected.
   let status = $state(null);
   let widgetEl;
+  // The id Turnstile returns from render(). Tracked so we render exactly once
+  // per mount and can remove() the widget on unmount, keeping Turnstile's global
+  // widget registry clean. Without this, an unmount (NEW CHAT re-gating, or SPA
+  // navigation back to this page) orphans the widget and the next render fails
+  // with "Cannot find Widget", so the solve callback never fires and no session
+  // is ever created.
+  let widgetId = null;
 
   async function onSolve(token) {
     status = "verifying";
@@ -47,7 +54,10 @@
 
   function renderWidget() {
     if (!window.turnstile || !widgetEl || !siteKey) return;
-    window.turnstile.render(widgetEl, {
+    // Render at most once per mount. A second render() on the same element is
+    // what triggers the "widget already rendered" / orphan errors.
+    if (widgetId !== null) return;
+    widgetId = window.turnstile.render(widgetEl, {
       sitekey: siteKey,
       callback: onSolve,
       "error-callback": () => {
@@ -56,11 +66,23 @@
     });
   }
 
+  function removeWidget() {
+    if (widgetId !== null && window.turnstile) {
+      try {
+        window.turnstile.remove(widgetId);
+      } catch {
+        // Widget already gone; nothing to clean up.
+      }
+    }
+    widgetId = null;
+  }
+
   onMount(() => {
-    if (!siteKey) return;
+    if (!siteKey) return undefined;
     if (window.turnstile) {
       renderWidget();
-      return;
+      // Still remove the widget on unmount so the registry stays clean.
+      return removeWidget;
     }
     // Load the challenge script once, then render when it is ready.
     let script = document.querySelector(`script[src="${SCRIPT_SRC}"]`);
@@ -72,7 +94,10 @@
       document.head.appendChild(script);
     }
     script.addEventListener("load", renderWidget);
-    return () => script.removeEventListener("load", renderWidget);
+    return () => {
+      script.removeEventListener("load", renderWidget);
+      removeWidget();
+    };
   });
 </script>
 
