@@ -240,7 +240,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "knowledge/ingest_queue.py",
     "knowledge/mcp.py",
     "knowledge/service.py",
-    "knowledge/reconciler.py",
     "knowledge/layout.py",
     # Private home scheduling + observability writer/ClickHouse paths.
     "home/schedule.py",
@@ -2113,18 +2112,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_reconciler_test",
-    srcs = ["knowledge/reconciler_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_indexing_test",
     srcs = ["knowledge/indexing_test.py"],
     imports = ["."],
@@ -2148,16 +2135,6 @@ py_test(
 py_test(
     name = "knowledge_visibility_test",
     srcs = ["knowledge/visibility_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_drift_detector_test",
-    srcs = ["knowledge/drift_detector_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2202,30 +2179,6 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_reconciler_coverage_test",
-    srcs = ["knowledge/reconciler_coverage_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_reconciler_extra_test",
-    srcs = ["knowledge/reconciler_extra_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -2637,33 +2590,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gap_stubs_test",
-    srcs = ["knowledge/gap_stubs_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_gap_classifier_test",
-    srcs = ["knowledge/gap_classifier_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_gap_lifecycle_test",
     srcs = ["knowledge/gap_lifecycle_test.py"],
     imports = ["."],
@@ -2783,63 +2709,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_research_agent_test",
-    srcs = ["knowledge/research_agent_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "knowledge_research_audit_trail_test",
-    srcs = ["knowledge/research_audit_trail_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_research_writer_test",
-    srcs = ["knowledge/research_writer_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
-
-py_test(
-    name = "knowledge_research_handler_test",
-    srcs = ["knowledge/research_handler_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_research_end_to_end_test",
-    srcs = ["knowledge/research_end_to_end_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//pyyaml",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_store_gap_queries_test",
     srcs = ["knowledge/store_gap_queries_test.py"],
     imports = ["."],
@@ -2874,17 +2743,6 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "knowledge_reconcile_external_in_review_stubs_test",
-    srcs = ["knowledge/reconcile_external_in_review_stubs_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -3149,19 +3007,6 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_research_handler_unit_test",
-    srcs = ["knowledge/research_handler_unit_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )
