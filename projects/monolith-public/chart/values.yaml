@@ -55,6 +55,36 @@ databaseSecretName: monolith-public-db
 onepassword:
   itemPath: ""
 
+# Public chat (ADR 005 / V3 plan Phase 1). The chat_public module is composed
+# into the public backend ("web"). It writes sessions + transcripts to the
+# Postgres PRIMARY (monolith-pg-rw) as the dedicated chat_public role, distinct
+# from the read-only public_reader the rest of the public tier uses. These are
+# the Phase 0 starting budget values from the plan; they are also surfaced as
+# CHAT_PUBLIC_* env on web.env below (Helm values cannot self-reference, so the
+# two must stay in sync, this block is the documented source of truth). Grep
+# the test tree before changing any of these (per CLAUDE.md).
+chatPublic:
+  # Per-message character cap on the user's single submitted message.
+  charCap: 8000
+  # Max conversational turns per session.
+  maxTurns: 20
+  # Max output tokens the model may emit in a single turn.
+  maxOutputTokens: 1024
+  # Max total tokens (in + out, accumulated) a single session may spend.
+  maxSessionTokens: 32000
+  # Session / cookie TTL in seconds (the SSR cookie maxAge mirrors this).
+  sessionTtlSeconds: 1800
+  # Name of the Secret holding the chat_public DB connection URI (key "uri"),
+  # pointing at monolith-pg-rw as the chat_public role. Synced from 1Password by
+  # the second OnePasswordItem (see onepassworditem.yaml); itemPath is set in
+  # deploy/values.yaml. This is the app-facing URI secret, distinct from the
+  # CNPG basic-auth password secret monolith-pg-chat-public (created out-of-band
+  # in the monolith namespace; see projects/monolith/deploy/public-reader-secret.md
+  # for the identical public_reader pattern).
+  databaseSecretName: monolith-public-chat-db
+  onepassword:
+    itemPath: ""
+
 # "web" component consumed by the homelab-library deployment/service helpers.
 web:
   enabled: true
@@ -80,15 +110,37 @@ web:
       path: /healthz
       initialDelaySeconds: 5
       periodSeconds: 10
-  # DATABASE_URL is the only secret the public tier carries: the read-only
-  # public_reader credential on monolith-pg-ro, synced from 1Password. The
-  # secretKeyRef name must match databaseSecretName above.
+  # DATABASE_URL is the read-only public_reader credential on monolith-pg-ro,
+  # synced from 1Password. CHAT_PUBLIC_DATABASE_URL is the chat_public WRITE
+  # credential on the primary monolith-pg-rw, a separate secret (ADR 005): the
+  # chat module owns DML on the chat_public schema only. The secretKeyRef names
+  # must match databaseSecretName / chatPublic.databaseSecretName above.
+  # The CHAT_PUBLIC_* budget values mirror the chatPublic block above (Helm
+  # values cannot self-reference, so they are repeated here as literals).
   env:
     - name: DATABASE_URL
       valueFrom:
         secretKeyRef:
           name: monolith-public-db
           key: uri
+    - name: CHAT_PUBLIC_DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-chat-db
+          key: uri
+    - name: CHAT_PUBLIC_CHAR_CAP
+      value: "8000"
+    - name: CHAT_PUBLIC_MAX_TURNS
+      value: "20"
+    - name: CHAT_PUBLIC_MAX_OUTPUT_TOKENS
+      value: "1024"
+    - name: CHAT_PUBLIC_MAX_SESSION_TOKENS
+      value: "32000"
+    - name: CHAT_PUBLIC_SESSION_TTL_SECONDS
+      value: "1800"
+    # TODO(Phase 2): TURNSTILE_SECRET_KEY for siteverify, sourced from the
+    # OnePasswordItem vaults/k8s-homelab/items/cloudflare-turnstile (field
+    # SECRET_KEY). The secret lives in the backend only, never in the frontend.
   # CPU request is sized so the HPA's per-container CPU utilization is a
   # meaningful signal (idle is ~1m). Memory request covers the FastAPI baseline
   # (~110Mi idle: SQLModel + psycopg + pgvector + the knowledge internals); the
@@ -147,6 +199,15 @@ frontend:
   env:
     - name: API_BASE
       value: "http://monolith-public-web:8000"
+    # CHAT_API_BASE is the same backend Service; the public chat SSR proxy
+    # (/public/chat/session + /public/chat/message) calls the internal chat API
+    # at this address over in-cluster mTLS (ADR 005, Phase 1).
+    - name: CHAT_API_BASE
+      value: "http://monolith-public-web:8000"
+    # TODO(Phase 2): TURNSTILE_SITE_KEY (public site key) for the SSR-rendered
+    # Turnstile widget, sourced from the OnePasswordItem
+    # vaults/k8s-homelab/items/cloudflare-turnstile (field SITE_KEY). The site
+    # key is public by design; the secret key stays on the backend only.
     - name: OTEL_COLLECTOR_HTTP_URL
       value: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
   # SSR Node needs more headroom than the read-only backend. CPU request sized

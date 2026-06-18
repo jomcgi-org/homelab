@@ -10,6 +10,15 @@ onepassword:
 
 databaseSecretName: monolith-public-db
 
+# Public chat (ADR 005, Phase 1): sync the chat_public DB credential from
+# 1Password into the monolith-public-chat-db Secret (key "uri" = full
+# postgresql:// connection string to monolith-pg-rw as the chat_public role).
+# The matching CNPG basic-auth secret monolith-pg-chat-public must be created
+# out-of-band in the monolith namespace (see public-reader-secret.md).
+chatPublic:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/chat-public-db"
+
 # Phase 5e cutover: serve the public hostname from this isolated service.
 cfIngress:
   public:
