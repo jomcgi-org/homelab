@@ -271,7 +271,7 @@ def discover_gaps(session: Session) -> int:
         # SAVEPOINT per insert: a concurrent discoverer could insert the same
         # slug between SELECT and INSERT. Nesting the add lets that single row
         # fail without rolling back every gap this cycle. With UNIQUE(note_id)
-        # / UNIQUE(term) this is the last line of defence — slug-folding above
+        # / UNIQUE(term) this is the last line of defence: slug-folding above
         # already collapses the in-process collisions.
         with session.begin_nested():
             session.add(
@@ -479,9 +479,9 @@ def list_gaps_for_review(
 
 
 def list_review_queue(session: Session) -> list[dict]:
-    """Return user-actionable gaps awaiting attention (internal/hybrid
-    await an answer; external awaits an approval to spend research
-    tokens), oldest first.
+    """Return user-actionable gaps awaiting attention (internal and hybrid
+    gaps await an answer from Joe, external gaps are drained directly by the
+    research routine with no approval step), oldest first.
 
     Thin wrapper around :func:`list_gaps_for_review` for backward
     compatibility — preserved for the small number of in-tree callers

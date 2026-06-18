@@ -182,7 +182,7 @@ async def layout_handler(session: Session) -> datetime | None:
     tripped the ``/healthz`` liveness probe. Both passes are dispatched to a
     worker thread via ``asyncio.to_thread``. ``_run_layout_pass`` /
     ``_run_public_layout_pass`` open their own SQLAlchemy session bound to
-    the caller's engine — engines are thread-safe, sessions are not, so we
+    the caller's engine (engines are thread-safe, sessions are not), so we
     pass ``session.get_bind()`` (the engine) and never the session itself.
     """
     engine = session.get_bind()
@@ -192,7 +192,7 @@ async def layout_handler(session: Session) -> datetime | None:
         node_count, edge_count, positioned = await asyncio.to_thread(
             _run_layout_pass, engine
         )
-    except Exception:  # noqa: BLE001 — layout failure must not crash the scheduler
+    except Exception:  # noqa: BLE001: layout failure must not crash the scheduler
         logger.exception("knowledge.layout: pass failed")
     else:
         logger.info(

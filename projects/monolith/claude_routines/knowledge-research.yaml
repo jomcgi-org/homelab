@@ -31,9 +31,11 @@ prompt: |
      pass derived_from_raw.
   4. Release the lock.
 
-  Critical: use ONLY create-atom. Do NOT call approve-research-gap or answer-gap
-  (both are filesystem-stranded after the Obsidian decommission). Creating the
-  atom does not flip the gap row to committed; that is expected. Never research
+  Critical: use ONLY create-atom. Do NOT call approve-research-gap (that tool no
+  longer exists) or answer-gap (it is for Joe's manual answers, not the research
+  routine's job). Creating the atom auto-commits the matching open gap row via
+  the resolve_gaps_for_note hook in create-atom, so you do not commit it yourself.
+  Never research
   internal/hybrid gaps. Follow the skill's schema, visibility, aliases, and
   wikilink guardrails exactly; create-atom enforces the schema server-side and
   returns an error you must correct. On a hard failure, notify via
