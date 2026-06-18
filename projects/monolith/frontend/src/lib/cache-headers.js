@@ -25,6 +25,15 @@ export function versionedEtag(dataEtag) {
 // 60s fresh · 24h SWR (background refresh) · 1y SIE (cluster-down resilience)
 export const PAGE_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /health probe: deliberately the inverse of the data caches above. A 60s edge
+// cache caps origin load at ~1 req/min, but health MUST surface a real outage,
+// so there is NO stale-if-error (it would serve a stale 200 while the origin is
+// down) and NO stale-while-revalidate (it would mask a fresh transition to
+// unhealthy for a cycle). Only the 200 is cached; the frontend leaves the header
+// off the 503 path so failures are never cached. 60s detection lag is fine: this
+// is a personal service with no SLA.
+export const HEALTH_CACHE_CONTROL = "public, max-age=0, s-maxage=60";
+
 // /notes graph: gardener mutates on a schedule, so 1h freshness is fine. Mirrors
 // _GRAPH_CACHE_CONTROL in projects/monolith/knowledge/router.py — keep in sync.
 export const NOTES_PAGE_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;

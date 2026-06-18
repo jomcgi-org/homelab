@@ -59,6 +59,10 @@ def test_healthz_present():
     assert "/healthz" in _paths()
 
 
+def test_api_health_present():
+    assert "/api/health" in _paths()
+
+
 # Deny-by-default allowlist: every route on the public app must fall under one
 # of these prefixes. Unlike the negative assertions below (which forbid the
 # private prefixes we know about today), this catches a future domain mounted
@@ -78,6 +82,9 @@ ALLOWED_PREFIXES = (
     # from the internet.
     "/internal/chat",
     "/healthz",
+    # Deep health probe (DB reachable + public_reader can query). Reached via the
+    # frontend /health same-origin proxy; not a private surface.
+    "/api/health",
     "/openapi.json",
     "/docs",
     "/redoc",
