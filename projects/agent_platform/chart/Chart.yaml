@@ -2,7 +2,7 @@ apiVersion: v2
 name: agent-platform
 description: Agent platform — umbrella chart bundling goose sandboxes, MCP servers, and supporting components
 type: application
-version: 0.36.3
+version: 0.37.0
 appVersion: "0.2.0"
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
