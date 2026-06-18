@@ -31,7 +31,6 @@ Design notes:
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -40,8 +39,8 @@ import yaml
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from knowledge.gap_stubs import RESEARCHING_DIR, write_stub
-from knowledge.gap_unlinkify import is_discardable, unlinkify_if_changed
+from knowledge.gap_stubs import RESEARCHING_DIR
+from knowledge.gap_unlinkify import unlinkify_if_changed
 from knowledge.gardener import _slugify
 from knowledge.models import Gap, Note, NoteLink
 
@@ -201,26 +200,25 @@ def _rewrite_sources(
     return touched
 
 
-def discover_gaps(session: Session, vault_root: Path) -> int:
-    """Scan note_links for unresolved wikilinks; insert Gap rows and write stubs.
+def discover_gaps(session: Session) -> int:
+    """Scan note_links for unresolved wikilinks and insert Gap rows (fileless).
 
-    For each unresolved term:
-        * Insert a Gap row if one doesn't already exist (UNIQUE on term).
-        * Backfill ``note_id = slug(term)`` on existing rows that pre-date
-          this extension.
-        * Write a stub note at ``_researching/<slug>.md`` containing the
-          accumulated ``referenced_by`` list. ``write_stub`` is idempotent
-          so existing stubs (including classifier-edited ones) survive.
+    For each unresolved wikilink term (a ``kind='link'`` target that does not
+    resolve to any existing ``note_id`` or slugified alias), insert a
+    ``Gap(state='discovered', gap_class=None)`` row unless a gap already
+    exists for that term/slug. Pure Postgres: no vault filesystem, no stub
+    files. The claude.ai classify routine (``set_gap_class``) and research
+    routine drain the rows from there.
 
-    Healing semantics:
-        * Gap row exists but stub is missing → write the stub.
-        * Stub exists but Gap row is missing → insert the Gap row.
-        * Two terms that slug to the same note_id collapse into one Gap row;
-          their ``referenced_by`` lists are unioned in the surviving stub.
+    Healing semantics preserved from the vault era (both pure-DB, no files):
+        * A legacy live Gap row whose ``note_id`` is still NULL is backfilled
+          with ``note_id = slug(term)``.
+        * A soft-deleted Gap row whose term is referenced again is resurrected
+          (``deleted_at`` cleared) rather than re-inserted, which
+          ``UNIQUE(note_id)`` would reject.
 
-    Returns the number of "new" items — the count of Gap rows newly inserted
-    OR stub files newly written (either side indicates this cycle did work).
-    Idempotent: a subsequent run with no changes returns 0.
+    Returns the count of Gap rows newly inserted or resurrected this cycle.
+    Idempotent: a subsequent run with no new unresolved links returns 0.
     """
     # Collect existing note_ids once so the unresolved filter is a set
     # membership check (avoids a correlated subquery per row). Includes
@@ -231,11 +229,9 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
     # false-positive gaps. Mirrors the gardener atomizer's alias-preserving
     # contract — wherever the gardener writes aliases, the gap-detector
     # consults them.
-    # Exclude type='gap' Notes: stubs are placeholders for unresolved
-    # wikilinks, not resolved targets. Including them shadows the slug
-    # in slug_refs, which prevents Phase A from ever seeing wikilinks
-    # to discardable stubs — the bug that left ~600 discardable stubs
-    # untouched cycle after cycle until this fix landed.
+    # Exclude type='gap' Notes: stubs were placeholders for unresolved
+    # wikilinks, not resolved targets. Including them would shadow the slug
+    # and hide the gap.
     existing_note_ids: set[str] = set()
     for note_id, aliases in session.execute(
         select(Note.note_id, Note.aliases).where(Note.type != "gap")
@@ -250,56 +246,42 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
     # references that a human would be expected to answer.
     link_rows = session.execute(
         select(
-            NoteLink.src_note_fk,
             NoteLink.target_id,
             Note.title,
-            Note.note_id,
         )
         .join(Note, Note.id == NoteLink.src_note_fk)
         .where(NoteLink.kind == "link")
     ).all()
 
-    # Phase 1: accumulate per-term breadcrumbs. One term can be referenced
-    # by many source notes; the stub's referenced_by reflects that.
+    # Phase 1: collect the first-seen context per unresolved term.
     #
     # ``NoteLink.target_id`` is the raw wikilink text (``Steve Krug``),
     # while ``existing_note_ids`` is a set of slugs (``steve-krug``) plus
-    # slugified aliases. Slugify the target before the membership check
-    # so a wikilink to an existing note resolves correctly regardless of
-    # casing, spaces, or punctuation. Without this, every ``[[Title Case
-    # Term]]`` to a `_processed/<slug>.md` note creates a Gap row that
-    # only Sonnet's filesystem inspection can later catch and discard --
-    # one full Sonnet call per duplicate that should never have been
-    # queued. ``referenced_by`` is still keyed by the raw target so the
-    # downstream slug-fold (Phase 2) preserves the canonical wikilink
-    # text for ``slug_canonical_term``.
-    referenced_by: dict[str, set[str]] = {}
+    # slugified aliases. Slugify the target before the membership check so a
+    # wikilink to an existing note resolves correctly regardless of casing,
+    # spaces, or punctuation. First-writer wins for context.
     contexts: dict[str, str] = {}
     for row in link_rows:
         target_id = row.target_id
         if _slugify(target_id) in existing_note_ids:
             continue
-        referenced_by.setdefault(target_id, set()).add(row.note_id)
-        # First-writer wins for context — legacy breadcrumb; the stub's
-        # referenced_by is authoritative.
         contexts.setdefault(target_id, row.title or "")
 
     # Phase 2: fold by slug. Two terms slugging to the same note_id collapse
-    # into one slug entry; their referenced_by sets are unioned. Sort terms
-    # so the canonical-term-per-slug is reproducible across runs (otherwise
-    # the dict-iteration order would pick whichever term landed first).
-    slug_refs: dict[str, set[str]] = {}
+    # into one Gap row. Sort terms so the canonical-term-per-slug is
+    # reproducible across runs (otherwise the dict-iteration order would
+    # pick whichever term landed first).
     slug_canonical_term: dict[str, str] = {}
     slug_context: dict[str, str] = {}
-    for term in sorted(referenced_by.keys()):
+    for term in sorted(contexts.keys()):
         slug = _slugify(term)
-        slug_refs.setdefault(slug, set()).update(referenced_by[term])
         if slug not in slug_canonical_term:
             slug_canonical_term[slug] = term
-            slug_context[slug] = contexts.get(term, "")
+            slug_context[slug] = contexts[term]
 
-    # Pre-load Gap rows by both note_id (post-stub identity) and term (for
-    # legacy backfill of rows where note_id is still NULL).
+    # Pre-load Gap rows by both note_id (slug identity) and term (for legacy
+    # backfill of rows where note_id is still NULL and the UNIQUE(term)
+    # dedupe check).
     all_gaps = (
         session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
     )
@@ -318,153 +300,56 @@ def discover_gaps(session: Session, vault_root: Path) -> int:
         g.note_id: g for g in soft_deleted_gaps if g.note_id
     }
 
-    stub_dir = vault_root / RESEARCHING_DIR
-    # Canonical Zulu form (no microseconds, no offset) — matches the design
-    # doc examples and the test fixture strings, keeps stub frontmatter
-    # visually consistent across files.
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     inserted = 0
-    stubs_written = 0
     backfilled = 0
-    new_items = 0
-    rewrite_enabled = os.environ.get(
-        "KNOWLEDGE_GAPS_REWRITE_DISCARDABLE", ""
-    ).lower() in {"1", "true", "yes"}
-    rewrites_applied = 0
-    rewrites_dryrun = 0
 
-    for slug, refs in slug_refs.items():
-        canonical_term = slug_canonical_term[slug]
-        refs_sorted = sorted(refs)
-        row_inserted = False
+    for slug, canonical_term in slug_canonical_term.items():
+        # A live gap already keyed by this slug: nothing to do.
+        if existing_by_note_id.get(slug) is not None:
+            continue
 
-        # Phase A: when the stub for this slug has triaged: discardable, the
-        # user has explicitly said "this isn't a gap worth tracking — strip
-        # the wikilinks from source bodies and stop refreshing the stub."
-        # Behind a feature flag while the behaviour bakes; default off is a
-        # dry-run that just logs how many notes WOULD be rewritten.
-        stub_path = stub_dir / f"{slug}.md"
-        if is_discardable(stub_path) and refs_sorted:
-            touched = _rewrite_sources(
-                session,
-                vault_root,
-                slug,
-                refs_sorted,
-                dry_run=not rewrite_enabled,
-            )
-            if rewrite_enabled:
-                rewrites_applied += touched
-            else:
-                rewrites_dryrun += touched
-            continue  # Skip upsert + write_stub for discardable stubs.
-
-        existing = existing_by_note_id.get(slug)
-        if existing is None:
-            legacy = existing_by_term.get(canonical_term)
-            if legacy is not None and legacy.note_id is None:
-                # Backfill: legacy row pre-dates the stub-notes extension.
+        # UNIQUE(term) dedupe: a live gap already exists for this term.
+        # Backfill its note_id if it pre-dates the slug-identity extension;
+        # otherwise leave it untouched (a second insert would collide).
+        legacy = existing_by_term.get(canonical_term)
+        if legacy is not None:
+            if legacy.note_id is None:
                 legacy.note_id = slug
                 backfilled += 1
-            else:
-                soft_del = soft_deleted_by_note_id.get(slug)
-                if soft_del is not None:
-                    # Resurrect: clear deleted_at so the gap re-enters the
-                    # pipeline. A plain INSERT would violate UNIQUE(note_id).
-                    soft_del.deleted_at = None
-                    inserted += 1
-                    row_inserted = True
-                else:
-                    # SAVEPOINT per insert: a concurrent discoverer could insert
-                    # the same slug between SELECT and INSERT. Nesting the add
-                    # lets that single row fail without rolling back every gap
-                    # this cycle. With UNIQUE(note_id) this is the last line
-                    # of defence — slug-folding above already collapses the
-                    # in-process collisions.
-                    with session.begin_nested():
-                        session.add(
-                            Gap(
-                                term=canonical_term,
-                                context=slug_context[slug],
-                                note_id=slug,
-                                pipeline_version=GAPS_PIPELINE_VERSION,
-                                state="discovered",
-                            )
-                        )
-                    inserted += 1
-                    row_inserted = True
+            continue
 
-        # Stub write is unconditional — write_stub is idempotent. Track whether
-        # a new stub was actually written so we can surface healing work.
-        # ``stub_path`` was set above before the discardable short-circuit.
-        stub_existed = stub_path.exists()
-        write_stub(
-            vault_root=vault_root,
-            note_id=slug,
-            title=slug,
-            referenced_by=refs_sorted,
-            discovered_at=now_iso,
-        )
-        stub_newly_written = not stub_existed
-        if stub_newly_written:
-            stubs_written += 1
+        # Resurrect a soft-deleted gap rather than re-inserting it.
+        soft_del = soft_deleted_by_note_id.get(slug)
+        if soft_del is not None:
+            soft_del.deleted_at = None
+            inserted += 1
+            continue
 
-        # Count one unit of "work done" per slug where EITHER a new row was
-        # inserted OR a new stub was written. Without this OR-collapse, the
-        # common case of a first-time discovery would double-count (row + stub)
-        # against a single observable gap.
-        if row_inserted or stub_newly_written:
-            new_items += 1
-
-    # Snapshot (gap, note_id) pairs BEFORE the commit. SQLAlchemy's
-    # expire_on_commit=True default would otherwise expire every Gap
-    # instance in `all_gaps`, turning the Phase B loop's note_id reads
-    # into N round-trip SELECTs.
-    gap_candidates = [(g, g.note_id) for g in all_gaps if g.note_id]
+        # SAVEPOINT per insert: a concurrent discoverer could insert the same
+        # slug between SELECT and INSERT. Nesting the add lets that single row
+        # fail without rolling back every gap this cycle. With UNIQUE(note_id)
+        # / UNIQUE(term) this is the last line of defence — slug-folding above
+        # already collapses the in-process collisions.
+        with session.begin_nested():
+            session.add(
+                Gap(
+                    term=canonical_term,
+                    context=slug_context[slug],
+                    note_id=slug,
+                    pipeline_version=GAPS_PIPELINE_VERSION,
+                    state="discovered",
+                )
+            )
+        inserted += 1
 
     if inserted or backfilled:
         session.commit()
-
-    # Phase B: tombstone discardable gaps whose source links are gone.
-    #
-    # A Gap row whose note_id is NOT in this cycle's slug_refs has zero
-    # inbound wikilinks (note_links was authoritative for slug_refs above).
-    # When such a gap's stub is marked triaged: discardable, the user has
-    # said "this concept is closed — clean it up." Delete the row and the
-    # stub together. Stubs marked keep / unmarked are preserved: a missing
-    # stub or a non-discardable marker means we never tombstone, so an
-    # orphan gap row from a deleted source note doesn't get blown away
-    # unintentionally — only user-triaged-discardable gaps reach this branch.
-    present_slugs = set(slug_refs.keys())
-    tombstoned = 0
-    for gap, gap_note_id in gap_candidates:
-        if gap_note_id in present_slugs:
-            continue
-        stub_for_gap = stub_dir / f"{gap_note_id}.md"
-        if not is_discardable(stub_for_gap):
-            continue
-        session.delete(gap)
-        try:
-            stub_for_gap.unlink()
-        except FileNotFoundError:
-            pass  # idempotent — already gone
-        tombstoned += 1
-
-    if tombstoned:
-        session.commit()
-
-    if new_items or backfilled or rewrites_applied or rewrites_dryrun or tombstoned:
         logger.info(
-            "gaps.discover_gaps: inserted=%d backfilled_note_id=%d "
-            "stubs_written=%d rewrites_applied=%d rewrites_dryrun=%d "
-            "tombstoned=%d",
+            "gaps.discover_gaps: inserted=%d backfilled_note_id=%d",
             inserted,
             backfilled,
-            stubs_written,
-            rewrites_applied,
-            rewrites_dryrun,
-            tombstoned,
         )
-    return new_items
+    return inserted
 
 
 def classify_gaps(
