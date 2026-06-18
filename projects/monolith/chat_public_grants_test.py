@@ -67,6 +67,27 @@ def test_public_writer_role_can_dml_chat_public_schema(pg):
             session.execute(
                 text("DELETE FROM chat_public.sessions WHERE id = 'grant-test-sess'")
             )
+            # response_cache (added 20260619010000): public_writer must be able to
+            # upsert and read it for the durable response cache to work.
+            session.execute(
+                text(
+                    "INSERT INTO chat_public.response_cache "
+                    "(cache_key, normalized_message, prompt_version, notes_watermark, "
+                    "response_text) VALUES "
+                    "('grant-test-key', 'q', 'pv', 'wm', 'a')"
+                )
+            )
+            session.execute(
+                text(
+                    "SELECT count(*) FROM chat_public.response_cache "
+                    "WHERE cache_key = 'grant-test-key'"
+                )
+            ).scalar_one()
+            session.execute(
+                text(
+                    "DELETE FROM chat_public.response_cache WHERE cache_key = 'grant-test-key'"
+                )
+            )
             # Never commit: the role can do the work, and nothing persists.
             session.rollback()
     finally:
