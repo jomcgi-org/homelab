@@ -73,6 +73,29 @@ Removes failed provenance so the gardener retries on its next cycle.
 3. **Read selectively** — fetch full content only for relevant notes
 4. **Traverse edges** — follow `derives_from` upstream for "why", `refines` downstream for detail
 
+## Repo markdown in the graph (public-chat corpus)
+
+The repo's own markdown (`docs/**`, `projects/**/*.md`, and `CLAUDE.md` files) is
+indexed into the knowledge graph so the **public chat** on jomcgi.dev can ground on
+project and decision context. It lives in dedicated `knowledge.repo_docs` /
+`knowledge.repo_doc_chunks` tables, deliberately separate from the curated `notes`
+graph (the gardener and gap loop never touch it), and is surfaced via the
+`public_api.knowledge_chunks` view (`note_id = 'repo:' || path`). A private-only
+scheduler job (`knowledge.repo_docs_reconcile`, every 6h) reconciles it by content
+hash from a committed manifest baked into the image.
+
+**When you edit repo markdown and want it indexed**, regenerate the manifest:
+
+```bash
+bazel run //projects/monolith:gen_repo_docs_manifest   # rewrites repo_docs_manifest.ndjson
+git add projects/monolith/knowledge/repo_docs_manifest.ndjson && git commit
+```
+
+CI enforces this: the Format check fails if the committed manifest is stale (the
+error prints the regen command). It is NOT auto-run by `format` (a py_venv_binary
+cannot run in the format multirun). The corpus deliberately includes internal docs,
+so the public chat can quote them.
+
 ## Tips
 
 - All commands support `--json` for raw API output
