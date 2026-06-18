@@ -3452,7 +3452,7 @@ bdd_test(
     srcs = ["public_knowledge_views_test.py"],
 )
 
-# Real-Postgres test: the chat_public write role can DML only its own schema,
+# Real-Postgres test: the public_writer role can DML only the chat_public schema,
 # is denied other schemas, and public_reader can never write chat_public
 # (ADR 005). Uses the bdd_test harness for the pg fixture + applied migrations.
 bdd_test(

@@ -46,20 +46,21 @@ spec:
         passwordSecret:
           name: monolith-pg-public-reader
         comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
-      # chat_public: the first public-tier WRITE identity (ADR 005). It owns DML
-      # on the chat_public schema only (sessions + transcripts on the primary),
-      # distinct from the read-only public_reader. Its GRANTs live in
+      # public_writer: the first public-tier WRITE identity (ADR 005). Generic so
+      # future public-tier write paths can reuse it; today it owns DML on the
+      # chat_public schema only (sessions + transcripts on the primary), distinct
+      # from the read-only public_reader. Its GRANTs live in
       # chart/migrations/20260617030000_chat_public.sql; CNPG only creates the
       # role and sets its password. The basic-auth secret is created out-of-band
       # from the 1Password item (same pattern as public_reader, see
-      # deploy/public-reader-secret.md). This credential is low-value: DML on one
+      # deploy/public-writer-secret.md). This credential is low-value: DML on one
       # schema of anonymous chat data, no access to any other schema.
-      - name: chat_public
+      - name: public_writer
         ensure: present
         login: true
         passwordSecret:
-          name: monolith-pg-chat-public
-        comment: "Public chat write role (ADR 005); GRANTs in Atlas migration"
+          name: monolith-pg-public-writer
+        comment: "Public-tier write role (ADR 005); GRANTs in Atlas migration"
   # Hosts the monolith database (plus the default postgres maintenance db);
   # the temporal/temporal_visibility/lakehouse databases were decommissioned
   # 2026-06-14. The prior 256Mi limit OOMKilled the instance 359 times. 1Gi
