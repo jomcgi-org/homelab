@@ -112,7 +112,8 @@ describe("renderMarkdown", () => {
     it("escapes an <img onerror=...> payload", () => {
       const html = renderMarkdown('<img src=x onerror="alert(1)">', noMap);
       expect(html).not.toMatch(/<img/i);
-      expect(html).not.toContain("onerror");
+      // onerror survives only as inert escaped text, never inside a live tag.
+      expect(html).not.toMatch(/<[^>]*onerror/i);
       expect(html).toContain("&lt;img");
     });
 
@@ -129,7 +130,8 @@ describe("renderMarkdown", () => {
       // javascript: URL renders as inert escaped text, never an <a href>.
       const html = renderMarkdown("[click](javascript:alert(1))", noMap);
       expect(html).not.toContain("href");
-      expect(html).not.toContain("javascript:alert");
+      // No anchor element is emitted; the javascript: URL stays inert text.
+      expect(html).not.toMatch(/<a[\s>]/i);
       expect(html).toContain("[click](javascript:alert(1))");
     });
 
@@ -151,7 +153,7 @@ describe("renderMarkdown", () => {
         noMap,
       );
       expect(html).not.toMatch(/<img/i);
-      expect(html).not.toContain("onerror=alert");
+      expect(html).not.toMatch(/<[^>]*onerror/i);
       expect(html).toContain("&lt;img");
     });
 
@@ -163,7 +165,8 @@ describe("renderMarkdown", () => {
         titleMap,
       );
       expect(html).not.toMatch(/<img/i);
-      expect(html).not.toContain("onerror");
+      expect(html).not.toMatch(/<[^>]*onerror/i);
+      expect(html).toContain("&lt;img");
     });
   });
 });

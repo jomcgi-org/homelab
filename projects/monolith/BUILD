@@ -21,6 +21,7 @@
 # gazelle:exclude public_knowledge_views_test.py
 # gazelle:exclude chat_public_grants_test.py
 # gazelle:exclude public_httproute_chat_guard_test.py
+# gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
@@ -3677,6 +3678,10 @@ semgrep_target_test(
     name = "main_public_semgrep_test",
     exclude_rules = [
         "avoid-sqlalchemy-text",
+        # knowledge/api.py search_public_chunks builds a fully parameterized
+        # SQLModel select (cosine_distance/order_by/limit), no raw SQL, so the
+        # taint flag is a false positive. Mirrors :main_semgrep_test's exclude.
+        "generic-sql-fastapi",  # keep
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
