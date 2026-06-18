@@ -172,6 +172,30 @@ def test_repeated_message_hits_cache_and_skips_model(client, session, monkeypatc
 # ---------------------------------------------------------------------------
 
 
+def test_empty_reply_is_not_cached(client, session, monkeypatch):
+    # A turn whose generation yields no text must NOT be cached: caching an empty
+    # reply would poison the entry so every future identical turn replays nothing.
+    counter = {"calls": 0}
+    monkeypatch.setattr(inference, "stream_chat", _counting_stream(counter, reply=""))
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve",
+        _fake_retrieve([RetrievedNote("n1", "TSA", "thread state analysis", 0.9)]),
+    )
+    _fix_watermark(monkeypatch)
+    row = sessions.create_session(session)
+
+    first = _post(client, row.id, "What is the TSA method?")
+    assert first.status_code == 200
+    assert counter["calls"] == 1
+
+    # The same question regenerates (treated as a miss) rather than replaying an
+    # empty cached answer.
+    second = _post(client, row.id, "What is the TSA method?")
+    assert second.status_code == 200
+    assert counter["calls"] == 2
+
+
 def test_changed_watermark_misses(client, session, monkeypatch):
     counter = {"calls": 0}
     monkeypatch.setattr(inference, "stream_chat", _counting_stream(counter))

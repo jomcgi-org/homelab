@@ -30,7 +30,7 @@ CHAR_CAP = int(os.environ.get("CHAT_PUBLIC_CHAR_CAP", "8000"))
 MAX_TURNS = int(os.environ.get("CHAT_PUBLIC_MAX_TURNS", "20"))
 
 # Max output tokens the model may emit in a single turn.
-MAX_OUTPUT_TOKENS = int(os.environ.get("CHAT_PUBLIC_MAX_OUTPUT_TOKENS", "1024"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("CHAT_PUBLIC_MAX_OUTPUT_TOKENS", "4000"))
 
 # Max total tokens (in + out, accumulated) a single session may spend.
 MAX_SESSION_TOKENS = int(os.environ.get("CHAT_PUBLIC_MAX_SESSION_TOKENS", "32000"))

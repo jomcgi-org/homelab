@@ -86,7 +86,7 @@ chatPublic:
   # Max conversational turns per session.
   maxTurns: 20
   # Max output tokens the model may emit in a single turn.
-  maxOutputTokens: 1024
+  maxOutputTokens: 4000
   # Max total tokens (in + out, accumulated) a single session may spend.
   maxSessionTokens: 32000
   # Session / cookie TTL in seconds (the SSR cookie maxAge mirrors this).
@@ -203,7 +203,7 @@ web:
     - name: CHAT_PUBLIC_MAX_TURNS
       value: "20"
     - name: CHAT_PUBLIC_MAX_OUTPUT_TOKENS
-      value: "1024"
+      value: "4000"
     - name: CHAT_PUBLIC_MAX_SESSION_TOKENS
       value: "32000"
     - name: CHAT_PUBLIC_SESSION_TTL_SECONDS
