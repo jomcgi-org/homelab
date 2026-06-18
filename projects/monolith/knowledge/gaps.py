@@ -22,25 +22,18 @@ Design notes:
       classifier. Local inference has zero privacy cost; only external
       research does.
     * Consolidation never mutates committed atoms — ``answer_gap``
-      creates a brand-new file and leaves the rest of the vault alone.
-    * We deliberately do *not* reconcile the new file into the DB here;
-      the reconciler picks it up on its next tick, matching the existing
-      ``create_note`` HTTP endpoint.
+      creates a brand-new atom directly in Postgres (fileless).
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable
 
-import yaml
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from knowledge.gap_stubs import RESEARCHING_DIR
-from knowledge.gap_unlinkify import unlinkify_if_changed
 from knowledge.gardener import _slugify
 from knowledge.models import Gap, Note, NoteLink
 
@@ -66,9 +59,8 @@ def split_csv(value: str | None) -> list[str] | None:
 _DEFAULT_GAP_CLASS = "internal"
 
 # Classes that are ready for user attention after classification. Internal/
-# hybrid await an answer via `answer_gap`; external awaits an approval to
-# spend research tokens via `approve_gap` (added in CLASSIFIER_VERSION
-# opus-4-7@v2).
+# hybrid await an answer via `answer_gap`; external is drained by the research
+# routine. Retained for the legacy in-pod `classify_gaps` helper only.
 _USER_REVIEW_CLASSES = {"internal", "hybrid", "external"}
 
 # Valid classifier outputs — mirrors the CHECK constraint on gaps.gap_class.
@@ -149,55 +141,6 @@ def resolve_gaps_for_note(
             committed,
         )
     return committed
-
-
-def _rewrite_sources(
-    session: Session,
-    vault_root: Path,
-    slug: str,
-    source_note_ids: list[str],
-    *,
-    dry_run: bool,
-) -> int:
-    """Rewrite ``[[X]]`` -> bare text in every source note whose body links to ``slug``.
-
-    Looks up each source note's on-disk path via ``Note.path``, runs
-    :func:`unlinkify_if_changed` against the body, and writes back unless
-    ``dry_run`` is True. Returns the count of notes whose bodies would
-    change (or did change). FileNotFound / OSError on any individual
-    file is logged and skipped — the loop must not abort because one
-    source note got renamed or moved.
-    """
-    rows = session.execute(
-        select(Note.note_id, Note.path).where(Note.note_id.in_(source_note_ids))
-    ).all()
-    touched = 0
-    for _note_id, rel_path in rows:
-        abs_path = vault_root / rel_path
-        try:
-            body = abs_path.read_text()
-        except (FileNotFoundError, OSError):
-            logger.warning(
-                "gaps._rewrite_sources: could not read %s for slug=%s",
-                abs_path,
-                slug,
-            )
-            continue
-        new_body = unlinkify_if_changed(body, {slug})
-        if new_body is None:
-            continue
-        touched += 1
-        if not dry_run:
-            try:
-                abs_path.write_text(new_body)
-            except OSError:
-                logger.warning(
-                    "gaps._rewrite_sources: write failed for %s slug=%s",
-                    abs_path,
-                    slug,
-                )
-                touched -= 1  # don't claim a write that didn't happen
-    return touched
 
 
 def discover_gaps(session: Session) -> int:
@@ -370,9 +313,7 @@ def classify_gaps(
 
     State transitions (real-classifier path):
         * ``internal`` / ``hybrid`` → ``in_review`` (ready for user answer)
-        * ``external`` → ``in_review`` (awaits user approval to spend
-          research tokens — see :func:`approve_gap`; added in
-          CLASSIFIER_VERSION ``opus-4-7@v2``)
+        * ``external`` → ``in_review`` (drained by the research routine)
         * ``parked`` → ``classified`` (queryable, not budget-consuming)
 
     Returns the number of gaps classified. When ``classifier`` is ``None``,
@@ -455,10 +396,6 @@ def _gap_to_dict(gap: Gap, session: Session | None = None) -> dict:
       this term".
     * ``research_attempts`` / ``answer`` — already on the model; surfaced
       so the audit UI can show "researched 3 times, no answer captured".
-
-    ``stub_body`` is NOT loaded here because the stub path is keyed by
-    ``vault_root`` which lives at the router layer. Callers that want it
-    (the review-queue endpoints) call ``_attach_stub_body`` after.
     """
     payload = {
         "id": gap.id,
@@ -489,59 +426,20 @@ def _gap_to_dict(gap: Gap, session: Session | None = None) -> dict:
     return payload
 
 
-# Cap stub-body bytes returned per gap so the review-queue payload stays
-# small even when classifier dumped a long research draft into the stub.
-_STUB_BODY_MAX_BYTES = 4096
-
-
-def _read_stub_body(vault_root: Path, gap: Gap) -> str | None:
-    """Return the first ~4 KiB of the gap's `_researching/<slug>.md` stub.
-
-    Returns ``None`` when the stub file doesn't exist (deleted by
-    ``reject_gap`` / ``answer_gap``, or never written). Errors are
-    swallowed and returned as ``None`` — review-queue listing is best-
-    effort metadata and must never break on a partial vault.
-    """
-    slug = _slugify(gap.term)
-    stub_path = vault_root / RESEARCHING_DIR / f"{slug}.md"
-    try:
-        if not stub_path.is_file():
-            return None
-        with stub_path.open("rb") as fh:
-            raw = fh.read(_STUB_BODY_MAX_BYTES + 1)
-    except OSError:
-        logger.warning(
-            "gaps._read_stub_body: failed to read %s for gap_id=%s",
-            stub_path,
-            gap.id,
-        )
-        return None
-    if len(raw) > _STUB_BODY_MAX_BYTES:
-        raw = raw[:_STUB_BODY_MAX_BYTES]
-    # decode(errors="replace") cannot raise on any byte sequence; no
-    # try/except needed (bare ``except Exception`` is also blocked by
-    # the no-broad-except-swallow semgrep rule).
-    return raw.decode("utf-8", errors="replace")
-
-
 def list_gaps_for_review(
     session: Session,
     *,
     mode: str = "pending",
     limit: int = 50,
-    vault_root: Path | None = None,
 ) -> list[dict]:
     """Return gaps for the private review page, filtered by ``mode``.
 
     ``mode='pending'`` — gaps awaiting user attention (``state='in_review'``,
     ``human_verified IS FALSE``). For ``gap_class='internal'`` / ``hybrid``
-    the user is expected to answer via :func:`answer_gap`. For
-    ``gap_class='external'`` the user approves auto-research via
-    :func:`approve_gap`. Both lanes surface in the same queue so the UI
-    can render either affordance per row. Oldest first. This is the same
-    queue that backs the original ``list_review_queue`` helper plus the
-    new ``human_verified`` filter so verified gaps drop out of the queue
-    immediately after a ``/verify``, ``/answer``, or ``/approve`` call.
+    the user is expected to answer via :func:`answer_gap`. Oldest first.
+    This is the same queue that backs the original ``list_review_queue``
+    helper plus the ``human_verified`` filter so verified gaps drop out of
+    the queue immediately after a ``/verify`` or ``/answer`` call.
 
     ``mode='audit'`` — terminal gaps (``committed|rejected|parked``) where
     ``human_verified IS FALSE``, most-recently-resolved first. NULL
@@ -550,9 +448,6 @@ def list_gaps_for_review(
     first thing surfaced to the user).
 
     Both modes filter out soft-deleted rows (``deleted_at IS NULL``).
-    When ``vault_root`` is provided, each row's ``stub_body`` is read
-    from ``_researching/<slug>.md`` so the audit UI has enough body
-    text to evaluate the gap without a per-row round-trip.
 
     Raises:
         ValueError: if ``mode`` is not one of ``pending``/``audit``.
@@ -580,13 +475,7 @@ def list_gaps_for_review(
         raise ValueError(f"unknown review-queue mode: {mode!r}")
 
     rows = session.execute(stmt).scalars().all()
-    payloads: list[dict] = []
-    for gap in rows:
-        payload = _gap_to_dict(gap, session=session)
-        if vault_root is not None:
-            payload["stub_body"] = _read_stub_body(vault_root, gap)
-        payloads.append(payload)
-    return payloads
+    return [_gap_to_dict(gap, session=session) for gap in rows]
 
 
 def list_review_queue(session: Session) -> list[dict]:
@@ -617,70 +506,8 @@ def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:
     return gap
 
 
-def _set_stub_status(vault_root: Path, gap: Gap, status: str) -> None:
-    """Overwrite a stub's ``status:`` frontmatter field in place.
-
-    Keeps the stub and the DB row's ``state`` in sync forward — the
-    reconciler projects stub frontmatter onto the Gap row on every
-    tick, so a DB-only state update would drift back on the next
-    reconciler cycle (~30s). Used by :func:`approve_gap` and by the
-    one-shot backlog reconciliation in ``service.on_startup``.
-
-    Idempotent: a stub whose status already matches ``status`` is left
-    alone (no rewrite, so mtime stays stable). Missing stub is a no-op
-    (the reconciler will recreate the Gap row's state from whatever
-    runs the next gardener tick).
-
-    Mirrors :func:`research_handler._mark_stub_discardable` in shape.
-    """
-    slug = _slugify(gap.term)
-    stub = vault_root / RESEARCHING_DIR / f"{slug}.md"
-    try:
-        text = stub.read_text()
-    except FileNotFoundError:
-        return
-    if not text.startswith("---\n"):
-        return
-    parts = text.split("---\n", 2)
-    if len(parts) < 3:
-        return
-    meta = yaml.safe_load(parts[1])
-    if not isinstance(meta, dict):
-        return
-    if meta.get("status") == status:
-        return  # already matches — skip the write to keep mtime stable.
-    meta["status"] = status
-    fm_str = yaml.dump(meta, default_flow_style=False, sort_keys=False)
-    stub.write_text(f"---\n{fm_str}---\n{parts[2]}")
-
-
-def _remove_stub_if_present(vault_root: Path, gap: Gap, *, action: str) -> None:
-    """Tombstone the ``_researching/<slug>.md`` stub for ``gap`` if it exists.
-
-    Matches :func:`answer_gap`'s stub cleanup: the stub is keyed by the
-    base slug of ``gap.term``, not by the (possibly suffixed) atom note_id.
-    Missing stub is tolerated. ``action`` is a free-form verb that flows
-    into the log line so different callers (``answer``/``reject``) are
-    distinguishable in logs.
-    """
-    slug = _slugify(gap.term)
-    stub_path = vault_root / RESEARCHING_DIR / f"{slug}.md"
-    if stub_path.is_file():
-        stub_path.unlink()
-        logger.info(
-            "gaps._remove_stub_if_present: removed stub %s for %s gap_id=%d",
-            stub_path.relative_to(vault_root),
-            action,
-            gap.id,
-        )
-
-
-def reject_gap(
-    session: Session,
-    gap_id: int,
-    vault_root: Path,
-) -> dict:
-    """Reject a pending gap: in_review → rejected, tombstone the stub.
+def reject_gap(session: Session, gap_id: int) -> dict:
+    """Reject a pending gap: in_review → rejected (pure DB).
 
     Sets ``human_verified=True`` because the user explicitly took an
     action on the gap — rejection is a verification just like answering.
@@ -698,7 +525,6 @@ def reject_gap(
     gap.state = "rejected"
     gap.resolved_at = datetime.now(timezone.utc)
     gap.human_verified = True
-    _remove_stub_if_present(vault_root, gap, action="rejected")
     session.commit()
     session.refresh(gap)
     logger.info("gaps.reject_gap: rejected gap_id=%d term=%r", gap_id, gap.term)
@@ -730,10 +556,7 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     """Reopen a terminal gap: committed|rejected|parked → in_review.
 
     Clears ``resolved_at`` and resets ``human_verified=False`` so the
-    gap re-enters the pending queue for a fresh human decision. Does not
-    re-write the ``_researching`` stub — if the user wants to re-research,
-    they can flip ``triaged: keep`` on any surviving stub or hand-create
-    a new one. The pending UI doesn't need the stub.
+    gap re-enters the pending queue for a fresh human decision (pure DB).
 
     Raises:
         ValueError: if ``gap_id`` is unknown or the gap is not in a
@@ -752,67 +575,6 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     session.commit()
     session.refresh(gap)
     logger.info("gaps.reopen_gap: reopened gap_id=%d term=%r", gap_id, gap.term)
-    return _gap_to_dict(gap, session=session)
-
-
-def approve_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
-    """Approve an external gap for auto-research: in_review -> classified.
-
-    The classifier (CLASSIFIER_VERSION opus-4-7@v2 onward) routes external
-    gaps into ``state='in_review'`` so the user can explicitly opt into
-    spending Sonnet web-research tokens on each one. Flipping back to
-    ``state='classified'`` re-arms the daily research cron's
-    ``_sweep_and_select_candidates`` sweep, which selects on
-    ``gap_class='external' AND state='classified'`` -- so this function
-    is the *only* path back into the research pipeline after the v2
-    cutover.
-
-    Sets ``human_verified=True`` because approval is an explicit user
-    action on the gap, mirroring :func:`reject_gap` / :func:`answer_gap`.
-    Also rewrites the stub's ``status`` frontmatter field to
-    ``classified`` via :func:`_set_stub_status` so the next reconciler
-    tick (~30s) does not project the stale ``in_review`` value back
-    onto the Gap row. Stub-write failures are logged at WARNING but
-    do not roll back the approval — the DB commit is the source of
-    truth and the reconciler will recover on a subsequent tick.
-
-    Raises:
-        ValueError: if ``gap_id`` is unknown, the gap is not in
-            ``state='in_review'``, or the gap's ``gap_class`` is not
-            ``'external'`` (only externals consume the research pipeline;
-            approving an internal/hybrid would be a no-op at best and a
-            wrong-pipeline routing at worst).
-    """
-    gap = _get_gap_or_raise(session, gap_id)
-    if gap.state != "in_review":
-        raise ValueError(
-            f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
-        )
-    if gap.gap_class != "external":
-        raise ValueError(
-            f"Gap id={gap_id} has gap_class={gap.gap_class!r}, expected 'external'"
-        )
-
-    gap.state = "classified"
-    gap.human_verified = True
-    session.commit()
-    session.refresh(gap)
-    # Sync the stub's `status` field so the next reconciler tick
-    # (~30s) doesn't project the stale `in_review` value back onto
-    # the Gap row. See _set_stub_status for the projection direction.
-    try:
-        _set_stub_status(vault_root, gap, "classified")
-    except Exception:
-        logger.warning(
-            "gaps.approve_gap: stub status sync failed for gap_id=%d term=%r; "
-            "the reconciler may revert the row on its next tick",
-            gap_id,
-            gap.term,
-            exc_info=True,
-        )
-    logger.info(
-        "gaps.approve_gap: approved gap_id=%d term=%r for research", gap_id, gap.term
-    )
     return _gap_to_dict(gap, session=session)
 
 
@@ -1021,14 +783,8 @@ async def answer_gap(
     return _finalize_answered_gap(session, gap_id, answer, note_id)
 
 
-def delete_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
-    """Soft-delete a gap. Sets ``deleted_at``; hard-deletes the stub file.
-
-    Stubs at ``_researching/<slug>.md`` are regenerable from the gap's
-    ``term`` (``discover_gaps`` will write a fresh one on its next tick
-    after undelete, provided there's still at least one source wikilink
-    pointing at the term). Hard-deleting the file now keeps the vault
-    tidy without losing anything that can't be reconstructed.
+def delete_gap(session: Session, gap_id: int) -> dict:
+    """Soft-delete a gap. Sets ``deleted_at`` (pure DB).
 
     Idempotent on already-deleted rows — calling delete twice is a no-op
     that returns the same payload.
@@ -1046,7 +802,6 @@ def delete_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
         return _gap_to_dict(gap, session=session)
 
     gap.deleted_at = datetime.now(timezone.utc)
-    _remove_stub_if_present(vault_root, gap, action="soft-deleted")
     session.add(gap)
     session.commit()
     session.refresh(gap)
@@ -1055,9 +810,9 @@ def delete_gap(session: Session, gap_id: int, vault_root: Path) -> dict:
 
 
 def undelete_gap(session: Session, gap_id: int) -> dict:
-    """Undo soft-delete: clear ``deleted_at``. The stub is regenerated
-    lazily by the next ``discover_gaps`` cycle (or stays absent if the
-    source wikilinks were rewritten/removed in the interim).
+    """Undo soft-delete: clear ``deleted_at`` (pure DB). The gap re-enters
+    queries; ``discover_gaps`` resurrects it on its next cycle if the source
+    wikilinks still reference the term.
 
     Raises:
         ValueError: if ``gap_id`` is unknown, or if the gap is not
