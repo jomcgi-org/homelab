@@ -97,8 +97,9 @@ describe("renderMarkdown", () => {
   // renderer for BOTH untrusted public-chat model output (titleMap empty) and
   // note bodies (titleMap from trusted graph nodes). It HTML-escapes &<> on
   // every path and emits no raw HTML, so injected markup cannot reach the DOM
-  // as live nodes. These assert the neutralization holds; the strict CSP
-  // (src/lib/csp.js) is the independent second line of defense.
+  // as live nodes. These assert the neutralization holds. The app sets no CSP
+  // (a CSP hardening layer is deferred to a later pass), so this escaping is the
+  // protection that matters.
   describe("neutralizes injected HTML/script", () => {
     // Empty titleMap mirrors how model replies are rendered (renderReply).
     const noMap = new Map();

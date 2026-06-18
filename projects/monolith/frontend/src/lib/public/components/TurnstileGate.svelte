@@ -10,8 +10,8 @@
    *
    * The site key is public by design; the Turnstile *secret* never leaves the
    * FastAPI backend. The challenge script + iframe load from
-   * https://challenges.cloudflare.com, which is allowlisted in script-src and
-   * frame-src by the app CSP (see src/lib/csp.js).
+   * https://challenges.cloudflare.com. The app sets no Content-Security-Policy
+   * (a CSP hardening layer is deferred to a later pass).
    *
    * @type {{
    *   siteKey: string,

@@ -136,7 +136,7 @@
     <h1 class="hero-headline">ten years ago i was underwriting policies and winning insurance hackathons. now i'm building <span class="hl hl-yellow">production grade infra</span> for weekend side quests and keeping <a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.</h1>
     <div class="hero-cta-row">
       <a href="#homelab" class="btn btn-primary">SEE MY HOMELAB <span class="btn-arr">→</span></a>
-      <a href="/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
+      <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
     </div>
     <Sticker color="var(--coral)" rotate={-5} class="sticker-hero">← BUILT THIS SITE TOO</Sticker>
   </div>

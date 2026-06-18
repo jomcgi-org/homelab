@@ -105,7 +105,7 @@
       <a href="https://jomcgi.dev/" class="btn btn-primary">
         <span class="btn-arr">←</span>&nbsp;BACK TO SOLID GROUND
       </a>
-      <a href="/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
+      <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
     </div>
   </div>
 </main>
