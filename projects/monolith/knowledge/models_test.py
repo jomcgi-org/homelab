@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import UniqueConstraint, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
@@ -204,6 +206,30 @@ def test_atom_raw_provenance_roundtrip(session):
     assert loaded.raw_fk == raw.id
 
 
+def test_repo_doc_and_chunk_roundtrip(session):
+    from knowledge.models import RepoDoc, RepoDocChunk
+
+    doc = RepoDoc(path="docs/security.md", content_hash="abc123", title="Security")
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    chunk = RepoDocChunk(
+        repo_doc_fk=doc.id,
+        chunk_index=0,
+        section_header="# Security",
+        chunk_text="never hardcode secrets",
+        embedding=[0.1] * 1024,
+    )
+    session.add(chunk)
+    session.commit()
+    session.refresh(chunk)
+
+    assert chunk.repo_doc_fk == doc.id
+    assert len(chunk.embedding) == 1024
+    assert doc.path == "docs/security.md"
+
+
 def test_atom_raw_provenance_rejects_both_null():
     with pytest.raises(ValueError, match="at least one of atom_fk or raw_fk"):
         AtomRawProvenance(
@@ -327,9 +353,6 @@ def test_note_visibility_rejected_at_db_constraint(session):
     emits it for SQLite too — keeping this test honest in CI without needing a
     real Postgres instance.
     """
-    from sqlalchemy import text
-    from sqlalchemy.exc import IntegrityError
-
     with pytest.raises(IntegrityError):
         session.execute(
             text(
@@ -344,8 +367,6 @@ def test_note_visibility_rejected_at_db_constraint(session):
 
 def test_gap_has_note_id_unique_constraint():
     """note_id is the projection-layer identity — must be UNIQUE in the schema."""
-    from sqlalchemy import UniqueConstraint
-
     from knowledge.models import Gap
 
     constraints = [c for c in Gap.__table_args__ if isinstance(c, UniqueConstraint)]
