@@ -17,7 +17,8 @@ const BODY = `# Joe McGinley
 ## Pages
 
 - [CV](${PUBLIC_BASE}/cv): full work history and project case studies
-- [Notes](${PUBLIC_BASE}/notes): public knowledge graph
+- [Notes](${PUBLIC_BASE}/notes): chat with my public knowledge graph
+- [Graph](${PUBLIC_BASE}/notes/graph): the public knowledge graph, browsable
 - [Home](${PUBLIC_BASE}/): overview and homelab status
 
 ## Elsewhere
