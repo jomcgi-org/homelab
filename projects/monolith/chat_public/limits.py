@@ -49,7 +49,64 @@ SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "180
 # Default 1 matches the Phase-0 reserved-headroom semaphore intent (start at 1,
 # validate at load test). Over the ceiling the message path sheds with a "busy"
 # event rather than spending a slot.
+#
+# This is ALSO the reserved-headroom GPU-isolation control (ADR 005 layer 3): it
+# is per-pod (deliberately, see _CircuitBreaker) and bounds how many public
+# requests are in flight to the shared vLLM at once, leaving decode slots for the
+# Discord bot, private chat, and the agent platform. Phase 6 (load test) tunes
+# the final reservation; the sizing rule is
+#     GLOBAL_MAX_CONCURRENT * web.maxReplicas + reserved_trusted <= max_num_seqs
+# (vLLM batch capacity, today max_num_seqs=3). Per-pod is Joe's decision: do NOT
+# make it a distributed counter.
 GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "1"))
+
+# --------------------------------------------------------------------------
+# Compaction knobs (ADR 005 layer 4 / plan Phase 3). When the live context
+# (system prompt + rolling summary + recent turns) approaches a fraction of the
+# model window, older turns are folded into the rolling summary so each request
+# stays bounded. See chat_public.summarizer + sessions.compact_if_needed.
+# --------------------------------------------------------------------------
+
+# Usable context window of the shared model, in tokens. Compaction is sized as a
+# fraction of this. It is a tuning knob, not a hard model property: keep it at or
+# below the real vLLM context length.
+MODEL_WINDOW_TOKENS = int(os.environ.get("CHAT_PUBLIC_MODEL_WINDOW_TOKENS", "32768"))
+
+# Fraction of the model window at which compaction triggers. At 0.70 the older
+# turns are summarised once the estimated live context crosses ~70% of the
+# window, keeping headroom for the new turn and its reply.
+COMPACTION_TRIGGER = float(os.environ.get("CHAT_PUBLIC_COMPACTION_TRIGGER", "0.70"))
+
+# How many of the most recent transcript messages are kept verbatim after a
+# compaction (everything older is folded into the rolling summary). Six messages
+# is roughly the last three turns. This caps summary frequency: once a summary
+# exists the live context is summary + this tail, which stays small.
+COMPACTION_KEEP_MESSAGES = int(
+    os.environ.get("CHAT_PUBLIC_COMPACTION_KEEP_MESSAGES", "6")
+)
+
+# Max tokens the rolling-summary generation may emit. A summary is meant to be
+# short, and it spends GPU under the same in-flight slot as a real turn, so cap
+# it tightly (ADR 005: a summary is far cheaper than an unbounded context).
+SUMMARY_MAX_TOKENS = int(os.environ.get("CHAT_PUBLIC_SUMMARY_MAX_TOKENS", "512"))
+
+# Human-readable shed message reused by the router's "busy" SSE event.
+BUSY_MESSAGE = "Public chat is busy right now. Please try again in a moment."
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token).
+
+    Used to decide when compaction should trigger and as a fallback for per-turn
+    token accounting when the model does not report usage. Real usage from the
+    model is always preferred when available; this is only an estimate.
+    """
+    return max(1, len(text or "") // 4)
+
+
+def should_compact(estimated_context_tokens: int) -> bool:
+    """True when the estimated live context has crossed the compaction trigger."""
+    return estimated_context_tokens >= COMPACTION_TRIGGER * MODEL_WINDOW_TOKENS
 
 
 class LimitExceeded(Exception):
@@ -103,17 +160,18 @@ class _CircuitBreaker:
     long as the AGGREGATE is sized sensibly. The web component has an HPA, so the
     cluster-wide public in-flight ceiling is GLOBAL_MAX_CONCURRENT * replicas.
 
-    PHASE 3 SIZING RULE (not a re-architecture): when real vLLM inference is wired
-    behind the reserved-headroom semaphore, choose GLOBAL_MAX_CONCURRENT and the
-    inference-bearing replica count together so that
+    SIZING RULE (reserved-headroom, ADR 005 layer 3): choose GLOBAL_MAX_CONCURRENT
+    and the inference-bearing replica count together so that
         GLOBAL_MAX_CONCURRENT * web.maxReplicas + reserved_trusted <= max_num_seqs
-    (vLLM batch capacity). That keeps decode slots reserved for the Discord bot,
-    private chat, and agents per ADR 005, with a simple per-pod limit. In Phase 2
-    the message path spends no GPU, so the exact value is not yet load-bearing.
+    (vLLM batch capacity, today max_num_seqs=3). That keeps decode slots reserved
+    for the Discord bot, private chat, and agents, with a simple per-pod limit.
+    Final reservation tuning is a Phase 6 load-test concern.
 
-    A threading.Lock (not asyncio) is used because the Phase-2 message endpoint
-    is a sync FastAPI handler dispatched to the threadpool, so concurrent turns
-    run on different threads.
+    A threading.Lock (not asyncio) is used so the counter is correct whether it is
+    touched from the event loop (the Phase 3 async streaming path acquires/releases
+    around the whole generation) or from a threadpool worker. try_acquire/release
+    are non-blocking and hold no lock across IO, so calling them from async code is
+    safe and never blocks the loop.
     """
 
     def __init__(self, limit: int) -> None:
@@ -148,26 +206,37 @@ def current_inflight() -> int:
     return _breaker.inflight
 
 
+def try_acquire_slot() -> bool:
+    """Try to take a global in-flight slot. False when the ceiling is reached.
+
+    The async streaming path (router._turn_stream) acquires the slot at the start
+    of the SSE generator and releases it in a finally, so the slot is held for the
+    ENTIRE generation, not just while the handler is building the response. This
+    is the Phase 3 fix for the earlier release-before-stream behaviour: a public
+    request occupies a reserved-headroom slot for exactly as long as it is on the
+    GPU. The module global is looked up dynamically so tests can swap _breaker.
+    """
+    return _breaker.try_acquire()
+
+
+def release_slot() -> None:
+    """Release a previously acquired global in-flight slot."""
+    _breaker.release()
+
+
 @contextlib.contextmanager
 def inflight_slot():
-    """Acquire a global in-flight slot for one public message/inference call.
+    """Context-manager form of try_acquire_slot/release_slot.
 
     Raises ``LimitExceeded("busy")`` when the global ceiling is already reached,
-    so the caller sheds the request without spending a slot. Releases the slot on
-    exit.
-
-    TODO(Phase 3): when the message path becomes async and streams real vLLM
-    tokens, the slot MUST be held for the whole generation (acquire before the
-    stream, release when it completes), not just while the handler builds the
-    response. In Phase 2 the canned reply is produced synchronously inside this
-    context, so holding it for the handler body is sufficient.
+    so a synchronous caller sheds without spending a slot, and releases on exit.
+    The async streaming path uses try_acquire_slot/release_slot directly so the
+    slot can be held across the SSE generator's lifetime rather than just a
+    ``with`` block.
     """
-    if not _breaker.try_acquire():
-        raise LimitExceeded(
-            "busy",
-            "Public chat is busy right now. Please try again in a moment.",
-        )
+    if not try_acquire_slot():
+        raise LimitExceeded("busy", BUSY_MESSAGE)
     try:
         yield
     finally:
-        _breaker.release()
+        release_slot()
