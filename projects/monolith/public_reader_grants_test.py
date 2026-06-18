@@ -59,7 +59,12 @@ def test_public_reader_can_read_public_datasets(pg):
         with Session(engine) as session:
             session.execute(text("SET ROLE public_reader"))
             # A granted SELECT on each wholly-public dataset must not raise.
-            for table in ("ships.vessels", "stars.sites", "hikes.walks"):
+            for table in (
+                "ships.vessels",
+                "stars.sites",
+                "hikes.walks",
+                "dr_jobs.nhs_vacancies",
+            ):
                 session.execute(text(f"SELECT count(*) FROM {table}"))
     finally:
         engine.dispose()
