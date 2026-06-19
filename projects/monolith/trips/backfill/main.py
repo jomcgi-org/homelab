@@ -31,7 +31,7 @@ from botocore.config import Config
 from sqlalchemy import delete
 from sqlmodel import Session, create_engine
 
-from trips.backfill import exif, transform
+from trips import exif, transform
 from trips.models import Trip, TripPoint
 
 logging.basicConfig(level=logging.INFO)

@@ -1,6 +1,6 @@
-"""Unit tests for the pure numeric helpers in trips.backfill.exif."""
+"""Unit tests for the pure numeric helpers in trips.exif."""
 
-from trips.backfill import exif
+from trips import exif
 
 
 def test_dms_to_decimal_north_east():

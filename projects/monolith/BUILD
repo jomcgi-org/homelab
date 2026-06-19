@@ -151,7 +151,10 @@ py_library(
             "shared/testing/**/*.py",
             # Offline grid generator: run by hand, not part of the runtime image.
             "stars/grid_gen/**",
-            # Run-by-hand S3->Postgres backfill, not part of the runtime image.
+            # Run-by-hand S3->Postgres backfill (boto3/typer/httpx orchestration)
+            # stays out of the runtime image; the pure exif.py/transform.py
+            # modules live at trips/ level and DO ship for the live ingest +
+            # SSR read paths.
             "trips/backfill/**",
         ],
     ),  # keep
@@ -161,6 +164,7 @@ py_library(
         "@pip//beautifulsoup4",
         "@pip//boto3",
         "@pip//certifi",
+        "@pip//defusedxml",  # trips/transform.py (KML parsing)
         "@pip//discord_py",
         "@pip//dulwich",
         "@pip//fastapi",
@@ -175,6 +179,7 @@ py_library(
         "@pip//opentelemetry_instrumentation_httpx",
         "@pip//opentelemetry_sdk",
         "@pip//pgvector",
+        "@pip//pillow",  # trips/exif.py (PIL image EXIF)
         "@pip//psycopg",
         "@pip//psycopg_binary",
         "@pip//pydantic",
@@ -3687,21 +3692,21 @@ py_test(
 )
 
 py_test(
-    name = "trips_backfill_transform_test",
-    srcs = ["trips/backfill/transform_test.py"],
+    name = "trips_transform_test",
+    srcs = ["trips/transform_test.py"],
     imports = ["."],
     deps = [
-        ":trips_backfill_lib",
+        ":monolith_backend",
         "@pip//pytest",
     ],
 )
 
 py_test(
-    name = "trips_backfill_exif_test",
-    srcs = ["trips/backfill/exif_test.py"],
+    name = "trips_exif_test",
+    srcs = ["trips/exif_test.py"],
     imports = ["."],
     deps = [
-        ":trips_backfill_lib",
+        ":monolith_backend",
         "@pip//pytest",
     ],
 )
