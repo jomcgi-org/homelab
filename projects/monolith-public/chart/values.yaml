@@ -424,6 +424,11 @@ imgproxy:
     # above. Combined with ALLOWED_SOURCES this is the resize allow-list.
     - name: IMGPROXY_ONLY_PRESETS
       value: "true"
+    # Images are content-addressed (img_<sha256>.jpg), so a URL is immutable: a
+    # changed photo gets a new key. Cache for a year (this is imgproxy's current
+    # default; pin it so it survives any future default change).
+    - name: IMGPROXY_TTL
+      value: "31536000"
     - name: IMGPROXY_QUALITY
       value: "90"
     - name: IMGPROXY_FORMAT_QUALITY
