@@ -26,6 +26,10 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # ScaledJob CRD renders to ~647 KiB; client-side apply blows the 256 KiB
+      # last-applied-configuration annotation cap and that one CRD silently fails
+      # to install, crash-looping keda-operator. Server-side apply skips the annotation.
+      - ServerSideApply=true
     retry:
       limit: 5
       backoff:
