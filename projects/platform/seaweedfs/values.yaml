@@ -122,19 +122,13 @@ seaweedfs:
       limits:
         cpu: 500m
         memory: 512Mi
-    # Declarative bucket provisioning. The chart's post-install bucket-hook Job
-    # is gated on filer.s3.* (NOT the standalone s3 component below), so the
-    # createBuckets list and its enabling flag must live here. Enabling filer.s3
-    # also runs an embedded S3 listener on the filer pod, but the canonical
-    # seaweedfs-s3 Service still selects only the standalone s3 component
-    # (its selector keys on component=s3), so clients are unaffected. Buckets
-    # live in the shared filer metadata, so monolith-trips is visible via the
-    # standalone s3 endpoint that imgproxy uses.
-    s3:
-      enabled: true
-      createBuckets:
-        - name: monolith-trips
-          anonymousRead: true
+    # NOTE: do NOT add `s3: { createBuckets: ... }` under filer here. The chart's
+    # bucket-hook runs `s3.configure --user anonymous`, which writes an identity
+    # into the shared filer metadata and flips the whole cluster S3 from
+    # auth-disabled (the open mode every service relies on with duckdb/anonymous
+    # keys) to auth-enforced, breaking chat blobs, stars grid, knowledge raws,
+    # and imgproxy with InvalidAccessKeyId. Provision buckets out-of-band via
+    # `weed shell s3.bucket.create` instead. (Incident 2026-06-19.)
 
   s3:
     enabled: true
