@@ -73,12 +73,15 @@ argo-cd:
       prometheus.io/port: "8083"
   repoServer:
     replicas: 2
+    # CPU limit raised 125m -> 1000m: manifest generation (helm template /
+    # kustomize build) is CPU-bound and gates every ArgoCD sync; it was throttled
+    # ~22% with p99 ~3.7s (max 34s) over 22k GenerateManifest calls.
     resources:
       requests:
         cpu: 25m
         memory: 128Mi
       limits:
-        cpu: 125m
+        cpu: 1000m
         memory: 512Mi
     livenessProbe:
       timeoutSeconds: 5

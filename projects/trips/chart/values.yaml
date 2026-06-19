@@ -75,13 +75,17 @@ imgproxy:
       value: "false"
     - name: IMGPROXY_ALLOW_INSECURE_URLS
       value: "true"
+  # imgproxy decodes and resizes full-size trip photos on the fly, this is
+  # CPU-bound work. The old req=limit=10m (Guaranteed, ~1% of a core, no burst)
+  # throttled every resize. Burstable with a real ceiling; memory raised so the
+  # higher throughput can decode large source images without OOM.
   resources:
     requests:
-      cpu: 10m
-      memory: 75Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
-      cpu: 10m
-      memory: 75Mi
+      cpu: "2"
+      memory: 512Mi
 
 # nginx routing configuration
 nginx:
