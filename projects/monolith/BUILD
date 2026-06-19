@@ -184,6 +184,7 @@ py_library(
         "@pip//psycopg_binary",
         "@pip//pydantic",
         "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -3722,6 +3723,22 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "trips_ingest_router_test",
+    srcs = ["trips/ingest_router_test.py"],
+    # Same committed JPEG fixtures posted through the TestClient.
+    data = glob(["trips/testdata/**"]),
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//python_multipart",
+        "@pip//sqlmodel",
     ],
 )
 
