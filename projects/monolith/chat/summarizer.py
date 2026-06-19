@@ -10,7 +10,6 @@ import httpx
 from sqlmodel import Session, select
 
 from chat.models import ChannelSummary, Message, UserChannelSummary
-from chat.vault_export import write_channel_summary, write_user_summary
 
 logger = logging.getLogger(__name__)
 
@@ -100,14 +99,6 @@ async def generate_summaries(
                     )
                 )
             await asyncio.to_thread(session.commit)
-            write_user_summary(
-                channel_id=channel_id,
-                user_id=user_id,
-                username=username,
-                summary=summary_text,
-                last_message_id=new_max_id,
-                updated_at=now,
-            )
         except Exception:
             logger.exception(
                 "Failed to generate summary for %s/%s", channel_id, username
@@ -196,13 +187,6 @@ async def generate_channel_summaries(
                     )
                 )
             await asyncio.to_thread(session.commit)
-            write_channel_summary(
-                channel_id=channel_id,
-                summary=summary_text,
-                message_count=total_count,
-                last_message_id=new_max_id,
-                updated_at=now,
-            )
         except Exception:
             logger.exception("Failed to generate channel summary for %s", channel_id)
             continue

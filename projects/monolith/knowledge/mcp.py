@@ -10,8 +10,6 @@ Tools call KnowledgeStore directly (no HTTP round-trip).
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
 
 import yaml
 from sqlmodel import Session, select
@@ -24,9 +22,9 @@ from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import list_review_queue, resolve_gaps_for_note, split_csv
 from knowledge.gaps import set_gap_class as _set_gap_class
 from knowledge.gardener import GARDENER_VERSION, _slugify
-from knowledge.indexing import index_note_best_effort, index_note_from_raw
+from knowledge.indexing import index_note_from_raw, reindex_note_with_edits
 from knowledge.models import AtomRawProvenance, RawInput
-from knowledge.notes import DEFAULT_VAULT_ROOT, VAULT_ROOT_ENV, resolve_note_body
+from knowledge.notes import resolve_note_body
 from knowledge.raw_store import fetch_raw
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
@@ -75,8 +73,7 @@ async def get_note(note_id: str) -> dict:
     """Retrieve a knowledge note by its stable ID.
 
     Returns note metadata (title, type, tags), the full markdown
-    body (authoritative ``knowledge.notes.content`` in Postgres, with a
-    vault fallback during the ADR 006 Phase 1 backfill), and all
+    body (authoritative ``knowledge.notes.content`` in Postgres), and all
     outgoing graph edges.
 
     Args:
@@ -88,12 +85,10 @@ async def get_note(note_id: str) -> dict:
         if note is None:
             return {"error": f"note not found: {note_id}"}
 
-        # ADR 006 Phase 2: body of record is Postgres ``content``; the vault
-        # read is a fallback only while the Phase 1 backfill is in flight.
-        vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-        body = resolve_note_body(note.get("content"), note["path"], vault_root)
+        # ADR 006: body of record is Postgres ``content``.
+        body = resolve_note_body(note.get("content"))
         if body is None:
-            return {"error": f"vault file missing for {note_id}"}
+            return {"error": f"note has no body: {note_id}"}
 
         edges = store.get_note_links(note_id)
         return {**note, "content": body, "edges": edges}
@@ -108,10 +103,12 @@ async def create_note(
     type: str | None = None,
     visibility: str | None = None,
 ) -> dict:
-    """Create a new knowledge note in the vault.
+    """Create a new knowledge note, fileless, indexed straight into Postgres.
 
-    Writes a markdown file with YAML frontmatter to the vault root.
-    The file is named from a slugified title with collision handling.
+    Resolves a DB-unique ``note_id`` from the slugified title, serializes
+    frontmatter, and indexes the note synchronously into
+    ``knowledge.notes`` (ADR 006, Obsidian decommissioned). Any open gap
+    whose term this note now defines is closed.
 
     Args:
         content: The markdown body of the note (required, must not be empty).
@@ -119,7 +116,7 @@ async def create_note(
         source: Optional source URL or reference.
         tags: Optional list of tags.
         type: Optional note type (e.g. "concept", "paper").
-        visibility: Optional public or private. Atoms without visibility
+        visibility: Optional public or private. Notes without visibility
             land in the review queue. Set explicitly to avoid that.
     """
     if not content or not content.strip():
@@ -131,29 +128,36 @@ async def create_note(
     if title is None:
         title = content.strip()[:60]
 
-    fm: dict[str, object] = {"title": title}
-    if source:
-        fm["source"] = source
-    if tags:
-        fm["tags"] = tags
-    if type:
-        fm["type"] = type
-    if visibility:
-        fm["visibility"] = visibility
+    with Session(get_engine()) as session:
+        store = KnowledgeStore(session)
 
-    file_content = "---\n" + yaml.dump(fm, default_flow_style=False) + "---\n" + content
+        # Resolve a unique note_id against the DB (fileless: no filesystem
+        # collision check). The slug stem becomes the stable id.
+        base = _slugify(title)
+        note_id = base
+        counter = 1
+        while store.get_note_by_id(note_id) is not None:
+            note_id = f"{base}-{counter}"
+            counter += 1
 
-    vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-    slug = _slugify(title)
-    candidate = vault_root / f"{slug}.md"
-    counter = 1
-    while candidate.exists():
-        candidate = vault_root / f"{slug}-{counter}.md"
-        counter += 1
+        fm: dict[str, object] = {"id": note_id, "title": title}
+        if source:
+            fm["source"] = source
+        if tags:
+            fm["tags"] = tags
+        if type:
+            fm["type"] = type
+        if visibility:
+            fm["visibility"] = visibility
 
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    candidate.write_text(file_content)
-    return {"path": candidate.name}
+        raw = "---\n" + yaml.dump(fm, default_flow_style=False) + "---\n" + content
+        rel_path = f"_processed/{note_id}.md"
+        await index_note_from_raw(
+            store, EmbeddingClient(), note_id=note_id, rel_path=rel_path, raw=raw
+        )
+        resolve_gaps_for_note(session, note_id=note_id, title=title, aliases=[])
+
+    return {"note_id": note_id, "path": rel_path}
 
 
 @mcp.tool
@@ -164,13 +168,14 @@ async def edit_note(
     tags: list[str] | None = None,
     visibility: str | None = None,
 ) -> dict:
-    """Edit an existing knowledge note.
+    """Edit an existing knowledge note, re-indexed straight into Postgres.
 
     Looks up the note by ID, merges the provided fields into the
-    existing frontmatter, and writes the updated file back. All
-    pre-existing frontmatter fields (visibility, source_tier, aliases,
-    edges, created/updated timestamps, custom extras) are preserved
-    on rewrite -- only the fields passed explicitly are modified.
+    frontmatter reconstructed from its Postgres row, and re-indexes (ADR
+    006, Obsidian decommissioned). All pre-existing frontmatter fields
+    (visibility, source_tier, aliases, edges, created/updated timestamps,
+    custom extras) are preserved -- only the fields passed explicitly are
+    modified.
 
     Args:
         note_id: The stable note identifier.
@@ -185,89 +190,35 @@ async def edit_note(
 
     with Session(get_engine()) as session:
         store = KnowledgeStore(session)
-        note = store.get_note_by_id(note_id)
-        if note is None:
-            return {"error": f"note not found: {note_id}"}
-
-        vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-        resolved = (vault_root / note["path"]).resolve()
-        if not resolved.is_relative_to(vault_root) or not resolved.is_file():
-            return {"error": f"vault file missing for {note_id}"}
-
-        raw = resolved.read_text()
-        parsed, body = frontmatter.parse(raw)
-
-        if title is not None:
-            parsed.title = title
-        if tags is not None:
-            parsed.tags = tags
-        if content is not None:
-            body = content
-        if visibility is not None:
-            parsed.visibility = visibility
-
-        # Mirrors router.edit_note's field list so every frontmatter field the
-        # parser knows about gets re-emitted. Drift between this list and the
-        # HTTP edit_note is the bug that silently nulled visibility on
-        # thousands of notes before this fix landed.
-        fm_dict: dict[str, object] = {}
-        if parsed.note_id:
-            fm_dict["id"] = parsed.note_id
-        if parsed.title:
-            fm_dict["title"] = parsed.title
-        if parsed.type:
-            fm_dict["type"] = parsed.type
-        if parsed.status:
-            fm_dict["status"] = parsed.status
-        if parsed.visibility is not None:
-            fm_dict["visibility"] = parsed.visibility
-        if parsed.source:
-            fm_dict["source"] = parsed.source
-        if parsed.tags:
-            fm_dict["tags"] = parsed.tags
-        if parsed.aliases:
-            fm_dict["aliases"] = parsed.aliases
-        if parsed.edges:
-            fm_dict["edges"] = parsed.edges
-        if parsed.created is not None:
-            fm_dict["created"] = parsed.created.isoformat()
-        if parsed.updated is not None:
-            fm_dict["updated"] = parsed.updated.isoformat()
-        if parsed.extra:
-            fm_dict.update(parsed.extra)
-
-        file_content = (
-            "---\n" + yaml.dump(fm_dict, default_flow_style=False) + "---\n" + body
-        )
-        resolved.write_text(file_content)
-        # ADR 006 Phase 3: re-index synchronously into Postgres; the disk
-        # write above is the safety net.
-        await index_note_best_effort(
+        result = await reindex_note_with_edits(
             store,
             EmbeddingClient(),
             note_id=note_id,
-            rel_path=note["path"],
-            raw=file_content,
+            title=title,
+            tags=tags,
+            content=content,
+            visibility=visibility,
         )
-        return {"path": note["path"], "note_id": note_id}
+        if result is None:
+            return {"error": f"note not found: {note_id}"}
+        return result
 
 
 @mcp.tool
 async def delete_note(note_id: str) -> dict:
     """Soft-delete a knowledge note.
 
-    Moves the markdown file to the vault _trash directory and sets
-    deleted_at on the row. The note disappears from all user-facing
+    Stamps ``deleted_at`` on the row (ADR 006: bodies are authoritative in
+    Postgres, no file to move). The note disappears from all user-facing
     read paths (review queue, graph, search) but the row survives so
-    undelete_note can restore the file to its original location.
+    undelete_note can restore it.
 
     Args:
         note_id: The stable note identifier.
     """
     with Session(get_engine()) as session:
-        vault_root = Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
         try:
-            note = notes_module.delete_note(session, note_id, vault_root)
+            note = notes_module.delete_note(session, note_id)
         except ValueError as exc:
             return {"error": str(exc)}
         return {"deleted": True, "note_id": note.note_id}

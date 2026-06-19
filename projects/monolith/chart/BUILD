@@ -23,27 +23,11 @@ sh_test(
     },
 )
 
-sh_test(
-    name = "obsidian_readiness_probe_test",
-    srcs = ["obsidian_readiness_probe_test.sh"],
-    args = [
-        "$(rootpath @multitool//tools/helm)",
-        "$(rootpath :chart.package)",
-        "$(rootpath //projects/monolith/obsidian-image:entrypoint.sh)",
-    ],
-    data = [
-        ":chart.package",
-        "//projects/monolith/obsidian-image:entrypoint.sh",
-        "@multitool//tools/helm",
-    ],
-)
-
 helm_chart(
     name = "chart",
     images = {
         "backend.image": "//projects/monolith:image.info",
         "frontend.image": "//projects/monolith/frontend:image.info",
-        "knowledge.headlessSync.image": "//projects/monolith/obsidian-image:image.info",
     },
     lint = False,
     publish = True,

@@ -24,7 +24,6 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.db import get_session
-from knowledge import frontmatter
 from knowledge.gaps import (
     answer_gap,
     delete_gap,
@@ -37,13 +36,12 @@ from knowledge.gaps import (
 )
 from knowledge.gardener import Gardener
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
-from knowledge.indexing import index_note_best_effort
+from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
 from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
     delete_note,
-    get_vault_root,
     list_notes_for_review,
     reset_note_visibility,
     resolve_note_body,
@@ -143,12 +141,7 @@ def get_notes_review_queue_endpoint(
     ordering, ``GET /notes/review-queue`` would resolve to
     ``get_knowledge_note(note_id="review-queue")`` and 404.
     """
-    vault_root = get_vault_root()
-    return {
-        "notes": list_notes_for_review(
-            session, mode=mode, limit=limit, vault_root=vault_root
-        )
-    }
+    return {"notes": list_notes_for_review(session, mode=mode, limit=limit)}
 
 
 @router.get("/notes/{note_id}")
@@ -161,12 +154,10 @@ def get_knowledge_note(
     if note is None:
         raise HTTPException(status_code=404, detail="note not found")
 
-    # ADR 006 Phase 2: body of record is Postgres ``content``; the vault
-    # read is a fallback only while the Phase 1 backfill is in flight.
-    vault_root = get_vault_root()
-    body = resolve_note_body(note.get("content"), note["path"], vault_root)
+    # ADR 006: body of record is Postgres ``content``.
+    body = resolve_note_body(note.get("content"))
     if body is None:
-        raise HTTPException(status_code=404, detail="vault file missing")
+        raise HTTPException(status_code=404, detail="note has no body")
 
     edges = store.get_note_links(note_id)
     return {**note, "content": body, "edges": edges}
@@ -177,25 +168,22 @@ def delete_note_endpoint(
     note_id: str,
     session: Session = Depends(get_session),
 ) -> dict:
-    """Soft-delete a note. Moves the file to ``_trash/`` and hides the row.
+    """Soft-delete a note by stamping ``deleted_at`` to hide the row.
 
     Backs the /private/review audit "delete" action. The DB row survives
-    so :func:`undelete_note_endpoint` can restore it; the on-disk file
-    is moved to ``_trash/<ts>-<slug>.md`` where both the gardener and
-    raw-ingest scanners skip it. There is no auto-purge of ``_trash/``
-    today — the user can hand-clean periodically.
+    so :func:`undelete_note_endpoint` can restore it. Bodies are
+    authoritative in Postgres (ADR 006); there is no file to move.
 
     NOTE: this is a behaviour change from the original hard-delete. The
     response shape used to be ``{"deleted": True, "note_id": ...}``; it
     is now the standard review-dict payload (matching the other
     note-action endpoints), with ``deleted_at`` populated.
     """
-    vault_root = get_vault_root()
     try:
-        note = delete_note(session, note_id, vault_root)
+        note = delete_note(session, note_id)
     except ValueError as exc:
         raise _map_note_error(exc) from exc
-    return _note_to_review_dict(note, vault_root)
+    return _note_to_review_dict(note)
 
 
 @router.post("/notes/{note_id}/undelete")
@@ -203,7 +191,7 @@ def undelete_note_endpoint(
     note_id: str,
     session: Session = Depends(get_session),
 ) -> dict:
-    """Undo a soft-delete: restore the file from ``_trash/`` and unhide the row.
+    """Undo a soft-delete: clear ``deleted_at`` to unhide the row.
 
     Calling this on a live note returns 404 — the row isn't "not found"
     from the user's perspective, but the error contract reuses the
@@ -211,12 +199,11 @@ def undelete_note_endpoint(
     Use the audit-mode review queue + delete action to land here in the
     first place.
     """
-    vault_root = get_vault_root()
     try:
-        note = undelete_note(session, note_id, vault_root)
+        note = undelete_note(session, note_id)
     except ValueError as exc:
         raise _map_note_error(exc) from exc
-    return _note_to_review_dict(note, vault_root)
+    return _note_to_review_dict(note)
 
 
 @router.put("/notes/{note_id}")
@@ -226,70 +213,25 @@ async def edit_note(
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
 ) -> dict:
-    """Update an existing note's frontmatter and/or body, then re-index."""
+    """Update an existing note's frontmatter and/or body, then re-index.
+
+    DB-only (ADR 006, Obsidian decommissioned): the shared
+    :func:`reindex_note_with_edits` core reconstructs frontmatter from the
+    note's Postgres row, merges the provided fields, and re-indexes. The
+    same core backs the MCP ``edit_note`` so the two can never drift.
+    """
     store = KnowledgeStore(session)
-    note = store.get_note_by_id(note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="note not found")
-
-    vault_root = get_vault_root()
-    resolved = (vault_root / note["path"]).resolve()
-    if not resolved.is_relative_to(vault_root) or not resolved.is_file():
-        raise HTTPException(status_code=404, detail="vault file missing")
-
-    existing_raw = resolved.read_text()  # nosemgrep: tainted-path-traversal-stdlib-fastapi (guarded by is_relative_to check above)
-    parsed, body = frontmatter.parse(existing_raw)
-
-    # Merge provided fields into the parsed frontmatter
-    if data.title is not None:
-        parsed.title = data.title
-    if data.tags is not None:
-        parsed.tags = data.tags
-    if data.content is not None:
-        body = data.content.strip()
-
-    # Re-serialize frontmatter
-    fm_dict: dict = {}
-    if parsed.note_id is not None:
-        fm_dict["id"] = parsed.note_id
-    if parsed.title is not None:
-        fm_dict["title"] = parsed.title
-    if parsed.type is not None:
-        fm_dict["type"] = parsed.type
-    if parsed.status is not None:
-        fm_dict["status"] = parsed.status
-    if parsed.visibility is not None:
-        fm_dict["visibility"] = parsed.visibility
-    if parsed.source is not None:
-        fm_dict["source"] = parsed.source
-    if parsed.tags:
-        fm_dict["tags"] = parsed.tags
-    if parsed.aliases:
-        fm_dict["aliases"] = parsed.aliases
-    if parsed.edges:
-        fm_dict["edges"] = parsed.edges
-    if parsed.created is not None:
-        fm_dict["created"] = parsed.created.isoformat()
-    if parsed.updated is not None:
-        fm_dict["updated"] = parsed.updated.isoformat()
-    fm_dict.update(parsed.extra)
-
-    fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
-    file_content = f"---\n{fm_str}---\n\n{body}\n"
-    resolved.write_text(
-        file_content
-    )  # nosemgrep: tainted-path-traversal-stdlib-fastapi (guarded by is_relative_to check above)
-
-    # ADR 006 Phase 3: re-index synchronously so the edit is searchable and
-    # the body of record is current. Disk write above is the safety net.
-    await index_note_best_effort(
+    result = await reindex_note_with_edits(
         store,
         embed_client,
         note_id=note_id,
-        rel_path=note["path"],
-        raw=file_content,
+        title=data.title,
+        tags=data.tags,
+        content=data.content,
     )
-    return {"path": note["path"], "note_id": note_id}
+    if result is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return result
 
 
 class IngestRequest(BaseModel):
@@ -594,12 +536,11 @@ def set_note_visibility_endpoint(
     session: Session = Depends(get_session),
 ) -> dict:
     """Set ``visibility`` (public|private) and mark verified."""
-    vault_root = get_vault_root()
     try:
-        note = set_note_visibility(session, note_id, data.visibility, vault_root)
+        note = set_note_visibility(session, note_id, data.visibility)
     except ValueError as exc:
         raise _map_note_error(exc) from exc
-    return _note_to_review_dict(note, vault_root)
+    return _note_to_review_dict(note)
 
 
 @router.post("/notes/{note_id}/verify-visibility")
@@ -608,12 +549,11 @@ def verify_note_visibility_endpoint(
     session: Session = Depends(get_session),
 ) -> dict:
     """Mark ``visibility_verified=True``. 409 if visibility is unset."""
-    vault_root = get_vault_root()
     try:
         note = verify_note_visibility(session, note_id)
     except ValueError as exc:
         raise _map_note_error(exc) from exc
-    return _note_to_review_dict(note, vault_root)
+    return _note_to_review_dict(note)
 
 
 @router.post("/notes/{note_id}/reset-visibility")
@@ -622,9 +562,8 @@ def reset_note_visibility_endpoint(
     session: Session = Depends(get_session),
 ) -> dict:
     """Clear ``visibility`` and ``visibility_verified``. Sends back to pending."""
-    vault_root = get_vault_root()
     try:
-        note = reset_note_visibility(session, note_id, vault_root)
+        note = reset_note_visibility(session, note_id)
     except ValueError as exc:
         raise _map_note_error(exc) from exc
-    return _note_to_review_dict(note, vault_root)
+    return _note_to_review_dict(note)
