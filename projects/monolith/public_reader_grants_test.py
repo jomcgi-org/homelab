@@ -64,6 +64,8 @@ def test_public_reader_can_read_public_datasets(pg):
                 "stars.sites",
                 "hikes.walks",
                 "dr_jobs.nhs_vacancies",
+                "trips.trips",
+                "trips.points",
             ):
                 session.execute(text(f"SELECT count(*) FROM {table}"))
     finally:

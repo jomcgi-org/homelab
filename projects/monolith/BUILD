@@ -253,7 +253,13 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "agent/**",
     "chat/**",
     "scheduler/**",
-    "trips/**",
+    # Trips: the read path (models.py + read_router.py + __init__.py) ships in
+    # the public image; the write/heavy path stays out (pillow/boto3/defusedxml).
+    "trips/ingest_router.py",
+    "trips/ingest.py",
+    "trips/s3.py",
+    "trips/exif.py",
+    "trips/transform.py",
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
@@ -292,6 +298,7 @@ py_library(
             "stars/**/*.py",
             "dr_jobs/**/*.py",
             "chat_public/**/*.py",
+            "trips/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -344,6 +351,7 @@ py_venv_binary(
             "stars/**/*.py",
             "dr_jobs/**/*.py",
             "chat_public/**/*.py",
+            "trips/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -3738,6 +3746,19 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//python_multipart",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "trips_read_router_test",
+    srcs = ["trips/read_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
         "@pip//sqlmodel",
     ],
 )

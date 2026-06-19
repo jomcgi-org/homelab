@@ -33,7 +33,14 @@ FORBIDDEN_MODULES = [
     "chat",
     "agent",
     "scheduler",
-    "trips",
+    # Trips read path (models + read_router) is public; the write/heavy path
+    # must stay out of the public closure (pillow/boto3/defusedxml).
+    "trips.ingest_router",
+    "trips.ingest",
+    "trips.s3",
+    "trips.exif",
+    "trips.transform",
+    "trips.backfill",
     # Private knowledge routers / write paths.
     "knowledge.router",
     "knowledge.tasks_router",
