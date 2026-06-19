@@ -358,6 +358,85 @@ frontend:
     maxReplicas: 3
     targetCPUUtilizationPercentage: 60
 
+# "imgproxy" component consumed by the homelab-library deployment/service
+# helpers. On-the-fly image resizing/optimization for trip photos, fetching
+# sources from the monolith-trips SeaweedFS bucket and serving optimized image
+# bytes at img.jomcgi.dev (via the Cloudflare tunnel, not the envoy gateway).
+# Uses an UPSTREAM public image (darthsim/imgproxy), so the tag is a plain
+# literal here and is NOT pinned by the Bazel helm_images_values pipeline (which
+# only rewrites the Bazel-built web/frontend images). The pod inherits the
+# chart's global non-root podSecurityContext/securityContext and the library's
+# writable /tmp emptyDir, so no per-component security overrides are needed.
+imgproxy:
+  enabled: true
+  replicas: 2
+  image:
+    repository: darthsim/imgproxy
+    tag: v3.25.0
+    pullPolicy: IfNotPresent
+  containerPort: 8080
+  portName: http
+  # Meshed like the other components (the namespace auto-injects); inbound is
+  # governed by the cluster default all-unauthenticated policy since no Server
+  # selects this port, so the meshed cloudflared tunnel reaches it.
+  podAnnotations:
+    linkerd.io/inject: enabled
+  # imgproxy serves /health (the library probe default), so no path override.
+  probes:
+    liveness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+    readiness:
+      initialDelaySeconds: 3
+      periodSeconds: 5
+      timeoutSeconds: 3
+  env:
+    - name: IMGPROXY_BIND
+      value: ":8080"
+    - name: IMGPROXY_USE_S3
+      value: "true"
+    - name: IMGPROXY_S3_ENDPOINT
+      value: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+    - name: IMGPROXY_S3_REGION
+      value: "us-east-1"
+    - name: AWS_ACCESS_KEY_ID
+      value: "anonymous"
+    - name: AWS_SECRET_ACCESS_KEY
+      value: "anonymous"
+    # Lock imgproxy to the trips bucket. This is the security boundary that lets
+    # the unsigned-URL mode below be safe: imgproxy will only fetch sources under
+    # s3://monolith-trips/, never other buckets or arbitrary URLs.
+    - name: IMGPROXY_ALLOWED_SOURCES
+      value: "s3://monolith-trips/"
+    # Unsafe (unsigned) URL mode. Safe here because ALLOWED_SOURCES locks every
+    # request to the monolith-trips bucket.
+    - name: IMGPROXY_ALLOW_INSECURE_URLS
+      value: "true"
+    - name: IMGPROXY_QUALITY
+      value: "90"
+    - name: IMGPROXY_FORMAT_QUALITY
+      value: "webp=92,avif=90,jpeg=90"
+    - name: IMGPROXY_ENABLE_WEBP_DETECTION
+      value: "true"
+    - name: IMGPROXY_STRIP_METADATA
+      value: "true"
+    - name: IMGPROXY_MAX_SRC_RESOLUTION
+      value: "50"
+  # CPU request only (no limit): image decode is bursty CPU-bound work and a
+  # limit would only throttle it. Memory request == limit per the sizing
+  # convention.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 8080
+
 # Public ingress (ADR 004 Phase 5e). Defaults off; enabled in deploy/values.yaml
 # for the cutover of the public hostname to this service. The frontend serves
 # pages (/_app/ + /), the backend serves /api.

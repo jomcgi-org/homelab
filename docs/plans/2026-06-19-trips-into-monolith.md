@@ -419,44 +419,43 @@ Repeat per trip slug under `projects/trips/frontend/public/trips/*/config.yaml`.
 
 ---
 
-## Task 6: Provision the bucket via GitOps + imgproxy into the monolith chart (bucket-locked, no nginx)
+## Task 6: Provision the bucket via GitOps + imgproxy into the monolith-PUBLIC chart, reusing the img.jomcgi.dev tunnel route
+
+**Topology correction (discovered mid-implementation):** `jomcgi.dev` is served by a SEPARATE chart, `projects/monolith-public/chart/` (OCI, its own ArgoCD app + namespace `monolith-public`). The private `monolith` chart's `httproute-public.yaml` is dormant (`cfIngress.public.enabled: false`). monolith-public's HTTPRoute is deliberately frontend-only (ADR 004). Public images today are served via `img.jomcgi.dev`, routed at the **Cloudflare tunnel layer** (`projects/platform/cloudflare-gateway/values-prod.yaml`) straight to `trips-nginx`, bypassing the envoy gateway. So imgproxy belongs in the **monolith-public** chart, and the public image route is the existing **img.jomcgi.dev tunnel entry repointed** at it (NOT a path on the envoy HTTPRoute, which would break ADR 004's frontend-only invariant).
 
 **Files:**
 
-- Modify: `projects/platform/seaweedfs/values.yaml` (add `monolith-trips` to `s3.createBuckets`)
-- Create: `projects/monolith/chart/templates/imgproxy.yaml` (Deployment + Service)
-- Modify: `projects/monolith/chart/values.yaml` (imgproxy block)
-- Modify: `projects/monolith/chart/templates/httproute-public.yaml` (route `/trips/img/*` -> imgproxy Service)
-- Modify: `projects/monolith/chart/Chart.yaml` (bump `version`) and `projects/monolith/deploy/application.yaml` (`targetRevision`), keep in sync per `feedback_chart_version_bumps`.
+- Modify: `projects/platform/seaweedfs/values.yaml` (add `monolith-trips` under `filer.s3.createBuckets`, enabling `filer.s3`)
+- Create: `projects/monolith-public/chart/templates/imgproxy.yaml` (Deployment + Service in the monolith-public namespace; match the chart's homelab-library style if it uses one, else plain YAML)
+- Modify: `projects/monolith-public/chart/values.yaml` (imgproxy block)
+- Modify: `projects/platform/cloudflare-gateway/values-prod.yaml` (repoint `img.jomcgi.dev` from `trips-nginx.trips.svc` to `monolith-public-imgproxy.monolith-public.svc.cluster.local:8080`)
+- Modify: `projects/monolith-public/chart/Chart.yaml` (bump `version`) and `projects/monolith-public/deploy/application.yaml` (`targetRevision`), keep in sync per `feedback_chart_version_bumps`.
+- REVERT the Task 6 v1 changes wrongly placed in the private monolith chart (imgproxy.yaml, imgproxy values block, the `/trips/img/` httproute rule, the `Chart.yaml`/`application.yaml` bump).
 
-**Step 0: Provision the bucket declaratively.** Add to `projects/platform/seaweedfs/values.yaml` under the existing `s3:` block (`values.yaml:126`):
+**Step 0: Provision the bucket declaratively.** The seaweedfs createBuckets hook reads `.Values.filer.s3.createBuckets` (gated on `filer.s3.enabled`), NOT a top-level `s3.createBuckets`. Add to `projects/platform/seaweedfs/values.yaml` under `filer.s3`:
 
 ```yaml
-s3:
-  enabled: true
-  # ...existing keys...
-  createBuckets:
-    - name: monolith-trips
-      anonymousRead: true
+    s3:
+      enabled: true
+      createBuckets:
+        - name: monolith-trips
+          anonymousRead: true
 ```
 
-The chart's `createBucketsHook` job runs idempotently on each ArgoCD sync. seaweedfs is a **platform app sourced from git HEAD**, so no chart version bump is needed (unlike the monolith chart below). This bucket must exist before recovery (Task 5 step 4) runs; since it syncs independently via ArgoCD, landing it in this PR is sufficient. Keep a defensive autocreate-on-`NoSuchBucket` in `trips/s3.py` (Task 3) as belt-and-braces, but GitOps is the source of truth.
+Enabling `filer.s3` also starts an embedded S3 listener on the filer pod, but the canonical `seaweedfs-s3` Service selector keys on `app.kubernetes.io/component: s3` (the standalone component), so imgproxy's endpoint is unaffected; buckets live in shared filer metadata so `monolith-trips` is visible via the standalone endpoint. seaweedfs is git-HEAD sourced, so no chart bump. The hook is `post-install` only (PostSync), so a pre-existing cluster may need one manual `s3.bucket.create` or rely on the `trips/s3.py` autocreate fallback; both are fine.
 
-**Step 1: Deployment+Service** modeled on `chart/templates/deployment.yaml` (plain YAML + `monolith.*` helpers, NOT the homelab library include the standalone chart used). Port the env from `projects/trips/chart/values.yaml:26-90`:
+**Step 1: imgproxy Deployment+Service in the monolith-public chart.** Read `projects/monolith-public/chart/templates/deployment.yaml` and `values.yaml` first to match its style (it runs `web` + `frontend` via the homelab library). Add imgproxy (component `imgproxy`), `darthsim/imgproxy:v3.25.0`, port 8080:
 
-- `darthsim/imgproxy:v3.25.0`, port 8080, non-root uid 65532, `runAsNonRoot: true`.
 - `IMGPROXY_USE_S3=true`, `IMGPROXY_S3_ENDPOINT=http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333`, `IMGPROXY_S3_REGION=us-east-1`, anonymous AWS creds.
-- **Lock to the bucket:** `IMGPROXY_ALLOWED_SOURCES=s3://monolith-trips/` (this replaces nginx's path-constraining role; without it, `unsafe` URLs could resize any reachable S3 path).
-- Keep `IMGPROXY_QUALITY=90`, `IMGPROXY_FORMAT_QUALITY=webp=92,avif=90,jpeg=90`, `IMGPROXY_ENABLE_WEBP_DETECTION=true`, `IMGPROXY_STRIP_METADATA=true`, `IMGPROXY_MAX_SRC_RESOLUTION=50`. Resources req `100m`/`128Mi`, limit `2`/`512Mi` (matches the just-applied un-throttle in #2705: CPU request only, no CPU limit per `feedback_resource_sizing_convention` — set request, drop the CPU limit, keep mem request=limit).
+- **Lock to the bucket:** `IMGPROXY_ALLOWED_SOURCES=s3://monolith-trips/`.
+- `IMGPROXY_ALLOW_INSECURE_URLS=true` (unsafe URL mode; safe because ALLOWED_SOURCES locks the bucket).
+- `IMGPROXY_QUALITY=90`, `IMGPROXY_FORMAT_QUALITY=webp=92,avif=90,jpeg=90`, `IMGPROXY_ENABLE_WEBP_DETECTION=true`, `IMGPROXY_STRIP_METADATA=true`, `IMGPROXY_MAX_SRC_RESOLUTION=50`.
+- non-root uid 65532, `runAsNonRoot: true`, drop ALL caps, `readOnlyRootFilesystem: true` + a writable `/tmp` emptyDir, `/health` liveness+readiness probes.
+- Resources: CPU request only (no CPU limit, per `feedback_resource_sizing_convention`), mem request==limit (128Mi/512Mi).
 
-**Step 2: HTTPRoute.** Add a rule to `httproute-public.yaml` forwarding `/trips/img/` to the imgproxy Service on 8080. This serves image **bytes**, not a JSON API, so it does not violate "zero public JSON API." imgproxy in `unsafe` mode constrained to the one bucket is the public image surface.
+**Step 2: Repoint the tunnel route.** In `projects/platform/cloudflare-gateway/values-prod.yaml`, change the `img.jomcgi.dev` mapping from `http://trips-nginx.trips.svc.cluster.local:80` to `http://monolith-public-imgproxy.monolith-public.svc.cluster.local:8080`. This keeps the public image surface on the same hostname (no envoy HTTPRoute change, ADR 004 intact) and means decommissioning trips-nginx does not break images. Frontend image URLs become absolute `https://img.jomcgi.dev/...` (cross-origin `<img>` tags need no CORS).
 
-**Step 3: Bump chart version + targetRevision, commit.**
-
-```bash
-git add projects/monolith/chart/ projects/monolith/deploy/application.yaml
-git commit -m "feat(trips): port imgproxy into monolith chart, bucket-locked, public image route"
-```
+**Step 3: Bump monolith-public chart version + targetRevision; commit.** The plain `<img src>` cross-origin works without CORS (unlike fetch+traceparent, see `feedback_otel_fetch_cors_thirdparty`).
 
 ---
 
@@ -464,15 +463,17 @@ git commit -m "feat(trips): port imgproxy into monolith chart, bucket-locked, pu
 
 The standalone frontend is React/wouter on Cloudflare Pages. Port the three pages to SvelteKit SSR under the monolith public routes. This is the largest task; split commits per page. Use `ships` (`ShipsMap.svelte`, maplibre GeoJSON layer) as the maplibre reference; trips maps should likewise render points as a GPU GeoJSON layer, not DOM markers.
 
-**Files (create under `projects/monolith/frontend/src/routes/public/trips/`):**
+**Public URL (settled):** `jomcgi.dev/app/trips/<slug>`, matching ships/stars/hikes/dr-jobs. The old `trips.jomcgi.dev` is let die (no redirect). Pages live under `routes/public/app/trips/` (the `hooks.js` reroute maps the apex under `/public`, so `jomcgi.dev/app/trips/...` -> `routes/public/app/trips/...`). Served by the **monolith-public** frontend pod via the catch-all `/` rule, so NO HTTPRoute change is needed for pages.
 
-- `+page.server.js` (default redirect to latest trip) and `[slug]/+page.server.js` (SSR load → `/api/trips/trip/<slug>`)
+**Files (create under `projects/monolith/frontend/src/routes/public/app/trips/`):**
+
+- `+page.server.js` (default: redirect to or render latest trip) and `[slug]/+page.server.js` (SSR load).
 - `[slug]/+page.svelte` — TripSummary (multi-day overview + map). Port from `projects/trips/frontend/src/pages/TripSummaryPage.jsx`.
 - `[slug]/timeline/+page.svelte` — port `TripTimeline.jsx`.
 - `[slug]/day/[day]/+page.svelte` — port `DayDetailPage.jsx` (per-day map, photo grid/viewer, elevation stats).
-- `lib/trips/images.js` — preset URL helper replacing nginx rewrites:
+- `lib/trips/images.js` — imgproxy preset URL helper. Images are served by imgproxy on `img.jomcgi.dev` (Task 6), so URLs are ABSOLUTE and cross-origin (fine for `<img>`):
   ```js
-  // build imgproxy URLs from presets; base path served by the HTTPRoute -> imgproxy
+  const IMG_BASE = "https://img.jomcgi.dev";
   const PRESETS = {
     thumb: "rs:fit:300:300/q:85",
     display: "rs:fit:1920:1080/q:92",
@@ -480,15 +481,15 @@ The standalone frontend is React/wouter on Cloudflare Pages. Port the three page
     gallery: "rs:fit:600:600/q:88",
   };
   export const imgUrl = (key, preset) =>
-    `/trips/img/unsafe/${PRESETS[preset]}/plain/s3://monolith-trips/${key}`;
+    `${IMG_BASE}/unsafe/${PRESETS[preset]}/plain/s3://monolith-trips/${key}`;
   export const fullUrl = (key) =>
-    `/trips/img/unsafe/plain/s3://monolith-trips/${key}`;
+    `${IMG_BASE}/unsafe/plain/s3://monolith-trips/${key}`;
   ```
 - Port supporting components as Svelte: `TripMap`/`DayMap` (maplibre), `PhotoViewer`, `DayPhotoGrid`, `DayStatsCard`, `DayNavigation`, `TagFilter`, `ViewToggle`, elevation chart. Drop `LiveBadge` and any WS hook (no live path). Drop `useWeather` unless trivially portable.
 
-**SSR data flow:** `+page.server.js` `load` runs in the public SSR pod and fetches `http://localhost:8000/api/trips/trip/<slug>` (same-pod, the read route from Task 4), inlining `{trip, points}` into the page. No client-side fetch, no exposed JSON API. Mirror the ships SSR load pattern.
+**SSR data flow (match the other public apps):** the public frontend pod has `API_BASE=http://monolith-public-web:8000` (the public read-only backend, which now includes the trips `read_router` from Task 4). The `[slug]/+page.server.js` `load` fetches `${API_BASE}/api/trips/trip/${slug}` server-side and inlines `{trip, points}` into the SSR HTML. For any client-side data needs, add a same-origin `routes/public/app/trips/.../+server.js` proxy that calls `API_BASE` (the pattern used by `ships/heat/+server.js`, `stars/history/.../+server.js`, etc.), NOT a direct browser call. No public JSON API is exposed and no envoy HTTPRoute change is needed. Read an existing example like `routes/public/app/ships/+page.server.js` (or `hikes`) to copy the `load`/`API_BASE` idiom exactly.
 
-**Routing note:** the SvelteKit `hooks.js` reroute maps `/` → `/public/` internally (see `project_jomcgi_dev_served_by_monolith`). Decide the public path: either keep `trips.jomcgi.dev` (add a hostname) or move to `jomcgi.dev/trips/<slug>`. Recommend `jomcgi.dev/trips/...` to retire the extra subdomain; update the engineering/portfolio links (`frontend/src/routes/public/engineering/engineering-data.js:287`, `diagrams/Trips.svelte:24`) that currently point at `trips.jomcgi.dev`.
+**Portfolio links:** update the engineering/portfolio links that point at the old subdomain (`frontend/src/routes/public/engineering/engineering-data.js:287`, `diagrams/Trips.svelte:24`) to `jomcgi.dev/app/trips/...`.
 
 **Tests:** add Vitest component tests where the standalone had them (`projects/trips/frontend/src/test/`), at minimum a render-without-crash + preset-URL-builder unit. Commit per page.
 

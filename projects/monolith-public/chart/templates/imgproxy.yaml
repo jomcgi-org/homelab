@@ -1,0 +1,23 @@
+# imgproxy: on-the-fly image resizing/optimization for trip photos, serving
+# image BYTES (not a JSON API) from the monolith-trips SeaweedFS bucket. It is
+# reached directly by the Cloudflare tunnel at img.jomcgi.dev (cloudflared in
+# envoy-gateway-system, meshed), NOT through the envoy gateway / public
+# HTTPRoute. The Deployment and Service are rendered from the homelab-library
+# helpers (same as the web/frontend components), so it lives in the meshed
+# monolith-public namespace.
+#
+# Meshing notes: the namespace label auto-injects the Linkerd proxy. No Server
+# in linkerd-policy.yaml selects this component's port, so the cluster's
+# defaultInboundPolicy (all-unauthenticated) governs inbound and the meshed
+# cloudflared tunnel can reach it over mTLS. imgproxy's only egress is the
+# in-cluster seaweedfs-s3 endpoint, which is cluster-network traffic and so is
+# not blocked by the namespace EgressNetwork deny.
+#
+# Security boundary: IMGPROXY_ALLOWED_SOURCES locks every request to
+# s3://monolith-trips/, which is what makes IMGPROXY_ALLOW_INSECURE_URLS (unsigned
+# URLs) safe. Per the resource-sizing convention this sets a CPU request but NO
+# CPU limit (image decode is bursty CPU-bound work; a limit only throttles it)
+# and pins memory request == limit.
+{{- include "homelab.deployment" (dict "context" . "component" "imgproxy") }}
+---
+{{- include "homelab.service" (dict "context" . "component" "imgproxy") }}

@@ -38,6 +38,7 @@ REQUIRED_PREFIXES = [
     "/api/stars",
     "/api/hikes",
     "/api/dr-jobs",
+    "/api/trips",
 ]
 
 
@@ -73,6 +74,7 @@ ALLOWED_PREFIXES = (
     "/api/stars",
     "/api/hikes",
     "/api/dr-jobs",
+    "/api/trips",
     "/api/knowledge/public",
     "/api/home/observability",
     # Internal-only public chat API. It is mounted on the public binary but is
