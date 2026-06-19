@@ -1,9 +1,9 @@
-"""Unit tests for trips.backfill.transform (pure, no I/O)."""
+"""Unit tests for trips.transform (pure, no I/O)."""
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from trips.backfill import transform
+from trips import transform
 
 _KML = """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
