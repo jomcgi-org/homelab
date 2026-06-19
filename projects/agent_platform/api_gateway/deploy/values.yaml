@@ -30,12 +30,15 @@ clusterInfo:
     # Stale-while-revalidate duration (seconds) - CDN serves stale content
     # while fetching fresh in background. Total survivable downtime = maxAge + staleWhileRevalidate
     staleWhileRevalidate: 300
+  # CPU limit raised 50m -> 500m: this sidecar lists cluster resources every 30s
+  # (kubectl), which spikes CPU and was throttled ~98.7% of periods pinned at its
+  # 50m ceiling. Request stays 50m (Burstable) so it bursts during the poll only.
   resources:
     requests:
       cpu: 50m
       memory: 256Mi
     limits:
-      cpu: 50m
+      cpu: 500m
       memory: 256Mi
 
 # Backend services to route to
