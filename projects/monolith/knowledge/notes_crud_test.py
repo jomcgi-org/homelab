@@ -280,11 +280,13 @@ class TestEditNote:
         assert body["note_id"] == "abc123"
         assert body["path"] == "my-note.md"
 
-        # The re-indexed DB row carries the new body + title.
+        # The re-indexed DB row carries the new body + title. The index
+        # pipeline stores the body with surrounding frontmatter whitespace,
+        # so compare on the stripped body.
         reloaded = _reload_note(real_session, "abc123")
         assert reloaded is not None
         assert reloaded.title == "Updated Title"
-        assert reloaded.content == "Updated body"
+        assert (reloaded.content or "").strip() == "Updated body"
 
     def test_edit_note_not_found(self, db_client):
         """PUT for an unknown note_id returns 404 (no row in the DB)."""
@@ -345,4 +347,4 @@ class TestEditNote:
         assert reloaded.visibility == "public", (
             f"PUT dropped visibility; got {reloaded.visibility!r}"
         )
-        assert reloaded.content == "Edited body."
+        assert (reloaded.content or "").strip() == "Edited body."
