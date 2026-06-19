@@ -10,6 +10,7 @@
   // Chat is the default view. A Chat | Graph toggle switches to the graph view,
   // which is LAZY: the heavy KnowledgeGraph component and its data are only
   // imported/fetched on the first switch, never on the initial chat load.
+  import { onMount } from "svelte";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import {
@@ -82,9 +83,11 @@
   // while a turn streams (chars received / 4 per token, over elapsed seconds),
   // settling to the last turn's rate when idle.
   //
-  // GPU hardware stats (temp / VRAM) are deliberately omitted: they need a
-  // metrics endpoint we do not expose yet. Wiring those into the ticker is a
-  // planned follow-up.
+  // GPU UTIL / VRAM come from the cluster stats snapshot (the same payload the
+  // homepage renders): SSR seeds `data.stats`, and we poll the same-origin
+  // /app/notes/stats proxy so the GPU readout stays live while a visitor sits on
+  // the page. No new backend endpoint, and the browser never calls the backend
+  // directly. When stats are unavailable the GPU items just drop out.
   const MODEL_NAME = "QWEN3.6-27B"; // CHAT_PUBLIC_MODEL = qwen3.6-27b
   const BOT_LABEL = "QWEN3.6 / LOCAL"; // model family + "runs on my cluster"
   const CONTEXT_WINDOW = 32768; // CHAT_PUBLIC_MODEL_WINDOW_TOKENS
@@ -100,6 +103,45 @@
   let tokPerSec = $state(0); // last computed decode rate
   let turnStart = 0; // performance.now() at turn start (plain, non-reactive)
 
+  // Live cluster stats (homepage GPU/system snapshot). SSR-seeded, then polled.
+  let liveStats = $state(data.stats ?? null);
+  onMount(() => {
+    let stopped = false;
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch("/app/notes/stats");
+        if (!stopped && res.ok) liveStats = await res.json();
+      } catch {
+        // keep the last good value; the readout never goes blank on a blip
+      }
+    }, 20_000);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  });
+
+  // GPU readouts derived from the snapshot: utilization and VRAM used / total.
+  // Each item appears only when its field is present, so a partial snapshot
+  // (e.g. util known but frame buffer unavailable) still surfaces what it can.
+  const gpuItems = $derived.by(() => {
+    const g = liveStats?.gpu;
+    if (!g) return [];
+    const items = [];
+    if (typeof g.utilization_pct === "number") {
+      items.push(`GPU: ${Math.round(g.utilization_pct)}% UTIL`);
+    }
+    if (
+      typeof g.memory_used_gb === "number" &&
+      typeof g.memory_total_gb === "number"
+    ) {
+      items.push(
+        `VRAM: ${g.memory_used_gb.toFixed(0)} / ${g.memory_total_gb.toFixed(0)} GB`,
+      );
+    }
+    return items;
+  });
+
   function fmtCount(n) {
     // 1234 -> "1,234". Used for the KG note count and empty-state copy.
     return n.toLocaleString("en-US");
@@ -111,6 +153,7 @@
 
   const tickerItems = $derived([
     `MODEL: ${MODEL_NAME}`,
+    ...gpuItems,
     `CTX: ${fmtTokens(sessionTokens)} / ${CONTEXT_WINDOW / 1024}K`,
     `TOK/S: ${tokPerSec.toFixed(1)}`,
     `KG: ${fmtCount(PUBLIC_NOTE_COUNT)} NOTES`,
@@ -657,10 +700,17 @@
      translateX(-33.333%) gives a seamless loop. Coral dots separate segments. */
   .ticker {
     flex: none;
+    /* Full-bleed: span the whole viewport width edge to edge, escaping the app
+       shell's horizontal padding (incl. safe-area insets). For a flex child the
+       50% resolves against the parent's content width, so this margin collapses
+       to exactly -padding at every breakpoint. No shadow: just top/bottom rules
+       so the band reads as a clean stripe. */
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
     background: var(--accent);
     color: var(--ink);
-    border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard-sm);
+    border-top: 2px solid var(--ink);
+    border-bottom: 2px solid var(--ink);
     overflow: hidden;
     font-size: 11px;
     font-weight: 700;
@@ -672,7 +722,7 @@
     gap: 36px;
     padding: 7px 0;
     width: max-content;
-    animation: ticker-scroll 42s linear infinite;
+    animation: ticker-scroll 28s linear infinite;
   }
   .ticker-item {
     display: inline-flex;
