@@ -25,15 +25,14 @@ Output: grid.json, an array of
 where lp_zone is the classified zone name (pristine/excellent/rural). ids are
 assigned after a stable sort by (lat, lon).
 
-Inputs (pull from the running stargazer pod's processed-data PVC):
+Inputs (the stargazer service was decommissioned 2026-06; its processed data was
+archived to SeaweedFS at s3://stargazer-archive/processed/ before removal):
 
-    # Roads (~193 MB) and the LP raster live under /data/processed on the api pod.
-    POD=$(kubectl get pods -n stargazer -l app.kubernetes.io/component=api \
-        -o jsonpath='{.items[0].metadata.name}')
-    kubectl cp -n stargazer "$POD":/data/processed/scotland-roads.geojson \
-        -c api /tmp/scotland-roads.geojson
-    kubectl cp -n stargazer "$POD":/data/processed/scotland_lp_2024.tif \
-        -c api /tmp/scotland_lp_2024.tif
+    # Roads (~193 MB) and the LP raster. Pull from the SeaweedFS archive. Set $EP
+    # to the in-cluster SeaweedFS S3 endpoint (the seaweedfsS3Endpoint value in the
+    # monolith chart; creds default to duckdb/duckdb, see chat/store.py).
+    aws --endpoint-url "$EP" s3 cp s3://stargazer-archive/processed/scotland-roads.geojson /tmp/scotland-roads.geojson
+    aws --endpoint-url "$EP" s3 cp s3://stargazer-archive/processed/scotland_lp_2024.tif /tmp/scotland_lp_2024.tif
 
     # Natural Earth 10m admin-1 (for the Scotland boundary); features with
     # properties.geonunit == "Scotland" are the Scottish council areas.

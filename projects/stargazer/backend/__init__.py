@@ -1,1 +1,0 @@
-"""Stargazer application module."""
