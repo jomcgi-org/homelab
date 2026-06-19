@@ -75,6 +75,48 @@
   let touchedMap = $state(new Map());
   let touched = $derived([...touchedMap.values()]);
 
+  // ── live ticker readouts ─────────────────────────────────────────
+  // The yellow marquee carries a few live numbers about the running session.
+  // CTX is the session token total (the `done` SSE frame's `total_tokens`) over
+  // the model's 32K context window. TOK/S is an approximate decode rate computed
+  // while a turn streams (chars received / 4 per token, over elapsed seconds),
+  // settling to the last turn's rate when idle.
+  //
+  // GPU hardware stats (temp / VRAM) are deliberately omitted: they need a
+  // metrics endpoint we do not expose yet. Wiring those into the ticker is a
+  // planned follow-up.
+  const MODEL_NAME = "QWEN3.6-27B"; // CHAT_PUBLIC_MODEL = qwen3.6-27b
+  const BOT_LABEL = "QWEN3.6 / LOCAL"; // model family + "runs on my cluster"
+  const CONTEXT_WINDOW = 32768; // CHAT_PUBLIC_MODEL_WINDOW_TOKENS
+  // Public note count for the KG readout + empty-state copy. The chat view does
+  // NOT load the graph payload on initial render (that lazy fetch only happens
+  // on the GRAPH toggle, by design), so there is no live count here without an
+  // extra round-trip. We use a maintained constant; a lightweight count endpoint
+  // is the follow-up that would make this live. Keep this in sync with the
+  // public graph node count.
+  const PUBLIC_NOTE_COUNT = 4636;
+
+  let sessionTokens = $state(0); // running CTX total for this session
+  let tokPerSec = $state(0); // last computed decode rate
+  let turnStart = 0; // performance.now() at turn start (plain, non-reactive)
+
+  function fmtCount(n) {
+    // 1234 -> "1,234". Used for the KG note count and empty-state copy.
+    return n.toLocaleString("en-US");
+  }
+  function fmtTokens(n) {
+    // 1180 -> "1.2K", 640 -> "640". Compact CTX readout.
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+  }
+
+  const tickerItems = $derived([
+    `MODEL: ${MODEL_NAME}`,
+    `CTX: ${fmtTokens(sessionTokens)} / ${CONTEXT_WINDOW / 1024}K`,
+    `TOK/S: ${tokPerSec.toFixed(1)}`,
+    `KG: ${fmtCount(PUBLIC_NOTE_COUNT)} NOTES`,
+    "NO TOOLS / NO CLOUD / NO TELEMETRY",
+  ]);
+
   // Starters that map to Joe's dense public notes, so they retrieve and ground
   // well (TSA / Alert Fatigue / Hexagonal Architecture / Production Readiness
   // Review notes).
@@ -130,6 +172,7 @@
     sending = true;
     turn = initialTurnState();
     controller = new AbortController();
+    turnStart = performance.now();
 
     try {
       await streamChatMessage(trimmed, {
@@ -137,6 +180,14 @@
         onFrame: (frame) => {
           turn = applyFrame(turn, frame);
           if (frame?.type === "node_touched") mergeTouched(frame);
+          if (frame?.type === "token") {
+            // Approximate decode rate while streaming: ~4 chars per token over
+            // elapsed seconds. Live-ish; settles to the last value when idle.
+            const elapsed = (performance.now() - turnStart) / 1000;
+            if (elapsed > 0.05) {
+              tokPerSec = turn.assistant.length / 4 / elapsed;
+            }
+          }
         },
       });
     } catch {
@@ -151,6 +202,9 @@
         { role: "assistant", content: turn.assistant, touched: turn.touched },
       ];
     }
+    // The `done` frame carries the session's running token total; surface it as
+    // the CTX readout in the ticker.
+    if (turn.totalTokens) sessionTokens = turn.totalTokens;
     if (turn.status === "busy" || turn.status === "error") {
       notice = { kind: turn.status, message: turn.error };
     }
@@ -170,6 +224,9 @@
     notice = s.notice;
     input = s.input;
     lastUserMessage = s.lastUserMessage;
+    // Reset the live ticker readouts too: a new session starts at 0 context.
+    sessionTokens = 0;
+    tokPerSec = 0;
   }
 
   function newChat() {
@@ -228,11 +285,24 @@
     <span class="crumb-name">notes</span>
   </nav>
 
-  <!-- Header row: the CHAT | GRAPH view toggle on the left, and the collapsible
-       "HOW DOES THIS WORK?" explainer right after it. The explainer is sized to
-       its own text (not a full-width banner); expanding it opens a content-width
-       popover under the summary so it never shoves the layout. The security
-       posture (open model, no tools, public notes) stays up front, neutral. -->
+  <!-- Live ticker: a scrolling yellow marquee of session readouts (model, live
+       CTX usage / 32K, live decode rate, KG size, posture). The run is tripled
+       so the loop is seamless; prefers-reduced-motion stops the scroll. -->
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker-track">
+      {#each { length: 3 } as _}
+        {#each tickerItems as item}
+          <span class="ticker-item"><span class="ticker-dot"></span>{item}</span>
+        {/each}
+      {/each}
+    </div>
+  </div>
+
+  <!-- Control row: the CHAT | GRAPH segmented toggle on the left, and the
+       collapsible "HOW DOES THIS WORK?" explainer right after it. The explainer
+       is sized to its own text; expanding it opens a content-width popover under
+       the summary so it never shoves the layout. The security posture (open
+       model, no tools, public notes) stays up front, neutral. -->
   <div class="app-toolbar">
     <div class="view-toggle" role="tablist" aria-label="Notes view">
       <button
@@ -275,20 +345,17 @@
   <div class="view-area">
     {#if view === "chat"}
     <section class="chat-box">
-      <div class="chat-box-bar">
-        <span class="chat-box-tag">PUBLIC CHAT</span>
-        <span class="chat-box-status" class:on={admitted}>
+      <div class="panel-head">
+        <span class="panel-tag">PUBLIC CHAT</span>
+        <span class="session" class:on={admitted}>
+          <span class="led" class:on={admitted}></span>
           {admitted ? "SESSION OPEN" : "LOCKED"}
         </span>
-        <span class="chat-box-hint">
-          Ask anything about my notes, projects, or how this homelab is built.
-        </span>
+        <span class="panel-spacer"></span>
         {#if admitted}
-          <div class="chat-box-actions">
-            <button type="button" class="bar-btn" onclick={newChat}>
-              NEW CHAT
-            </button>
-          </div>
+          <button type="button" class="bar-btn" onclick={newChat}>
+            NEW CHAT
+          </button>
         {/if}
       </div>
 
@@ -310,6 +377,72 @@
           </div>
         {:else if messages.length === 0 && !sending}
           <div class="chat-empty">
+            <!-- Scattered brutalist doodles, decorative only. Hidden under 640px
+                 and pointer-events:none so they never interfere. -->
+            <svg
+              class="doodle doodle-cloud"
+              viewBox="0 0 64 40"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M14 32 Q4 32 5 24 Q5 16 14 17 Q15 7 26 9 Q33 2 42 10 Q54 9 53 19 Q62 19 60 27 Q59 32 50 32 Z"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <svg
+              class="doodle doodle-star"
+              viewBox="0 0 40 40"
+              aria-hidden="true"
+            >
+              <path
+                d="M20 2 L24 16 L38 20 L24 24 L20 38 L16 24 L2 20 L16 16 Z"
+                fill="var(--blue)"
+                stroke="var(--ink)"
+                stroke-width="2"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <svg
+              class="doodle doodle-squiggle"
+              viewBox="0 0 84 20"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M2 10 Q12 -1 22 10 T42 10 T62 10 T82 10"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+              />
+            </svg>
+            <svg
+              class="doodle doodle-diamond"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <rect
+                x="6"
+                y="6"
+                width="12"
+                height="12"
+                transform="rotate(45 12 12)"
+                fill="var(--coral)"
+                stroke="var(--ink)"
+                stroke-width="2"
+              />
+            </svg>
+
+            <h2 class="empty-headline">
+              ask my notes <span class="empty-hl">anything.</span>
+            </h2>
+            <p class="empty-sub">
+              There are {fmtCount(PUBLIC_NOTE_COUNT)} of them: coffee logs, ADRs,
+              dark-sky readings, half-finished side quests. An open model reads
+              the graph and answers. No tools, no cloud, no telemetry.
+            </p>
             <div class="chat-examples">
               {#each EXAMPLES as ex}
                 <button
@@ -326,12 +459,11 @@
           {#each messages as m}
             {#if m.role === "user"}
               <article class="turn turn-user">
-                <p class="turn-tag">YOU</p>
-                <p class="turn-user-text">{m.content}</p>
+                <div class="user-bubble">{m.content}</div>
               </article>
             {:else}
-              <article class="turn turn-graph">
-                <p class="turn-tag">GRAPH</p>
+              <article class="turn turn-bot">
+                <p class="bot-label">{BOT_LABEL}</p>
                 <div class="turn-md">{@html renderReply(m.content)}</div>
                 {#if m.touched && m.touched.length}
                   <div class="turn-touched">
@@ -352,8 +484,8 @@
           {/each}
 
           {#if sending}
-            <article class="turn turn-graph">
-              <p class="turn-tag">GRAPH</p>
+            <article class="turn turn-bot">
+              <p class="bot-label">{BOT_LABEL}</p>
               {#if turn.assistant}
                 <div class="turn-md">{@html renderReply(turn.assistant)}<span class="caret"></span></div>
               {:else}
@@ -384,6 +516,20 @@
 
       {#if admitted}
         <form class="chat-input" onsubmit={onSubmit}>
+          <!-- Small blue squiggle doodle anchored bottom-left of the dock. -->
+          <svg
+            class="dock-doodle"
+            viewBox="0 0 60 14"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M2 7 Q9 0 16 7 T30 7 T44 7 T58 7"
+              stroke="var(--blue)"
+              stroke-width="2.5"
+              stroke-linecap="round"
+            />
+          </svg>
           <textarea
             bind:this={inputEl}
             bind:value={input}
@@ -440,7 +586,7 @@
 <style>
   /* ── full-screen app shell ──────────────────────────────────── */
   /* No site nav on /app/* routes (same convention as /app/ships): this page
-     owns the whole viewport. A flex column with generous gaps so the explainer,
+     owns the whole viewport. A flex column with generous gaps so the ticker,
      toolbar, and the chat/graph surface sit apart and breathe. 100dvh tracks
      the dynamic mobile viewport; the safe-area insets keep it off the notch and
      the home indicator. */
@@ -450,9 +596,9 @@
     height: 100dvh;
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    padding: calc(24px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right))
-      calc(24px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
+    gap: 14px;
+    padding: calc(20px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right))
+      calc(20px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
     overflow: hidden;
     font-family: var(--mono);
     color: var(--ink);
@@ -506,6 +652,49 @@
     color: var(--ink-3);
   }
 
+  /* ── live ticker (yellow scrolling marquee) ─────────────────── */
+  /* A thin yellow band of session readouts under the breadcrumb. Tripled run +
+     translateX(-33.333%) gives a seamless loop. Coral dots separate segments. */
+  .ticker {
+    flex: none;
+    background: var(--accent);
+    color: var(--ink);
+    border: 2px solid var(--ink);
+    box-shadow: var(--shadow-hard-sm);
+    overflow: hidden;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .ticker-track {
+    display: flex;
+    gap: 36px;
+    padding: 7px 0;
+    width: max-content;
+    animation: ticker-scroll 42s linear infinite;
+  }
+  .ticker-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    white-space: nowrap;
+  }
+  .ticker-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--coral);
+    border: 1.5px solid var(--ink);
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  @keyframes ticker-scroll {
+    to {
+      transform: translateX(-33.333%);
+    }
+  }
+
   /* ── toolbar (view toggle + inline explainer on one row) ─────── */
   .app-toolbar {
     flex: none;
@@ -517,8 +706,7 @@
   /* ── inline explainer (neutral disclosure, sized to its text) ── */
   /* Sits to the right of the CHAT | GRAPH toggle. The collapsed summary is just
      wide enough for its text; expanding opens a content-width popover under the
-     summary (absolute, so it does not shove the toolbar or the chat surface).
-     Neutral: ink-on-paper with a plain border, no coral. */
+     summary (absolute, so it does not shove the toolbar or the chat surface). */
   .explainer {
     flex: none;
     position: relative;
@@ -529,21 +717,16 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 9px 14px;
+    padding: 8px 14px;
     cursor: pointer;
     list-style: none;
   }
   .explainer-summary::-webkit-details-marker {
     display: none;
   }
-  /* Hover/focus fill the summary with the yellow accent (readable black-on-
-     yellow) instead of the grey --bg-elev, which blended into the cream page. */
   .explainer-summary:hover {
     background: var(--accent);
   }
-  /* Clean brutalist focus: the box already carries an ink border, so suppress
-     the default blue focus glow and signal keyboard focus with the same accent
-     fill as hover. No blue ring. */
   .explainer-summary:focus-visible {
     outline: none;
     background: var(--accent);
@@ -558,21 +741,16 @@
     color: var(--ink-2);
     white-space: nowrap;
   }
-  /* +/x mark on the LEFT of the summary; rotates to an x on expand. */
+  /* Coral +/x mark on the LEFT of the summary; rotates to an x on expand. */
   .explainer-mark {
     font-size: 18px;
     line-height: 1;
-    color: var(--ink-3);
+    color: var(--coral);
     transition: transform 150ms ease;
   }
   .explainer[open] .explainer-mark {
     transform: rotate(45deg);
   }
-  /* Content-width popover, left-aligned to the summary, not a full-bleed banner.
-     max-content hugs the text up to a readable ~62ch cap, the viewport clamp
-     keeps it on-screen. A clear gap below the summary plus a solid 2px ink
-     border and a hard offset shadow read it as a deliberate layer floating
-     ABOVE the PUBLIC CHAT bar (high z-index), not something bleeding into it. */
   .explainer-body {
     position: absolute;
     top: calc(100% + 8px);
@@ -603,19 +781,115 @@
     min-height: 0;
   }
 
-  /* ── view toggle ────────────────────────────────────────────── */
-  /* Two separate brutalist boxes (not a segmented control). Flat: the inactive
-     tab signals hover with a background change, not a hard offset shadow. */
+  /* ── view toggle (segmented control) ────────────────────────── */
+  /* A single segmented box: the two tabs share one ink border with a divider
+     between them. The active tab fills with the yellow accent. */
   .view-toggle {
     display: inline-flex;
-    gap: 12px;
+    border: 2px solid var(--ink);
+    background: var(--paper);
   }
   .view-toggle-btn {
     font-family: var(--mono);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.12em;
-    padding: 9px 20px;
+    padding: 8px 20px;
+    border: none;
+    background: var(--paper);
+    color: var(--ink);
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+  .view-toggle-btn + .view-toggle-btn {
+    border-left: 2px solid var(--ink);
+  }
+  .view-toggle-btn.on {
+    background: var(--accent);
+  }
+  .view-toggle-btn:hover:not(.on) {
+    background: var(--bg-elev);
+  }
+
+  /* ── chat box shell ─────────────────────────────────────────── */
+  /* Fills the view-area (flex:1) so the chat surface is the full-screen app;
+     the transcript scrolls internally and the input stays pinned. A 2.5px ink
+     border reads as the heavier brutalist panel from the mockup. */
+  .chat-box {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    border: 2.5px solid var(--ink);
+    background: var(--paper);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* The in-app header bar: PUBLIC CHAT tag + a pulsing-LED SESSION OPEN status,
+     a flexible spacer, then NEW CHAT. */
+  .panel-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 16px;
+    background: var(--paper);
+    border-bottom: 2.5px solid var(--ink);
+  }
+  .panel-tag {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    padding: 4px 10px;
+    border: 2px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .session {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--ink-3);
+  }
+  .session.on {
+    color: var(--ink);
+  }
+  .led {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    border: 1.5px solid var(--ink);
+    background: var(--coral);
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  /* Green + pulsing only when a session is open. */
+  .led.on {
+    background: var(--green);
+    animation: led-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes led-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 var(--green);
+      opacity: 1;
+    }
+    50% {
+      box-shadow: 0 0 0 3px transparent;
+      opacity: 0.55;
+    }
+  }
+  .panel-spacer {
+    flex: 1;
+  }
+  .bar-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    padding: 5px 11px;
     border: 2px solid var(--ink);
     background: var(--paper);
     color: var(--ink);
@@ -625,94 +899,10 @@
       transform 120ms ease,
       box-shadow 120ms ease;
   }
-  .view-toggle-btn.on {
-    background: var(--accent);
-  }
-  /* The active tab already owns the yellow accent, so the inactive tab signals
-     hover by staying white and lifting with a hard offset shadow (visible
-     against the cream page) rather than the grey --bg-elev, which blended in. */
-  .view-toggle-btn:hover:not(.on) {
-    background: var(--paper);
-    transform: translate(-1px, -1px);
-    box-shadow: var(--shadow-hard-sm);
-  }
-
-  /* ── chat box shell ─────────────────────────────────────────── */
-  /* Fills the view-area (flex:1) so the chat surface is the full-screen app;
-     the transcript scrolls internally and the input stays pinned. */
-  .chat-box {
-    flex: 1;
-    min-height: 0;
-    width: 100%;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  /* The in-app header bar (PUBLIC CHAT / status / actions). Kept neutral paper
-     so yellow is not the dominant colour; the PUBLIC CHAT tag is a readable
-     outlined chip (ink-on-paper) and the SESSION OPEN status carries green. */
-  .chat-box-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 18px;
-    background: var(--paper);
-    border-bottom: 2px solid var(--ink);
-  }
-  .chat-box-tag {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    padding: 3px 9px;
-    border: 1.5px solid var(--ink);
-    background: var(--paper);
-  }
-  .chat-box-status {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    padding: 3px 9px;
-    border: 1.5px solid var(--ink);
-    background: var(--paper);
-  }
-  .chat-box-status.on {
-    background: var(--green);
-  }
-  /* Muted helper text to the right of the status. Truncates rather than wraps,
-     and drops out on narrow screens so the bar never overflows. */
-  .chat-box-hint {
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--ink-3);
-    min-width: 0;
-    flex: 0 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .chat-box-actions {
-    display: flex;
-    gap: 8px;
-    margin-left: auto;
-  }
-  .bar-btn {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    padding: 3px 9px;
-    border: 1.5px solid var(--ink);
-    background: var(--paper);
-    color: var(--ink);
-    cursor: pointer;
-    transition: background 120ms ease;
-  }
-  /* Accent hover (readable black-on-yellow), not grey --bg-elev which vanished
-     against the cream page. */
   .bar-btn:hover {
     background: var(--accent);
+    transform: translate(-1px, -1px);
+    box-shadow: var(--shadow-hard-sm);
   }
 
   /* ── transcript ─────────────────────────────────────────────── */
@@ -725,16 +915,12 @@
     padding: 24px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 20px;
     background: var(--paper);
   }
 
-  /* gate + empty */
-  /* Top-aligned (not centered): the starter chips and the gate sit near the top
-     of the transcript so they land at eyeline, with a little breathing room
-     under the bar rather than floating in the middle of the panel. */
-  .chat-gate,
-  .chat-empty {
+  /* ── gate ───────────────────────────────────────────────────── */
+  .chat-gate {
     margin: 8px 0 0;
     display: flex;
     flex-direction: column;
@@ -752,23 +938,63 @@
     color: var(--ink-2);
     max-width: 54ch;
   }
+
+  /* ── empty state (headline + sub + chips + doodles) ─────────── */
+  /* The signature first-run view: a big lowercase mono headline with a yellow
+     highlight on the last word, a flavour paragraph, the starter chips, and a
+     few absolutely-positioned doodles scattered around the panel. */
+  .chat-empty {
+    position: relative;
+    margin: 18px 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .empty-headline {
+    font-family: var(--mono);
+    font-size: clamp(28px, 5vw, 46px);
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    max-width: 16ch;
+  }
+  /* Yellow highlight behind the last word: a flat band that sits behind the
+     glyphs (box-decoration-break keeps it intact if the word ever wraps). */
+  .empty-hl {
+    background: linear-gradient(
+      transparent 8%,
+      var(--accent) 8% 92%,
+      transparent 92%
+    );
+    padding: 0 6px;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  .empty-sub {
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink-2);
+    max-width: 56ch;
+  }
   .chat-examples {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
+    margin-top: 4px;
   }
-  /* Tappable suggestions as readable outlines: white paper fill, a 2px ink
-     border, bold ink mono. The old soft blue fill was low-contrast under black
-     text. Hover fills with the yellow accent (readable black-on-yellow) and
-     lifts with a translate + hard offset shadow. Still brutalist, full contrast. */
+  /* White paper chips with a hard 3px ink offset shadow; hover fills with the
+     yellow accent and presses the shadow down. */
   .chat-example {
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
-    padding: 9px 13px;
+    padding: 10px 14px;
     border: 2px solid var(--ink);
     background: var(--paper);
     color: var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
     cursor: pointer;
     transition:
       background 120ms ease,
@@ -778,47 +1004,92 @@
   .chat-example:hover {
     background: var(--accent);
     transform: translate(-1px, -1px);
-    box-shadow: var(--shadow-hard-sm);
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+  .chat-example:active {
+    transform: translate(3px, 3px);
+    box-shadow: 0 0 0 var(--ink);
   }
 
-  /* turns */
+  /* ── doodles (decorative SVGs, hidden on small screens) ─────── */
+  .doodle {
+    position: absolute;
+    color: var(--ink);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .doodle-cloud {
+    width: 64px;
+    top: 4px;
+    right: 10%;
+  }
+  .doodle-star {
+    width: 34px;
+    top: 96px;
+    right: 4%;
+  }
+  .doodle-squiggle {
+    width: 78px;
+    top: 8px;
+    right: 30%;
+    color: var(--coral);
+  }
+  .doodle-diamond {
+    width: 20px;
+    bottom: 8px;
+    right: 14%;
+  }
+  @media (max-width: 640px) {
+    .doodle {
+      display: none;
+    }
+  }
+
+  /* ── turns ──────────────────────────────────────────────────── */
   .turn {
-    border: 1.5px solid var(--ink);
-    background: var(--paper);
-    padding: 12px 14px;
-    border-left-width: 5px;
-  }
-  .turn-user {
-    border-left-color: var(--blue);
-    align-self: flex-end;
-    max-width: 88%;
-  }
-  .turn-graph {
-    border-left-color: var(--accent);
-    align-self: flex-start;
-    max-width: 100%;
-    width: 100%;
-    /* Let the flex item shrink below its content's intrinsic width so long
-       tokens/code wrap instead of forcing horizontal overflow of the page. */
     min-width: 0;
   }
-  .turn-tag {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    color: var(--ink-3);
-    margin-bottom: 6px;
+  /* User turn: a yellow bubble pinned to the right with a hard offset shadow. */
+  .turn-user {
+    align-self: flex-end;
+    max-width: 80%;
+    display: flex;
+    justify-content: flex-end;
   }
-  .turn-user-text {
+  .user-bubble {
+    background: var(--accent);
+    border: 2px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    padding: 11px 14px;
     font-size: 13px;
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
   }
+  /* Bot / graph turn: a blue uppercase model label, then the markdown body set
+     off by a 3px ink left rule. */
+  .turn-bot {
+    align-self: flex-start;
+    max-width: 100%;
+    width: 100%;
+  }
+  .bot-label {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--ink);
+    background: var(--blue);
+    border: 1.5px solid var(--ink);
+    padding: 2px 8px;
+    margin-bottom: 9px;
+  }
   .turn-md {
     font-size: 13px;
-    line-height: 1.6;
+    line-height: 1.65;
     min-width: 0;
+    padding-left: 14px;
+    border-left: 3px solid var(--ink);
     overflow-wrap: anywhere;
     word-break: break-word;
   }
@@ -896,6 +1167,7 @@
     letter-spacing: 0.06em;
   }
 
+  /* Blinking block cursor at the end of the streaming reply. */
   .caret {
     display: inline-block;
     width: 8px;
@@ -918,6 +1190,8 @@
     gap: 6px;
     font-size: 12px;
     color: var(--ink-3);
+    padding-left: 14px;
+    border-left: 3px solid var(--rule-2);
   }
   .turn-thinking .dot,
   .graph-thinking .dot {
@@ -945,13 +1219,14 @@
     }
   }
 
-  /* grounded chips */
+  /* ── grounded chips (under bot turns) ───────────────────────── */
   .turn-touched {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    margin-top: 11px;
+    gap: 7px;
+    margin-top: 12px;
+    margin-left: 14px;
     padding-top: 10px;
     border-top: 1.5px dashed var(--ink);
   }
@@ -964,18 +1239,24 @@
   .touched-chip {
     font-family: var(--mono);
     font-size: 11px;
-    padding: 3px 8px;
+    padding: 3px 9px;
     border: 1.5px solid var(--ink);
     background: var(--blue);
+    box-shadow: 2px 2px 0 var(--ink);
     cursor: pointer;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    transition: background 120ms ease;
+    transition:
+      background 120ms ease,
+      transform 120ms ease,
+      box-shadow 120ms ease;
   }
   .touched-chip:hover {
     background: var(--accent);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--ink);
   }
 
   /* ── notice ─────────────────────────────────────────────────── */
@@ -984,7 +1265,7 @@
     align-items: center;
     gap: 10px;
     padding: 10px 14px;
-    border-top: 2px solid var(--ink);
+    border-top: 2.5px solid var(--ink);
     background: var(--coral);
     font-size: 12px;
   }
@@ -1005,33 +1286,46 @@
     cursor: pointer;
   }
 
-  /* ── input ──────────────────────────────────────────────────── */
+  /* ── input dock ─────────────────────────────────────────────── */
+  /* A bordered field with the text input, a char counter top-right, a blue SEND
+     button with a hard offset shadow, and a small blue squiggle bottom-left. */
   .chat-input {
+    position: relative;
     display: flex;
     gap: 10px;
     align-items: flex-end;
     padding: 12px 14px;
-    border-top: 2px solid var(--ink);
+    border-top: 2.5px solid var(--ink);
     background: var(--paper);
+  }
+  .dock-doodle {
+    position: absolute;
+    left: 16px;
+    bottom: 4px;
+    width: 52px;
+    pointer-events: none;
+    opacity: 0.85;
+  }
+  @media (max-width: 640px) {
+    .dock-doodle {
+      display: none;
+    }
   }
   .chat-input textarea {
     flex: 1;
     resize: none;
-    min-height: 44px;
+    min-height: 46px;
     max-height: 160px;
     font-family: var(--mono);
     font-size: 13px;
     line-height: 1.5;
-    padding: 11px 12px;
+    padding: 12px 13px;
     border: 2px solid var(--rule-2);
     border-radius: 0;
     background: var(--paper);
     color: var(--ink);
     transition: border-color 120ms ease;
   }
-  /* Flat brutalist focus: the border simply goes solid ink. Override the global
-     :focus-visible outline so we do not get the doubled / offset blue ring on
-     top of the border. */
   .chat-input textarea:focus,
   .chat-input textarea:focus-visible {
     outline: none;
@@ -1060,19 +1354,29 @@
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    min-height: 44px;
-    padding: 0 20px;
+    min-height: 46px;
+    padding: 0 22px;
     border: 2px solid var(--ink);
     background: var(--blue);
     color: var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
     cursor: pointer;
-    transition: filter 120ms ease;
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease,
+      filter 120ms ease;
   }
   .chat-send:hover:not(:disabled) {
-    filter: brightness(0.94);
+    transform: translate(-1px, -1px);
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+  .chat-send:active:not(:disabled) {
+    transform: translate(3px, 3px);
+    box-shadow: 0 0 0 var(--ink);
   }
   .chat-send:disabled {
     opacity: 0.5;
+    box-shadow: none;
     cursor: default;
   }
 
@@ -1081,7 +1385,7 @@
     flex: 1;
     min-height: 0;
     width: 100%;
-    border: 2px solid var(--ink);
+    border: 2.5px solid var(--ink);
     background: var(--bg);
     display: flex;
     flex-direction: column;
@@ -1103,28 +1407,37 @@
     background: var(--accent);
     cursor: pointer;
   }
+  .graph-thinking {
+    border-left: none;
+    padding-left: 0;
+  }
+
+  /* ── reduced motion: no scroll, no LED pulse, no caret blink ── */
+  @media (prefers-reduced-motion: reduce) {
+    .ticker-track,
+    .led.on,
+    .caret,
+    .turn-thinking .dot,
+    .graph-thinking .dot {
+      animation: none;
+    }
+  }
 
   @media (max-width: 640px) {
     .chat-app {
-      gap: 12px;
+      gap: 10px;
       padding: calc(14px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
         calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
     }
     .explainer-hint {
       display: none;
     }
-    .chat-box-hint {
-      display: none;
-    }
     .chat-transcript {
       padding: 16px;
-      gap: 14px;
+      gap: 16px;
     }
     .turn-user {
-      max-width: 95%;
-    }
-    .chat-box-actions {
-      gap: 6px;
+      max-width: 92%;
     }
   }
 </style>
