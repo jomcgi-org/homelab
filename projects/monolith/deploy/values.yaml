@@ -28,10 +28,6 @@ clickhouse:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/signoz-clickhouse"
 
-trips:
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/trips-ingest"
-
 cfIngress:
   public:
     # Phase 5e cutover (ADR 004): jomcgi.dev is now served by the isolated

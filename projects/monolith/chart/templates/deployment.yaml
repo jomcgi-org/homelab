@@ -71,13 +71,6 @@ spec:
             - name: BOUNDING_BOX
               value: {{ .Values.marine.boundingBox | quote }}
             {{- end }}
-            {{- if .Values.trips.onepassword.itemPath }}
-            - name: TRIPS_INGEST_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-trips
-                  key: TRIPS_INGEST_KEY
-            {{- end }}
             - name: FRONTEND_HEALTH_URL
               value: "http://localhost:3000/"
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT

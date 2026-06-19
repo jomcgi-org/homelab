@@ -6,10 +6,9 @@ monolith trip-image ingestion endpoint. The server does EXIF extraction,
 content-addressing, the S3 upload, and the Postgres write; this client is a thin
 uploader whose only durability layer is a local SQLite queue (retry on failure).
 
-Auth: an ``X-Trips-Ingest-Key`` header (compared server-side against
-``TRIPS_INGEST_KEY``). When the endpoint is reached remotely through Cloudflare
-Access, ``CF-Access-Client-Id`` / ``CF-Access-Client-Secret`` service-token
-headers are sent too; at home (kubectl port-forward) those are omitted.
+Auth: the endpoint is protected by Cloudflare Access at the Envoy gateway. When
+reached remotely, ``CF-Access-Client-Id`` / ``CF-Access-Client-Secret``
+service-token headers are sent; at home (kubectl port-forward) those are omitted.
 """
 
 import asyncio
@@ -606,7 +605,6 @@ def ingest_config() -> tuple[str, dict[str, str]]:
     """Build the ingestion base URL and request headers from the environment.
 
     - ``TRIPS_INGEST_URL`` (required): base origin, e.g. ``https://private.jomcgi.dev``.
-    - ``TRIPS_INGEST_KEY`` (required): static auth secret for ``X-Trips-Ingest-Key``.
     - ``CF_ACCESS_CLIENT_ID`` / ``CF_ACCESS_CLIENT_SECRET`` (optional): when both
       are set, the Cloudflare Access service-token headers are added (remote
       path). Omitted for the local kubectl port-forward path.
@@ -615,7 +613,7 @@ def ingest_config() -> tuple[str, dict[str, str]]:
     if not base:
         raise RuntimeError("TRIPS_INGEST_URL is not set")
 
-    headers = {"X-Trips-Ingest-Key": os.getenv("TRIPS_INGEST_KEY", "")}
+    headers: dict[str, str] = {}
 
     cf_id = os.getenv("CF_ACCESS_CLIENT_ID")
     cf_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
@@ -855,9 +853,8 @@ def scan(
     Recursively scans all subdirectories. Images are sorted by EXIF timestamp.
     Use --interval to sample at most one image per N seconds.
 
-    Requires TRIPS_INGEST_URL and TRIPS_INGEST_KEY in the environment (and,
-    for the remote Cloudflare Access path, CF_ACCESS_CLIENT_ID /
-    CF_ACCESS_CLIENT_SECRET).
+    Requires TRIPS_INGEST_URL in the environment (and, for the remote
+    Cloudflare Access path, CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET).
 
     Example:
         # Upload all images for a trip
