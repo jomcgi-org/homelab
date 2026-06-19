@@ -6,7 +6,12 @@ run-by-hand backfill (backfill/) that re-derives points from image EXIF in the
 SSR read router (read_router) that backs the /app/trips pages.
 """
 
-from fastapi import FastAPI
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 
 def register(app: FastAPI) -> None:

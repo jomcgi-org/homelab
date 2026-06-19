@@ -31,8 +31,11 @@ tunnel:
       # private.jomcgi.dev/app/<app> via the cloudflare-ingress gateway
       # (HTTPRoutes in each chart). Their old subdomains fall through to
       # catchAll, which has no matching gateway route, so they stop resolving.
+      # Trip images: imgproxy resizes/optimizes photos from the monolith-trips
+      # SeaweedFS bucket on the fly. Lives in the monolith-public chart (meshed
+      # public tier); the tunnel reaches it directly, not via the envoy gateway.
       - hostname: img.jomcgi.dev
-        service: http://trips-nginx.trips.svc.cluster.local:80
+        service: http://monolith-public-imgproxy.monolith-public.svc.cluster.local:8080
       - hostname: grimoire.jomcgi.dev
         service: http://grimoire-frontend.grimoire.svc.cluster.local:8080
       - hostname: api.jomcgi.dev
