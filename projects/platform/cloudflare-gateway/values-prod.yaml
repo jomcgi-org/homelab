@@ -54,12 +54,15 @@ tunnel:
         matchLabels:
           app.kubernetes.io/name: cloudflare-tunnel
 
+  # CPU limit raised 250m -> 1000m: this tunnel is the ingress path for all
+  # external traffic and was CPU-throttled ~16-19% of periods, pinned exactly at
+  # its 250m ceiling. The node is CPU-idle, so the limit was the only constraint.
   resources:
     requests:
       cpu: 25m
       memory: 64Mi
     limits:
-      cpu: 250m
+      cpu: 1000m
       memory: 256Mi
 
   envoy:
