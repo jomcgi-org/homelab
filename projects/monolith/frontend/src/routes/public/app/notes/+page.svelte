@@ -340,16 +340,68 @@
 <h1 class="sr-only">Chat with my knowledge graph</h1>
 
 <main class="chat-app">
-  <!-- Back-to-home breadcrumb, top-left, mirroring the other /app/* pages
-       (e.g. /app/stars). The home link is underlined in blue and points at the
-       jomcgi.dev apex; the current app name reads as the trailing crumb. -->
-  <nav class="crumb" aria-label="Breadcrumb">
-    <a class="crumb-home" href="https://jomcgi.dev/"
-      >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
-    >
-    <span class="crumb-sep">/</span>
-    <span class="crumb-name">notes</span>
-  </nav>
+  <!-- Top header row: the back-to-home breadcrumb on the left (mirroring the
+       other /app/* pages, e.g. /app/stars), and the app controls (CHAT | GRAPH
+       toggle + the collapsible "HOW DOES THIS WORK?" explainer) on the right,
+       on ONE row. Keeping the controls up here on the otherwise-empty
+       breadcrumb line saves a full row of vertical height over a separate
+       toolbar row; the controls wrap below the crumb on narrow screens. The
+       explainer is sized to its own text; expanding it opens a content-width
+       popover that overlays downward so it never shoves the layout. -->
+  <header class="app-header">
+    <nav class="crumb" aria-label="Breadcrumb">
+      <a class="crumb-home" href="https://jomcgi.dev/"
+        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+      >
+      <span class="crumb-sep">/</span>
+      <span class="crumb-name">notes</span>
+    </nav>
+
+    <div class="app-toolbar">
+      <div class="view-toggle" role="tablist" aria-label="Notes view">
+        <button
+          type="button"
+          class="view-toggle-btn"
+          class:on={view === "chat"}
+          role="tab"
+          aria-selected={view === "chat"}
+          onclick={showChat}
+        >
+          CHAT
+        </button>
+        <button
+          type="button"
+          class="view-toggle-btn"
+          class:on={view === "graph"}
+          role="tab"
+          aria-selected={view === "graph"}
+          onclick={() => showGraph(null)}
+        >
+          GRAPH
+        </button>
+      </div>
+
+      <details
+        class="explainer"
+        bind:open={explainerOpen}
+        bind:this={explainerEl}
+      >
+        <summary class="explainer-summary">
+          <span class="explainer-mark" aria-hidden="true">+</span>
+          <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
+          <span class="explainer-hint"
+            >An open model on my own cluster, no tools.</span
+          >
+        </summary>
+        <div class="explainer-body">
+          <p>
+            Agents research topics and write them into my knowledge graph. This
+            model answers from that graph, nothing else. Answers can be wrong.
+          </p>
+        </div>
+      </details>
+    </div>
+  </header>
 
   <!-- Live ticker: a scrolling yellow marquee of session readouts (model, live
        CTX usage / 32K, live decode rate, KG size, posture). The run is tripled
@@ -362,50 +414,6 @@
         {/each}
       {/each}
     </div>
-  </div>
-
-  <!-- Control row: the CHAT | GRAPH segmented toggle on the left, and the
-       collapsible "HOW DOES THIS WORK?" explainer right after it. The explainer
-       is sized to its own text; expanding it opens a content-width popover under
-       the summary so it never shoves the layout. The security posture (open
-       model, no tools, public notes) stays up front, neutral. -->
-  <div class="app-toolbar">
-    <div class="view-toggle" role="tablist" aria-label="Notes view">
-      <button
-        type="button"
-        class="view-toggle-btn"
-        class:on={view === "chat"}
-        role="tab"
-        aria-selected={view === "chat"}
-        onclick={showChat}
-      >
-        CHAT
-      </button>
-      <button
-        type="button"
-        class="view-toggle-btn"
-        class:on={view === "graph"}
-        role="tab"
-        aria-selected={view === "graph"}
-        onclick={() => showGraph(null)}
-      >
-        GRAPH
-      </button>
-    </div>
-
-    <details class="explainer" bind:open={explainerOpen} bind:this={explainerEl}>
-      <summary class="explainer-summary">
-        <span class="explainer-mark" aria-hidden="true">+</span>
-        <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
-        <span class="explainer-hint">An open model on my own cluster, no tools.</span>
-      </summary>
-      <div class="explainer-body">
-        <p>
-          Agents research topics and write them into my knowledge graph. This
-          model answers from that graph, nothing else. Answers can be wrong.
-        </p>
-      </div>
-    </details>
   </div>
 
   <div class="view-area">
@@ -769,6 +777,18 @@
   }
 
   /* ── toolbar (view toggle + inline explainer on one row) ─────── */
+  /* ── top header row (breadcrumb + controls on one line) ─────── */
+  /* The breadcrumb sits left; the CHAT | GRAPH toggle and explainer sit right.
+     space-between pins them to the two ends; flex-wrap lets the controls drop
+     below the crumb on narrow screens instead of overflowing. */
+  .app-header {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+  }
   .app-toolbar {
     flex: none;
     display: flex;
@@ -827,7 +847,10 @@
   .explainer-body {
     position: absolute;
     top: calc(100% + 8px);
-    left: 0;
+    /* Anchored to the explainer's RIGHT edge: the explainer now lives on the
+       right of the header row, so the popover must flow leftward to stay
+       on-screen (a left-anchored popover would overflow the viewport edge). */
+    right: 0;
     z-index: 50;
     width: max-content;
     max-width: min(62ch, calc(100vw - 48px));
