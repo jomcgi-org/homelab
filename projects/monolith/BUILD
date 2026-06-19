@@ -884,17 +884,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_vault_export_test",
-    srcs = ["chat/vault_export_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
-
-py_test(
     name = "main_extra_test",
     srcs = ["app/main_extra_test.py"],
     imports = ["."],

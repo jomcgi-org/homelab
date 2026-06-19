@@ -5,23 +5,21 @@ feature. The four functions in this module back the HTTP routes added in
 :mod:`knowledge.router`:
 
     list_notes_for_review   → pending / audit queue
-    set_note_visibility     → write frontmatter + flip the verified flag
-    verify_note_visibility  → flip the verified flag (no frontmatter change)
-    reset_note_visibility   → clear frontmatter visibility + verified flag
+    set_note_visibility     → set the visibility column + flip the verified flag
+    verify_note_visibility  → flip the verified flag
+    reset_note_visibility   → clear the visibility column + verified flag
 
 All four take an open :class:`Session`; the caller owns the session
-lifecycle, same convention as ``gaps.py`` and ``store.py``. Notes that
-are listed always include a short body snippet read from disk so the
-review UI can show context without a second round-trip per row.
+lifecycle, same convention as ``gaps.py`` and ``store.py``. Everything is
+Postgres now (ADR 006, Obsidian decommissioned): ``knowledge.notes.content``
+is the authoritative body, so listed notes carry a short snippet read from
+that column rather than from disk.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -32,19 +30,6 @@ from knowledge.models import Note
 
 logger = logging.getLogger(__name__)
 
-# Vault-root resolution lives here (not in knowledge.service) so the light
-# public note path (knowledge.public_router) can resolve the vault root without
-# importing knowledge.service and its heavy write-path closure (reconciler,
-# layout, gap_stubs). knowledge.service re-exports these for back-compat.
-VAULT_ROOT_ENV = "VAULT_ROOT"
-DEFAULT_VAULT_ROOT = "/vault"
-
-
-def get_vault_root() -> Path:
-    """Resolve the vault root from the env (or default), as an absolute path."""
-    return Path(os.environ.get(VAULT_ROOT_ENV, DEFAULT_VAULT_ROOT)).resolve()
-
-
 # Snippet cap for the review-queue list calls. Was 200 chars when the
 # review page first shipped — too thin to evaluate a card in audit mode.
 # Bumped to 100 lines (capped by a byte ceiling so a single huge line
@@ -52,12 +37,6 @@ def get_vault_root() -> Path:
 # inside without opening each row.
 _SNIPPET_MAX_LINES = 100
 _SNIPPET_MAX_BYTES = 8192
-
-# Directory under the vault root where soft-deleted notes are parked.
-# Both the gardener (knowledge.gardener._EXCLUDED_DIRS) and raw-ingest
-# scanner (knowledge.raw_ingest._EXCLUDED_TOP_LEVEL) skip this so the
-# moved files don't get re-ingested as fresh raws.
-_TRASH_DIR_NAME = "_trash"
 
 
 def _get_note_or_raise(session: Session, note_id: str) -> Note:
@@ -76,45 +55,27 @@ def _get_note_or_raise(session: Session, note_id: str) -> Note:
     return note
 
 
-def resolve_note_body(content: str | None, path: str, vault_root: Path) -> str | None:
-    """Resolve a note's markdown body, preferring Postgres ``content``.
+def resolve_note_body(content: str | None) -> str | None:
+    """Return a note's markdown body. Postgres ``content`` is authoritative.
 
-    ADR 006 Phase 2: ``knowledge.notes.content`` is the authoritative
-    body (frontmatter and the generated ``## Links`` section already
-    stripped by the reconciler). Legacy rows whose Phase 1 backfill has
-    not completed yet may still have ``content IS NULL``; for those, fall
-    back to reading the vault file and stripping its frontmatter. Returns
-    ``None`` when neither source yields a body (missing or path-escaping
-    file) so callers can 404.
+    ADR 006: ``knowledge.notes.content`` holds the body (frontmatter and the
+    generated ``## Links`` section already stripped at index time). The
+    historical on-disk vault fallback is gone now that Obsidian is fully
+    decommissioned and ``/vault`` no longer exists.
     """
-    if content is not None:
-        return content
-    try:
-        resolved = (vault_root / path).resolve()
-        if not resolved.is_relative_to(vault_root) or not resolved.is_file():
-            return None
-        raw = resolved.read_text()
-    except OSError:
-        return None
-    try:
-        _, body = frontmatter.parse(raw)
-    except frontmatter.FrontmatterError:
-        # Body still useful even if frontmatter is broken; fall back to raw.
-        body = raw
-    return body
+    return content
 
 
-def _read_note_snippet(vault_root: Path, note: Note) -> str:
+def _read_note_snippet(note: Note) -> str:
     """Return the first ~100 lines of ``note``'s body, capped at 8 KiB.
 
-    Prefers the authoritative Postgres ``content`` (ADR 006 Phase 2) and
-    falls back to the vault file while any row's backfill is pending.
-    Missing / unreadable bodies return an empty string — review-queue
-    listing is best-effort metadata and must never break on a partial
-    vault. The line+byte cap is sized to give the audit UI enough context
-    to evaluate a note in-place without surfacing the entire body.
+    Reads the authoritative Postgres ``content`` (ADR 006). Missing bodies
+    return an empty string — review-queue listing is best-effort metadata and
+    must never break on a partial row. The line+byte cap is sized to give the
+    audit UI enough context to evaluate a note in-place without surfacing the
+    entire body.
     """
-    body = resolve_note_body(note.content, note.path, vault_root)
+    body = resolve_note_body(note.content)
     if body is None:
         logger.warning(
             "notes._read_note_snippet: failed to read %s for note_id=%r",
@@ -131,7 +92,7 @@ def _read_note_snippet(vault_root: Path, note: Note) -> str:
     return head
 
 
-def _note_to_review_dict(note: Note, vault_root: Path) -> dict:
+def _note_to_review_dict(note: Note) -> dict:
     """Serialize a Note row to the dict shape returned by review-queue endpoints.
 
     Emits a ~100-line snippet (was 200 chars before the audit-UI redesign)
@@ -144,7 +105,7 @@ def _note_to_review_dict(note: Note, vault_root: Path) -> dict:
     return {
         "id": note.note_id,
         "title": note.title,
-        "snippet": _read_note_snippet(vault_root, note),
+        "snippet": _read_note_snippet(note),
         "visibility": note.visibility,
         "visibility_verified": note.visibility_verified,
         "updated_at": updated_at.isoformat() if updated_at is not None else None,
@@ -194,44 +155,18 @@ def _serialize_frontmatter(parsed: frontmatter.ParsedFrontmatter, body: str) -> 
     return f"---\n{fm_str}---\n\n{body}\n"
 
 
-def _write_note_visibility_frontmatter(
-    vault_root: Path, note: Note, visibility: str | None
-) -> None:
-    """Set (or clear) the ``visibility`` key in the note's on-disk frontmatter.
-
-    ``visibility=None`` removes the key entirely so the file shape matches
-    a fresh, un-classified note (i.e. ``visibility`` absent rather than
-    ``visibility: null``). Re-serializes via :func:`_serialize_frontmatter`
-    so the write path matches ``edit_note``'s.
-
-    Raises:
-        ValueError: if the vault file is missing or escapes the vault
-            root — same identical error contract as :func:`_get_note_or_raise`'s
-            "not found" so the router maps it to 404.
-    """
-    resolved = (vault_root / note.path).resolve()
-    if not resolved.is_relative_to(vault_root) or not resolved.is_file():
-        raise ValueError(
-            f"Note not found on disk: note_id={note.note_id!r} path={note.path!r}"
-        )
-    existing_raw = resolved.read_text()
-    parsed, body = frontmatter.parse(existing_raw)
-    parsed.visibility = visibility
-    resolved.write_text(_serialize_frontmatter(parsed, body))
-
-
 def set_note_visibility(
     session: Session,
     note_id: str,
     visibility: str,
-    vault_root: Path,
 ) -> Note:
     """Set ``note.visibility`` (public|private) and mark verified.
 
-    Writes the frontmatter via :func:`_write_note_visibility_frontmatter`
-    and flips ``visibility_verified=True`` because the caller (a human)
-    explicitly took an action — same convention as ``reject_gap`` /
-    ``answer_gap``.
+    Updates the column and flips ``visibility_verified=True`` because the
+    caller (a human) explicitly took an action — same convention as
+    ``reject_gap`` / ``answer_gap``. Visibility lives only in the column
+    now (ADR 006): ``content`` carries no frontmatter, so there is nothing
+    to rewrite on disk.
 
     Raises:
         ValueError: if ``visibility`` is not exactly ``"public"`` or
@@ -242,7 +177,6 @@ def set_note_visibility(
             f"visibility must be 'public' or 'private', got {visibility!r}"
         )
     note = _get_note_or_raise(session, note_id)
-    _write_note_visibility_frontmatter(vault_root, note, visibility)
     # ``Visibility`` is ``Literal["public", "private"]``; the validation
     # above guarantees ``visibility`` matches one of those two strings.
     note.visibility = visibility  # type: ignore[assignment]
@@ -285,20 +219,17 @@ def verify_note_visibility(session: Session, note_id: str) -> Note:
 def reset_note_visibility(
     session: Session,
     note_id: str,
-    vault_root: Path,
 ) -> Note:
     """Clear ``note.visibility`` and ``visibility_verified``.
 
     Sends the note back to the pending review queue (``visibility IS
-    NULL``) by writing the frontmatter without the ``visibility`` key
-    and zeroing the DB flags. The audit-mode "no, this decision was
-    wrong" path.
+    NULL``) by zeroing the DB flags. The audit-mode "no, this decision was
+    wrong" path. Visibility lives only in the column now (ADR 006).
 
     Raises:
         ValueError: if ``note_id`` is unknown.
     """
     note = _get_note_or_raise(session, note_id)
-    _write_note_visibility_frontmatter(vault_root, note, None)
     note.visibility = None
     note.visibility_verified = False
     session.add(note)
@@ -313,7 +244,6 @@ def list_notes_for_review(
     *,
     mode: Literal["pending", "audit"] = "pending",
     limit: int = 50,
-    vault_root: Path,
 ) -> list[dict]:
     """Return notes for the private review page, filtered by ``mode``.
 
@@ -343,114 +273,46 @@ def list_notes_for_review(
             .limit(limit)
         )
     rows = session.execute(stmt).scalars().all()
-    return [_note_to_review_dict(note, vault_root) for note in rows]
+    return [_note_to_review_dict(note) for note in rows]
 
 
-def _trash_filename(slug: str, *, when: datetime, collision_root: Path) -> str:
-    """Build a non-colliding ``<ts>-<slug>.md`` filename under ``collision_root``.
+def delete_note(session: Session, note_id: str) -> Note:
+    """Soft-delete a note by stamping ``deleted_at``.
 
-    Timestamps are second-resolution Zulu (same format the gap stubs use)
-    so a burst of deletes within the same second falls through to the
-    ``-1``, ``-2`` counter suffix instead of overwriting prior trash
-    entries. ``collision_root`` is the ``_trash`` directory; callers pass
-    it so the existence check is correct relative to the actual vault.
-    """
-    timestamp = when.strftime("%Y%m%dT%H%M%SZ")
-    candidate = f"{timestamp}-{slug}.md"
-    if not (collision_root / candidate).exists():
-        return candidate
-    counter = 1
-    while True:
-        candidate = f"{timestamp}-{slug}-{counter}.md"
-        if not (collision_root / candidate).exists():
-            return candidate
-        counter += 1
-
-
-def delete_note(session: Session, note_id: str, vault_root: Path) -> Note:
-    """Soft-delete a note. Move its file to ``_trash/<ts>-<slug>.md``.
-
-    Stamps ``deleted_at = now()`` and stashes the original vault-relative
-    path in ``pre_delete_path`` so :func:`undelete_note` can restore the
-    file to exactly where it lived before, no filename-parsing required.
-    ``note.path`` is rewritten to point at the trash location so the row
-    consistently reflects where the bytes live on disk.
-
-    Missing on-disk file is tolerated: the DB flip still happens (so the
-    row drops out of review queries) but no move is attempted. This
-    matches :func:`knowledge.gaps._remove_stub_if_present`'s tolerance —
-    the disk and DB can drift, and the row is the system of record for
-    "the user said delete this".
+    Sets ``deleted_at = now()`` so the row drops out of every user-facing
+    read path (review queue, graph, search, get-by-id). ``pre_delete_path``
+    captures the current ``path`` so :func:`undelete_note` is symmetric.
+    Bodies are authoritative in Postgres (ADR 006); there is no on-disk file
+    to move now that the vault is gone.
 
     Raises:
         ValueError: if ``note_id`` is unknown OR already deleted (caller
             should call ``undelete_note`` instead of double-deleting).
     """
     note = _get_note_or_raise(session, note_id)
-
-    original_relative = note.path
-    src = (vault_root / original_relative).resolve()
-    moved_src: Path | None = None
-    moved_dest: Path | None = None
-    if src.is_file() and src.is_relative_to(vault_root):
-        trash_dir = vault_root / _TRASH_DIR_NAME
-        trash_dir.mkdir(exist_ok=True)
-        slug = Path(original_relative).stem
-        filename = _trash_filename(
-            slug, when=datetime.now(timezone.utc), collision_root=trash_dir
-        )
-        dest = trash_dir / filename
-        shutil.move(str(src), str(dest))
-        moved_src, moved_dest = src, dest
-        note.path = str(dest.relative_to(vault_root))
-    else:
-        # File already gone (raced delete, partial vault, etc.). Keep
-        # the existing ``note.path`` so undelete still has a meaningful
-        # pre_delete_path to restore to. Don't fabricate a trash entry
-        # -- there's nothing to move.
-        logger.info(
-            "notes.delete_note: file %s missing on disk for note_id=%r; "
-            "DB-only soft-delete",
-            original_relative,
-            note_id,
-        )
-
-    note.pre_delete_path = original_relative
+    note.pre_delete_path = note.path
     note.deleted_at = datetime.now(timezone.utc)
     session.add(note)
-    try:
-        session.commit()
-    except Exception:
-        # DB commit failed AFTER we already moved the file. Roll the
-        # filesystem back so the on-disk state still matches the
-        # persisted DB row (which now reverts to pointing at the
-        # original path). Without this we'd leave the file orphaned in
-        # _trash/ with the live row claiming it's at the original path.
-        if moved_src is not None and moved_dest is not None and moved_dest.exists():
-            shutil.move(str(moved_dest), str(moved_src))
-        raise
+    session.commit()
     session.refresh(note)
     logger.info(
-        "notes.delete_note: soft-deleted note_id=%r original_path=%s trash_path=%s",
+        "notes.delete_note: soft-deleted note_id=%r path=%s",
         note_id,
-        original_relative,
         note.path,
     )
     return note
 
 
-def undelete_note(session: Session, note_id: str, vault_root: Path) -> Note:
-    """Undo a soft-delete: move the file back, clear the bookkeeping.
+def undelete_note(session: Session, note_id: str) -> Note:
+    """Undo a soft-delete by clearing ``deleted_at``.
 
-    Reads ``pre_delete_path`` (set by :func:`delete_note`) to know where
-    to restore the file. If the original location is already occupied
-    (rare — usually because a brand-new note got written there in the
-    interim), falls back to a counter suffix so the undelete never
-    silently overwrites unrelated data.
+    The row reappears in every read path. Bodies are authoritative in
+    Postgres (ADR 006); there is no file to move back now that the vault
+    is gone, so this is a pure DB flag clear.
 
     Raises:
         ValueError: if ``note_id`` is unknown, or if the row is not in
-            soft-deleted state. Both messages start with ``"Note not
+            soft-deleted state. The message starts with ``"Note not
             found"`` so :func:`router._map_note_error` maps to 404.
     """
     # Query specifically for soft-deleted rows — is_not(None) satisfies the
@@ -461,55 +323,10 @@ def undelete_note(session: Session, note_id: str, vault_root: Path) -> Note:
     if note is None:
         raise ValueError(f"Note not found: note_id={note_id!r}")
 
-    # pre_delete_path SHOULD always be set by delete_note, but tolerate
-    # the legacy edge case where a row was somehow marked deleted without
-    # one (manual DB poke). Fall back to whatever path is currently set.
-    original_relative = note.pre_delete_path or note.path
-    trash_src = (vault_root / note.path).resolve()
-    dest = (vault_root / original_relative).resolve()
-    if trash_src.is_file() and trash_src.is_relative_to(vault_root):
-        # Resolve collision at the destination: a brand-new note may have
-        # claimed the slug while this one was in trash. Use a counter
-        # suffix on the FILENAME stem (matching create_note's strategy).
-        if dest.exists():
-            stem = dest.stem
-            parent = dest.parent
-            counter = 1
-            while True:
-                candidate = parent / f"{stem}-{counter}.md"
-                if not candidate.exists():
-                    dest = candidate
-                    break
-                counter += 1
-            logger.warning(
-                "notes.undelete_note: original path %s occupied; "
-                "restoring note_id=%r to %s instead",
-                original_relative,
-                note_id,
-                dest.relative_to(vault_root),
-            )
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(trash_src), str(dest))
-        note.path = str(dest.relative_to(vault_root))
-    else:
-        # Nothing to move on disk; just clear the DB flags so the row
-        # reappears in queries.
-        logger.info(
-            "notes.undelete_note: trash file %s missing for note_id=%r; "
-            "DB-only undelete",
-            note.path,
-            note_id,
-        )
-        note.path = original_relative
-
     note.deleted_at = None
     note.pre_delete_path = None
     session.add(note)
     session.commit()
     session.refresh(note)
-    logger.info(
-        "notes.undelete_note: restored note_id=%r path=%s",
-        note_id,
-        note.path,
-    )
+    logger.info("notes.undelete_note: restored note_id=%r path=%s", note_id, note.path)
     return note

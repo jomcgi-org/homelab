@@ -1,6 +1,5 @@
 backend:
   replicas: 1
-  vaultApiUrl: "http://obsidian-vault.obsidian.svc.cluster.local:8000"
   clickhouseUrl: "http://chi-signoz-clickhouse-cluster-0-0.signoz.svc.cluster.local:8123"
   otelEndpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318/v1/traces"
   resources:
@@ -77,13 +76,10 @@ cfIngress:
 
 knowledge:
   enabled: true
-  # Obsidian + vault git-sync torn out 2026-06-15 (ADR 006). Note bodies are
-  # authoritative in Postgres (knowledge.notes.content, backfilled) and raws
-  # are exported to s3://knowledge-raws, so the slow per-rollout vault download
-  # is gone. gitRemote cleared -> clone_vault and vault-backup no-op;
-  # headlessSync.enabled is false in the chart so the obsidian sidecar is not
-  # rendered. Reversible: restore gitRemote + set headlessSync.enabled: true.
-  gitRemote: ""
+  # Obsidian fully decommissioned (ADR 006). Note bodies are authoritative in
+  # Postgres (knowledge.notes.content); raws live in SeaweedFS. The note
+  # read/write paths are DB-only and the /vault disk dependency is gone, so
+  # there is no sidecar, no vault volume, and no git-sync backup left to wire.
   gaps:
     rewriteDiscardable: true
 

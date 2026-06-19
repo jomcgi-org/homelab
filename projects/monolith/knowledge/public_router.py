@@ -24,7 +24,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
-from knowledge.notes import get_vault_root, resolve_note_body
+from knowledge.notes import resolve_note_body
 from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.store import GRAPH_NOTE_TYPES
 from knowledge.visibility import strip_private_wikilinks
@@ -165,16 +165,12 @@ def get_public_note(
         logger.info("public.note.404 note_id=%s reason=not_found", note_id)
         raise HTTPException(status_code=404, detail="Not Found")
 
-    # ADR 006 Phase 2: body of record is Postgres ``content``. The vault
-    # read is a fallback only while the Phase 1 backfill is in flight, and
-    # ``resolve_note_body`` keeps the same path-traversal guard so a
-    # malformed path can't escape the vault root.
-    vault_root = get_vault_root()
-    body = resolve_note_body(note.content, note.path, vault_root)
+    # ADR 006: body of record is Postgres ``content`` (Obsidian decommissioned).
+    body = resolve_note_body(note.content)
     if body is None:
         # Same identical 404: don't leak that the DB row exists but
         # the body is unavailable.
-        logger.info("public.note.404 note_id=%s reason=vault_file_missing", note_id)
+        logger.info("public.note.404 note_id=%s reason=no_body", note_id)
         raise HTTPException(status_code=404, detail="Not Found")
 
     # The public service cannot enumerate private notes (it reads only the

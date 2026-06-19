@@ -46,10 +46,6 @@ spec:
                   name: {{ include "monolith.fullname" . }}-secrets
                   key: ICAL_FEED_URL
             {{- end }}
-            {{- if .Values.backend.vaultApiUrl }}
-            - name: VAULT_API_URL
-              value: {{ .Values.backend.vaultApiUrl | quote }}
-            {{- end }}
             {{- if .Values.backend.clickhouseUrl }}
             - name: CLICKHOUSE_URL
               value: {{ .Values.backend.clickhouseUrl | quote }}
@@ -109,8 +105,6 @@ spec:
                   key: CLAUDE_AUTH_TOKEN
             {{- end }}
             {{- if .Values.knowledge.enabled }}
-            - name: VAULT_ROOT
-              value: {{ .Values.knowledge.vault.mountPath }}
             {{- if .Values.knowledge.gaps.rewriteDiscardable }}
             - name: KNOWLEDGE_GAPS_REWRITE_DISCARDABLE
               value: "1"
@@ -129,20 +123,6 @@ spec:
               value: {{ .Values.knowledge.layout.nodeSizeScale | quote }}
             - name: KNOWLEDGE_LAYOUT_SEED
               value: {{ .Values.knowledge.layout.seed | quote }}
-            {{- if .Values.knowledge.gitRemote }}
-            - name: VAULT_GIT_REMOTE
-              value: {{ .Values.knowledge.gitRemote | quote }}
-            - name: USER
-              value: "vault-backup"
-            - name: GIT_AUTHOR_NAME
-              value: "vault-backup"
-            - name: GIT_AUTHOR_EMAIL
-              value: "vault-backup@monolith.local"
-            - name: GIT_COMMITTER_NAME
-              value: "vault-backup"
-            - name: GIT_COMMITTER_EMAIL
-              value: "vault-backup@monolith.local"
-            {{- end }}
             {{- end }}
             {{- if and .Values.agent .Values.agent.discord }}
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID
@@ -196,53 +176,10 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
             timeoutSeconds: 3
-          {{- if .Values.knowledge.enabled }}
-          volumeMounts:
-            # Writable: the backend reconciler injects generated
-            # `id:` frontmatter into notes that lack one so future
-            # reconcile cycles have stable graph identity. The
-            # obsidian headless-sync sidecar observes those writes
-            # and propagates them through Obsidian's cloud sync,
-            # so the backend + sidecar are coordinated writers
-            # rather than racing writers.
-            - name: vault
-              mountPath: {{ .Values.knowledge.vault.mountPath }}
-          {{- end }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-        {{- if and .Values.knowledge.enabled .Values.knowledge.headlessSync.enabled }}
-        - name: obsidian
-          image: "{{ .Values.knowledge.headlessSync.image.repository }}:{{ .Values.knowledge.headlessSync.image.tag }}"
-          securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          env:
-            - name: VAULT_PATH
-              value: {{ .Values.knowledge.vault.mountPath }}
-            - name: VAULT_NAME
-              value: {{ .Values.knowledge.headlessSync.vaultName | quote }}
-            - name: OBSIDIAN_EMAIL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-knowledge
-                  key: email
-            - name: OBSIDIAN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-knowledge
-                  key: password
-          readinessProbe:
-            exec:
-              command: ["test", "-f", "/tmp/ready"]
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          volumeMounts:
-            - name: vault
-              mountPath: {{ .Values.knowledge.vault.mountPath }}
-          resources:
-            {{- toYaml .Values.knowledge.resources.headlessSync | nindent 12 }}
-        {{- end }}
         - name: frontend
           image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
@@ -269,9 +206,3 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-      {{- if .Values.knowledge.enabled }}
-      volumes:
-        - name: vault
-          emptyDir:
-            sizeLimit: {{ .Values.knowledge.vault.sizeLimit }}
-      {{- end }}
