@@ -3689,6 +3689,18 @@ semgrep_target_test(
     target = ":trips_backfill",
 )
 
+# Backfill tests dep on :trips_backfill_lib (boto3/typer/httpx orchestration),
+# NOT :monolith_backend, since the backfill is excluded from the server image.
+py_test(
+    name = "trips_backfill_main_test",
+    srcs = ["trips/backfill/main_test.py"],
+    imports = ["."],
+    deps = [
+        ":trips_backfill_lib",
+        "@pip//pytest",
+    ],
+)
+
 py_test(
     name = "trips_models_test",
     srcs = ["trips/models_test.py"],

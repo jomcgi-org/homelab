@@ -9,10 +9,12 @@ Run by hand against a port-forwarded SeaweedFS + Postgres, e.g.:
         --database-url postgresql://postgres@localhost:5432/monolith \\
         --kml van-to-kamloops.kml --kml-start 2025-01-03T10:28:00
 
-It lists the `trips` bucket, extracts GPS/timestamp/optics EXIF from each image,
-optionally adds route-only gap points from KML directions and elevation from the
-NRCan CDEM API, then replaces trips.points for the trip (and upserts the
-trips.trips metadata row from config.yaml). Idempotent: re-running rebuilds.
+It lists the source `trips` bucket, extracts GPS/timestamp/optics EXIF from each
+image, optionally adds route-only gap points from KML directions and elevation
+from the NRCan CDEM API, then replaces trips.points for the trip (and upserts
+the trips.trips metadata row from config.yaml). It also copies the image bytes
+server-side into the serving bucket (`monolith-trips`) the read path reads from.
+Idempotent: re-running rebuilds the rows and skips already-copied images.
 """
 
 import asyncio
@@ -28,6 +30,7 @@ import httpx
 import typer
 import yaml
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from sqlalchemy import delete
 from sqlmodel import Session, create_engine
 
@@ -40,6 +43,7 @@ logger = logging.getLogger("trips.backfill")
 app = typer.Typer(help="Backfill the trips Postgres schema from S3 image EXIF.")
 
 DEFAULT_BUCKET = "trips"
+DEFAULT_DEST_BUCKET = "monolith-trips"
 ELEVATION_API = "https://geogratis.gc.ca/services/elevation/cdem/altitude"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
 
@@ -82,10 +86,71 @@ def list_image_keys(s3, bucket: str) -> list[str]:
         token = resp["NextContinuationToken"]
 
 
+def _copy_images(
+    s3, src_bucket: str, dest_bucket: str, keys: list[str], concurrency: int = 10
+) -> tuple[int, int]:
+    """Server-side copy each key from the source bucket into the serving bucket.
+
+    SeaweedFS serves both buckets off the same S3 endpoint, so this is a
+    server-side ``copy_object`` (no bytes through this process). A ``head_object``
+    skip-guard on the destination makes reruns idempotent: an object already
+    present in ``dest_bucket`` is not re-copied. Returns ``(copied, skipped)``.
+    A no-op when ``src_bucket == dest_bucket`` (nothing to move).
+    """
+    if src_bucket == dest_bucket:
+        logger.info(
+            "source bucket == dest bucket (%s); skipping image copy", src_bucket
+        )
+        return 0, 0
+
+    def work(key: str) -> str:
+        try:
+            s3.head_object(Bucket=dest_bucket, Key=key)
+            return "skipped"  # already in the serving bucket
+        except ClientError as exc:
+            # 404/NoSuchKey just means it is not in the dest yet, so copy it.
+            # Anything else (auth, transport) is a real error worth surfacing.
+            code = exc.response.get("Error", {}).get("Code")
+            if code not in ("404", "NoSuchKey", "NotFound"):
+                raise
+        s3.copy_object(
+            Bucket=dest_bucket,
+            Key=key,
+            CopySource={"Bucket": src_bucket, "Key": key},
+        )
+        return "copied"
+
+    copied = skipped = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for future in as_completed(pool.submit(work, k) for k in keys):
+            if future.result() == "copied":
+                copied += 1
+            else:
+                skipped += 1
+    logger.info(
+        "image copy s3://%s -> s3://%s: %d copied, %d skipped",
+        src_bucket,
+        dest_bucket,
+        copied,
+        skipped,
+    )
+    return copied, skipped
+
+
 def _extract_photo_points(
     s3, bucket: str, keys: list[str], tmp_dir: Path, concurrency: int
 ) -> list[dict]:
-    """Download images, pull EXIF, return photo point dicts (GPS only)."""
+    """Download images, pull EXIF, return photo point dicts (GPS only).
+
+    This deliberately calls exif.extract_exif / transform directly rather than
+    trips.ingest.build_point: build_point raises on no-GPS (the backfill skips
+    those silently) and emits a final TripPoint-shaped dict with elevation left
+    None, whereas the backfill carries an intermediate "key/lat/lng/timestamp/
+    optics" shape so it can dedupe and batch the NRCan elevation lookup and merge
+    gap points before constructing rows. The EXIF/transform core is already the
+    shared one (post-Task-1: exif.py + transform.py back both paths), so reusing
+    build_point here would tangle the flow without removing the real duplication.
+    """
 
     def work(key: str):
         local = tmp_dir / Path(key).name
@@ -173,7 +238,17 @@ def run(
         Path | None,
         typer.Option(help="frontend config.yaml to upsert the trips.trips row"),
     ] = None,
-    bucket: Annotated[str, typer.Option(help="S3 bucket")] = DEFAULT_BUCKET,
+    bucket: Annotated[str, typer.Option(help="Source S3 bucket")] = DEFAULT_BUCKET,
+    dest_bucket: Annotated[
+        str, typer.Option(help="Serving S3 bucket images are copied into")
+    ] = DEFAULT_DEST_BUCKET,
+    copy_images: Annotated[
+        bool,
+        typer.Option(
+            "--copy-images/--no-copy-images",
+            help="Copy image bytes from --bucket into --dest-bucket",
+        ),
+    ] = True,
     endpoint: Annotated[
         str, typer.Option(help="SeaweedFS S3 endpoint")
     ] = "http://localhost:8333",
@@ -290,6 +365,17 @@ def run(
         session.add_all(rows)
         session.commit()
     print(f"Wrote {len(rows)} points for {slug}")
+
+    # Move the source bytes into the bucket the serving read path reads from.
+    # Done after the DB write (dry-run returns earlier, so it never copies); the
+    # order is not load-bearing since copy is idempotent and points reference
+    # keys by name, not by presence in the serving bucket.
+    if copy_images:
+        print(f"Copying {len(keys)} images s3://{bucket} -> s3://{dest_bucket} ...")
+        copied, skipped = _copy_images(s3, bucket, dest_bucket, keys, concurrency)
+        print(f"Image copy: {copied} copied, {skipped} skipped")
+    else:
+        print("Image copy disabled (--no-copy-images)")
 
 
 if __name__ == "__main__":
