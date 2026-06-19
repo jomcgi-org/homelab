@@ -61,7 +61,6 @@ multirun(
         "//projects/operators/oci-model-cache:image.push",
         "//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.push",
         "//projects/platform/signoz-addons/dashboard-sidecar:chart.push",
-        "//projects/stargazer:image.push",
         "//projects/trips/backend:image.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism

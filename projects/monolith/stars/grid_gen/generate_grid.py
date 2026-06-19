@@ -8,10 +8,11 @@ keeps only Scottish land dark-sky points. Pure-Python ray-casting point-in-polyg
 (no geopandas).
 
 Inputs:
-  - dark_regions.geojson: stargazer's LP dark mask (a MultiPolygon). Pull from the
-    running stargazer pod (shell-less, use the api container):
-        kubectl exec -n stargazer <stargazer-api-pod> -c api -- \
-            cat /data/processed/dark_regions.geojson > dark_regions.geojson
+  - dark_regions.geojson: the LP dark mask (a MultiPolygon). The stargazer service
+    was decommissioned 2026-06; its data is archived in SeaweedFS. Pull via S3,
+    with $EP set to the in-cluster SeaweedFS S3 endpoint (seaweedfsS3Endpoint in
+    the monolith chart; creds default to duckdb/duckdb, see chat/store.py):
+        aws --endpoint-url "$EP" s3 cp s3://stargazer-archive/processed/dark_regions.geojson dark_regions.geojson
   - admin1.geojson: Natural Earth 10m admin-1, for the Scotland boundary:
         curl -o admin1.geojson https://raw.githubusercontent.com/nvkelso/\
 natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson
