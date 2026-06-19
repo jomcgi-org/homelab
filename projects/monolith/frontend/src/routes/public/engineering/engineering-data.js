@@ -346,7 +346,12 @@ export const projects = [
         v: "0 to 100: darkness 40%, weather 25%, accessibility 20%, horizon 15%. Filterable by threshold.",
       },
     ],
-    links: [],
+    links: [
+      {
+        label: "Live at jomcgi.dev/app/stars",
+        href: "https://jomcgi.dev/app/stars",
+      },
+    ],
   },
   {
     id: "bazel",
