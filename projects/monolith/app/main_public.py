@@ -23,6 +23,7 @@ import home
 import knowledge
 import ships
 import stars
+import trips
 from app.db import get_engine
 from app.log import configure_logging
 from fastapi import FastAPI
@@ -37,6 +38,7 @@ app = FastAPI(title="Monolith Public")
 
 ships.register_public(app)
 stars.register_public(app)
+trips.register_public(app)
 hikes.register_public(app)
 dr_jobs.register_public(app)
 knowledge.register_public(app)
