@@ -32,8 +32,8 @@ For Joe (future-me):
 
 from __future__ import annotations
 
-PROFILE_VERSION = "2"
-PROFILE_UPDATED = "2026-05-28"
+PROFILE_VERSION = "3"
+PROFILE_UPDATED = "2026-06-18"
 
 IDENTITY = """\
 Senior Platform Engineer @ Semgrep (Vancouver, BC). Career thesis:
@@ -134,7 +134,12 @@ RELEVANCE_SKIP: list[dict[str, str]] = [
 RELEVANCE_EMPLOYER_CARVE_OUTS = (
     "BenchSci is allowed in depth (3yr prior employer); the "
     "Sky/AXA/Hometree/Ensono atoms about Joe's own platform work there are "
-    "KEEP (CV-relevant); generic market commentary about those firms is SKIP."
+    "KEEP (worth retaining in the graph); generic market commentary about "
+    "those firms is SKIP. RELEVANCE (keep vs skip) is separate from "
+    "VISIBILITY (public vs private): an employer-attributed work-history atom "
+    "is KEEP but DEFAULTS PRIVATE -- see VISIBILITY_CRITERIA. The curated "
+    "public CV at https://jomcgi.dev is the only public surface for "
+    "employment history; raw graph notes naming an employer stay private."
 )
 
 VISIBILITY_CRITERIA = """\
@@ -149,13 +154,24 @@ Mark `public` when the note is about:
 - General engineering concepts, principles, heuristics (DORA, Conway's Law,
   blameless postmortems, etc.) -- anything you'd find in a textbook, blog,
   or conference talk.
-- Skills, technologies, or methods covered in Joe's public CV / GitHub /
-  conference talks.
+- A skill, technology, or method *in the abstract* -- the generalizable
+  pattern, NOT an account of Joe applying it at a named employer. ("How
+  pull-based GKE workers cut cost" = public; "At BenchSci I cut cost 89%"
+  = private.)
 - Verifiable facts about external systems, libraries, protocols, or tools.
 - Book / paper / talk summaries when the source is publicly available.
 
 Mark `private` when the note involves any of:
 - Names of current or former colleagues, managers, reports, or interviewers.
+- Employer-attributed work history: any note describing what Joe did at a
+  named employer (current OR former -- Semgrep, BenchSci, Ensono, Hometree,
+  AXA, Sky, Chubb, etc.), including accomplishments, metrics, dates, role
+  scope, project descriptions, or recognition. This is PRIVATE even when the
+  underlying skill is on the public CV -- the curated CV at jomcgi.dev is the
+  ONLY public surface for employment history; raw graph notes are not.
+- Personal identity / profile notes: career timelines, expertise-stack
+  inventories, and `joe-mcginley-*` profile atoms (the CV is the public
+  version; the graph copies stay private).
 - Specific employers in non-public ways: project codenames, internal
   architecture, compensation, performance reviews, hiring decisions.
 - Job-search activity: interview prep, comp negotiation, target companies,
@@ -231,6 +247,21 @@ PRIVATE_CATEGORIES: list[dict[str, list[str] | str]] = [
             "internal Semgrep roadmaps not yet public",
             "internal headcount/financials",
             "internal disputes",
+        ],
+    },
+    {
+        "name": "Employer-attributed work history",
+        "seeds": [
+            "what Joe did at a named employer (current or former)",
+            "BenchSci",
+            "Ensono",
+            "Hometree",
+            "AXA",
+            "Sky",
+            "Chubb",
+            "tenure accomplishments / metrics / cost figures",
+            "role scope, dates, recognition tied to an employer",
+            "the public CV at jomcgi.dev is the only public employment surface",
         ],
     },
     {
