@@ -89,8 +89,11 @@ export const STARS_SITES_CACHE_CONTROL =
 export const STARS_HISTORY_CACHE_CONTROL =
   "public, max-age=0, s-maxage=31536000, stale-while-revalidate=604800, stale-if-error=604800";
 
-// /app/trips pages (the trip index + per-trip metadata and points): trip content
-// changes rarely (a backfill run at most), so a short browser TTL with a long
-// CDN TTL keeps the SSR pages snappy while a reload picks up fresh data within a
-// day. Mirrors _CACHE in projects/monolith/trips/read_router.py, keep in sync.
-export const TRIPS_CACHE_CONTROL = "public, max-age=300, s-maxage=86400";
+// /app/trips pages (the trip index + per-trip metadata and points). Trip content
+// is edited in place (title, cover, the occasional backfill), so a short CDN TTL
+// matters: a 24h edge cache made edits invisible for a day and required a manual
+// Cloudflare purge. 5 min CDN with stale-while-revalidate keeps the SSR pages
+// snappy (CDN offload) while edits propagate within minutes without a purge.
+// Mirrors _CACHE in projects/monolith/trips/read_router.py, keep in sync.
+export const TRIPS_CACHE_CONTROL =
+  "public, max-age=60, s-maxage=300, stale-while-revalidate=3600";
