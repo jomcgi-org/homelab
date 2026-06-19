@@ -3,6 +3,7 @@
   import DayMap from "$lib/public/components/trips/DayMap.svelte";
   import DayStats from "$lib/public/components/trips/DayStats.svelte";
   import PhotoGrid from "$lib/public/components/trips/PhotoGrid.svelte";
+  import PhotoViewer from "$lib/public/components/trips/PhotoViewer.svelte";
   import ElevationChart from "$lib/public/components/trips/ElevationChart.svelte";
   import {
     groupByDay,
@@ -23,6 +24,17 @@
   const photos = $derived(day ? photosOf(day.points) : []);
   const label = $derived(dayLabel(trip?.days, dayNumber));
   const dayStats = $derived(day ? { ...day, photoCount: photos.length } : null);
+
+  // One lightbox shared by the map markers and the photo grid. -1 = closed.
+  // The map and grid both index into the same `photos` array, so opening photo
+  // i is unambiguous.
+  let viewerIndex = $state(-1);
+  function openPhoto(i) {
+    viewerIndex = i;
+  }
+  function closePhoto() {
+    viewerIndex = -1;
+  }
 </script>
 
 <svelte:head>
@@ -38,7 +50,7 @@
     <DayNav slug={trip.slug} {dayNumber} {totalDays} {label} dayColor={color} />
 
     <div class="map-box">
-      <DayMap points={day.points} {photos} dayColor={color} />
+      <DayMap points={day.points} {photos} dayColor={color} onPhotoClick={openPhoto} />
     </div>
 
     <DayStats stats={dayStats} dayColor={color} />
@@ -58,8 +70,18 @@
 
     <section class="photos">
       <p class="eyebrow">{photos.length} photo{photos.length === 1 ? "" : "s"}</p>
-      <PhotoGrid {photos} tz={trip?.tz} />
+      <PhotoGrid {photos} onOpen={openPhoto} />
     </section>
+  {/if}
+
+  {#if viewerIndex >= 0}
+    <PhotoViewer
+      {photos}
+      index={viewerIndex}
+      tz={trip?.tz}
+      onIndex={(i) => (viewerIndex = i)}
+      onClose={closePhoto}
+    />
   {/if}
 </div>
 

@@ -9,7 +9,7 @@
   // TODO(trips): the old React DayMap drove a per-photo marker + terrain
   // hillshade lit from the sun position at the photo's timestamp. That solar /
   // bearing panel is dropped in this port; photos are shown as static markers.
-  let { points = [], photos = [], dayColor = "#2563eb" } = $props();
+  let { points = [], photos = [], dayColor = "#2563eb", onPhotoClick } = $props();
 
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
@@ -70,11 +70,15 @@
           });
         }
 
+        // Carry each photo's index in the `photos` array so a marker click can
+        // open that exact photo in the page-level lightbox. `photos` is the same
+        // array the grid and PhotoViewer use, so the indices line up.
         const photoFeatures = photos
-          .filter((p) => p.lat != null && p.lng != null)
-          .map((p) => ({
+          .map((p, i) => ({ p, i }))
+          .filter(({ p }) => p.lat != null && p.lng != null)
+          .map(({ p, i }) => ({
             type: "Feature",
-            properties: {},
+            properties: { photoIndex: i },
             geometry: { type: "Point", coordinates: [p.lng, p.lat] },
           }));
         if (photoFeatures.length) {
@@ -92,6 +96,17 @@
               "circle-stroke-color": "#ffffff",
               "circle-stroke-width": 2,
             },
+          });
+
+          map.on("click", "day-photos", (e) => {
+            const i = e.features?.[0]?.properties?.photoIndex;
+            if (i != null) onPhotoClick?.(i);
+          });
+          map.on("mouseenter", "day-photos", () => {
+            map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", "day-photos", () => {
+            map.getCanvas().style.cursor = "";
           });
         }
       });
