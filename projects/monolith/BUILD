@@ -3711,6 +3711,20 @@ py_test(
     ],
 )
 
+py_test(
+    name = "trips_ingest_test",
+    srcs = ["trips/ingest_test.py"],
+    # Tiny committed JPEG fixtures (geotagged + no-GPS) the test reads through
+    # the real exif.extract_exif path. Excluded from the server libs above so
+    # the bytes never ship in the production image.
+    data = glob(["trips/testdata/**"]),
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
 semgrep_test(
     name = "import_boundaries_test_semgrep_test",
     srcs = ["import_boundaries_test.py"],
