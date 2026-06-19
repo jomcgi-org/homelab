@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel.pool import StaticPool
 
 from knowledge.gardener import GARDENER_VERSION
-from knowledge.models import AtomRawProvenance
+from knowledge.models import AtomRawProvenance, Note
 from knowledge.mcp import (
     create_atom,
     create_note,
@@ -25,6 +28,7 @@ from knowledge.mcp import (
     search_tasks,
     update_task,
 )
+from knowledge.store import KnowledgeStore
 
 FAKE_EMBEDDING = [0.1] * 1024
 
@@ -49,6 +53,82 @@ SAMPLE_NOTE = {
     "type": "paper",
     "tags": ["ml", "transformers"],
 }
+
+
+@pytest.fixture(name="db_engine")
+def db_engine_fixture():
+    """In-memory SQLite engine for the fileless create/edit write paths.
+
+    ADR 006: create_note/edit_note index straight into Postgres, so these
+    tools must run against a real DB rather than a mocked store. Strips the
+    Postgres ``schema=`` overrides so ``create_all`` lands every table in the
+    default SQLite schema, then restores them so the shared SQLModel.metadata
+    isn't poisoned for other tests. StaticPool keeps a single connection so
+    rows committed by the tool are visible to assertion sessions.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        yield engine
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
+def _fake_embedder() -> AsyncMock:
+    """Embedder whose ``embed_batch`` returns deterministic 1024-dim vectors.
+
+    The fileless write paths call ``EmbeddingClient().embed_batch`` during
+    indexing; mocking it keeps the tests off the network.
+    """
+    client = AsyncMock()
+    client.embed_batch.side_effect = lambda texts: [[0.1] * 1024 for _ in texts]
+    return client
+
+
+def _insert_note(
+    engine,
+    *,
+    note_id: str,
+    title: str = "Original",
+    content: str | None = "Old body",
+    path: str | None = None,
+    type: str = "atom",
+    visibility: str | None = None,
+) -> None:
+    """Insert a live Note row used by the edit/collision write-path tests."""
+    with Session(engine) as session:
+        session.add(
+            Note(
+                note_id=note_id,
+                path=path or f"_processed/{note_id}.md",
+                title=title,
+                content_hash=f"hash-{note_id}",
+                content=content,
+                type=type,
+                visibility=visibility,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+
+def _get_note_row(engine, note_id: str) -> Note:
+    """Fetch the raw Note ORM row (carries columns get_note_by_id omits)."""
+    with Session(engine) as session:
+        # test helper: intentionally reads any row (including soft-deleted).
+        stmt = select(Note).where(Note.note_id == note_id)  # nosemgrep
+        return session.exec(stmt).one()
 
 
 class TestSearchKnowledge:
@@ -125,36 +205,8 @@ class TestGetNote:
     """Tests for the get_note MCP tool."""
 
     @pytest.mark.asyncio
-    async def test_returns_note_with_content(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention\n\nSelf-attention mechanism.")
-
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        mock_session = MagicMock()
-        with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
-        ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
-            MockStore.return_value.get_note_links.return_value = []
-            result = await get_note("n1")
-
-        assert result["note_id"] == "n1"
-        assert result["content"] == "# Attention\n\nSelf-attention mechanism."
-        assert result["edges"] == []
-
-    @pytest.mark.asyncio
-    async def test_serves_content_from_db_without_disk(self, tmp_path, monkeypatch):
-        """ADR 006 Phase 2: body comes from Postgres, no vault file read."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()  # empty — proves the read does not touch disk
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
+    async def test_returns_note_with_content(self):
+        """ADR 006: body comes from the authoritative Postgres ``content``."""
         mock_session = MagicMock()
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
@@ -163,12 +215,13 @@ class TestGetNote:
         ):
             MockStore.return_value.get_note_by_id.return_value = {
                 **SAMPLE_NOTE,
-                "content": "# From Postgres\n\nNo disk read needed.",
+                "content": "# Attention\n\nSelf-attention mechanism.",
             }
             MockStore.return_value.get_note_links.return_value = []
             result = await get_note("n1")
 
-        assert result["content"] == "# From Postgres\n\nNo disk read needed."
+        assert result["note_id"] == "n1"
+        assert result["content"] == "# Attention\n\nSelf-attention mechanism."
         assert result["edges"] == []
 
     @pytest.mark.asyncio
@@ -185,11 +238,8 @@ class TestGetNote:
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_missing_vault_file_returns_error(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
+    async def test_missing_body_returns_error(self):
+        """ADR 006: a row with a NULL ``content`` has no body to serve."""
         mock_session = MagicMock()
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),
@@ -198,36 +248,47 @@ class TestGetNote:
         ):
             MockStore.return_value.get_note_by_id.return_value = {
                 **SAMPLE_NOTE,
-                "path": "nonexistent/missing.md",
+                "content": None,
             }
             result = await get_note("n1")
 
         assert "error" in result
+        assert "no body" in result["error"]
 
 
 class TestCreateNoteTool:
-    """Tests for the create_note MCP tool."""
+    """Tests for the create_note MCP tool.
+
+    ADR 006: create_note is fileless: it resolves a DB-unique note_id from
+    the slugified title and indexes straight into Postgres, returning
+    ``{"note_id", "path": "_processed/<id>.md"}``. The tests run against a
+    real SQLite engine (``db_engine``) with the embedder mocked and assert on
+    the persisted Note row rather than a file on disk.
+    """
 
     @pytest.mark.asyncio
-    async def test_creates_file(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+    async def test_creates_note_in_db(self, db_engine):
+        with (
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
+        ):
+            result = await create_note(
+                content="Some note body",
+                title="My Test Note",
+                tags=["test"],
+                type="concept",
+            )
 
-        result = await create_note(
-            content="Some note body",
-            title="My Test Note",
-            tags=["test"],
-            type="concept",
-        )
+        assert result["note_id"] == "my-test-note"
+        assert result["path"] == "_processed/my-test-note.md"
 
-        assert "path" in result
-        assert result["path"] == "my-test-note.md"
-        created = vault_dir / result["path"]
-        assert created.is_file()
-        text = created.read_text()
-        assert "title: My Test Note" in text
-        assert "Some note body" in text
+        with Session(db_engine) as session:
+            note = KnowledgeStore(session).get_note_by_id("my-test-note")
+        assert note is not None
+        assert note["title"] == "My Test Note"
+        assert note["type"] == "concept"
+        assert note["tags"] == ["test"]
+        assert "Some note body" in note["content"]
 
     @pytest.mark.asyncio
     async def test_empty_content_returns_error(self):
@@ -240,199 +301,154 @@ class TestCreateNoteTool:
         assert result == {"error": "content must not be empty"}
 
     @pytest.mark.asyncio
-    async def test_collision_handling(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+    async def test_collision_handling(self, db_engine):
+        _insert_note(db_engine, note_id="my-note", title="My Note")
 
-        (vault_dir / "my-note.md").write_text("existing")
+        with (
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
+        ):
+            result = await create_note(content="body", title="My Note")
 
-        result = await create_note(content="body", title="My Note")
-        assert result["path"] == "my-note-1.md"
-
-    @pytest.mark.asyncio
-    async def test_default_title_from_content(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        result = await create_note(content="Short body")
-        created = vault_dir / result["path"]
-        text = created.read_text()
-        assert "title: Short body" in text
+        assert result["note_id"] == "my-note-1"
+        assert result["path"] == "_processed/my-note-1.md"
 
     @pytest.mark.asyncio
-    async def test_visibility_arg_writes_frontmatter(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+    async def test_default_title_from_content(self, db_engine):
+        with (
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
+        ):
+            result = await create_note(content="Short body")
 
-        result = await create_note(
-            content="An atom about service mesh.",
-            title="Linkerd mTLS",
-            visibility="public",
-        )
-
-        text = (vault_dir / result["path"]).read_text()
-        assert "visibility: public" in text
+        with Session(db_engine) as session:
+            note = KnowledgeStore(session).get_note_by_id(result["note_id"])
+        assert note["title"] == "Short body"
 
     @pytest.mark.asyncio
-    async def test_rejects_invalid_visibility(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+    async def test_visibility_arg_persisted(self, db_engine):
+        with (
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
+        ):
+            result = await create_note(
+                content="An atom about service mesh.",
+                title="Linkerd mTLS",
+                visibility="public",
+            )
 
+        row = _get_note_row(db_engine, result["note_id"])
+        assert row.visibility == "public"
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_visibility(self):
         result = await create_note(content="body", visibility="weird-value")
         assert "error" in result
 
 
 class TestEditNoteTool:
-    """Tests for the edit_note MCP tool."""
+    """Tests for the edit_note MCP tool.
+
+    ADR 006: edit_note delegates to ``reindex_note_with_edits``, which loads
+    the authoritative Note row from Postgres, merges the provided fields, and
+    re-indexes in place (no vault file). The tests seed a real Note row, mock
+    the embedder, and assert on the re-indexed row. A missing note returns
+    ``{"error": "note not found: <id>"}`` (there is no missing-file path).
+    """
 
     @pytest.mark.asyncio
-    async def test_updates_content(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("---\ntitle: Original\n---\nOld body")
+    async def test_updates_content(self, db_engine):
+        _insert_note(
+            db_engine,
+            note_id="n1",
+            title="Original",
+            content="Old body",
+            path="papers/attention.md",
+        )
 
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        mock_session = MagicMock()
         with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
         ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
             result = await edit_note("n1", content="New body", title="Updated Title")
 
         assert result == {"path": "papers/attention.md", "note_id": "n1"}
-        text = note_file.read_text()
-        assert "title: Updated Title" in text
-        assert "New body" in text
-        assert "Old body" not in text
+
+        with Session(db_engine) as session:
+            note = KnowledgeStore(session).get_note_by_id("n1")
+        assert note["title"] == "Updated Title"
+        assert "New body" in note["content"]
+        assert "Old body" not in note["content"]
 
     @pytest.mark.asyncio
-    async def test_reindexes_into_postgres(self, tmp_path, monkeypatch):
-        """ADR 006 Phase 3: an edit re-indexes synchronously via upsert_note."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("---\nid: n1\ntitle: Original\n---\nOld body")
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
+    async def test_reindexes_into_postgres(self, db_engine):
+        """ADR 006: an edit re-indexes synchronously into the note row."""
+        _insert_note(db_engine, note_id="n1", title="Original", content="Old body")
 
-        embed = AsyncMock()
-        embed.embed_batch.side_effect = lambda texts: [[0.1] * 1024 for _ in texts]
-        mock_session = MagicMock()
         with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.EmbeddingClient", return_value=embed),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
         ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
             await edit_note("n1", content="Fresh body")
 
-        MockStore.return_value.upsert_note.assert_called_once()
-        kwargs = MockStore.return_value.upsert_note.call_args.kwargs
-        assert kwargs["note_id"] == "n1"
-        assert "Fresh body" in kwargs["content"]
+        with Session(db_engine) as session:
+            note = KnowledgeStore(session).get_note_by_id("n1")
+        assert "Fresh body" in note["content"]
+        assert "Old body" not in note["content"]
 
     @pytest.mark.asyncio
-    async def test_not_found_returns_error(self):
-        mock_session = MagicMock()
+    async def test_not_found_returns_error(self, db_engine):
         with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
         ):
-            MockStore.return_value.get_note_by_id.return_value = None
             result = await edit_note("nonexistent", content="x")
 
-        assert "error" in result
+        assert result == {"error": "note not found: nonexistent"}
 
     @pytest.mark.asyncio
-    async def test_missing_file_returns_error(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        mock_session = MagicMock()
-        with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
-        ):
-            MockStore.return_value.get_note_by_id.return_value = {
-                **SAMPLE_NOTE,
-                "path": "gone/missing.md",
-            }
-            result = await edit_note("n1", content="x")
-
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_preserves_existing_visibility(self, tmp_path, monkeypatch):
-        """Title-only edit must not drop visibility from frontmatter.
+    async def test_preserves_existing_visibility(self, db_engine):
+        """Title-only edit must not drop visibility from the row.
 
         Regression guard for the bug that nulled visibility on thousands of
-        notes prior to this fix. Mirror the file shape that the gardener
-        emits (id + title + type + visibility) and confirm the rewrite
-        keeps the visibility line.
+        notes prior to this fix. Seed a note with visibility set and confirm
+        a title-only edit preserves it on the re-indexed row.
         """
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text(
-            "---\nid: n1\ntitle: Original\ntype: atom\nvisibility: public\n---\nOld body"
+        _insert_note(
+            db_engine,
+            note_id="n1",
+            title="Original",
+            content="Old body",
+            type="atom",
+            visibility="public",
         )
 
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        mock_session = MagicMock()
         with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
         ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
             await edit_note("n1", title="Updated Title")
 
-        text = note_file.read_text()
-        assert "visibility: public" in text
-        assert "title: Updated Title" in text
+        row = _get_note_row(db_engine, "n1")
+        assert row.visibility == "public"
+        assert row.title == "Updated Title"
 
     @pytest.mark.asyncio
-    async def test_sets_visibility_when_passed(self, tmp_path, monkeypatch):
-        """Explicit visibility arg writes the field even if missing before."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("---\nid: n1\ntitle: Original\n---\nOld body")
+    async def test_sets_visibility_when_passed(self, db_engine):
+        """Explicit visibility arg writes the field even if unset before."""
+        _insert_note(db_engine, note_id="n1", title="Original", content="Old body")
 
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
-        mock_session = MagicMock()
         with (
-            patch("knowledge.mcp.Session", return_value=mock_session),
-            patch("knowledge.mcp.get_engine"),
-            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
-            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.get_engine", return_value=db_engine),
+            patch("knowledge.mcp.EmbeddingClient", return_value=_fake_embedder()),
         ):
-            MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
             await edit_note("n1", visibility="private")
 
-        assert "visibility: private" in note_file.read_text()
+        row = _get_note_row(db_engine, "n1")
+        assert row.visibility == "private"
 
     @pytest.mark.asyncio
-    async def test_rejects_invalid_visibility(self, tmp_path, monkeypatch):
+    async def test_rejects_invalid_visibility(self):
         result = await edit_note("n1", visibility="weird")
         assert "error" in result
 
@@ -440,18 +456,14 @@ class TestEditNoteTool:
 class TestDeleteNoteTool:
     """Tests for the delete_note MCP tool.
 
-    The tool now delegates to notes.delete_note (soft-delete) instead of
-    the old hard-delete path. File-on-disk semantics, missing-file
-    tolerance, and Trash bookkeeping are all covered in notes_test.py;
-    here we only verify the MCP tool plumbing.
+    ADR 006: the tool delegates to ``notes.delete_note(session, note_id)``
+    (DB-only soft-delete, no vault_root, no file move). Soft-delete row
+    semantics are covered in notes_test.py / notes_crud_test.py; here we only
+    verify the MCP tool plumbing.
     """
 
     @pytest.mark.asyncio
-    async def test_soft_deletes_via_notes_module(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
+    async def test_soft_deletes_via_notes_module(self):
         fake_note = MagicMock()
         fake_note.note_id = "n1"
 
@@ -468,16 +480,12 @@ class TestDeleteNoteTool:
         assert result == {"deleted": True, "note_id": "n1"}
         mock_delete.assert_called_once()
         call = mock_delete.call_args
-        # Positional signature: notes.delete_note(session, note_id, vault_root)
+        # Positional signature: notes.delete_note(session, note_id), no vault_root.
         assert call.args[1] == "n1"
-        assert call.args[2] == vault_dir.resolve()
+        assert len(call.args) == 2
 
     @pytest.mark.asyncio
-    async def test_value_error_returns_error_dict(self, tmp_path, monkeypatch):
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv("VAULT_ROOT", str(vault_dir))
-
+    async def test_value_error_returns_error_dict(self):
         mock_session = MagicMock()
         with (
             patch("knowledge.mcp.Session", return_value=mock_session),

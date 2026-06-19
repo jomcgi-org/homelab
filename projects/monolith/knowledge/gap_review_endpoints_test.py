@@ -22,7 +22,6 @@ from knowledge.gaps import (
     list_gaps_for_review,
 )
 from knowledge.models import Gap, Note
-from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture
@@ -51,13 +50,12 @@ def session():
 
 
 @pytest.fixture
-def client(session, tmp_path, monkeypatch):
+def client(session):
     from fastapi import FastAPI
 
     from app.db import get_session
     from knowledge.router import router
 
-    monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
@@ -446,9 +444,7 @@ class TestSoftDeleteGap:
     ``discover_gaps`` cycle (not by undelete itself).
     """
 
-    def test_delete_sets_deleted_at_and_removes_from_audit_queue(
-        self, client, session, tmp_path
-    ):
+    def test_delete_sets_deleted_at_and_removes_from_audit_queue(self, client, session):
         _make_source_note(session)
         gap = _make_gap(
             session,
@@ -515,7 +511,7 @@ class TestSoftDeleteGap:
         assert second.status_code == 200
         assert second.json().get("deleted_at") == first_ts
 
-    def test_get_lifecycle_endpoints_404_after_delete(self, client, session, tmp_path):
+    def test_get_lifecycle_endpoints_404_after_delete(self, client, session):
         """Write helpers (_get_gap_or_raise) treat deleted as not-found."""
         _make_source_note(session)
         gap = _make_gap(
@@ -590,7 +586,7 @@ class TestGapReviewQueueDictShape:
     `answer` so the UI can render in-place.
     """
 
-    def test_dict_includes_new_audit_fields(self, client, session, tmp_path):
+    def test_dict_includes_new_audit_fields(self, client, session):
         _make_source_note(session)
         _make_gap(
             session,
@@ -622,7 +618,7 @@ class TestGapReviewQueueDictShape:
         # No inbound links so count is 0.
         assert item["referenced_by_count"] == 0
 
-    def test_referenced_by_count_reflects_note_links(self, client, session, tmp_path):
+    def test_referenced_by_count_reflects_note_links(self, client, session):
         from knowledge.models import NoteLink
 
         src = _make_source_note(session, note_id="linker")
