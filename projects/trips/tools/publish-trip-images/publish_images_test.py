@@ -1,47 +1,36 @@
-"""Tests for publish-trip-images/main.py — functions not covered by rebuild_test.py.
+"""Tests for publish-trip-images/main.py — core scan/queue/EXIF helpers.
 
 Covers:
 - dms_to_decimal: GPS DMS-to-decimal conversion
 - get_gps_info: EXIF GPS tag extraction
 - calculate_light_value: LV from exposure triangle
 - format_shutter_speed: shutter speed string formatting
-- calculate_md5: file hashing
 - scan_images: filesystem image scanner
-- generate_dest_key: deterministic S3 key generation
-- object_exists_with_hash: S3 existence check
-- upload_image: S3 upload with dedup logic
-- publish_to_nats: NATS JetStream publishing
+- generate_dest_key: deterministic local dedup-key generation
 - sample_images_by_time: time-interval image sampling
 - UploadQueue: CRUD operations (add, get_pending, get_completed,
   mark_uploading, mark_completed, mark_failed, reset_uploading, get_stats)
+
+The HTTP ingestion POST path is covered by ingest_post_test.py.
 """
 
-import json
 import sqlite3
-import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-import pytest_asyncio  # noqa: F401 — registers plugin
 
 from main import (
-    IMAGE_KEY_NAMESPACE,
-    ImageRecord,
     OpticsData,
     UploadQueue,
     UploadStatus,
     calculate_light_value,
-    calculate_md5,
     dms_to_decimal,
     format_shutter_speed,
     generate_dest_key,
     get_gps_info,
-    object_exists_with_hash,
-    publish_to_nats,
     sample_images_by_time,
     scan_images,
-    upload_image,
 )
 
 
@@ -213,54 +202,6 @@ class TestFormatShutterSpeed:
 
 
 # ---------------------------------------------------------------------------
-# calculate_md5
-# ---------------------------------------------------------------------------
-
-
-class TestCalculateMd5:
-    """MD5 hash of a file for S3 ETag comparison."""
-
-    def test_known_content_produces_expected_hash(self, tmp_path):
-        import hashlib
-
-        data = b"hello world"
-        f = tmp_path / "test.bin"
-        f.write_bytes(data)
-        expected = hashlib.md5(data, usedforsecurity=False).hexdigest()  # nosec
-        assert calculate_md5(f) == expected
-
-    def test_empty_file_produces_known_hash(self, tmp_path):
-        import hashlib
-
-        f = tmp_path / "empty.bin"
-        f.write_bytes(b"")
-        expected = hashlib.md5(b"", usedforsecurity=False).hexdigest()  # nosec
-        assert calculate_md5(f) == expected
-
-    def test_different_content_different_hash(self, tmp_path):
-        f1 = tmp_path / "a.bin"
-        f2 = tmp_path / "b.bin"
-        f1.write_bytes(b"aaa")
-        f2.write_bytes(b"bbb")
-        assert calculate_md5(f1) != calculate_md5(f2)
-
-    def test_same_content_same_hash(self, tmp_path):
-        f1 = tmp_path / "a.bin"
-        f2 = tmp_path / "b.bin"
-        f1.write_bytes(b"identical")
-        f2.write_bytes(b"identical")
-        assert calculate_md5(f1) == calculate_md5(f2)
-
-    def test_returns_hex_string(self, tmp_path):
-        f = tmp_path / "x.bin"
-        f.write_bytes(b"data")
-        result = calculate_md5(f)
-        assert isinstance(result, str)
-        assert len(result) == 32
-        assert all(c in "0123456789abcdef" for c in result)
-
-
-# ---------------------------------------------------------------------------
 # scan_images
 # ---------------------------------------------------------------------------
 
@@ -389,294 +330,6 @@ class TestGenerateDestKey:
         basename = key[4:].rsplit(".", 1)[0]
         assert len(basename) == 12
         assert all(c in "0123456789abcdef" for c in basename)
-
-
-# ---------------------------------------------------------------------------
-# object_exists_with_hash
-# ---------------------------------------------------------------------------
-
-
-class TestObjectExistsWithHash:
-    """Check if S3 object exists with matching MD5 ETag."""
-
-    def test_returns_true_when_etag_matches(self):
-        s3 = MagicMock()
-        s3.head_object.return_value = {"ETag": '"abc123"'}
-        result = object_exists_with_hash(s3, "bucket", "key.jpg", "abc123")
-        assert result is True
-
-    def test_returns_false_when_etag_mismatch(self):
-        s3 = MagicMock()
-        s3.head_object.return_value = {"ETag": '"differenthash"'}
-        result = object_exists_with_hash(s3, "bucket", "key.jpg", "abc123")
-        assert result is False
-
-    def test_returns_false_when_object_not_found(self):
-        from botocore.exceptions import ClientError
-
-        s3 = MagicMock()
-        s3.head_object.side_effect = ClientError(
-            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
-        )
-        result = object_exists_with_hash(s3, "bucket", "key.jpg", "abc123")
-        assert result is False
-
-    def test_returns_false_on_other_client_error(self):
-        from botocore.exceptions import ClientError
-
-        s3 = MagicMock()
-        s3.head_object.side_effect = ClientError(
-            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
-        )
-        result = object_exists_with_hash(s3, "bucket", "key.jpg", "abc123")
-        assert result is False
-
-    def test_strips_quotes_from_etag(self):
-        """ETags from S3 come with surrounding quotes."""
-        s3 = MagicMock()
-        s3.head_object.return_value = {"ETag": '"myhash"'}
-        result = object_exists_with_hash(s3, "bucket", "key.jpg", "myhash")
-        assert result is True
-
-    def test_passes_correct_bucket_and_key(self):
-        s3 = MagicMock()
-        s3.head_object.return_value = {"ETag": '"hash"'}
-        object_exists_with_hash(s3, "my-bucket", "path/to/key.jpg", "hash")
-        s3.head_object.assert_called_once_with(
-            Bucket="my-bucket", Key="path/to/key.jpg"
-        )
-
-
-# ---------------------------------------------------------------------------
-# upload_image
-# ---------------------------------------------------------------------------
-
-
-class TestUploadImage:
-    """Upload image to S3 — skips if file unchanged (ETag match)."""
-
-    def test_skips_upload_when_hash_matches(self, tmp_path):
-        img = tmp_path / "photo.jpg"
-        img.write_bytes(b"image data")
-
-        # Mock: object exists with same hash
-        s3 = MagicMock()
-        with (
-            patch("main.calculate_md5", return_value="abc123"),
-            patch("main.object_exists_with_hash", return_value=True),
-        ):
-            result = upload_image(s3, "bucket", img, "img_abc.jpg")
-
-        assert result is False
-        s3.upload_file.assert_not_called()
-
-    def test_uploads_when_hash_differs(self, tmp_path):
-        img = tmp_path / "photo.jpg"
-        img.write_bytes(b"new image data")
-
-        s3 = MagicMock()
-        with (
-            patch("main.calculate_md5", return_value="newhash"),
-            patch("main.object_exists_with_hash", return_value=False),
-        ):
-            result = upload_image(s3, "bucket", img, "img_abc.jpg")
-
-        assert result is True
-        s3.upload_file.assert_called_once()
-
-    def test_jpg_content_type(self, tmp_path):
-        img = tmp_path / "photo.jpg"
-        img.write_bytes(b"data")
-
-        s3 = MagicMock()
-        with (
-            patch("main.calculate_md5", return_value="h"),
-            patch("main.object_exists_with_hash", return_value=False),
-        ):
-            upload_image(s3, "bucket", img, "img.jpg")
-
-        call_kwargs = s3.upload_file.call_args[1]
-        assert call_kwargs["ExtraArgs"]["ContentType"] == "image/jpeg"
-
-    def test_png_content_type(self, tmp_path):
-        img = tmp_path / "photo.png"
-        img.write_bytes(b"data")
-
-        s3 = MagicMock()
-        with (
-            patch("main.calculate_md5", return_value="h"),
-            patch("main.object_exists_with_hash", return_value=False),
-        ):
-            upload_image(s3, "bucket", img, "img.png")
-
-        call_kwargs = s3.upload_file.call_args[1]
-        assert call_kwargs["ExtraArgs"]["ContentType"] == "image/png"
-
-    def test_heic_content_type(self, tmp_path):
-        img = tmp_path / "photo.heic"
-        img.write_bytes(b"data")
-
-        s3 = MagicMock()
-        with (
-            patch("main.calculate_md5", return_value="h"),
-            patch("main.object_exists_with_hash", return_value=False),
-        ):
-            upload_image(s3, "bucket", img, "img.jpg")
-
-        call_kwargs = s3.upload_file.call_args[1]
-        assert call_kwargs["ExtraArgs"]["ContentType"] == "image/heic"
-
-    def test_upload_receives_correct_bucket_and_key(self, tmp_path):
-        img = tmp_path / "shot.jpg"
-        img.write_bytes(b"data")
-
-        s3 = MagicMock()
-        with (
-            patch("main.calculate_md5", return_value="h"),
-            patch("main.object_exists_with_hash", return_value=False),
-        ):
-            upload_image(s3, "my-bucket", img, "trips/img_abc.jpg")
-
-        args = s3.upload_file.call_args[0]
-        assert args[1] == "my-bucket"
-        assert args[2] == "trips/img_abc.jpg"
-
-
-# ---------------------------------------------------------------------------
-# publish_to_nats
-# ---------------------------------------------------------------------------
-
-
-class TestPublishToNats:
-    """NATS JetStream trip point publishing."""
-
-    def _make_record(
-        self,
-        dest_key: str = "img_aabbccddeeff.jpg",
-        lat: float = 49.2827,
-        lng: float = -123.1207,
-        timestamp: str = "2025-07-01T12:00:00",
-        tags: list[str] | None = None,
-        optics: OpticsData | None = None,
-    ) -> ImageRecord:
-        return ImageRecord(
-            id=1,
-            source_path="/tmp/photo.jpg",
-            dest_key=dest_key,
-            status=UploadStatus.COMPLETED,
-            retry_count=0,
-            error_message=None,
-            lat=lat,
-            lng=lng,
-            timestamp=timestamp,
-            created_at="2025-07-01T12:00:00",
-            completed_at="2025-07-01T12:00:05",
-            tags=tags,
-            optics=optics,
-        )
-
-    @pytest.mark.asyncio
-    async def test_publishes_to_trips_point_subject(self):
-        js = AsyncMock()
-        record = self._make_record()
-        await publish_to_nats(js, record, "gopro")
-        subject = js.publish.call_args[0][0]
-        assert subject == "trips.point"
-
-    @pytest.mark.asyncio
-    async def test_payload_includes_id_from_key(self):
-        js = AsyncMock()
-        record = self._make_record(dest_key="img_aabbccddeeff.jpg")
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["id"] == "aabbccddeeff"
-
-    @pytest.mark.asyncio
-    async def test_payload_rounds_coordinates_to_5_decimal_places(self):
-        js = AsyncMock()
-        record = self._make_record(lat=49.282789012, lng=-123.120678901)
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["lat"] == round(49.282789012, 5)
-        assert payload["lng"] == round(-123.120678901, 5)
-
-    @pytest.mark.asyncio
-    async def test_payload_includes_source(self):
-        js = AsyncMock()
-        record = self._make_record()
-        await publish_to_nats(js, record, "phone")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["source"] == "phone"
-
-    @pytest.mark.asyncio
-    async def test_payload_includes_image_key(self):
-        js = AsyncMock()
-        record = self._make_record(dest_key="img_abc123.jpg")
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["image"] == "img_abc123.jpg"
-
-    @pytest.mark.asyncio
-    async def test_payload_includes_empty_tags_by_default(self):
-        js = AsyncMock()
-        record = self._make_record(tags=None)
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["tags"] == []
-
-    @pytest.mark.asyncio
-    async def test_payload_includes_provided_tags(self):
-        js = AsyncMock()
-        record = self._make_record(tags=["wildlife", "hotspring"])
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["tags"] == ["wildlife", "hotspring"]
-
-    @pytest.mark.asyncio
-    async def test_payload_includes_optics_fields_when_present(self):
-        js = AsyncMock()
-        optics = OpticsData(
-            light_value=8.6,
-            iso=400,
-            shutter_speed="1/240",
-            aperture=2.8,
-            focal_length_35mm=16,
-        )
-        record = self._make_record(optics=optics)
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert payload["light_value"] == 8.6
-        assert payload["iso"] == 400
-        assert payload["shutter_speed"] == "1/240"
-        assert payload["aperture"] == 2.8
-        assert payload["focal_length_35mm"] == 16
-
-    @pytest.mark.asyncio
-    async def test_payload_omits_optics_when_none(self):
-        js = AsyncMock()
-        record = self._make_record(optics=None)
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert "light_value" not in payload
-        assert "iso" not in payload
-
-    @pytest.mark.asyncio
-    async def test_payload_omits_individual_none_optics_fields(self):
-        """Optics fields with None values are not included in the payload."""
-        js = AsyncMock()
-        optics = OpticsData(
-            light_value=None,
-            iso=400,
-            shutter_speed=None,
-            aperture=None,
-            focal_length_35mm=None,
-        )
-        record = self._make_record(optics=optics)
-        await publish_to_nats(js, record, "gopro")
-        payload = json.loads(js.publish.call_args[0][1].decode())
-        assert "light_value" not in payload
-        assert payload["iso"] == 400
-        assert "shutter_speed" not in payload
 
 
 # ---------------------------------------------------------------------------
