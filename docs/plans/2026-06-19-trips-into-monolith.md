@@ -26,7 +26,7 @@ Each task lists the test to author and the expected CI assertion. "Run" steps ar
 ## Design decisions already settled (do not re-litigate)
 
 1. **NATS is removed.** Postgres is source of truth. No queue, no replay-on-boot, no live WebSocket. The client (`publish-trip-images`) keeps retry logic and POSTs synchronously.
-2. **New bucket `monolith-trips`.** The monolith writes here; the legacy `trips` bucket is read-only input for recovery, deleted only at decommission. Images stay content-addressed (`img_<hex>.jpg`) so re-POSTing the same photo is idempotent.
+2. **New bucket `monolith-trips`, provisioned via GitOps** in the seaweedfs platform chart's `s3.createBuckets` (the chart's native declarative-bucket hook), not auto-create-on-write and not COSI. The monolith writes here; the legacy `trips` bucket is read-only input for recovery, deleted only at decommission. Images stay content-addressed (`img_<hex>.jpg`) so re-POSTing the same photo is idempotent.
 3. **Zero public JSON API.** The read route exists but stays off `httproute-public.yaml`; only SvelteKit SSR (same tier) calls it. Public ingress exposes `/`, `/_app/`, and the trips image path only.
 4. **Ingestion is private.** It lives on the read-write monolith, fronted by Cloudflare Access (service token for the remote device; `kubectl port-forward` to bypass Cloudflare at home).
 5. **imgproxy only** (not nginx). Presets move into a small frontend URL helper; imgproxy is locked to the new bucket via `IMGPROXY_ALLOWED_SOURCES`.
@@ -405,14 +405,28 @@ Repeat per trip slug under `projects/trips/frontend/public/trips/*/config.yaml`.
 
 ---
 
-## Task 6: imgproxy into the monolith chart (bucket-locked, no nginx)
+## Task 6: Provision the bucket via GitOps + imgproxy into the monolith chart (bucket-locked, no nginx)
 
 **Files:**
 
+- Modify: `projects/platform/seaweedfs/values.yaml` (add `monolith-trips` to `s3.createBuckets`)
 - Create: `projects/monolith/chart/templates/imgproxy.yaml` (Deployment + Service)
 - Modify: `projects/monolith/chart/values.yaml` (imgproxy block)
 - Modify: `projects/monolith/chart/templates/httproute-public.yaml` (route `/trips/img/*` -> imgproxy Service)
-- Modify: `projects/monolith/chart/Chart.yaml` (bump `version`) and `projects/monolith/deploy/application.yaml` (`targetRevision`) — keep in sync per `feedback_chart_version_bumps`.
+- Modify: `projects/monolith/chart/Chart.yaml` (bump `version`) and `projects/monolith/deploy/application.yaml` (`targetRevision`), keep in sync per `feedback_chart_version_bumps`.
+
+**Step 0: Provision the bucket declaratively.** Add to `projects/platform/seaweedfs/values.yaml` under the existing `s3:` block (`values.yaml:126`):
+
+```yaml
+s3:
+  enabled: true
+  # ...existing keys...
+  createBuckets:
+    - name: monolith-trips
+      anonymousRead: true
+```
+
+The chart's `createBucketsHook` job runs idempotently on each ArgoCD sync. seaweedfs is a **platform app sourced from git HEAD**, so no chart version bump is needed (unlike the monolith chart below). This bucket must exist before recovery (Task 5 step 4) runs; since it syncs independently via ArgoCD, landing it in this PR is sufficient. Keep a defensive autocreate-on-`NoSuchBucket` in `trips/s3.py` (Task 3) as belt-and-braces, but GitOps is the source of truth.
 
 **Step 1: Deployment+Service** modeled on `chart/templates/deployment.yaml` (plain YAML + `monolith.*` helpers, NOT the homelab library include the standalone chart used). Port the env from `projects/trips/chart/values.yaml:26-90`:
 
@@ -526,5 +540,5 @@ git commit -m "chore(trips): decommission standalone trips service (served by mo
 ## Open operational prerequisites (not code, do before/around merge)
 
 - **Create the Cloudflare Access service token** and an Access policy allowing it on the ingestion path; store the client id/secret for the field device (and as a monolith secret if the app needs to validate beyond the X-key).
-- **Provision `monolith-trips` bucket:** auto-created on first write by the put-with-autocreate helper (chat pattern), so no manual step is strictly required; if you prefer GitOps provisioning, use COSI per the standing note in MEMORY (deletionPolicy:Retain, no TTL for content-addressed blobs).
+- **Provision `monolith-trips` bucket:** done declaratively in Task 6 step 0 via the seaweedfs chart's `s3.createBuckets` (GitOps, no manual step). The `trips/s3.py` autocreate-on-`NoSuchBucket` is only a fallback.
 - **Locate any saved KMLs** for gap-route restoration; without them, gap points are not recoverable (accepted).
