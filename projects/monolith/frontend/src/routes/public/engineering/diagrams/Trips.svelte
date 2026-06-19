@@ -21,5 +21,5 @@
   <DArrow />
   <DBox role="external">Cloudflare CDN</DBox>
   <DArrow />
-  <DBox role="output" sub="live WebSocket">trips.jomcgi.dev</DBox>
+  <DBox role="output" sub="SvelteKit SSR">/app/trips</DBox>
 </Diagram>
