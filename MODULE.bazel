@@ -438,28 +438,10 @@ apko.translate_lock(
     name = "monolith_frontend_lock",
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
-apko.translate_lock(
-    name = "obsidian_image_lock",
-    lock = "//projects/monolith/obsidian-image:apko.lock.json",
-)
-use_repo(apko, "goose_agent_lock", "grimoire_frontend_lock", "monolith_frontend_lock", "obsidian_image_lock")
+use_repo(apko, "goose_agent_lock", "grimoire_frontend_lock", "monolith_frontend_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
-
-# Download better-sqlite3 prebuilt native addon for obsidian-image sidecar.
-# Node.js 25.x = ABI v141, Wolfi uses glibc (linux, not linuxmusl).
-# Prebuilts: https://github.com/WiseLibs/better-sqlite3/releases/tag/v12.6.2
-multiarch_http_archive(
-    name = "better_sqlite3",
-    amd64_sha256 = "ec1fb474dbcfeb40dab89223fcf67cde09557cbedb3f52302aec562fdde4736d",
-    amd64_url = "https://github.com/WiseLibs/better-sqlite3/releases/download/v12.6.2/better-sqlite3-v12.6.2-node-v141-linux-x64.tar.gz",
-    arm64_sha256 = "ebea076445a86f0b7f79ae8df12172112271292f62963be64c7dab75601898d3",
-    arm64_url = "https://github.com/WiseLibs/better-sqlite3/releases/download/v12.6.2/better-sqlite3-v12.6.2-node-v141-linux-arm64.tar.gz",
-    binary_name = "better_sqlite3.node",
-    extracted_binary_name = "build/Release/better_sqlite3.node",
-    package_dir = "/usr/local/lib/node_modules/better-sqlite3/build/Release",
-)
 
 multiarch_http_archive(
     name = "goose",
