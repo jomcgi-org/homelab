@@ -231,6 +231,7 @@ if Path(_static_dir).is_dir():
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -247,6 +248,10 @@ _tracer_provider.add_span_processor(
 )
 trace.set_tracer_provider(_tracer_provider)
 FastAPIInstrumentor.instrument_app(app)
+# Instrument outbound httpx calls (embedding queries to inference-embeddings,
+# LLM calls to inference) so slow RAG/chat paths show a child span for the HTTP
+# leg instead of being an opaque multi-second server span.
+HTTPXClientInstrumentor().instrument()
 logger.info("OpenTelemetry instrumentation enabled")
 
 if __name__ == "__main__":
