@@ -47,7 +47,9 @@ describe("/public/app/trips/[slug] layout load", () => {
       expect.objectContaining({ "cache-control": TRIPS_CACHE_CONTROL }),
     );
     // Byte-for-byte mirror of _CACHE in trips/read_router.py.
-    expect(TRIPS_CACHE_CONTROL).toBe("public, max-age=300, s-maxage=86400");
+    expect(TRIPS_CACHE_CONTROL).toBe(
+      "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+    );
   });
 
   it("throws a 404 when the trip does not exist", async () => {

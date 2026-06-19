@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/trips", tags=["trips"])
 # Trip content changes rarely (a backfill run at most), so a short browser TTL
 # with a long CDN TTL keeps the SSR pages snappy while letting a reload pick up
 # fresh data within a day.
-_CACHE = "public, max-age=300, s-maxage=86400"
+_CACHE = "public, max-age=60, s-maxage=300, stale-while-revalidate=3600"
 
 
 @router.get("/trips")
