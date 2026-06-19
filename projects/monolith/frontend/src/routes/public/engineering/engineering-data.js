@@ -283,9 +283,7 @@ export const projects = [
         v: "MapLibre vector tiles with terrain hillshade, day-by-day galleries, elevation profiles, and WebSocket live updates during active trips.",
       },
     ],
-    links: [
-      { label: "Live at trips.jomcgi.dev", href: "https://trips.jomcgi.dev" },
-    ],
+    links: [{ label: "Live trips", href: "/app/trips" }],
   },
   {
     id: "ships",
