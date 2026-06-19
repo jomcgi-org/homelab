@@ -118,10 +118,14 @@ seaweedfs:
     resources:
       requests:
         cpu: 100m
-        memory: 128Mi
+        # The filer loads the whole metadata tree into memory on cold start. At
+        # 512Mi it OOM-crash-looped (exit 137) after a restart, taking down all
+        # cluster S3 (chat blobs, stars grid, knowledge raws, imgproxy). Give it
+        # burst headroom for the cold-load spike. (Incident 2026-06-19.)
+        memory: 768Mi
       limits:
         cpu: 500m
-        memory: 512Mi
+        memory: 2Gi
     # NOTE: do NOT add `s3: { createBuckets: ... }` under filer here. The chart's
     # bucket-hook runs `s3.configure --user anonymous`, which writes an identity
     # into the shared filer metadata and flips the whole cluster S3 from
