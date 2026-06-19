@@ -1,4 +1,3 @@
-# gazelle:semgrep_exclude_rules boto3-endpoint-url-missing-scheme
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
@@ -14,10 +13,7 @@ py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
-        "//projects/trips/tools/elevation",
-        "@pip//boto3",
-        "@pip//botocore",
-        "@pip//nats_py",
+        "@pip//httpx",
         "@pip//pillow",
         "@pip//rich",
         "@pip//typer",
@@ -30,10 +26,7 @@ py_venv_binary(
     main = "main.py",
     visibility = ["//:__subpackages__"],
     deps = [
-        "//projects/trips/tools/elevation",
-        "@pip//boto3",
-        "@pip//botocore",
-        "@pip//nats_py",
+        "@pip//httpx",
         "@pip//pillow",
         "@pip//rich",
         "@pip//typer",
@@ -43,35 +36,15 @@ py_venv_binary(
 semgrep_test(
     name = "__init___semgrep_test",
     srcs = ["__init__.py"],
-    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 semgrep_target_test(
     name = "main_semgrep_test",
-    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     lockfiles = ["//bazel/requirements:all.txt"],
     rules = ["//bazel/semgrep/rules:python_rules"],
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
     target = ":main",
-)
-
-py_test(
-    name = "rebuild_test",
-    srcs = ["rebuild_test.py"],
-    imports = ["."],
-    deps = [
-        "//projects/trips/tools/elevation",
-        "//projects/trips/tools/publish-trip-images",
-        "@pip//pytest",
-    ],
-)
-
-semgrep_test(
-    name = "rebuild_test_semgrep_test",
-    srcs = ["rebuild_test.py"],
-    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
 # gazelle:resolve py publish_images_test //projects/trips/tools/publish-trip-images:publish-trip-images
@@ -81,17 +54,14 @@ py_test(
     imports = ["."],
     deps = [
         "//projects/trips/tools/publish-trip-images",
-        "@pip//botocore",
         "@pip//pillow",
         "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 
 semgrep_test(
     name = "publish_images_test_semgrep_test",
     srcs = ["publish_images_test.py"],
-    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
@@ -109,6 +79,24 @@ py_test(
 semgrep_test(
     name = "main_test_semgrep_test",
     srcs = ["main_test.py"],
-    exclude_rules = ["boto3-endpoint-url-missing-scheme"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+# gazelle:resolve py ingest_post_test //projects/trips/tools/publish-trip-images:publish-trip-images
+py_test(
+    name = "ingest_post_test",
+    srcs = ["ingest_post_test.py"],
+    imports = ["."],
+    deps = [
+        "//projects/trips/tools/publish-trip-images",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+semgrep_test(
+    name = "ingest_post_test_semgrep_test",
+    srcs = ["ingest_post_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )

@@ -1,1 +1,1 @@
-# Publish trip images to SeaweedFS and NATS
+# Publish trip images to the monolith ingestion endpoint

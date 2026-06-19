@@ -1,12 +1,18 @@
 """
 Publish Trip Images
 
-Scans a directory (e.g., SD card) for images, extracts EXIF metadata,
-uploads to SeaweedFS, and publishes trip points to NATS.
+Scans a directory (e.g., SD card) for images and POSTs the raw JPEG bytes to the
+monolith trip-image ingestion endpoint. The server does EXIF extraction,
+content-addressing, the S3 upload, and the Postgres write; this client is a thin
+uploader whose only durability layer is a local SQLite queue (retry on failure).
+
+Auth: an ``X-Trips-Ingest-Key`` header (compared server-side against
+``TRIPS_INGEST_KEY``). When the endpoint is reached remotely through Cloudflare
+Access, ``CF-Access-Client-Id`` / ``CF-Access-Client-Secret`` service-token
+headers are sent too; at home (kubectl port-forward) those are omitted.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import math
@@ -20,11 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from botocore.exceptions import ClientError
-
-import boto3
-import nats
-from botocore.config import Config
+import httpx
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 from rich.progress import (
@@ -37,23 +39,23 @@ from rich.progress import (
 )
 import typer
 
-from projects.trips.tools.elevation import ElevationClient
-
 # Defaults
 DB_PATH = Path(__file__).parent / "publish_queue.db"
-DEFAULT_BUCKET = "trips"
 
-# SeaweedFS S3 endpoint (for local dev, use port-forward or external URL)
-SEAWEEDFS_ENDPOINT = os.getenv("SEAWEEDFS_ENDPOINT", "http://localhost:8333")
-NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
+# Ingestion endpoint config (read at call time so tests/env can override).
+INGEST_PATH = "/api/trips/ingest"
 
-# Namespace UUID for deterministic image key generation
-# This ensures the same source+timestamp always produces the same key
+# Namespace UUID for deterministic local dedup-key generation. The server
+# content-addresses by sha256 of the bytes; this key is only the UNIQUE column
+# the local queue uses to avoid re-enqueuing the same source image.
 IMAGE_KEY_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+# Per-request timeout for the upload POST. Images are a few MB, so allow plenty.
+HTTP_TIMEOUT = httpx.Timeout(120.0)
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="Publish trip images to SeaweedFS and NATS")
+app = typer.Typer(help="Publish trip images to the monolith ingestion endpoint")
 
 
 class UploadStatus(str, Enum):
@@ -61,6 +63,9 @@ class UploadStatus(str, Enum):
     UPLOADING = "uploading"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Permanent skip: the server rejected the image as un-ingestable (no GPS).
+    # Retrying would never succeed, so it is dequeued without being completed.
+    SKIPPED = "skipped"
 
 
 @dataclass
@@ -127,7 +132,7 @@ class UploadQueue:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON images(status)")
-            # Migrations: add columns if they don't exist
+            # Migrations: add columns if they don't exist (existing field DBs).
             migrations = [
                 "ALTER TABLE images ADD COLUMN tags TEXT",
                 "ALTER TABLE images ADD COLUMN light_value REAL",
@@ -222,6 +227,20 @@ class UploadQueue:
             conn.execute(
                 "UPDATE images SET status = ?, completed_at = ? WHERE id = ?",
                 (UploadStatus.COMPLETED.value, datetime.now().isoformat(), record_id),
+            )
+            conn.commit()
+
+    def mark_skipped(self, record_id: int, reason: str) -> None:
+        """Permanently dequeue a record the server will never accept (e.g. no GPS)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE images SET status = ?, error_message = ?, completed_at = ? WHERE id = ?",
+                (
+                    UploadStatus.SKIPPED.value,
+                    reason,
+                    datetime.now().isoformat(),
+                    record_id,
+                ),
             )
             conn.commit()
 
@@ -389,7 +408,14 @@ def format_shutter_speed(exposure_time: float | None) -> str | None:
 def extract_exif(
     image_path: Path,
 ) -> tuple[float | None, float | None, str | None, OpticsData | None]:
-    """Extract GPS coordinates, timestamp, and OPTICS data from EXIF."""
+    """Extract GPS coordinates, timestamp, and OPTICS data from EXIF.
+
+    GPS + timestamp drive local time-interval sampling and the dedup key, so
+    they stay. The server re-extracts EXIF on ingest, so the optics fields here
+    are informational only (kept in the local queue, never sent).
+    # TODO(trips): server now extracts EXIF; the optics extraction below is no
+    # longer used by the upload path and could be removed in a later cleanup.
+    """
     try:
         img = Image.open(image_path)
         exif_data = img._getexif()
@@ -473,306 +499,6 @@ def extract_exif(
         return None, None, None, None
 
 
-def get_s3_client():
-    """Create S3 client for SeaweedFS."""
-    return boto3.client(
-        "s3",
-        endpoint_url=SEAWEEDFS_ENDPOINT,
-        aws_access_key_id="any",  # SeaweedFS with auth disabled
-        aws_secret_access_key="any",
-        config=Config(signature_version="s3v4"),
-        region_name="us-east-1",
-    )
-
-
-def ensure_bucket(s3_client, bucket: str) -> None:
-    """Create bucket if it doesn't exist."""
-    try:
-        s3_client.head_bucket(Bucket=bucket)
-    except s3_client.exceptions.ClientError:
-        print(f"Creating bucket: {bucket}")
-        s3_client.create_bucket(Bucket=bucket)
-
-
-class OpticsCache:
-    """SQLite cache for OPTICS data to avoid re-downloading images."""
-
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS optics_cache (
-                    image_key TEXT PRIMARY KEY,
-                    light_value REAL,
-                    iso INTEGER,
-                    shutter_speed TEXT,
-                    aperture REAL,
-                    focal_length_35mm INTEGER,
-                    cached_at TEXT NOT NULL
-                )
-            """)
-            conn.commit()
-
-    def get(self, image_key: str) -> tuple[bool, OpticsData | None]:
-        """Returns (found_in_cache, optics_data)."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM optics_cache WHERE image_key = ?", (image_key,)
-            ).fetchone()
-            if not row:
-                return False, None
-            return True, OpticsData(
-                light_value=row["light_value"],
-                iso=row["iso"],
-                shutter_speed=row["shutter_speed"],
-                aperture=row["aperture"],
-                focal_length_35mm=row["focal_length_35mm"],
-            )
-
-    def put(self, image_key: str, optics: OpticsData | None) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO optics_cache
-                (image_key, light_value, iso, shutter_speed, aperture, focal_length_35mm, cached_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    image_key,
-                    optics.light_value if optics else None,
-                    optics.iso if optics else None,
-                    optics.shutter_speed if optics else None,
-                    optics.aperture if optics else None,
-                    optics.focal_length_35mm if optics else None,
-                    datetime.now().isoformat(),
-                ),
-            )
-            conn.commit()
-
-    def stats(self) -> int:
-        with sqlite3.connect(self.db_path) as conn:
-            return conn.execute("SELECT COUNT(*) FROM optics_cache").fetchone()[0]
-
-
-OPTICS_CACHE_PATH = Path(__file__).parent / "optics_cache.db"
-
-
-def list_s3_keys(s3_client, bucket: str, prefix: str = "") -> list[str]:
-    """List all object keys in an S3 bucket (paginated).
-
-    Only returns keys with image extensions (.jpg, .jpeg, .png, .heic, .heif).
-    """
-    image_extensions = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
-    keys = []
-    continuation_token = None
-
-    while True:
-        kwargs = {"Bucket": bucket, "MaxKeys": 1000}
-        if prefix:
-            kwargs["Prefix"] = prefix
-        if continuation_token:
-            kwargs["ContinuationToken"] = continuation_token
-
-        response = s3_client.list_objects_v2(**kwargs)
-
-        for obj in response.get("Contents", []):
-            key = obj["Key"]
-            ext = Path(key).suffix.lower()
-            if ext in image_extensions:
-                keys.append(key)
-
-        if not response.get("IsTruncated"):
-            break
-        continuation_token = response["NextContinuationToken"]
-
-    return keys
-
-
-def _rebuild_batch(
-    s3_client,
-    bucket: str,
-    keys: list[str],
-    queue: UploadQueue,
-    optics_cache: OpticsCache,
-    tmp_dir: Path,
-    concurrency: int,
-) -> list[dict]:
-    """Download a batch of images from S3, extract EXIF, add to queue.
-
-    Returns list of point dicts (with lat/lng/timestamp/optics) for later
-    elevation lookup and NATS publishing. Cleans up downloaded files after.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    points = []
-
-    def download_and_extract(
-        key: str,
-    ) -> tuple[str, float | None, float | None, str | None, OpticsData | None]:
-        """Download one image and extract EXIF. Runs in thread pool."""
-        # Check optics cache first
-        found, cached_optics = optics_cache.get(key)
-
-        local_path = tmp_dir / key
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            s3_client.download_file(bucket, key, str(local_path))
-            lat, lng, timestamp, optics = extract_exif(local_path)
-
-            # Cache optics result
-            if not found:
-                optics_cache.put(key, optics)
-            elif cached_optics:
-                # Use cached optics if we had them (extract_exif may return same)
-                optics = cached_optics
-
-            return key, lat, lng, timestamp, optics
-        except Exception as e:
-            logger.warning("Failed to process %s: %s", key, e)
-            print(f"  Warning: Failed to process {key}: {e}")
-            return key, None, None, None, None
-
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {executor.submit(download_and_extract, key): key for key in keys}
-
-        for future in as_completed(futures):
-            key, lat, lng, timestamp, optics = future.result()
-
-            # Skip images without GPS
-            if lat is None or lng is None:
-                continue
-
-            # Add to queue DB (source_path is S3 key since local path is gone)
-            record_id = queue.add(
-                source_path=Path(key),
-                dest_key=key,
-                lat=lat,
-                lng=lng,
-                timestamp=timestamp,
-                tags=None,
-                optics=optics,
-            )
-
-            # Mark as completed immediately (image already in S3)
-            if record_id:
-                queue.mark_completed(record_id)
-
-            # Collect point for elevation + NATS publishing
-            point = {
-                "key": key,
-                "lat": lat,
-                "lng": lng,
-                "timestamp": timestamp,
-                "optics": optics,
-            }
-            points.append(point)
-
-    # Clean up downloaded files
-    import shutil
-
-    shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    return points
-
-
-def calculate_md5(file_path: Path) -> str:
-    """Calculate MD5 hash of a file for S3 ETag comparison."""
-    md5 = hashlib.md5(usedforsecurity=False)  # nosec: MD5 required for S3 ETag match
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            md5.update(chunk)
-    return md5.hexdigest()
-
-
-def object_exists_with_hash(s3_client, bucket: str, key: str, local_hash: str) -> bool:
-    """Check if object exists in S3 with matching hash (ETag)."""
-    try:
-        response = s3_client.head_object(Bucket=bucket, Key=key)
-        # ETag is quoted, e.g., '"d41d8cd98f00b204e9800998ecf8427e"'
-        etag = response.get("ETag", "").strip('"')
-        return etag == local_hash
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            return False
-        # For other errors, assume we need to upload
-        return False
-
-
-def upload_image(s3_client, bucket: str, source_path: Path, dest_key: str) -> bool:
-    """Upload image to SeaweedFS. Returns True if uploaded, False if skipped (already exists)."""
-    # Check if file already exists with same hash
-    local_hash = calculate_md5(source_path)
-    if object_exists_with_hash(s3_client, bucket, dest_key, local_hash):
-        return False  # Skip upload, file unchanged
-
-    content_type = "image/jpeg"
-    if source_path.suffix.lower() == ".png":
-        content_type = "image/png"
-    elif source_path.suffix.lower() in (".heic", ".heif"):
-        content_type = "image/heic"
-
-    s3_client.upload_file(
-        str(source_path),
-        bucket,
-        dest_key,
-        ExtraArgs={"ContentType": content_type},
-    )
-    return True  # Uploaded
-
-
-async def get_jetstream() -> tuple:
-    """Connect to NATS and return (connection, jetstream) tuple."""
-    nc = await nats.connect(NATS_URL)
-    js = nc.jetstream()
-
-    # Ensure stream exists
-    try:
-        await js.stream_info("trips")
-    except nats.js.errors.NotFoundError:
-        await js.add_stream(name="trips", subjects=["trips.>"])
-
-    return nc, js
-
-
-async def publish_to_nats(js, record: ImageRecord, source: str) -> None:
-    """Publish trip point to NATS JetStream."""
-    # Extract deterministic ID from dest_key (e.g., "img_abc123def456.jpg" -> "abc123def456")
-    # This ensures the same image always gets the same ID
-    key_hex = record.dest_key.replace("img_", "").rsplit(".", 1)[0]
-
-    # Build trip point message
-    # 5 decimal places = ~1m precision (sufficient for 5-10m requirement)
-    point = {
-        "id": key_hex,  # Deterministic string ID from UUID
-        "lat": round(record.lat, 5) if record.lat else 0.0,
-        "lng": round(record.lng, 5) if record.lng else 0.0,
-        "timestamp": record.timestamp or datetime.now().isoformat(),
-        "image": record.dest_key,  # Frontend constructs full/thumb URLs
-        "source": source,
-        "tags": record.tags or [],  # User-defined tags
-    }
-
-    # Include OPTICS data if available
-    if record.optics:
-        if record.optics.light_value is not None:
-            point["light_value"] = record.optics.light_value
-        if record.optics.iso is not None:
-            point["iso"] = record.optics.iso
-        if record.optics.shutter_speed is not None:
-            point["shutter_speed"] = record.optics.shutter_speed
-        if record.optics.aperture is not None:
-            point["aperture"] = record.optics.aperture
-        if record.optics.focal_length_35mm is not None:
-            point["focal_length_35mm"] = record.optics.focal_length_35mm
-
-    await js.publish("trips.point", json.dumps(point).encode())
-
-
 def scan_images(source_dir: Path) -> list[Path]:
     """Scan directory for image files (recursive)."""
     extensions = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
@@ -846,17 +572,16 @@ def sample_images_by_time(
 
 
 def generate_dest_key(image_path: Path, source: str, timestamp: str | None) -> str:
-    """Generate deterministic destination key for S3.
+    """Generate a deterministic local dedup key for the queue.
 
     Uses UUID5 (deterministic) based on:
     - source (gopro, camera, phone)
     - EXIF timestamp (if available)
     - original filename (as fallback/disambiguation)
 
-    This ensures the same image always gets the same key, even if:
-    - The image is rotated/edited (timestamp preserved)
-    - The script is re-run from scratch
-    - The database is deleted
+    This is only the local queue's UNIQUE key (so the same image is not enqueued
+    twice across re-runs). The server stores the image under its own
+    content-addressed key derived from the bytes.
     """
     # Build identity string: source + timestamp + filename
     # Timestamp is primary identifier, filename disambiguates same-second shots
@@ -877,17 +602,73 @@ def generate_dest_key(image_path: Path, source: str, timestamp: str | None) -> s
     return f"img_{key_uuid.hex[:12]}{ext}"
 
 
+def ingest_config() -> tuple[str, dict[str, str]]:
+    """Build the ingestion base URL and request headers from the environment.
+
+    - ``TRIPS_INGEST_URL`` (required): base origin, e.g. ``https://private.jomcgi.dev``.
+    - ``TRIPS_INGEST_KEY`` (required): static auth secret for ``X-Trips-Ingest-Key``.
+    - ``CF_ACCESS_CLIENT_ID`` / ``CF_ACCESS_CLIENT_SECRET`` (optional): when both
+      are set, the Cloudflare Access service-token headers are added (remote
+      path). Omitted for the local kubectl port-forward path.
+    """
+    base = os.getenv("TRIPS_INGEST_URL", "").rstrip("/")
+    if not base:
+        raise RuntimeError("TRIPS_INGEST_URL is not set")
+
+    headers = {"X-Trips-Ingest-Key": os.getenv("TRIPS_INGEST_KEY", "")}
+
+    cf_id = os.getenv("CF_ACCESS_CLIENT_ID")
+    cf_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
+    if cf_id and cf_secret:
+        headers["CF-Access-Client-Id"] = cf_id
+        headers["CF-Access-Client-Secret"] = cf_secret
+
+    return base, headers
+
+
+async def post_image(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict[str, str],
+    record: ImageRecord,
+    trip: str,
+    source: str,
+) -> httpx.Response:
+    """POST one image's raw bytes to the ingestion endpoint.
+
+    Reads the JPEG from disk and sends it as the multipart ``image`` field with
+    ``trip`` / ``source`` / ``tags`` query params. Returns the raw response so
+    the caller can branch on the status code (201 success, 422 no-GPS skip,
+    anything else retryable).
+    """
+    source_path = Path(record.source_path)
+    data = source_path.read_bytes()
+
+    params = {
+        "trip": trip,
+        "source": source,
+        "tags": ",".join(record.tags or []),
+    }
+    files = {"image": (source_path.name, data, "image/jpeg")}
+
+    return await client.post(
+        f"{base_url}{INGEST_PATH}",
+        params=params,
+        files=files,
+        headers=headers,
+    )
+
+
 async def _run_upload(
     source_dir: Path,
     db_path: Path,
-    bucket: str,
+    trip: str,
     dry_run: bool,
-    publish: bool,
     interval_seconds: int = 0,
     source: str = "gopro",
     tags: list[str] | None = None,
 ) -> None:
-    """Main upload logic."""
+    """Main upload logic: scan, queue, then POST pending images to the endpoint."""
     queue = UploadQueue(db_path)
 
     # Reset interrupted uploads
@@ -900,21 +681,23 @@ async def _run_upload(
     images = scan_images(source_dir)
     print(f"Found {len(images)} images")
 
-    if not images:
-        return
+    # Note: even with no new files on disk there may be pending records from a
+    # previous run, so do not early-return here.
 
     # Sample images by time interval (e.g., 60s = at least 1 image per minute)
-    print(
-        "Extracting EXIF and sampling by time..."
-        if interval_seconds > 0
-        else "Extracting EXIF..."
-    )
-    sampled = sample_images_by_time(images, interval_seconds)
-    if interval_seconds > 0:
-        print(f"Sampled to {len(sampled)} images (at least 1 per {interval_seconds}s)")
-
-    if not sampled:
-        return
+    if images:
+        print(
+            "Extracting EXIF and sampling by time..."
+            if interval_seconds > 0
+            else "Extracting EXIF..."
+        )
+        sampled = sample_images_by_time(images, interval_seconds)
+        if interval_seconds > 0:
+            print(
+                f"Sampled to {len(sampled)} images (at least 1 per {interval_seconds}s)"
+            )
+    else:
+        sampled = []
 
     # Queue new images (EXIF already extracted during sampling)
     new_count = 0
@@ -947,7 +730,7 @@ async def _run_upload(
     print(f"Queue: {pending_count} pending, {completed} completed, {failed} failed")
 
     if dry_run:
-        print("\n[DRY RUN] Would upload to SeaweedFS and publish to NATS")
+        print(f"\n[DRY RUN] Would POST pending images to {INGEST_PATH}")
         return
 
     # Get pending records (includes failed with retry_count < MAX_RETRIES)
@@ -956,17 +739,10 @@ async def _run_upload(
         print("No pending uploads")
         return
 
-    # Create S3 client and ensure bucket
-    s3_client = get_s3_client()
-    ensure_bucket(s3_client, bucket)
-
-    # Connect to NATS once if publishing
-    nc, js = None, None
-    if publish:
-        nc, js = await get_jetstream()
+    base_url, headers = ingest_config()
 
     # Process uploads with progress bar
-    try:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         with GracefulShutdown() as shutdown:
             with Progress(
                 SpinnerColumn(),
@@ -986,21 +762,13 @@ async def _run_upload(
                     progress.update(task, description=f"[cyan]{source_file.name}")
 
                     try:
-                        # Upload to S3 (skips if file unchanged)
-                        uploaded = upload_image(
-                            s3_client, bucket, source_file, record.dest_key
+                        resp = await post_image(
+                            client, base_url, headers, record, trip, source
                         )
-
-                        # Publish to NATS if requested (even if upload skipped - metadata may differ)
-                        if publish and js:
-                            await publish_to_nats(js, record, source)
-
-                        queue.mark_completed(record.id)
-                        progress.advance(task)
-
-                    except Exception as e:
+                    except httpx.HTTPError as e:
+                        # Network/transport error: leave in queue to retry.
                         error_msg = str(e)
-                        logger.exception("Upload failed for %s", record.dest_key)
+                        logger.warning("Upload error for %s: %s", record.dest_key, e)
                         queue.mark_failed(record.id, error_msg)
                         retry_info = (
                             f"retry {record.retry_count + 1}/{queue.MAX_RETRIES}"
@@ -1008,14 +776,38 @@ async def _run_upload(
                         progress.console.print(
                             f"[red][FAIL] {source_file.name}: {error_msg} ({retry_info})"
                         )
-    finally:
-        if nc:
-            await nc.close()
+                        continue
+
+                    if resp.status_code == 201:
+                        queue.mark_completed(record.id)
+                        progress.advance(task)
+                    elif resp.status_code == 422:
+                        # Server rejected: image has no GPS. Will never succeed,
+                        # so dequeue permanently rather than retry forever.
+                        queue.mark_skipped(record.id, "no GPS coordinates (HTTP 422)")
+                        progress.advance(task)
+                        progress.console.print(
+                            f"[yellow][SKIP] {source_file.name}: no GPS coordinates"
+                        )
+                    else:
+                        # Any other non-2xx is retryable (auth, 5xx, etc.).
+                        error_msg = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                        logger.warning(
+                            "Upload failed for %s: %s", record.dest_key, error_msg
+                        )
+                        queue.mark_failed(record.id, error_msg)
+                        retry_info = (
+                            f"retry {record.retry_count + 1}/{queue.MAX_RETRIES}"
+                        )
+                        progress.console.print(
+                            f"[red][FAIL] {source_file.name}: {error_msg} ({retry_info})"
+                        )
 
     # Final stats
     final_stats = queue.get_stats()
     print(
         f"\nFinal: {final_stats.get(UploadStatus.COMPLETED.value, 0)} completed, "
+        f"{final_stats.get(UploadStatus.SKIPPED.value, 0)} skipped, "
         f"{final_stats.get(UploadStatus.FAILED.value, 0)} failed"
     )
 
@@ -1028,12 +820,13 @@ def scan(
             help="Directory to scan for images (e.g., /Volumes/SD_CARD/DCIM)"
         ),
     ],
+    trip: Annotated[
+        str,
+        typer.Option("--trip", help="Trip slug to ingest into (e.g. 'vancouver-2025')"),
+    ],
     db_path: Annotated[
         Path, typer.Option("--db", help="Path to upload queue database")
     ] = DB_PATH,
-    bucket: Annotated[
-        str, typer.Option("--bucket", "-b", help="S3 bucket name")
-    ] = DEFAULT_BUCKET,
     interval: Annotated[
         int,
         typer.Option(
@@ -1045,9 +838,6 @@ def scan(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", "-n", help="Scan and queue only, don't upload")
     ] = False,
-    publish: Annotated[
-        bool, typer.Option("--publish", "-p", help="Publish to NATS after upload")
-    ] = True,
     source: Annotated[
         str,
         typer.Option("--source", "-s", help="Image source (gopro, camera, phone)"),
@@ -1060,23 +850,27 @@ def scan(
     ] = "",
 ) -> None:
     """
-    Scan a directory for images and upload to SeaweedFS.
+    Scan a directory for images and POST them to the trip ingestion endpoint.
 
     Recursively scans all subdirectories. Images are sorted by EXIF timestamp.
     Use --interval to sample at most one image per N seconds.
 
+    Requires TRIPS_INGEST_URL and TRIPS_INGEST_KEY in the environment (and,
+    for the remote Cloudflare Access path, CF_ACCESS_CLIENT_ID /
+    CF_ACCESS_CLIENT_SECRET).
+
     Example:
-        # Upload all images
-        publish-trip-images scan /Volumes/Untitled/DCIM/vancouver-to-kamloops
+        # Upload all images for a trip
+        publish-trip-images scan /Volumes/Untitled/DCIM/vancouver --trip vancouver-2025
 
         # Sample to at least 1 image per 60 seconds
-        publish-trip-images scan /Volumes/Untitled/DCIM/vancouver-to-kamloops --interval 60
+        publish-trip-images scan /Volumes/Untitled/DCIM/vancouver --trip vancouver-2025 --interval 60
 
         # Tag images for filtering (e.g., hotspring, wildlife, food)
-        publish-trip-images scan /path/to/trip --tags hotspring,wildlife
+        publish-trip-images scan /path/to/trip --trip vancouver-2025 --tags hotspring,wildlife
 
         # Preview what would be selected (dry run)
-        publish-trip-images scan /path/to/trip --interval 60 --dry-run
+        publish-trip-images scan /path/to/trip --trip vancouver-2025 --interval 60 --dry-run
     """
     if not source_dir.exists():
         print(f"Error: Directory not found: {source_dir}")
@@ -1086,9 +880,7 @@ def scan(
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
     asyncio.run(
-        _run_upload(
-            source_dir, db_path, bucket, dry_run, publish, interval, source, tag_list
-        )
+        _run_upload(source_dir, db_path, trip, dry_run, interval, source, tag_list)
     )
 
 
@@ -1111,6 +903,7 @@ def status(
     print(f"  Completed:  {stats.get(UploadStatus.COMPLETED.value, 0)}")
     print(f"  Pending:    {stats.get(UploadStatus.PENDING.value, 0)}")
     print(f"  Uploading:  {stats.get(UploadStatus.UPLOADING.value, 0)}")
+    print(f"  Skipped:    {stats.get(UploadStatus.SKIPPED.value, 0)}")
     print(f"  Failed:     {stats.get(UploadStatus.FAILED.value, 0)}")
 
     # Show failed records
@@ -1124,17 +917,19 @@ def status(
 
 @app.command()
 def retry(
+    trip: Annotated[
+        str,
+        typer.Option("--trip", help="Trip slug to ingest the pending images into"),
+    ],
     db_path: Annotated[
         Path, typer.Option("--db", help="Path to upload queue database")
     ] = DB_PATH,
-    bucket: Annotated[
-        str, typer.Option("--bucket", "-b", help="S3 bucket name")
-    ] = DEFAULT_BUCKET,
-    publish: Annotated[
-        bool, typer.Option("--publish", "-p", help="Publish to NATS after upload")
-    ] = True,
+    source: Annotated[
+        str,
+        typer.Option("--source", "-s", help="Image source (gopro, camera, phone)"),
+    ] = "gopro",
 ) -> None:
-    """Retry failed uploads."""
+    """Retry pending/failed uploads (no directory scan)."""
     if not db_path.exists():
         print("No upload history found")
         return
@@ -1148,7 +943,7 @@ def retry(
 
     print(f"Retrying {len(pending)} uploads...")
     # Use a dummy source dir since we're only retrying existing records
-    asyncio.run(_run_upload(Path("."), db_path, bucket, dry_run=False, publish=publish))
+    asyncio.run(_run_upload(Path("."), db_path, trip, dry_run=False, source=source))
 
 
 @app.command()
@@ -1168,575 +963,6 @@ def fix_timestamps(
         )
         conn.commit()
         print(f"Fixed {cursor.rowcount} timestamps")
-
-
-@app.command()
-def publish_all(
-    db_path: Annotated[
-        Path, typer.Option("--db", help="Path to upload queue database")
-    ] = DB_PATH,
-    source: Annotated[
-        str,
-        typer.Option("--source", "-s", help="Image source (gopro, camera, phone)"),
-    ] = "gopro",
-) -> None:
-    """Publish all completed uploads to NATS (useful for re-sync)."""
-    if not db_path.exists():
-        print("No upload history found")
-        return
-
-    queue = UploadQueue(db_path)
-    completed = queue.get_completed()
-
-    if not completed:
-        print("No completed uploads to publish")
-        return
-
-    async def _publish_all():
-        print(f"Publishing {len(completed)} points to NATS (source={source})...")
-        nc, js = await get_jetstream()
-        try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
-                task = progress.add_task("Publishing...", total=len(completed))
-
-                for record in completed:
-                    progress.update(task, description=f"[cyan]{record.dest_key}")
-                    try:
-                        await publish_to_nats(js, record, source)
-                        progress.advance(task)
-                    except Exception as e:
-                        logger.warning(
-                            "NATS publish failed for %s: %s", record.dest_key, e
-                        )
-                        progress.console.print(f"[red][FAIL] {record.dest_key}: {e}")
-        finally:
-            await nc.close()
-
-    asyncio.run(_publish_all())
-    print("Done")
-
-
-@app.command()
-def backfill_optics(
-    bucket: Annotated[
-        str, typer.Option("--bucket", "-b", help="S3 bucket name")
-    ] = DEFAULT_BUCKET,
-    dry_run: Annotated[
-        bool,
-        typer.Option(
-            "--dry-run", "-n", help="Show what would be published without publishing"
-        ),
-    ] = False,
-    limit: Annotated[
-        int,
-        typer.Option(
-            "--limit", "-l", help="Limit number of points to process (0 = all)"
-        ),
-    ] = 0,
-    concurrency: Annotated[
-        int,
-        typer.Option("--concurrency", "-c", help="Number of parallel downloads"),
-    ] = 10,
-) -> None:
-    """Backfill OPTICS data from SeaweedFS raw images to NATS.
-
-    Replays all points from NATS, downloads each image from SeaweedFS,
-    extracts OPTICS EXIF data (ISO, aperture, shutter speed, focal length,
-    light value), and republishes to NATS with the enriched metadata.
-
-    Preserves existing point data (tags, source, etc.) - only adds OPTICS fields.
-    Uses SQLite cache to avoid re-downloading images for duplicate points.
-
-    Example:
-        # Preview what would be backfilled
-        backfill-optics --dry-run
-
-        # Backfill all points
-        backfill-optics
-
-        # Backfill with 20 parallel downloads
-        backfill-optics --concurrency 20
-
-        # Backfill first 10 points (for testing)
-        backfill-optics --limit 10
-    """
-    import tempfile
-    from concurrent.futures import ThreadPoolExecutor
-
-    cache = OpticsCache(OPTICS_CACHE_PATH)
-    print(f"OPTICS cache: {cache.stats()} entries")
-
-    s3_client = get_s3_client()
-
-    def download_and_extract(image_key: str) -> tuple[bool, OpticsData | None]:
-        """Download image and extract OPTICS (runs in thread pool).
-        Returns (from_cache, optics_data).
-        """
-        # Check cache first
-        found, cached = cache.get(image_key)
-        if found:
-            return True, cached
-
-        # Download and extract
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmp:
-            try:
-                s3_client.download_file(bucket, image_key, tmp.name)
-                _, _, _, optics = extract_exif(Path(tmp.name))
-                # Cache result (even if None)
-                cache.put(image_key, optics)
-                return False, optics
-            except Exception:
-                logger.warning("failed to download or extract EXIF for %s", image_key)
-                return False, None
-
-    async def _backfill():
-        nc = await nats.connect(NATS_URL)
-        js = nc.jetstream()
-
-        # Replay all existing points from NATS stream
-        print("Replaying points from NATS stream...")
-        points = []
-        try:
-            consumer = await js.pull_subscribe(
-                "trips.>",
-                stream="trips",
-                config=nats.js.api.ConsumerConfig(
-                    deliver_policy=nats.js.api.DeliverPolicy.ALL,
-                    ack_policy=nats.js.api.AckPolicy.NONE,
-                ),
-            )
-
-            while True:
-                try:
-                    msgs = await consumer.fetch(batch=100, timeout=1)
-                    for msg in msgs:
-                        try:
-                            point_data = json.loads(msg.data.decode())
-                            # Skip tombstone/delete messages
-                            if not point_data.get("deleted"):
-                                points.append(point_data)
-                        except Exception:
-                            logger.warning("failed to decode NATS message, skipping")
-                            pass
-                except nats.errors.TimeoutError:
-                    break
-
-            await consumer.unsubscribe()
-        except nats.js.errors.StreamNotFoundError:
-            print("Stream 'trips' not found")
-            await nc.close()
-            return 0, 0, 0, 0
-
-        print(f"Found {len(points)} points in NATS stream")
-
-        # Filter to points with images that don't already have OPTICS
-        points_to_process = [
-            p
-            for p in points
-            if p.get("image") and not (p.get("iso") or p.get("light_value"))
-        ]
-        skipped_already_has = len(
-            [p for p in points if p.get("iso") or p.get("light_value")]
-        )
-
-        print(f"  {len(points_to_process)} need OPTICS data")
-        if skipped_already_has:
-            print(f"  {skipped_already_has} already have OPTICS data")
-
-        if limit > 0:
-            points_to_process = points_to_process[:limit]
-            print(f"Processing first {limit} points")
-
-        if not points_to_process:
-            print("No points to process")
-            await nc.close()
-            return 0, 0, skipped_already_has, 0
-
-        # Get unique images to download
-        unique_images = list({p["image"] for p in points_to_process})
-        print(f"  {len(unique_images)} unique images to process")
-
-        # Download and extract OPTICS in parallel using thread pool
-        optics_by_image: dict[str, OpticsData | None] = {}
-        cache_hits = 0
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            # Phase 1: Download and extract (parallelized)
-            task = progress.add_task(
-                f"Extracting OPTICS ({concurrency} workers)...",
-                total=len(unique_images),
-            )
-
-            with ThreadPoolExecutor(max_workers=concurrency) as executor:
-                # Submit all images - download_and_extract checks cache internally
-                futures = {
-                    executor.submit(download_and_extract, img): img
-                    for img in unique_images
-                }
-
-                from concurrent.futures import as_completed
-
-                for future in as_completed(futures):
-                    image_key = futures[future]
-                    try:
-                        from_cache, optics = future.result()
-                        optics_by_image[image_key] = optics
-                        if from_cache:
-                            cache_hits += 1
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to extract EXIF for %s: %s", image_key, e
-                        )
-                        progress.console.print(f"[red][SKIP] {image_key}: {e}")
-                    progress.advance(task)
-
-            if cache_hits:
-                progress.console.print(
-                    f"[green]Cache hits: {cache_hits}/{len(unique_images)}"
-                )
-
-            # Phase 2: Publish enriched points
-            task2 = progress.add_task(
-                "Publishing to NATS...", total=len(points_to_process)
-            )
-            processed = 0
-            with_optics = 0
-
-            for point in points_to_process:
-                image_key = point["image"]
-                optics = optics_by_image.get(image_key)
-
-                # Build enriched point - preserve all existing data
-                enriched_point = dict(point)
-
-                # Add OPTICS data if available
-                if optics:
-                    with_optics += 1
-                    if optics.light_value is not None:
-                        enriched_point["light_value"] = optics.light_value
-                    if optics.iso is not None:
-                        enriched_point["iso"] = optics.iso
-                    if optics.shutter_speed is not None:
-                        enriched_point["shutter_speed"] = optics.shutter_speed
-                    if optics.aperture is not None:
-                        enriched_point["aperture"] = optics.aperture
-                    if optics.focal_length_35mm is not None:
-                        enriched_point["focal_length_35mm"] = optics.focal_length_35mm
-
-                if dry_run:
-                    optics_str = ""
-                    if optics:
-                        parts = []
-                        if optics.light_value:
-                            parts.append(f"EV:{optics.light_value}")
-                        if optics.iso:
-                            parts.append(f"ISO:{optics.iso}")
-                        if optics.shutter_speed:
-                            parts.append(optics.shutter_speed)
-                        if optics.aperture:
-                            parts.append(f"ƒ/{optics.aperture}")
-                        if optics.focal_length_35mm:
-                            parts.append(f"{optics.focal_length_35mm}mm")
-                        optics_str = " [" + " ".join(parts) + "]" if parts else ""
-                    progress.console.print(f"[dim]{image_key}{optics_str}")
-                else:
-                    await js.publish("trips.point", json.dumps(enriched_point).encode())
-
-                processed += 1
-                progress.advance(task2)
-
-        await nc.close()
-        return processed, with_optics, skipped_already_has, cache_hits
-
-    result = asyncio.run(_backfill())
-    processed, with_optics, skipped, cache_hits = result
-
-    print(f"\nOPTICS cache now has {cache.stats()} entries")
-
-    if dry_run:
-        print(
-            f"[DRY RUN] Would publish {processed} points ({with_optics} with OPTICS data)"
-        )
-    else:
-        print(f"Published {processed} points ({with_optics} with OPTICS data)")
-    if skipped:
-        print(f"  Skipped {skipped} points that already have OPTICS data")
-
-
-async def _run_rebuild(
-    bucket: str,
-    batch_size: int,
-    concurrency: int,
-    dry_run: bool,
-    source: str,
-    db_path: Path,
-    fix_retention: bool,
-) -> None:
-    """Main rebuild logic."""
-    import shutil
-    import tempfile
-
-    queue = UploadQueue(db_path)
-    optics_cache = OpticsCache(OPTICS_CACHE_PATH)
-    s3_client = get_s3_client()
-
-    # Step 1: Connect to NATS
-    print("Connecting to NATS...")
-    nc, js = await get_jetstream()
-
-    try:
-        # Step 2: Fix stream retention
-        if fix_retention and not dry_run:
-            try:
-                stream_info = await js.stream_info("trips")
-                config = stream_info.config
-                if config.max_age and config.max_age > 0:
-                    config.max_age = 0  # unlimited
-                    await js.update_stream(config)
-                    print("Fixed NATS stream max_age: removed 30d TTL (now unlimited)")
-                else:
-                    print("NATS stream max_age already unlimited")
-            except Exception as e:
-                logger.warning("Could not update stream retention: %s", e)
-                print(f"Warning: Could not update stream retention: {e}")
-
-        # Step 3: List all S3 keys
-        print(f"Listing objects in s3://{bucket}...")
-        all_keys = list_s3_keys(s3_client, bucket)
-        print(f"Found {len(all_keys)} images in S3")
-
-        if not all_keys:
-            return
-
-        # Step 4: Process in batches
-        tmp_dir = Path(tempfile.mkdtemp(prefix="rebuild-"))
-        all_points = []
-
-        try:
-            num_batches = (len(all_keys) + batch_size - 1) // batch_size
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
-                task = progress.add_task(
-                    f"Processing batches (0/{num_batches})...",
-                    total=len(all_keys),
-                )
-
-                for batch_idx in range(0, len(all_keys), batch_size):
-                    batch_keys = all_keys[batch_idx : batch_idx + batch_size]
-                    batch_num = batch_idx // batch_size + 1
-
-                    progress.update(
-                        task,
-                        description=f"Batch {batch_num}/{num_batches} ({len(batch_keys)} images)...",
-                    )
-
-                    batch_points = _rebuild_batch(
-                        s3_client=s3_client,
-                        bucket=bucket,
-                        keys=batch_keys,
-                        queue=queue,
-                        optics_cache=optics_cache,
-                        tmp_dir=tmp_dir,
-                        concurrency=concurrency,
-                    )
-
-                    all_points.extend(batch_points)
-                    progress.advance(task, advance=len(batch_keys))
-
-        finally:
-            # Clean up temp dir
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-        no_gps = len(all_keys) - len(all_points)
-        print(
-            f"\nExtracted {len(all_points)} points with GPS ({no_gps} skipped, no GPS)"
-        )
-        print(f"Optics cache: {optics_cache.stats()} entries")
-
-        if not all_points:
-            print("No points to publish")
-            return
-
-        # Step 5: Fetch elevation
-        coords = [(p["lat"], p["lng"]) for p in all_points]
-        print(f"\nFetching elevation for {len(coords)} points...")
-
-        async with ElevationClient() as elev_client:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
-                task = progress.add_task("Fetching elevations...", total=len(coords))
-
-                def update_progress(completed, total):
-                    progress.update(task, completed=completed)
-
-                results = await elev_client.get_elevations(
-                    coords, progress_callback=update_progress
-                )
-
-        with_elevation = sum(1 for r in results if r.elevation is not None)
-        cached = sum(1 for r in results if r.cached)
-        print(
-            f"Elevation: {with_elevation}/{len(results)} resolved ({cached} from cache)"
-        )
-
-        # Attach elevation to points
-        for point, result in zip(all_points, results):
-            point["elevation"] = result.elevation
-
-        if dry_run:
-            print(f"\n[DRY RUN] Would publish {len(all_points)} points to NATS")
-            # Show sample
-            for p in all_points[:5]:
-                elev = f"{p['elevation']:.0f}m" if p["elevation"] else "none"
-                optics_str = ""
-                if p["optics"] and p["optics"].light_value:
-                    optics_str = f" EV:{p['optics'].light_value}"
-                print(
-                    f"  {p['key']} ({p['lat']:.4f}, {p['lng']:.4f}) elev={elev}{optics_str}"
-                )
-            if len(all_points) > 5:
-                print(f"  ... and {len(all_points) - 5} more")
-            return
-
-        # Step 6: Publish to NATS
-        print(f"\nPublishing {len(all_points)} points to NATS...")
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task("Publishing...", total=len(all_points))
-
-            for point in all_points:
-                key = point["key"]
-                key_hex = key.replace("img_", "").rsplit(".", 1)[0]
-
-                msg = {
-                    "id": key_hex,
-                    "lat": round(point["lat"], 5),
-                    "lng": round(point["lng"], 5),
-                    "timestamp": point["timestamp"] or datetime.now().isoformat(),
-                    "image": key,
-                    "source": source,
-                    "tags": [],
-                }
-
-                if point["elevation"] is not None:
-                    msg["elevation"] = point["elevation"]
-
-                optics = point["optics"]
-                if optics:
-                    if optics.light_value is not None:
-                        msg["light_value"] = optics.light_value
-                    if optics.iso is not None:
-                        msg["iso"] = optics.iso
-                    if optics.shutter_speed is not None:
-                        msg["shutter_speed"] = optics.shutter_speed
-                    if optics.aperture is not None:
-                        msg["aperture"] = optics.aperture
-                    if optics.focal_length_35mm is not None:
-                        msg["focal_length_35mm"] = optics.focal_length_35mm
-
-                await js.publish("trips.point", json.dumps(msg).encode())
-                progress.advance(task)
-
-        # Step 7: Final stats
-        queue_stats = queue.get_stats()
-        print(f"\nDone! Published {len(all_points)} points to NATS")
-        print(f"  With elevation: {with_elevation}")
-        print(
-            f"  Queue DB: {queue_stats.get(UploadStatus.COMPLETED.value, 0)} completed"
-        )
-
-    finally:
-        await nc.close()
-
-
-@app.command()
-def rebuild(
-    bucket: Annotated[
-        str, typer.Option("--bucket", "-b", help="S3 bucket name")
-    ] = DEFAULT_BUCKET,
-    batch_size: Annotated[
-        int, typer.Option("--batch-size", help="Images per download batch")
-    ] = 80,
-    concurrency: Annotated[
-        int, typer.Option("--concurrency", "-c", help="Parallel downloads per batch")
-    ] = 10,
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", "-n", help="Extract and report only, don't publish"),
-    ] = False,
-    source: Annotated[
-        str,
-        typer.Option("--source", "-s", help="Image source tag"),
-    ] = "gopro",
-    db_path: Annotated[
-        Path, typer.Option("--db", help="Path to upload queue database")
-    ] = DB_PATH,
-    fix_retention: Annotated[
-        bool,
-        typer.Option(
-            "--fix-retention/--no-fix-retention",
-            help="Fix NATS stream max_age to unlimited",
-        ),
-    ] = True,
-) -> None:
-    """Rebuild trip data from SeaweedFS when NATS stream data has been lost.
-
-    Lists all images in the S3 bucket, downloads in batches to extract EXIF
-    metadata (GPS, timestamps, camera settings), fetches elevation from NRCan,
-    populates the local queue DB, and republishes all points to NATS.
-
-    Disk usage is capped by processing images in batches (default 80 images
-    ~440MB per batch). Temp files are cleaned between batches.
-
-    Example:
-        # Preview what would be recovered (dry run)
-        publish-trip-images rebuild --dry-run
-
-        # Full rebuild with elevation
-        publish-trip-images rebuild
-
-        # Custom batch size for lower disk usage
-        publish-trip-images rebuild --batch-size 40
-    """
-    asyncio.run(
-        _run_rebuild(
-            bucket=bucket,
-            batch_size=batch_size,
-            concurrency=concurrency,
-            dry_run=dry_run,
-            source=source,
-            db_path=db_path,
-            fix_retention=fix_retention,
-        )
-    )
 
 
 if __name__ == "__main__":
