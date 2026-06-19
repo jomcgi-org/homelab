@@ -53,6 +53,29 @@
     view = "chat";
   }
 
+  // ── "how does this work?" explainer ──────────────────────────────
+  // A controlled <details> popover (bind:open). Native <details> never closes on
+  // an outside click or Esc, so while it is open we attach document listeners
+  // that close it when the visitor clicks outside the disclosure or hits Escape.
+  // The effect only runs while open, so there is no idle global listener.
+  let explainerOpen = $state(false);
+  let explainerEl = $state();
+  $effect(() => {
+    if (!explainerOpen) return;
+    const onDocClick = (e) => {
+      if (explainerEl && !explainerEl.contains(e.target)) explainerOpen = false;
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") explainerOpen = false;
+    };
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  });
+
   // ── admission / session ──────────────────────────────────────────
   let admitted = $state(false);
 
@@ -370,7 +393,7 @@
       </button>
     </div>
 
-    <details class="explainer">
+    <details class="explainer" bind:open={explainerOpen} bind:this={explainerEl}>
       <summary class="explainer-summary">
         <span class="explainer-mark" aria-hidden="true">+</span>
         <span class="explainer-eyebrow">HOW DOES THIS WORK?</span>
@@ -811,7 +834,6 @@
     padding: 14px 16px;
     background: var(--paper);
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard);
   }
   .explainer-body p {
     font-size: 12px;
