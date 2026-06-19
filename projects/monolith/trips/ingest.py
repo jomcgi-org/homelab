@@ -10,6 +10,7 @@ out of band by the caller).
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from trips import exif, transform
 
@@ -35,7 +36,10 @@ def build_point(
     if lat is None or lng is None or not transform.is_valid_coordinates(lat, lng):
         raise ValueError("image has no GPS coordinates")
 
-    taken_at = transform.localize(taken_iso, tz, fallback=datetime.now())
+    # localize() returns the fallback verbatim when the EXIF timestamp is
+    # missing or unparseable, and its contract requires a tz-aware value (the
+    # taken_at column is TIMESTAMPTZ), so the fallback must carry tzinfo.
+    taken_at = transform.localize(taken_iso, tz, fallback=datetime.now(ZoneInfo(tz)))
 
     point: dict = {
         "trip_slug": trip_slug,
