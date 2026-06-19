@@ -101,14 +101,6 @@ marine:
     itemPath: "vaults/k8s-homelab/items/marine"
   boundingBox: "[[[46.876152, -129.552155], [51.413769, -121.213531]]]"
 
-# Trips: the private ingest endpoint (POST /api/trips/ingest) is guarded by a
-# static shared key. Set onepassword.itemPath to a 1Password item exposing a
-# `TRIPS_INGEST_KEY` field; leaving it empty skips both the OnePasswordItem and
-# the env injection (the endpoint then fails closed, 401 on every request).
-trips:
-  onepassword:
-    itemPath: ""
-
 # Stars / dark-sky planner: the stars.load_grid job ingests grid.json (the
 # light-pollution site grid, uploaded out-of-band) from the SeaweedFS S3
 # gateway. SeaweedFS auth is disabled cluster-wide, so the dummy creds below

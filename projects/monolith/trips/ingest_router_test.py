@@ -2,8 +2,8 @@
 
 FastAPI TestClient over an in-memory SQLite session (SQLModel.create_all, no
 migrations), mirroring trips/models_test.py's schema-stripping fixture. The S3
-put is monkeypatched so no real SeaweedFS is touched, and TRIPS_INGEST_KEY is
-set via env so the auth dependency passes.
+put is monkeypatched so no real SeaweedFS is touched. The endpoint has no
+app-level auth: it is protected by the Cloudflare Access policy at the gateway.
 """
 
 from pathlib import Path
@@ -57,8 +57,7 @@ def put_calls_fixture(monkeypatch):
 
 
 @pytest.fixture(name="client")
-def client_fixture(session, put_calls, monkeypatch):
-    monkeypatch.setenv("TRIPS_INGEST_KEY", "test-key")
+def client_fixture(session, put_calls):
     app = FastAPI()
     app.include_router(ingest_router)
     app.dependency_overrides[get_session] = lambda: session
@@ -71,7 +70,6 @@ def _post_image(client, filename="geotagged.jpg", trip="2025-liard-hot-springs")
     return client.post(
         "/api/trips/ingest",
         params={"trip": trip},
-        headers={"X-Trips-Ingest-Key": "test-key"},
         files={"image": (filename, image_bytes, "image/jpeg")},
     )
 
@@ -90,16 +88,6 @@ def test_post_image_writes_point_and_uploads(client, session, put_calls):
     # The S3 put was called with the content-addressed image key.
     assert len(put_calls) == 1
     assert put_calls[0][0] == f"img_{point_id}.jpg"
-
-
-def test_post_image_requires_auth(client):
-    image_bytes = (_TESTDATA / "geotagged.jpg").read_bytes()
-    resp = client.post(
-        "/api/trips/ingest",
-        params={"trip": "2025-liard-hot-springs"},
-        files={"image": ("geotagged.jpg", image_bytes, "image/jpeg")},
-    )
-    assert resp.status_code == 401
 
 
 def test_reingest_same_image_is_idempotent(client, session):

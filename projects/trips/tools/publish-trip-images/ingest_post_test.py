@@ -6,7 +6,7 @@ httpx client (no real network):
 - 201 -> record dequeued (marked completed).
 - 422 (no GPS) -> permanent skip (dequeued, never retried).
 - 500 / network error -> retryable (left pending in the queue).
-- the POST carries the raw JPEG multipart + auth header + trip/source/tags.
+- the POST carries the raw JPEG multipart + trip/source/tags.
 - Cloudflare Access headers are added only when the env vars are set.
 """
 
@@ -52,9 +52,8 @@ def _fake_client(response=None, exc=None) -> MagicMock:
 
 @pytest.fixture
 def env(monkeypatch):
-    """Local port-forward style env: ingest URL + key, no Cloudflare headers."""
+    """Local port-forward style env: ingest URL only, no Cloudflare headers."""
     monkeypatch.setenv("TRIPS_INGEST_URL", "https://example.test")
-    monkeypatch.setenv("TRIPS_INGEST_KEY", "s3cret")
     monkeypatch.delenv("CF_ACCESS_CLIENT_ID", raising=False)
     monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
 
@@ -86,13 +85,8 @@ class TestIngestConfig:
 
     def test_strips_trailing_slash(self, monkeypatch):
         monkeypatch.setenv("TRIPS_INGEST_URL", "https://example.test/")
-        monkeypatch.setenv("TRIPS_INGEST_KEY", "k")
         base, _ = ingest_config()
         assert base == "https://example.test"
-
-    def test_includes_ingest_key_header(self, env):
-        _, headers = ingest_config()
-        assert headers["X-Trips-Ingest-Key"] == "s3cret"
 
     def test_omits_cf_headers_when_unset(self, env):
         _, headers = ingest_config()
@@ -101,7 +95,6 @@ class TestIngestConfig:
 
     def test_adds_cf_headers_when_both_set(self, monkeypatch):
         monkeypatch.setenv("TRIPS_INGEST_URL", "https://example.test")
-        monkeypatch.setenv("TRIPS_INGEST_KEY", "k")
         monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "cf-id")
         monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "cf-secret")
         _, headers = ingest_config()
@@ -110,7 +103,6 @@ class TestIngestConfig:
 
     def test_omits_cf_headers_when_only_one_set(self, monkeypatch):
         monkeypatch.setenv("TRIPS_INGEST_URL", "https://example.test")
-        monkeypatch.setenv("TRIPS_INGEST_KEY", "k")
         monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "cf-id")
         monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
         _, headers = ingest_config()
@@ -136,7 +128,7 @@ class TestPostImage:
         await post_image(
             client,
             "https://example.test",
-            {"X-Trips-Ingest-Key": "k"},
+            {},
             record,
             trip="van-2025",
             source="gopro",
@@ -155,7 +147,6 @@ class TestPostImage:
         assert filename == "shot.jpg"
         assert data == b"raw-jpeg-bytes"
         assert content_type == "image/jpeg"
-        assert kwargs["headers"]["X-Trips-Ingest-Key"] == "k"
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +232,5 @@ class TestRunUploadOutcomes:
         _, kwargs = client.post.call_args
         assert kwargs["params"]["trip"] == "van-2025"
         assert kwargs["params"]["source"] == "phone"
-        assert kwargs["headers"]["X-Trips-Ingest-Key"] == "s3cret"
         assert "CF-Access-Client-Id" not in kwargs["headers"]
         assert Path(next(iter(kwargs["files"].values()))[0]).suffix == ".jpg"
