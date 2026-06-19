@@ -1,6 +1,6 @@
 # Vault-to-Postgres cutover (Obsidian decommission Phase 6)
 
-**Status:** In progress (2026-06-18)
+**Status:** Done (2026-06-18)
 **Branch:** chore/retire-obsidian
 
 Completes Phase 6 of the Obsidian decommission (docs/plans/2026-06-13-obsidian-decommission-plan.md):

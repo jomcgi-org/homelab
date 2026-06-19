@@ -1,13 +1,12 @@
 """Tests for rolling summary generation."""
 
-from datetime import datetime
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from chat.models import Message, UserChannelSummary
+from chat.models import ChannelSummary, Message, UserChannelSummary
 from chat.summarizer import generate_channel_summaries, generate_summaries
 
 
@@ -142,68 +141,44 @@ class TestGenerateSummaries:
         mock_llm.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_calls_write_user_summary_with_correct_args(self, session):
-        """write_user_summary is called with the right kwargs after a successful run."""
-        _make_message(session, "ch1", "u1", "Alice", "I deployed the app", 1)
-        _make_message(session, "ch1", "u1", "Alice", "It went smoothly", 2)
-
-        mock_llm = AsyncMock(return_value="Alice is a deployer.")
-
-        with patch("chat.summarizer.write_user_summary") as mock_write:
-            await generate_summaries(session, mock_llm)
-
-        mock_write.assert_called_once_with(
-            channel_id="ch1",
-            user_id="u1",
-            username="Alice",
-            summary="Alice is a deployer.",
-            last_message_id=2,
-            updated_at=ANY,
-        )
-        # updated_at must be a timezone-aware datetime
-        called_updated_at = mock_write.call_args.kwargs["updated_at"]
-        assert isinstance(called_updated_at, datetime)
-        assert called_updated_at.tzinfo is not None
-
-    @pytest.mark.asyncio
-    async def test_no_vault_export_when_llm_fails(self, session):
-        """write_user_summary is NOT called when the LLM raises."""
+    async def test_survives_llm_failure(self, session):
+        """An LLM failure is swallowed: the loop survives and no summary is written."""
         _make_message(session, "ch1", "u1", "Alice", "Message", 1)
 
         mock_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
-        with patch("chat.summarizer.write_user_summary") as mock_write:
-            await generate_summaries(session, mock_llm)
+        # Must not propagate the exception out of the loop.
+        await generate_summaries(session, mock_llm)
 
-        mock_write.assert_not_called()
+        summary = session.exec(
+            select(UserChannelSummary).where(
+                UserChannelSummary.channel_id == "ch1",
+                UserChannelSummary.user_id == "u1",
+            )
+        ).first()
+        assert summary is None
 
     @pytest.mark.asyncio
-    async def test_no_vault_export_when_db_commit_fails(self, session):
-        """write_user_summary is NOT called when session.commit raises."""
+    async def test_survives_db_commit_failure(self, session):
+        """A commit failure is swallowed rather than propagating out of the loop."""
         _make_message(session, "ch1", "u1", "Alice", "Message", 1)
 
         mock_llm = AsyncMock(return_value="A summary.")
 
         original_commit = session.commit
-        call_count = 0
 
         def _failing_commit():
-            nonlocal call_count
-            call_count += 1
-            # The first commit is from _make_message setup (already done before
-            # patching), so we raise on the summarizer's commit call.
             raise Exception("DB write failed")
 
         session.commit = _failing_commit
-
-        with patch("chat.summarizer.write_user_summary") as mock_write:
+        try:
+            # Must not propagate the exception out of the loop.
             await generate_summaries(session, mock_llm)
+        finally:
+            session.commit = original_commit
 
-        mock_write.assert_not_called()
-        session.commit = original_commit
 
-
-class TestGenerateChannelSummariesVaultExport:
+class TestGenerateChannelSummaries:
     @pytest.fixture(name="session")
     def session_fixture(self):
         engine = create_engine(
@@ -240,42 +215,23 @@ class TestGenerateChannelSummariesVaultExport:
         return msg
 
     @pytest.mark.asyncio
-    async def test_calls_write_channel_summary_with_correct_args(self, session):
-        """write_channel_summary is called with correct kwargs after a successful run."""
-        self._make_message(session, "ch1", "u1", "Alice", "Deployed the app", 1)
-        self._make_message(session, "ch1", "u2", "Bob", "Looks good", 2)
-
-        mock_llm = AsyncMock(return_value="Channel discusses deployments.")
-
-        with patch("chat.summarizer.write_channel_summary") as mock_write:
-            await generate_channel_summaries(session, mock_llm)
-
-        mock_write.assert_called_once_with(
-            channel_id="ch1",
-            summary="Channel discusses deployments.",
-            message_count=2,
-            last_message_id=2,
-            updated_at=ANY,
-        )
-        called_updated_at = mock_write.call_args.kwargs["updated_at"]
-        assert isinstance(called_updated_at, datetime)
-        assert called_updated_at.tzinfo is not None
-
-    @pytest.mark.asyncio
-    async def test_no_vault_export_when_channel_llm_fails(self, session):
-        """write_channel_summary is NOT called when the LLM raises."""
+    async def test_survives_llm_failure(self, session):
+        """An LLM failure is swallowed: the loop survives and no summary is written."""
         self._make_message(session, "ch1", "u1", "Alice", "Message", 1)
 
         mock_llm = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
-        with patch("chat.summarizer.write_channel_summary") as mock_write:
-            await generate_channel_summaries(session, mock_llm)
+        # Must not propagate the exception out of the loop.
+        await generate_channel_summaries(session, mock_llm)
 
-        mock_write.assert_not_called()
+        summary = session.exec(
+            select(ChannelSummary).where(ChannelSummary.channel_id == "ch1")
+        ).first()
+        assert summary is None
 
     @pytest.mark.asyncio
-    async def test_no_vault_export_when_channel_db_commit_fails(self, session):
-        """write_channel_summary is NOT called when session.commit raises."""
+    async def test_survives_db_commit_failure(self, session):
+        """A commit failure is swallowed rather than propagating out of the loop."""
         self._make_message(session, "ch1", "u1", "Alice", "Message", 1)
 
         mock_llm = AsyncMock(return_value="A channel summary.")
@@ -286,9 +242,8 @@ class TestGenerateChannelSummariesVaultExport:
             raise Exception("DB write failed")
 
         session.commit = _failing_commit
-
-        with patch("chat.summarizer.write_channel_summary") as mock_write:
+        try:
+            # Must not propagate the exception out of the loop.
             await generate_channel_summaries(session, mock_llm)
-
-        mock_write.assert_not_called()
-        session.commit = original_commit
+        finally:
+            session.commit = original_commit

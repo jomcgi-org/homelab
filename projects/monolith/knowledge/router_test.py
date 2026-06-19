@@ -14,7 +14,6 @@ from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
 from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.router import get_embedding_client
-from knowledge.notes import VAULT_ROOT_ENV
 from knowledge.store import KnowledgeStore
 
 FAKE_EMBEDDING = [0.1] * 1024
@@ -200,27 +199,22 @@ def note_client(fake_session):
 
 
 class TestGetNoteEndpoint:
-    """Tests for GET /api/knowledge/notes/{note_id}."""
+    """Tests for GET /api/knowledge/notes/{note_id}.
 
-    def test_happy_path_returns_note_with_content(
-        self, tmp_path, fake_session, monkeypatch
-    ):
-        """Existing note + vault file returns all fields plus content."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention\n\nSelf-attention mechanism.")
+    DB-only now (ADR 006, Obsidian decommissioned): the body comes from the
+    note's Postgres ``content`` column via ``resolve_note_body`` — there is no
+    vault directory, no on-disk file read, and no path-traversal guard.
+    """
 
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-        app.dependency_overrides[get_session] = lambda: fake_session
-        try:
-            c = TestClient(app, raise_server_exceptions=False)
-            with patch("knowledge.router.KnowledgeStore") as MockStore:
-                MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
-                r = c.get("/api/knowledge/notes/n1")
-        finally:
-            app.dependency_overrides.clear()
+    def test_happy_path_returns_note_with_content(self, note_client):
+        """Existing note returns all fields plus the body from ``content``."""
+        with patch("knowledge.router.KnowledgeStore") as MockStore:
+            MockStore.return_value.get_note_by_id.return_value = {
+                **SAMPLE_NOTE,
+                "content": "# Attention\n\nSelf-attention mechanism.",
+            }
+            MockStore.return_value.get_note_links.return_value = []
+            r = note_client.get("/api/knowledge/notes/n1")
 
         assert r.status_code == 200
         body = r.json()
@@ -231,26 +225,15 @@ class TestGetNoteEndpoint:
         assert body["tags"] == ["ml", "transformers"]
         assert body["content"] == "# Attention\n\nSelf-attention mechanism."
 
-    def test_serves_content_from_db_without_disk(
-        self, tmp_path, fake_session, monkeypatch
-    ):
-        """ADR 006 Phase 2: body is served from Postgres, no vault file."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()  # intentionally empty — no note file on disk
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
-        app.dependency_overrides[get_session] = lambda: fake_session
-        try:
-            c = TestClient(app, raise_server_exceptions=False)
-            with patch("knowledge.router.KnowledgeStore") as MockStore:
-                MockStore.return_value.get_note_by_id.return_value = {
-                    **SAMPLE_NOTE,
-                    "content": "# From Postgres\n\nNo disk read needed.",
-                }
-                MockStore.return_value.get_note_links.return_value = []
-                r = c.get("/api/knowledge/notes/n1")
-        finally:
-            app.dependency_overrides.clear()
+    def test_serves_content_from_db_without_disk(self, note_client):
+        """ADR 006: body is served from Postgres ``content``, no vault file."""
+        with patch("knowledge.router.KnowledgeStore") as MockStore:
+            MockStore.return_value.get_note_by_id.return_value = {
+                **SAMPLE_NOTE,
+                "content": "# From Postgres\n\nNo disk read needed.",
+            }
+            MockStore.return_value.get_note_links.return_value = []
+            r = note_client.get("/api/knowledge/notes/n1")
 
         assert r.status_code == 200
         body = r.json()
@@ -266,84 +249,41 @@ class TestGetNoteEndpoint:
         body = r.json()
         assert body.get("detail") == "note not found"
 
-    def test_missing_vault_file_returns_404(self, tmp_path, fake_session, monkeypatch):
-        """Note exists in DB but vault file missing on disk -> 404."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
-        app.dependency_overrides[get_session] = lambda: fake_session
-        try:
-            with patch("knowledge.router.KnowledgeStore") as MockStore:
-                MockStore.return_value.get_note_by_id.return_value = {
-                    **SAMPLE_NOTE,
-                    "path": "nonexistent/missing.md",
-                }
-                c = TestClient(app, raise_server_exceptions=False)
-                r = c.get("/api/knowledge/notes/n1")
-        finally:
-            app.dependency_overrides.clear()
+    def test_missing_body_returns_404(self, note_client):
+        """Note exists in DB but its ``content`` is NULL -> 404 'note has no body'."""
+        with patch("knowledge.router.KnowledgeStore") as MockStore:
+            MockStore.return_value.get_note_by_id.return_value = {
+                **SAMPLE_NOTE,
+                "content": None,
+            }
+            r = note_client.get("/api/knowledge/notes/n1")
 
         assert r.status_code == 404
         body = r.json()
-        assert body.get("detail") == "vault file missing"
+        assert body.get("detail") == "note has no body"
 
-    def test_note_includes_edges(self, tmp_path, fake_session, monkeypatch):
+    def test_note_includes_edges(self, note_client):
         """Note detail response includes edges."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention\n\nContent.")
-
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-        app.dependency_overrides[get_session] = lambda: fake_session
-        try:
-            c = TestClient(app, raise_server_exceptions=False)
-            with patch("knowledge.router.KnowledgeStore") as MockStore:
-                MockStore.return_value.get_note_by_id.return_value = SAMPLE_NOTE
-                MockStore.return_value.get_note_links.return_value = [
-                    {
-                        "target_id": "n2",
-                        "kind": "link",
-                        "edge_type": None,
-                        "target_title": "Related Note",
-                    },
-                ]
-                r = c.get("/api/knowledge/notes/n1")
-        finally:
-            app.dependency_overrides.clear()
+        with patch("knowledge.router.KnowledgeStore") as MockStore:
+            MockStore.return_value.get_note_by_id.return_value = {
+                **SAMPLE_NOTE,
+                "content": "# Attention\n\nContent.",
+            }
+            MockStore.return_value.get_note_links.return_value = [
+                {
+                    "target_id": "n2",
+                    "kind": "link",
+                    "edge_type": None,
+                    "target_title": "Related Note",
+                },
+            ]
+            r = note_client.get("/api/knowledge/notes/n1")
 
         assert r.status_code == 200
         body = r.json()
         assert "edges" in body
         assert body["edges"][0]["target_id"] == "n2"
         assert body["edges"][0]["target_title"] == "Related Note"
-
-    def test_path_traversal_returns_404(self, tmp_path, fake_session, monkeypatch):
-        """Path traversal is caught by is_relative_to guard."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        # Create a file outside vault that the traversal path would reach
-        secret = tmp_path / "secret.txt"
-        secret.write_text("should not be readable")
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
-        app.dependency_overrides[get_session] = lambda: fake_session
-        try:
-            with patch("knowledge.router.KnowledgeStore") as MockStore:
-                MockStore.return_value.get_note_by_id.return_value = {
-                    **SAMPLE_NOTE,
-                    "path": "../secret.txt",
-                }
-                c = TestClient(app, raise_server_exceptions=False)
-                r = c.get("/api/knowledge/notes/n1")
-        finally:
-            app.dependency_overrides.clear()
-
-        assert r.status_code == 404
-        body = r.json()
-        assert body.get("detail") == "vault file missing"
 
 
 # ---------------------------------------------------------------------------

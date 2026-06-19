@@ -6,14 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from app.db import get_session
 from app.main import app
 from knowledge.models import Note
 from knowledge.router import get_embedding_client
-from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture()
@@ -34,9 +33,8 @@ def fake_embed_client():
 
 
 @pytest.fixture()
-def client(fake_session, fake_embed_client, tmp_path, monkeypatch):
-    """TestClient with overridden session, embedder, and a temp vault root."""
-    monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
+def client(fake_session, fake_embed_client):
+    """TestClient with an overridden (mocked) session and embedder."""
     app.dependency_overrides[get_session] = lambda: fake_session
     app.dependency_overrides[get_embedding_client] = lambda: fake_embed_client
     yield TestClient(app, raise_server_exceptions=False)
@@ -73,9 +71,8 @@ def real_session():
 
 
 @pytest.fixture()
-def db_client(real_session, fake_embed_client, tmp_path, monkeypatch):
-    """TestClient backed by a real session — used by the soft-delete tests."""
-    monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
+def db_client(real_session, fake_embed_client):
+    """TestClient backed by a real session — used by the soft-delete + edit tests."""
     app.dependency_overrides[get_session] = lambda: real_session
     app.dependency_overrides[get_embedding_client] = lambda: fake_embed_client
     yield TestClient(app, raise_server_exceptions=False)
@@ -162,14 +159,30 @@ class TestCreateNote:
         assert mock_ingest.call_args.kwargs["source"] == "capture"
 
 
-def _insert_note(session: Session, *, note_id: str, path: str) -> Note:
-    """Insert a Note row used by the soft-delete tests."""
+def _insert_note(
+    session: Session,
+    *,
+    note_id: str,
+    path: str,
+    title: str | None = None,
+    content: str | None = None,
+    tags: list[str] | None = None,
+    visibility: str | None = None,
+) -> Note:
+    """Insert a Note row used by the soft-delete + edit tests.
+
+    DB-only after ADR 006: ``content`` is the authoritative body, so the
+    edit tests set it here rather than writing a vault file.
+    """
     note = Note(
         note_id=note_id,
         path=path,
-        title=note_id,
+        title=title or note_id,
+        content=content,
         content_hash=f"hash-{note_id}",
         type="atom",
+        tags=tags or [],
+        visibility=visibility,  # type: ignore[arg-type]
         created_at=datetime.now(timezone.utc),
     )
     session.add(note)
@@ -178,20 +191,30 @@ def _insert_note(session: Session, *, note_id: str, path: str) -> Note:
     return note
 
 
+def _reload_note(session: Session, note_id: str) -> Note | None:
+    """Fetch the current Note row by stable ``note_id`` from a fresh read.
+
+    ``edit_note`` re-indexes by deleting and re-inserting the row (new
+    primary key), so callers must look it up by ``note_id``, not the old
+    ``id``. ``expire_all`` drops the stale identity-map copy first.
+    """
+    session.expire_all()
+    # test helper: intentionally reads any row (including soft-deleted).
+    stmt = select(Note).where(Note.note_id == note_id)  # nosemgrep
+    return session.exec(stmt).one_or_none()
+
+
 class TestDeleteNote:
     """Tests for DELETE /api/knowledge/notes/{note_id}.
 
-    Behaviour changed from the original hard-delete to a soft-delete
-    that moves the file into ``_trash/`` and stamps ``deleted_at`` on
-    the row. The DB row survives so POST /undelete can restore it.
+    DB-only soft-delete (ADR 006, Obsidian decommissioned): stamps
+    ``deleted_at`` and captures ``pre_delete_path`` on the row. There is no
+    file to move and no ``_trash/`` directory; ``path`` is unchanged. The
+    DB row survives so POST /undelete can restore it.
     """
 
-    def test_delete_note_soft_deletes_and_moves_to_trash(
-        self, db_client, real_session, tmp_path
-    ):
-        note_path = "delete-me.md"
-        (tmp_path / note_path).write_text("---\ntitle: Doomed\n---\n\nGoodbye\n")
-        note = _insert_note(real_session, note_id="del123", path=note_path)
+    def test_delete_note_soft_deletes_and_stamps_row(self, db_client, real_session):
+        note = _insert_note(real_session, note_id="del123", path="delete-me.md")
 
         r = db_client.delete("/api/knowledge/notes/del123")
 
@@ -200,18 +223,14 @@ class TestDeleteNote:
         assert body.get("id") == "del123"
         assert body.get("deleted_at") is not None
 
-        # Original file is gone; trash file exists.
-        assert not (tmp_path / note_path).exists()
-        trash_files = list((tmp_path / "_trash").glob("*-delete-me.md"))
-        assert len(trash_files) == 1, f"expected 1 trash entry, got {trash_files}"
-
-        # DB row survives with deleted_at set and pre_delete_path captured.
-        real_session.expire_all()
-        reloaded = real_session.get(Note, note.id)
+        # DB row survives with deleted_at set, pre_delete_path captured, and
+        # path UNCHANGED (no _trash move).
+        reloaded = _reload_note(real_session, "del123")
         assert reloaded is not None
+        assert reloaded.id == note.id
         assert reloaded.deleted_at is not None
-        assert reloaded.pre_delete_path == note_path
-        assert reloaded.path.startswith("_trash/")
+        assert reloaded.pre_delete_path == "delete-me.md"
+        assert reloaded.path == "delete-me.md"
 
     def test_delete_note_not_found(self, db_client):
         """DELETE for nonexistent note_id returns 404."""
@@ -220,13 +239,9 @@ class TestDeleteNote:
         detail = r.json().get("detail", "")
         assert "not found" in detail.lower()
 
-    def test_delete_note_already_deleted_returns_404(
-        self, db_client, real_session, tmp_path
-    ):
+    def test_delete_note_already_deleted_returns_404(self, db_client, real_session):
         """A second DELETE on a soft-deleted note 404s — the row is hidden."""
-        note_path = "already-gone.md"
-        (tmp_path / note_path).write_text("---\ntitle: Ghost\n---\n\nBoo\n")
-        _insert_note(real_session, note_id="gone456", path=note_path)
+        _insert_note(real_session, note_id="gone456", path="already-gone.md")
 
         first = db_client.delete("/api/knowledge/notes/gone456")
         assert first.status_code == 200
@@ -234,143 +249,100 @@ class TestDeleteNote:
         second = db_client.delete("/api/knowledge/notes/gone456")
         assert second.status_code == 404
 
-    def test_delete_note_missing_file_still_soft_deletes(
-        self, db_client, real_session, tmp_path
-    ):
-        """DELETE when file is already gone still stamps the row."""
-        # Insert a row but don't write the file — simulate external deletion.
-        _insert_note(real_session, note_id="ghost", path="ghost.md")
-
-        r = db_client.delete("/api/knowledge/notes/ghost")
-        assert r.status_code == 200
-        body = r.json()
-        assert body.get("deleted_at") is not None
-        # No _trash file expected because there was nothing to move.
-        assert not (tmp_path / "_trash").exists()
-
 
 class TestEditNote:
-    """Tests for PUT /api/knowledge/notes/{note_id}."""
+    """Tests for PUT /api/knowledge/notes/{note_id}.
 
-    def test_edit_note_updates_content(self, client, tmp_path):
-        """PUT with new content+title returns 200 and updates the file."""
-        # Create an existing vault file with frontmatter
-        note_path = "my-note.md"
-        original = "---\ntitle: Original Title\ntags:\n- old\n---\n\nOriginal body\n"
-        (tmp_path / note_path).write_text(original)
+    DB-only after ADR 006: ``edit_note`` reconstructs frontmatter from the
+    authoritative Postgres row and re-indexes synchronously, so these tests
+    insert a real Note row (with ``content`` set) into a real session and
+    rely on the fake embedder injected by ``db_client``.
+    """
 
-        mock_note = {
-            "note_id": "abc123",
-            "title": "Original Title",
-            "path": note_path,
-            "type": "note",
-            "tags": ["old"],
-        }
+    def test_edit_note_updates_content(self, db_client, real_session):
+        """PUT with new content+title returns 200 and updates the DB row."""
+        _insert_note(
+            real_session,
+            note_id="abc123",
+            path="my-note.md",
+            title="Original Title",
+            content="Original body",
+            tags=["old"],
+        )
 
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.get_note_by_id.return_value = mock_note
-
-            r = client.put(
-                "/api/knowledge/notes/abc123",
-                json={"content": "Updated body", "title": "Updated Title"},
-            )
+        r = db_client.put(
+            "/api/knowledge/notes/abc123",
+            json={"content": "Updated body", "title": "Updated Title"},
+        )
 
         assert r.status_code == 200
         body = r.json()
         assert body["note_id"] == "abc123"
-        assert body["path"] == note_path
+        assert body["path"] == "my-note.md"
 
-        # Verify file was updated
-        written = (tmp_path / note_path).read_text()
-        parts = written.split("---\n")
-        assert len(parts) >= 3
-        fm = yaml.safe_load(parts[1])
-        assert fm["title"] == "Updated Title"
-        assert "Updated body" in parts[2]
+        # The re-indexed DB row carries the new body + title.
+        reloaded = _reload_note(real_session, "abc123")
+        assert reloaded is not None
+        assert reloaded.title == "Updated Title"
+        assert reloaded.content == "Updated body"
 
-    def test_edit_note_not_found(self, client):
-        """PUT for nonexistent note_id returns 404."""
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.get_note_by_id.return_value = None
-
-            r = client.put(
-                "/api/knowledge/notes/nonexistent",
-                json={"content": "New content"},
-            )
+    def test_edit_note_not_found(self, db_client):
+        """PUT for an unknown note_id returns 404 (no row in the DB)."""
+        r = db_client.put(
+            "/api/knowledge/notes/nonexistent",
+            json={"content": "New content"},
+        )
 
         assert r.status_code == 404
         assert "note not found" in r.json().get("detail", "")
 
-    def test_edit_note_missing_vault_file(self, client, tmp_path):
-        """PUT when note exists in DB but vault file is gone returns 404."""
-        mock_note = {
-            "note_id": "abc123",
-            "title": "Ghost Note",
-            "path": "gone.md",
-            "type": "note",
-            "tags": [],
-        }
-
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.get_note_by_id.return_value = mock_note
-
-            r = client.put(
-                "/api/knowledge/notes/abc123",
-                json={"title": "New Title"},
-            )
-
-        assert r.status_code == 404
-        assert "vault file missing" in r.json().get("detail", "")
-
-    def test_edit_note_preserves_visibility_in_frontmatter(self, client, tmp_path):
-        """PUT must preserve visibility frontmatter on body/title rewrites.
-
-        Regression guard for the public-notes-visibility V1: the PUT endpoint
-        rewrites the file's frontmatter from the parsed metadata. If a future
-        refactor drops ``visibility`` from the re-serialized frontmatter, the
-        next reconciler pass will null the column on disk and silently leak
-        previously-public notes back to private (or vice versa). Tasks 4-5
-        wire ``visibility`` through the parser -> store flow; this test makes
-        sure the PUT round-trip doesn't undo that on every manual edit.
-        """
-        note_path = "rt.md"
-        original = (
-            "---\n"
-            "title: Round Trip\n"
-            "visibility: public\n"
-            "tags:\n"
-            "- demo\n"
-            "---\n"
-            "\n"
-            "Original body\n"
+    def test_edit_note_soft_deleted_returns_404(self, db_client, real_session):
+        """PUT on a soft-deleted note 404s — the row is hidden from writes."""
+        _insert_note(
+            real_session,
+            note_id="dead",
+            path="dead.md",
+            content="body",
         )
-        (tmp_path / note_path).write_text(original)
+        assert db_client.delete("/api/knowledge/notes/dead").status_code == 200
 
-        mock_note = {
-            "note_id": "rt",
-            "title": "Round Trip",
-            "path": note_path,
-            "type": "note",
-            "tags": ["demo"],
-        }
+        r = db_client.put(
+            "/api/knowledge/notes/dead",
+            json={"content": "resurrect"},
+        )
+        assert r.status_code == 404
+        assert "note not found" in r.json().get("detail", "")
 
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.get_note_by_id.return_value = mock_note
+    def test_edit_note_preserves_visibility_column(self, db_client, real_session):
+        """PUT must preserve the ``visibility`` column on body/title rewrites.
 
-            r = client.put(
-                "/api/knowledge/notes/rt",
-                json={"content": "Edited body."},
-            )
+        Regression guard for public-notes-visibility V1: ``edit_note``
+        reconstructs frontmatter from the row and re-indexes. If a future
+        refactor drops ``visibility`` from the reconstruction, a manual edit
+        would silently null the column and leak a previously-public note back
+        to private (or vice versa). DB-only after ADR 006, so this asserts the
+        ``visibility`` column directly, not a disk file.
+        """
+        _insert_note(
+            real_session,
+            note_id="rt",
+            path="rt.md",
+            title="Round Trip",
+            content="Original body",
+            tags=["demo"],
+            visibility="public",
+        )
+
+        r = db_client.put(
+            "/api/knowledge/notes/rt",
+            json={"content": "Edited body."},
+        )
 
         assert r.status_code == 200
 
-        # Re-parse the rewritten file and assert the visibility key survived
-        # the round-trip through the PUT serializer.
-        written = (tmp_path / note_path).read_text()
-        parts = written.split("---\n")
-        assert len(parts) >= 3, f"Expected frontmatter delimiters, got: {written}"
-        fm = yaml.safe_load(parts[1])
-        assert fm.get("visibility") == "public", (
-            f"PUT dropped visibility from frontmatter; got fm={fm!r}"
+        reloaded = _reload_note(real_session, "rt")
+        assert reloaded is not None
+        assert reloaded.visibility == "public", (
+            f"PUT dropped visibility; got {reloaded.visibility!r}"
         )
-        assert "Edited body." in parts[2]
+        assert reloaded.content == "Edited body."

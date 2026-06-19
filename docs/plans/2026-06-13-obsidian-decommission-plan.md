@@ -2,7 +2,7 @@
 
 **Design:** [ADR 006 — Decommission Obsidian, Postgres as the Body of Record](../decisions/platform/006-obsidian-decommission-postgres-interim.md)
 **Created:** 2026-06-13
-**Updated:** 2026-06-14: ADR 006 Accepted; reframed from interim to destination after the ADR 004 lakehouse was decommissioned (PR #2596). Phase 1 merged (#2593, chart 0.135.0); Phase 2 in flight (#2604).
+**Updated:** 2026-06-18: **Phase 6 complete** (vault-to-Postgres cutover, see `2026-06-18-vault-to-postgres-cutover.md`). Phases 1-4 shipped earlier; **Phase 5 (web editor) deferred** by decision (note editing happens via the MCP tools and the existing HTTP endpoints; a dedicated `/private/notes` editor was judged not needed now). Phase 7 (cancel the Obsidian Sync subscription) remains a manual out-of-band step. Earlier: 2026-06-14 ADR 006 Accepted; Phase 1 merged (#2593, chart 0.135.0); Phase 2 (#2604).
 **Branch:** `claude/obsidian-postgres-migration-b6sdnl`
 **Scope decision:** Full ADR 006 end-to-end. v1 web UI ships editor + search; wikilink graph navigation is deferred to a follow-up phase (the read-only graph at `/private/notes` already exists and stays).
 
@@ -80,7 +80,13 @@ Originally specified as a per-run tmpdir materialized from Postgres. Superseded 
 - Move raw content from `knowledge.raw_inputs.content` (Postgres) to `s3://knowledge-raws/<sha256>`, mirroring the `chat.blobs` migration (nullable -> backfill/export -> drop column -> `VACUUM FULL`). `raw_inputs` keeps metadata + the content-hash key. `get-raw` reads from S3.
 - **Verify:** CI green; `raw_inputs.content` dropped; gardener `get-raw` serves from SeaweedFS; Postgres size reclaimed.
 
-## Phase 5 — Notes web UI (editor + search)
+## Phase 5 — Notes web UI (editor + search) — DEFERRED (2026-06-18)
+
+Deferred by decision: note editing is handled via the MCP `create_note` /
+`edit_note` / `delete_note` tools and the existing HTTP CRUD endpoints, so a
+dedicated `/private/notes` editor was judged not worth building now. Phase 6
+went ahead without it (the disk write paths were already producing nothing
+persistent, so there was no daily-driver gate to satisfy first).
 
 Reuse what exists, add the write surface. Existing: `/private/notes` graph + read-only `NotePanel` + `GraphSearch` (`frontend/src/lib/components/notes/`), and `GET /api/knowledge/search` + `/notes/{id}` (`router.py:84-109, 377-393`).
 
@@ -90,9 +96,24 @@ Reuse what exists, add the write surface. Existing: `/private/notes` graph + rea
 
 **Verify:** CI green; manual `/verify` against the deployed `/private/notes` editor — create, edit, search, delete round-trip through Postgres; works on mobile browser.
 
-## Phase 6 — Retire Obsidian plumbing (the cutover)
+## Phase 6 — Retire Obsidian plumbing (the cutover) — DONE (2026-06-18)
 
-Only after Phase 5 is the validated daily driver:
+Shipped in the vault-to-Postgres cutover (`2026-06-18-vault-to-postgres-cutover.md`).
+What actually landed (the runtime was already Obsidian-disabled since 2026-06-15,
+and the reconciler + vault-backup/reconcile jobs were already removed in #2680):
+
+- Note read/write paths are DB-only: `create_note`/`edit_note`/`delete_note`/
+  visibility/undelete no longer touch disk; both `edit_note` endpoints share one
+  `reindex_note_with_edits` core that reconstructs frontmatter from the row.
+- Removed the `obsidian` sidecar, the `vault` emptyDir + mounts, `VAULT_ROOT` /
+  `VAULT_API_URL` / `VAULT_GIT_REMOTE` env, the obsidian-image, the obsidian
+  creds `OnePasswordItem`, the readiness-probe test, and the
+  `headlessSync`/`vault`/`gitRemote`/`onepassword` values.
+- Dropped the Discord `vault_export` summary mirror (summaries persist as DB
+  rows regardless).
+- `/vault` removal unblocks N replicas (left at 1 here).
+
+Original checklist (for reference):
 
 1. Drop disk dual-write from Phases 3-4 (Postgres-only).
 2. Remove the `obsidian` sidecar container (`deployment.yaml:207-237`), the `vault` emptyDir volume (`:264-268`) and its mounts (`:192-201`, `:232-234`), and the obsidian readiness probe.

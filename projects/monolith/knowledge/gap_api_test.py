@@ -16,7 +16,6 @@ from sqlmodel.pool import StaticPool
 
 from knowledge.gaps import GAPS_PIPELINE_VERSION
 from knowledge.models import Gap, Note
-from knowledge.notes import VAULT_ROOT_ENV
 
 
 @pytest.fixture
@@ -42,13 +41,12 @@ def session():
 
 
 @pytest.fixture
-def client(session, tmp_path, monkeypatch):
+def client(session):
     from fastapi import FastAPI
 
     from app.db import get_session
     from knowledge.router import router
 
-    monkeypatch.setenv(VAULT_ROOT_ENV, str(tmp_path))
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
