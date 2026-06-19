@@ -11,6 +11,11 @@ from sqlmodel.pool import StaticPool
 from app.db import get_session
 from app.main import app
 from knowledge.frontmatter import ParsedFrontmatter
+from knowledge.gaps import (
+    GapAnswerInvalidError,
+    GapNotFoundError,
+    GapWrongStateError,
+)
 from knowledge.links import Link
 from knowledge.public_models import PublicNote, PublicNoteLink
 from knowledge.router import get_embedding_client
@@ -563,9 +568,9 @@ class TestAnswerGapEndpoint:
             assert args[2] == "my answer text"
 
     def test_gap_not_found_returns_404(self, note_client):
-        """ValueError containing 'Gap not found' maps to HTTP 404."""
+        """GapNotFoundError maps to HTTP 404."""
         with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = ValueError("Gap not found: id=9999")
+            mock_answer.side_effect = GapNotFoundError("Gap not found: id=9999")
             r = note_client.post(
                 "/api/knowledge/gaps/9999/answer",
                 json={"answer": "anything"},
@@ -575,9 +580,9 @@ class TestAnswerGapEndpoint:
         assert "Gap not found" in r.json().get("detail", "")
 
     def test_wrong_state_returns_409(self, note_client):
-        """ValueError containing 'expected in_review' maps to HTTP 409."""
+        """GapWrongStateError maps to HTTP 409."""
         with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = ValueError(
+            mock_answer.side_effect = GapWrongStateError(
                 "Gap 1 is in state 'discovered', expected 'in_review'"
             )
             r = note_client.post(
@@ -589,9 +594,9 @@ class TestAnswerGapEndpoint:
         assert "expected 'in_review'" in r.json().get("detail", "")
 
     def test_frontmatter_terminator_returns_400(self, note_client):
-        """ValueError containing 'frontmatter terminator' maps to HTTP 400."""
+        """GapAnswerInvalidError (frontmatter terminator) maps to HTTP 400."""
         with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = ValueError(
+            mock_answer.side_effect = GapAnswerInvalidError(
                 "Answer contains a frontmatter terminator (---)"
             )
             r = note_client.post(
