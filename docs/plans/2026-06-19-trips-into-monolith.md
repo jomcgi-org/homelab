@@ -283,7 +283,7 @@ def register(app):
 
 Add to `app/main.py`: `import trips` and `trips.register(app)` next to `ships.register(app)`.
 
-**Step 5: BUILD + commit.** Add `trips/ingest_router.py`, `trips/s3.py` to server lib; `trips_ingest_router_test` target. The endpoint is on the private `app.main` only.
+**Step 5: BUILD + commit.** `trips/ingest_router.py` and `trips/s3.py` auto-glob into `:main`/`:monolith_backend` (they match `trips/**/*.py` and are not under `trips/backfill/**`), so no lib-srcs change is needed for the private image. Hand-add a `trips_ingest_router_test` target (gazelle excludes trips) with deps on `:monolith_backend` and `@pip//pytest` + FastAPI test deps. The endpoint ships only in the private `app.main`; do not touch the public libs here (that is Task 4).
 
 ```bash
 git add projects/monolith/trips/ projects/monolith/app/main.py projects/monolith/BUILD
@@ -356,7 +356,21 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA trips
 
 Use a timestamp after `20260618...`. Regenerate `atlas.sum` via the repo's Atlas hashing step (the migrations dir is hashed; a stale sum fails CI). Extend `public_reader_grants_test.py` to include `trips`. Reminder from `feedback_public_reader_grant_new_schema`: without this grant the public page 503s.
 
-**Step 5: Un-fence trips read modules from the server image.** In `projects/monolith/BUILD`, remove `trips/__init__.py`, `trips/models.py`, `trips/exif.py`, `trips/transform.py`, `trips/ingest.py`, `trips/ingest_router.py`, `trips/read_router.py`, `trips/s3.py` from the server-image glob excludes (lines ~60,75,139,155,245,250,392). Keep `trips/backfill/**` excluded. The `# gazelle:exclude trips` stays (targets remain hand-maintained).
+**Step 5: Un-fence trips READ modules from the PUBLIC image only.** The private libs (`:main` / `:monolith_backend`, BUILD:60) already glob `trips/**/*.py` and exclude only `trips/backfill/**`, so the read router, models, and ingest modules already ship privately, no change there. The work is on the public side:
+
+- In both the `monolith_public_backend` (BUILD:283-296) and `main_public` (BUILD:335-348) `glob` include lists, add `"trips/**/*.py"`.
+- In `_PUBLIC_PRUNE_EXCLUDE` (BUILD:243-279), **remove the blanket `"trips/**"`** (line 255) and add narrow excludes so only the read path enters the public closure:
+  ```python
+  "trips/backfill/**",     # already present, keep
+  "trips/ingest_router.py", # private write endpoint
+  "trips/ingest.py",        # EXIF builder (pulls pillow)
+  "trips/s3.py",            # boto3 writer
+  "trips/exif.py",          # pillow
+  "trips/transform.py",     # defusedxml (only the write/backfill path needs it)
+  ```
+  This leaves `trips/__init__.py`, `trips/models.py`, and `trips/read_router.py` in the public image. `read_router.py` must NOT import `ingest`/`s3`/`exif`/`transform` (it only reads Postgres), or the public closure breaks at import time, which `main_public_imports_test` will catch.
+- Do NOT add `pillow`/`defusedxml` to `monolith_public_backend` deps (the public read path does not need them; boto3 is already there but unused by the read path).
+- The `# gazelle:exclude trips` (BUILD:15) stays (targets remain hand-maintained).
 
 **Step 6: Commit.**
 
