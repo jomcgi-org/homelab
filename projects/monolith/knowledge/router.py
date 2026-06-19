@@ -14,7 +14,6 @@ can override it with a deterministic fake via ``app.dependency_overrides``.
 from __future__ import annotations
 
 import logging
-import re
 from email.utils import format_datetime
 from typing import Literal
 
@@ -25,6 +24,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from knowledge.gaps import (
+    GapError,
     answer_gap,
     delete_gap,
     list_gaps_for_review,
@@ -400,29 +400,16 @@ def get_review_queue_endpoint(
 
 
 def _map_gap_error(exc: ValueError) -> HTTPException:
-    """Map a :class:`ValueError` from a gap function to an HTTP error.
+    """Map a gap-lifecycle error to an HTTP error by exception class.
 
-    Centralises the string-prefix mapping so reject/verify/reopen/answer
-    all surface the same status codes. The post-MVP TODO on
-    ``answer_gap_endpoint`` (typed exceptions) applies here too — once
-    gaps.py raises typed errors, this helper collapses to an
-    ``isinstance`` dispatch.
+    ``knowledge.gaps`` raises typed :class:`~knowledge.gaps.GapError`
+    subclasses, each carrying the ``status_code`` its endpoint should
+    surface (404 not-found, 409 wrong-state / not-deleted, 400 otherwise).
+    A bare ``ValueError`` that is not a ``GapError`` (should not occur from
+    the gap layer) falls back to 400.
     """
-    msg = str(exc)
-    if "Gap not found" in msg:
-        return HTTPException(status_code=404, detail=msg)
-    if "is not deleted" in msg:
-        # Calling undelete on a live row is a UI bug, not "not found"
-        # — surface a distinct 409 so the frontend can react sensibly.
-        return HTTPException(status_code=409, detail=msg)
-    if re.search(
-        r"\bexpected\b", msg
-    ):  # "expected 'in_review'" / "expected one of [...]"
-        # \b word boundary so "unexpected" (substring) doesn't false-match.
-        return HTTPException(status_code=409, detail=msg)
-    if "frontmatter terminator" in msg:
-        return HTTPException(status_code=400, detail=msg)
-    return HTTPException(status_code=400, detail=msg)
+    status_code = exc.status_code if isinstance(exc, GapError) else 400
+    return HTTPException(status_code=status_code, detail=str(exc))
 
 
 @router.post("/gaps/{gap_id}/answer")
@@ -435,10 +422,6 @@ async def answer_gap_endpoint(
     try:
         return await answer_gap(session, gap_id, data.answer)
     except ValueError as exc:
-        # TODO(post-mvp): refactor gaps.py to raise typed exceptions
-        # (GapNotFoundError, GapWrongStateError, GapAnswerRejectedError) so this
-        # error mapping isn't coupled to specific string messages. The router
-        # should map by exception class, not str(exc) substring.
         raise _map_gap_error(exc) from exc
 
 

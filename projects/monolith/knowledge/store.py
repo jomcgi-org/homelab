@@ -466,8 +466,12 @@ class KnowledgeStore:
 
         # Orphans (no edges) carry no graph information; we filter them
         # out so the layout step doesn't waste effort and the renderer
-        # doesn't show floating dots. The 506 unlinked gap notes
-        # observed in prod are a separate data bug — see followup TODO.
+        # doesn't show floating dots. Most orphans are legacy vault-era
+        # type='gap' stub notes: the fileless discover_gaps no longer
+        # creates stub notes (gaps live in knowledge.gaps now), so the
+        # pre-migration stubs whose term is no longer wikilinked anywhere
+        # have nothing pointing at them. Filtering them here is correct;
+        # purging the vestigial stubs is tracked separately.
         connected_note_ids = set(degree_by_note_id)
         connected_note_rows = [
             row for row in note_rows if row.note_id in connected_note_ids
