@@ -32,13 +32,15 @@ k8s-infra:
         cpu: 500m
         memory: 500Mi
   otelDeployment:
+    # Memory limit raised 400Mi -> 768Mi: this collector was OOMKilled repeatedly
+    # (cluster-telemetry bursts exceed 400Mi); 768Mi gives headroom over steady ~320Mi.
     resources:
       requests:
         cpu: 100m
         memory: 200Mi
       limits:
         cpu: 500m
-        memory: 400Mi
+        memory: 768Mi
     # Inject Cloudflare Access service token for Zero Trust bypass
     # Create a service token in Cloudflare Zero Trust dashboard:
     # Zero Trust > Access > Service Auth > Create Service Token

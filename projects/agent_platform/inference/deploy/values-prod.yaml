@@ -230,9 +230,11 @@ podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"
 
+# CPU request trimmed 4 -> 2: vLLM decode is GPU-bound, 7-day SigNoz peak CPU is
+# ~1715m (avg ~7m), so 2 cores covers peak with headroom and frees node-4 reservation.
 resources:
   requests:
-    cpu: 4
+    cpu: 2
     memory: "24Gi"
     nvidia.com/gpu: 1
   limits:

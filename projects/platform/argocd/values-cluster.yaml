@@ -37,12 +37,14 @@ argo-cd:
   # These expose Prometheus metrics including argocd_app_info for health/sync status
   # Pod annotations enable SigNoz autodiscovery (scraper uses role: pod)
   controller:
+    # Memory limit raised 1Gi -> 2Gi: the controller was OOMKilled x5 (sync storms
+    # spike memory well above 1Gi). Request stays 1Gi so it remains schedulable.
     resources:
       requests:
         cpu: 500m
         memory: 1Gi
       limits:
-        memory: 1Gi
+        memory: 2Gi
     metrics:
       enabled: true
     podAnnotations:
