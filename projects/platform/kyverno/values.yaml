@@ -35,6 +35,26 @@ linkerdInjection:
     # Observability (optional - can mesh these if desired)
     - signoz # SigNoz collector (avoid circular tracing)
 
+# Require resource requests + a memory limit (AUDIT-only) in first-party app
+# namespaces, so regressions in our own charts surface as PolicyReports. A CPU
+# limit is intentionally NOT required: CPU limits cause CFS throttling even on an
+# idle node. Scoped to namespaces where we author Helm charts; vendor/operator
+# namespaces are deliberately left out (they ship without resources and we don't
+# want to flag what we can't change).
+requireResources:
+  enabled: true
+  background: true # scan existing workloads too, not just new admissions
+  targetKinds:
+    - Deployment
+    - StatefulSet
+    - DaemonSet
+  includeNamespaces:
+    - monolith
+    - monolith-public
+    - trips
+    - agent-platform
+    - api-gateway
+
 kyverno:
   # Admission controller configuration
   admissionController:

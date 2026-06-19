@@ -1,0 +1,56 @@
+{{- if .Values.requireResources.enabled }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-requests
+  annotations:
+    policies.kyverno.io/title: Require Resource Requests and Memory Limit
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: |
+      AUDIT-ONLY guardrail for first-party application namespaces. Every
+      container must declare CPU and memory requests and a memory limit.
+
+      A CPU LIMIT is intentionally NOT required: CPU limits cause CFS
+      throttling even on an idle node, which is the opposite of what we want.
+      The convention here is CPU requests (for fair scheduling) + memory
+      requests=limit (to bound the noisy-neighbour / OOM blast radius), with
+      CPU left burstable.
+
+      Scoped to the namespaces where we author Helm charts (see
+      requireResources.includeNamespaces), so it catches regressions in our own
+      services without touching vendor-managed operator namespaces. Audit mode:
+      violations surface as PolicyReports, nothing is rejected.
+spec:
+  background: {{ .Values.requireResources.background }}
+  validationFailureAction: Audit
+  rules:
+  - name: require-requests-and-mem-limit
+    match:
+      any:
+      - resources:
+          kinds:
+          {{- range .Values.requireResources.targetKinds }}
+          - {{ . }}
+          {{- end }}
+          namespaces:
+          {{- range .Values.requireResources.includeNamespaces }}
+          - {{ . }}
+          {{- end }}
+    validate:
+      message: >-
+        Every container must set resources.requests.cpu, resources.requests.memory
+        and resources.limits.memory (a CPU limit is intentionally not required, to
+        avoid CFS throttling).
+      pattern:
+        spec:
+          template:
+            spec:
+              containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    memory: "?*"
+{{- end }}
