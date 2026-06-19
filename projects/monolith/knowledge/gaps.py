@@ -39,6 +39,47 @@ from knowledge.models import Gap, Note, NoteLink
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Typed gap-lifecycle errors
+#
+# Each carries the HTTP ``status_code`` its router endpoint should surface, so
+# ``knowledge.router._map_gap_error`` maps by class instead of matching error
+# substrings. All subclass ``ValueError`` so existing callers that ``except
+# ValueError`` (the MCP tools return ``str(exc)``) keep working unchanged.
+# ---------------------------------------------------------------------------
+
+
+class GapError(ValueError):
+    """Base for gap-lifecycle errors. Maps to HTTP 400 unless overridden."""
+
+    status_code = 400
+
+
+class GapNotFoundError(GapError):
+    """No gap with the given id (or it is soft-deleted on a write path)."""
+
+    status_code = 404
+
+
+class GapWrongStateError(GapError):
+    """The gap is not in the state the requested transition requires."""
+
+    status_code = 409
+
+
+class GapNotDeletedError(GapError):
+    """``undelete`` was called on a gap that is not soft-deleted."""
+
+    status_code = 409
+
+
+class GapAnswerInvalidError(GapError):
+    """The supplied answer text is invalid (e.g. a frontmatter terminator)."""
+
+    status_code = 400
+
+
 GAPS_PIPELINE_VERSION = "gaps@v1"
 
 
@@ -472,7 +513,7 @@ def list_gaps_for_review(
             .limit(limit)
         )
     else:
-        raise ValueError(f"unknown review-queue mode: {mode!r}")
+        raise GapError(f"unknown review-queue mode: {mode!r}")
 
     rows = session.execute(stmt).scalars().all()
     return [_gap_to_dict(gap, session=session) for gap in rows]
@@ -493,16 +534,16 @@ def list_review_queue(session: Session) -> list[dict]:
 
 
 def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:
-    """Load a Gap by id or raise ValueError. Shared by reject/verify/reopen.
+    """Load a Gap by id or raise :class:`GapNotFoundError`. Shared by
+    reject/verify/reopen.
 
-    Mirrors :func:`answer_gap`'s error contract — the router layer maps
-    ``"Gap not found"`` substrings to HTTP 404. Soft-deleted gaps
+    The router maps :class:`GapNotFoundError` to HTTP 404. Soft-deleted gaps
     (``deleted_at IS NOT NULL``) are treated as not-found so write paths
     can't mutate them; use :func:`undelete_gap` to restore first.
     """
     gap = session.get(Gap, gap_id)
     if gap is None or gap.deleted_at is not None:
-        raise ValueError(f"Gap not found: id={gap_id}")
+        raise GapNotFoundError(f"Gap not found: id={gap_id}")
     return gap
 
 
@@ -518,7 +559,7 @@ def reject_gap(session: Session, gap_id: int) -> dict:
     """
     gap = _get_gap_or_raise(session, gap_id)
     if gap.state != "in_review":
-        raise ValueError(
+        raise GapWrongStateError(
             f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
         )
 
@@ -564,7 +605,7 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     """
     gap = _get_gap_or_raise(session, gap_id)
     if gap.state not in _TERMINAL_GAP_STATES:
-        raise ValueError(
+        raise GapWrongStateError(
             f"Gap id={gap_id} is in state={gap.state!r}, expected one of "
             f"{list(_TERMINAL_GAP_STATES)}"
         )
@@ -604,10 +645,10 @@ def set_gap_class(session: Session, gap_id: int, gap_class: str) -> dict:
             classified or in flight).
     """
     if gap_class not in _VALID_GAP_CLASSES:
-        raise ValueError(f"invalid gap_class: {gap_class!r}")
+        raise GapError(f"invalid gap_class: {gap_class!r}")
     gap = _get_gap_or_raise(session, gap_id)
     if gap.state != "discovered":
-        raise ValueError(
+        raise GapWrongStateError(
             f"Gap id={gap_id} is in state={gap.state!r}, expected 'discovered'"
         )
 
@@ -663,9 +704,9 @@ def _load_gap_for_answer(session: Session, gap_id: int) -> Gap:
     """
     gap = session.get(Gap, gap_id)
     if gap is None or gap.deleted_at is not None:
-        raise ValueError(f"Gap not found: id={gap_id}")
+        raise GapNotFoundError(f"Gap not found: id={gap_id}")
     if gap.state != "in_review":
-        raise ValueError(
+        raise GapWrongStateError(
             f"Gap id={gap_id} is in state={gap.state!r}, expected 'in_review'"
         )
     return gap
@@ -750,7 +791,7 @@ async def answer_gap(
     """
     gap = _load_gap_for_answer(session, gap_id)
     if "\n---\n" in f"\n{answer}\n":
-        raise ValueError(
+        raise GapAnswerInvalidError(
             "answer may not contain a frontmatter terminator ('---' on its own line)"
         )
 
@@ -797,7 +838,7 @@ def delete_gap(session: Session, gap_id: int) -> dict:
     # Bypass _get_gap_or_raise's deleted-as-404 to make delete idempotent.
     gap = session.get(Gap, gap_id)
     if gap is None:
-        raise ValueError(f"Gap not found: id={gap_id}")
+        raise GapNotFoundError(f"Gap not found: id={gap_id}")
     if gap.deleted_at is not None:
         return _gap_to_dict(gap, session=session)
 
@@ -822,9 +863,9 @@ def undelete_gap(session: Session, gap_id: int) -> dict:
     # Bypass _get_gap_or_raise's deleted-as-404 so we can find the row.
     gap = session.get(Gap, gap_id)
     if gap is None:
-        raise ValueError(f"Gap not found: id={gap_id}")
+        raise GapNotFoundError(f"Gap not found: id={gap_id}")
     if gap.deleted_at is None:
-        raise ValueError(f"Gap id={gap_id} is not deleted")
+        raise GapNotDeletedError(f"Gap id={gap_id} is not deleted")
 
     gap.deleted_at = None
     session.add(gap)

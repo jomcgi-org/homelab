@@ -18,8 +18,16 @@ from sqlmodel.pool import StaticPool
 
 from knowledge.gaps import (
     GAPS_PIPELINE_VERSION,
+    GapAnswerInvalidError,
+    GapError,
+    GapNotDeletedError,
+    GapNotFoundError,
+    GapWrongStateError,
     answer_gap,
     list_gaps_for_review,
+    reject_gap,
+    set_gap_class,
+    undelete_gap,
 )
 from knowledge.models import Gap, Note
 
@@ -663,3 +671,77 @@ class TestGapReviewQueueDictShape:
         assert r.status_code == 200
         item = r.json().get("gaps", [])[0]
         assert item["referenced_by_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Typed gap-lifecycle errors (the class -> HTTP status contract)
+# ---------------------------------------------------------------------------
+
+
+class TestTypedGapErrors:
+    """Lock the typed-exception contract that ``_map_gap_error`` maps by class.
+
+    The gap functions raise ``GapError`` subclasses carrying a ``status_code``;
+    the router maps by class instead of matching error substrings. All subclass
+    ``ValueError`` so the MCP tools' ``except ValueError`` keeps working.
+    """
+
+    def test_all_subclass_value_error(self):
+        for cls in (
+            GapError,
+            GapNotFoundError,
+            GapWrongStateError,
+            GapNotDeletedError,
+            GapAnswerInvalidError,
+        ):
+            assert issubclass(cls, ValueError)
+
+    def test_status_codes(self):
+        assert GapError.status_code == 400
+        assert GapNotFoundError.status_code == 404
+        assert GapWrongStateError.status_code == 409
+        assert GapNotDeletedError.status_code == 409
+        assert GapAnswerInvalidError.status_code == 400
+
+    def test_unknown_gap_raises_not_found(self, session):
+        with pytest.raises(GapNotFoundError):
+            reject_gap(session, 999999)
+
+    def test_wrong_state_raises_wrong_state(self, session):
+        gap = _make_gap(session, term="Foo", state="rejected")
+        with pytest.raises(GapWrongStateError):
+            reject_gap(session, gap.id)
+
+    def test_invalid_gap_class_raises_gap_error(self, session):
+        gap = _make_gap(session, term="Bar", state="discovered", gap_class=None)
+        with pytest.raises(GapError) as exc_info:
+            set_gap_class(session, gap.id, "bogus")
+        # The base class (400), not a more specific subclass.
+        assert type(exc_info.value) is GapError
+
+    def test_undelete_live_gap_raises_not_deleted(self, session):
+        gap = _make_gap(session, term="Baz", state="in_review")
+        with pytest.raises(GapNotDeletedError):
+            undelete_gap(session, gap.id)
+
+    @pytest.mark.asyncio
+    async def test_answer_with_frontmatter_terminator_raises_answer_invalid(
+        self, session
+    ):
+        gap = _make_gap(session, term="Qux", state="in_review", gap_class="internal")
+        with pytest.raises(GapAnswerInvalidError):
+            await answer_gap(session, gap.id, "before\n---\nafter")
+
+    def test_map_gap_error_maps_each_class_to_its_status(self):
+        from knowledge.router import _map_gap_error
+
+        cases = [
+            (GapNotFoundError("x"), 404),
+            (GapWrongStateError("x"), 409),
+            (GapNotDeletedError("x"), 409),
+            (GapAnswerInvalidError("x"), 400),
+            (GapError("x"), 400),
+            (ValueError("untyped"), 400),  # non-GapError falls back to 400
+        ]
+        for exc, expected in cases:
+            assert _map_gap_error(exc).status_code == expected
