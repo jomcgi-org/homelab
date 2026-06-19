@@ -18,6 +18,7 @@ import knowledge
 import scheduler
 import ships
 import stars
+import trips
 from home.observability.rollup import prime_snapshots
 
 configure_logging()
@@ -209,6 +210,7 @@ scheduler.register(app)
 ships.register(app)
 hikes.register(app)
 stars.register(app)
+trips.register(app)
 dr_jobs.register(app)
 app.mount("/mcp", _mcp_app)
 
