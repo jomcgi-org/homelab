@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image
 from PIL.ExifTags import GPSTAGS, TAGS
 
-logger = logging.getLogger("trips.backfill")
+logger = logging.getLogger("monolith.trips.exif")
 
 
 @dataclass
