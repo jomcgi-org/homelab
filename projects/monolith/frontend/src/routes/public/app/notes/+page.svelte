@@ -217,6 +217,17 @@
 <h1 class="sr-only">Chat with my knowledge graph</h1>
 
 <main class="chat-app">
+  <!-- Back-to-home breadcrumb, top-left, mirroring the other /app/* pages
+       (e.g. /app/stars). The home link is underlined in blue and points at the
+       jomcgi.dev apex; the current app name reads as the trailing crumb. -->
+  <nav class="crumb" aria-label="Breadcrumb">
+    <a class="crumb-home" href="https://jomcgi.dev/"
+      >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span></a
+    >
+    <span class="crumb-sep">/</span>
+    <span class="crumb-name">notes</span>
+  </nav>
+
   <!-- Header row: the CHAT | GRAPH view toggle on the left, and the collapsible
        "HOW DOES THIS WORK?" explainer right after it. The explainer is sized to
        its own text (not a full-width banner); expanding it opens a content-width
@@ -460,6 +471,41 @@
     border: 0;
   }
 
+  /* ── breadcrumb (back-to-home, matches /app/stars) ───────────── */
+  .crumb {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .crumb-home {
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+    text-decoration-skip-ink: none;
+    text-underline-offset: 2px;
+    padding: 0 2px;
+    transition: background 140ms ease;
+  }
+  .crumb-home:hover,
+  .crumb-home:focus-visible {
+    background: linear-gradient(transparent 56%, var(--accent) 56%);
+    text-decoration-color: var(--ink);
+  }
+  .crumb-arrow {
+    font-size: 0.85em;
+    margin-left: 1px;
+  }
+  .crumb-sep {
+    color: var(--ink-3);
+  }
+
   /* ── toolbar (view toggle + inline explainer on one row) ─────── */
   .app-toolbar {
     flex: none;
@@ -490,8 +536,17 @@
   .explainer-summary::-webkit-details-marker {
     display: none;
   }
+  /* Hover/focus fill the summary with the yellow accent (readable black-on-
+     yellow) instead of the grey --bg-elev, which blended into the cream page. */
   .explainer-summary:hover {
-    background: var(--bg-elev);
+    background: var(--accent);
+  }
+  /* Clean brutalist focus: the box already carries an ink border, so suppress
+     the default blue focus glow and signal keyboard focus with the same accent
+     fill as hover. No blue ring. */
+  .explainer-summary:focus-visible {
+    outline: none;
+    background: var(--accent);
   }
   .explainer-eyebrow {
     font-size: 11px;
@@ -513,19 +568,22 @@
   .explainer[open] .explainer-mark {
     transform: rotate(45deg);
   }
-  /* Content-width popover, not a full-bleed banner. max-content lets it hug the
-     text up to a readable cap, and the viewport clamp keeps it on-screen. */
+  /* Content-width popover, left-aligned to the summary, not a full-bleed banner.
+     max-content hugs the text up to a readable ~62ch cap, the viewport clamp
+     keeps it on-screen. A clear gap below the summary plus a solid 2px ink
+     border and a hard offset shadow read it as a deliberate layer floating
+     ABOVE the PUBLIC CHAT bar (high z-index), not something bleeding into it. */
   .explainer-body {
     position: absolute;
-    top: calc(100% + 6px);
+    top: calc(100% + 8px);
     left: 0;
-    z-index: 20;
+    z-index: 50;
     width: max-content;
-    max-width: min(64ch, calc(100vw - 48px));
+    max-width: min(62ch, calc(100vw - 48px));
     padding: 14px 16px;
     background: var(--paper);
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard-sm);
+    box-shadow: var(--shadow-hard);
   }
   .explainer-body p {
     font-size: 12px;
@@ -562,13 +620,21 @@
     background: var(--paper);
     color: var(--ink);
     cursor: pointer;
-    transition: background 120ms ease;
+    transition:
+      background 120ms ease,
+      transform 120ms ease,
+      box-shadow 120ms ease;
   }
   .view-toggle-btn.on {
     background: var(--accent);
   }
+  /* The active tab already owns the yellow accent, so the inactive tab signals
+     hover by staying white and lifting with a hard offset shadow (visible
+     against the cream page) rather than the grey --bg-elev, which blended in. */
   .view-toggle-btn:hover:not(.on) {
-    background: var(--bg-elev);
+    background: var(--paper);
+    transform: translate(-1px, -1px);
+    box-shadow: var(--shadow-hard-sm);
   }
 
   /* ── chat box shell ─────────────────────────────────────────── */
@@ -585,8 +651,8 @@
     overflow: hidden;
   }
   /* The in-app header bar (PUBLIC CHAT / status / actions). Kept neutral paper
-     so yellow is not the dominant colour; the PUBLIC CHAT tag carries a blue
-     chip and the status carries green for variety. */
+     so yellow is not the dominant colour; the PUBLIC CHAT tag is a readable
+     outlined chip (ink-on-paper) and the SESSION OPEN status carries green. */
   .chat-box-bar {
     display: flex;
     align-items: center;
@@ -601,7 +667,7 @@
     letter-spacing: 0.14em;
     padding: 3px 9px;
     border: 1.5px solid var(--ink);
-    background: var(--blue);
+    background: var(--paper);
   }
   .chat-box-status {
     font-size: 11px;
@@ -643,8 +709,10 @@
     cursor: pointer;
     transition: background 120ms ease;
   }
+  /* Accent hover (readable black-on-yellow), not grey --bg-elev which vanished
+     against the cream page. */
   .bar-btn:hover {
-    background: var(--bg-elev);
+    background: var(--accent);
   }
 
   /* ── transcript ─────────────────────────────────────────────── */
@@ -689,19 +757,17 @@
     flex-wrap: wrap;
     gap: 10px;
   }
-  /* Inviting, tappable suggestions: a soft blue fill with a bolder blue left
-     edge so they read as calls to action, not plain outlines. Hover lifts with
-     a hard offset shadow and flips to the yellow accent. Still brutalist: ink
-     border, mono, full contrast. */
+  /* Tappable suggestions as readable outlines: white paper fill, a 2px ink
+     border, bold ink mono. The old soft blue fill was low-contrast under black
+     text. Hover fills with the yellow accent (readable black-on-yellow) and
+     lifts with a translate + hard offset shadow. Still brutalist, full contrast. */
   .chat-example {
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
     padding: 9px 13px;
-    border: 1.5px solid var(--ink);
-    border-left-width: 5px;
-    border-left-color: var(--blue);
-    background: color-mix(in srgb, var(--blue) 22%, var(--paper));
+    border: 2px solid var(--ink);
+    background: var(--paper);
     color: var(--ink);
     cursor: pointer;
     transition:
