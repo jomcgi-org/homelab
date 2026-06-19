@@ -5,15 +5,14 @@
 // `image` value (the S3 object key for that photo).
 const IMG_BASE = "https://img.jomcgi.dev";
 
-const PRESETS = {
-  thumb: "rs:fit:300:300/q:85",
-  display: "rs:fit:1920:1080/q:92",
-  preview: "rs:fit:1200:1200/q:90",
-  gallery: "rs:fit:600:600/q:88",
+// imgproxy is locked to named presets (IMGPROXY_ONLY_PRESETS); these names must
+// match IMGPROXY_PRESETS in the monolith-public chart.
+const PRESETS = new Set(["thumb", "gallery", "preview", "display", "full"]);
+
+export const imgUrl = (key, preset = "gallery") => {
+  const p = PRESETS.has(preset) ? preset : "gallery";
+  return `${IMG_BASE}/unsafe/${p}/plain/s3://monolith-trips/${key}`;
 };
 
-export const imgUrl = (key, preset) =>
-  `${IMG_BASE}/unsafe/${PRESETS[preset]}/plain/s3://monolith-trips/${key}`;
-
 export const fullUrl = (key) =>
-  `${IMG_BASE}/unsafe/plain/s3://monolith-trips/${key}`;
+  `${IMG_BASE}/unsafe/full/plain/s3://monolith-trips/${key}`;

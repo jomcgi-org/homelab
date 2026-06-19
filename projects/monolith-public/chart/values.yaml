@@ -414,6 +414,16 @@ imgproxy:
     # request to the monolith-trips bucket.
     - name: IMGPROXY_ALLOW_INSECURE_URLS
       value: "true"
+    # Named presets are the ONLY processing options allowed (ONLY_PRESETS below).
+    # This caps imgproxy to the exact sizes the trips frontend requests instead
+    # of serving arbitrary resizes of the bucket. The names here MUST match the
+    # PRESETS set in projects/monolith/frontend/src/lib/trips/images.js.
+    - name: IMGPROXY_PRESETS
+      value: "thumb=resize:fit:300:300/quality:85,gallery=resize:fit:600:600/quality:88,preview=resize:fit:1200:1200/quality:90,display=resize:fit:1920:1080/quality:92,full=quality:95"
+    # Reject any URL whose processing options are not one of the named presets
+    # above. Combined with ALLOWED_SOURCES this is the resize allow-list.
+    - name: IMGPROXY_ONLY_PRESETS
+      value: "true"
     - name: IMGPROXY_QUALITY
       value: "90"
     - name: IMGPROXY_FORMAT_QUALITY

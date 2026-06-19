@@ -1,24 +1,15 @@
 <script>
   import { imgUrl } from "$lib/trips/images.js";
-  import PhotoViewer from "./PhotoViewer.svelte";
 
-  // Contact-sheet grid of a day's photos. Clicking a tile opens the lightbox.
-  // Self-contained: owns the lightbox open/index state.
-  let { photos = [], tz = "UTC" } = $props();
-
-  let open = $state(false);
-  let index = $state(0);
-
-  function show(i) {
-    index = i;
-    open = true;
-  }
+  // Contact-sheet grid of a day's photos. Clicking a tile calls onOpen(i); the
+  // lightbox itself is owned by the page so the map and grid share one viewer.
+  let { photos = [], onOpen = () => {} } = $props();
 </script>
 
 {#if photos.length}
   <div class="grid">
     {#each photos as photo, i (photo.id)}
-      <button class="tile" onclick={() => show(i)} aria-label={`Open photo ${i + 1}`}>
+      <button class="tile" onclick={() => onOpen(i)} aria-label={`Open photo ${i + 1}`}>
         <img
           src={imgUrl(photo.image, "gallery")}
           alt={`Photo ${i + 1}`}
@@ -30,16 +21,6 @@
   </div>
 {:else}
   <p class="empty">No photos for this day.</p>
-{/if}
-
-{#if open}
-  <PhotoViewer
-    {photos}
-    {index}
-    {tz}
-    onIndex={(i) => (index = i)}
-    onClose={() => (open = false)}
-  />
 {/if}
 
 <style>
