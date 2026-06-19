@@ -12,7 +12,6 @@ from typer.testing import CliRunner
 
 from knowledge.gardener import Gardener
 from knowledge.models import AtomRawProvenance, RawInput
-from knowledge.notes import VAULT_ROOT_ENV
 from knowledge.router import get_embedding_client
 from tools.cli.main import app
 
@@ -144,6 +143,9 @@ _SAMPLE_NOTE = {
     "path": "papers/attention.md",
     "type": "paper",
     "tags": ["ml", "transformers"],
+    # ADR 006: the body of record is the Postgres ``content`` column; the
+    # endpoint serves it directly (no vault file fallback anymore).
+    "content": "# Attention\n\nSelf-attention mechanism.",
 }
 
 
@@ -312,18 +314,8 @@ class TestSearch:
 class TestNote:
     """Tests for the `knowledge note` CLI command."""
 
-    def test_note_fetches_metadata_and_writes_tmpfile(
-        self, runner, tmp_path, monkeypatch
-    ):
+    def test_note_fetches_metadata_and_writes_tmpfile(self, runner, tmp_path):
         """Successful note fetch prints title/type and writes content to tmpfile."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention\n\nSelf-attention mechanism.")
-
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
         with (
             patch("knowledge.router.KnowledgeStore") as MockStore,
             patch("tools.cli.output.TMPDIR", tmp_path / "notes"),
@@ -337,16 +329,8 @@ class TestNote:
         assert "paper" in result.output
         assert "Content:" in result.output
 
-    def test_note_json_output(self, runner, tmp_path, monkeypatch):
+    def test_note_json_output(self, runner):
         """--json flag emits raw JSON for the note instead of formatted text."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention\n\nContent.")
-
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
         with patch("knowledge.router.KnowledgeStore") as MockStore:
             MockStore.return_value.get_note_by_id.return_value = _SAMPLE_NOTE
             MockStore.return_value.get_note_links.return_value = []
@@ -357,16 +341,8 @@ class TestNote:
         assert '"n1"' in result.output
         assert '"title"' in result.output
 
-    def test_note_displays_typed_edges(self, runner, tmp_path, monkeypatch):
+    def test_note_displays_typed_edges(self, runner, tmp_path):
         """Note with typed edges shows 'Edges:' line with edge type and target."""
-        vault_dir = tmp_path / "vault"
-        vault_dir.mkdir()
-        note_file = vault_dir / "papers" / "attention.md"
-        note_file.parent.mkdir(parents=True)
-        note_file.write_text("# Attention\n\nContent.")
-
-        monkeypatch.setenv(VAULT_ROOT_ENV, str(vault_dir))
-
         with (
             patch("knowledge.router.KnowledgeStore") as MockStore,
             patch("tools.cli.output.TMPDIR", tmp_path / "notes"),
