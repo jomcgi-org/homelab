@@ -14,6 +14,7 @@
     color = "var(--ink)",
     cursor = null,
     cursorColor = "var(--ink)",
+    showMinMax = false,
   } = $props();
 
   const lo = $derived(min ?? (series.length ? Math.min(...series) : 0));
@@ -39,23 +40,51 @@
 </script>
 
 {#if path}
-  <svg
-    viewBox={`0 0 100 ${height}`}
-    preserveAspectRatio="none"
-    style={`width:100%;height:${height}px;display:block`}
-    aria-hidden="true"
-  >
-    <path d={path} fill={color} fill-opacity="0.85" />
-    {#if cursorX != null}
-      <line
-        x1={cursorX}
-        y1="0"
-        x2={cursorX}
-        y2={height}
-        stroke={cursorColor}
-        stroke-width="1.5"
-        vector-effect="non-scaling-stroke"
-      />
+  <div class="elev" style={`--h:${height}px`}>
+    <svg
+      viewBox={`0 0 100 ${height}`}
+      preserveAspectRatio="none"
+      style={`width:100%;height:${height}px;display:block`}
+      aria-hidden="true"
+    >
+      <path d={path} fill={color} fill-opacity="0.85" />
+      {#if cursorX != null}
+        <line
+          x1={cursorX}
+          y1="0"
+          x2={cursorX}
+          y2={height}
+          stroke={cursorColor}
+          stroke-width="1.5"
+          vector-effect="non-scaling-stroke"
+        />
+      {/if}
+    </svg>
+    {#if showMinMax}
+      <span class="tick top">{Math.round(hi)}m</span>
+      <span class="tick bottom">{Math.round(lo)}m</span>
     {/if}
-  </svg>
+  </div>
 {/if}
+
+<style>
+  .elev {
+    position: relative;
+  }
+  .tick {
+    position: absolute;
+    right: 2px;
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    pointer-events: none;
+  }
+  .tick.top {
+    top: 0;
+  }
+  .tick.bottom {
+    bottom: 0;
+  }
+</style>

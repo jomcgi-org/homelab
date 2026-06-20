@@ -2,6 +2,7 @@
   import DayNav from "$lib/public/components/trips/DayNav.svelte";
   import DayMap from "$lib/public/components/trips/DayMap.svelte";
   import DayStats from "$lib/public/components/trips/DayStats.svelte";
+  import DayTelemetry from "$lib/public/components/trips/DayTelemetry.svelte";
   import ElevationChart from "$lib/public/components/trips/ElevationChart.svelte";
   import {
     groupByDay,
@@ -11,6 +12,7 @@
     elevationSeries,
     clampIndex,
   } from "$lib/trips/trip.js";
+  import { photoTelemetry } from "$lib/trips/telemetry.js";
 
   let { data } = $props();
 
@@ -25,9 +27,9 @@
   const dayStats = $derived(day ? { ...day, photoCount: photos.length } : null);
   const series = $derived(day ? elevationSeries(day.points, 120) : []);
 
-  // Scrubber state: the index of the "current" photo. The map highlights and
-  // centers this photo, the elevation cursor tracks its route position, and the
-  // right-hand panel shows it at display size. Clamped to the photo count.
+  // Scrubber state: the index of the "current" photo. The photo is the dominant
+  // element; the map highlights and centers it, the elevation cursor tracks its
+  // route position, and the telemetry panel shows its per-photo readouts.
   let current = $state(0);
 
   // Reset to the first photo whenever the day changes (SvelteKit reuses this
@@ -42,6 +44,20 @@
   });
 
   const photo = $derived(photos[current] ?? null);
+
+  // Per-photo telemetry (position/elev interpolated from the GPS track when the
+  // photo lacks a fix, plus bearing, cumulative km, EV and solar context).
+  const telemetry = $derived(
+    photo ? photoTelemetry(photo, day?.points ?? [], trip?.tz) : null,
+  );
+
+  // Interpolated coordinates for the map's current-photo marker, so it still
+  // tracks photos that lack their own GPS fix.
+  const currentCoords = $derived(
+    telemetry && telemetry.lat != null && telemetry.lng != null
+      ? [telemetry.lng, telemetry.lat]
+      : null,
+  );
 
   function step(delta) {
     if (!photos.length) return;
@@ -59,20 +75,28 @@
     return idx / (day.points.length - 1);
   });
 
-  function fmtTime(iso) {
-    if (!iso) return "";
-    try {
-      return new Date(iso).toLocaleString("en-CA", {
-        timeZone: trip?.tz || "UTC",
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return "";
+  // Warm the browser/CDN cache for the neighbouring photos so arrow-stepping
+  // shows the next image instantly. Pre-signed `imgDisplay` URLs are already in
+  // the SSR payload, so this just kicks off background GETs via new Image(); it
+  // never blocks render. Browser-only (Image is undefined during SSR).
+  $effect(() => {
+    const i = current;
+    if (typeof Image === "undefined" || !photos.length) return;
+    const preloaders = [];
+    for (const delta of [1, -1, 2, -2]) {
+      const neighbor = photos[i + delta];
+      if (neighbor?.imgDisplay) {
+        const img = new Image();
+        img.src = neighbor.imgDisplay;
+        preloaders.push(img);
+      }
     }
-  }
+    // Drop references on change/teardown so the GC can reclaim them once the
+    // browser cache is warm (no listeners are attached, so nothing leaks).
+    return () => {
+      preloaders.length = 0;
+    };
+  });
 
   // Arrow keys step through photos. No scroll-jacking: keyboard + buttons only.
   $effect(() => {
@@ -102,25 +126,7 @@
     <DayNav slug={trip.slug} {dayNumber} {totalDays} {label} dayColor={color} />
 
     <div class="scrubber">
-      <section class="map-box" aria-label="Day route map">
-        <DayMap
-          points={day.points}
-          {photos}
-          dayColor={color}
-          {current}
-          onPhotoClick={(i) => (current = i)}
-        />
-      </section>
-
-      <section class="stats-box">
-        <p class="eyebrow">Day stats</p>
-        <DayStats stats={dayStats} dayColor={color} />
-      </section>
-
       <section class="photo-box" style={`--day:${color}`}>
-        <p class="eyebrow">
-          Photo {photos.length ? current + 1 : 0} / {photos.length}
-        </p>
         {#if photo}
           <figure class="frame">
             <img
@@ -128,14 +134,6 @@
               alt={`Photo ${current + 1} of ${photos.length}`}
               decoding="async"
             />
-            <figcaption>
-              {#if photo.taken_at}<span>{fmtTime(photo.taken_at)}</span>{/if}
-              {#if photo.focal_length_35mm}<span>{photo.focal_length_35mm}mm</span>{/if}
-              {#if photo.aperture}<span>&fnof;/{photo.aperture}</span>{/if}
-              {#if photo.iso}<span>ISO {photo.iso}</span>{/if}
-              {#if photo.shutter_speed}<span>{photo.shutter_speed}</span>{/if}
-              {#if photo.elevation != null}<span>{Math.round(photo.elevation)}m</span>{/if}
-            </figcaption>
           </figure>
           <div class="controls">
             <button
@@ -146,6 +144,7 @@
             >
               &larr; Prev
             </button>
+            <span class="counter">{photos.length ? current + 1 : 0} / {photos.length}</span>
             <button
               class="step"
               onclick={() => step(1)}
@@ -159,7 +158,30 @@
           <p class="empty">No photos for this day.</p>
         {/if}
       </section>
+
+      <section class="map-box" aria-label="Day route map">
+        <DayMap
+          points={day.points}
+          {photos}
+          dayColor={color}
+          {current}
+          {currentCoords}
+          onPhotoClick={(i) => (current = i)}
+        />
+      </section>
+
+      <section class="stats-box">
+        <p class="eyebrow">Day stats</p>
+        <DayStats stats={dayStats} dayColor={color} />
+      </section>
     </div>
+
+    {#if telemetry}
+      <section class="telem-box">
+        <p class="eyebrow">Telemetry</p>
+        <DayTelemetry t={telemetry} index={current} total={photos.length} dayColor={color} />
+      </section>
+    {/if}
 
     {#if dayStats.hasElevation}
       <section class="profile">
@@ -171,6 +193,7 @@
             {color}
             cursor={cursorFraction}
             cursorColor={color}
+            showMinMax={true}
           />
         </div>
       </section>
@@ -187,53 +210,62 @@
     color: var(--ink);
     min-height: 100vh;
   }
+  /* Photo dominates: a wide left column (2fr) holds the large image; the map and
+     day stats stack in the narrower right rail (1fr). */
   .scrubber {
     display: grid;
-    grid-template-columns: 1.1fr 0.9fr 1.3fr;
-    grid-template-areas: "map stats photo";
+    grid-template-columns: 2fr 1fr;
+    grid-template-areas:
+      "photo map"
+      "photo stats";
     gap: 20px;
     align-items: start;
+  }
+  .photo-box {
+    grid-area: photo;
   }
   .map-box {
     grid-area: map;
     border: 2px solid var(--ink);
-    height: 420px;
+    height: 320px;
   }
   .stats-box {
     grid-area: stats;
-  }
-  .photo-box {
-    grid-area: photo;
   }
   .frame {
     margin: 0;
     border: 2px solid var(--ink);
     background: var(--ink);
-    display: flex;
-    flex-direction: column;
+    display: block;
   }
   .frame img {
     width: 100%;
-    max-height: 460px;
+    aspect-ratio: 16 / 9;
+    max-height: 620px;
     object-fit: contain;
     display: block;
     background: var(--ink);
   }
-  figcaption {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 16px;
-    padding: 10px 12px;
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    color: var(--paper);
-    border-top: 2px solid var(--day);
-  }
   .controls {
     display: flex;
-    gap: 0;
+    align-items: stretch;
     margin-top: 12px;
+  }
+  .counter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    padding: 0 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--ink);
+    border: 2px solid var(--ink);
+    border-left: none;
+    border-right: none;
+    background: var(--paper);
   }
   .step {
     flex: 1;
@@ -248,9 +280,6 @@
     padding: 10px 14px;
     cursor: pointer;
   }
-  .step + .step {
-    border-left: none;
-  }
   .step:hover:not(:disabled) {
     background: var(--ink);
     color: var(--paper);
@@ -258,6 +287,9 @@
   .step:disabled {
     opacity: 0.35;
     cursor: default;
+  }
+  .telem-box {
+    margin-top: 28px;
   }
   .profile {
     margin-top: 28px;
@@ -288,17 +320,21 @@
   .missing a {
     color: var(--ink);
   }
-  /* Narrow screens: stack map, photo, stats (in that order), then elevation. */
+  /* Narrow screens: stack photo, map, stats (in that order), then telemetry and
+     elevation below (both already full width). */
   @media (max-width: 900px) {
     .scrubber {
       grid-template-columns: 1fr;
       grid-template-areas:
-        "map"
         "photo"
+        "map"
         "stats";
     }
     .map-box {
-      height: 300px;
+      height: 280px;
+    }
+    .frame img {
+      max-height: 70vh;
     }
   }
 </style>
