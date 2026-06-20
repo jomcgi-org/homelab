@@ -31,14 +31,15 @@ def create_snapshot(db: Session, session: ChatSession) -> ChatSnapshot:
     """Freeze a session's transcript into an immutable, shareable snapshot.
 
     Reads the server-authoritative transcript, keeps only user/assistant rows,
-    serializes them to a ``[{role, content}, ...]`` array, mints an opaque
+    serializes them to a ``[{role, content, touched}, ...]`` array (touched is
+    the assistant turn's grounding, empty for user turns), mints an opaque
     CSPRNG id, inserts, and returns the row. The browser supplies nothing here:
     the content comes only from what the server already stored.
     """
     from chat_public import sessions  # local import: avoid an import cycle
 
     transcript = [
-        {"role": m.role, "content": m.content}
+        {"role": m.role, "content": m.content, "touched": list(m.touched or [])}
         for m in sessions.get_transcript(db, session)
         if m.role in _SHARABLE_ROLES
     ]

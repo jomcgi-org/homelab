@@ -392,6 +392,10 @@ async def _turn_stream(
             role="assistant",
             content=reply,
             tokens=completion_tokens,
+            # Persist the turn's grounding so a shared snapshot can render the
+            # same GROUNDED IN chips (same shape as the node_touched events and
+            # the response cache's touched list).
+            touched=[{"id": n.note_id, "title": n.title} for n in retrieved],
         )
         sessions.record_turn(db, session, tokens=turn_tokens)
 
@@ -474,6 +478,9 @@ async def _replay_cached(
             role="assistant",
             content=cached.text,
             tokens=reply_tokens,
+            # The cached answer carries its original grounding; persist it so a
+            # shared snapshot of a cache-hit turn shows the same chips.
+            touched=list(cached.touched),
         )
         turn_tokens = limits.estimate_tokens(message) + reply_tokens
         sessions.record_turn(db, session, tokens=turn_tokens)

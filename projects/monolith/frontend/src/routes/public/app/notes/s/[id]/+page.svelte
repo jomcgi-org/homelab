@@ -63,13 +63,18 @@
           {:else}
             <article class="turn turn-bot">
               <p class="bot-label">{BOT_LABEL}</p>
-              <!-- follow-up: grounding/touched chips are out of scope for v1
-                   because the stored transcript does not persist the touched
-                   node set per assistant message. Persisting touched per
-                   assistant turn (e.g. a JSONB column on chat_public.messages,
-                   carried into the snapshot) would let this view render the same
-                   GROUNDED IN chips the live app shows. -->
               <div class="turn-md">{@html renderReply(m.content)}</div>
+              {#if m.touched && m.touched.length}
+                <!-- The same GROUNDED IN set the live app shows, persisted on
+                     the assistant turn and carried into the snapshot. Static
+                     labels here (read-only view: there is no graph to open). -->
+                <div class="turn-touched">
+                  <span class="turn-touched-label">GROUNDED IN</span>
+                  {#each m.touched as n}
+                    <span class="touched-chip">{n.title || "untitled note"}</span>
+                  {/each}
+                </div>
+              {/if}
             </article>
           {/if}
         {/each}
@@ -316,6 +321,37 @@
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.06em;
+  }
+
+  /* Grounding chips under a bot turn: same look as the live app's GROUNDED IN
+     row, but static (no graph to open in a read-only snapshot). */
+  .turn-touched {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    margin-top: 12px;
+    margin-left: 14px;
+    padding-top: 10px;
+    border-top: 1.5px dashed var(--ink);
+  }
+  .turn-touched-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--ink-3, #9b9b9b);
+  }
+  .touched-chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1.5px solid var(--ink);
+    background: var(--blue);
+    box-shadow: 2px 2px 0 var(--ink);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .share-foot {

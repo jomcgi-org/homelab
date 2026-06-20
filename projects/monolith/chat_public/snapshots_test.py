@@ -89,8 +89,12 @@ def test_share_then_get_round_trips_the_transcript(client, session):
     # created_at serializes to an ISO string regardless of the SQLite naive tz.
     assert isinstance(body["created_at"], str)
     assert body["messages"] == [
-        {"role": "user", "content": "What is STPA?"},
-        {"role": "assistant", "content": "STPA is a hazard analysis method."},
+        {"role": "user", "content": "What is STPA?", "touched": []},
+        {
+            "role": "assistant",
+            "content": "STPA is a hazard analysis method.",
+            "touched": [],
+        },
     ]
 
     # The persisted snapshot is immutable record of the stored transcript.
@@ -98,6 +102,27 @@ def test_share_then_get_round_trips_the_transcript(client, session):
     assert snap.message_count == 2
     assert snap.source_session_id == row.id
     assert isinstance(snap.created_at, datetime)
+
+
+def test_snapshot_carries_assistant_grounding(client, session):
+    """An assistant turn's grounding (touched notes) round-trips into the
+    snapshot, so the shared view can render the same GROUNDED IN chips."""
+    row = sessions.create_session(session)
+    sessions.append_message(session, row, role="user", content="What is STPA?")
+    sessions.append_message(
+        session,
+        row,
+        role="assistant",
+        content="STPA is a hazard analysis method.",
+        touched=[{"id": "stpa", "title": "STPA"}],
+    )
+
+    shared = client.post("/internal/chat/share", json={"session_id": row.id})
+    snapshot_id = shared.json()["snapshot_id"]
+    messages = client.get(f"/internal/chat/shared/{snapshot_id}").json()["messages"]
+
+    assert messages[0]["touched"] == []  # user turn carries no grounding
+    assert messages[1]["touched"] == [{"id": "stpa", "title": "STPA"}]
 
 
 def test_share_accepts_session_id_from_header(client, session):
