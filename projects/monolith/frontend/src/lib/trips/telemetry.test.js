@@ -88,6 +88,11 @@ describe("cumulativeKm", () => {
     expect(d.km).toBeLessThan(13);
     expect(d.percent).toBeGreaterThan(0);
     expect(d.percent).toBeLessThan(100);
+    // The un-rounded fraction backs the elevation marker; percent is just it
+    // rounded to a whole number.
+    expect(d.fraction).toBeGreaterThan(0);
+    expect(d.fraction).toBeLessThan(1);
+    expect(Math.round(d.fraction * 100)).toBe(d.percent);
   });
 
   it("returns zero travelled for a photo at the day's start", () => {

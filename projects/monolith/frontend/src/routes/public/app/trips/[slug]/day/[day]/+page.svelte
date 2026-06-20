@@ -121,14 +121,12 @@
     };
   });
 
-  // Elevation sparkline: ~60 samples, with the position marker mapped onto it by
-  // the photo's progress fraction along the route (matches the original).
+  // Elevation sparkline: ~60 samples for the polyline, with the position marker
+  // placed by the photo's continuous progress fraction along the route. Passing
+  // the raw fraction (not a rounded sample index) lets the marker sit at its true
+  // position and glide between photos instead of snapping to one of ~60 buckets.
   const profile = $derived(day ? elevationSeries(day.points, 60) : []);
-  const profileIndex = $derived(
-    profile.length
-      ? Math.round(((telemetry?.progressPercent ?? 0) / 100) * (profile.length - 1))
-      : 0,
-  );
+  const profileProgress = $derived(telemetry?.progressFraction ?? 0);
 
   function step(delta) {
     if (!photos.length) return;
@@ -326,7 +324,7 @@
               <div class="elev-profile">
                 <div class="label">ELEVATION PROFILE</div>
                 <div class="elev-inner">
-                  <DayElevationProfile data={profile} currentIndex={profileIndex} accentColor={color} />
+                  <DayElevationProfile data={profile} progress={profileProgress} accentColor={color} />
                 </div>
               </div>
 

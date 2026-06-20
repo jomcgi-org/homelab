@@ -134,6 +134,10 @@ export function cumulativeKm(dayPoints, photoTime) {
     km: Math.round(traveled),
     total: Math.round(total),
     percent: total > 0 ? Math.round((traveled / total) * 100) : 0,
+    // Un-rounded 0..1 ratio. `percent` is for the integer readout; the
+    // elevation-profile marker needs the raw fraction so it can sit at the
+    // photo's true route position instead of snapping to a whole percent.
+    fraction: total > 0 ? traveled / total : 0,
   };
 }
 
@@ -237,6 +241,9 @@ export function photoTelemetry(photo, dayPoints, tz) {
     // time. The elevation-profile cursor maps this onto the sampled profile so
     // the position marker tracks where the photo sits along the route.
     progressPercent: dist?.percent ?? 0,
+    // Same quantity un-rounded (0..1), used to place the elevation marker at the
+    // photo's exact route position rather than the nearest whole percent.
+    progressFraction: dist?.fraction ?? 0,
     // Optics passed straight through for the panel to format.
     focalLength35mm: photo.focal_length_35mm ?? null,
     aperture: photo.aperture ?? null,
