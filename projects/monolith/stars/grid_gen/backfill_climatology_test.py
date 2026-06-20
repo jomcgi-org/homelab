@@ -56,8 +56,8 @@ class TestSunElevationDeg:
         """December noon at 57N: sun is low but above horizon."""
         dt = datetime(2024, 12, 21, 12, 0, 0)
         elev = sun_elevation_deg(57.0, -3.2, dt)
-        # Sun rises and sets in Edinburgh in December; noon should be > 0
-        assert elev > -20  # may be low but not deeply negative at noon
+        # Sun rises and sets in Edinburgh in December; solar noon should be > 0
+        assert elev > 0
 
     def test_returns_float(self):
         dt = datetime(2024, 6, 1, 0, 0, 0)
@@ -129,10 +129,10 @@ class TestScorePoint:
         ]
         cc = [80.0, 90.0]  # all heavily cloudy
         result = score_point(57.0, -3.0, _make_hourly(times, cc))
-        if 12 in result:
-            dark_hours, clear_dark = result[12]
-            assert dark_hours >= 1
-            assert clear_dark == 0  # >= CLEAR_CLOUD_MAX_PCT so not clear
+        assert 12 in result  # December midnight hours must be captured
+        dark_hours, clear_dark = result[12]
+        assert dark_hours >= 1
+        assert clear_dark == 0  # >= CLEAR_CLOUD_MAX_PCT so not clear
 
     def test_none_cloud_cover_skipped(self):
         """Hours with cc=None must be skipped entirely."""
@@ -142,9 +142,9 @@ class TestScorePoint:
         ]
         cc = [None, 0.0]  # first hour skipped, second counted
         result = score_point(57.0, -3.0, _make_hourly(times, cc))
-        if 12 in result:
-            dark_hours, _ = result[12]
-            assert dark_hours <= 1  # at most 1 (the non-None one)
+        assert 12 in result  # the non-None dark hour must be counted
+        dark_hours, _ = result[12]
+        assert dark_hours == 1  # exactly 1: the non-None hour
 
     def test_mixed_months_grouped_correctly(self):
         """Hours from different months go to different month buckets."""
@@ -164,18 +164,18 @@ class TestScorePoint:
         times = ["2024-12-21T00:00:00"]
         cc = [CLEAR_CLOUD_MAX_PCT]  # exactly 10.0 -- not clear
         result = score_point(57.0, -3.0, _make_hourly(times, cc))
-        if 12 in result:
-            _, clear_dark = result[12]
-            assert clear_dark == 0
+        assert 12 in result  # dark hour must be counted even if not clear
+        _, clear_dark = result[12]
+        assert clear_dark == 0
 
     def test_just_below_threshold_is_clear(self):
         """cc = CLEAR_CLOUD_MAX_PCT - epsilon IS clear."""
         times = ["2024-12-21T00:00:00"]
         cc = [CLEAR_CLOUD_MAX_PCT - 0.1]  # 9.9 -- clear
         result = score_point(57.0, -3.0, _make_hourly(times, cc))
-        if 12 in result:
-            _, clear_dark = result[12]
-            assert clear_dark == 1
+        assert 12 in result  # dark hour must be counted
+        _, clear_dark = result[12]
+        assert clear_dark == 1
 
 
 # ---------------------------------------------------------------------------
