@@ -2,14 +2,17 @@
   /** @type {{ route?: string, isPrivate?: boolean }} */
   let { route = "home", isPrivate = false } = $props();
 
-  // ENGINEERING and CV are same-host relative URLs so they resolve to
+  // ENGINEERING, DOCS, and CV are same-host relative URLs so they resolve to
   // jomcgi.dev/* from the public homepage and to private.jomcgi.dev/* from the
   // private dashboard, without bouncing public visitors into the auth-gated
   // private surface. HOME always points at the public site. Notes is no longer
   // a top-level link: it moved under the APPS dropdown alongside the other apps.
+  // DOCS is reference material (repo docs + ADRs), a peer of ENGINEERING, not an
+  // interactive app, so it sits in the top row rather than the APPS dropdown.
   const publicItems = [
     { slug: "home", label: "HOME", href: "https://jomcgi.dev/" },
     { slug: "engineering", label: "ENGINEERING", href: "/engineering" },
+    { slug: "docs", label: "DOCS", href: "/docs" },
     { slug: "cv", label: "CV", href: "/cv" },
   ];
 
