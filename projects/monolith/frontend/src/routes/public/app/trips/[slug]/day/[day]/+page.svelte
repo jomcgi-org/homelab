@@ -43,6 +43,35 @@
 
   const photo = $derived(photos[current] ?? null);
 
+  // Smooth scrubbing: keep the CURRENT frame on screen until the next image has
+  // actually decoded (instant when it was preloaded), so the photo never flashes
+  // its black cell background between shots while an arrow is held down. Only the
+  // latest target wins, so rapid stepping settles on the right frame.
+  let displayedSrc = $state(photos[current]?.imgDisplay ?? null);
+  $effect(() => {
+    const target = photo?.imgDisplay ?? null;
+    if (!target) {
+      displayedSrc = null;
+      return;
+    }
+    if (typeof Image === "undefined") {
+      displayedSrc = target; // SSR: render the URL directly
+      return;
+    }
+    let cancelled = false;
+    const swap = () => {
+      if (!cancelled) displayedSrc = target;
+    };
+    const img = new Image();
+    img.src = target;
+    if (img.complete) swap();
+    else if (img.decode) img.decode().then(swap).catch(swap);
+    else img.onload = swap;
+    return () => {
+      cancelled = true;
+    };
+  });
+
   // Per-photo telemetry (position/elev interpolated from the GPS track when the
   // photo lacks a fix, plus bearing, cumulative km, EV and solar context).
   const telemetry = $derived(
@@ -148,7 +177,7 @@
       <figure class="photo">
         {#if photo}
           <img
-            src={photo.imgDisplay}
+            src={displayedSrc}
             alt={`Photo ${current + 1} of ${photos.length}`}
             decoding="async"
           />
