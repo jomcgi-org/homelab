@@ -18,6 +18,18 @@
         <span class="label">Descent</span>
         <span class="value down">-{stats.descent.toLocaleString()}<span class="unit">m</span></span>
       </div>
+      {#if stats.maxElevation != null}
+        <div class="cell">
+          <span class="label">High Point</span>
+          <span class="value">{stats.maxElevation.toLocaleString()}<span class="unit">m</span></span>
+        </div>
+      {/if}
+      {#if stats.minElevation != null}
+        <div class="cell">
+          <span class="label">Low Point</span>
+          <span class="value">{stats.minElevation.toLocaleString()}<span class="unit">m</span></span>
+        </div>
+      {/if}
     {/if}
     <div class="cell">
       <span class="label">Photos</span>

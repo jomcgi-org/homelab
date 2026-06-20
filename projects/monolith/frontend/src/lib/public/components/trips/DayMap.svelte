@@ -11,14 +11,20 @@
   // eases to its coordinates. Clicking any marker calls onPhotoClick(i) so the
   // page can set `current`.
   //
-  // TODO(trips): the old React DayMap drove a per-photo marker + terrain
-  // hillshade lit from the sun position at the photo's timestamp. That solar /
-  // bearing panel is dropped in this port; photos are shown as static markers.
+  // `currentCoords` (optional) is the [lng, lat] for the current photo with the
+  // page's GPS interpolation already applied, so the highlight marker tracks
+  // photos that lack their own fix. Falls back to the photo's raw coordinates.
+  //
+  // Note: the old React DayMap also drove a terrain hillshade lit from the sun
+  // position at the photo's timestamp; that relighting needs a raster-DEM
+  // terrain source and is out of scope here. The solar/bearing readouts live in
+  // the telemetry panel instead.
   let {
     points = [],
     photos = [],
     dayColor = "#2563eb",
     current = 0,
+    currentCoords = null,
     onPhotoClick,
   } = $props();
 
@@ -51,11 +57,13 @@
   }
 
   // Keep the highlight layer + camera in sync with the scrubber's `current`.
-  // Guarded on mapReady so it no-ops until the sources/layers exist.
+  // Guarded on mapReady so it no-ops until the sources/layers exist. Prefers the
+  // page's interpolated `currentCoords` so the marker tracks fix-less photos.
   $effect(() => {
     const i = current;
+    const interp = currentCoords;
     if (!mapReady || !map) return;
-    const coords = photoCoords(i);
+    const coords = interp ?? photoCoords(i);
     const src = map.getSource("day-photo-current");
     if (src) {
       src.setData({
