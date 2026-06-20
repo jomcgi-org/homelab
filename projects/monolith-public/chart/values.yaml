@@ -153,6 +153,23 @@ turnstile:
   onepassword:
     itemPath: ""
 
+# imgproxy URL signing (trip images). imgproxy validates an HMAC-SHA256 signature
+# on every /img request; only URLs the SSR signer (frontend
+# lib/server/trips-img.js) produces are accepted, so the unsigned /unsafe/ path is
+# retired. The KEY and SALT are hex-encoded random bytes synced from the
+# trips-imgproxy-signing 1Password item into an Opaque Secret (keys IMGPROXY_KEY /
+# IMGPROXY_SALT, mapped from the field labels). BOTH the imgproxy component (to
+# verify) and the frontend SSR component (to sign) reference this Secret via
+# secretKeyRef; the secret MUST NEVER be handed to the browser. onepassword.itemPath
+# is set in deploy/values.yaml and left empty here so a bare `helm template` does
+# not emit a OnePasswordItem with a null path.
+imgproxySigning:
+  # Name of the Opaque Secret the OnePasswordItem syncs the signing fields into.
+  # Backend (imgproxy) and frontend secretKeyRefs reference this name.
+  secretName: monolith-public-imgproxy-signing
+  onepassword:
+    itemPath: ""
+
 # "web" component consumed by the homelab-library deployment/service helpers.
 web:
   enabled: true
@@ -293,7 +310,9 @@ web:
 # "frontend" component (ADR 004 Phase 5d): the public-only SvelteKit SSR
 # renderer, built from the private-route-free source tree. It is a separate
 # meshed pod that server-renders the public pages and calls the backend "web"
-# component over in-cluster mTLS via API_BASE. It carries no secrets.
+# component over in-cluster mTLS via API_BASE. Its only secret is the imgproxy
+# URL signing key (IMGPROXY_KEY/SALT below): the SSR signer pre-signs /img URLs
+# server-side so the secret never reaches the browser.
 frontend:
   enabled: true
   replicas: 1
@@ -319,10 +338,13 @@ frontend:
       tcpSocket: true
       initialDelaySeconds: 3
       periodSeconds: 5
-  # No secrets. API_BASE points at the backend "web" Service (in-cluster).
+  # API_BASE points at the backend "web" Service (in-cluster).
   # OTEL_COLLECTOR_HTTP_URL lets the same-origin /otel proxy forward browser
   # traces to the in-cluster SigNoz collector (cross-namespace, in-cluster, so
-  # the EgressNetwork off-cluster deny does not apply).
+  # the EgressNetwork off-cluster deny does not apply). IMGPROXY_KEY/SALT are the
+  # only secrets: the SSR signer (lib/server/trips-img.js) reads them via
+  # $env/dynamic/private to sign /img URLs server-side and they never reach the
+  # browser ($lib/server is never client-bundled).
   env:
     - name: API_BASE
       value: "http://monolith-public-web:8000"
@@ -339,6 +361,21 @@ frontend:
       value: "0x4AAAAAADm59tvOGWo09IYc"
     - name: OTEL_COLLECTOR_HTTP_URL
       value: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
+    # imgproxy URL signing secret (hex-encoded KEY/SALT), synced from 1Password
+    # via the imgproxy-signing OnePasswordItem. The SSR signer computes the same
+    # HMAC the imgproxy component validates. secretKeyRef name must equal
+    # imgproxySigning.secretName above (values.yaml is not re-templated, so this
+    # is a literal, like DATABASE_URL / the Turnstile refs).
+    - name: IMGPROXY_KEY
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-imgproxy-signing
+          key: IMGPROXY_KEY
+    - name: IMGPROXY_SALT
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-imgproxy-signing
+          key: IMGPROXY_SALT
   # SSR Node needs more headroom than the read-only backend. CPU request sized
   # for a meaningful HPA signal (Node SSR is CPU-bound under concurrent renders).
   # Memory request keeps headroom above the ~37Mi idle baseline for load spikes.
@@ -363,7 +400,8 @@ frontend:
 # sources from the monolith-trips SeaweedFS bucket and serving optimized image
 # bytes same-origin under /img on the public hostname (the public HTTPRoute
 # forwards /img/ here; IMGPROXY_PATH_PREFIX=/img strips the prefix internally).
-# The old img.jomcgi.dev Cloudflare-tunnel route is retired.
+# The old img.jomcgi.dev Cloudflare-tunnel route is retired. URLs are HMAC-signed
+# (IMGPROXY_KEY/SALT): only paths the frontend SSR signer produces are served.
 # Uses an UPSTREAM public image (darthsim/imgproxy), so the tag is a plain
 # literal here and is NOT pinned by the Bazel helm_images_values pipeline (which
 # only rewrites the Bazel-built web/frontend images). The pod inherits the
@@ -404,8 +442,8 @@ imgproxy:
     # Serve under /img so the public HTTPRoute can forward /img/ here without a
     # rewrite. imgproxy strips this prefix before parsing the processing path.
     # MUST match the IMG_BASE in
-    # projects/monolith/frontend/src/lib/trips/images.js and the /img/ HTTPRoute
-    # rule in templates/httproute-public.yaml.
+    # projects/monolith/frontend/src/lib/server/trips-img.js and the /img/
+    # HTTPRoute rule in templates/httproute-public.yaml.
     - name: IMGPROXY_PATH_PREFIX
       value: "/img"
     - name: IMGPROXY_USE_S3
@@ -418,15 +456,28 @@ imgproxy:
       value: "anonymous"
     - name: AWS_SECRET_ACCESS_KEY
       value: "anonymous"
-    # Lock imgproxy to the trips bucket. This is the security boundary that lets
-    # the unsigned-URL mode below be safe: imgproxy will only fetch sources under
-    # s3://monolith-trips/, never other buckets or arbitrary URLs.
+    # Lock imgproxy to the trips bucket: it will only fetch sources under
+    # s3://monolith-trips/, never other buckets or arbitrary URLs. Defense in
+    # depth alongside URL signing (IMGPROXY_KEY/SALT below) and the preset
+    # allow-list.
     - name: IMGPROXY_ALLOWED_SOURCES
       value: "s3://monolith-trips/"
-    # Unsafe (unsigned) URL mode. Safe here because ALLOWED_SOURCES locks every
-    # request to the monolith-trips bucket.
-    - name: IMGPROXY_ALLOW_INSECURE_URLS
-      value: "true"
+    # Signed-URL mode. With IMGPROXY_KEY/SALT set, imgproxy REQUIRES a valid
+    # HMAC-SHA256 signature on every request (the unsigned /unsafe/ path is
+    # rejected), so only URLs the SSR signer (frontend lib/server/trips-img.js)
+    # produces are served. The KEY and SALT are hex-encoded secrets synced from
+    # the trips-imgproxy-signing 1Password item; sourced via secretKeyRef, never
+    # as a plaintext values literal, and the same secret the frontend signs with.
+    - name: IMGPROXY_KEY
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-imgproxy-signing
+          key: IMGPROXY_KEY
+    - name: IMGPROXY_SALT
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-imgproxy-signing
+          key: IMGPROXY_SALT
     # Named presets are the ONLY processing options allowed (ONLY_PRESETS below).
     # This caps imgproxy to the exact sizes the trips frontend requests instead
     # of serving arbitrary resizes of the bucket. The names here MUST match the

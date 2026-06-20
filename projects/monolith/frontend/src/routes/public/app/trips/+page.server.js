@@ -7,6 +7,10 @@ import {
   TRIPS_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
+// Server-only imgproxy URL signer (relative import: vitest loads this module
+// directly without the $lib alias). See [slug]/+layout.server.js for the same
+// pattern; the HMAC secret never leaves the server.
+import { signedImgUrl } from "../../../../lib/server/trips-img.js";
 
 // No URL fallback: API_BASE is injected via values.yaml in prod; a localhost
 // fallback would silently route to the wrong backend if the env var were missing
@@ -30,5 +34,13 @@ export async function load({ fetch, setHeaders }) {
   if (etag) headers.etag = etag;
   setHeaders(headers);
 
-  return { index: await res.json() };
+  // Pre-sign each trip cover server-side (gallery preset) into `coverUrl` so the
+  // index cards render a signed /img URL without ever touching the secret.
+  const index = await res.json();
+  const trips = (index.trips ?? []).map((t) =>
+    t.default_image
+      ? { ...t, coverUrl: signedImgUrl(t.default_image, "gallery") }
+      : t,
+  );
+  return { index: { ...index, trips } };
 }

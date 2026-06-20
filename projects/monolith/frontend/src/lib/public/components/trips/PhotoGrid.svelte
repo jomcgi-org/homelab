@@ -1,8 +1,8 @@
 <script>
-  import { imgUrl } from "$lib/trips/images.js";
-
   // Contact-sheet grid of a day's photos. Clicking a tile calls onOpen(i); the
   // lightbox itself is owned by the page so the map and grid share one viewer.
+  // Each photo carries a pre-signed `imgGallery` URL (signed server-side in the
+  // trip [slug] layout load); this component never builds an imgproxy URL.
   let { photos = [], onOpen = () => {} } = $props();
 </script>
 
@@ -11,7 +11,7 @@
     {#each photos as photo, i (photo.id)}
       <button class="tile" onclick={() => onOpen(i)} aria-label={`Open photo ${i + 1}`}>
         <img
-          src={imgUrl(photo.image, "gallery")}
+          src={photo.imgGallery}
           alt={`Photo ${i + 1}`}
           loading="lazy"
           decoding="async"

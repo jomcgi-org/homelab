@@ -27,6 +27,13 @@ turnstile:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/cloudflare-turnstile"
 
+# Trip image URL signing: sync the imgproxy KEY/SALT from 1Password into the
+# monolith-public-imgproxy-signing Secret (keys IMGPROXY_KEY / IMGPROXY_SALT).
+# Both the imgproxy and frontend components reference it via secretKeyRef.
+imgproxySigning:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/trips-imgproxy-signing"
+
 # Phase 5e cutover: serve the public hostname from this isolated service.
 cfIngress:
   public:

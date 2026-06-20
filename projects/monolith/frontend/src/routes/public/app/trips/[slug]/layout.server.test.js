@@ -67,4 +67,63 @@ describe("/public/app/trips/[slug] layout load", () => {
       load({ params: { slug: "2025-x" }, fetch, setHeaders }),
     ).rejects.toThrow();
   });
+
+  it("pre-signs image URLs onto points, the cover, and highlights", async () => {
+    // Clear the signing secret so the signer's deterministic unsigned /unsafe/
+    // fallback is exercised (the HMAC path is covered in lib/server/trips-img.test.js).
+    const savedKey = process.env.IMGPROXY_KEY;
+    const savedSalt = process.env.IMGPROXY_SALT;
+    delete process.env.IMGPROXY_KEY;
+    delete process.env.IMGPROXY_SALT;
+    try {
+      const payload = {
+        trip: {
+          slug: "2025-x",
+          title: "X",
+          default_image: "cover.jpg",
+          highlights: [
+            { id: 1, title: "H1", image: "h1.jpg" },
+            { id: 2, title: "no-photo" },
+          ],
+        },
+        points: [
+          { id: 1, image: "p1.jpg" },
+          { id: 2, lat: 1, lng: 2 },
+        ],
+      };
+      const fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: makeHeaders(),
+        json: async () => payload,
+      });
+
+      const result = await load({
+        params: { slug: "2025-x" },
+        fetch,
+        setHeaders: vi.fn(),
+      });
+
+      expect(result.trip.coverUrl).toBe(
+        "/img/unsafe/gallery/plain/s3://monolith-trips/cover.jpg",
+      );
+      expect(result.trip.highlights[0].imgGallery).toBe(
+        "/img/unsafe/gallery/plain/s3://monolith-trips/h1.jpg",
+      );
+      expect(result.trip.highlights[1].imgGallery).toBeUndefined();
+      expect(result.points[0].imgDisplay).toBe(
+        "/img/unsafe/display/plain/s3://monolith-trips/p1.jpg",
+      );
+      expect(result.points[0].imgGallery).toBe(
+        "/img/unsafe/gallery/plain/s3://monolith-trips/p1.jpg",
+      );
+      // Image-less point passes through untouched.
+      expect(result.points[1].imgDisplay).toBeUndefined();
+    } finally {
+      if (savedKey === undefined) delete process.env.IMGPROXY_KEY;
+      else process.env.IMGPROXY_KEY = savedKey;
+      if (savedSalt === undefined) delete process.env.IMGPROXY_SALT;
+      else process.env.IMGPROXY_SALT = savedSalt;
+    }
+  });
 });

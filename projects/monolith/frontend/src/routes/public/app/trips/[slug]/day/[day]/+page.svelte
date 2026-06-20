@@ -3,7 +3,6 @@
   import DayMap from "$lib/public/components/trips/DayMap.svelte";
   import DayStats from "$lib/public/components/trips/DayStats.svelte";
   import ElevationChart from "$lib/public/components/trips/ElevationChart.svelte";
-  import { imgUrl } from "$lib/trips/images.js";
   import {
     groupByDay,
     dayColor,
@@ -125,7 +124,7 @@
         {#if photo}
           <figure class="frame">
             <img
-              src={imgUrl(photo.image, "display")}
+              src={photo.imgDisplay}
               alt={`Photo ${current + 1} of ${photos.length}`}
               decoding="async"
             />

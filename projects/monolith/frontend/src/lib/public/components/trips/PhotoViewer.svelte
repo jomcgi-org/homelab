@@ -1,7 +1,8 @@
 <script>
   import { onMount } from "svelte";
-  import { imgUrl } from "$lib/trips/images.js";
 
+  // Each photo carries a pre-signed `imgDisplay` URL (signed server-side in the
+  // trip [slug] layout load); this component never builds an imgproxy URL.
   // Fullscreen lightbox for a list of photo points. Controlled: the parent owns
   // `index` and reacts to onIndex / onClose. Keyboard: left/right navigate,
   // Escape closes.
@@ -54,7 +55,7 @@
     {/if}
 
     <figure class="frame">
-      <img src={imgUrl(photo.image, "display")} alt={`Photo ${index + 1} of ${photos.length}`} />
+      <img src={photo.imgDisplay} alt={`Photo ${index + 1} of ${photos.length}`} />
       <figcaption>
         <span class="count">{index + 1} / {photos.length}</span>
         {#if photo.taken_at}<span>{fmtTime(photo.taken_at)}</span>{/if}

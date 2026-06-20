@@ -1,6 +1,6 @@
 <script>
-  import { imgUrl } from "$lib/trips/images.js";
-
+  // Image URLs are pre-signed server-side in +page.server.js (trip.coverUrl);
+  // the signing secret never reaches the client.
   let { data } = $props();
 
   const trips = $derived(data.index?.trips ?? []);
@@ -33,9 +33,9 @@
         <li>
           <a class="card" href={`/app/trips/${trip.slug}`}>
             <div class="thumb">
-              {#if trip.default_image}
+              {#if trip.coverUrl}
                 <img
-                  src={imgUrl(trip.default_image, "gallery")}
+                  src={trip.coverUrl}
                   alt={trip.title}
                   loading="lazy"
                   decoding="async"
