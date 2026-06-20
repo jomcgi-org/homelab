@@ -105,9 +105,7 @@ class TestChScalar:
     @pytest.mark.asyncio
     async def test_retries_once_on_transient_failure(self, monkeypatch):
         """First call raises, second returns a value -- retry must recover."""
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         call_count = 0
 
         async def _flaky(sql):
@@ -125,9 +123,7 @@ class TestChScalar:
 
     @pytest.mark.asyncio
     async def test_raises_after_all_retries_exhausted(self, monkeypatch):
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         client = MagicMock()
         client.query_scalar = AsyncMock(side_effect=RuntimeError("DB down"))
         with pytest.raises(RuntimeError, match="DB down"):
@@ -149,9 +145,7 @@ class TestChRows:
 
     @pytest.mark.asyncio
     async def test_retries_once_on_transient_failure(self, monkeypatch):
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         call_count = 0
 
         async def _flaky(sql):
@@ -169,9 +163,7 @@ class TestChRows:
 
     @pytest.mark.asyncio
     async def test_raises_after_all_retries_exhausted(self, monkeypatch):
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         client = MagicMock()
         client.query_rows = AsyncMock(side_effect=RuntimeError("DB down"))
         with pytest.raises(RuntimeError, match="DB down"):
@@ -247,9 +239,7 @@ class TestQueryNode:
 
     @pytest.mark.asyncio
     async def test_node_slo_query_fails_results_in_degraded(self, monkeypatch):
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         node = _simple_node(
             "api",
             slo=SloConfig(target=99.0, window_days=30, query="SELECT 1"),
@@ -284,9 +274,7 @@ class TestQueryNode:
 
     @pytest.mark.asyncio
     async def test_node_dynamic_metric_query_fails_returns_dash(self, monkeypatch):
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         node = _simple_node(
             "api",
             metrics=[MetricConfig(key="rps", query="SELECT rps")],
@@ -451,9 +439,7 @@ class TestBuildTopology:
             "home.observability.topology_query.TOPOLOGY",
             _make_topology(nodes=[node]),
         )
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         mock_client = MagicMock()
         mock_client.query_scalar = AsyncMock(side_effect=RuntimeError("CH exploded"))
         mock_client.close = AsyncMock()
@@ -529,9 +515,7 @@ class TestBuildTopology:
             "home.observability.topology_query.TOPOLOGY",
             _make_topology(nodes=[node]),
         )
-        monkeypatch.setattr(
-            "home.observability.topology_query._CH_RETRY_DELAY", 0
-        )
+        monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         mock_client = MagicMock()
         # Make the node query raise so build_topology propagates
         mock_client.query_scalar = AsyncMock(side_effect=RuntimeError("fatal"))

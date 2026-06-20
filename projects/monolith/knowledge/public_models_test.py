@@ -118,27 +118,27 @@ class TestPublicNote:
         assert retrieved.layout_y == pytest.approx(2.5)
 
     def test_query_by_type(self, session):
-        session.add_all([
-            PublicNote(
-                note_id="a1",
-                title="Atom",
-                type="atom",
-                indexed_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                path="a.md",
-            ),
-            PublicNote(
-                note_id="g1",
-                title="Gap",
-                type="gap",
-                indexed_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                path="g.md",
-            ),
-        ])
+        session.add_all(
+            [
+                PublicNote(
+                    note_id="a1",
+                    title="Atom",
+                    type="atom",
+                    indexed_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    path="a.md",
+                ),
+                PublicNote(
+                    note_id="g1",
+                    title="Gap",
+                    type="gap",
+                    indexed_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    path="g.md",
+                ),
+            ]
+        )
         session.commit()
 
-        atoms = session.exec(
-            select(PublicNote).where(PublicNote.type == "atom")
-        ).all()
+        atoms = session.exec(select(PublicNote).where(PublicNote.type == "atom")).all()
         assert len(atoms) == 1
         assert atoms[0].note_id == "a1"
 
@@ -189,10 +189,12 @@ class TestPublicNoteLink:
         assert retrieved.kind == "link"
 
     def test_multiple_links_same_source(self, session):
-        session.add_all([
-            PublicNoteLink(id=20, source="hub", target="spoke-1", kind="link"),
-            PublicNoteLink(id=21, source="hub", target="spoke-2", kind="link"),
-        ])
+        session.add_all(
+            [
+                PublicNoteLink(id=20, source="hub", target="spoke-1", kind="link"),
+                PublicNoteLink(id=21, source="hub", target="spoke-2", kind="link"),
+            ]
+        )
         session.commit()
 
         links = session.exec(

@@ -94,7 +94,11 @@ class TestBuildMessages:
         result = summarizer._build_messages("Old summary", msgs)
         user_content = result[1]["content"]
         # Should ask the model to fold in / update the summary
-        assert "fold" in user_content.lower() or "updated" in user_content.lower() or "incorporates" in user_content.lower()
+        assert (
+            "fold" in user_content.lower()
+            or "updated" in user_content.lower()
+            or "incorporates" in user_content.lower()
+        )
 
     def test_system_prompt_never_derived_from_user_input(self):
         """The server-fixed instruction must not contain any user content."""
