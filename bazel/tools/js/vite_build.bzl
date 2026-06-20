@@ -6,7 +6,7 @@ Astro projects which use Vite internally.
 
 Example usage:
     load("//bazel/tools/js:vite_build.bzl", "vite_build")
-    load("@npm//projects/websites/my_site:vite/package_json.bzl", vite_bin = "bin")
+    load("@npm//projects/my_app:vite/package_json.bzl", vite_bin = "bin")
 
     # Create vite binary target (required before using macro)
     vite_bin.vite_binary(name = "vite")
@@ -21,7 +21,7 @@ Example usage:
             "react-dom",
             "@vitejs/plugin-react",
         ],
-        visibility = ["//services/my_frontend:__pkg__"],
+        visibility = ["//projects/my_app:__pkg__"],
     )
 """
 
@@ -47,7 +47,7 @@ def vite_build(
       - :{name}_dist - Filegroup exposing built dist for downstream consumption
 
     The consuming BUILD file must create the build tool binary target first:
-        load("@npm//projects/websites/my_site:vite/package_json.bzl", vite_bin = "bin")
+        load("@npm//projects/my_app:vite/package_json.bzl", vite_bin = "bin")
         vite_bin.vite_binary(name = "vite")
 
     Args:
@@ -64,7 +64,7 @@ def vite_build(
             Example: ["react", "react-dom", "@vitejs/plugin-react"]
         bazel_deps: List of Bazel target labels to include as dependencies.
             Use for cross-package deps like shared CSS.
-            Example: ["//projects/websites/shared:css"]
+            Example: ["//projects/my_app/shared:css"]
         out_dir: Output directory name (default: "dist").
         build_args: Custom build arguments (default: ["build"]).
         visibility: Visibility for the dist filegroup.

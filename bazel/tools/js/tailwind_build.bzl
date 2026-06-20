@@ -7,7 +7,7 @@ to handle CSS processing that esbuild cannot do natively (like Tailwind's
 
 Example usage:
     load("//bazel/tools/js:tailwind_build.bzl", "tailwind_build")
-    load("@npm//projects/websites/my_site:@tailwindcss/cli/package_json.bzl", tailwind_bin = "bin")
+    load("@npm//projects/my_app:@tailwindcss/cli/package_json.bzl", tailwind_bin = "bin")
 
     # Create Tailwind binary target
     tailwind_bin.tailwindcss_binary(name = "tailwindcss")
