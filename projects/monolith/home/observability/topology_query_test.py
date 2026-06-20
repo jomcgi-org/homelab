@@ -509,23 +509,33 @@ class TestBuildTopology:
 
     @pytest.mark.asyncio
     async def test_client_closed_even_on_unexpected_error(self, monkeypatch):
-        """The finally block must close the client even if query_node raises."""
-        node = _simple_node("svc")
+        """The finally block closes the client even when a CH query fails.
+
+        Give the node an SLO query so _ch_scalar is actually called and raises.
+        The exception is caught inside _query_node's try/except, availability
+        stays None, and the node comes back with status='degraded'. The key
+        assertion is that close() is still called via the finally block.
+        """
+        node = _simple_node(
+            "svc",
+            slo=SloConfig(target=99.0, window_days=30, query="SELECT slo"),
+        )
         monkeypatch.setattr(
             "home.observability.topology_query.TOPOLOGY",
             _make_topology(nodes=[node]),
         )
         monkeypatch.setattr("home.observability.topology_query._CH_RETRY_DELAY", 0)
         mock_client = MagicMock()
-        # Make the node query raise so build_topology propagates
+        # query_scalar always raises -- SLO query fails on every retry
         mock_client.query_scalar = AsyncMock(side_effect=RuntimeError("fatal"))
         mock_client.close = AsyncMock()
         with patch(
             "home.observability.topology_query.ClickHouseClient",
             return_value=mock_client,
         ):
-            # Node errors are caught per-node (return_exceptions=True), so
-            # build_topology should still return successfully with a fallback.
+            # Node errors are caught per-node (return_exceptions=True inside
+            # _query_node), so build_topology returns successfully with a
+            # degraded fallback node (availability=None -> status='degraded').
             result = await build_topology()
         assert result["nodes"][0]["status"] == "degraded"
         mock_client.close.assert_awaited_once()
