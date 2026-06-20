@@ -6,34 +6,48 @@
   // route. The marker is an absolutely positioned div (a true circle) rather than
   // an SVG node, since the viewBox is x-stretched (preserveAspectRatio="none").
   //
-  // `data` is the sampled elevation array; `currentIndex` is the marker's index
-  // into it; `accentColor` tints the marker (the day colour).
-  let { data = [], currentIndex = 0, accentColor = "#dc2626" } = $props();
+  // `data` is the sampled elevation array (decimated to ~60 points for a cheap
+  // polyline). `progress` is the marker's position as a continuous 0..1 fraction
+  // of the route, NOT an index into `data`: placing the marker by a sample index
+  // would snap it to one of ~60 fixed x-positions and make it jump in chunky
+  // steps. We map the fraction onto the profile and linearly interpolate the
+  // height between the two bracketing samples, then let CSS glide it between
+  // photos. `accentColor` tints the marker (the day colour).
+  let { data = [], progress = 0, accentColor = "#dc2626" } = $props();
 
   const min = $derived(data.length ? Math.min(...data) : 0);
   const max = $derived(data.length ? Math.max(...data) : 1);
   const range = $derived(max - min || 1);
 
+  const clamped = $derived(Math.max(0, Math.min(1, progress)));
+
   // Normalised 0..100 viewBox (height 100), matching the original formula:
   // y = 100 - ((val - min) / range) * (100 - 4) - 2.
+  const yFor = (val) => 100 - ((val - min) / range) * 96 - 2;
+
   const points = $derived(
     data
       .map((val, i) => {
         const x = data.length > 1 ? (i / (data.length - 1)) * 100 : 0;
-        const y = 100 - ((val - min) / range) * 96 - 2;
-        return `${x},${y}`;
+        return `${x},${yFor(val)}`;
       })
       .join(" "),
   );
 
-  const markerLeftPercent = $derived(
-    data.length > 1 ? (currentIndex / (data.length - 1)) * 100 : 50,
-  );
-  const markerTopPercent = $derived(
-    data[currentIndex] != null
-      ? 100 - ((data[currentIndex] - min) / range) * 96 - 2
-      : 50,
-  );
+  const markerLeftPercent = $derived(data.length > 1 ? clamped * 100 : 50);
+
+  // Interpolated elevation at the continuous route fraction: walk to the
+  // fractional sample position and blend the two neighbouring samples, so the
+  // dot sits on the line at its true position rather than snapping to a sample.
+  const markerTopPercent = $derived.by(() => {
+    if (data.length === 0) return 50;
+    if (data.length === 1) return yFor(data[0]);
+    const pos = clamped * (data.length - 1);
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(i0 + 1, data.length - 1);
+    const t = pos - i0;
+    return yFor(data[i0] + (data[i1] - data[i0]) * t);
+  });
 </script>
 
 {#if data.length}
@@ -107,5 +121,15 @@
     border-radius: 50%;
     border: 2px solid white;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    /* Scrubbing is photo-to-photo (discrete), so glide the marker between
+       positions instead of teleporting. Position-only transition keeps it cheap. */
+    transition:
+      left 180ms ease,
+      top 180ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .marker {
+      transition: none;
+    }
   }
 </style>
