@@ -1,0 +1,28 @@
+rules:
+  - id: logger-name-missing-monolith-prefix
+    patterns:
+      - pattern: logging.getLogger("$NAME")
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: "^(?!monolith\\.)(?!discord)(?!httpx)(?!httpcore)(?!uvicorn)"
+    paths:
+      include:
+        - "projects/monolith/**"
+      exclude:
+        - "**/*_test.py"
+        - "**/test_*.py"
+    message: >-
+      Logger name "$NAME" does not start with "monolith.". Logger names under
+      projects/monolith/ must be prefixed with "monolith." so they inherit the
+      monolith logging configuration and appear correctly in observability tooling.
+      Use logging.getLogger("monolith.<module>") or logging.getLogger(__name__).
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: logging
+      confidence: HIGH
+      likelihood: LOW
+      impact: LOW
+      technology: [python]
+      description: Logger name missing "monolith." prefix — will not inherit monolith log configuration
