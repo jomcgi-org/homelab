@@ -61,9 +61,7 @@ def has_sharable_transcript(db: Session, session: ChatSession) -> bool:
     with nothing to share never creates an orphan artifact."""
     from chat_public import sessions  # local import: avoid an import cycle
 
-    return any(
-        m.role in _SHARABLE_ROLES for m in sessions.get_transcript(db, session)
-    )
+    return any(m.role in _SHARABLE_ROLES for m in sessions.get_transcript(db, session))
 
 
 def load_snapshot(read_db: Session, snapshot_id: str | None) -> ChatSnapshot | None:

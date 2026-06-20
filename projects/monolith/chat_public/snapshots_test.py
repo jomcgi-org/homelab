@@ -143,9 +143,7 @@ def test_share_empty_transcript_is_400_and_mints_nothing(client, session):
 
 
 def test_share_missing_session_is_404(client):
-    shared = client.post(
-        "/internal/chat/share", json={"session_id": "does-not-exist"}
-    )
+    shared = client.post("/internal/chat/share", json={"session_id": "does-not-exist"})
     assert shared.status_code == 404
     assert shared.json()["detail"] == "Session not found"
 

@@ -104,7 +104,9 @@ class ChatResponseCache(
     hit_count: int = Field(default=0)
 
 
-class ChatSnapshot(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class ChatSnapshot(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
     """An opt-in, read-only, immutable share of a chat transcript (ADR 005
     follow-up, "share this chat").
 
