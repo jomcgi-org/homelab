@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
-  import { invalidateAll } from "$app/navigation";
+  import { goto, invalidateAll } from "$app/navigation";
+  import { page } from "$app/stores";
   import HikesMap from "$lib/public/components/hikes/HikesMap.svelte";
   import BrutalistSelect from "$lib/public/components/BrutalistSelect.svelte";
   import {
@@ -8,6 +9,7 @@
     filterWalksByLocation,
     upcomingUkDays,
   } from "$lib/public/hikes/filters.js";
+  import { readHikeParams, writeHikeParams } from "$lib/public/hikes/urlParams.js";
 
   let { data } = $props();
 
@@ -48,21 +50,36 @@
   // km; this captures the cluster without spilling into the next one).
   const REGION_RADIUS_KM = 75;
 
-  // The five numeric filters. Empty means "no constraint" (the filters module
-  // reads undefined/NaN as unbounded).
-  let minDuration = $state("");
-  let maxDuration = $state("");
-  let minDistance = $state("");
-  let maxDistance = $state("");
-  let maxAscent = $state("");
+  // Valid "near" values for URL validation: the region preset keys plus the
+  // device-location sentinel. A `near` param outside this set is ignored.
+  const VALID_NEAR_KEYS = new Set([
+    GEO_SENTINEL,
+    ...HIKE_LOCATIONS.map((l) => l.key),
+  ]);
+
+  // Filter/view state is initialized from the URL on load (so a shared link
+  // restores it) and mirrored back as it changes (see the $effect below). The
+  // numeric fields stay strings to match the <input bind:value>; "" means "no
+  // constraint" (the filters module reads undefined/NaN as unbounded).
+  const initial = readHikeParams(
+    $page.url.searchParams,
+    VALID_NEAR_KEYS,
+  );
+
+  // The five numeric filters.
+  let minDuration = $state(initial.minDuration);
+  let maxDuration = $state(initial.maxDuration);
+  let minDistance = $state(initial.minDistance);
+  let maxDistance = $state(initial.maxDistance);
+  let maxAscent = $state(initial.maxAscent);
 
   // Date strip: one chip per upcoming UK-local day. null means "any day".
   const DATE_HORIZON = 7;
-  let selectedDay = $state(null);
+  let selectedDay = $state(initial.selectedDay);
 
   // "Near" filter: a preset hub key, GEO_SENTINEL for the device location, or
   // "" for off. userCoords resolves async once the browser grants permission.
-  let nearKey = $state("");
+  let nearKey = $state(initial.nearKey);
   let userCoords = $state(null);
   let geoError = $state("");
 
@@ -214,7 +231,32 @@
     geoError = "";
   }
 
+  // Mirror the filter state back to the URL so it is shareable. replaceState so
+  // typing in a number field or stepping the day strip does not spam history.
+  // Guarded: only goto when the serialized params actually differ from the
+  // current URL, so this "URL write" never re-triggers the init read in a loop.
+  $effect(() => {
+    const url = new URL($page.url);
+    writeHikeParams(url.searchParams, {
+      selectedDay,
+      nearKey,
+      minDuration,
+      maxDuration,
+      minDistance,
+      maxDistance,
+      maxAscent,
+    });
+    if (url.searchParams.toString() !== $page.url.searchParams.toString()) {
+      goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+    }
+  });
+
   onMount(() => {
+    // If a shared link restored the "my location" sentinel, resolve the device
+    // position so the region radius applies (the dropdown shows it as selected,
+    // but nearCenter is null until coords arrive).
+    if (nearKey === GEO_SENTINEL) onNearChange();
+
     // Live updates: re-run the SSR load every 30 min (windows change 6-hourly).
     const refresh = setInterval(() => {
       nowMs = Date.now();

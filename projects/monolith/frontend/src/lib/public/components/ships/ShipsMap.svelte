@@ -1,7 +1,13 @@
 <script>
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { deadReckon } from "$lib/public/ships/deadReckoning.js";
+  import {
+    readShipsParams,
+    writeShipsParams,
+  } from "$lib/public/ships/urlParams.js";
 
   let { vessels = [] } = $props();
 
@@ -66,7 +72,23 @@
     { key: "special", label: "Special", icon: "ship-special", color: VESSEL_COLORS.special },
     { key: "unknown", label: "Other", icon: "ship-unknown", color: VESSEL_COLORS.unknown },
   ];
-  let active = $state(new Set(LEGEND.map((l) => l.key))); // all on by default
+  // The full legend order, used as the vessel-type allow-list + "all on" default
+  // for URL sync, and to write `types` in a stable order.
+  const LEGEND_KEYS = LEGEND.map((l) => l.key);
+
+  // View state (type filter, mode, selection) is initialized from the URL on
+  // load (so a shared link restores it) and mirrored back as it changes (see the
+  // $effect below). This is a lib component, but $app/stores + $app/navigation
+  // work in any client component, and the ships route disables SSR, so reading
+  // $page here is always client-side.
+  const initialView = readShipsParams($page.url.searchParams, LEGEND_KEYS);
+
+  let active = $state(initialView.active); // enabled vessel types (all on by default)
+
+  // A vessel selection restored from the URL (?mmsi=), applied once its row
+  // arrives in the fleet (see syncVessels). Cleared after it is consumed so a
+  // later user-driven deselect is not undone.
+  let pendingMmsi = initialView.mmsi;
 
   function applyFilter() {
     if (!map || !layerReady) return;
@@ -138,7 +160,7 @@
     return hi < breaks[i] ? `${breaks[i]}` : `${breaks[i]}-${hi}`;
   }
 
-  let mode = $state("vessels"); // 'vessels' | 'heat'
+  let mode = $state(initialView.mode); // 'vessels' | 'heat'
   let heatLoaded = false;
   // Drives the legend; updated from data.stops once the grid loads, so the
   // swatches/labels track the live quantile breaks (fallback until then).
@@ -191,9 +213,11 @@
     }
   }
 
-  function setMode(next) {
-    if (next === mode || !map || !layerReady) return;
-    mode = next;
+  // Apply the layer visibility for `mode` to the map. Extracted so it can run
+  // both on a user toggle (setMode) and once at load when the URL restored a
+  // non-default mode (applyInitialMode in the load handler).
+  function applyModeLayers(next) {
+    if (!map || !layerReady) return;
     const heat = next === "heat";
     if (heat) loadHeat();
     map.setLayoutProperty(HEAT_LAYER, "visibility", heat ? "visible" : "none");
@@ -204,6 +228,12 @@
       heat ? "none" : "visible",
     );
     if (heat) closePanel(); // markers hidden, so drop any open vessel panel
+  }
+
+  function setMode(next) {
+    if (next === mode || !map || !layerReady) return;
+    mode = next;
+    applyModeLayers(next);
   }
 
   function emptyFC() {
@@ -407,6 +437,15 @@
 
     pushData();
 
+    // Restore a URL-shared vessel selection once its row is in the fleet. Only
+    // fires once (pendingMmsi is cleared), so a later user deselect sticks. If
+    // the mmsi is not in this snapshot, drop it rather than wait indefinitely.
+    if (pendingMmsi) {
+      const entry = fleet.get(pendingMmsi);
+      pendingMmsi = null;
+      if (entry) selectVessel(entry.row);
+    }
+
     // Late fallback fit: only reached when the map was created without a seed
     // viewport (an empty snapshot at mount) and the first vessels arrived on a
     // later refresh. The common path seeds the viewport at construction (see
@@ -483,6 +522,23 @@
   $effect(() => {
     void vessels;
     if (map && layerReady) syncVessels();
+  });
+
+  // Mirror the view state (type filter, mode, selected vessel) back to the URL
+  // so it is shareable. replaceState so toggling types/mode and tapping vessels
+  // does not spam browser history. Guarded: only goto when the serialized params
+  // differ from the current URL, so this "URL write" never re-triggers the init
+  // read in a loop.
+  $effect(() => {
+    const url = new URL($page.url);
+    writeShipsParams(
+      url.searchParams,
+      { active, mode, mmsi: selected?.mmsi ?? null },
+      LEGEND_KEYS,
+    );
+    if (url.searchParams.toString() !== $page.url.searchParams.toString()) {
+      goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+    }
   });
 
   onMount(() => {
@@ -613,6 +669,14 @@
         });
         layerReady = true;
         applyFilter(); // honor any pre-toggled legend state
+        // Honor a URL-restored mode (e.g. ?mode=heat); vessels is the layer
+        // default, so this only does work when heat was shared. In heat mode the
+        // markers hide, so any restored selection is dropped (see applyModeLayers
+        // -> closePanel) and the pending-mmsi restore is cancelled.
+        if (mode !== "vessels") {
+          pendingMmsi = null;
+          applyModeLayers(mode);
+        }
 
         map.on("click", LAYER_ID, (e) => {
           const f = e.features?.[0];

@@ -102,3 +102,40 @@ class ChatResponseCache(
     touched: list = Field(default_factory=list, sa_column=Column(_JSONB))
     created_at: datetime = Field(default_factory=_utcnow)
     hit_count: int = Field(default=0)
+
+
+class ChatSnapshot(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    """An opt-in, read-only, immutable share of a chat transcript (ADR 005
+    follow-up, "share this chat").
+
+    Minted SERVER-SIDE from the stored, server-authoritative transcript, never
+    from client-supplied content, so a forged body cannot put words in the
+    model's mouth in a publicly-shareable artifact. The id is an opaque CSPRNG
+    token (same posture as a session id) so the share url is unguessable. Once
+    created a snapshot is immutable: there is no application UPDATE path.
+
+    ``source_session_id`` is forensics-only and is NOT a cascading FK: a snapshot
+    must outlive its session, so purging a session sets it NULL rather than
+    deleting the share (ON DELETE SET NULL in the migration). Mirrors
+    chart/migrations/20260620000000_chat_public_shared_snapshots.sql.
+    """
+
+    __tablename__ = "shared_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "message_count >= 0", name="shared_snapshots_message_count_nonneg_chk"
+        ),
+        {"schema": "chat_public", "extend_existing": True},
+    )
+
+    # Opaque, client-unforgeable id (set server-side, never derived from input).
+    id: str = Field(primary_key=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    # The frozen transcript: an array of {role, content} objects, user/assistant
+    # rows only (no system rows, no grounding metadata).
+    transcript: list = Field(default_factory=list, sa_column=Column(_JSONB))
+    message_count: int = Field(default=0)
+    # Forensics only; nullable so the snapshot survives session purge.
+    source_session_id: str | None = Field(
+        default=None, foreign_key="chat_public.sessions.id"
+    )

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
@@ -31,6 +32,7 @@ from chat_public import (
     limits,
     retrieval,
     sessions,
+    snapshots,
     summarizer,
     turnstile,
 )
@@ -158,6 +160,27 @@ class MessageRequest(BaseModel):
     # or via the X-Chat-Session-Id header (body wins if both are set).
     session_id: str | None = None
     message: str
+
+
+class ShareRequest(BaseModel):
+    # Like MessageRequest, the session id is resolved from the body or the
+    # X-Chat-Session-Id header (the SSR proxy forwards it from the httpOnly
+    # cookie). NO transcript content is accepted from the client: the snapshot is
+    # minted server-side from the stored transcript.
+    session_id: str | None = None
+
+
+def _iso(dt: datetime | None) -> str | None:
+    """Serialize a possibly-naive timestamp as an offset-consistent ISO string.
+
+    SQLite round-trips a TIMESTAMPTZ as a naive datetime in tests while Postgres
+    is tz-aware; coerce to UTC so JSON output matches across both (per the
+    monolith sqlite-fixture rule, mirroring ships/router.py)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 
 def _limit_status(code: str) -> int:
@@ -476,3 +499,59 @@ async def _replay_cached(
                 "message": "Something went wrong generating a reply. Please try again.",
             },
         )
+
+
+@router.post("/share")
+def share_chat(
+    payload: ShareRequest = Body(default_factory=ShareRequest),
+    db: Session = Depends(get_chat_session),
+    header_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
+) -> dict:
+    """Mint an opt-in, read-only snapshot of a session's transcript.
+
+    Server-authoritative and integrity-preserving: the only client input honored
+    is the session id (resolved from the body or the X-Chat-Session-Id header,
+    same as /message). The transcript is read from the stored, server-side record
+    and frozen into an immutable snapshot; NO client-supplied content is used, so
+    a forged body cannot put words in the model's mouth in a public artifact.
+
+    404 (identical to /message) when the session is missing/expired/invalid;
+    400 when the transcript is empty (nothing to share). Uses the writer engine.
+    """
+    session_id = payload.session_id or header_session_id
+    session = sessions.load_active_session(db, session_id)
+    if session is None:
+        # Identical 404 for missing/expired/invalid: never leak which.
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Reject an empty transcript before minting, so a "share" with nothing to
+    # share never creates an orphan snapshot row.
+    if not snapshots.has_sharable_transcript(db, session):
+        raise HTTPException(status_code=400, detail="Nothing to share yet")
+
+    snapshot = snapshots.create_snapshot(db, session)
+    logger.info(
+        "chat_public.snapshot.created snapshot=%s messages=%d",
+        snapshot.id,
+        snapshot.message_count,
+    )
+    return {"snapshot_id": snapshot.id}
+
+
+@router.get("/shared/{snapshot_id}")
+def get_shared_chat(
+    snapshot_id: str,
+    read_db: Session = Depends(get_session),
+) -> dict:
+    """Return a read-only shared snapshot by id (404 if missing).
+
+    Uses the default read dependency (public_reader on the replica). The response
+    is the frozen transcript; there is no session, no input, and no mutation."""
+    snapshot = snapshots.load_snapshot(read_db, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return {
+        "id": snapshot.id,
+        "created_at": _iso(snapshot.created_at),
+        "messages": list(snapshot.transcript or []),
+    }

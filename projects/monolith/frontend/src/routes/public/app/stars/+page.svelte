@@ -1,10 +1,19 @@
 <script>
   import { onMount } from "svelte";
-  import { invalidateAll } from "$app/navigation";
+  import { goto, invalidateAll } from "$app/navigation";
+  import { page } from "$app/stores";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
   import { monthLabel, monthShort, starsNights } from "$lib/public/stars/heat.js";
+  import {
+    readStarsParams,
+    writeStarsParams,
+  } from "$lib/public/stars/urlParams.js";
 
+  // View state (mode + time selection) is initialized from the URL on load and
+  // mirrored back as it changes (see the $effect below), so a shared link
+  // restores it.
   let { data } = $props();
+  const initialView = readStarsParams($page.url.searchParams);
 
   // A coarse "current time" signal: it advances the "updated Xm ago" label, the
   // night-chip set, and StarsMap dropping hours that elapse on a long-open page
@@ -28,8 +37,9 @@
   // Mode: LIVE = the upcoming-forecast layer (per-night quality); HISTORICAL =
   // the month-bucketed clear-dark-hours layer (stars v2). Both render as the
   // box-cell heatmap (see heatOn below). The toggle swaps the map's data source
-  // and the time control (night picker vs month picker).
-  let mode = $state("live");
+  // and the time control (night picker vs month picker). Initialized from the
+  // URL (?mode=) so a shared link opens on the right layer.
+  let mode = $state(initialView.mode);
 
   // Both layers render as the box-cell heatmap. The site grid is a dense ~4km
   // mesh (thousands of sites), so plotting raw point markers piles them into
@@ -47,7 +57,7 @@
   let nights = $derived(
     mode === "live" ? starsNights(sites, darkness, nowMs) : [],
   );
-  let selectedNight = $state("all"); // "all" or a night key
+  let selectedNight = $state(initialView.selectedNight); // "all" or a night key
   let nightOpen = $state(false); // the night box is collapsed until tapped
 
   // Fall back to "all" if the chosen night has dropped off the forecast horizon
@@ -89,7 +99,7 @@
   // year-month, so the picker is a fixed All / Jan..Dec (ADR 008).
   const ALL_YEAR = 0;
   const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
-  let selectedMonth = $state(ALL_YEAR);
+  let selectedMonth = $state(initialView.selectedMonth);
   let monthOpen = $state(false);
 
   // Display label for the current selection, and the phrase used in the header.
@@ -150,6 +160,23 @@
     if (next === mode) return;
     mode = next;
   }
+
+  // Mirror the view state back to the URL so it is shareable. Uses effectiveNight
+  // (not raw selectedNight) so a night that dropped off the forecast horizon is
+  // not persisted. replaceState to keep mode/time flips out of browser history.
+  // Guarded: only goto when the serialized params differ from the current URL,
+  // so this "URL write" never re-triggers the init read in a loop.
+  $effect(() => {
+    const url = new URL($page.url);
+    writeStarsParams(url.searchParams, {
+      mode,
+      selectedNight: effectiveNight,
+      selectedMonth,
+    });
+    if (url.searchParams.toString() !== $page.url.searchParams.toString()) {
+      goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+    }
+  });
 
   // The site set the map plots: live snapshot, or the loaded month's sites.
   let mapSites = $derived(mode === "live" ? sites : (historyData?.sites ?? []));

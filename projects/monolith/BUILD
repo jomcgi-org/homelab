@@ -2396,6 +2396,22 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): opt-in read-only transcript
+# snapshots ("share this chat"): server-side mint from the stored transcript,
+# round-trip via the read route, empty-transcript -> 400, missing -> 404.
+py_test(
+    name = "chat_public_snapshots_test",
+    srcs = ["chat_public/snapshots_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Hand-registered (chat_public is gazelle-excluded): Phase 2 admission + abuse
 # controls (Turnstile siteverify failure -> 403, global circuit-breaker shed via
 # the busy SSE event, salted ip_hash storage).
