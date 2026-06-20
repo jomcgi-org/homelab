@@ -47,6 +47,18 @@ DEFAULT_DEST_BUCKET = "monolith-trips"
 ELEVATION_API = "https://geogratis.gc.ca/services/elevation/cdem/altitude"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
 
+# The trips migration once wrote 67-byte S3 error bodies ("operation Lookup
+# failed") as "images". Defend the backfill copy too: a real JPEG opens with the
+# SOI marker and is KB-MB; anything below this floor or without the magic is an
+# error body, not a photo.
+_MIN_IMAGE_BYTES = 1024
+_JPEG_MAGIC = b"\xff\xd8"
+
+
+def _looks_like_jpeg(data: bytes) -> bool:
+    """True if ``data`` is plausibly a real JPEG (SOI magic + size floor)."""
+    return len(data) >= _MIN_IMAGE_BYTES and data.startswith(_JPEG_MAGIC)
+
 
 def make_engine(database_url: str):
     """Create an engine, rewriting the scheme for psycopg v3 (see app/db.py)."""
@@ -118,6 +130,22 @@ def _copy_images(
             Key=key,
             CopySource={"Bucket": src_bucket, "Key": key},
         )
+        # copy_object moves bytes server-side, so we never see them here; a
+        # post-copy HEAD is the cheapest way to catch a tiny error-body object
+        # that slipped into the source bucket. Warn only: a bad object is
+        # already filtered out of the DB rows by _extract_photo_points, so its
+        # presence in the serving bucket is harmless and not worth failing on.
+        try:
+            head = s3.head_object(Bucket=dest_bucket, Key=key)
+            size = head.get("ContentLength", 0)
+            if size < _MIN_IMAGE_BYTES:
+                logger.warning(
+                    "copied %s is only %d bytes; likely corrupt or an error body",
+                    key,
+                    size,
+                )
+        except ClientError as exc:  # noqa: BLE001 - sanity check, never fatal
+            logger.warning("post-copy HEAD failed for %s: %s", key, exc)
         return "copied"
 
     copied = skipped = 0
@@ -156,6 +184,14 @@ def _extract_photo_points(
         local = tmp_dir / Path(key).name
         try:
             s3.download_file(bucket, key, str(local))
+            head = local.read_bytes()
+            if not _looks_like_jpeg(head):
+                logger.warning(
+                    "skipping %s: not a valid JPEG (%d bytes); likely an error body",
+                    key,
+                    len(head),
+                )
+                return key, None, None, None, None
             lat, lng, ts, optics = exif.extract_exif(local)
             return key, lat, lng, ts, optics
         except Exception as exc:  # noqa: BLE001 - skip unreadable objects

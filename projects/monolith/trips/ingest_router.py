@@ -45,9 +45,10 @@ async def ingest_image(
 
     Auth is enforced at the Envoy gateway (Cloudflare Access JWT), not here.
 
-    Order matters: ``build_point`` validates GPS BEFORE the S3 put, so a bad
-    image never leaves an orphaned object. ``merge`` upserts on the composite
-    PK, so re-POSTing the same image (same content-addressed key) is idempotent.
+    Order matters: ``build_point`` validates the bytes are a decodable image
+    and carry GPS BEFORE the S3 put, so a corrupt or GPS-less image never
+    leaves an orphaned object. ``merge`` upserts on the composite PK, so
+    re-POSTing the same image (same content-addressed key) is idempotent.
     """
     data = await image.read()
     image_key = f"img_{hashlib.sha256(data).hexdigest()[:12]}.jpg"
@@ -62,8 +63,10 @@ async def ingest_image(
             tags=tag_list,
             tz=_trip_tz(session, trip),
         )
-    except ValueError:
-        raise HTTPException(status_code=422, detail="image has no GPS coordinates")
+    except ValueError as exc:
+        # Covers both decode-validation (corrupt/undersized) and the no-GPS
+        # rejection; surface the specific reason rather than a fixed message.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     s3.put_image(image_key, data, content_type=image.content_type or "image/jpeg")
 

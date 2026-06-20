@@ -23,7 +23,7 @@
 # gazelle:exclude public_httproute_chat_guard_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
-# gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi
+# gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
@@ -3321,6 +3321,10 @@ semgrep_target_test(
         # is_relative_to(vault_root) but Semgrep Pro can't trace through
         # the DB as a sanitizer.
         "tainted-path-traversal-stdlib-fastapi",  # keep
+        # trips/ingest.py validate_image does Image.open(io.BytesIO(data)) on
+        # in-memory upload bytes (NOT a filesystem path), so there is no path
+        # traversal; the rule false-positives on any Image.open of request data.
+        "tainted-path-traversal-pillow-fastapi",  # keep
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":main",
@@ -3618,6 +3622,7 @@ semgrep_target_test(
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
+        "tainted-path-traversal-pillow-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":add_visibility_field",
@@ -3630,6 +3635,7 @@ semgrep_target_test(
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
+        "tainted-path-traversal-pillow-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":classify_visibility_backfill",
@@ -3684,6 +3690,8 @@ semgrep_target_test(
         "avoid-sqlalchemy-text",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
+        # validate_image opens in-memory bytes, not a path; false positive (mirrors :main).
+        "tainted-path-traversal-pillow-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":trips_backfill",
@@ -3783,6 +3791,7 @@ semgrep_test(
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
+        "tainted-path-traversal-pillow-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
@@ -3805,6 +3814,7 @@ semgrep_target_test(
         # semgrep-core ignores inline # nosemgrep, so exclude here. # keep
         "boto3-endpoint-url-missing-scheme",  # keep
         "test-hardcoded-past-timestamp",  # keep
+        "tainted-path-traversal-pillow-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":main_public",
@@ -3817,6 +3827,7 @@ semgrep_target_test(
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-stdlib-fastapi",
+        "tainted-path-traversal-pillow-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_repo_docs_manifest",

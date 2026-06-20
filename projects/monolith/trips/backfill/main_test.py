@@ -58,3 +58,15 @@ def test_copy_images_short_circuits_when_src_equals_dest():
     assert (copied, skipped) == (0, 0)
     assert s3.copied == []
     assert s3.head_calls == []
+
+
+def test_looks_like_jpeg_accepts_real_magic_and_size():
+    # SOI marker + padding over the 1KB floor.
+    assert main._looks_like_jpeg(b"\xff\xd8" + b"\x00" * 2000)
+
+
+def test_looks_like_jpeg_rejects_error_body_and_undersized():
+    assert not main._looks_like_jpeg(b"operation Lookup failed")  # 67-byte-style body
+    assert not main._looks_like_jpeg(b"\xff\xd8" + b"\x00" * 10)  # magic but too small
+    assert not main._looks_like_jpeg(b"%PNG" + b"\x00" * 2000)  # right size, not JPEG
+    assert not main._looks_like_jpeg(b"")
