@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { fullUrl } from "$lib/trips/images.js";
+  import { imgUrl } from "$lib/trips/images.js";
 
   // Fullscreen lightbox for a list of photo points. Controlled: the parent owns
   // `index` and reacts to onIndex / onClose. Keyboard: left/right navigate,
@@ -54,7 +54,7 @@
     {/if}
 
     <figure class="frame">
-      <img src={fullUrl(photo.image)} alt={`Photo ${index + 1} of ${photos.length}`} />
+      <img src={imgUrl(photo.image, "display")} alt={`Photo ${index + 1} of ${photos.length}`} />
       <figcaption>
         <span class="count">{index + 1} / {photos.length}</span>
         {#if photo.taken_at}<span>{fmtTime(photo.taken_at)}</span>{/if}
