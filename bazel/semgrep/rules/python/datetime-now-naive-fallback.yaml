@@ -1,0 +1,25 @@
+rules:
+  - id: datetime-now-naive-fallback
+    pattern-either:
+      - pattern: datetime.now()
+      - pattern: datetime.utcnow()
+      - pattern: datetime.datetime.now()
+      - pattern: datetime.datetime.utcnow()
+    message: >
+      `datetime.now()` and `datetime.utcnow()` return naive datetimes with no timezone
+      information, causing silent bugs when mixing with timezone-aware values or comparing
+      across timezones. `datetime.utcnow()` is deprecated in Python 3.12.
+      Use `datetime.now(tz=timezone.utc)`, `datetime.now(timezone.utc)`, or
+      `datetime.now(ZoneInfo("UTC"))` instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      subcategory: datetime
+      confidence: HIGH
+      likelihood: MEDIUM
+      impact: MEDIUM
+      technology: [python]
+      description: >
+        datetime.now() or datetime.utcnow() without a timezone produces naive datetimes;
+        pass tz=timezone.utc or ZoneInfo(...) to get a timezone-aware datetime
