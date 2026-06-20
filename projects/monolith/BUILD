@@ -268,6 +268,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # Whole private domains.
     "agent/**",
     "chat/**",
+    "cluster/**",
     "scheduler/**",
     # Trips: the read path (models.py + read_router.py + __init__.py) ships in
     # the public image; the write/heavy path stays out (pillow/boto3/defusedxml).
@@ -295,10 +296,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/observability/topology_query.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
-    # The K8s API client wrapper. Only stats.py (excluded above) uses it, so it
-    # is not in the public closure; keep the cluster-API client out of the
-    # public artifact entirely (ADR 004: public holds no cluster access).
-    "home/observability/kubernetes.py",
 ]
 
 py_library(
@@ -3422,8 +3419,8 @@ py_test(
 )
 
 py_test(
-    name = "kubernetes_client_test",
-    srcs = ["home/observability/kubernetes_test.py"],
+    name = "cluster_kubernetes_test",
+    srcs = ["cluster/kubernetes_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
