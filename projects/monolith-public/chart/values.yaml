@@ -361,7 +361,9 @@ frontend:
 # "imgproxy" component consumed by the homelab-library deployment/service
 # helpers. On-the-fly image resizing/optimization for trip photos, fetching
 # sources from the monolith-trips SeaweedFS bucket and serving optimized image
-# bytes at img.jomcgi.dev (via the Cloudflare tunnel, not the envoy gateway).
+# bytes same-origin under /img on the public hostname (the public HTTPRoute
+# forwards /img/ here; IMGPROXY_PATH_PREFIX=/img strips the prefix internally).
+# The old img.jomcgi.dev Cloudflare-tunnel route is retired.
 # Uses an UPSTREAM public image (darthsim/imgproxy), so the tag is a plain
 # literal here and is NOT pinned by the Bazel helm_images_values pipeline (which
 # only rewrites the Bazel-built web/frontend images). The pod inherits the
@@ -395,6 +397,13 @@ imgproxy:
   env:
     - name: IMGPROXY_BIND
       value: ":8080"
+    # Serve under /img so the public HTTPRoute can forward /img/ here without a
+    # rewrite. imgproxy strips this prefix before parsing the processing path.
+    # MUST match the IMG_BASE in
+    # projects/monolith/frontend/src/lib/trips/images.js and the /img/ HTTPRoute
+    # rule in templates/httproute-public.yaml.
+    - name: IMGPROXY_PATH_PREFIX
+      value: "/img"
     - name: IMGPROXY_USE_S3
       value: "true"
     - name: IMGPROXY_S3_ENDPOINT

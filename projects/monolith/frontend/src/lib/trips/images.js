@@ -1,9 +1,11 @@
 // imgproxy URL helpers for the /app/trips pages. Originals live in the
-// monolith-trips SeaweedFS bucket; imgproxy resizes them on the fly and serves
-// from img.jomcgi.dev (absolute, cross-origin <img>, no CORS needed). The
-// presets mirror the sizes the old trips frontend used. `key` is the TripPoint
-// `image` value (the S3 object key for that photo).
-const IMG_BASE = "https://img.jomcgi.dev";
+// monolith-trips SeaweedFS bucket; imgproxy resizes them on the fly. It is now
+// served same-origin under /img by the monolith-public HTTPRoute (imgproxy runs
+// with IMGPROXY_PATH_PREFIX=/img), so these are relative URLs (no cross-origin,
+// no CORS, no separate img.jomcgi.dev tunnel). The presets mirror the sizes the
+// old trips frontend used. `key` is the TripPoint `image` value (the S3 object
+// key for that photo).
+const IMG_BASE = "/img";
 
 // imgproxy is locked to named presets (IMGPROXY_ONLY_PRESETS); these names must
 // match IMGPROXY_PRESETS in the monolith-public chart.
