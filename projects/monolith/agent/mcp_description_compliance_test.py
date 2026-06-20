@@ -21,7 +21,9 @@ If Context Forge is upgraded and the rules change, update the
 
 from __future__ import annotations
 
+import ast
 import importlib
+import pathlib
 
 import pytest
 
@@ -36,11 +38,37 @@ FORBIDDEN_PATTERNS = ["&&", ";", "||", "$(", "|", "> ", "< "]
 MAX_DESCRIPTION_LENGTH = 8192
 
 
+def _tool_registration_modules() -> list[str]:
+    """The ``<domain>.mcp`` modules ``app/main.py`` imports to register tools.
+
+    Derived from ``app/main.py`` (the single source of truth for tool
+    registration) instead of hand-listed here, so a newly added tool module is
+    covered automatically. A hand-maintained list previously omitted
+    ``cluster.mcp`` and shipped the k8s-* tools unvalidated (the gateway then
+    silently dropped four of them); reading the real registration site closes
+    that gap for good.
+    """
+    main_py = pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py"
+    tree = ast.parse(main_py.read_text())
+    return [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name.endswith(".mcp")
+    ]
+
+
 @pytest.mark.asyncio
 async def test_all_mcp_tool_descriptions_pass_context_forge_validation():
     """Every registered tool's description must be Context Forge-safe."""
-    importlib.import_module("agent.mcp")
-    importlib.import_module("knowledge.mcp")
+    modules = _tool_registration_modules()
+    assert modules, (
+        "no <domain>.mcp registration imports found in app/main.py; the test "
+        "cannot see the tool set (check the app/main.py data dependency)"
+    )
+    for module in modules:
+        importlib.import_module(module)
     from app.mcp_app import mcp
 
     tools = await mcp.list_tools()

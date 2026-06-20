@@ -3671,6 +3671,9 @@ py_test(
 py_test(
     name = "agent_mcp_description_compliance_test",
     srcs = ["agent/mcp_description_compliance_test.py"],
+    # The test parses app/main.py at runtime to derive the tool-registration
+    # module list, so it must be in the test runfiles.
+    data = ["app/main.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",

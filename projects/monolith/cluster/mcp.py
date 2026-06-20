@@ -6,7 +6,7 @@ logs, deduped events, and ArgoCD sync. Output is shaped by ``cluster.summarize``
 for token efficiency — never a raw manifest dump unless explicitly requested.
 
 Tool names follow the codebase convention: the FastMCP name is the function
-name (``k8s_*``); the gateway converts underscores to dashes and (today) adds
+name (``k8s_*``). The gateway converts underscores to dashes and (today) adds
 the ``monolith-`` federation prefix, so these surface as ``k8s-*`` once that
 prefix is dropped.
 """
@@ -60,7 +60,7 @@ async def k8s_list_resources(
     Args:
         kind: One of the allowed kinds (see error message for the full set,
             e.g. pods, deployments, services, events, applications).
-        namespace: Restrict to a namespace; omit for all namespaces
+        namespace: Restrict to a namespace, or omit for all namespaces
             (ignored for cluster-scoped kinds like nodes/namespaces).
         label_selector: Standard label selector, e.g. "app=foo".
         limit: Max rows returned (default 100).
@@ -88,7 +88,7 @@ async def k8s_get_resource(
     Args:
         kind: One of the allowed kinds.
         name: Resource name.
-        namespace: Namespace (defaults to "default" for namespaced kinds;
+        namespace: Namespace (defaults to "default" for namespaced kinds,
             "argocd" for applications).
         full: Return the entire manifest instead of the trimmed view.
     """
@@ -120,7 +120,7 @@ async def k8s_get_pod_logs(
         pod: Pod name.
         container: Container name (required only for multi-container pods).
         tail_lines: Lines to fetch from the end (default 200).
-        grep: Optional regex; only matching lines are returned.
+        grep: Optional regex, only matching lines are returned.
         previous: Read the previous (crashed) container instance instead.
     """
     k8s = KubernetesClient()
@@ -147,7 +147,7 @@ async def k8s_get_events(
     """List cluster events, deduplicated by (object, type, reason, message).
 
     Args:
-        namespace: Restrict to a namespace; omit for all namespaces.
+        namespace: Restrict to a namespace, or omit for all namespaces.
         involved_object: Restrict to events about a specific object name.
     """
     k8s = KubernetesClient()
