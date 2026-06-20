@@ -225,8 +225,8 @@
       />
 
       <div class="stack">
-        <!-- MAP: full width, 280px, inverted basemap with the layered route line
-             + start/end/square-current markers. -->
+        <!-- MAP: full width, 280px, light Positron basemap with the layered
+             route line + start/end/square-current markers. -->
         <DayMap
           points={day.points}
           dayColor={color}
@@ -258,7 +258,8 @@
             {#if telemetry}
               {@const t = telemetry}
               <!-- ROW 1: TIME | SOLAR | LIGHT | EV | ELEV -->
-              <div class="cell r1 c-time">
+              <!-- TIME is the hero readout: a solid day-colour block. -->
+              <div class="cell r1 c-time" style={`background:${color}`}>
                 <div class="label">TIME</div>
                 <div class="time-big">
                   {t.time}<span class="period">{t.period}</span>
@@ -312,7 +313,7 @@
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
                     </button>
                   </div>
-                  <div class="counter">{photos.length ? current + 1 : 0} / {photos.length}</div>
+                  <div class="counter" style={`background:${color}`}>{photos.length ? current + 1 : 0} / {photos.length}</div>
                 </div>
 
                 <div class="bearing">
@@ -399,11 +400,14 @@
     gap: 24px;
   }
 
-  /* TRIPTYCH: photo + data panel, sharing a 2px top rule. */
+  /* TRIPTYCH: photo + data panel framed as one neo-brutalist card: a chunky
+     ink border all around plus a hard offset drop-shadow (no blur). */
   .triptych {
     display: flex;
     align-items: stretch;
-    border-top: 2px solid #1a1a1a;
+    border: 3px solid #1a1a1a;
+    box-shadow: 5px 5px 0 0 #1a1a1a;
+    background: white;
   }
   .photo {
     flex: 0 0 auto;
@@ -437,7 +441,7 @@
     display: grid;
     grid-template-columns: 150px 1fr 1fr 1fr 1fr;
     grid-template-rows: auto 1fr auto;
-    border-left: 2px solid #1a1a1a;
+    border-left: 3px solid #1a1a1a;
     font-family: monospace;
     min-width: 0;
   }
@@ -491,6 +495,14 @@
     color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
     margin-left: 4px;
   }
+  /* TIME hero: white readout on the solid day-colour block (set inline). */
+  .c-time .label,
+  .c-time .period {
+    color: rgba(255, 255, 255, 0.82);
+  }
+  .c-time .time-big {
+    color: white;
+  }
 
   /* Row 2, column 1: optics / nav / bearing stack. */
   .col1 {
@@ -535,7 +547,8 @@
     cursor: pointer;
     transition:
       background 0.15s,
-      color 0.15s;
+      color 0.15s,
+      transform 0.1s;
   }
   .navstep.border-r {
     border-right: 2px solid #1a1a1a;
@@ -548,14 +561,19 @@
     background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     color: white;
   }
+  /* Tactile press to match the day-nav buttons. */
+  .navstep:active:not(:disabled) {
+    transform: translate(1px, 1px);
+  }
   .navstep:disabled {
     opacity: 0.3;
     cursor: not-allowed;
   }
+  /* Photo counter: a solid day-colour accent block (set inline) with white text. */
   .counter {
     font-size: 11px;
     font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: white;
     text-align: center;
     padding: 8px;
     border-top: 2px solid #1a1a1a;
@@ -662,7 +680,6 @@
     }
     .triptych {
       flex-direction: column;
-      border-top: none;
     }
     .photo {
       width: 100%;
