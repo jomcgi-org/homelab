@@ -187,6 +187,38 @@ else
 	FAILED=1
 fi
 
+# --- Validation 5: public docs-site manifest ---
+#
+# projects/monolith/frontend/src/lib/public/docs/docs-manifest.json is a committed
+# snapshot of the public-allowlisted repo docs (top-level docs/*.md + the
+# docs/decisions/** ADR tree), baked into the monolith-public frontend image and
+# rendered server-side by the SvelteKit /docs route. Regenerate it here and fail
+# if it drifts from what is committed, so a doc change does not silently go
+# unpublished. Same git-driven, stdlib-only generator pattern as the repo-docs
+# manifest above.
+
+echo "Validating docs-site manifest ..."
+
+DOCS_MANIFEST=projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
+if python3 projects/monolith/knowledge/tools/gen_docs_manifest.py >/dev/null 2>"$TMPDIR_VALIDATE/gen_docs.err"; then
+	if git diff --quiet -- "$DOCS_MANIFEST"; then
+		echo "  docs-site-manifest: PASS"
+	else
+		echo "  docs-site-manifest: FAIL"
+		echo "    $DOCS_MANIFEST is out of date with the public docs allowlist."
+		echo "    Regenerate it and commit the result:"
+		echo "      bazel run //projects/monolith:gen_docs_manifest"
+		echo "      git add $DOCS_MANIFEST && git commit"
+		FAILED=1
+		# Restore the committed version so later format steps see a clean tree.
+		git checkout -- "$DOCS_MANIFEST" 2>/dev/null || true
+	fi
+else
+	echo "  docs-site-manifest: FAIL (generator did not run)"
+	sed 's/^/    /' "$TMPDIR_VALIDATE/gen_docs.err"
+	FAILED=1
+fi
+
 # --- Summary ---
 
 echo ""

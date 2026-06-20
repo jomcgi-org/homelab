@@ -1,0 +1,190 @@
+"""Generate the public docs manifest baked into the monolith-public frontend.
+
+Globs the public-allowlisted repository docs (top-level ``docs/*.md`` plus the
+ADR tree ``docs/decisions/**/*.md``) via ``git ls-files`` and writes a committed
+JSON manifest with full bodies inline to
+``projects/monolith/frontend/src/lib/public/docs/docs-manifest.json``. The
+SvelteKit ``/docs`` route imports that manifest SERVER-SIDE (never in a client
+bundle) and renders each doc with ``marked``.
+
+Using git (not a filesystem walk) makes the output deterministic across
+platforms and Python versions and never picks up untracked files or build
+artifacts under symlinked ``bazel-out/`` dirs.
+
+Security (ADR docs/001): the public docs surface is built from an EXPLICIT
+allowlist, never the RAG ingest (which indexes internal docs). Excluded:
+``docs/plans/**``, anything outside ``docs/``, and a per-file blocklist of
+personal / non-homelab docs. Be conservative: if unsure whether a doc is public,
+it stays off the allowlist.
+
+When the published docs change, regenerate and commit the manifest:
+``bazel run //projects/monolith:gen_docs_manifest`` (or run this script with any
+python3). CI enforces freshness: bazel/images/validate-generate-scripts.sh
+(run in the Format check action) regenerates the manifest and fails the build if
+it differs from what is committed, with the regen command in the error.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+MANIFEST_REL = "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
+
+DOCS_PREFIX = "docs/"
+DECISIONS_PREFIX = "docs/decisions/"
+
+# Per-file blocklist: docs that live under docs/ but must NOT appear on the
+# public docs site. WORKING-WITH-JOE.md is a personal "how to work with me"
+# profile, not homelab reference material, so it is kept off the public surface.
+_BLOCKLIST = frozenset(
+    {
+        "docs/WORKING-WITH-JOE.md",
+    }
+)
+
+_H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_NUM = re.compile(r"^(\d+)")
+
+
+def _basename(rel_path: str) -> str:
+    return rel_path.rsplit("/", 1)[-1]
+
+
+def derive_title(content: str, rel_path: str) -> str:
+    """First H1, falling back to the filename (without the .md suffix)."""
+    m = _H1.search(content)
+    if m:
+        return m.group(1).strip()
+    name = _basename(rel_path)
+    return name[:-3] if name.endswith(".md") else name
+
+
+def _should_index(rel_path: str) -> bool:
+    """True if a repo-relative path belongs on the public docs site.
+
+    Allowlist (conservative):
+      - docs/decisions/**/*.md  (the ADR tree, incl. index.md, any depth)
+      - docs/<name>.md          (top-level reference docs, exactly one level)
+    Everything else (docs/plans/**, nested non-ADR docs, non-docs paths, the
+    per-file blocklist, the manifest itself) is excluded.
+    """
+    if not rel_path.endswith(".md"):
+        return False
+    if rel_path in _BLOCKLIST or rel_path == MANIFEST_REL:
+        return False
+    if rel_path.startswith(DECISIONS_PREFIX):
+        return True
+    if rel_path.startswith(DOCS_PREFIX):
+        rest = rel_path[len(DOCS_PREFIX) :]
+        # Top-level only: a further slash means a subtree (docs/plans/...) we
+        # do not publish beyond the explicitly-handled decisions/ tree above.
+        return "/" not in rest
+    return False
+
+
+def make_slug(rel_path: str) -> str:
+    """URL path under /docs/ for a repo doc path.
+
+    docs/security.md               -> security
+    docs/decisions/agents/001-x.md -> decisions/agents/001-x
+    docs/decisions/index.md        -> decisions   (index collapses to its dir)
+    """
+    s = rel_path[len(DOCS_PREFIX) :] if rel_path.startswith(DOCS_PREFIX) else rel_path
+    if s.endswith(".md"):
+        s = s[:-3]
+    if s.endswith("/index"):
+        s = s[: -len("/index")]
+    return s
+
+
+def section_for(rel_path: str) -> str:
+    return "Decisions" if rel_path.startswith(DECISIONS_PREFIX) else "Reference"
+
+
+def category_for(rel_path: str) -> str:
+    """ADR category (the dir segment under docs/decisions/); "" otherwise."""
+    if not rel_path.startswith(DECISIONS_PREFIX):
+        return ""
+    rest = rel_path[len(DECISIONS_PREFIX) :]
+    if "/" not in rest:
+        return ""  # docs/decisions/index.md
+    return rest.split("/", 1)[0]
+
+
+def _numeric_prefix(rel_path: str) -> int:
+    m = _NUM.match(_basename(rel_path))
+    return int(m.group(1)) if m else 0
+
+
+def _sort_key(rel_path: str):
+    """Deterministic sidebar ordering.
+
+    Reference docs first (alphabetical), then the ADR tree: the decisions index,
+    then each category alphabetically with its ADRs by numeric prefix.
+    """
+    if section_for(rel_path) == "Reference":
+        return (0, "", 0, rel_path)
+    cat = category_for(rel_path)
+    if cat == "":
+        return (1, "", -1, rel_path)  # decisions/index.md sorts before categories
+    return (1, cat, _numeric_prefix(rel_path), rel_path)
+
+
+def iter_doc_paths(root: Path) -> list[str]:
+    """Tracked allowlisted doc paths. Uses ``git ls-files`` so the set is exactly
+    the committed files (deterministic, no symlinked build artifacts)."""
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    paths = (p for p in result.stdout.split("\0") if p)
+    return sorted({p for p in paths if _should_index(p)})
+
+
+def build_manifest(root: Path, paths: list[str]) -> list[dict]:
+    """Manifest entries in stable sidebar order. ``order`` is the entry index."""
+    ordered = sorted(paths, key=_sort_key)
+    entries: list[dict] = []
+    for i, rel in enumerate(ordered):
+        # Strip NUL bytes (0x00) so the body is JSON-safe and storable; the docs
+        # are first-party markdown, but mirror the repo_docs generator's guard.
+        content = (root / rel).read_text(encoding="utf-8").replace("\x00", "")
+        entries.append(
+            {
+                "path": rel,
+                "slug": make_slug(rel),
+                "title": derive_title(content, rel),
+                "section": section_for(rel),
+                "order": i,
+                "content": content,
+            }
+        )
+    return entries
+
+
+def main() -> int:
+    root = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd())
+    out = root / MANIFEST_REL
+    out.parent.mkdir(parents=True, exist_ok=True)
+    entries = build_manifest(root, iter_doc_paths(root))
+    # indent=2 keeps the committed manifest diff-friendly; insertion order of
+    # each entry's keys is fixed above so the serialization is stable.
+    out.write_text(
+        json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote {len(entries)} docs to {MANIFEST_REL}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
