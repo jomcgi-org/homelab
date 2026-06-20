@@ -1,5 +1,5 @@
 <script>
-  import { Nav, Footer } from "$lib/public/components";
+  import { Footer } from "$lib/public/components";
 
   /**
    * @type {{
@@ -14,7 +14,12 @@
   const hasToc = $derived(Array.isArray(toc) && toc.length > 0);
 </script>
 
-<Nav route="docs" />
+<header class="docs-topbar">
+  <a class="docs-back" href="https://jomcgi.dev/">
+    <span class="docs-back-arrow" aria-hidden="true">&larr;</span>
+    <span class="docs-back-label">jomcgi.dev</span>
+  </a>
+</header>
 
 <div class="docs-layout" class:has-toc={hasToc}>
   <aside class="docs-side">
@@ -86,6 +91,62 @@
 <Footer />
 
 <style>
+  /* ── Top bar: a single back link to the apex, in place of the shared
+     site nav. Sticky height (~48px) matches the old nav so the sidebar /
+     TOC `top: 76px` offsets and heading scroll-margins stay valid. ── */
+  .docs-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--paper);
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .docs-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 14px 32px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    text-decoration: none;
+    transition: color 160ms ease;
+  }
+
+  .docs-back-arrow {
+    font-size: 14px;
+    transition: transform 160ms ease;
+  }
+
+  .docs-back:hover {
+    color: var(--ink);
+  }
+
+  .docs-back:hover .docs-back-arrow {
+    transform: translateX(-3px);
+  }
+
+  .docs-back-label {
+    border-bottom: 2px solid transparent;
+    transition: border-color 160ms ease;
+  }
+
+  .docs-back:hover .docs-back-label {
+    border-bottom-color: var(--coral);
+  }
+
+  @media (max-width: 1080px) {
+    .docs-back {
+      padding: 12px 20px;
+    }
+  }
+
   .docs-layout {
     display: grid;
     grid-template-columns: 248px minmax(0, 1fr);
