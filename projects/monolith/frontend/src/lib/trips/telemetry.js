@@ -233,6 +233,10 @@ export function photoTelemetry(photo, dayPoints, tz) {
     bearingArrow: compassArrow(bearing),
     km: dist?.km ?? null,
     totalKm: dist?.total ?? null,
+    // Fraction (0..100) of the day's distance travelled by the photo's capture
+    // time. The elevation-profile cursor maps this onto the sampled profile so
+    // the position marker tracks where the photo sits along the route.
+    progressPercent: dist?.percent ?? 0,
     // Optics passed straight through for the panel to format.
     focalLength35mm: photo.focal_length_35mm ?? null,
     aperture: photo.aperture ?? null,

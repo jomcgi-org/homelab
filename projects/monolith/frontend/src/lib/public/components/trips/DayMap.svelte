@@ -2,36 +2,38 @@
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
 
-  // Single-day route map: the day's GPS line plus a circle layer marking each
-  // photo location. Interactive (pan/zoom). Follows the ShipsMap pattern
-  // (lazy maplibre import, GeoJSON sources + layers).
+  // Single-day route map, a faithful port of the original React DayMap. The
+  // whole container is CSS `invert(1)`ed so the light Carto Positron basemap
+  // reads as a dark map: every colour drawn into it is pre-inverted so it shows
+  // correctly after the filter (a black line draws as white, the day colour is
+  // inverted, etc). Layers, in z-order: a thick `route-line` (black -> white),
+  // a thin `route-color-accent` (inverted day colour) down its centre, and a
+  // wide transparent `route-hit-area` for click-to-select. DOM markers mark the
+  // start, end and the current photo (a square). A sun-lit terrain hillshade
+  // sits under the basemap, relit from the photo-time sun azimuth/altitude.
   //
-  // `current` is the scrubber's selected photo index: the matching marker is
-  // highlighted (a larger ring on the `day-photo-current` layer) and the map
-  // eases to its coordinates. Clicking any marker calls onPhotoClick(i) so the
-  // page can set `current`.
-  //
-  // `currentCoords` (optional) is the [lng, lat] for the current photo with the
-  // page's GPS interpolation already applied, so the highlight marker tracks
-  // photos that lack their own fix. Falls back to the photo's raw coordinates.
-  //
-  // Note: the old React DayMap also drove a terrain hillshade lit from the sun
-  // position at the photo's timestamp; that relighting needs a raster-DEM
-  // terrain source and is out of scope here. The solar/bearing readouts live in
-  // the telemetry panel instead.
+  // `currentCoords` ([lng, lat] or null) is the current photo's location with the
+  // page's GPS interpolation already applied, so the square marker tracks photos
+  // that lack their own fix. `sunPosition` ({ altitude, azimuth } in radians)
+  // drives the hillshade relighting. `onLocationClick(takenAtIso)` fires with the
+  // nearest route point's capture time when the route is clicked; the page maps
+  // that to the closest photo.
   let {
     points = [],
-    photos = [],
     dayColor = "#2563eb",
-    current = 0,
+    height = "280px",
     currentCoords = null,
-    onPhotoClick,
+    sunPosition = null,
+    onLocationClick,
   } = $props();
 
-  const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+  const BASEMAP_STYLE =
+    "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
   let mapContainer;
   let map = null;
+  let maplibre = null;
+  let photoMarker = null;
   let mapReady = $state(false);
 
   function geoPoints() {
@@ -49,37 +51,139 @@
     ];
   }
 
-  // Coordinates of the photo at index `i`, or null if it has no GPS fix.
-  function photoCoords(i) {
-    const p = photos[i];
-    if (!p || p.lat == null || p.lng == null) return null;
-    return [p.lng, p.lat];
+  // Invert a #rrggbb so it displays as the intended colour after the container's
+  // CSS invert(1). Returns an rgb() string.
+  function invertColor(hex) {
+    const r = 255 - parseInt(hex.slice(1, 3), 16);
+    const g = 255 - parseInt(hex.slice(3, 5), 16);
+    const b = 255 - parseInt(hex.slice(5, 7), 16);
+    return `rgb(${r}, ${g}, ${b})`;
   }
 
-  // Keep the highlight layer + camera in sync with the scrubber's `current`.
-  // Guarded on mapReady so it no-ops until the sources/layers exist. Prefers the
-  // page's interpolated `currentCoords` so the marker tracks fix-less photos.
-  $effect(() => {
-    const i = current;
-    const interp = currentCoords;
-    if (!mapReady || !map) return;
-    const coords = interp ?? photoCoords(i);
-    const src = map.getSource("day-photo-current");
-    if (src) {
-      src.setData({
-        type: "FeatureCollection",
-        features: coords
-          ? [
-              {
-                type: "Feature",
-                properties: { photoIndex: i },
-                geometry: { type: "Point", coordinates: coords },
-              },
-            ]
-          : [],
-      });
+  // Drop points within ~20m of the previous one (multiple GPS sources stack
+  // duplicates that thicken the rendered line).
+  function dedupePoints(pts) {
+    if (!pts.length) return [];
+    const result = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const prev = result[result.length - 1];
+      const curr = pts[i];
+      const dlat = Math.abs(curr.lat - prev.lat);
+      const dlng = Math.abs(curr.lng - prev.lng);
+      if (dlat > 0.0002 || dlng > 0.0002) result.push(curr);
     }
-    if (coords) map.easeTo({ center: coords, duration: 500 });
+    return result;
+  }
+
+  // --- hillshade relighting from the sun ---
+  // SunCalc azimuth is radians from south, positive west; MapLibre's
+  // illumination-direction is degrees from north.
+  function illuminationDirection(sun) {
+    if (!sun) return 315;
+    const azimuthDeg = (sun.azimuth * 180) / Math.PI + 180;
+    return ((azimuthDeg % 360) + 360) % 360;
+  }
+
+  function sunIntensity(sun) {
+    if (!sun) {
+      return {
+        exaggeration: 0.8,
+        shadowColor: "#cccccc",
+        highlightColor: "#000000",
+      };
+    }
+    const altitudeDeg = (sun.altitude * 180) / Math.PI;
+    const lerp = (a, b, t) => a + (b - a) * Math.max(0, Math.min(1, t));
+    const lerpColor = (c1, c2, t) => {
+      const r1 = parseInt(c1.slice(1, 3), 16),
+        g1 = parseInt(c1.slice(3, 5), 16),
+        b1 = parseInt(c1.slice(5, 7), 16);
+      const r2 = parseInt(c2.slice(1, 3), 16),
+        g2 = parseInt(c2.slice(3, 5), 16),
+        b2 = parseInt(c2.slice(5, 7), 16);
+      const r = Math.round(lerp(r1, r2, t)),
+        g = Math.round(lerp(g1, g2, t)),
+        b = Math.round(lerp(b1, b2, t));
+      return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+    };
+    const t = (altitudeDeg + 12) / 27;
+    let exaggeration;
+    if (altitudeDeg < -6) {
+      exaggeration = lerp(0.2, 0.5, (altitudeDeg + 12) / 6);
+    } else if (altitudeDeg < 5) {
+      exaggeration = lerp(0.5, 1.0, (altitudeDeg + 6) / 11);
+    } else {
+      exaggeration = 1.0;
+    }
+    const shadowColor = lerpColor("#222222", "#ffffff", t);
+    const highlightColor = lerpColor("#111111", "#000000", t);
+    return { exaggeration, shadowColor, highlightColor };
+  }
+
+  // Reposition + recentre on the current photo. The square marker eases over
+  // 300ms (ease-out-cubic), and the camera eases to zoom 10, matching the
+  // original. Guarded on mapReady so it no-ops until the marker can be created.
+  $effect(() => {
+    const coords = currentCoords;
+    if (!mapReady || !map || !maplibre) return;
+    if (coords) {
+      if (photoMarker) {
+        const start = photoMarker.getLngLat();
+        const startTime = performance.now();
+        const duration = 300;
+        const animate = (now) => {
+          const t = Math.min((now - startTime) / duration, 1);
+          const eased = 1 - Math.pow(1 - t, 3);
+          const lng = start.lng + (coords[0] - start.lng) * eased;
+          const lat = start.lat + (coords[1] - start.lat) * eased;
+          photoMarker.setLngLat([lng, lat]);
+          if (t < 1) requestAnimationFrame(animate);
+        };
+        requestAnimationFrame(animate);
+      } else {
+        const el = document.createElement("div");
+        el.style.cssText = `width:24px;height:24px;background:${invertColor(dayColor)};border:3px solid black;cursor:pointer;`;
+        photoMarker = new maplibre.Marker({ element: el })
+          .setLngLat(coords)
+          .addTo(map);
+      }
+      map.easeTo({
+        center: coords,
+        zoom: 10,
+        duration: 300,
+        easing: (t) => 1 - Math.pow(1 - t, 3),
+      });
+    } else if (photoMarker) {
+      photoMarker.remove();
+      photoMarker = null;
+    }
+  });
+
+  // Relight the hillshade when the sun position changes.
+  $effect(() => {
+    const sun = sunPosition;
+    if (!mapReady || !map || !map.getLayer("hillshade")) return;
+    const intensity = sunIntensity(sun);
+    map.setPaintProperty(
+      "hillshade",
+      "hillshade-illumination-direction",
+      illuminationDirection(sun),
+    );
+    map.setPaintProperty(
+      "hillshade",
+      "hillshade-exaggeration",
+      intensity.exaggeration,
+    );
+    map.setPaintProperty(
+      "hillshade",
+      "hillshade-shadow-color",
+      intensity.shadowColor,
+    );
+    map.setPaintProperty(
+      "hillshade",
+      "hillshade-highlight-color",
+      intensity.highlightColor,
+    );
   });
 
   onMount(() => {
@@ -87,104 +191,154 @@
     let cleanup = () => {};
 
     (async () => {
-      const maplibregl = (await import("maplibre-gl")).default;
+      maplibre = (await import("maplibre-gl")).default;
       if (destroyed) return;
 
       const b = bounds();
-      map = new maplibregl.Map({
+      map = new maplibre.Map({
         container: mapContainer,
         style: BASEMAP_STYLE,
-        ...(b ? { bounds: b, fitBoundsOptions: { padding: 50 } } : { center: [0, 30], zoom: 1.4 }),
-        attributionControl: { compact: true },
+        ...(b
+          ? { bounds: b, fitBoundsOptions: { padding: 50 } }
+          : { center: [0, 30], zoom: 1.4 }),
         dragRotate: false,
-        touchZoomRotate: false,
+        attributionControl: false,
       });
-      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+      map.addControl(
+        new maplibre.NavigationControl({ showCompass: false }),
+        "top-right",
+      );
 
       map.on("load", () => {
-        const coords = geoPoints().map((p) => [p.lng, p.lat]);
-        if (coords.length >= 2) {
-          map.addSource("day-route", {
+        // Terrain hillshade, lit from the photo-time sun, under the basemap.
+        map.addSource("terrain-dem", {
+          type: "raster-dem",
+          tiles: [
+            "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+          ],
+          encoding: "terrarium",
+          tileSize: 256,
+          maxzoom: 15,
+        });
+        const firstSymbol = map
+          .getStyle()
+          .layers.find((l) => l.type === "symbol");
+        const intensity = sunIntensity(sunPosition);
+        map.addLayer(
+          {
+            id: "hillshade",
+            type: "hillshade",
+            source: "terrain-dem",
+            minzoom: 0,
+            maxzoom: 22,
+            paint: {
+              "hillshade-exaggeration": intensity.exaggeration,
+              "hillshade-shadow-color": intensity.shadowColor,
+              "hillshade-highlight-color": intensity.highlightColor,
+              "hillshade-accent-color": "#000000",
+              "hillshade-illumination-direction":
+                illuminationDirection(sunPosition),
+            },
+          },
+          firstSymbol?.id,
+        );
+
+        const routePoints = dedupePoints(geoPoints());
+        const coordinates = routePoints.map((p) => [p.lng, p.lat]);
+        if (coordinates.length >= 2) {
+          map.addSource("route", {
             type: "geojson",
             data: {
               type: "Feature",
-              properties: {},
-              geometry: { type: "LineString", coordinates: coords },
+              geometry: { type: "LineString", coordinates },
             },
           });
+          // Thick black line: inverts to a clean white route.
           map.addLayer({
-            id: "day-route",
+            id: "route-line",
             type: "line",
-            source: "day-route",
+            source: "route",
             layout: { "line-join": "round", "line-cap": "round" },
-            paint: { "line-color": dayColor, "line-width": 4, "line-opacity": 1 },
+            paint: { "line-color": "#000000", "line-width": 7, "line-opacity": 1 },
           });
-        }
-
-        // Carry each photo's index in the `photos` array so a marker click can
-        // set that exact photo as the scrubber's current index. `photos` is the
-        // same array the scrubber/elevation use, so the indices line up.
-        const photoFeatures = photos
-          .map((p, i) => ({ p, i }))
-          .filter(({ p }) => p.lat != null && p.lng != null)
-          .map(({ p, i }) => ({
-            type: "Feature",
-            properties: { photoIndex: i },
-            geometry: { type: "Point", coordinates: [p.lng, p.lat] },
-          }));
-        if (photoFeatures.length) {
-          map.addSource("day-photos", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: photoFeatures },
-          });
+          // Thin inverted-day-colour accent down the centre.
           map.addLayer({
-            id: "day-photos",
-            type: "circle",
-            source: "day-photos",
+            id: "route-color-accent",
+            type: "line",
+            source: "route",
+            layout: { "line-join": "round", "line-cap": "round" },
             paint: {
-              "circle-radius": 5,
-              "circle-color": dayColor,
-              "circle-stroke-color": "#ffffff",
-              "circle-stroke-width": 2,
+              "line-color": invertColor(dayColor),
+              "line-width": 1.5,
+              "line-opacity": 1,
             },
           });
-
-          // Highlight layer for the current photo: a larger ring drawn on top of
-          // the base markers. Driven by the $effect above via its own source.
-          map.addSource("day-photo-current", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: [] },
-          });
+          // Wide transparent hit area for easier clicking.
           map.addLayer({
-            id: "day-photo-current",
-            type: "circle",
-            source: "day-photo-current",
-            paint: {
-              "circle-radius": 9,
-              "circle-color": dayColor,
-              "circle-stroke-color": "#ffffff",
-              "circle-stroke-width": 3,
-            },
+            id: "route-hit-area",
+            type: "line",
+            source: "route",
+            layout: { "line-join": "round", "line-cap": "round" },
+            paint: { "line-color": "transparent", "line-width": 20, "line-opacity": 0 },
           });
 
-          map.on("click", "day-photos", (e) => {
-            const i = e.features?.[0]?.properties?.photoIndex;
-            if (i != null) onPhotoClick?.(i);
-          });
-          map.on("mouseenter", "day-photos", () => {
-            map.getCanvas().style.cursor = "pointer";
-          });
-          map.on("mouseleave", "day-photos", () => {
-            map.getCanvas().style.cursor = "";
-          });
+          if (onLocationClick) {
+            map.on("mouseenter", "route-hit-area", () => {
+              map.getCanvas().style.cursor = "pointer";
+            });
+            map.on("mouseleave", "route-hit-area", () => {
+              map.getCanvas().style.cursor = "";
+            });
+            map.on("click", "route-hit-area", (e) => {
+              const { lng: clickLng, lat: clickLat } = e.lngLat;
+              let minDist = Infinity;
+              let closest = null;
+              for (const p of points) {
+                if (p.lat == null || p.lng == null || !p.taken_at) continue;
+                const dist =
+                  Math.pow(p.lng - clickLng, 2) + Math.pow(p.lat - clickLat, 2);
+                if (dist < minDist) {
+                  minDist = dist;
+                  closest = p;
+                }
+              }
+              if (closest?.taken_at) onLocationClick(closest.taken_at);
+            });
+          }
         }
 
-        // Signal the $effect that sources/layers exist; it then renders the
-        // initial highlight + centers on the current photo.
+        // Start / end DOM markers (inverted: black draws white, white draws
+        // black). The square current-photo marker is created by the $effect.
+        const pts = geoPoints();
+        if (pts.length > 0) {
+          const startEl = document.createElement("div");
+          startEl.style.cssText =
+            "width:16px;height:16px;background:#000000;border:3px solid #ffffff;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+          new maplibre.Marker({ element: startEl })
+            .setLngLat([pts[0].lng, pts[0].lat])
+            .addTo(map);
+
+          const last = pts[pts.length - 1];
+          const distance = Math.sqrt(
+            Math.pow(last.lng - pts[0].lng, 2) +
+              Math.pow(last.lat - pts[0].lat, 2),
+          );
+          if (distance > 0.01) {
+            const endEl = document.createElement("div");
+            endEl.style.cssText =
+              "width:14px;height:14px;background:#ffffff;border:3px solid #000000;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+            new maplibre.Marker({ element: endEl })
+              .setLngLat([last.lng, last.lat])
+              .addTo(map);
+          }
+        }
+
         mapReady = true;
       });
 
       cleanup = () => {
+        photoMarker?.remove();
+        photoMarker = null;
         map?.remove();
         map = null;
         mapReady = false;
@@ -198,16 +352,14 @@
   });
 </script>
 
-<div class="map" bind:this={mapContainer}></div>
+<div class="map" style={`height:${height}`} bind:this={mapContainer}></div>
 
 <style>
+  /* The whole map is inverted so the light Carto basemap reads dark; every
+     colour drawn into it is pre-inverted to compensate. */
   .map {
     width: 100%;
-    height: 100%;
-    min-height: 200px;
-  }
-  .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
-    font-size: 10px;
+    overflow: hidden;
+    filter: invert(1);
   }
 </style>
