@@ -160,6 +160,14 @@ export function dayPhotos(dayPoints) {
   return (dayPoints || []).filter((p) => p.image);
 }
 
+// Clamp a scrubber index into [0, count-1] (returns 0 when there are no items).
+// Pure so the day-page scrubber's prev/next + keyboard stepping is unit-testable
+// without a Svelte render harness.
+export function clampIndex(i, count) {
+  if (!count || count < 1) return 0;
+  return Math.max(0, Math.min(count - 1, i));
+}
+
 // Sampled elevation series for a sparkline (caps point count).
 export function elevationSeries(points, maxPoints = 60) {
   const elevs = (points || []).map((p) => p.elevation).filter((e) => e != null);

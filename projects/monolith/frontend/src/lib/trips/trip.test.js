@@ -6,6 +6,7 @@ import {
   dayLabel,
   dayPhotos,
   routeDistanceKm,
+  clampIndex,
 } from "./trip.js";
 
 // Two days in America/Vancouver (UTC-8 in winter): the 23:30 local point of
@@ -81,5 +82,23 @@ describe("dayLabel + dayPhotos", () => {
   });
   it("dayPhotos keeps only image-bearing points", () => {
     expect(dayPhotos(POINTS).map((p) => p.id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("clampIndex (scrubber stepping)", () => {
+  it("advances and steps back within range", () => {
+    // Mirrors the day-page step(): current + delta, clamped to the photo count.
+    expect(clampIndex(0 + 1, 3)).toBe(1);
+    expect(clampIndex(1 + 1, 3)).toBe(2);
+    expect(clampIndex(2 - 1, 3)).toBe(1);
+  });
+  it("clamps at both ends instead of wrapping", () => {
+    expect(clampIndex(-1, 3)).toBe(0);
+    expect(clampIndex(2 + 1, 3)).toBe(2);
+    expect(clampIndex(99, 3)).toBe(2);
+  });
+  it("returns 0 when there are no photos", () => {
+    expect(clampIndex(0, 0)).toBe(0);
+    expect(clampIndex(5, 0)).toBe(0);
   });
 });
