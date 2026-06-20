@@ -73,27 +73,41 @@
     return idx / (day.points.length - 1);
   });
 
-  // Warm the browser/CDN cache for the neighbouring photos so arrow-stepping
-  // shows the next image instantly. Pre-signed `imgDisplay` URLs are already in
-  // the SSR payload, so this just kicks off background GETs via new Image(); it
-  // never blocks render. Browser-only (Image is undefined during SSR).
+  // Warm the browser/CDN cache so scrubbing is always instant. First the close
+  // neighbours (+-5, nearest first), then keep streaming the REST of the day
+  // forward in the background (then backward as filler), paced so we never fire
+  // a burst of hundreds of requests. Pre-signed `imgDisplay` URLs are already in
+  // the SSR payload; new Image() just kicks off background GETs and never blocks
+  // render. Browser-only (Image is undefined during SSR). `warmed` persists
+  // across scrubs so an image is only ever fetched once.
+  const warmed = new Set();
+  function warm(idx) {
+    const p = photos[idx];
+    if (!p?.imgDisplay || warmed.has(p.imgDisplay)) return false;
+    warmed.add(p.imgDisplay);
+    new Image().src = p.imgDisplay;
+    return true;
+  }
   $effect(() => {
     const i = current;
     if (typeof Image === "undefined" || !photos.length) return;
-    const preloaders = [];
-    for (const delta of [1, -1, 2, -2]) {
-      const neighbor = photos[i + delta];
-      if (neighbor?.imgDisplay) {
-        const img = new Image();
-        img.src = neighbor.imgDisplay;
-        preloaders.push(img);
-      }
+    // Priority window around the current photo, nearest first.
+    for (let d = 1; d <= 5; d++) {
+      warm(i + d);
+      warm(i - d);
     }
-    // Drop references on change/teardown so the GC can reclaim them once the
-    // browser cache is warm (no listeners are attached, so nothing leaks).
-    return () => {
-      preloaders.length = 0;
-    };
+    // Then progressively warm everything else, biased forward from i+6, paced.
+    let fwd = i + 6;
+    let back = i - 6;
+    const timer = setInterval(() => {
+      let did = false;
+      for (let n = 0; n < 3 && !did; n++) {
+        while (fwd < photos.length && !(did = warm(fwd++)));
+        if (!did) while (back >= 0 && !(did = warm(back--)));
+      }
+      if (fwd >= photos.length && back < 0) clearInterval(timer);
+    }, 100);
+    return () => clearInterval(timer);
   });
 
   // Arrow keys step through photos. No scroll-jacking: keyboard + buttons only.
