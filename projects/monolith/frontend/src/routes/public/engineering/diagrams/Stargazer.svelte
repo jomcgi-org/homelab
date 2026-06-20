@@ -5,19 +5,15 @@
   import DArrow from "$lib/public/components/diagrams/DArrow.svelte";
 </script>
 
-<Diagram label="Scoring pipeline">
-  <DGroup label="Acquire" stack>
-    <DBox role="source">Light pollution</DBox>
-    <DBox role="source">OSM roads</DBox>
-    <DBox role="source">SRTM elevation</DBox>
-    <DBox role="source">MET Norway</DBox>
+<Diagram label="Forecast scoring">
+  <DGroup label="Sources" stack>
+    <DBox role="store" sub="from SeaweedFS">LP site grid</DBox>
+    <DBox role="external">MET Norway</DBox>
   </DGroup>
+  <DArrow label="hourly" />
+  <DBox role="process" sub="dark + clear">Score hours</DBox>
   <DArrow />
-  <DGroup label="Process" stack>
-    <DBox role="process">Dark regions</DBox>
-    <DBox role="process">Road buffers</DBox>
-    <DBox role="process">Zones</DBox>
-  </DGroup>
+  <DBox role="store" sub="qualifying hours">stars.site_hours</DBox>
   <DArrow />
-  <DBox role="output" sub="0 to 100">Composite score</DBox>
+  <DBox role="output" sub="SSR, edge-cached">jomcgi.dev/app/stars</DBox>
 </Diagram>

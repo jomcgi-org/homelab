@@ -31,6 +31,12 @@
   // when an app page passes its own slug as `route`.
   const apps = [
     {
+      slug: "trips",
+      label: "Trips",
+      desc: "Geotagged photo journeys",
+      href: "/app/trips",
+    },
+    {
       slug: "hikes",
       label: "Hikes",
       desc: "Scottish hill-walk planner",
@@ -145,7 +151,27 @@
                     onclick={() => (open = false)}
                   >
                     <span class="md-apps-icon" aria-hidden="true">
-                      {#if app.slug === "hikes"}
+                      {#if app.slug === "trips"}
+                        <svg width="22" height="22" viewBox="0 0 24 24">
+                          <path
+                            d="M5 20 C 7 14 12 14 17 12"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            stroke-dasharray="0.2 3.4"
+                          />
+                          <circle cx="5" cy="20" r="1.9" fill="currentColor" stroke="none" />
+                          <path
+                            d="M17 3 C 14.5 3 13 4.8 13 6.8 C 13 9.6 17 12.5 17 12.5 C 17 12.5 21 9.6 21 6.8 C 21 4.8 19.5 3 17 3 Z"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linejoin="round"
+                          />
+                          <circle cx="17" cy="6.8" r="1.4" fill="currentColor" stroke="none" />
+                        </svg>
+                      {:else if app.slug === "hikes"}
                         <svg width="22" height="22" viewBox="0 0 24 24">
                           <path
                             d="M2 20 L9 6 L13 13 L16 8 L22 20 Z"
@@ -406,6 +432,15 @@
   .md-apps-item[data-app="notes"]:hover .md-apps-icon,
   .md-apps-item[data-app="notes"]:focus-visible .md-apps-icon {
     background: #ffd84d; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+
+  .md-apps-item[data-app="trips"]:hover,
+  .md-apps-item[data-app="trips"]:focus-visible {
+    background: #ffece9; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="trips"]:hover .md-apps-icon,
+  .md-apps-item[data-app="trips"]:focus-visible .md-apps-icon {
+    background: #ff8d7a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
   .md-apps-icon {

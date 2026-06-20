@@ -262,25 +262,29 @@ export const projects = [
     category: "apps",
     title: "Trips: Camera to Browser",
     oneLiner:
-      "A dash-mounted GoPro becomes a live trip feed: EXIF extraction, event sourcing on NATS, on-the-fly image resizing, edge caching.",
+      "A dash-mounted GoPro becomes a browseable journey: server-side EXIF extraction, Postgres-backed trip points, on-the-fly image resizing, edge caching.",
     motivation:
-      "I wanted an easy way to share trips with friends and family. A GoPro on the dash captures photos automatically, and my homelab turns them into a live feed they can follow along with, or replay later. Works for anything with GPS-tagged photos.",
+      "I wanted an easy way to share trips with friends and family. A GoPro on the dash captures photos automatically, and my homelab turns them into a map they can follow day by day, or replay later. Works for anything with GPS-tagged photos.",
     facts: [
       {
         k: "Capture",
         v: "A Python asyncio controller drives the camera over WiFi: GPS-triggered interval capture, a persistent SQLite download queue, and exponential backoff on connection drops.",
       },
       {
-        k: "Event store",
-        v: "Trip points are events in NATS JetStream. The API replays the stream on startup to rebuild state (about 200ms for 10k events) and deletions are tombstone events. No database.",
+        k: "Ingest",
+        v: "Each geotagged frame is POSTed to a private endpoint gated by Cloudflare Access at the gateway (no app-level key). The server extracts EXIF, derives a trip point, and upserts it. The write path ships only in the private image, so it is unreachable from the internet.",
+      },
+      {
+        k: "Store",
+        v: "Postgres is the source of truth for trip points; folding trips into the monolith retired the old NATS event store. Image bytes live content-addressed in SeaweedFS, so a re-POST of the same frame is idempotent.",
       },
       {
         k: "Delivery",
-        v: "27MB originals live in SeaweedFS; imgproxy resizes on the fly and Cloudflare CDN caches at the edge. Content-addressed keys mean cache invalidation is never needed.",
+        v: "imgproxy resizes originals on the fly and Cloudflare caches at the edge. Content-addressed keys mean cache invalidation is never needed.",
       },
       {
         k: "Display",
-        v: "MapLibre vector tiles with terrain hillshade, day-by-day galleries, elevation profiles, and WebSocket live updates during active trips.",
+        v: "A read-only, SSR tier renders the public pages from localhost in-pod and is CDN-cached: MapLibre vector tiles with terrain hillshade, day-by-day galleries, and an elevation-profile scrubber. No live socket, the public reads never touch the write path.",
       },
     ],
     links: [{ label: "Live trips", href: "/app/trips" }],
@@ -290,25 +294,25 @@ export const projects = [
     category: "apps",
     title: "Ships: AIS Vessel Tracking",
     oneLiner:
-      "Live maritime traffic on a map: AIS position reports streamed through the cluster to a MapLibre frontend over WebSockets.",
+      "Live maritime traffic on a map: AIS position reports streamed into the cluster, persisted to Postgres, and served as a CDN-cached MapLibre snapshot.",
     motivation:
-      "Living near the coast, I wanted to see what ships are passing by in real time. AIS data is publicly broadcast by vessels, but there is no simple way to visualize it locally. This pipeline streams AIS data through my cluster to a live map.",
+      "Living near the coast, I wanted to see what ships are passing by in real time. AIS data is publicly broadcast by vessels, but there is no simple way to visualize it locally. This pipeline streams AIS data through my cluster onto a map.",
     facts: [
       {
         k: "AIS ingest",
-        v: "A Python service holds a WebSocket to AISStream.io, filters to a Pacific Northwest bounding box, and publishes position reports to NATS JetStream.",
+        v: "A supervised background task inside the monolith holds a websocket to AISStream.io, filters to a Pacific Northwest bounding box, and batches position reports. NATS is gone: it writes straight to Postgres, and an AISStream hiccup can never crash the app.",
       },
       {
-        k: "Event sourcing",
-        v: "Same pattern as Trips: JetStream is the source of truth and the API replays the stream on startup to rebuild vessel state.",
+        k: "Storage",
+        v: "Postgres is the single source of truth. ships.positions is range-partitioned by day, so retention drops whole partitions with zero vacuum churn; a stateless persister reads affected vessels back, dedups, and upserts a latest-positions serving table.",
       },
       {
         k: "Ships API",
-        v: "REST plus WebSocket streaming, with position deduplication to cut noise from stationary vessels.",
+        v: "SSR-only REST reached from localhost in-pod: a snapshot endpoint for the initial render and a per-vessel track on click. Both are CDN-cached with ETag 304s, so they run a few times a minute regardless of how many browsers are watching.",
       },
       {
         k: "MapLibre UI",
-        v: "Vessels render as directional arrows by heading. Click for ship type, speed, course, and destination.",
+        v: "Vessels render as a GPU GeoJSON symbol layer, directional icons by heading, so panning stays smooth at scale. A separate WebGL layer maps distinct-vessel traffic density per ~500m cell.",
       },
     ],
     links: [
@@ -321,27 +325,27 @@ export const projects = [
   {
     id: "stargazer",
     category: "apps",
-    title: "Stargazer",
+    title: "Stars: Dark-Sky Windows",
     oneLiner:
-      "Scores stargazing locations by combining light pollution, road access, elevation, and rolling weather forecasts into one number.",
+      "Finds the best dark-sky viewing windows across Scotland: scores each site's upcoming hours for darkness and clear sky, then serves the ones that qualify.",
     motivation:
-      "Finding good stargazing spots means combining light pollution maps, road access, elevation for horizon clearance, and the weather forecast. Stargazer scores locations across Scotland on all of these and updates continuously.",
+      "Finding a good stargazing night means combining how dark a site is with whether the sky will actually be clear once it gets dark. Stars pairs a light-pollution grid of road-accessible dark sites with rolling weather forecasts and surfaces the upcoming hours that are both dark and clear.",
     facts: [
       {
-        k: "16-task DAG",
-        v: "Parallel acquisition of the light pollution atlas, OSM road network, SRTM elevation, and MET Norway forecasts, scheduled by dependency.",
+        k: "Site grid",
+        v: "A light-pollution grid of ~14k road-accessible dark sites is built offline and uploaded to SeaweedFS; a scheduled job wholesale-replaces the stars.sites table from it, so the scorer always works off a current site list.",
       },
       {
-        k: "Spatial analysis",
-        v: "Dark-region extraction from the light pollution raster, road buffering for accessibility, zone classification by sky quality.",
+        k: "Forecast scoring",
+        v: "An hourly job fetches MET Norway forecasts for every site and scores each future hour for darkness (sun below the threshold, astronomy via astral) and clear sky (cloud below the threshold).",
       },
       {
-        k: "Weather scoring",
-        v: "Cloud cover, humidity, fog probability, wind, and dew point with configurable weights, refreshed hourly.",
+        k: "Metric",
+        v: "The unit is clear-dark hours, not a single composite score. Qualifying hours land in Postgres (stars.site_hours); an hourly prune drops hours once their clock hour has elapsed.",
       },
       {
-        k: "Composite score",
-        v: "0 to 100: darkness 40%, weather 25%, accessibility 20%, horizon 15%. Filterable by threshold.",
+        k: "Delivery",
+        v: "A wholly public, read-only domain folded into the monolith: a slim SSR payload lists sites with their upcoming windows, the per-site history graph loads lazily, and the page is edge-cached.",
       },
     ],
     links: [
