@@ -12,13 +12,36 @@
   let { sidebar, toc = [], activeSlug = "", children } = $props();
 
   const hasToc = $derived(Array.isArray(toc) && toc.length > 0);
+
+  // Top-nav active state, mirroring the old VitePress nav: ADRs lights up on any
+  // decisions page, Architecture on any other (reference) doc. The /docs index
+  // (empty slug) leaves both inactive.
+  const onDecisions = $derived(activeSlug.startsWith("decisions"));
+  const onReference = $derived(activeSlug !== "" && !onDecisions);
 </script>
 
 <header class="docs-topbar">
-  <a class="docs-back" href="https://jomcgi.dev/">
-    <span class="docs-back-arrow" aria-hidden="true">&larr;</span>
-    <span class="docs-back-label">jomcgi.dev</span>
-  </a>
+  <div class="docs-topbar-inner">
+    <a class="docs-back" href="https://jomcgi.dev/">
+      <span class="docs-back-arrow" aria-hidden="true">&larr;</span>
+      <span class="docs-back-label">jomcgi.dev</span>
+    </a>
+
+    <nav class="docs-topnav" aria-label="Documentation sections">
+      <a class="docs-topnav-link" class:active={onReference} href="/docs/services"
+        >Architecture</a
+      >
+      <a class="docs-topnav-link" class:active={onDecisions} href="/docs/decisions"
+        >ADRs</a
+      >
+      <a
+        class="docs-topnav-link"
+        href="https://github.com/jomcgi/homelab"
+        target="_blank"
+        rel="noopener noreferrer">GitHub</a
+      >
+    </nav>
+  </div>
 </header>
 
 <div class="docs-layout" class:has-toc={hasToc}>
@@ -91,9 +114,10 @@
 <Footer />
 
 <style>
-  /* ── Top bar: a single back link to the apex, in place of the shared
-     site nav. Sticky height (~48px) matches the old nav so the sidebar /
-     TOC `top: 76px` offsets and heading scroll-margins stay valid. ── */
+  /* ── Top bar: apex back link on the left, docs section nav on the right
+     (mirrors the old VitePress nav). Sticky height (~48px) matches the old
+     site nav so the sidebar / TOC `top: 76px` offsets and heading
+     scroll-margins stay valid. ── */
   .docs-topbar {
     position: sticky;
     top: 0;
@@ -102,13 +126,20 @@
     border-bottom: 2px solid var(--ink);
   }
 
+  .docs-topbar-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 14px 32px;
+  }
+
   .docs-back {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 14px 32px;
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 600;
@@ -141,9 +172,72 @@
     border-bottom-color: var(--coral);
   }
 
+  /* ── Right-hand section nav ── */
+  .docs-topnav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .docs-topnav-link {
+    position: relative;
+    padding: 6px 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    text-decoration: none;
+    transition: color 160ms ease;
+  }
+
+  .docs-topnav-link::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 0;
+    height: 2px;
+    background: var(--coral);
+    transform: scaleX(0);
+    transition: transform 160ms ease;
+  }
+
+  .docs-topnav-link:hover {
+    color: var(--ink);
+  }
+
+  .docs-topnav-link:hover::after {
+    transform: scaleX(1);
+  }
+
+  .docs-topnav-link.active {
+    color: var(--ink);
+  }
+
+  .docs-topnav-link.active::after {
+    background: var(--ink);
+    transform: scaleX(1);
+  }
+
   @media (max-width: 1080px) {
-    .docs-back {
+    .docs-topbar-inner {
       padding: 12px 20px;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .docs-topbar-inner {
+      gap: 10px;
+    }
+    .docs-topnav {
+      gap: 0;
+    }
+    .docs-topnav-link {
+      padding: 6px 7px;
+      font-size: 11px;
+      letter-spacing: 0.06em;
     }
   }
 
