@@ -106,3 +106,28 @@ def test_reingest_same_image_is_idempotent(client, session):
 def test_post_image_without_gps_is_422(client):
     resp = _post_image(client, filename="no_gps.jpg")
     assert resp.status_code == 422
+
+
+def test_post_corrupt_image_is_422(client, session, put_calls):
+    # A non-image error body must be rejected with 422 before any S3/DB write.
+    resp = client.post(
+        "/api/trips/ingest",
+        params={"trip": "2025-liard-hot-springs"},
+        files={"image": ("bad.jpg", b"operation Lookup failed " * 64, "image/jpeg")},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not a valid image" in resp.json().get("detail", "")
+    # No object stored and no point row written for a rejected upload.
+    assert put_calls == []
+    assert session.exec(select(TripPoint)).all() == []
+
+
+def test_post_tiny_image_is_422(client, put_calls):
+    resp = client.post(
+        "/api/trips/ingest",
+        params={"trip": "2025-liard-hot-springs"},
+        files={"image": ("tiny.jpg", b"tinybytes!", "image/jpeg")},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "too small" in resp.json().get("detail", "")
+    assert put_calls == []

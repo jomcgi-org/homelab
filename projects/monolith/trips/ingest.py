@@ -7,12 +7,41 @@ image bytes plus metadata and returns a dict shaped to construct a
 out of band by the caller).
 """
 
+import io
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from PIL import Image, UnidentifiedImageError
+
 from trips import exif, transform
+
+# A real photo is KB to MB; a sub-kilobyte payload is almost certainly a
+# truncated upload or an S3 error body (the trips migration stored 67-byte
+# "operation Lookup failed" bodies as images), never a usable raster.
+_MIN_IMAGE_BYTES = 256
+
+
+def validate_image(data: bytes) -> None:
+    """Raise ``ValueError`` if ``data`` is not a decodable raster image.
+
+    Two cheap structural checks before any EXIF / S3 / DB work: a size floor
+    that rejects error bodies and truncated uploads, then a Pillow
+    ``Image.verify()`` that confirms the bytes are a parseable image without a
+    full decode. ``verify()`` leaves the Image object unusable afterwards, so
+    callers must re-open from the original bytes for any further work (EXIF
+    extraction re-opens from a temp file, which is fine).
+    """
+    if not data or len(data) < _MIN_IMAGE_BYTES:
+        raise ValueError(
+            f"image too small ({len(data) if data else 0} bytes), "
+            "likely corrupt or an error body"
+        )
+    try:
+        Image.open(io.BytesIO(data)).verify()
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
+        raise ValueError(f"not a valid image: {exc}") from exc
 
 
 def build_point(
@@ -26,8 +55,14 @@ def build_point(
 ) -> dict:
     """Extract a TripPoint-shaped dict from raw image bytes.
 
-    Raises ``ValueError`` if the image carries no usable GPS coordinates.
+    Raises ``ValueError`` if the bytes are not a decodable image, or if the
+    image carries no usable GPS coordinates.
     """
+    # Reject corrupt / undersized payloads before touching the temp file, EXIF,
+    # S3 or the DB. validate_image leaves nothing for us to reuse, so EXIF
+    # extraction below re-opens the bytes independently.
+    validate_image(image_bytes)
+
     with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
         tmp.write(image_bytes)
         tmp.flush()

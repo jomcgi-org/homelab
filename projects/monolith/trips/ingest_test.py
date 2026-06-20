@@ -56,3 +56,35 @@ def test_build_point_rejects_missing_gps():
             tags=None,
             tz="America/Vancouver",
         )
+
+
+def test_build_point_rejects_corrupt_bytes():
+    # Non-image bytes that clear the size floor (>1KB) so the Pillow decode
+    # branch is what rejects them, mirroring a larger-but-still-garbage payload.
+    corrupt = b"operation Lookup failed " * 64  # ~1.5KB of plain text, not a JPEG
+    with pytest.raises(ValueError, match="not a valid image|too small"):
+        ingest.build_point(
+            trip_slug="bc-2024",
+            image_bytes=corrupt,
+            image_key="img_corrupt.jpg",
+            source="gopro",
+            tags=None,
+            tz="America/Vancouver",
+        )
+
+
+def test_build_point_rejects_tiny():
+    with pytest.raises(ValueError, match="too small"):
+        ingest.build_point(
+            trip_slug="bc-2024",
+            image_bytes=b"tinybytes!",  # 10 bytes, below the 1KB floor
+            image_key="img_tiny.jpg",
+            source="gopro",
+            tags=None,
+            tz="America/Vancouver",
+        )
+
+
+def test_validate_image_accepts_real_jpeg():
+    # A real fixture passes verify(); guards against an over-eager floor.
+    ingest.validate_image(_GEOTAGGED.read_bytes())
