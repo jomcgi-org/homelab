@@ -73,6 +73,11 @@ class ChatMessage(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without
     role: str
     content: str
     tokens: int = Field(default=0)
+    # Grounding for an assistant turn: the public notes it touched, as a
+    # [{id, title}, ...] array (empty for user turns). Persisted so a shared
+    # snapshot can render the same GROUNDED IN chips the live app shows; it is
+    # the node_touched grounding emitted during the turn.
+    touched: list = Field(default_factory=list, sa_column=Column(_JSONB))
     created_at: datetime = Field(default_factory=_utcnow)
 
 

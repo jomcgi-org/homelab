@@ -170,6 +170,25 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 4. **Retention policy specifics.** Default TTL (if any beyond on-demand purge), the takedown process, and the public-facing notice wording.
 5. **Overlay node-touched transport.** Whether to reuse the existing `node_discovered` SSE event from the private `/explore` path to stream highlighted public nodes (proxied through SSR), or compute the touched set post-hoc.
 6. **Session/transcript write path.** Sessions, budget counters, and transcripts write to the `chat_public` schema on the Postgres primary via a dedicated role; the cookie is an opaque id over that row. Confirm whether the latency-sensitive budget counters stay in Postgres or move to a faster store, and that the public namespace egress allows the primary `-rw` endpoint for this one schema.
+7. **Shared-snapshot retention and takedown.** Opt-in sharing (see the addendum) adds `chat_public.shared_snapshots`, an independent frozen copy of transcript content. The purge tooling mandated by layer 8 must therefore cover snapshots too: a takedown by session or IP-hash must also delete that session's snapshots, and snapshots want their own TTL. No scheduled retention job exists for `chat_public` yet (only the read-time session-TTL flip), so this is recorded as an obligation the retention tooling must satisfy when it lands, not a built control.
+
+---
+
+## Addendum: opt-in transcript sharing (2026-06-20)
+
+Public chat shipped deliberately unshareable: a transcript lived only on the server (layer 4) and in the visitor's session, with no addressable URL. This addendum adds an **opt-in, read-only "share this chat"** capability without weakening any of the eight layers.
+
+**Decision.** A visitor can explicitly share a conversation. The share action mints an immutable, read-only **snapshot** of the transcript at an unguessable opaque id (`secrets.token_urlsafe`, the same posture as a session id), served at `/public/app/notes/s/<id>`. The live session, its `httpOnly` cookie, and its budget are never exposed: sharing does not hand anyone the session, only a frozen copy. This was chosen over putting the live session id in a URL, which would let a recipient append to the conversation and burn the owner's budget, and would share by default rather than on intent.
+
+**Why server-authoritative minting.** The snapshot is built server-side from the stored transcript (`sessions.get_transcript`), never from client-supplied content. This is the integrity counterpart to layer 4: just as the server ignores client-supplied history when generating, it ignores client-supplied content when sharing, so a forged request body cannot fabricate a public artifact that puts words in the model's mouth. A test asserts forged body fields never reach the snapshot.
+
+**Consistency with the existing layers.**
+
+- **Rendering (layer 8).** The shared view renders the transcript through the same sanitized-markdown path as the live overlay (HTML-escaped, no raw HTML, no `javascript:`/`data:` URLs). Model output stays untrusted on the read path too. The page is `noindex`: an anonymous visitor's shared link is their content, not site content we want crawled.
+- **Read/write isolation (ADR 004, layer 4).** Minting writes to `chat_public` on the primary via `public_writer`; the public read route reads the snapshot via `public_reader` on the replica, so the public read path never touches the primary. The streaming-replication lag (single-digit ms) is dwarfed by the human and network round-trip between minting a link and anyone opening it, so a freshly minted link is reliably visible by the time it is followed; the isolation is worth more than closing a sub-second window.
+- **Confinement (layer 5).** Grounding is persisted per assistant turn (`chat_public.messages.touched`, the public notes the turn touched) and carried into the snapshot so the shared view shows the same "grounded in" chips. That set is, by construction, public-notes-only, so nothing private is exposed by surfacing it.
+
+**New obligation (threat 8 / layer 8).** `shared_snapshots` is a second store of anonymous user content, an independent frozen copy that outlives its session by design (the `source_session_id` FK is `ON DELETE SET NULL` so routine session aging never breaks a live link). That independence means the mandatory purge/takedown tooling must explicitly cover snapshots: a takedown by session or IP-hash must also delete that session's snapshots, and snapshots want their own retention TTL. Recorded as Open Question 7.
 
 ---
 
