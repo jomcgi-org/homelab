@@ -102,10 +102,11 @@
     align-items: center;
     gap: 20px;
     padding: 20px 0;
-    border-bottom: 2px solid #1a1a1a;
+    border-bottom: 3px solid #1a1a1a;
     margin-bottom: 24px;
   }
 
+  /* Neo-brutalist nav buttons: chunky ink border + hard offset drop-shadow. */
   .navbtn {
     display: flex;
     align-items: center;
@@ -116,21 +117,30 @@
     font-weight: 600;
     color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     background: white;
-    border: 2px solid #1a1a1a;
+    border: 3px solid #1a1a1a;
+    box-shadow: 3px 3px 0 0 #1a1a1a;
     text-decoration: none;
     cursor: pointer;
     transition:
       background 0.15s,
-      color 0.15s;
+      color 0.15s,
+      box-shadow 0.1s,
+      transform 0.1s;
   }
   a.navbtn:hover {
     background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     color: white;
   }
+  /* Tactile "press": the button shifts onto its shadow. */
+  a.navbtn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0 0 #1a1a1a;
+  }
   .navbtn.disabled {
     opacity: 0.4;
     cursor: not-allowed;
     pointer-events: none;
+    box-shadow: none;
   }
   .chev {
     width: 16px;

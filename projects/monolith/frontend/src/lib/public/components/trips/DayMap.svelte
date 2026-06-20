@@ -3,14 +3,13 @@
   import "maplibre-gl/dist/maplibre-gl.css";
 
   // Single-day route map, a faithful port of the original React DayMap. The
-  // whole container is CSS `invert(1)`ed so the light Carto Positron basemap
-  // reads as a dark map: every colour drawn into it is pre-inverted so it shows
-  // correctly after the filter (a black line draws as white, the day colour is
-  // inverted, etc). Layers, in z-order: a thick `route-line` (black -> white),
-  // a thin `route-color-accent` (inverted day colour) down its centre, and a
-  // wide transparent `route-hit-area` for click-to-select. DOM markers mark the
-  // start, end and the current photo (a square). A sun-lit terrain hillshade
-  // sits under the basemap, relit from the photo-time sun azimuth/altitude.
+  // basemap is the light Carto Positron style, drawn in its normal light form
+  // (no CSS inversion), with a neo-brutalist high-contrast route on top. Layers,
+  // in z-order: a thick ink `route-line` casing, a thin `route-color-accent`
+  // (the real day colour) down its centre, and a wide transparent
+  // `route-hit-area` for click-to-select. DOM markers mark the start, end and
+  // the current photo (a day-colour square). A subtle terrain hillshade sits
+  // under the basemap, its illumination direction relit from the photo-time sun.
   //
   // `currentCoords` ([lng, lat] or null) is the current photo's location with the
   // page's GPS interpolation already applied, so the square marker tracks photos
@@ -51,15 +50,6 @@
     ];
   }
 
-  // Invert a #rrggbb so it displays as the intended colour after the container's
-  // CSS invert(1). Returns an rgb() string.
-  function invertColor(hex) {
-    const r = 255 - parseInt(hex.slice(1, 3), 16);
-    const g = 255 - parseInt(hex.slice(3, 5), 16);
-    const b = 255 - parseInt(hex.slice(5, 7), 16);
-    return `rgb(${r}, ${g}, ${b})`;
-  }
-
   // Drop points within ~20m of the previous one (multiple GPS sources stack
   // duplicates that thicken the rendered line).
   function dedupePoints(pts) {
@@ -84,29 +74,18 @@
     return ((azimuthDeg % 360) + 360) % 360;
   }
 
+  // Subtle, standard (non-inverted) hillshade: shadows dark, highlights light.
+  // The sun still sets the illumination direction (azimuth) and the relief
+  // exaggeration (terrain reads stronger at low sun); the colours are fixed
+  // normals so the shading sits quietly under the light Positron basemap.
   function sunIntensity(sun) {
+    const shadowColor = "#5a5a5a";
+    const highlightColor = "#ffffff";
     if (!sun) {
-      return {
-        exaggeration: 0.8,
-        shadowColor: "#cccccc",
-        highlightColor: "#000000",
-      };
+      return { exaggeration: 0.8, shadowColor, highlightColor };
     }
     const altitudeDeg = (sun.altitude * 180) / Math.PI;
     const lerp = (a, b, t) => a + (b - a) * Math.max(0, Math.min(1, t));
-    const lerpColor = (c1, c2, t) => {
-      const r1 = parseInt(c1.slice(1, 3), 16),
-        g1 = parseInt(c1.slice(3, 5), 16),
-        b1 = parseInt(c1.slice(5, 7), 16);
-      const r2 = parseInt(c2.slice(1, 3), 16),
-        g2 = parseInt(c2.slice(3, 5), 16),
-        b2 = parseInt(c2.slice(5, 7), 16);
-      const r = Math.round(lerp(r1, r2, t)),
-        g = Math.round(lerp(g1, g2, t)),
-        b = Math.round(lerp(b1, b2, t));
-      return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
-    };
-    const t = (altitudeDeg + 12) / 27;
     let exaggeration;
     if (altitudeDeg < -6) {
       exaggeration = lerp(0.2, 0.5, (altitudeDeg + 12) / 6);
@@ -115,8 +94,6 @@
     } else {
       exaggeration = 1.0;
     }
-    const shadowColor = lerpColor("#222222", "#ffffff", t);
-    const highlightColor = lerpColor("#111111", "#000000", t);
     return { exaggeration, shadowColor, highlightColor };
   }
 
@@ -142,7 +119,8 @@
         requestAnimationFrame(animate);
       } else {
         const el = document.createElement("div");
-        el.style.cssText = `width:24px;height:24px;background:${invertColor(dayColor)};border:3px solid black;cursor:pointer;`;
+        // Day-colour square with a chunky ink border (neo-brutalist).
+        el.style.cssText = `width:24px;height:24px;background:${dayColor};border:3px solid #1a1a1a;cursor:pointer;`;
         photoMarker = new maplibre.Marker({ element: el })
           .setLngLat(coords)
           .addTo(map);
@@ -235,7 +213,7 @@
               "hillshade-exaggeration": intensity.exaggeration,
               "hillshade-shadow-color": intensity.shadowColor,
               "hillshade-highlight-color": intensity.highlightColor,
-              "hillshade-accent-color": "#000000",
+              "hillshade-accent-color": "transparent",
               "hillshade-illumination-direction":
                 illuminationDirection(sunPosition),
             },
@@ -253,23 +231,23 @@
               geometry: { type: "LineString", coordinates },
             },
           });
-          // Thick black line: inverts to a clean white route.
+          // Thick ink casing: reads boldly on the light Positron basemap.
           map.addLayer({
             id: "route-line",
             type: "line",
             source: "route",
             layout: { "line-join": "round", "line-cap": "round" },
-            paint: { "line-color": "#000000", "line-width": 7, "line-opacity": 1 },
+            paint: { "line-color": "#1a1a1a", "line-width": 6, "line-opacity": 1 },
           });
-          // Thin inverted-day-colour accent down the centre.
+          // Thin real-day-colour core down the centre of the ink casing.
           map.addLayer({
             id: "route-color-accent",
             type: "line",
             source: "route",
             layout: { "line-join": "round", "line-cap": "round" },
             paint: {
-              "line-color": invertColor(dayColor),
-              "line-width": 1.5,
+              "line-color": dayColor,
+              "line-width": 2.5,
               "line-opacity": 1,
             },
           });
@@ -307,13 +285,14 @@
           }
         }
 
-        // Start / end DOM markers (inverted: black draws white, white draws
-        // black). The square current-photo marker is created by the $effect.
+        // Start / end DOM markers: start = solid ink dot with a white ring,
+        // end = white dot with an ink ring. The square current-photo marker is
+        // created by the $effect.
         const pts = geoPoints();
         if (pts.length > 0) {
           const startEl = document.createElement("div");
           startEl.style.cssText =
-            "width:16px;height:16px;background:#000000;border:3px solid #ffffff;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+            "width:16px;height:16px;background:#1a1a1a;border:3px solid #ffffff;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
           new maplibre.Marker({ element: startEl })
             .setLngLat([pts[0].lng, pts[0].lat])
             .addTo(map);
@@ -326,7 +305,7 @@
           if (distance > 0.01) {
             const endEl = document.createElement("div");
             endEl.style.cssText =
-              "width:14px;height:14px;background:#ffffff;border:3px solid #000000;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+              "width:14px;height:14px;background:#ffffff;border:3px solid #1a1a1a;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
             new maplibre.Marker({ element: endEl })
               .setLngLat([last.lng, last.lat])
               .addTo(map);
@@ -355,11 +334,14 @@
 <div class="map" style={`height:${height}`} bind:this={mapContainer}></div>
 
 <style>
-  /* The whole map is inverted so the light Carto basemap reads dark; every
-     colour drawn into it is pre-inverted to compensate. */
+  /* Light Positron basemap framed as a neo-brutalist card: chunky ink border
+     and a hard offset drop-shadow (no blur). box-sizing keeps the framed box at
+     its given height so the border does not change the outer dimensions. */
   .map {
     width: 100%;
+    box-sizing: border-box;
     overflow: hidden;
-    filter: invert(1);
+    border: 3px solid #1a1a1a;
+    box-shadow: 5px 5px 0 0 #1a1a1a;
   }
 </style>
