@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from home.observability.kubernetes import KubernetesClient, _parse_cpu, _parse_memory
+from cluster.kubernetes import KubernetesClient, _parse_cpu, _parse_memory
 
 
 @pytest.fixture
@@ -39,9 +39,9 @@ async def test_count_nodes(k8s_client):
     )
 
     with (
-        patch("home.observability.kubernetes.config.load_incluster_config"),
-        patch("home.observability.kubernetes.ApiClient", return_value=mock_api),
-        patch("home.observability.kubernetes.client.CoreV1Api", return_value=mock_v1),
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
     ):
         count = await k8s_client.count_nodes()
 
@@ -59,10 +59,10 @@ async def test_count_argocd_applications(k8s_client):
     )
 
     with (
-        patch("home.observability.kubernetes.config.load_incluster_config"),
-        patch("home.observability.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
         patch(
-            "home.observability.kubernetes.client.CustomObjectsApi",
+            "cluster.kubernetes.client.CustomObjectsApi",
             return_value=mock_custom,
         ),
     ):
@@ -118,11 +118,11 @@ async def test_aggregate_node_resources_uses_rss_not_working_set(k8s_client):
     )
 
     with (
-        patch("home.observability.kubernetes.config.load_incluster_config"),
-        patch("home.observability.kubernetes.ApiClient", return_value=mock_api),
-        patch("home.observability.kubernetes.client.CoreV1Api", return_value=mock_v1),
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
         patch(
-            "home.observability.kubernetes.client.CustomObjectsApi",
+            "cluster.kubernetes.client.CustomObjectsApi",
             return_value=mock_custom,
         ),
     ):
@@ -172,11 +172,11 @@ async def test_aggregate_node_resources_falls_back_to_working_set(k8s_client):
     mock_v1.connect_get_node_proxy_with_path = AsyncMock(side_effect=_proxy)
 
     with (
-        patch("home.observability.kubernetes.config.load_incluster_config"),
-        patch("home.observability.kubernetes.ApiClient", return_value=mock_api),
-        patch("home.observability.kubernetes.client.CoreV1Api", return_value=mock_v1),
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
         patch(
-            "home.observability.kubernetes.client.CustomObjectsApi",
+            "cluster.kubernetes.client.CustomObjectsApi",
             return_value=mock_custom,
         ),
     ):
@@ -192,8 +192,8 @@ async def test_close_cleans_up(k8s_client):
     mock_api.close = AsyncMock()
 
     with (
-        patch("home.observability.kubernetes.config.load_incluster_config"),
-        patch("home.observability.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
     ):
         # Force client creation
         await k8s_client._ensure_client()

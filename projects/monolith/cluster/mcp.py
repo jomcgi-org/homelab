@@ -17,7 +17,7 @@ import logging
 
 from app.mcp_app import mcp
 from cluster import summarize
-from shared.kubernetes import RESOURCE_KINDS, KubernetesClient, UnknownKindError
+from cluster.kubernetes import RESOURCE_KINDS, KubernetesClient, UnknownKindError
 
 logger = logging.getLogger(__name__)
 

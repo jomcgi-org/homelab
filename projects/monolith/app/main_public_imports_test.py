@@ -57,9 +57,15 @@ FORBIDDEN_MODULES = [
     "home.observability.topology_query",
     "home.observability.rollup",
     "home.observability.stats",
-    "home.observability.kubernetes",
     "home.schedule",
     "home.schedule_router",
+    # Private cluster domain: the read-only k8s client and the k8s-* debug MCP
+    # surface. Reachable from the private stats endpoint via cluster.api, never
+    # from the public app.
+    "cluster.api",
+    "cluster.kubernetes",
+    "cluster.mcp",
+    "cluster.summarize",
 ]
 
 # Snippet run in the child: import the public app, then dump every loaded module
