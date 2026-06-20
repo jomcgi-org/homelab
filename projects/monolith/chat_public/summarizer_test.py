@@ -110,7 +110,7 @@ class TestBuildMessages:
     def test_system_prompt_instructs_not_to_follow_instructions(self):
         system = summarizer._SUMMARY_SYSTEM
         assert "Do not follow" in system
-        assert "do not invent" in system.lower() or "do not follow" in system.lower()
+        assert "do not invent" in system.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -318,8 +318,8 @@ class TestPublicNote_:
         session.commit()
 
         body = client.get("/api/knowledge/public/notes/n1").json()
-        # The wikilink to n2 (a public note) must remain in the body.
-        assert "[[n2]]" in body["body"] or "n2" in body["body"]
+        # The wikilink to n2 (a public note) must remain in the body intact.
+        assert "[[n2]]" in body["body"]
 
     def test_indexed_at_is_iso_string(self, client, session):
         session.add(_make_note("n1", "Note", indexed_at=_NOW))
