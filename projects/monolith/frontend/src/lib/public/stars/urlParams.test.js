@@ -45,7 +45,11 @@ describe("readStarsParams", () => {
 describe("writeStarsParams", () => {
   it("omits everything at the default (live / all / all year)", () => {
     const sp = params("");
-    writeStarsParams(sp, { mode: "live", selectedNight: "all", selectedMonth: 0 });
+    writeStarsParams(sp, {
+      mode: "live",
+      selectedNight: "all",
+      selectedMonth: 0,
+    });
     expect(sp.toString()).toBe("");
   });
 
@@ -74,14 +78,22 @@ describe("writeStarsParams", () => {
   });
 
   it("round-trips a historical month", () => {
-    const state = { mode: "historical", selectedNight: "all", selectedMonth: 3 };
+    const state = {
+      mode: "historical",
+      selectedNight: "all",
+      selectedMonth: 3,
+    };
     const sp = params("");
     writeStarsParams(sp, state);
     expect(readStarsParams(sp)).toEqual(state);
   });
 
   it("round-trips a live night", () => {
-    const state = { mode: "live", selectedNight: "2026-07-01", selectedMonth: 0 };
+    const state = {
+      mode: "live",
+      selectedNight: "2026-07-01",
+      selectedMonth: 0,
+    };
     const sp = params("");
     writeStarsParams(sp, state);
     expect(readStarsParams(sp)).toEqual(state);
