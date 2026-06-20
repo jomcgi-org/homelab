@@ -525,12 +525,6 @@ py_test(
         "@pip//pytest",
         "@pip//sqlmodel",
         "@pip//tzdata",
-    name = "cluster_summarize_test",
-    srcs = ["cluster/summarize_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
     ],
 )
 
@@ -546,6 +540,20 @@ py_test(
     deps = [
         ":monolith_public_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "cluster_summarize_test",
+    srcs = ["cluster/summarize_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "cluster_mcp_test",
     srcs = ["cluster/mcp_test.py"],
     imports = ["."],
