@@ -9,8 +9,6 @@ multirun(
     commands = [
         "//projects/hikes/frontend:frontend.push",
         "//projects/hikes/frontend:hikes.push",
-        "//projects/websites/docs.jomcgi.dev:docs.push",
-        "//projects/websites/jomcgi.dev:jomcgi.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
