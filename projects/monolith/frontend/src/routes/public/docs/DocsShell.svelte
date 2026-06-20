@@ -1,5 +1,6 @@
 <script>
   import { Footer } from "$lib/public/components";
+  import DocsSearch from "./DocsSearch.svelte";
 
   /**
    * @type {{
@@ -18,6 +19,42 @@
   // (empty slug) leaves both inactive.
   const onDecisions = $derived(activeSlug.startsWith("decisions"));
   const onReference = $derived(activeSlug !== "" && !onDecisions);
+
+  // Flat doc list for search: titles/slugs only (already client-safe), tagged
+  // with their sidebar group so results can show where each doc lives.
+  const allDocs = $derived([
+    ...sidebar.reference.map((d) => ({
+      slug: d.slug,
+      title: d.title,
+      group: "Reference",
+    })),
+    ...(sidebar.decisions.index
+      ? [
+          {
+            slug: sidebar.decisions.index.slug,
+            title: sidebar.decisions.index.title,
+            group: "Decisions",
+          },
+        ]
+      : []),
+    ...sidebar.decisions.categories.flatMap((c) =>
+      c.items.map((d) => ({ slug: d.slug, title: d.title, group: c.name })),
+    ),
+  ]);
+
+  // Collapsible ADR categories (accordion), matching VitePress's `collapsed`
+  // groups. Start collapsed except the category holding the active doc, which
+  // opens so the current page is visible on load.
+  const DECISIONS_PREFIX = "decisions/";
+  const activeCat = activeSlug.startsWith(DECISIONS_PREFIX)
+    ? activeSlug.slice(DECISIONS_PREFIX.length).split("/")[0]
+    : null;
+  let openCats = $state(activeCat ? { [activeCat]: true } : {});
+
+  /** @param {string} name */
+  function toggleCat(name) {
+    openCats = { ...openCats, [name]: !openCats[name] };
+  }
 </script>
 
 <header class="docs-topbar">
@@ -27,20 +64,28 @@
       <span class="docs-back-label">jomcgi.dev</span>
     </a>
 
-    <nav class="docs-topnav" aria-label="Documentation sections">
-      <a class="docs-topnav-link" class:active={onReference} href="/docs/services"
-        >Architecture</a
-      >
-      <a class="docs-topnav-link" class:active={onDecisions} href="/docs/decisions"
-        >ADRs</a
-      >
-      <a
-        class="docs-topnav-link"
-        href="https://github.com/jomcgi/homelab"
-        target="_blank"
-        rel="noopener noreferrer">GitHub</a
-      >
-    </nav>
+    <div class="docs-topbar-right">
+      <DocsSearch docs={allDocs} />
+
+      <nav class="docs-topnav" aria-label="Documentation sections">
+        <a
+          class="docs-topnav-link"
+          class:active={onReference}
+          href="/docs/services">Architecture</a
+        >
+        <a
+          class="docs-topnav-link"
+          class:active={onDecisions}
+          href="/docs/decisions">ADRs</a
+        >
+        <a
+          class="docs-topnav-link"
+          href="https://github.com/jomcgi/homelab"
+          target="_blank"
+          rel="noopener noreferrer">GitHub</a
+        >
+      </nav>
+    </div>
   </div>
 </header>
 
@@ -74,19 +119,45 @@
       </ul>
 
       {#each sidebar.decisions.categories as cat}
-        <p class="side-subhead">{cat.name}</p>
-        <ul class="side-list">
-          {#each cat.items as item}
-            <li>
-              <a
-                class="side-link"
-                class:active={activeSlug === item.slug}
-                href={`/docs/${item.slug}`}
-                title={item.title}>{item.title}</a
-              >
-            </li>
-          {/each}
-        </ul>
+        <button
+          type="button"
+          class="side-cat"
+          aria-expanded={!!openCats[cat.name]}
+          onclick={() => toggleCat(cat.name)}
+        >
+          <svg
+            class="side-cat-chevron"
+            class:open={openCats[cat.name]}
+            width="9"
+            height="9"
+            viewBox="0 0 10 10"
+            aria-hidden="true"
+          >
+            <path
+              d="M3 1 L7 5 L3 9"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="square"
+            />
+          </svg>
+          <span class="side-cat-name">{cat.name}</span>
+          <span class="side-cat-count">{cat.items.length}</span>
+        </button>
+        {#if openCats[cat.name]}
+          <ul class="side-list">
+            {#each cat.items as item}
+              <li>
+                <a
+                  class="side-link"
+                  class:active={activeSlug === item.slug}
+                  href={`/docs/${item.slug}`}
+                  title={item.title}>{item.title}</a
+                >
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {/each}
     </nav>
   </aside>
@@ -172,7 +243,14 @@
     border-bottom-color: var(--coral);
   }
 
-  /* ── Right-hand section nav ── */
+  /* ── Right-hand cluster: search + section nav ── */
+  .docs-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+
   .docs-topnav {
     display: flex;
     align-items: center;
@@ -285,14 +363,47 @@
     margin-top: 0;
   }
 
-  .side-subhead {
+  /* ── Collapsible ADR category (accordion disclosure) ── */
+  .side-cat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    margin: 12px 0 6px;
+    padding: 4px 0;
+    background: none;
+    border: none;
+    cursor: pointer;
     font-family: var(--mono);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--ink-3);
-    margin: 12px 0 6px;
+    text-align: left;
+    transition: color 120ms ease;
+  }
+
+  .side-cat:hover {
+    color: var(--ink);
+  }
+
+  .side-cat-chevron {
+    flex: 0 0 auto;
+    transition: transform 140ms ease;
+  }
+
+  .side-cat-chevron.open {
+    transform: rotate(90deg);
+  }
+
+  .side-cat-name {
+    flex: 1 1 auto;
+  }
+
+  .side-cat-count {
+    flex: 0 0 auto;
+    color: var(--ink-3);
   }
 
   .side-list {
