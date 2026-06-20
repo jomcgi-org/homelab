@@ -57,8 +57,6 @@ js_library(
         ":node_modules/d3-quadtree",
         ":node_modules/d3-selection",
         ":node_modules/d3-zoom",
-        # Shared design tokens consumed via @import in lib/global.css.
-        "//projects/websites/shared:css",
     ],
 )
 
@@ -126,8 +124,6 @@ js_library(
         ":node_modules/d3-quadtree",
         ":node_modules/d3-selection",
         ":node_modules/d3-zoom",
-        # Shared design tokens consumed via @import in lib/global.css.
-        "//projects/websites/shared:css",
     ],
 )
 
