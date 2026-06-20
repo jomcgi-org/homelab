@@ -3879,3 +3879,110 @@ semgrep_target_test(
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_docs_manifest",
 )
+
+# Hand-registered (chat_public is gazelle-excluded): rolling-summary helpers
+# (_format_turns, _build_messages, summarize) with mocked inference.complete.
+py_test(
+    name = "chat_public_summarizer_test",
+    srcs = ["chat_public/summarizer_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (knowledge is gazelle-excluded): pure HTTP-cache helpers
+# (_as_utc, _graph_etag, _GRAPH_CACHE_CONTROL).
+py_test(
+    name = "knowledge_http_cache_test",
+    srcs = ["knowledge/http_cache_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+# Hand-registered (knowledge is gazelle-excluded): PublicNote, PublicNoteLink,
+# PublicChunk SQLModel definitions -- instantiation and SQLite round-trips.
+py_test(
+    name = "knowledge_public_models_test",
+    srcs = ["knowledge/public_models_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (knowledge is gazelle-excluded): public knowledge graph +
+# note endpoints via TestClient + SQLite session.
+py_test(
+    name = "knowledge_public_router_test",
+    srcs = ["knowledge/public_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (home is gazelle-excluded): ClickHouse-backed topology
+# builder -- _ch_scalar, _ch_rows, _query_node, _query_edge, build_topology.
+py_test(
+    name = "home_observability_topology_query_test",
+    srcs = ["home/observability/topology_query_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+# Hand-registered (trips is gazelle-excluded): SeaweedFS S3 image upload --
+# missing endpoint, scheme guard, head-hit skip, auto-create bucket.
+py_test(
+    name = "trips_s3_test",
+    srcs = ["trips/s3_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//botocore",
+        "@pip//pytest",
+    ],
+)
+
+# Hand-registered: CERRA backfill pure helpers (_to_xyz, sun_elevation_deg).
+# xarray/cfgrib/scipy are mocked via sys.modules so only numpy is needed.
+py_test(
+    name = "stars_backfill_cerra_test",
+    srcs = [
+        "stars/grid_gen/backfill_cerra.py",
+        "stars/grid_gen/backfill_cerra_test.py",
+    ],
+    imports = ["stars/grid_gen"],
+    deps = [
+        "@pip//numpy",
+        "@pip//pytest",
+    ],
+)
+
+# Hand-registered: ERA5 climatology backfill pure helpers (stdlib-only module).
+py_test(
+    name = "stars_backfill_climatology_test",
+    srcs = [
+        "stars/grid_gen/backfill_climatology.py",
+        "stars/grid_gen/backfill_climatology_test.py",
+    ],
+    imports = ["stars/grid_gen"],
+    deps = ["@pip//pytest"],
+)
