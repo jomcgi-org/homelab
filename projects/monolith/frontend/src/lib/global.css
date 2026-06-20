@@ -7,7 +7,7 @@
  * the browser's serif fallback (because font-family: var(--font-mono)
  * resolves to nothing) and brutalist borders/badges going invisible.
  */
-@import "../../../../websites/shared/tokens.css";
+@import "./styles/shared/tokens.css";
 
 /* ── Reset ──────────────────────────────────── */
 *,

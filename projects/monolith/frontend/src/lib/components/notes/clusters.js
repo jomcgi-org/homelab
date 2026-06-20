@@ -1,5 +1,5 @@
 // Maps Note.type values to CSS custom-property references defined in
-// projects/websites/shared/tokens.css. Unknown types fall through to
+// src/lib/styles/shared/tokens.css. Unknown types fall through to
 // --cluster-other so new types appear in the legend without a code
 // change.
 
