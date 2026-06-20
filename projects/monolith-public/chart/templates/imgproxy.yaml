@@ -14,9 +14,10 @@
 # in-cluster seaweedfs-s3 endpoint, which is cluster-network traffic and so is
 # not blocked by the namespace EgressNetwork deny.
 #
-# Security boundary: IMGPROXY_ALLOWED_SOURCES locks every request to
-# s3://monolith-trips/, which is what makes IMGPROXY_ALLOW_INSECURE_URLS (unsigned
-# URLs) safe. Per the resource-sizing convention this sets a CPU request but NO
+# Security boundary: URLs are HMAC-signed (IMGPROXY_KEY/SALT synced from
+# 1Password), so imgproxy only serves paths the frontend SSR signer produced;
+# IMGPROXY_ALLOWED_SOURCES additionally locks every request to s3://monolith-trips/
+# as defense in depth. Per the resource-sizing convention this sets a CPU request but NO
 # CPU limit (image decode is bursty CPU-bound work; a limit only throttles it)
 # and pins memory request == limit.
 {{- include "homelab.deployment" (dict "context" . "component" "imgproxy") }}

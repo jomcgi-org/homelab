@@ -7,6 +7,12 @@ import {
   TRIPS_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../../lib/cache-headers.js";
+// Server-only: signs imgproxy URLs with the HMAC secret. Relative (not $lib) so
+// vitest, which loads this module directly without the SvelteKit $lib alias, can
+// resolve it (the signer's $env/dynamic/private import is aliased in
+// vitest.config.js). $lib/server/** is never client-bundled, so the secret stays
+// server-side; we pre-sign here and hand the components finished URLs.
+import { signedImgUrl } from "../../../../../lib/server/trips-img.js";
 
 // No URL fallback: API_BASE is injected via values.yaml in prod; a localhost
 // fallback would silently route to the wrong backend if the env var were missing
@@ -35,5 +41,34 @@ export async function load({ params, fetch, setHeaders }) {
   setHeaders(headers);
 
   const { trip, points } = await res.json();
-  return { trip, points };
+
+  // Pre-sign every image URL server-side and attach it to the data. The day
+  // scrubber needs the `display` preset, the grids/timeline need `gallery`, so
+  // each image-bearing point carries both. Cover + highlight thumbs use
+  // `gallery`. Fields are only added when the source image exists, so trips /
+  // points without photos pass through unchanged.
+  const signedPoints = (points ?? []).map((p) =>
+    p.image
+      ? {
+          ...p,
+          imgDisplay: signedImgUrl(p.image, "display"),
+          imgGallery: signedImgUrl(p.image, "gallery"),
+        }
+      : p,
+  );
+
+  let signedTrip = trip;
+  if (trip) {
+    signedTrip = { ...trip };
+    if (trip.default_image) {
+      signedTrip.coverUrl = signedImgUrl(trip.default_image, "gallery");
+    }
+    if (Array.isArray(trip.highlights)) {
+      signedTrip.highlights = trip.highlights.map((h) =>
+        h.image ? { ...h, imgGallery: signedImgUrl(h.image, "gallery") } : h,
+      );
+    }
+  }
+
+  return { trip: signedTrip, points: signedPoints };
 }

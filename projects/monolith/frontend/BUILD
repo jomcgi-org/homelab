@@ -195,6 +195,9 @@ js_library(
         # Resolved by the $app/environment alias in vitest.config.js; lives
         # outside src/ so it never reaches the app bundle.
         "test/app-environment-stub.js",
+        # Resolved by the $env/dynamic/private alias in vitest.config.js; same
+        # rationale: lives outside src/ so it never reaches the app bundle.
+        "test/env-dynamic-private-stub.js",
     ],
     deps = [
         ":node_modules/vitest",

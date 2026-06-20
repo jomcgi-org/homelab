@@ -11,6 +11,13 @@ export default defineConfig({
       "$app/environment": fileURLToPath(
         new URL("./test/app-environment-stub.js", import.meta.url),
       ),
+      // Same reason for `$env/dynamic/private` (used by lib/server/trips-img.js
+      // and, transitively, the trips server loads). The real module is injected
+      // by SvelteKit at build time; the stub exposes process.env so tests can
+      // control IMGPROXY_KEY/SALT.
+      "$env/dynamic/private": fileURLToPath(
+        new URL("./test/env-dynamic-private-stub.js", import.meta.url),
+      ),
     },
   },
   test: {

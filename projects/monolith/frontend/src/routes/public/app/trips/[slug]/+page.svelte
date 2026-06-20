@@ -1,7 +1,6 @@
 <script>
   import TripMap from "$lib/public/components/trips/TripMap.svelte";
   import ElevationChart from "$lib/public/components/trips/ElevationChart.svelte";
-  import { imgUrl } from "$lib/trips/images.js";
   import {
     deriveTripStats,
     dayColor,
@@ -167,8 +166,8 @@ ${trkpts}
                   onmouseenter={() => (hoveredDay = (h.day ?? 1) - 1)}
                   onmouseleave={() => (hoveredDay = null)}
                 >
-                  {#if h.image}
-                    <img src={imgUrl(h.image, "gallery")} alt={h.title} loading="lazy" />
+                  {#if h.imgGallery}
+                    <img src={h.imgGallery} alt={h.title} loading="lazy" />
                   {:else}
                     <span class="hl-fill" aria-hidden="true"></span>
                   {/if}
