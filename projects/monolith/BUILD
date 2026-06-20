@@ -121,6 +121,19 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
 )
 
+# Stdlib-only generator for the PUBLIC docs manifest consumed by the SvelteKit
+# /docs route. Globs the public-allowlisted repo docs (top-level docs/*.md plus
+# the docs/decisions/** ADR tree) and writes the committed
+# projects/monolith/frontend/src/lib/public/docs/docs-manifest.json. Run via
+# `bazel run //projects/monolith:gen_docs_manifest`; freshness is enforced by the
+# manifest staleness check in bazel/images/validate-generate-scripts.sh. Same no
+# `imports` attr rationale as gen_repo_docs_manifest above.
+py_venv_binary(
+    name = "gen_docs_manifest",
+    main = "knowledge/tools/gen_docs_manifest.py",
+    visibility = ["//:__subpackages__"],
+)
+
 py_library(
     name = "monolith_backend",
     srcs = glob(
@@ -2193,6 +2206,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_gen_docs_manifest_test",
+    srcs = ["knowledge/gen_docs_manifest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_repo_docs_test",
     srcs = ["knowledge/repo_docs_test.py"],
     imports = ["."],
@@ -3831,4 +3854,17 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_repo_docs_manifest",
+)
+
+semgrep_target_test(
+    name = "gen_docs_manifest_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-stdlib-fastapi",
+        "tainted-path-traversal-pillow-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":gen_docs_manifest",
 )

@@ -86,7 +86,12 @@ repos:
     hooks:
       - id: semgrep
         args: ["--config", "bazel/semgrep/rules/", "--error"]
-        exclude: "^bazel/semgrep/rules/"
+        # The docs manifest bakes full markdown bodies (incl. ADR YAML/image-tag
+        # snippets) inline as JSON, so semgrep would flag those examples as real
+        # config. It is a generated artifact; the source docs are linted in place.
+        # pre-commit's exclude filters files before they reach semgrep (a
+        # .semgrepignore entry is not honoured for explicitly-passed files).
+        exclude: "^(bazel/semgrep/rules/|projects/monolith/frontend/src/lib/public/docs/docs-manifest\\.json$)"
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.2
     hooks:
