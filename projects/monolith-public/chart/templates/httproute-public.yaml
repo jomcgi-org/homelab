@@ -27,22 +27,6 @@ spec:
           port: {{ .Values.frontend.service.port | int }}
       timeouts:
         request: 60s
-    # /img/ -> imgproxy. This is a DELIBERATE, narrow exception to the otherwise
-    # frontend-only routing: imgproxy is read-only and tightly locked down
-    # (IMGPROXY_ALLOWED_SOURCES pins it to the monolith-trips bucket,
-    # IMGPROXY_ONLY_PRESETS caps it to the named resize presets), so exposing it
-    # same-origin replaces the old img.jomcgi.dev tunnel without widening the
-    # attack surface. No URLRewrite: imgproxy serves under /img via
-    # IMGPROXY_PATH_PREFIX, so the /img prefix is forwarded as-is.
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /img/
-      backendRefs:
-        - name: {{ include "monolith-public.fullname" . }}-imgproxy
-          port: {{ .Values.imgproxy.service.port | int }}
-      timeouts:
-        request: 60s
     # NO /api rule: the public backend is never internet-reachable. Every
     # backend read is server-side (SSR +page.server.js or a frontend +server.js
     # proxy, e.g. /notes/body/<id>, ships/stars heat/track), so the browser only
@@ -58,6 +42,40 @@ spec:
       backendRefs:
         - name: {{ include "monolith-public.fullname" . }}-frontend
           port: {{ .Values.frontend.service.port | int }}
+      timeouts:
+        request: 60s
+---
+# /img/ -> imgproxy on its OWN HTTPRoute, deliberately SEPARATE from the route
+# above so the rate-limit BackendTrafficPolicy (which targets -public) does NOT
+# apply to image serving. A single trip day legitimately loads hundreds of
+# photos (the scrubber also preloads the whole day), which would trip the
+# page-level 100 req/min limit (local_rate_limited). Images are safe to leave
+# unlimited: imgproxy is read-only, signed (IMGPROXY_KEY), bucket-locked
+# (ALLOWED_SOURCES=monolith-trips) and preset-capped (ONLY_PRESETS), and almost
+# all requests are served from the Cloudflare 1-year immutable cache, never
+# reaching origin. No URLRewrite: imgproxy serves under /img via
+# IMGPROXY_PATH_PREFIX, so the /img prefix is forwarded as-is.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-img
+  labels:
+    ingress-tier: {{ .Values.cfIngress.public.tier }}
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.public.gateway.name }}
+      namespace: {{ .Values.cfIngress.public.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.public.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /img/
+      backendRefs:
+        - name: {{ include "monolith-public.fullname" . }}-imgproxy
+          port: {{ .Values.imgproxy.service.port | int }}
       timeouts:
         request: 60s
 ---
