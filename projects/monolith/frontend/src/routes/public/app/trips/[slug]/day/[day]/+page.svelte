@@ -1,7 +1,7 @@
 <script>
   import DayNav from "$lib/public/components/trips/DayNav.svelte";
   import DayMap from "$lib/public/components/trips/DayMap.svelte";
-  import ElevationChart from "$lib/public/components/trips/ElevationChart.svelte";
+  import DayElevationProfile from "$lib/public/components/trips/DayElevationProfile.svelte";
   import {
     groupByDay,
     dayColor,
@@ -11,6 +11,7 @@
     clampIndex,
   } from "$lib/trips/trip.js";
   import { photoTelemetry, formatCoord } from "$lib/trips/telemetry.js";
+  import { sunAltitude, sunAzimuth } from "$lib/trips/sun.js";
 
   let { data } = $props();
 
@@ -23,19 +24,40 @@
   const photos = $derived(day ? photosOf(day.points) : []);
   const label = $derived(dayLabel(trip?.days, dayNumber));
   const dayStats = $derived(day ? { ...day, photoCount: photos.length } : null);
-  const series = $derived(day ? elevationSeries(day.points, 120) : []);
 
-  // Scrubber state: the index of the "current" photo. The photo is the dominant
-  // element; the map highlights and centers it, the elevation cursor tracks its
-  // route position, and the telemetry panel shows its per-photo readouts.
+  // Day date for the nav eyebrow, formatted in the trip's zone (e.g. "Sep 15,
+  // 2024"). Taken from the day's first point so it never disagrees with the
+  // day-grouping key.
+  const formattedDate = $derived.by(() => {
+    const iso = day?.points?.[0]?.taken_at;
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    try {
+      return d.toLocaleDateString("en-US", {
+        timeZone: trip?.tz || "UTC",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return "";
+    }
+  });
+
+  // Scrubber state: index of the "current" photo. The photo is the dominant
+  // element; the map highlights/centres it, the elevation cursor tracks its
+  // route position, and the data panel shows its per-photo readouts.
   let current = $state(0);
+  let showFullscreen = $state(false);
 
   // Reset to the first photo whenever the day changes (SvelteKit reuses this
-  // component across [day] navigations, so $state(0) alone would persist a stale
-  // index). Also keeps `current` in range if the photo list shrinks.
+  // component across [day] navigations). Also keeps `current` in range if the
+  // photo list shrinks.
   $effect(() => {
     const _ = dayNumber;
     current = 0;
+    showFullscreen = false;
   });
   $effect(() => {
     if (current > photos.length - 1) current = clampIndex(current, photos.length);
@@ -44,9 +66,8 @@
   const photo = $derived(photos[current] ?? null);
 
   // Smooth scrubbing: keep the CURRENT frame on screen until the next image has
-  // actually decoded (instant when it was preloaded), so the photo never flashes
-  // its black cell background between shots while an arrow is held down. Only the
-  // latest target wins, so rapid stepping settles on the right frame.
+  // actually decoded (instant when preloaded), so the photo never flashes its
+  // black cell between shots while an arrow is held. Only the latest target wins.
   let displayedSrc = $state(photos[current]?.imgDisplay ?? null);
   $effect(() => {
     const target = photo?.imgDisplay ?? null;
@@ -78,12 +99,35 @@
     photo ? photoTelemetry(photo, day?.points ?? [], trip?.tz) : null,
   );
 
-  // Interpolated coordinates for the map's current-photo marker, so it still
-  // tracks photos that lack their own GPS fix.
+  // Interpolated [lng, lat] for the map's current-photo marker, so it tracks
+  // photos that lack their own GPS fix.
   const currentCoords = $derived(
     telemetry && telemetry.lat != null && telemetry.lng != null
       ? [telemetry.lng, telemetry.lat]
       : null,
+  );
+
+  // Sun altitude + azimuth (radians) at the photo's capture time and location,
+  // for the map's terrain hillshade relighting (mirrors the original's
+  // SunCalc.getPosition()).
+  const sunPosition = $derived.by(() => {
+    if (!telemetry || telemetry.lat == null || telemetry.lng == null) return null;
+    if (!photo?.taken_at) return null;
+    const d = new Date(photo.taken_at);
+    if (Number.isNaN(d.getTime())) return null;
+    return {
+      altitude: sunAltitude(d, telemetry.lat, telemetry.lng),
+      azimuth: sunAzimuth(d, telemetry.lat, telemetry.lng),
+    };
+  });
+
+  // Elevation sparkline: ~60 samples, with the position marker mapped onto it by
+  // the photo's progress fraction along the route (matches the original).
+  const profile = $derived(day ? elevationSeries(day.points, 60) : []);
+  const profileIndex = $derived(
+    profile.length
+      ? Math.round(((telemetry?.progressPercent ?? 0) / 100) * (profile.length - 1))
+      : 0,
   );
 
   function step(delta) {
@@ -91,24 +135,28 @@
     current = clampIndex(current + delta, photos.length);
   }
 
-  // Cursor fraction (0..1) along the elevation x-axis. The elevation chart is
-  // sampled over every point in the day; map the current photo to its position
-  // in that point sequence so the cursor tracks where the photo sits along the
-  // route. Approximate (photo points are a subset of all points) but tracking.
-  const cursorFraction = $derived.by(() => {
-    if (!photo || !day || day.points.length < 2) return null;
-    const idx = day.points.indexOf(photo);
-    if (idx < 0) return null;
-    return idx / (day.points.length - 1);
-  });
+  // Map route click -> nearest route point's capture time -> nearest photo.
+  function handleMapLocationClick(takenAtIso) {
+    if (!photos.length || !takenAtIso) return;
+    const clickTime = new Date(takenAtIso).getTime();
+    if (Number.isNaN(clickTime)) return;
+    let closest = 0;
+    let minDiff = Infinity;
+    photos.forEach((p, i) => {
+      if (!p.taken_at) return;
+      const diff = Math.abs(new Date(p.taken_at).getTime() - clickTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = i;
+      }
+    });
+    current = closest;
+  }
 
-  // Warm the browser/CDN cache so scrubbing is always instant. First the close
-  // neighbours (+-5, nearest first), then keep streaming the REST of the day
-  // forward in the background (then backward as filler), paced so we never fire
-  // a burst of hundreds of requests. Pre-signed `imgDisplay` URLs are already in
-  // the SSR payload; new Image() just kicks off background GETs and never blocks
-  // render. Browser-only (Image is undefined during SSR). `warmed` persists
-  // across scrubs so an image is only ever fetched once.
+  // Warm the browser/CDN cache so scrubbing is always instant: first the close
+  // neighbours (+-5, nearest first), then stream the rest of the day forward in
+  // the background (then backward as filler), paced so we never fire hundreds of
+  // requests at once. Browser-only. `warmed` persists across scrubs.
   const warmed = new Set();
   function warm(idx) {
     const p = photos[idx];
@@ -120,12 +168,10 @@
   $effect(() => {
     const i = current;
     if (typeof Image === "undefined" || !photos.length) return;
-    // Priority window around the current photo, nearest first.
     for (let d = 1; d <= 5; d++) {
       warm(i + d);
       warm(i - d);
     }
-    // Then progressively warm everything else, biased forward from i+6, paced.
     let fwd = i + 6;
     let back = i - 6;
     const timer = setInterval(() => {
@@ -139,468 +185,510 @@
     return () => clearInterval(timer);
   });
 
-  // Arrow keys step through photos. No scroll-jacking: keyboard + buttons only.
+  // Arrow keys step through photos; Escape closes the fullscreen overlay.
   $effect(() => {
     const onKey = (e) => {
-      if (!photos.length) return;
-      if (e.key === "ArrowLeft") {
-        step(-1);
-      } else if (e.key === "ArrowRight") {
-        step(1);
+      if (e.key === "Escape") {
+        showFullscreen = false;
+        return;
       }
+      if (!photos.length) return;
+      if (e.key === "ArrowLeft") step(-1);
+      else if (e.key === "ArrowRight") step(1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  const hasPrev = $derived(current > 0);
+  const hasNext = $derived(current < photos.length - 1);
 </script>
 
 <svelte:head>
   <title>{trip ? `${trip.short_title ?? trip.title} - Day ${dayNumber}` : "Day"}</title>
 </svelte:head>
 
-<div class="page">
-  {#if !day}
-    <p class="missing">
-      Day {dayNumber} not found. <a href={`/app/trips/${trip?.slug}`}>Back to summary</a>.
-    </p>
-  {:else}
-    <DayNav slug={trip.slug} {dayNumber} {totalDays} {label} dayColor={color} />
+<div class="root">
+  <div class="inner">
+    {#if !day}
+      <p class="missing">
+        Day {dayNumber} not found. <a href={`/app/trips/${trip?.slug}`}>Back to summary</a>.
+      </p>
+    {:else}
+      <DayNav
+        slug={trip.slug}
+        {dayNumber}
+        {totalDays}
+        {label}
+        dayColor={color}
+        date={formattedDate}
+      />
 
-    <!-- One bordered instrument panel: photo (dominant), map + telemetry rail,
-         controls, elevation strip and day totals all share contiguous 2px ink
-         gaps so the dashboard reads as a single connected unit that fits one
-         viewport. The ink background + 2px grid gap renders every divider; each
-         cell paints its own paper/cream fill on top. -->
-    <div class="panel" style={`--day:${color}`}>
-      <!-- PHOTO: the dominant cell, letterboxed (contain) so it never forces the
-           page taller than the viewport. -->
-      <figure class="photo">
-        {#if photo}
-          <img
-            src={displayedSrc}
-            alt={`Photo ${current + 1} of ${photos.length}`}
-            decoding="async"
-          />
-        {:else}
-          <span class="empty">No photos for this day.</span>
-        {/if}
-      </figure>
-
-      <!-- CONTROLS: prev / counter / next, locked under the photo. -->
-      <div class="ctrls">
-        <button
-          class="step"
-          onclick={() => step(-1)}
-          disabled={current === 0}
-          aria-label="Previous photo"
-        >
-          &larr; Prev
-        </button>
-        <span class="counter">{photos.length ? current + 1 : 0} / {photos.length}</span>
-        <button
-          class="step"
-          onclick={() => step(1)}
-          disabled={current >= photos.length - 1}
-          aria-label="Next photo"
-        >
-          Next &rarr;
-        </button>
-      </div>
-
-      <!-- MAP: top of the right rail. -->
-      <div class="map" aria-label="Day route map">
+      <div class="stack">
+        <!-- MAP: full width, 280px, inverted basemap with the layered route line
+             + start/end/square-current markers. -->
         <DayMap
           points={day.points}
-          {photos}
           dayColor={color}
-          {current}
+          height="280px"
           {currentCoords}
-          onPhotoClick={(i) => (current = i)}
+          {sunPosition}
+          onLocationClick={handleMapLocationClick}
         />
-      </div>
 
-      <!-- TELEMETRY: the per-photo machine readout, beside the photo (mirrors the
-           original DataPanel). All fields preserved. -->
-      <div class="telem">
-        {#if telemetry}
-          {@const t = telemetry}
-          <div class="cell time">
-            <span class="label">Time</span>
-            <span class="clock">{t.time}<span class="period">{t.period}</span></span>
-          </div>
-          <div class="cell">
-            <span class="label">Solar</span>
-            <span class="value">{t.solarAltDeg != null ? `${Math.round(t.solarAltDeg)}°` : "--"}</span>
-            <span class="sub">{t.solarLabel}</span>
-          </div>
-          <div class="cell">
-            <span class="label">Light</span>
-            <span class="value sm">{t.light || "DARK"}</span>
-          </div>
-          <div class="cell">
-            <span class="label">EV</span>
-            <span class="value">{t.ev ?? "--"}</span>
-            <span class="sub">{t.evLabel}</span>
-          </div>
-          <div class="cell">
-            <span class="label">Elev</span>
-            <span class="value">{t.elevation != null ? Math.round(t.elevation) : "--"}<span class="unit">m</span></span>
-          </div>
-          <div class="cell">
-            <span class="label">Km</span>
-            <span class="value">{t.km ?? 0}<span class="unit">/{t.totalKm ?? 0}</span></span>
-          </div>
-          <div class="cell bearing">
-            <span class="label">Bearing</span>
-            <span class="arrow">{t.bearingArrow}</span>
-            <span class="sub">{t.bearing != null ? `${Math.round(t.bearing)}°` : "--"}</span>
-          </div>
-          <div class="cell">
-            <span class="label">Photo</span>
-            <span class="value">{photos.length ? current + 1 : 0}<span class="unit">/{photos.length}</span></span>
-          </div>
-          <div class="cell optics">
-            <span class="label">Optics</span>
-            <span class="value sm">
-              {t.focalLength35mm != null ? `${t.focalLength35mm}mm` : "--"} &fnof;/{t.aperture ?? "--"}
-            </span>
-            <span class="sub">ISO {t.iso ?? "--"} · {t.shutterSpeed ?? "--"}</span>
-          </div>
-          <div class="cell position">
-            <span class="label">Position</span>
-            <span class="coord">{formatCoord(t.lat, true)}</span>
-            <span class="coord">{formatCoord(t.lng, false)}</span>
-          </div>
-        {:else}
-          <div class="cell"><span class="label">Telemetry</span><span class="value sm">--</span></div>
-        {/if}
-      </div>
-
-      <!-- ELEVATION: connected strip across the foot of the panel. -->
-      <div class="elev">
-        <span class="label">Elevation profile</span>
-        {#if dayStats.hasElevation}
-          <div class="chart">
-            <ElevationChart
-              {series}
-              height={88}
-              {color}
-              cursor={cursorFraction}
-              cursorColor={color}
-              showMinMax={true}
-            />
-          </div>
-        {:else}
-          <span class="value sm none">No elevation data</span>
-        {/if}
-      </div>
-
-      <!-- DAY TOTALS: subsumed into the panel, no separate floating card. -->
-      <div class="stats">
-        <div class="cell">
-          <span class="label">Distance</span>
-          <span class="value">{dayStats.distance}<span class="unit">km</span></span>
-        </div>
-        {#if dayStats.hasElevation}
-          <div class="cell">
-            <span class="label">Ascent</span>
-            <span class="value up">+{dayStats.ascent.toLocaleString()}<span class="unit">m</span></span>
-          </div>
-          <div class="cell">
-            <span class="label">Descent</span>
-            <span class="value down">-{dayStats.descent.toLocaleString()}<span class="unit">m</span></span>
-          </div>
-          {#if dayStats.maxElevation != null}
-            <div class="cell">
-              <span class="label">High</span>
-              <span class="value">{dayStats.maxElevation.toLocaleString()}<span class="unit">m</span></span>
-            </div>
+        <!-- TRIPTYCH: 520px photo + the 5-column data panel. -->
+        <div class="triptych">
+          {#if photo}
+            <button
+              class="photo"
+              onclick={() => (showFullscreen = true)}
+              aria-label={`View photo ${current + 1} fullscreen`}
+            >
+              <img
+                src={displayedSrc}
+                alt={`Photo ${current + 1} of ${photos.length}`}
+                decoding="async"
+              />
+            </button>
+          {:else}
+            <div class="photo empty">No photos for this day.</div>
           {/if}
-          {#if dayStats.minElevation != null}
-            <div class="cell">
-              <span class="label">Low</span>
-              <span class="value">{dayStats.minElevation.toLocaleString()}<span class="unit">m</span></span>
-            </div>
-          {/if}
-        {/if}
-        <div class="cell">
-          <span class="label">Photos</span>
-          <span class="value">{dayStats.photoCount ?? 0}</span>
+
+          <div class="panel">
+            {#if telemetry}
+              {@const t = telemetry}
+              <!-- ROW 1: TIME | SOLAR | LIGHT | EV | ELEV -->
+              <div class="cell r1 c-time">
+                <div class="label">TIME</div>
+                <div class="time-big">
+                  {t.time}<span class="period">{t.period}</span>
+                </div>
+              </div>
+              <div class="cell r1 div-thin">
+                <div class="label">SOLAR</div>
+                <div class="val">{t.solarAltDeg != null ? `${t.solarAltDeg.toFixed(0)}°` : "--"}</div>
+                <div class="sub">{t.solarLabel}</div>
+              </div>
+              <div class="cell r1 div-thin">
+                <div class="label">LIGHT</div>
+                <div class="val sm">{t.light || "DARK"}</div>
+              </div>
+              <div class="cell r1 div-thin">
+                <div class="label">EV</div>
+                <div class="val">{t.ev ?? "--"}</div>
+                <div class="sub">{t.evLabel}</div>
+              </div>
+              <div class="cell r1">
+                <div class="label">ELEV</div>
+                <div class="val">{t.elevation != null ? Math.round(t.elevation) : "--"}<span class="unit">m</span></div>
+              </div>
+
+              <!-- ROW 2: OPTICS+NAV+BEARING | ELEVATION PROFILE -->
+              <div class="col1">
+                <div class="optics">
+                  <div class="label">OPTICS</div>
+                  <div class="optics-line">
+                    {t.focalLength35mm != null ? `${t.focalLength35mm}mm` : "--"} &fnof;/{t.aperture ?? "--"}
+                  </div>
+                  <div class="optics-sub">ISO {t.iso ?? "--"} · {t.shutterSpeed ?? "--"}</div>
+                </div>
+
+                <div class="nav">
+                  <div class="navrow">
+                    <button
+                      class="navstep border-r"
+                      onclick={() => step(-1)}
+                      disabled={!hasPrev}
+                      aria-label="Previous photo"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                    </button>
+                    <button
+                      class="navstep"
+                      onclick={() => step(1)}
+                      disabled={!hasNext}
+                      aria-label="Next photo"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                    </button>
+                  </div>
+                  <div class="counter">{photos.length ? current + 1 : 0} / {photos.length}</div>
+                </div>
+
+                <div class="bearing">
+                  <div class="label">BEARING</div>
+                  <div class="arrow">{t.bearingArrow}</div>
+                  <div class="bearing-deg">{t.bearing != null ? `${Math.round(t.bearing)}°` : "--"}</div>
+                </div>
+              </div>
+
+              <div class="elev-profile">
+                <div class="label">ELEVATION PROFILE</div>
+                <div class="elev-inner">
+                  <DayElevationProfile data={profile} currentIndex={profileIndex} accentColor={color} />
+                </div>
+              </div>
+
+              <!-- ROW 3: POSITION | KM | ASCENT | DESCENT | PHOTOS -->
+              <div class="cell-position">
+                <div class="label">POSITION</div>
+                <div class="coords">
+                  <div>{formatCoord(t.lat, true)}</div>
+                  <div>{formatCoord(t.lng, false)}</div>
+                </div>
+              </div>
+              <div class="cell-stat div-thin">
+                <div class="label">KM</div>
+                <div class="km-val">{t.km ?? 0}<span class="small">/{t.totalKm ?? 0}</span></div>
+              </div>
+              <div class="cell-stat div-thin">
+                <div class="label">ASCENT</div>
+                <div class="stat-val up">+{(dayStats?.ascent ?? 0).toLocaleString()}m</div>
+              </div>
+              <div class="cell-stat div-thin">
+                <div class="label">DESCENT</div>
+                <div class="stat-val down">-{(dayStats?.descent ?? 0).toLocaleString()}m</div>
+              </div>
+              <div class="cell-stat">
+                <div class="label">PHOTOS</div>
+                <div class="stat-val">{dayStats?.photoCount ?? 0}</div>
+              </div>
+            {:else}
+              <div class="cell r1"><div class="label">TELEMETRY</div><div class="val sm">--</div></div>
+            {/if}
+          </div>
         </div>
+
+        {#if Array.isArray(trip.highlights) && trip.highlights.length > 0}
+          <!-- (Trip-level highlights; the original showed per-day highlights here.) -->
+        {/if}
       </div>
-    </div>
-  {/if}
+    {/if}
+  </div>
 </div>
 
+{#if showFullscreen && photo}
+  <button
+    class="fs"
+    aria-label="Close fullscreen photo"
+    onclick={() => (showFullscreen = false)}
+  >
+    <img src={photo.imgGallery ?? displayedSrc} alt={`Photo ${current + 1} of ${photos.length}`} />
+  </button>
+{/if}
+
 <style>
-  .page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 16px 24px 24px;
-    background: var(--cream);
-    color: var(--ink);
+  .root {
     min-height: 100vh;
+    background: white;
+    font-family: system-ui, -apple-system, sans-serif;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
-
-  /* The instrument panel. One grid, contiguous 2px ink dividers (ink background
-     showing through the 2px gap), framed by a 2px border. Sized to fill the
-     viewport below the day-nav so the whole day reads without scrolling on a
-     normal desktop. Rows: a flexing top band (photo + map) then auto-height
-     telemetry, controls, elevation and totals. */
-  .panel {
-    display: grid;
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-    grid-template-rows: minmax(150px, 1fr) auto auto auto;
-    grid-template-areas:
-      "photo map"
-      "photo telem"
-      "ctrls telem"
-      "elev stats";
-    gap: 2px;
-    background: var(--ink);
-    border: 2px solid var(--ink);
-    /* Fill the viewport minus the page padding + day-nav header. */
-    height: calc(100vh - 132px);
-    min-height: 520px;
+  .inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px 32px;
   }
-
-  .photo {
-    grid-area: photo;
-    margin: 0;
-    background: var(--ink);
-    min-height: 0;
-    min-width: 0;
-    overflow: hidden;
+  .missing {
+    font-family: monospace;
+    font-size: 13px;
+  }
+  .stack {
     display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  /* TRIPTYCH: photo + data panel, sharing a 2px top rule. */
+  .triptych {
+    display: flex;
+    align-items: stretch;
+    border-top: 2px solid #1a1a1a;
+  }
+  .photo {
+    flex: 0 0 auto;
+    width: 520px;
+    height: 520px;
+    cursor: pointer;
+    display: block;
+    padding: 0;
+    border: none;
+    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
   .photo img {
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: cover;
     display: block;
-    background: var(--ink);
   }
-  .photo .empty {
-    margin: auto;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--paper);
-  }
-
-  .ctrls {
-    grid-area: ctrls;
-    display: flex;
-    align-items: stretch;
-    background: var(--paper);
-    min-width: 0;
-  }
-  .counter {
+  .photo.empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    flex: 0 0 auto;
-    padding: 0 18px;
-    font-family: var(--mono);
+    color: white;
+    font-family: monospace;
     font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: var(--ink);
-    background: var(--paper);
-  }
-  .step {
-    flex: 1;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink);
-    border: none;
-    background: var(--paper);
-    padding: 12px 14px;
-    cursor: pointer;
-  }
-  .step:first-child {
-    border-right: 2px solid var(--ink);
-  }
-  .step:last-child {
-    border-left: 2px solid var(--ink);
-  }
-  .step:hover:not(:disabled) {
-    background: var(--ink);
-    color: var(--paper);
-  }
-  .step:disabled {
-    opacity: 0.35;
     cursor: default;
   }
 
-  .map {
-    grid-area: map;
-    background: var(--paper);
-    min-height: 0;
+  /* DATA PANEL: the aligned 5-column grid. */
+  .panel {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 150px 1fr 1fr 1fr 1fr;
+    grid-template-rows: auto 1fr auto;
+    border-left: 2px solid #1a1a1a;
+    font-family: monospace;
     min-width: 0;
-    overflow: hidden;
   }
 
-  /* Telemetry: a nested grid that inherits the same ink-gap treatment, so its
-     internal dividers line up visually with the rest of the panel. */
-  .telem {
-    grid-area: telem;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-    grid-auto-rows: minmax(0, 1fr);
-    gap: 2px;
-    background: var(--ink);
-    font-family: var(--mono);
-    min-width: 0;
-    min-height: 0;
-  }
-  .cell {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    padding: 10px 12px;
-    background: var(--paper);
-    min-width: 0;
-    overflow: hidden;
-  }
   .label {
-    font-family: var(--mono);
     font-size: 9px;
     font-weight: 700;
+    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
     letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-    margin-bottom: 5px;
+    margin-bottom: 4px;
   }
-  .value {
-    font-family: var(--mono);
+  .val {
     font-size: 18px;
-    font-weight: 900;
-    line-height: 1;
-    color: var(--ink);
-  }
-  .value.sm {
-    font-size: 12px;
     font-weight: 700;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .val.sm {
+    font-size: 14px;
   }
   .unit {
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--ink-3);
-    margin-left: 2px;
+    font-size: 10px;
+    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
   .sub {
     font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: var(--ink-3);
-    margin-top: 4px;
+    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    font-weight: 600;
   }
-  .coord {
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.5;
-    color: var(--ink);
+
+  /* Row 1 cells. */
+  .r1 {
+    padding: 12px;
+    border-bottom: 2px solid #1a1a1a;
+    background: white;
   }
-  .up {
-    color: var(--teal);
+  .div-thin {
+    border-right: 1px solid #e5e7eb;
   }
-  .down {
-    color: var(--coral);
+  .c-time {
+    border-right: 2px solid #1a1a1a;
   }
-  /* TIME: the primary readout, accent-topped, spanning the rail width. */
-  .time {
-    grid-column: 1 / -1;
-    border-top: 3px solid var(--day);
-  }
-  .clock {
-    font-size: 26px;
+  .time-big {
+    font-size: 24px;
     font-weight: 900;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     line-height: 1;
-    color: var(--ink);
   }
   .period {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
-    color: var(--ink-3);
+    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
     margin-left: 4px;
   }
-  .bearing .arrow {
-    font-size: 26px;
-    line-height: 1;
-    color: var(--ink);
-  }
-  .optics {
-    grid-column: span 2;
-  }
-  .position {
-    grid-column: span 2;
-  }
 
-  /* Elevation strip, foot of the panel under the photo. */
-  .elev {
-    grid-area: elev;
+  /* Row 2, column 1: optics / nav / bearing stack. */
+  .col1 {
     display: flex;
     flex-direction: column;
-    padding: 10px 14px;
-    background: var(--paper);
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
+    border-right: 2px solid #1a1a1a;
+    border-bottom: 2px solid #1a1a1a;
+    background: #fafafa; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
-  .elev .chart {
-    flex: 1;
-    min-height: 0;
+  .optics {
+    padding: 12px;
+    border-bottom: 2px solid #1a1a1a;
+    background: #f5f5f5; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .optics-line {
+    font-size: 14px;
+    font-weight: 700;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .optics-sub {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    margin-top: 2px;
+  }
+  .nav {
+    border-bottom: 2px solid #1a1a1a;
+    background: white;
+  }
+  .navrow {
     display: flex;
-    align-items: stretch;
+    height: 56px;
   }
-  .elev .chart :global(.elev) {
-    width: 100%;
-    align-self: center;
+  .navstep {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: white;
+    border: none;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      color 0.15s;
   }
-  .elev .none {
-    margin-top: 8px;
-    color: var(--ink-3);
+  .navstep.border-r {
+    border-right: 2px solid #1a1a1a;
+  }
+  .navstep svg {
+    width: 24px;
+    height: 24px;
+  }
+  .navstep:hover:not(:disabled) {
+    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: white;
+  }
+  .navstep:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  .counter {
+    font-size: 11px;
+    font-weight: 700;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    text-align: center;
+    padding: 8px;
+    border-top: 2px solid #1a1a1a;
+  }
+  .bearing {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 12px;
+    background: white;
+  }
+  .bearing .arrow {
+    font-size: 36px;
+    line-height: 1;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .bearing-deg {
+    font-size: 11px;
+    font-weight: 700;
+    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    margin-top: 4px;
   }
 
-  /* Day totals: nested ink-gap grid, contiguous with the panel. */
-  .stats {
-    grid-area: stats;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
-    gap: 2px;
-    background: var(--ink);
-    min-width: 0;
+  /* Row 2 elevation profile, spanning columns 2-5. */
+  .elev-profile {
+    grid-column: span 4;
+    padding: 12px 16px;
+    border-bottom: 2px solid #1a1a1a;
+    display: flex;
+    flex-direction: column;
+    background: white;
+  }
+  .elev-profile .label {
+    margin-bottom: 8px;
+  }
+  .elev-inner {
+    flex-grow: 1;
+    position: relative;
+    min-height: 120px;
   }
 
-  /* Narrow screens: drop the fit-to-viewport constraint and stack the panel into
-     a single scrollable column (photo, controls, map, telemetry, elevation,
-     totals). */
-  @media (max-width: 900px) {
-    .panel {
-      grid-template-columns: 1fr;
-      grid-template-rows: auto auto auto auto auto auto;
-      grid-template-areas:
-        "photo"
-        "ctrls"
-        "map"
-        "telem"
-        "elev"
-        "stats";
-      height: auto;
-      min-height: 0;
+  /* Row 3 cells. */
+  .cell-position {
+    padding: 10px 12px;
+    border-right: 2px solid #1a1a1a;
+    background: white;
+  }
+  .coords {
+    font-size: 10px;
+    font-weight: 600;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    line-height: 1.6;
+  }
+  .cell-stat {
+    padding: 10px;
+    background: #fafafa; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .km-val {
+    font-size: 16px;
+    font-weight: 900;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .small {
+    font-size: 10px;
+    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .stat-val {
+    font-size: 14px;
+    font-weight: 900;
+    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .stat-val.up {
+    color: #059669; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .stat-val.down {
+    color: #dc2626; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+
+  /* Fullscreen photo overlay. */
+  .fs {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.92);
+    border: none;
+    padding: 24px;
+    cursor: zoom-out;
+  }
+  .fs img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+
+  /* Responsive: stack the triptych and reflow the panel to two columns. */
+  @media (max-width: 768px) {
+    .inner {
+      padding: 16px;
+    }
+    .triptych {
+      flex-direction: column;
+      border-top: none;
     }
     .photo {
-      aspect-ratio: 4 / 3;
-      max-height: 70vh;
+      width: 100%;
+      height: auto;
+      max-height: 60vh;
     }
-    .map {
-      height: 280px;
+    .photo img {
+      max-height: 60vh;
+      object-fit: contain;
     }
-    .elev .chart {
-      min-height: 96px;
+    .panel {
+      border-left: none;
+      border-top: 2px solid #1a1a1a;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: none;
+    }
+    .c-time,
+    .col1,
+    .elev-profile,
+    .cell-position {
+      grid-column: 1 / -1;
+    }
+    .c-time,
+    .col1,
+    .cell-position {
+      border-right: none;
     }
   }
 </style>

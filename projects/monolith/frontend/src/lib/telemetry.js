@@ -35,13 +35,16 @@ export function initTelemetry() {
         new DocumentLoadInstrumentation(),
         new FetchInstrumentation({
           // Skip instrumenting third-party hosts that reject the CORS
-          // preflight: fonts, plus the OpenFreeMap tiles behind the
-          // /app/ships basemap (its OPTIONS returns 405).
+          // preflight: fonts, the OpenFreeMap tiles behind the /app/ships
+          // basemap (its OPTIONS returns 405), plus the Carto Positron basemap
+          // and elevation-tiles DEM behind the /app/trips day map.
           ignoreUrls: [
             /\/otel\//,
             /fonts\.googleapis/,
             /fonts\.gstatic/,
             /tiles\.openfreemap\.org/,
+            /basemaps\.cartocdn\.com/,
+            /elevation-tiles-prod/,
           ],
           // Only continue traces into same-origin requests (the safe
           // default). Propagating to every cross-origin host injects a

@@ -38,6 +38,13 @@ function altitudeRad(H, phi, dec) {
   );
 }
 
+function azimuthRad(H, phi, dec) {
+  return Math.atan2(
+    Math.sin(H),
+    Math.cos(H) * Math.sin(phi) - Math.tan(dec) * Math.cos(phi),
+  );
+}
+
 function siderealTime(d, lw) {
   return rad * (280.16 + 360.9856235 * d) - lw;
 }
@@ -69,6 +76,19 @@ export function sunAltitude(date, lat, lng) {
   const c = sunCoords(d);
   const H = siderealTime(d, lw) - c.ra;
   return altitudeRad(H, phi, c.dec);
+}
+
+// Sun azimuth (radians, measured from south to west: 0 = south, +PI/2 = west) at
+// `date` for the given latitude / longitude in degrees. Matches
+// SunCalc.getPosition().azimuth, which the day-map hillshade uses to relight the
+// terrain from the sun's bearing at the photo's capture time.
+export function sunAzimuth(date, lat, lng) {
+  const lw = rad * -lng;
+  const phi = rad * lat;
+  const d = toDays(date);
+  const c = sunCoords(d);
+  const H = siderealTime(d, lw) - c.ra;
+  return azimuthRad(H, phi, c.dec);
 }
 
 // --- sunset time ---
