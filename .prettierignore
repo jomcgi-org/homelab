@@ -7,9 +7,6 @@
 # Minified/bundled assets should not be reformatted
 **/dist/
 
-# Auto-generated files (managed by scripts in bazel/images/)
-**/adr-sidebar.json
-
 # Generated public docs manifest: produced deterministically by
 # projects/monolith/knowledge/tools/gen_docs_manifest.py (json.dumps indent=2)
 # and freshness-checked in CI. Prettier reformatting it would diverge from the

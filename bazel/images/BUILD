@@ -5,22 +5,10 @@
 load("@rules_multirun//:defs.bzl", "multirun")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
-# Generate scripts for push_all and push_all_pages targets
+# Generate script for the push_all target
 sh_binary(
     name = "generate-push-all",
     srcs = ["generate-push-all.sh"],
-    visibility = ["//:__subpackages__"],
-)
-
-sh_binary(
-    name = "generate-push-all-pages",
-    srcs = ["generate-push-all-pages.sh"],
-    visibility = ["//:__subpackages__"],
-)
-
-sh_binary(
-    name = "generate-docs-sidebar",
-    srcs = ["generate-docs-sidebar.sh"],
     visibility = ["//:__subpackages__"],
 )
 

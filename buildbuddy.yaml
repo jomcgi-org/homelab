@@ -198,21 +198,6 @@ actions:
 
           bazel run //bazel/images:push_all --config=ci --stamp
 
-  # Push pages — runs on main only, in parallel with Test and Push images
-  - name: "Push pages"
-    container_image: "ubuntu-24.04"
-    max_retries: 1
-    resource_requests:
-      disk: "20GB"
-    triggers:
-      push:
-        branches:
-          - "main"
-    steps:
-      - run: |
-          # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID set in BuildBuddy Settings → Secrets
-          bazel run //projects/websites:push_all_pages --config=ci
-
   # Manifest diff — renders Helm manifests from main and PR, posts diff as PR comment
   # Runs in parallel with other actions (no depends_on), non-blocking (informational only)
   - name: "Manifest diff"

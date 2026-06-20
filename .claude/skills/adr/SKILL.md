@@ -102,30 +102,39 @@ Reference `docs/security.md` for baseline. Document any deviations.
 
 ### Step 3: Register the ADR (required, CI-enforced)
 
-A new ADR file is not enough. Two more files must be updated or the
-`//projects/websites/docs.jomcgi.dev:config_links_test` test fails CI (it asserts
-every ADR markdown file has a docs-site sidebar entry):
+ADRs surface automatically on the monolith docs site at `jomcgi.dev/docs/decisions/`;
+there is no VitePress sidebar to regenerate any more (the `docs.jomcgi.dev` site
+and its `config_links_test` gate were retired in ADR 002). Registering a new ADR
+now means regenerating the committed docs manifests and adding an index row, or
+the docs-site / repo-docs freshness checks in
+`bazel/images/validate-generate-scripts.sh` fail CI:
 
-1. **Regenerate the docs-site sidebar.** Write the ADR's first-line heading as
-   `# ADR NNN: <Title>` first (the generator derives the sidebar label from it),
-   then run:
+1. **Write the heading first.** The manifests derive the doc title from the
+   first-line `# ADR NNN: <Title>` heading, so write it before regenerating.
+
+2. **Regenerate the public docs-site manifest** (what the `/docs` route renders):
 
    ```bash
-   bash bazel/images/generate-docs-sidebar.sh
+   python3 projects/monolith/knowledge/tools/gen_docs_manifest.py
    ```
 
-   This scans `docs/decisions/*/*.md` and rewrites
-   `projects/websites/docs.jomcgi.dev/.vitepress/adr-sidebar.json`. That file is
-   `.prettierignore`'d, so its compact one-line form is canonical: do not
-   reformat it.
+   This rewrites `projects/monolith/frontend/src/lib/public/docs/docs-manifest.json`.
 
-2. **Add an index row.** Add a row for the new ADR to its category table in
+3. **Regenerate the repo-docs knowledge manifest** (public-chat RAG grounding):
+
+   ```bash
+   python3 projects/monolith/knowledge/tools/gen_repo_docs_manifest.py
+   ```
+
+   This rewrites `projects/monolith/knowledge/repo_docs_manifest.ndjson`.
+
+4. **Add an index row.** Add a row for the new ADR to its category table in
    `docs/decisions/index.md`.
 
 ### Step 4: Commit with conventional commit format
 
-Commit the ADR file, the regenerated `adr-sidebar.json`, and the updated
-`index.md` together.
+Commit the ADR file, the regenerated `docs-manifest.json` and
+`repo_docs_manifest.ndjson`, and the updated `index.md` together.
 
 ```bash
 git commit -m "docs(adr): <short description>"
@@ -156,4 +165,4 @@ When a decision is reversed or evolved:
 - **Diagrams**: Mermaid for all architecture and flow diagrams (renders natively on GitHub)
 - **Sections**: Problem, Decision, Architecture, Alternatives, Security, Risks, References
 - **No work tracking**: implementation lives in `docs/plans/` and PRs, not in the ADR
-- **Three files per ADR**: the new ADR file, the regenerated `adr-sidebar.json`, and the `index.md` row. CI fails if the sidebar entry is missing (see Step 3).
+- **Files per ADR**: the new ADR file, the regenerated `docs-manifest.json` and `repo_docs_manifest.ndjson`, and the `index.md` row. CI fails if the manifests are stale (see Step 3).
