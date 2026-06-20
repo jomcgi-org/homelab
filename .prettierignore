@@ -10,6 +10,12 @@
 # Auto-generated files (managed by scripts in bazel/images/)
 **/adr-sidebar.json
 
+# Generated public docs manifest: produced deterministically by
+# projects/monolith/knowledge/tools/gen_docs_manifest.py (json.dumps indent=2)
+# and freshness-checked in CI. Prettier reformatting it would diverge from the
+# generator and churn the freshness check; the generator is the sole authority.
+**/docs-manifest.json
+
 # STPA.md files are rendered deterministically by the stpa skill's jq renderer
 # (.claude/skills/stpa). Reformatting would diverge from the renderer output and
 # churn on every scheduled regeneration; the renderer is the sole authority.
