@@ -383,14 +383,18 @@ imgproxy:
   # selects this port, so the meshed cloudflared tunnel reaches it.
   podAnnotations:
     linkerd.io/inject: enabled
-  # imgproxy serves /health (the library probe default), so no path override.
+  # IMGPROXY_PATH_PREFIX=/img moves EVERY route (including the health endpoint)
+  # under /img, so the probes must hit /img/health, not the library default
+  # /health (which now 404s and would crash-loop the pod on liveness failure).
   probes:
     liveness:
+      path: /img/health
       initialDelaySeconds: 5
       periodSeconds: 10
       timeoutSeconds: 5
       failureThreshold: 6
     readiness:
+      path: /img/health
       initialDelaySeconds: 3
       periodSeconds: 5
       timeoutSeconds: 3
