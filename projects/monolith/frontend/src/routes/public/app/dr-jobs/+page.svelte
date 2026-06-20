@@ -1,7 +1,12 @@
 <script>
   import { onMount } from "svelte";
-  import { invalidateAll } from "$app/navigation";
+  import { goto, invalidateAll } from "$app/navigation";
+  import { page } from "$app/stores";
   import BrutalistSelect from "$lib/public/components/BrutalistSelect.svelte";
+  import {
+    readDrJobsParams,
+    writeDrJobsParams,
+  } from "$lib/public/dr-jobs/urlParams.js";
 
   let { data } = $props();
 
@@ -9,10 +14,13 @@
   const liveJobs = $derived(jobs.filter((j) => j.is_live));
   const historyJobs = $derived(jobs.filter((j) => !j.is_live));
 
-  // Live by default; the History button reveals closed/expired posts (Option A
+  // View + town filter are initialized from the URL (so a shared link restores
+  // them) and mirrored back as they change (see the $effect below). Live is the
+  // default; the History button reveals closed/expired posts (Option A
   // lifecycle keeps them, so this needs no second request).
-  let view = $state("live");
-  let town = $state("");
+  const initial = readDrJobsParams($page.url.searchParams);
+  let view = $state(initial.view);
+  let town = $state(initial.town);
 
   const bucket = $derived(view === "live" ? liveJobs : historyJobs);
 
@@ -30,8 +38,21 @@
 
   // Reset the town filter when the option leaves the new bucket (e.g. toggling
   // to History where that town has no posts), so the table never goes blank.
+  // The reset mirrors to the URL via the effect below (town drops back to "").
   $effect(() => {
     if (town && !bucket.some((j) => j.town === town)) town = "";
+  });
+
+  // Mirror the view + town back to the URL so it is shareable. replaceState to
+  // keep toggling and town picks out of browser history. Guarded: only goto
+  // when the serialized params differ from the current URL, so this "URL write"
+  // never re-triggers the init read in a loop.
+  $effect(() => {
+    const url = new URL($page.url);
+    writeDrJobsParams(url.searchParams, { view, town });
+    if (url.searchParams.toString() !== $page.url.searchParams.toString()) {
+      goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+    }
   });
 
   const MONTHS = [

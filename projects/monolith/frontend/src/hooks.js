@@ -27,10 +27,30 @@ const APEX_PREFIX = "/public";
 // not be swept under a subdomain prefix.
 const PASSTHROUGH_PREFIXES = ["/otel/"];
 
+// Browser chat paths the public app POSTs to same-origin. They live under
+// /public/chat/* in the route tree, so map the short browser path the SvelteKit
+// app uses (/chat/share, alongside /chat/session and /chat/message which the
+// apex/public prefix already covers) explicitly. This keeps the rewrite obvious
+// next to the others even though the apex/public prefixing below would also
+// catch it on the apex host.
+const CHAT_PREFIX_MAP = {
+  "/chat/session": "/public/chat/session",
+  "/chat/message": "/public/chat/message",
+  "/chat/share": "/public/chat/share",
+};
+
 /** @type {import('@sveltejs/kit').Reroute} */
 export function reroute({ url }) {
   if (PASSTHROUGH_PREFIXES.some((p) => url.pathname.startsWith(p))) {
     return;
+  }
+  // Same-origin chat BFF paths the public app POSTs to. Mapped explicitly (and
+  // host-independently) so each browser path is obvious next to the others; the
+  // apex/public prefix rule below would also catch these on the apex host, but
+  // the explicit map keeps /chat/share co-located with /chat/session and
+  // /chat/message.
+  if (CHAT_PREFIX_MAP[url.pathname]) {
+    return CHAT_PREFIX_MAP[url.pathname];
   }
   for (const [domain, prefix] of Object.entries(DOMAIN_PREFIX_MAP)) {
     if (

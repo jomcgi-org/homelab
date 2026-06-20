@@ -11,6 +11,8 @@
   // which is LAZY: the heavy KnowledgeGraph component and its data are only
   // imported/fetched on the first switch, never on the initial chat load.
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import {
@@ -43,14 +45,36 @@
     }
   }
 
+  // ── URL <-> view/focus sync ──────────────────────────────────────
+  // Mirror the view toggle ("chat" default | "graph") and the graph focus node
+  // to the URL (?view=graph&focus=<id>), so a graph-focused view is shareable
+  // and the back button pops the toggle naturally. Defaults are omitted from the
+  // URL (no ?view=chat). The ephemeral chat transcript is NOT in the URL: only
+  // the structural view/focus state is. Mirrors the HomepageTopology pattern
+  // ($page + goto with keepFocus/noScroll/replaceState).
+  function syncUrl() {
+    const url = new URL($page.url);
+    if (view === "graph") url.searchParams.set("view", "graph");
+    else url.searchParams.delete("view");
+    if (view === "graph" && graphFocusId != null) {
+      url.searchParams.set("focus", String(graphFocusId));
+    } else {
+      url.searchParams.delete("focus");
+    }
+    goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+  }
+
   function showGraph(focusId = null) {
     graphFocusId = focusId;
     view = "graph";
     ensureGraphView();
+    syncUrl();
   }
 
   function showChat() {
     view = "chat";
+    graphFocusId = null;
+    syncUrl();
   }
 
   // ── "how does this work?" explainer ──────────────────────────────
@@ -129,6 +153,19 @@
   // Live cluster stats (homepage GPU/system snapshot). SSR-seeded, then polled.
   let liveStats = $state(data.stats ?? null);
   onMount(() => {
+    // Initialize view/focus from the URL so a shared ?view=graph&focus=<id>
+    // link lands directly on that graph-focused view (ssr=false, so $page is
+    // browser-only and safe to read here). The chat transcript is never
+    // initialized from the URL: it is ephemeral session state.
+    const params = $page.url.searchParams;
+    if (params.get("view") === "graph") {
+      // focus is a string from the URL; the graph treats focusId as opaque
+      // (selectionForFocus passes it through), so a shared link lands on the
+      // graph and best-effort highlights the focused node.
+      const focus = params.get("focus");
+      showGraph(focus || null);
+    }
+
     let stopped = false;
     const id = setInterval(async () => {
       try {
@@ -306,7 +343,50 @@
     sending = false;
     applyFreshState();
     admitted = false;
-    view = "chat";
+    showChat();
+  }
+
+  // ── share this chat ──────────────────────────────────────────────
+  // Opt-in, read-only share. POSTs to the same-origin /chat/share proxy (the
+  // session id rides the httpOnly cookie, never the body), gets {snapshot_id},
+  // and copies the absolute share URL to the clipboard. The snapshot is minted
+  // server-side from the stored transcript, so nothing here can forge content.
+  let shareFeedback = $state(null); // brief inline status, then clears
+  let shareTimer = null;
+  let sharing = $state(false);
+
+  function flashShare(message) {
+    shareFeedback = message;
+    clearTimeout(shareTimer);
+    shareTimer = setTimeout(() => {
+      shareFeedback = null;
+    }, 4000);
+  }
+
+  async function shareChat() {
+    if (sharing) return;
+    sharing = true;
+    try {
+      const resp = await fetch("/chat/share", { method: "POST" });
+      if (!resp.ok) {
+        flashShare("COULD NOT SHARE");
+        return;
+      }
+      const { snapshot_id: snapshotId } = await resp.json();
+      const shareUrl = `${location.origin}/public/app/notes/s/${snapshotId}`;
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        flashShare("LINK COPIED");
+      } catch {
+        // Clipboard blocked (no permission / insecure context): surface the URL
+        // so the visitor can copy it by hand.
+        flashShare(shareUrl);
+      }
+    } catch {
+      flashShare("COULD NOT SHARE");
+    } finally {
+      sharing = false;
+    }
   }
 
   function onSubmit(e) {
@@ -426,6 +506,19 @@
           {admitted ? "SESSION OPEN" : "LOCKED"}
         </span>
         <span class="panel-spacer"></span>
+        {#if admitted && messages.length > 0}
+          {#if shareFeedback}
+            <span class="share-feedback" role="status">{shareFeedback}</span>
+          {/if}
+          <button
+            type="button"
+            class="bar-btn"
+            onclick={shareChat}
+            disabled={sharing}
+          >
+            {sharing ? "..." : "SHARE"}
+          </button>
+        {/if}
         {#if admitted}
           <button type="button" class="bar-btn" onclick={newChat}>
             NEW CHAT
@@ -998,6 +1091,30 @@
     background: var(--accent);
     transform: translate(-1px, -1px);
     box-shadow: var(--shadow-hard-sm);
+  }
+  .bar-btn:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .bar-btn:disabled:hover {
+    background: var(--paper);
+    transform: none;
+    box-shadow: none;
+  }
+  /* Brief inline confirmation ("LINK COPIED") or the URL to copy by hand. */
+  .share-feedback {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--ink);
+    background: var(--blue);
+    border: 1.5px solid var(--ink);
+    padding: 3px 8px;
+    max-width: 40ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* ── transcript ─────────────────────────────────────────────── */

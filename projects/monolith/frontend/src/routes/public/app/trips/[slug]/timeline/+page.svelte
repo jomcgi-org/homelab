@@ -1,4 +1,6 @@
 <script>
+  import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
   import TripMap from "$lib/public/components/trips/TripMap.svelte";
   import PhotoGrid from "$lib/public/components/trips/PhotoGrid.svelte";
   import TagFilter from "$lib/public/components/trips/TagFilter.svelte";
@@ -29,7 +31,25 @@
         ),
   );
 
-  let view = $state("photos");
+  // The photos/map toggle is mirrored to the URL (?view=) so a shared link opens
+  // on the same view. The [slug] already lives in the path; this is the only
+  // view-state param. Validate against the allow-list and fall back to "photos".
+  const VIEWS = new Set(["photos", "map"]);
+  const rawView = $page.url.searchParams.get("view");
+  let view = $state(VIEWS.has(rawView) ? rawView : "photos");
+
+  // Mirror the view back to the URL. replaceState so flipping photos/map does
+  // not stack browser-history entries. "photos" is the default, so it is dropped
+  // to keep the shared URL clean. Guarded: only goto when the serialized params
+  // differ, so this "URL write" never re-triggers the init read in a loop.
+  $effect(() => {
+    const url = new URL($page.url);
+    if (view === "map") url.searchParams.set("view", "map");
+    else url.searchParams.delete("view");
+    if (url.searchParams.toString() !== $page.url.searchParams.toString()) {
+      goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+    }
+  });
 </script>
 
 <svelte:head>

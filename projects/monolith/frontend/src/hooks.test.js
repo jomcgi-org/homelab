@@ -52,4 +52,21 @@ describe("reroute", () => {
       reroute({ url: url("jomcgi.dev", "/otel/v1/traces") }),
     ).toBeUndefined();
   });
+
+  it("maps the chat BFF paths to /public/chat/* on any host", () => {
+    expect(reroute({ url: url("jomcgi.dev", "/chat/session") })).toBe(
+      "/public/chat/session",
+    );
+    expect(reroute({ url: url("jomcgi.dev", "/chat/message") })).toBe(
+      "/public/chat/message",
+    );
+    expect(reroute({ url: url("jomcgi.dev", "/chat/share") })).toBe(
+      "/public/chat/share",
+    );
+    // Host-independent: the same browser path resolves under /public on the
+    // public subdomain too.
+    expect(reroute({ url: url("public.jomcgi.dev", "/chat/share") })).toBe(
+      "/public/chat/share",
+    );
+  });
 });
