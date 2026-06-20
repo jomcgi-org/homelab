@@ -7,6 +7,8 @@ import { PUBLIC_BASE } from "$lib/public/seo.js";
 const PAGES = [
   { path: "/", priority: "1.0" },
   { path: "/cv", priority: "0.9" },
+  // The docs index; per-doc URLs are reachable from it (listed once, like notes).
+  { path: "/docs", priority: "0.8" },
   { path: "/app/notes", priority: "0.7" },
 ];
 
