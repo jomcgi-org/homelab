@@ -6,7 +6,7 @@ one thing: the `homelab-library` Helm library chart.
 ## homelab-library
 
 `helm/homelab-library/chart` is a [Helm library chart](https://helm.sh/docs/topics/library_charts/)
-(type: `library`, version `0.4.0`). It provides named template partials that
+(type: `library`, version `0.5.0`). It provides named template partials that
 individual service charts call with `include`. Library charts produce no
 Kubernetes manifests on their own — they only supply reusable helpers.
 
@@ -55,7 +55,7 @@ Reference the chart with a `file://` path from the consuming chart's
 ```yaml
 dependencies:
   - name: homelab-library
-    version: "0.4.0"
+    version: "0.5.0"
     repository: "file://../../shared/helm/homelab-library/chart"
 ```
 
@@ -67,7 +67,6 @@ Adjust the relative path depth as needed (services nested one level deeper use
 | Project | Chart path |
 |---|---|
 | `trips` | `projects/trips/chart` |
-| `stargazer` | `projects/stargazer/chart` |
 | `grimoire` | `projects/grimoire/chart` |
 | `agent_platform/orchestrator` | `projects/agent_platform/chart/orchestrator` |
 | `agent_platform/mcp-servers` | `projects/agent_platform/chart/mcp-servers` |
