@@ -39,6 +39,19 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-pg-app
                   key: uri
+            # Batch-job routing: "monolith" runs jobs in-process (default),
+            # "argo" submits them to the Argo controller in WORKFLOW_NAMESPACE.
+            # Flip jobs.executor to "argo" to cut over.
+            - name: JOB_EXECUTOR
+              value: {{ .Values.jobs.executor | default "monolith" | quote }}
+            - name: WORKFLOW_NAMESPACE
+              value: {{ .Values.jobs.workflowNamespace | default "monolith-workflows" | quote }}
+            {{- if .Values.jobs.image }}
+            # Digest-pinned at build time by helm_images_values (chart/BUILD
+            # images "jobs.image"); the Workflow runs this exact image.
+            - name: JOBS_IMAGE
+              value: {{ .Values.jobs.image | quote }}
+            {{- end }}
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
               valueFrom:

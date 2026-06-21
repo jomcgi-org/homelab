@@ -364,6 +364,24 @@ class KubernetesClient:
         )
         return {"app": name, "synced": True, "prune": prune, "dry_run": dry_run}
 
+    async def create_workflow(self, namespace: str, body: dict) -> str:
+        """Create an Argo Workflow custom resource; return its server-assigned name.
+
+        Used by the scheduler to dispatch a batch job to the Argo controller in
+        the monolith-workflows namespace (off-pod execution). ``body`` is a full
+        Workflow manifest (e.g. from Hera's ``Workflow.to_dict()``).
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        created = await custom.create_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="workflows",
+            body=body,
+        )
+        return created["metadata"]["name"]
+
     async def close(self) -> None:
         if self._api:
             await self._api.close()

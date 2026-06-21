@@ -216,6 +216,7 @@ py_library(
         "@pip//dulwich",
         "@pip//fastapi",
         "@pip//fastmcp",
+        "@pip//hera",
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//kubernetes_asyncio",
@@ -391,6 +392,7 @@ py_library(
         "@pip//dulwich",
         "@pip//fastapi",
         "@pip//fastmcp",
+        "@pip//hera",
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//kubernetes_asyncio",
@@ -2045,6 +2047,17 @@ py_test(
 )
 
 py_test(
+    name = "scheduler_argo_test",
+    srcs = ["scheduler/argo_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "scheduler_loop_test",
     srcs = ["scheduler/scheduler_loop_test.py"],
     imports = ["."],
@@ -2738,6 +2751,17 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "worldcup_dispatch_test",
+    srcs = ["worldcup/dispatch_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 

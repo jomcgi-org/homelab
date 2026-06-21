@@ -365,3 +365,26 @@ async def refresh_handler(session) -> datetime | None:
     sim_changed = await asyncio.to_thread(_upsert, standings_rows, fixture_rows)
     await asyncio.to_thread(_simulate_and_store, sim_changed)
     return None
+
+
+async def refresh_dispatch(session) -> datetime | None:
+    """Scheduler entrypoint that routes the refresh job to its executor.
+
+    When JOB_EXECUTOR=argo, submit a Workflow that runs ``jobs_main.py
+    worldcup-sim`` in an off-pod Argo pod and return immediately (the scheduler's
+    lock already prevents concurrent runs). Otherwise run in-process as before.
+    This is the flag we flip to cut over without a code change. The job pod runs
+    refresh_handler directly (jobs_main.py worldcup-sim -> refresh_handler), so
+    the routing decision must live HERE, not inside refresh_handler, or the job
+    pod would recurse into submitting another Workflow.
+    """
+    from scheduler.api import jobs_use_argo, submit_job_workflow
+
+    if jobs_use_argo():
+        await submit_job_workflow(
+            name="worldcup-sim",
+            args=["worldcup-sim"],
+            env_keys=["DATABASE_URL", "WORLDCUP_API_BASE"],
+        )
+        return None
+    return await refresh_handler(session)

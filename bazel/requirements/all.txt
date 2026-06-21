@@ -1432,6 +1432,12 @@ haversine==2.9.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+hera==7.0.0 \
+    --hash=sha256:a73bf5d7299a35bdbd43626ecfbec2f6e47ce62226e6fda8a8e312ac699208dc \
+    --hash=sha256:e6dd7c2aafa866845174993faa839281855da5f88787284a20d88b17d64beb77
+    # via
+    #   -c bazel/requirements/runtime.txt
+    #   -r bazel/requirements/runtime.txt
 hf-xet==1.4.2 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' \
     --hash=sha256:09b138422ecbe50fd0c84d4da5ff537d27d487d3607183cd10e3e53f05188e82 \
     --hash=sha256:163aab46854ccae0ab6a786f8edecbbfbaa38fcaa0184db6feceebf7000c93c0 \
@@ -3434,6 +3440,7 @@ pydantic[email]==2.12.5 \
     #   fastmcp
     #   genai-prices
     #   google-genai
+    #   hera
     #   mcp
     #   open-gopro
     #   openai
@@ -4277,6 +4284,7 @@ requests==2.33.0 \
     #   fastembed
     #   google-auth
     #   google-genai
+    #   hera
     #   open-gopro
     #   opentelemetry-exporter-otlp-proto-http
     #   osmium

@@ -11,6 +11,15 @@ backend:
     limits:
       memory: "256Mi"
 
+# Off-pod batch-job execution via Argo Workflows. executor=monolith runs jobs
+# in-process (current behaviour); executor=argo submits them to the Argo
+# controller in workflowNamespace. The cutover is a one-line flip to "argo".
+# jobs.image is injected (digest-pinned) at build time by helm_images_values
+# (see chart/BUILD images "jobs.image"); do not set it here.
+jobs:
+  executor: monolith
+  workflowNamespace: monolith-workflows
+
 frontend:
   otelCollectorUrl: ""
   image:

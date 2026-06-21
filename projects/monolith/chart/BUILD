@@ -28,6 +28,7 @@ helm_chart(
     images = {
         "backend.image": "//projects/monolith:image.info",
         "frontend.image": "//projects/monolith/frontend:image.info",
+        "jobs.image": "//projects/monolith:jobs_image.info",
     },
     lint = False,
     publish = True,
