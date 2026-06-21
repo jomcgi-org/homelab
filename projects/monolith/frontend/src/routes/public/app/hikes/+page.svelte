@@ -205,6 +205,11 @@
       // (not merely one good hour). Membership is a cheap O(1) check, no hourly
       // windows to re-parse.
       result = result.filter((w) => w.viable_days?.includes(selectedDay));
+    } else {
+      // "Any day": still drop walks doable on NO forecast day, so the map means
+      // "doable somewhere in the 7-day window" rather than plotting walks whose
+      // whole forecast is too short/washed-out to ever complete.
+      result = result.filter((w) => w.viable_days?.length);
     }
     return result;
   });
