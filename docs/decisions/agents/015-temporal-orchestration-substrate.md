@@ -1,10 +1,17 @@
 # ADR 015: Temporal as the Orchestration Substrate
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Superseded
 **Created:** 2026-05-30
+**Superseded:** 2026-06-21 (Temporal was decommissioned on 2026-06-14 with the lakehouse stack, PR #2596; event-sourced orchestration work moved to `loom`. Homelab agent orchestration is migrating into the monolith + claude.ai routines.)
 **Supersedes:** [014 — AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)
 **Depends on:** [016 — NATS as Canonical Event Stream](016-nats-canonical-event-stream.md), [017 — Domain Event Schema](017-domain-event-schema.md)
+
+---
+
+## Superseded (2026-06-21)
+
+Temporal was never kept as the homelab's orchestration substrate. It was deployed for the event-sourced lakehouse and decommissioned with that stack on 2026-06-14 (PR #2596); the data-platform orchestration work continues under `loom`. Homelab agent orchestration (the `agent-orchestrator` and `cluster_agents` this ADR planned to replace) is instead migrating into the monolith and claude.ai scheduled routines, the same pattern the knowledge gardener already uses ([ADR 018](018-event-driven-gardener-trigger.md)).
 
 ---
 

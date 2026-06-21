@@ -1,9 +1,16 @@
 # ADR 017: Domain Event Schema and Tombstone Semantics
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Superseded
 **Created:** 2026-05-30
+**Superseded:** 2026-06-21 (the event schema only ever served the canonical bus of ADR 016, now removed; an event-sourced contract still belongs in `loom`, not the homelab.)
 **Depends on:** [016 — NATS as Canonical Event Stream](016-nats-canonical-event-stream.md)
+
+---
+
+## Superseded (2026-06-21)
+
+The domain event envelope and tombstone semantics defined here exist only to give consumers of the canonical event bus ([ADR 016](016-nats-canonical-event-stream.md)) a uniform interpretation. Every consumer this ADR named (the Temporal gap-drain dispatcher, the Iceberg batch committer) belonged to the lakehouse stack decommissioned on 2026-06-14 (PR #2596) and moved to `loom`. With NATS removed from the homelab (ADR 016) and no homelab component publishing or consuming these events, this schema has no remaining homelab consumer. An event-sourced data platform does still need an envelope, idempotency, and tombstone contract, so this decision belongs to `loom` rather than the homelab.
 
 ---
 

@@ -1,9 +1,16 @@
 # ADR 016: NATS as the Canonical Event Stream
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Superseded
 **Created:** 2026-05-30
+**Superseded:** 2026-06-21 (NATS removed from the homelab; the bus only ever served the decommissioned lakehouse and had no remaining homelab publishers or consumers. Event-sourced data-platform work continues under `loom`.)
 **Depends on:** [015 — Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md), [017 — Domain Event Schema](017-domain-event-schema.md)
+
+---
+
+## Superseded (2026-06-21)
+
+NATS is no longer deployed in the homelab. This ADR chose NATS as the canonical event stream on the premise that Temporal ([ADR 015](015-temporal-orchestration-substrate.md)) would own orchestration and every cross-component state change would flow through events. That stack was decommissioned on 2026-06-14 (lakehouse + Temporal, PR #2596) and its successor, the event-sourced data platform, moved to `loom`. The NATS deployment (`nack`, `nats`, `nats-streams` under `projects/platform`) had no remaining homelab publishers or consumers, so it was removed. Homelab state is authoritative in Postgres, and components communicate via direct calls and MCP: see [ADR 018](018-event-driven-gardener-trigger.md), where the gardener explicitly chose an in-process trigger over this bus. If an event bus is needed again, it will be designed in `loom`.
 
 ---
 

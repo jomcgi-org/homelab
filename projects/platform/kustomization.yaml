@@ -13,9 +13,6 @@ resources:
   - ./kyverno
   - ./linkerd
   - ./longhorn
-  - ./nack # NATS JetStream controller; must reconcile before nats-streams (Stream CRDs)
-  - ./nats
-  - ./nats-streams
   - ./nvidia-gpu-operator
   - ./opentelemetry-operator
   - ./seaweedfs
@@ -25,3 +22,6 @@ resources:
   # stack decommissioned (superseded by ../loom). The CNPG temporal/
   # temporal_visibility/lakehouse databases were dropped via ensure:absent before
   # this removal.
+  # nack, nats, nats-streams removed: the canonical event bus (ADRs agents/016,
+  # 017) only ever served the decommissioned lakehouse; no homelab publishers or
+  # consumers remained. Event-sourced data-platform work continues under ../loom.
