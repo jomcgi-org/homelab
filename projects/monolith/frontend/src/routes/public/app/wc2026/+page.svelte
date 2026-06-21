@@ -698,6 +698,11 @@
     background: var(--cream);
     border: none;
     border-bottom: 2px solid var(--ink);
+    /* Strip the native input chrome: WebKit gives text inputs rounded corners
+       and an inner bevel by default, which breaks the hard-edge brutalist box. */
+    border-radius: 0;
+    -webkit-appearance: none;
+    appearance: none;
     outline: none;
   }
   .picker-search::placeholder {
