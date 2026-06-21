@@ -293,9 +293,7 @@ def test_transcript_returns_the_stored_session_history(client, session):
         touched=[{"id": "stpa", "title": "STPA"}],
     )
 
-    got = client.get(
-        "/internal/chat/transcript", headers={"X-Chat-Session-Id": row.id}
-    )
+    got = client.get("/internal/chat/transcript", headers={"X-Chat-Session-Id": row.id})
     assert got.status_code == 200
     body = got.json()
     assert body["messages"] == [

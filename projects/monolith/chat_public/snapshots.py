@@ -111,9 +111,7 @@ def fork_snapshot(
 
     if entries:
         sessions.append_messages(db, session, entries)
-    sessions.set_counters(
-        db, session, turn_count=turns, total_tokens=seeded_tokens
-    )
+    sessions.set_counters(db, session, turn_count=turns, total_tokens=seeded_tokens)
     db.refresh(session)
     return session
 
