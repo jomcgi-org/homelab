@@ -185,10 +185,11 @@
 <Footer />
 
 <style>
-  /* ── Top bar: apex back link on the left, docs section nav on the right
-     (mirrors the old VitePress nav). Sticky height (~48px) matches the old
-     site nav so the sidebar / TOC `top: 76px` offsets and heading
-     scroll-margins stay valid. ── */
+  /* ── Top bar: apex back link on the left, docs section nav on the right.
+     This is the *only* header on docs pages: the global site nav is
+     suppressed on /docs (see routes/+layout.svelte), so this bar owns
+     `top: 0` alone. Its height (~64px with the search box) sets the
+     sidebar / TOC `top: 76px` offsets and heading scroll-margins. ── */
   .docs-topbar {
     position: sticky;
     top: 0;
@@ -202,7 +203,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    max-width: 1280px;
+    max-width: 1320px;
     margin: 0 auto;
     padding: 14px 32px;
   }
@@ -321,16 +322,16 @@
 
   .docs-layout {
     display: grid;
-    grid-template-columns: 248px minmax(0, 1fr);
-    gap: 28px;
-    max-width: 1280px;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 32px;
+    max-width: 1320px;
     margin: 0 auto;
     padding: 32px;
     align-items: start;
   }
 
   .docs-layout.has-toc {
-    grid-template-columns: 248px minmax(0, 1fr) 220px;
+    grid-template-columns: 240px minmax(0, 1fr) 200px;
   }
 
   /* ── Left sidebar ────────────────────────────────────────── */
@@ -493,8 +494,23 @@
     border-left-color: var(--coral);
   }
 
-  /* ── Responsive: collapse the rails on narrow viewports ──── */
-  @media (max-width: 1080px) {
+  /* ── Responsive: shed the rails in two stages ─────────────────
+     The right TOC is the first to go (≤1200px): below that width the
+     nav + content + TOC triple squeezes the prose into a cramped
+     column and makes the serif headings look oversized. Dropping the
+     TOC first hands that space back to the content. The left nav only
+     unsticks and stacks on top once the viewport can no longer hold a
+     two-column layout (≤920px). */
+  @media (max-width: 1200px) {
+    .docs-layout.has-toc {
+      grid-template-columns: 240px minmax(0, 1fr);
+    }
+    .docs-toc {
+      display: none;
+    }
+  }
+
+  @media (max-width: 920px) {
     .docs-layout,
     .docs-layout.has-toc {
       grid-template-columns: minmax(0, 1fr);
@@ -504,9 +520,6 @@
     .docs-side {
       position: static;
       max-height: none;
-    }
-    .docs-toc {
-      display: none;
     }
     .docs-card {
       padding: 28px 22px;
@@ -528,21 +541,21 @@
   }
 
   .docs-card :global(h1) {
-    font-size: 2.6rem;
-    letter-spacing: -0.02em;
-    margin: 0 0 24px;
+    font-size: 2.2rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 20px;
   }
 
   .docs-card :global(h2) {
-    font-size: 1.7rem;
-    margin: 38px 0 14px;
+    font-size: 1.5rem;
+    margin: 34px 0 14px;
     padding-bottom: 8px;
     border-bottom: 2px solid var(--ink);
   }
 
   .docs-card :global(h3) {
-    font-size: 1.3rem;
-    margin: 28px 0 10px;
+    font-size: 1.2rem;
+    margin: 26px 0 10px;
   }
 
   .docs-card :global(h4) {
@@ -681,6 +694,12 @@
     padding: 8px 10px;
     text-align: left;
     vertical-align: top;
+    /* Long unbroken mono tokens (file paths like
+       projects/platform/agent-sandbox, URLs) would otherwise force the
+       auto-laid-out table wider than the card and bleed past its right
+       border. Let them wrap inside the cell instead. */
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .docs-card :global(thead th) {

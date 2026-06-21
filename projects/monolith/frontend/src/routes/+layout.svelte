@@ -12,11 +12,17 @@
   // hooks.js reroute keeps the browser path un-prefixed, but match the
   // /public|/private prefixes too in case a route is hit directly.
   //
+  // Docs under /docs are likewise suppressed: DocsShell renders its own
+  // purpose-built topbar (back-to-apex link, docs search, section nav), so the
+  // global site nav would just stack a second sticky bar on top of it. Matches
+  // /docs and /docs/* but not unrelated prefixes like /docstore.
+  //
   // Error pages (notably the brutalist 404 in src/routes/+error.svelte) also
   // suppress the nav: a not-found page renders its own "back home" affordance
   // and the cross-tier nav would only clutter the dead-end.
   let hideNav = $derived(
     /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       $page.error != null,
   );
 
