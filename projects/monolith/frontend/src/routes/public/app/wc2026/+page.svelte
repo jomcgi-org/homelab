@@ -312,16 +312,20 @@
             games), so a heavy favourite is never treated as a sure thing.
           </li>
           <li>
-            <strong>Score each match.</strong> For an unplayed match, the two
-            teams' drawn strengths set two Poisson scoring rates, one per side,
-            and a scoreline is sampled from them, so the stronger team scores
-            more and evenly matched sides draw about a quarter of the time.
+            <strong>Score each match.</strong> For an unplayed match, each
+            team's Poisson scoring rate is built from both sides' drawn strengths
+            and from how freely it has actually scored and conceded so far, so a
+            strong attack and a leaky defence are modelled separately. Scorelines
+            are sampled with a small low-score correction, so the stronger team
+            scores more and evenly matched sides draw about a quarter of the time.
           </li>
           <li>
             <strong>Rank by the real rules.</strong> Each simulated tournament
-            applies the actual qualification rules: top two of every group, plus
-            the eight best third-placed teams, ordered by points, then goal
-            difference, then goals scored.
+            applies the actual 2026 rules: top two of every group, plus the
+            eight best third-placed teams. Within a group, a tie on points is
+            settled head-to-head first (the result between the level teams), then
+            overall goal difference and goals scored; the third-placed teams, who
+            never met, are compared on points, goal difference and goals scored.
           </li>
           <li>
             <strong>Aggregate over the runs.</strong> Across all {nSims} runs,
