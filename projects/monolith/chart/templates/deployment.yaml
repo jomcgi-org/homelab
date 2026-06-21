@@ -47,10 +47,12 @@ spec:
             - name: WORKFLOW_NAMESPACE
               value: {{ .Values.jobs.workflowNamespace | default "monolith-workflows" | quote }}
             {{- if .Values.jobs.image }}
-            # Digest-pinned at build time by helm_images_values (chart/BUILD
-            # images "jobs.image"); the Workflow runs this exact image.
+            # Pinned at build time by helm_images_values (chart/BUILD images
+            # "jobs.image") as a {repository, tag} object - same shape as
+            # backend.image - so build the ref the same way; the Workflow runs
+            # this exact image.
             - name: JOBS_IMAGE
-              value: {{ .Values.jobs.image | quote }}
+              value: "{{ .Values.jobs.image.repository }}:{{ .Values.jobs.image.tag }}"
             {{- end }}
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
