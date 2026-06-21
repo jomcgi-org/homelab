@@ -4251,6 +4251,8 @@ semgrep_target_test(
         "tainted-path-traversal-stdlib-fastapi",
         "test-hardcoded-past-timestamp",  # keep
     ],
+    lockfiles = ["//bazel/requirements:all.txt"],
     rules = ["//bazel/semgrep/rules:python_rules"],
+    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
     target = ":jobs",
 )
