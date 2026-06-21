@@ -1081,6 +1081,8 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .flag {
@@ -1100,10 +1102,11 @@
   }
 
   .chance {
-    display: inline-flex;
+    display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 4px;
+    width: 100%;
   }
 
   .chance-num {
@@ -1113,7 +1116,8 @@
 
   .chance-bar {
     display: block;
-    width: 44px;
+    width: 100%;
+    max-width: 120px;
     height: 5px;
     background: var(--rule);
     border: 1px solid var(--ink);
@@ -1609,6 +1613,33 @@
   @media (max-width: 519px) {
     .grid .sec {
       display: none;
+    }
+  }
+
+  /* From tablet up the board is wide enough that an auto-width team column eats
+     all the slack and strands the stats against the right edge, leaving a big
+     gap in the middle. Switch to a fixed layout: pin the structural columns and
+     let P/W/D/L/GF/GA/GD share the remainder, so the numbers spread evenly
+     across the width like a proper standings table. */
+  @media (min-width: 520px) {
+    .grid {
+      table-layout: fixed;
+    }
+    .col-team {
+      width: 27%;
+    }
+    .col-pos {
+      width: 6%;
+    }
+    .col-pts {
+      width: 8%;
+    }
+    .col-chance {
+      width: 13%;
+    }
+    .team-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   }
 
