@@ -5,6 +5,8 @@
 -- country_code. swing_matches holds only ephemeral computed output (the sim
 -- delete-then-inserts the whole table each refresh), so dropping and recreating
 -- is safe and avoids in-place primary-key surgery.
+-- nosemgrep: migration-destructive-ddl (safe: ephemeral computed output only; the sim
+-- delete-then-inserts the whole table on each refresh, so dropping and recreating is safe)
 DROP TABLE IF EXISTS worldcup.swing_matches;
 
 CREATE TABLE worldcup.swing_matches (

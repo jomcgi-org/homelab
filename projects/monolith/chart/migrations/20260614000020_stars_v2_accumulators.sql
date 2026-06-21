@@ -4,7 +4,10 @@
 -- swap window_count / sum_q / sum_darkness / sum_clarity for dark_hours and
 -- clear_dark_hours. dark_hours is the denominator; clear_dark_hours is the
 -- headline metric and clear_dark_hours / dark_hours is the clarity rate.
+-- nosemgrep: migration-destructive-ddl (safe: v1 rows are stale after the grid/metric
+-- change; truncating before inserting v2 data is the correct migration strategy)
 TRUNCATE stars.site_month_stats;
+-- nosemgrep: migration-destructive-ddl (same rationale as above)
 TRUNCATE stars.site_month_climatology;
 
 ALTER TABLE stars.site_month_stats   DROP COLUMN window_count, DROP COLUMN sum_q,

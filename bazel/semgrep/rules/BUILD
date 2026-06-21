@@ -46,7 +46,10 @@ filegroup(
         # Excluded: path-scoped rules that cannot run against all project files
         # because semgrep-core ignores paths: filters (pysemgrep-only feature).
         # These rules are wired to dedicated semgrep_test targets below.
-        exclude = ["python/no-pytest-mark-asyncio-without-plugin.yaml"],
+        exclude = [
+            "python/migration-destructive-ddl.yaml",
+            "python/no-pytest-mark-asyncio-without-plugin.yaml",
+        ],
     ) + ["@semgrep_pro_rules_python//:rules"],
 )
 
@@ -299,6 +302,23 @@ semgrep_test(
     srcs = ["//bazel/semgrep/tests:no_create_extension_sql_fixtures"],
     env = {"SEMGREP_TEST_MODE": "1"},
     rules = [":sql_rules"],
+    tags = ["semgrep"],
+)
+
+# migration-destructive-ddl uses languages: [generic] scoped to **/chart/migrations/*.sql.
+# Wired to its own .sql annotation fixture independently of python_rules_test
+# (which scans python/*.py sources). Excluded from python_rules because semgrep-core
+# ignores paths: filters and would scan all Python files if included.
+filegroup(
+    name = "migration_destructive_ddl_rule",
+    srcs = ["python/migration-destructive-ddl.yaml"],
+)
+
+semgrep_test(
+    name = "migration_destructive_ddl_test",
+    srcs = ["//bazel/semgrep/tests:migration_destructive_ddl_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":migration_destructive_ddl_rule"],
     tags = ["semgrep"],
 )
 
