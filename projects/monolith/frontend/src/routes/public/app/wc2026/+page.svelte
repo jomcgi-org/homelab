@@ -211,11 +211,19 @@
         </p>
         <ol class="explainer-steps">
           <li>
-            <strong>Score each match from Elo.</strong> Every team has an Elo
-            rating. For an unplayed match, the rating gap sets two Poisson
-            scoring rates, one per side, and a scoreline is drawn from them, so
-            the stronger team scores more and evenly matched sides draw about a
-            quarter of the time.
+            <strong>Rate each team, with uncertainty.</strong> Every team starts
+            from a pre-tournament Elo rating, then moves up or down with the
+            group results already played, so a side that has over-performed
+            carries that into its remaining games. Because a rating is an
+            estimate and not a fact, each run draws the team's strength from a
+            range around that value (wider for teams who have played fewer
+            games), so a heavy favourite is never treated as a sure thing.
+          </li>
+          <li>
+            <strong>Score each match.</strong> For an unplayed match, the two
+            teams' drawn strengths set two Poisson scoring rates, one per side,
+            and a scoreline is sampled from them, so the stronger team scores
+            more and evenly matched sides draw about a quarter of the time.
           </li>
           <li>
             <strong>Rank by the real rules.</strong> Each simulated tournament
@@ -230,9 +238,9 @@
           </li>
         </ol>
         <p class="explainer-fine">
-          Elo ratings are frozen at kickoff, matches are independent, and the
-          two lowest FIFA tiebreakers (disciplinary record and world ranking)
-          aren't modelled, they're sampled as coin-flips.
+          Matches are simulated independently, and the two lowest FIFA
+          tiebreakers (disciplinary record and world ranking) aren't modelled,
+          they're sampled as coin-flips.
         </p>
       </div>
     </details>
@@ -397,7 +405,7 @@
     <footer class="foot">
       <p>
         Data from <a href="https://worldcup26.ir" rel="external noopener">worldcup26.ir</a>.
-        Odds from an Elo-weighted Monte Carlo, {q.n_sims ?? 0} simulations.
+        Odds from an Elo-weighted Monte Carlo, {nSims} simulations.
       </p>
       <p class="caveat">
         The final two FIFA tiebreakers (disciplinary record and FIFA ranking)
