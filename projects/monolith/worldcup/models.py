@@ -50,7 +50,9 @@ class Fixture(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     updated_at: datetime | None = None
 
 
-class Qualification(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Qualification(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
     __tablename__ = "qualification"
     __table_args__ = _SCHEMA
     team_id: str = Field(primary_key=True)
