@@ -282,6 +282,47 @@ def test_swing_n_zero_yields_no_swing():
     assert 0.0 <= res.per_team["FAV"].prob_qualify <= 1.0
 
 
+def _scenario_settled_match():
+    """A group of four after two matchdays: AAA and BBB have both won twice
+    (6 pts) while CCC and DDD have lost twice (0 pts). The matchday-three
+    fixtures are AAA vs BBB and CCC vs DDD.
+
+    AAA and BBB each finish on >= 6 points whatever happens between them, while
+    the 0-point teams can reach at most 3, so both are guaranteed top-two and
+    are "qualified". Their head-to-head is therefore a settled-vs-settled match
+    that can move no team and must be dropped from every swing list. CCC and DDD
+    are still contesting the single third-place slot, so their match is the one
+    decisive fixture and is kept.
+    """
+    states = [
+        _team("AAA", "A", pts=6, gf=6, ga=0),
+        _team("BBB", "A", pts=6, gf=6, ga=0),
+        _team("CCC", "A", pts=0, gf=0, ga=3),
+        _team("DDD", "A", pts=0, gf=0, ga=3),
+    ]
+    fixtures = [
+        Fixture("A-AAA-BBB", "A", "AAA", "BBB"),
+        Fixture("A-CCC-DDD", "A", "CCC", "DDD"),
+    ]
+    elo = {c: _BASE for c in ("AAA", "BBB", "CCC", "DDD")}
+    return states, fixtures, elo
+
+
+def test_settled_vs_settled_match_excluded_from_swings():
+    # A match between two already-qualified teams has a true swing of 0 for every
+    # team, so it is dropped from all swing lists rather than surfaced with a noisy
+    # estimate; the still-live third-place match survives.
+    states, fixtures, elo = _scenario_settled_match()
+    res = simulate(states, fixtures, elo, focus="AAA", n=4000, seed=3, swing_n=4000)
+    assert res.per_team["AAA"].status == "qualified"
+    assert res.per_team["BBB"].status == "qualified"
+    # The settled-vs-settled fixture is absent from every team's swing list.
+    for code, rows in res.swings_by_country.items():
+        assert all(s.match_id != "A-AAA-BBB" for s in rows), code
+    # The genuinely decisive third-place match is still present.
+    assert "A-CCC-DDD" in {s.match_id for s in res.swings_by_country["CCC"]}
+
+
 def _scenario_head_to_head_tie():
     """A finished group of four where SCO and BRA are level on points for 2nd.
 

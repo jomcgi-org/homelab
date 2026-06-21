@@ -316,12 +316,24 @@ def simulate(
     # Build each country's ranked swing list from the tally. When an outcome was
     # never sampled (totals 0, e.g. swing_n == 0 or an impossible result) fall
     # back to the team's unconditional qualify probability so its swing is 0.
+    #
+    # A match between two teams whose fates are already sealed (each one qualified
+    # or eliminated) is skipped entirely: it cannot move ANY team's qualification.
+    # Neither participant's own standing matters anymore, and a settled team is
+    # never a best-third contender whose goal difference could shift the cutoff, so
+    # the match's true swing is exactly 0 for everyone. We drop it rather than
+    # surface its noisy Monte Carlo estimate: a rare upset between two settled teams
+    # is sampled in very few trials, so its conditional qualify-probability is high
+    # variance and reads as a phantom swing (the Tunisia-Netherlands case).
+    settled = {code for code, tp in per_team.items() if tp.status != "contention"}
     swings_by_country: dict[str, list[Swing]] = {}
     for c in by_code:
         ci = code_to_idx[c]
         cprob = per_team[c].prob_qualify
         rows = []
         for f in fixtures:
+            if f.home_code in settled and f.away_code in settled:
+                continue
             m = match_to_idx[f.match_id]
             conds = {}
             for oc, o in _OC_IDX.items():
