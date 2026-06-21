@@ -37,6 +37,7 @@ const CHAT_PREFIX_MAP = {
   "/chat/session": "/public/chat/session",
   "/chat/message": "/public/chat/message",
   "/chat/share": "/public/chat/share",
+  "/chat/fork": "/public/chat/fork",
 };
 
 /** @type {import('@sveltejs/kit').Reroute} */

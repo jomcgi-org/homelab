@@ -170,6 +170,15 @@ class ShareRequest(BaseModel):
     session_id: str | None = None
 
 
+class ForkRequest(BaseModel):
+    # "Fork this chat" from a read-only snapshot: the only client input honored
+    # is the snapshot id and a Turnstile token (admission, same as a fresh
+    # session). The seeded history comes server-side from the immutable snapshot,
+    # never from the client body.
+    snapshot_id: str | None = None
+    turnstile_token: str | None = None
+
+
 def _iso(dt: datetime | None) -> str | None:
     """Serialize a possibly-naive timestamp as an offset-consistent ISO string.
 
@@ -561,4 +570,88 @@ def get_shared_chat(
         "id": snapshot.id,
         "created_at": _iso(snapshot.created_at),
         "messages": list(snapshot.transcript or []),
+    }
+
+
+@router.post("/fork", response_model=SessionCreateResponse)
+async def fork_chat(
+    payload: ForkRequest = Body(default_factory=ForkRequest),
+    db: Session = Depends(get_chat_session),
+    read_db: Session = Depends(get_session),
+    cf_ipcountry: str | None = Header(default=None, alias="CF-IPCountry"),
+    cf_connecting_ip: str | None = Header(default=None, alias="CF-Connecting-IP"),
+    user_agent: str | None = Header(default=None, alias="User-Agent"),
+) -> SessionCreateResponse:
+    """Fork a read-only snapshot into a new, continuable session.
+
+    Admission is identical to creating a fresh session (siteverify the forwarded
+    Turnstile token: no valid token, no session), because a fork mints a new
+    server-side session backed by real inference. Only then is the snapshot read
+    (public_reader replica) and its frozen transcript seeded into a new session
+    (public_writer primary). The seeded turns/tokens are charged to the new
+    session so the fork inherits the conversation's budget. Returns the opaque
+    session id; SSR stores it in the httpOnly cookie, then lands the visitor on
+    the live app, which rehydrates the seeded transcript.
+
+    404 (identical to a missing snapshot) when the snapshot id is unknown.
+    """
+    result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
+    if not result.success:
+        raise HTTPException(
+            status_code=_limit_status("turnstile_failed"),
+            detail={
+                "code": "turnstile_failed",
+                "message": "Challenge verification failed. Please try again.",
+            },
+        )
+
+    snapshot = snapshots.load_snapshot(read_db, payload.snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    session = snapshots.fork_snapshot(
+        db,
+        snapshot,
+        turnstile_outcome=result.outcome,
+        ip=cf_connecting_ip,
+        country=cf_ipcountry,
+        user_agent=user_agent,
+    )
+    logger.info(
+        "chat_public.snapshot.forked snapshot=%s session=%s turns=%d",
+        snapshot.id,
+        session.id,
+        session.turn_count,
+    )
+    return SessionCreateResponse(session_id=session.id)
+
+
+@router.get("/transcript")
+def get_chat_transcript(
+    db: Session = Depends(get_chat_session),
+    header_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
+) -> dict:
+    """Return the current session's stored transcript so the live app can resume.
+
+    The session id is resolved from the X-Chat-Session-Id header (SSR forwards it
+    from the httpOnly cookie), same posture as /message and /share. Returns the
+    user/assistant turns (each assistant turn with its grounding) plus the
+    running counters, so a reload, or a freshly-forked session, rehydrates the
+    same view the server already holds. 404 (identical to /message) for a
+    missing/expired/invalid session; the browser never sends history, so this is
+    the only way to read it back.
+    """
+    session = sessions.load_active_session(db, header_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    messages = [
+        {"role": m.role, "content": m.content, "touched": list(m.touched or [])}
+        for m in sessions.get_transcript(db, session)
+        if m.role in ("user", "assistant")
+    ]
+    return {
+        "messages": messages,
+        "turn_count": session.turn_count,
+        "total_tokens": session.total_tokens,
     }

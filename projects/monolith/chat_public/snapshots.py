@@ -55,6 +55,69 @@ def create_snapshot(db: Session, session: ChatSession) -> ChatSnapshot:
     return snapshot
 
 
+def fork_snapshot(
+    db: Session,
+    snapshot: ChatSnapshot,
+    *,
+    turnstile_outcome: str = "passed",
+    ip: str | None = None,
+    country: str | None = None,
+    user_agent: str | None = None,
+) -> ChatSession:
+    """Open a new live session seeded with a snapshot's frozen transcript.
+
+    "Fork this chat": a snapshot is read-only, so to continue it we mint a fresh
+    server-side session and copy the immutable snapshot's transcript into it as
+    the new session's server-authoritative history. The browser supplies nothing
+    but the snapshot id and a solved Turnstile token (verified in the router,
+    same admission as a fresh session); the seeded content comes only from the
+    stored snapshot, so a forged body cannot inject history.
+
+    The carried-over turns/tokens are charged to the new session's counters, so
+    the fork inherits the conversation's spend against the per-session ceilings
+    rather than resetting the budget (re-forking cannot mint unlimited turns).
+    """
+    from chat_public import limits, sessions  # local import: avoid an import cycle
+
+    session = sessions.create_session(
+        db,
+        turnstile_outcome=turnstile_outcome,
+        ip=ip,
+        country=country,
+        user_agent=user_agent,
+    )
+
+    entries: list[dict] = []
+    seeded_tokens = 0
+    turns = 0
+    for row in snapshot.transcript or []:
+        role = row.get("role")
+        if role not in _SHARABLE_ROLES:
+            continue
+        content = row.get("content") or ""
+        tokens = limits.estimate_tokens(content)
+        seeded_tokens += tokens
+        # One turn = one user message answered, so count user rows.
+        if role == "user":
+            turns += 1
+        entries.append(
+            {
+                "role": role,
+                "content": content,
+                "tokens": tokens,
+                "touched": list(row.get("touched") or []),
+            }
+        )
+
+    if entries:
+        sessions.append_messages(db, session, entries)
+    sessions.set_counters(
+        db, session, turn_count=turns, total_tokens=seeded_tokens
+    )
+    db.refresh(session)
+    return session
+
+
 def has_sharable_transcript(db: Session, session: ChatSession) -> bool:
     """True iff the session has at least one user/assistant turn to share.
 

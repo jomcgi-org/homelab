@@ -7,7 +7,10 @@
   // (HTML-escapes &<> on every path, emits no raw HTML, no links, no
   // javascript:/data: URLs), and rendered with the same user-bubble / bot-turn
   // look as the live app.
+  import { goto } from "$app/navigation";
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
+  import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
+  import { forkChatSession } from "$lib/public/chat/admission.js";
 
   let { data } = $props();
 
@@ -16,6 +19,28 @@
   function renderReply(text) {
     // Empty title map: [[wikilinks]] render as inert text (no graph nav here).
     return renderMarkdown(text ?? "", new Map());
+  }
+
+  // ── fork this chat ───────────────────────────────────────────────
+  // A snapshot is read-only, but a visitor can FORK it: solving a Turnstile
+  // challenge mints a new live session seeded with this snapshot's transcript
+  // (server-side), then we land them on the live app to keep chatting. The
+  // challenge is the same admission gate as starting a fresh chat (a fork is a
+  // new inference-backed session). Only offered when a site key is configured
+  // and there is a transcript to continue.
+  const canFork = $derived(
+    Boolean(data.turnstileSiteKey) && data.messages.length > 0,
+  );
+  let forking = $state(false); // gate revealed?
+
+  function startFork() {
+    forking = true;
+  }
+
+  function onForked() {
+    // The fork set the httpOnly session cookie; the live app's loader reads it
+    // and rehydrates the seeded transcript. Navigate there to continue.
+    goto("/app/notes");
   }
 </script>
 
@@ -48,6 +73,11 @@
       <span class="panel-tag">SHARED CHAT</span>
       <span class="panel-readonly">READ-ONLY</span>
       <span class="panel-spacer"></span>
+      {#if canFork && !forking}
+        <button type="button" class="bar-btn bar-btn-primary" onclick={startFork}>
+          CONTINUE THIS CHAT
+        </button>
+      {/if}
       <a class="bar-btn" href="/public/app/notes">START YOUR OWN CHAT</a>
     </div>
 
@@ -80,6 +110,22 @@
         {/each}
       {/if}
     </div>
+
+    {#if forking}
+      <div class="fork-panel">
+        <p class="fork-eyebrow">CONTINUE THIS CHAT</p>
+        <p class="fork-copy">
+          Solve the challenge to pick up this conversation in a fresh session.
+          The transcript above is carried over and you can keep asking from
+          there. No sign-in, no tracking beyond what keeps the bots out.
+        </p>
+        <TurnstileGate
+          siteKey={data.turnstileSiteKey}
+          admit={(token) => forkChatSession(data.snapshotId, token)}
+          onAdmitted={onForked}
+        />
+      </div>
+    {/if}
 
     <div class="share-foot">
       <p class="share-foot-copy">
@@ -192,6 +238,35 @@
     background: var(--accent);
     transform: translate(-1px, -1px);
     box-shadow: var(--shadow-hard-sm);
+  }
+  /* The primary "continue this chat" action: filled blue so it reads as the
+     main affordance next to the neutral "start your own chat" link. */
+  .bar-btn-primary {
+    background: var(--blue);
+  }
+
+  /* The fork gate panel: revealed under the transcript when a visitor opts to
+     continue. The same neo-brutalist framing as the rest of the share view. */
+  .fork-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px 24px;
+    border-top: 2.5px solid var(--ink);
+    background: var(--paper);
+  }
+  .fork-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    margin: 0;
+  }
+  .fork-copy {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--ink-2, #6b6b6b);
+    max-width: 60ch;
+    margin: 0;
   }
 
   .chat-transcript {
