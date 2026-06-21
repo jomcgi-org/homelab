@@ -10,7 +10,7 @@ argocd_app(
     name = "argo-workflows",
     chart = "projects/platform/argo-workflows",
     chart_files = ":chart",
-    namespace = "argo",
+    namespace = "monolith-workflows",
     release_name = "argo-workflows",
     # The bundled Argo CRDs (workflows, workflowtemplates, ...) embed full
     # pod/container OpenAPI schemas inside their `description:` text. Two Semgrep
