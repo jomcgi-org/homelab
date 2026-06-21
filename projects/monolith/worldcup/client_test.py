@@ -1,6 +1,72 @@
+import asyncio
 from datetime import datetime, timezone
 
-from worldcup.client import build_team_index, parse_fixtures, parse_standings
+import httpx
+
+from worldcup import client as wc_client
+from worldcup.client import _get_json, build_team_index, parse_fixtures, parse_standings
+
+
+def _async_client(handler):
+    # MockTransport never hits the network, but set a timeout to satisfy the
+    # httpx-client-no-timeout rule and mirror production usage.
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://test", timeout=5.0
+    )
+
+
+def _fetch(handler, monkeypatch):
+    """Run _get_json against a MockTransport handler with backoff zeroed."""
+    monkeypatch.setattr(wc_client, "_FETCH_BACKOFF_SECS", 0)
+    stats = {"errors": []}
+
+    async def go():
+        async with _async_client(handler) as c:
+            return await _get_json(c, "/get/teams", stats)
+
+    return asyncio.run(go()), stats
+
+
+def test_get_json_retries_5xx_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"ok": True})
+
+    result, stats = _fetch(handler, monkeypatch)
+    assert result == {"ok": True}
+    assert calls["n"] == 2  # retried once, then succeeded
+    assert stats["errors"] == []
+
+
+def test_get_json_does_not_retry_4xx(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(404, text="nope")
+
+    result, stats = _fetch(handler, monkeypatch)
+    assert result == {}  # degrades gracefully
+    assert calls["n"] == 1  # a client error is not retried
+    assert len(stats["errors"]) == 1
+
+
+def test_get_json_exhausts_retries_then_degrades(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(503, text="down")
+
+    result, stats = _fetch(handler, monkeypatch)
+    assert result == {}
+    assert calls["n"] == wc_client._FETCH_ATTEMPTS  # all attempts used
+    assert len(stats["errors"]) == 1
+
 
 TEAMS = {
     "teams": [

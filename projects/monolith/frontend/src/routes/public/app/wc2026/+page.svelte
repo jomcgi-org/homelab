@@ -1,4 +1,7 @@
 <script>
+  import { page } from "$app/stores";
+  import { goto } from "$app/navigation";
+
   let { data } = $props();
 
   // The whole tournament arrives in one payload; the visitor picks a country and
@@ -16,11 +19,16 @@
     Object.fromEntries(allTeams.map((t) => [t.fifa_code, t.name])),
   );
 
-  // Selected country: the page opens on the default (Scotland). Guarded so a
-  // code missing from the data falls back to the default rather than blanking.
-  let picked = $state(data.default_country ?? "SCO");
+  // Selected country lives in the URL (?country=CODE) so a chosen team is
+  // shareable and bookmarkable. It derives from $page.url (works in SSR and on
+  // the client), falling back to the default (Scotland) when absent or unknown.
+  // load() does not read url, so updating the query never re-runs it: switching
+  // stays an instant client-side re-derive with no refetch.
+  const requested = $derived($page.url.searchParams.get("country"));
   const selectedCode = $derived(
-    codeToGroup[picked] ? picked : (data.default_country ?? "SCO"),
+    requested && codeToGroup[requested]
+      ? requested
+      : (data.default_country ?? "SCO"),
   );
   const countryName = $derived(codeToName[selectedCode] ?? selectedCode);
 
@@ -41,7 +49,12 @@
       : allTeams,
   );
   function choose(code) {
-    picked = code;
+    // Mirror the pick into the URL (shareable). replaceState keeps every dropdown
+    // flip out of browser history; keepFocus/noScroll avoid a jump. load() does
+    // not depend on url, so this does not refetch.
+    const url = new URL($page.url);
+    url.searchParams.set("country", code);
+    goto(url, { keepFocus: true, noScroll: true, replaceState: true });
     pickerOpen = false;
     pickerQuery = "";
   }

@@ -319,9 +319,25 @@ def _fake_result():
 
 
 class TestSimulateGate:
-    def _seed(self, session, *, qual_n):
+    def _seed(self, session, *, qual_n, with_swing=True):
         session.add_all([_standing("SCO"), _standing("GER", pts=4)])
         session.add(_fixture("F-SCO-GER", "SCO", "GER", finished=False))
+        if with_swing:
+            # A populated swing table; without one the self-heal gate would fire.
+            session.add(
+                SwingMatch(
+                    match_id="F-SCO-GER",
+                    country_code="SCO",
+                    group_name="A",
+                    home_code="SCO",
+                    away_code="GER",
+                    swing=0.3,
+                    p_qualify_home_win=0.9,
+                    p_qualify_draw=0.6,
+                    p_qualify_away_win=0.4,
+                    is_own_match=True,
+                )
+            )
         session.add(
             Qualification(
                 team_id="id-SCO",
@@ -360,6 +376,20 @@ class TestSimulateGate:
         # recompute once even though no match result moved.
         with Session(engine) as session:
             self._seed(session, qual_n=123)
+        calls = []
+        monkeypatch.setattr(
+            jobs.sim, "simulate", lambda *a, **k: (calls.append(1), _fake_result())[1]
+        )
+        jobs._simulate_and_store(inputs_changed=False)
+        assert len(calls) == 1
+
+    def test_runs_when_swing_missing_even_if_inputs_same(self, engine, monkeypatch):
+        # Remaining fixtures exist but the swing table is empty (e.g. just
+        # recreated by a migration): self-heal by recomputing, even when inputs
+        # and N are unchanged.
+        current_n = int(os.environ.get("WORLDCUP_SIM_N", "500000"))
+        with Session(engine) as session:
+            self._seed(session, qual_n=current_n, with_swing=False)
         calls = []
         monkeypatch.setattr(
             jobs.sim, "simulate", lambda *a, **k: (calls.append(1), _fake_result())[1]
