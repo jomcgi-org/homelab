@@ -44,41 +44,49 @@ exec_filegroup(
     src = "//projects/monolith/frontend:build",
 )
 
+# Shared source closure for the monolith binaries. Both the API server
+# (:main / :image) and the batch-jobs entrypoint (:jobs / :jobs_image) glob the
+# same tree so their image dependency layers are byte-identical: Bazel caches
+# them and the OCI registry dedupes the blobs, so the jobs image costs only its
+# thin launcher layer to build and push. Keep them sharing this variable rather
+# than maintaining two globs that could silently drift apart.
+_BACKEND_SRCS = glob(
+    [
+        "agent/**/*.py",
+        "app/**/*.py",
+        "chat/**/*.py",
+        "chat_public/**/*.py",
+        "cluster/**/*.py",
+        "knowledge/**/*.py",
+        "home/**/*.py",
+        "scheduler/**/*.py",
+        "shared/**/*.py",
+        "ships/**/*.py",
+        "hikes/**/*.py",
+        "stars/**/*.py",
+        "trips/**/*.py",
+        "dr_jobs/**/*.py",
+        "worldcup/**/*.py",
+    ],
+    exclude = [
+        # pytest discovers both *_test.py (sibling convention) and
+        # test_*.py (its default). Exclude both so that any test
+        # file in these source trees stays out of the production
+        # binary AND out of downstream test targets' runfiles.
+        "**/*_test.py",
+        "**/test_*.py",
+        "*/tests/**/*.py",
+        "shared/testing/**/*.py",
+        # Offline grid generator: run by hand, not part of the runtime image.
+        "stars/grid_gen/**",
+        # Run-by-hand S3->Postgres backfill, not part of the runtime image.
+        "trips/backfill/**",
+    ],
+)
+
 py_venv_binary(
     name = "main",
-    srcs = glob(
-        [
-            "agent/**/*.py",
-            "app/**/*.py",
-            "chat/**/*.py",
-            "chat_public/**/*.py",
-            "cluster/**/*.py",
-            "knowledge/**/*.py",
-            "home/**/*.py",
-            "scheduler/**/*.py",
-            "shared/**/*.py",
-            "ships/**/*.py",
-            "hikes/**/*.py",
-            "stars/**/*.py",
-            "trips/**/*.py",
-            "dr_jobs/**/*.py",
-            "worldcup/**/*.py",
-        ],
-        exclude = [
-            # pytest discovers both *_test.py (sibling convention) and
-            # test_*.py (its default). Exclude both so that any test
-            # file in these source trees stays out of the production
-            # binary AND out of downstream test targets' runfiles.
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-            "shared/testing/**/*.py",
-            # Offline grid generator: run by hand, not part of the runtime image.
-            "stars/grid_gen/**",
-            # Run-by-hand S3->Postgres backfill, not part of the runtime image.
-            "trips/backfill/**",
-        ],
-    ),  # keep
+    srcs = _BACKEND_SRCS,  # keep
     data = [
         # ratings.py reads this committed Elo snapshot at runtime via
         # Path(__file__).parent/"ratings"/"elo_2026.json"; the "worldcup/**/*.py"
@@ -89,6 +97,22 @@ py_venv_binary(
     ],
     imports = ["."],  # keep
     main = "app/main.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_backend"],  # keep
+)
+
+# Batch-jobs entrypoint: same source closure and deps as :main, but launches
+# app/jobs_main.py (a Typer CLI) instead of the FastAPI server. Built into its
+# own image (:jobs_image) so an ephemeral pod (e.g. an Argo Workflow) can run a
+# single job to completion off the API pod. Only the worldcup Elo snapshot is
+# shipped as data; the jobs entrypoint never serves the frontend, so the static
+# bundle and the repo-docs manifest are deliberately omitted.
+py_venv_binary(
+    name = "jobs",
+    srcs = _BACKEND_SRCS,  # keep
+    data = ["worldcup/ratings/elo_2026.json"],
+    imports = ["."],  # keep
+    main = "app/jobs_main.py",
     visibility = ["//:__subpackages__"],
     deps = [":monolith_backend"],  # keep
 )
@@ -252,6 +276,25 @@ py3_image(
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
 )
 
+# Batch-jobs image: identical base/deps to :image, launching app/jobs_main.py.
+# The dependency layers are byte-identical to the backend image, so this is
+# nearly free to build and push (Bazel caches the layers; the registry dedupes
+# the blobs). The runfiles/venv paths embed the binary name, so they read
+# "jobs.runfiles" / ".jobs" here where the backend reads "main" / ".main".
+py3_image(
+    name = "jobs_image",
+    binary = "//projects/monolith:jobs",
+    env = {
+        "PYTHONPATH": "/projects/monolith/jobs.runfiles/_main:/projects/monolith/jobs.runfiles/_main/projects/monolith",
+        # worldcup-sim makes outbound HTTPS to worldcup26.ir; point OpenSSL at
+        # certifi's bundle since the minimal base image has no CA certificates.
+        "SSL_CERT_FILE": "/projects/monolith/jobs.runfiles/_main/projects/monolith/.jobs/lib/python3.13/site-packages/certifi/cacert.pem",
+    },
+    main = "app/jobs_main.py",
+    multiarch_tars = ["@claude_code//:tar"],
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
+)
+
 # ---------------------------------------------------------------------------
 # Public service (ADR 004 Phase 5): a pruned, read-only binary/image that runs
 # app/main_public.py. It deliberately excludes every private write-path domain
@@ -300,6 +343,8 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
+    # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
+    "app/jobs_main.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
     "knowledge/router.py",
     "knowledge/tasks_router.py",
@@ -517,6 +562,18 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "jobs_main_test",
+    srcs = ["app/jobs_main_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+        "@pip//typer",
     ],
 )
 
@@ -4145,4 +4202,25 @@ py_test(
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],
+)
+
+semgrep_target_test(
+    name = "jobs_semgrep_test",
+    # :jobs scans the identical source closure as :main, so it must carry the
+    # identical exclude_rules. Beyond the file-level gazelle directive, these
+    # mirror main_semgrep_test's hand-kept excludes; see that target for the
+    # per-rule rationale (semgrep-core does not honour inline # nosemgrep).
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "boto3-endpoint-url-missing-scheme",  # keep
+        "generic-sql-fastapi",  # keep
+        "logger-name-missing-monolith-prefix",  # keep
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+        "test-hardcoded-past-timestamp",  # keep
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":jobs",
 )

@@ -1,0 +1,35 @@
+"""Unit tests for the jobs Typer entrypoint (``app/jobs_main.py``).
+
+These verify command dispatch only: the network (worldcup poll) and the DB are
+patched, so no real session or HTTP call happens. They exist to prove the CLI
+wiring stays intact as commands are added.
+"""
+
+from __future__ import annotations
+
+from unittest import mock
+
+from typer.testing import CliRunner
+
+import app.jobs_main as jobs_main
+
+runner = CliRunner()
+
+
+def test_worldcup_sim_dispatches_to_refresh_handler():
+    handler = mock.AsyncMock(return_value=None)
+    with (
+        mock.patch("app.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session"),
+        mock.patch("worldcup.jobs.refresh_handler", new=handler),
+    ):
+        result = runner.invoke(jobs_main.app, ["worldcup-sim"])
+
+    assert result.exit_code == 0, result.output
+    handler.assert_awaited_once()
+
+
+def test_no_args_lists_commands():
+    result = runner.invoke(jobs_main.app, [])
+    # no_args_is_help exits non-zero and prints the command list.
+    assert "worldcup-sim" in result.output
