@@ -280,14 +280,25 @@ def _simulate_and_store(inputs_changed: bool) -> None:
             select(Qualification).where(Qualification.fifa_code == FOCUS_CODE)
         ).first()
         n_changed = existing is None or existing.n_sims != current_n
-        if not inputs_changed and not n_changed:
+
+        states, fixtures = _build_sim_inputs(session)
+
+        # Self-heal: if there are remaining fixtures but no swing rows at all, the
+        # swing table is unpopulated (e.g. just recreated by a migration) and must
+        # be recomputed even when nothing else changed. Without this the table can
+        # stay empty until the tournament data happens to move. (No remaining
+        # fixtures => no swing to compute, so an empty table is correct then.)
+        swing_missing = bool(fixtures) and (
+            session.exec(select(SwingMatch).limit(1)).first() is None
+        )
+
+        if not inputs_changed and not n_changed and not swing_missing:
             logger.info(
                 "worldcup: no sim-relevant change (N=%d unchanged); skipping simulation",
                 current_n,
             )
             return
 
-        states, fixtures = _build_sim_inputs(session)
         finished = _build_finished_games(session)
         elo = ratings.load_elo()
 

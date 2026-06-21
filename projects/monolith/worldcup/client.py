@@ -21,6 +21,7 @@ corpus). This module does NO database writes; persistence is a separate concern.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -39,6 +40,14 @@ _LOCAL_DATE_FMT = "%m/%d/%Y %H:%M"
 
 # Per-request timeout; the client-level timeout in the handler is the ceiling.
 _TIMEOUT_SECS = 20.0
+
+# Retry transient upstream failures (5xx, timeouts, connection resets) with
+# exponential backoff. worldcup26.ir intermittently 500s on a single endpoint,
+# and /get/teams is the join table the whole poll depends on, so one blip must
+# not collapse the fetch. 4xx responses are NOT retried (a client error will not
+# fix itself). Backoff is 0.5s, then 1.0s between the three attempts.
+_FETCH_ATTEMPTS = 3
+_FETCH_BACKOFF_SECS = 0.5
 
 
 def _to_int(value) -> int:
@@ -186,20 +195,49 @@ def parse_fixtures(games_payload: dict, team_index: dict) -> list[dict]:
     return fixtures
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """Retry transient failures only. A 4xx is a client error that will not fix
+    itself on retry; 5xx, timeouts, and connection errors are transient."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is not None:
+        return status >= 500
+    # No response (timeout, connect error, read error) -> transient.
+    return isinstance(exc, httpx.HTTPError)
+
+
 async def _get_json(client: httpx.AsyncClient, path: str, stats: dict) -> dict:
     """GET a path off the client's base_url and decode JSON. Never raises.
 
-    Records any HTTP or decode failure into stats["errors"] and returns {} so a
-    single bad endpoint degrades gracefully instead of aborting the whole fetch.
+    Retries transient upstream failures (5xx, timeouts, connection errors) with
+    exponential backoff so a single intermittent blip on one endpoint does not
+    abort the whole fetch. After the final attempt (or on a non-retryable 4xx)
+    it records the failure into stats["errors"] and returns {} so the caller
+    degrades gracefully.
     """
-    try:
-        resp = await client.get(path, timeout=_TIMEOUT_SECS)
-        resp.raise_for_status()
-        return resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.error("worldcup fetch failed for %s: %s", path, exc)
-        stats["errors"].append(f"{path}: {exc}")
-        return {}
+    last_exc: Exception | None = None
+    for attempt in range(_FETCH_ATTEMPTS):
+        try:
+            resp = await client.get(path, timeout=_TIMEOUT_SECS)
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            last_exc = exc
+            if not _is_retryable(exc) or attempt == _FETCH_ATTEMPTS - 1:
+                break
+            backoff = _FETCH_BACKOFF_SECS * (2**attempt)
+            logger.warning(
+                "worldcup fetch %s attempt %d/%d failed (%s); retrying in %.1fs",
+                path,
+                attempt + 1,
+                _FETCH_ATTEMPTS,
+                exc,
+                backoff,
+            )
+            await asyncio.sleep(backoff)
+    logger.error("worldcup fetch failed for %s: %s", path, last_exc)
+    stats["errors"].append(f"{path}: {last_exc}")
+    return {}
 
 
 async def fetch_all(
