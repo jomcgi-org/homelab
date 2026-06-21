@@ -48,18 +48,22 @@ export function monthShort(month) {
   return MONTH_SHORT[month] ?? "";
 }
 
-// Geometry for the per-site 12-month clear-dark-hours bar chart. Given the
-// `months` map from the /history payload ({1..12: clear_dark_hours}, keys may be
-// numbers or strings since JSON object keys stringify), returns a fixed array of
-// 12 bars in month order. Each bar carries its raw `value`, its `frac` (value /
-// the tallest month, 0..1, the bar height fraction), and `isMax` (the tallest
-// month(s), so the card can label the notable bar). Pure + layout-agnostic: it
-// emits numbers, not SVG, so it stays unit-testable without a DOM (mirrors how
-// relativeMax keeps the normalization math out of StarsMap).
+// Geometry for the per-site 12-month clear-dark-hours bar chart. Accepts either
+// a 12-element array (clear-dark hours, index 0 = January, the shape the
+// /history payload now carries per site) or the legacy {1..12: clear_dark_hours}
+// map (keys may be numbers or strings since JSON object keys stringify). Returns
+// a fixed array of 12 bars in month order. Each bar carries its raw `value`, its
+// `frac` (value / the tallest month, 0..1, the bar height fraction), and `isMax`
+// (the tallest month(s), so the card can label the notable bar). Pure +
+// layout-agnostic: it emits numbers, not SVG, so it stays unit-testable without
+// a DOM (mirrors how relativeMax keeps the normalization math out of StarsMap).
 export function monthBars(months) {
+  const at = Array.isArray(months)
+    ? (m) => months[m - 1]
+    : (m) => months?.[m] ?? months?.[String(m)];
   const values = [];
   for (let m = 1; m <= 12; m++) {
-    const raw = Number(months?.[m] ?? months?.[String(m)] ?? 0);
+    const raw = Number(at(m) ?? 0);
     values.push(Number.isFinite(raw) && raw > 0 ? raw : 0);
   }
   const max = Math.max(0, ...values);
@@ -70,6 +74,66 @@ export function monthBars(months) {
     frac: max > 0 ? value / max : 0,
     isMax: max > 0 && value === max,
   }));
+}
+
+// Sum a 12-element month array, coercing non-finite entries to zero (an absent
+// or short array reads as zero), so the all-year view never yields NaN.
+function sumMonths(arr) {
+  let total = 0;
+  for (const v of arr ?? []) {
+    if (typeof v === "number" && Number.isFinite(v)) total += v;
+  }
+  return total;
+}
+
+// Project one all-months history row onto the selected view. `site` is a
+// {id, name, lat, lon, clear:[12], dark:[12]} row from the /history payload and
+// `month` is 1..12, or 0 for the all-year sum. Returns the scalar headline shape
+// the map field + detail card read (clear_dark_hours / dark_hours / clear_rate),
+// keeping the per-site `clear` array so the card can still draw the 12-bar chart
+// without a second request. Returns null when the site has no dark hours in the
+// selected view, so the caller drops it (matching the old server-side per-view
+// filter). Pure + unit-testable: this is the client-side replacement for the
+// month filtering the API used to do per request.
+export function projectHistory(site, month) {
+  if (!site) return null;
+  const clearArr = site.clear ?? [];
+  const darkArr = site.dark ?? [];
+  let clear;
+  let dark;
+  if (month === 0) {
+    clear = sumMonths(clearArr);
+    dark = sumMonths(darkArr);
+  } else {
+    clear = Number(clearArr[month - 1] ?? 0) || 0;
+    dark = Number(darkArr[month - 1] ?? 0) || 0;
+  }
+  if (dark <= 0) return null;
+  return {
+    id: site.id,
+    name: site.name,
+    lat: site.lat,
+    lon: site.lon,
+    clear_dark_hours: clear,
+    dark_hours: dark,
+    clear_rate: dark ? clear / dark : 0,
+    clear: clearArr,
+  };
+}
+
+// The site rows the historical map plots for the selected month (1..12, or 0 for
+// all year): every site projected onto that view, the zero-dark sites dropped,
+// sorted by clear-dark hours descending so the richest spot leads (the API used
+// to do this server-side per month; it now happens once in the browser over the
+// single all-months payload).
+export function historyView(sites, month) {
+  const out = [];
+  for (const site of sites ?? []) {
+    const row = projectHistory(site, month);
+    if (row) out.push(row);
+  }
+  out.sort((a, b) => b.clear_dark_hours - a.clear_dark_hours);
+  return out;
 }
 
 // The relative normalization floor: the largest heat value across the current

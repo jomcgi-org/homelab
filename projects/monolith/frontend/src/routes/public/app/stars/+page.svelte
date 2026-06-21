@@ -3,7 +3,12 @@
   import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
-  import { monthLabel, monthShort, starsNights } from "$lib/public/stars/heat.js";
+  import {
+    historyView,
+    monthLabel,
+    monthShort,
+    starsNights,
+  } from "$lib/public/stars/heat.js";
   import {
     readStarsParams,
     writeStarsParams,
@@ -117,43 +122,48 @@
     monthOpen = false;
   }
 
-  // Historical data, fetched through the SSR-only same-origin proxy
-  // (/app/stars/history/<month>) so the browser never touches /api/stars/*.
-  // Cached per month so re-selecting a month is instant.
-  const historyCache = new Map();
-  let historyData = $state(null); // last loaded {month, sites, count}
-  let historyLoading = $state(false);
+  // Historical data: the WHOLE climatology (every site's 12-month clear-dark
+  // hours) fetched once through the SSR-only same-origin proxy
+  // (/app/stars/history) so the browser never touches /api/stars/*. The month
+  // picker then filters this in memory (see mapSites below), so switching months
+  // is instant and never hits the network. One payload, one cache entry, instead
+  // of a per-month request that re-queried (and OOM-killed) the backend each time.
+  let historyAllSites = $state(null); // [{id,name,lat,lon,clear:[12],dark:[12]}]
+  let historyLoading = $state(false); // template-facing only
   let historyError = $state(false);
+  // Plain (non-reactive) guards. Keeping them out of $state means the loadHistory
+  // effect depends only on `mode`, never on these: a persistent fetch failure
+  // does not re-trigger the effect into a retry loop (which would hammer the
+  // backend during the very outage that caused the failure). A retry happens only
+  // when the user toggles back into historical mode.
+  let historyLoaded = false; // succeeded once
+  let historyInFlight = false; // a fetch is running
 
-  async function loadMonth(m) {
-    if (historyCache.has(m)) {
-      historyData = historyCache.get(m);
-      historyError = false;
-      return;
-    }
+  async function loadHistory() {
+    if (historyLoaded || historyInFlight) return;
+    historyInFlight = true;
     historyLoading = true;
     historyError = false;
     try {
-      const res = await fetch(`/app/stars/history/${m}`);
+      const res = await fetch(`/app/stars/history`);
       if (!res.ok) throw new Error(`history ${res.status}`);
       const payload = await res.json();
-      historyCache.set(m, payload);
-      // Only apply if the user has not moved on while the fetch was in flight.
-      if (mode === "historical" && selectedMonth === m) {
-        historyData = payload;
-      }
+      historyAllSites = payload.sites ?? [];
+      historyLoaded = true;
     } catch {
-      if (mode === "historical" && selectedMonth === m) historyError = true;
+      historyError = true;
     } finally {
+      historyInFlight = false;
       historyLoading = false;
     }
   }
 
-  // Load (or re-use) the selected month whenever we are in historical mode or the
-  // month changes. Reads mode + selectedMonth, so it re-runs on either; it does
-  // not read the history state it writes, so there is no loop.
+  // Fetch the history payload the first time we enter historical mode. Reads
+  // mode; does not read the history state it writes, so there is no loop. A
+  // failed load leaves historyLoaded false, so toggling back into historical
+  // retries.
   $effect(() => {
-    if (mode === "historical") loadMonth(selectedMonth);
+    if (mode === "historical") loadHistory();
   });
 
   function setMode(next) {
@@ -178,15 +188,16 @@
     }
   });
 
-  // The site set the map plots: live snapshot, or the loaded month's sites.
-  let mapSites = $derived(mode === "live" ? sites : (historyData?.sites ?? []));
-
-  // Whether the loaded history matches the currently selected month (guards the
-  // header + empty state from showing stale counts during a month switch).
-  let histReady = $derived(
-    !!historyData && historyData.month === selectedMonth,
+  // The site set the map plots: live snapshot, or the all-months history
+  // projected onto the selected month (client-side, instant on a month switch).
+  let mapSites = $derived(
+    mode === "live" ? sites : historyView(historyAllSites, selectedMonth),
   );
-  let histCount = $derived(histReady ? historyData.count : 0);
+
+  // Whether the one-time history payload has loaded, and how many sites have data
+  // in the currently selected view (drives the header count + empty state).
+  let histReady = $derived(!!historyAllSites);
+  let histCount = $derived(mode === "historical" ? mapSites.length : 0);
 
   // sites is already sorted by clear_dark_hours descending, so the head is the
   // site with the most upcoming clear-dark hours.
@@ -413,7 +424,7 @@
         </div>
       {:else if historyLoading && !histReady}
         <div class="panel empty-state" role="status">
-          Loading {monthSummary} history&hellip;
+          Loading history&hellip;
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">

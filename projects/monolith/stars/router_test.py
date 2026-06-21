@@ -366,73 +366,54 @@ class TestHistory:
             )
         )
 
-    def test_month_filter_ordering_rate_no_months_in_bulk(self, client, session):
+    def test_all_months_per_site_arrays_sorted(self, client, session):
+        # The bulk payload now carries every site's full 12-month breakdown as a
+        # `clear` array (clear-dark hours, index 0 = January) and a matching
+        # `dark` array, so the frontend can filter to any month client-side.
         _seed_site(session, "galloway-forest")
         _seed_site(session, "tomintoul")
-        # December: the historical layer reads the ERA5/CERRA climatology only.
-        # galloway leads on clear_dark_hours.
+        self._seed_climo(session, "galloway-forest", 1, 30, 8)
         self._seed_climo(session, "galloway-forest", 12, 50, 25)
-        self._seed_climo(session, "tomintoul", 12, 25, 6)
-        # A different month is excluded from the headline counts entirely.
-        self._seed_climo(session, "tomintoul", 6, 10, 10)
-        session.commit()
-
-        r = client.get("/api/stars/history", params={"month": 12})
-        assert r.status_code == 200
-        body = r.json()
-        assert body["month"] == 12
-        assert body["count"] == 2
-        ids = [s["id"] for s in body["sites"]]
-        # Ordered by clear_dark_hours descending.
-        assert ids == ["galloway-forest", "tomintoul"]
-        gf = body["sites"][0]
-        assert gf["clear_dark_hours"] == 25
-        assert gf["dark_hours"] == 50
-        assert gf["clear_rate"] == pytest.approx(25 / 50)
-        # Metadata joined from stars.sites.
-        assert gf["name"] == "Galloway Forest Park"
-        assert gf["lat"] == 55.083
-        # The bulk payload is slim: no per-month map (it is fetched lazily per
-        # site from /history/site/{id}).
-        assert "months" not in gf
-        # tomintoul's December headline excludes its June bucket.
-        tom = body["sites"][1]
-        assert tom["clear_dark_hours"] == 6
-        assert "months" not in tom
-
-    def test_default_is_all_year(self, client, session):
-        # No month param -> all-year view (month 0): every month-of-year bucket
-        # for a site is summed into one row.
-        _seed_site(session, "galloway-forest")
-        _seed_site(session, "tomintoul")
-        self._seed_climo(session, "galloway-forest", 1, 10, 8)
-        self._seed_climo(session, "galloway-forest", 12, 20, 15)
-        self._seed_climo(session, "galloway-forest", 6, 5, 4)
-        self._seed_climo(session, "tomintoul", 7, 8, 6)
+        self._seed_climo(session, "tomintoul", 6, 10, 9)
         session.commit()
 
         r = client.get("/api/stars/history")
         assert r.status_code == 200
         body = r.json()
-        assert body["month"] == 0
-        gf = next(s for s in body["sites"] if s["id"] == "galloway-forest")
-        # All three galloway rows (Jan + Dec + Jun) fold into one.
-        assert gf["dark_hours"] == 10 + 20 + 5
-        assert gf["clear_dark_hours"] == 8 + 15 + 4
-        assert "months" not in gf
-        # Ordered by clear_dark_hours desc: galloway (27) before tomintoul (6).
+        assert body["count"] == 2
+        assert "month" not in body
+        # Ordered by all-year clear-dark hours descending: galloway (33) leads
+        # tomintoul (9).
         assert [s["id"] for s in body["sites"]] == ["galloway-forest", "tomintoul"]
 
-    def test_clear_rate_guards_zero_dark(self, client, session):
-        # A site whose only climatology row has zero dark hours has no dark hours
-        # to show and would divide by zero, so it is omitted (never a NaN rate).
+        gf = body["sites"][0]
+        # Metadata joined from stars.sites.
+        assert gf["name"] == "Galloway Forest Park"
+        assert gf["lat"] == 55.083
+        # 12-element arrays, indexed Jan..Dec, zero-filled for absent months.
+        assert len(gf["clear"]) == 12
+        assert len(gf["dark"]) == 12
+        assert gf["clear"][0] == 8  # January
+        assert gf["clear"][11] == 25  # December
+        assert gf["dark"][0] == 30
+        assert gf["dark"][11] == 50
+        assert gf["clear"][5] == 0  # June: no row
+        # Per-site month buckets do not bleed across sites.
+        tom = body["sites"][1]
+        assert tom["clear"][5] == 9  # June
+        assert tom["dark"][5] == 10
+        assert sum(tom["clear"]) == 9
+
+    def test_site_with_no_dark_hours_in_any_month_is_omitted(self, client, session):
+        # A site whose only climatology row has zero dark hours has nothing to
+        # show in any view and is omitted (never a divide-by-zero on the client).
         _seed_site(session, "galloway-forest")
         self._seed_climo(session, "galloway-forest", 5, 0, 0)
         session.commit()
 
-        r = client.get("/api/stars/history", params={"month": 5})
+        r = client.get("/api/stars/history")
         assert r.status_code == 200
-        assert r.json() == {"month": 5, "sites": [], "count": 0}
+        assert r.json() == {"sites": [], "count": 0}
 
     def test_orphan_climatology_without_site_is_skipped(self, client, session):
         # A climatology row whose site dropped from the grid has no metadata to
@@ -440,15 +421,15 @@ class TestHistory:
         self._seed_climo(session, "ghost", 12, 5, 4)
         session.commit()
 
-        r = client.get("/api/stars/history", params={"month": 12})
+        r = client.get("/api/stars/history")
         assert r.status_code == 200
-        assert r.json() == {"month": 12, "sites": [], "count": 0}
+        assert r.json() == {"sites": [], "count": 0}
 
     def test_cache_and_etag_headers(self, client, session):
         _seed_site(session, "galloway-forest")
         self._seed_climo(session, "galloway-forest", 12, 10, 5)
         session.commit()
-        r = client.get("/api/stars/history", params={"month": 12})
+        r = client.get("/api/stars/history")
         assert r.status_code == 200
         # History caches longer than the live sites layer (it is effectively
         # static between climatology reloads).
@@ -460,11 +441,10 @@ class TestHistory:
         _seed_site(session, "galloway-forest")
         self._seed_climo(session, "galloway-forest", 12, 10, 5)
         session.commit()
-        first = client.get("/api/stars/history", params={"month": 12})
+        first = client.get("/api/stars/history")
         etag = first.headers["ETag"]
         second = client.get(
             "/api/stars/history",
-            params={"month": 12},
             headers={"If-None-Match": etag},
         )
         assert second.status_code == 304
@@ -472,74 +452,9 @@ class TestHistory:
         assert second.headers["Cache-Control"]
         assert second.content == b""
 
-    def test_empty_month_returns_empty(self, client, session):
+    def test_empty_climatology_returns_empty(self, client, session):
         _seed_site(session, "galloway-forest")
         session.commit()
-        r = client.get("/api/stars/history", params={"month": 3})
+        r = client.get("/api/stars/history")
         assert r.status_code == 200
-        assert r.json() == {"month": 3, "sites": [], "count": 0}
-
-    def test_invalid_month_rejected(self, client):
-        assert client.get("/api/stars/history", params={"month": 13}).status_code == 422
-        assert client.get("/api/stars/history", params={"month": -1}).status_code == 422
-
-
-class TestHistorySite:
-    def _seed_climo(self, session, site_id, month, dark_hours, clear_dark_hours):
-        session.add(
-            SiteMonthClimatology(
-                site_id=site_id,
-                month=month,
-                dark_hours=dark_hours,
-                clear_dark_hours=clear_dark_hours,
-            )
-        )
-
-    def test_returns_zero_filled_12_month_map(self, client, session):
-        # The per-site breakdown is a {1..12: clear_dark_hours} map (string keys
-        # after JSON), zero-filled for months with no climatology row.
-        self._seed_climo(session, "galloway-forest", 1, 30, 8)
-        self._seed_climo(session, "galloway-forest", 12, 50, 25)
-        # A different site's rows must not bleed into this one.
-        self._seed_climo(session, "tomintoul", 6, 10, 9)
-        session.commit()
-
-        r = client.get("/api/stars/history/site/galloway-forest")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["site_id"] == "galloway-forest"
-        months = body["months"]
-        assert set(months.keys()) == {str(m) for m in range(1, 13)}
-        assert months["1"] == 8
-        assert months["12"] == 25
-        assert months["6"] == 0
-
-    def test_unknown_site_returns_all_zero_map(self, client, session):
-        # A site with no climatology rows (or no metadata) still returns a valid
-        # all-zero 12-month map rather than 404, so the card chart renders empty.
-        r = client.get("/api/stars/history/site/ghost")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["site_id"] == "ghost"
-        assert body["months"] == {str(m): 0 for m in range(1, 13)}
-
-    def test_cache_and_etag_headers(self, client, session):
-        self._seed_climo(session, "galloway-forest", 12, 10, 5)
-        session.commit()
-        r = client.get("/api/stars/history/site/galloway-forest")
-        assert r.status_code == 200
-        assert r.headers["Cache-Control"] == _HISTORY_CACHE_CONTROL
-        assert r.headers["ETag"]
-
-    def test_conditional_get_returns_304(self, client, session):
-        self._seed_climo(session, "galloway-forest", 12, 10, 5)
-        session.commit()
-        first = client.get("/api/stars/history/site/galloway-forest")
-        etag = first.headers["ETag"]
-        second = client.get(
-            "/api/stars/history/site/galloway-forest",
-            headers={"If-None-Match": etag},
-        )
-        assert second.status_code == 304
-        assert second.headers["ETag"] == etag
-        assert second.content == b""
+        assert r.json() == {"sites": [], "count": 0}

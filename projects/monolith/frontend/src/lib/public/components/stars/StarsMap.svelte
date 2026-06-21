@@ -11,10 +11,10 @@
   // `sites` is the list to plot; clicking a dot opens the detail card. In LIVE
   // mode the rows carry per-night scores + upcoming clear-dark hours; in
   // HISTORICAL mode they carry clear-dark-hour counts (clear_dark_hours /
-  // dark_hours / clear_rate) for the selected view. The per-month {1..12}
-  // breakdown for the card graph is no longer in the bulk payload: it is fetched
-  // lazily per site from /app/stars/history/site/{id} when a history card opens
-  // (stars v2 metric).
+  // dark_hours / clear_rate) for the selected view plus the per-site `clear`
+  // array (12 months, index 0 = January) the card graph draws from. The parent
+  // projects both from the single all-months /history payload, so the card needs
+  // no extra fetch (stars v2 metric).
   // `activeNights` is the set of selected night keys from the parent's night
   // filter (LIVE only): a marker is coloured by the best score it reaches across
   // those nights, and drops off the map when none of its hours fall on a
@@ -116,37 +116,6 @@
   const index = new Map();
 
   let selected = $state(null); // selected site row, or null
-
-  // Historical per-site month breakdown, fetched lazily when a history card opens
-  // (the bulk /history payload no longer carries the per-month map). Cached per
-  // site id so re-opening a card is instant. `cardMonths` is the {1..12} map for
-  // the currently open site; null means none open or the fetch is in flight,
-  // which the card renders as a tiny loading state.
-  const monthsCache = new Map();
-  let cardMonths = $state(null);
-
-  async function loadSiteMonths(siteId) {
-    if (monthsCache.has(siteId)) {
-      cardMonths = monthsCache.get(siteId);
-      return;
-    }
-    cardMonths = null;
-    try {
-      const res = await fetch(
-        `/app/stars/history/site/${encodeURIComponent(siteId)}`,
-      );
-      if (!res.ok) throw new Error(`history site ${res.status}`);
-      const payload = await res.json();
-      const months = payload?.months ?? {};
-      monthsCache.set(siteId, months);
-      // Only apply if the card has not moved to another site meanwhile.
-      if (selected && selected.id === siteId) cardMonths = months;
-    } catch {
-      // Fall back to an empty map so the chart renders as all-zero rather than
-      // hanging on the loading state.
-      if (selected && selected.id === siteId) cardMonths = {};
-    }
-  }
 
   // The legend follows what is actually drawn. The field is always a relative
   // clear-dark-hour percentile, so it reads low/medium/high either way: the cell
@@ -500,17 +469,6 @@
     if (map && layerReady) applyHeatVisibility();
   });
 
-  // Lazy-load the open historical card's 12-month breakdown. Reads selected.id +
-  // mode; does not read the cardMonths state it writes, so there is no loop.
-  $effect(() => {
-    const id = selected?.id;
-    if (mode === "historical" && id) {
-      loadSiteMonths(id);
-    } else {
-      cardMonths = null;
-    }
-  });
-
   onMount(() => {
     let cleanup = () => {};
     let destroyed = false;
@@ -682,48 +640,44 @@
           </div>
         </dl>
 
-        {#if cardMonths}
-          {@const bars = monthBars(cardMonths)}
-          <!-- Inline SVG bar chart (no charting dep): one bar per month-of-year,
-               height relative to the busiest month, the tallest bar(s) accented
-               and value-labelled. viewBox does the scaling so the CSS width keeps
-               it crisp. Mono labels + 2px ink strokes mirror the card chrome. The
-               per-month data is lazy-fetched per site (cardMonths). -->
-          <svg
-            class="month-chart"
-            viewBox="0 0 264 112"
-            preserveAspectRatio="xMidYMid meet"
-            role="img"
-            aria-label="Clear dark hours for each month of the year"
-          >
-            <line x1="6" y1="86" x2="258" y2="86" class="chart-axis" />
-            {#each bars as bar (bar.month)}
-              {@const bw = 16}
-              {@const x = 8 + (bar.month - 1) * 20.8}
-              {@const h =
-                bar.value > 0 ? Math.max(2, Math.round(bar.frac * 70)) : 0}
-              {#if h > 0}
-                <rect
-                  {x}
-                  y={86 - h}
-                  width={bw}
-                  height={h}
-                  class="chart-bar"
-                  class:is-max={bar.isMax}
-                />
-              {/if}
-              {#if bar.isMax && bar.value > 0}
-                <text x={x + bw / 2} y={86 - h - 4} class="chart-val"
-                  >{bar.value}</text
-                >
-              {/if}
-              <text x={x + bw / 2} y={100} class="chart-tick">{bar.short[0]}</text
+        {@const bars = monthBars(selected.clear)}
+        <!-- Inline SVG bar chart (no charting dep): one bar per month-of-year,
+             height relative to the busiest month, the tallest bar(s) accented
+             and value-labelled. viewBox does the scaling so the CSS width keeps
+             it crisp. Mono labels + 2px ink strokes mirror the card chrome. The
+             per-month data rides on the selected row (selected.clear) from the
+             single all-months payload, so there is no per-card fetch. -->
+        <svg
+          class="month-chart"
+          viewBox="0 0 264 112"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label="Clear dark hours for each month of the year"
+        >
+          <line x1="6" y1="86" x2="258" y2="86" class="chart-axis" />
+          {#each bars as bar (bar.month)}
+            {@const bw = 16}
+            {@const x = 8 + (bar.month - 1) * 20.8}
+            {@const h =
+              bar.value > 0 ? Math.max(2, Math.round(bar.frac * 70)) : 0}
+            {#if h > 0}
+              <rect
+                {x}
+                y={86 - h}
+                width={bw}
+                height={h}
+                class="chart-bar"
+                class:is-max={bar.isMax}
+              />
+            {/if}
+            {#if bar.isMax && bar.value > 0}
+              <text x={x + bw / 2} y={86 - h - 4} class="chart-val"
+                >{bar.value}</text
               >
-            {/each}
-          </svg>
-        {:else}
-          <p class="chart-loading">Loading monthly breakdown&hellip;</p>
-        {/if}
+            {/if}
+            <text x={x + bw / 2} y={100} class="chart-tick">{bar.short[0]}</text>
+          {/each}
+        </svg>
         <p class="card-empty">
           Hours with the sun below -12 deg and under 10% cloud, from the ERA5
           reanalysis seasonal baseline. Taller bars are the months this spot
@@ -1047,14 +1001,6 @@
     line-height: 1.5;
     color: var(--ink-3);
     margin-bottom: 14px;
-  }
-
-  /* Tiny loading line while the lazy per-site month breakdown fetches. */
-  .chart-loading {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    margin: 4px 0 12px;
   }
 
   /* Location footer: a full-bleed accent block (yellow + ink, high contrast and
