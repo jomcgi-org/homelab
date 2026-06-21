@@ -187,3 +187,40 @@ def test_parse_fixtures_eastern_to_utc_offset():
     )
     # 18:00 US Eastern (EDT, UTC-4) in June -> 22:00 UTC.
     assert fx[0]["kickoff"] == datetime(2026, 6, 24, 22, 0, tzinfo=timezone.utc)
+
+
+def test_parse_fixtures_drops_unresolved_team_codes():
+    idx = build_team_index(TEAMS)
+    fx = parse_fixtures(
+        {
+            "games": [
+                # Away team id is absent from the index -> away_code None -> dropped.
+                {
+                    "id": "8",
+                    "type": "group",
+                    "group": "C",
+                    "matchday": "1",
+                    "home_team_id": "12",
+                    "away_team_id": "404",
+                    "finished": "FALSE",
+                    "local_date": "06/24/2026 18:00",
+                },
+                # Fully resolvable game is still kept.
+                {
+                    "id": "9",
+                    "type": "group",
+                    "group": "C",
+                    "matchday": "1",
+                    "home_team_id": "12",
+                    "away_team_id": "9",
+                    "finished": "FALSE",
+                    "local_date": "06/24/2026 18:00",
+                },
+            ]
+        },
+        idx,
+    )
+    # Unresolved game dropped, resolvable game survives.
+    assert len(fx) == 1
+    assert fx[0]["match_id"] == "9"
+    assert fx[0]["home_code"] == "SCO" and fx[0]["away_code"] == "BRA"
