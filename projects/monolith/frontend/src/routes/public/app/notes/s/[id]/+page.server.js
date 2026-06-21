@@ -6,6 +6,12 @@ import { error } from "@sveltejs/kit";
 // never talks to the internal chat API: SSR fetches the snapshot here.
 const CHAT_API_BASE = process.env.CHAT_API_BASE || "http://localhost:8000";
 
+// The public Turnstile site key gates "fork this chat" (a fork mints a new live
+// session, same admission as starting a fresh chat). Public by design (it
+// identifies the widget, not a credential); the Turnstile secret never enters
+// SSR. Empty when unset, which disables the fork affordance gracefully.
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || "";
+
 export async function load({ params, fetch }) {
   let resp;
   try {
@@ -34,5 +40,6 @@ export async function load({ params, fetch }) {
     messages: Object.freeze(
       Array.isArray(snapshot.messages) ? snapshot.messages : [],
     ),
+    turnstileSiteKey: TURNSTILE_SITE_KEY,
   };
 }

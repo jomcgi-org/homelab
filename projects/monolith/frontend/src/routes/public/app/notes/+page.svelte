@@ -101,11 +101,15 @@
   });
 
   // ── admission / session ──────────────────────────────────────────
-  let admitted = $state(false);
+  // Seeded from the server loader: a live session (a reload, or a chat just
+  // forked from a shared snapshot) hydrates as already-admitted with its stored
+  // transcript, so the visitor resumes rather than re-passing the gate. A
+  // cookieless visit hydrates as { admitted: false, [] } and shows the gate.
+  let admitted = $state(data.admitted ?? false);
 
   // ── transcript ───────────────────────────────────────────────────
   // Committed turns. Each: { role: "user" | "assistant", content, touched? }.
-  let messages = $state([]);
+  let messages = $state(data.initialMessages ?? []);
   let input = $state("");
   let sending = $state(false);
   // The in-flight assistant turn (token stream + per-turn touched set).
@@ -119,8 +123,21 @@
 
   // ── grounding ────────────────────────────────────────────────────
   // The cumulative set of public notes the whole conversation has touched,
-  // deduped by id and in first-seen order. Drives the graph highlight.
-  let touchedMap = $state(new Map());
+  // deduped by id and in first-seen order. Drives the graph highlight. Seeded
+  // from a hydrated transcript so a resumed/forked session's graph view lights
+  // up the notes the carried-over turns grounded on.
+  function seedTouched(msgs) {
+    const map = new Map();
+    for (const msg of msgs ?? []) {
+      for (const n of msg.touched ?? []) {
+        const id = n?.id;
+        if (id === undefined || id === null || map.has(id)) continue;
+        map.set(id, { id, title: n.title ?? "" });
+      }
+    }
+    return map;
+  }
+  let touchedMap = $state(seedTouched(data.initialMessages));
   let touched = $derived([...touchedMap.values()]);
 
   // ── live ticker readouts ─────────────────────────────────────────
@@ -146,7 +163,7 @@
   // public graph node count.
   const PUBLIC_NOTE_COUNT = 4636;
 
-  let sessionTokens = $state(0); // running CTX total for this session
+  let sessionTokens = $state(data.initialTokens ?? 0); // running CTX total
   let tokPerSec = $state(0); // last computed decode rate
   let turnStart = 0; // performance.now() at turn start (plain, non-reactive)
 

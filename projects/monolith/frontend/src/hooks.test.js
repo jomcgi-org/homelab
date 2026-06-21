@@ -63,6 +63,9 @@ describe("reroute", () => {
     expect(reroute({ url: url("jomcgi.dev", "/chat/share") })).toBe(
       "/public/chat/share",
     );
+    expect(reroute({ url: url("jomcgi.dev", "/chat/fork") })).toBe(
+      "/public/chat/fork",
+    );
     // Host-independent: the same browser path resolves under /public on the
     // public subdomain too.
     expect(reroute({ url: url("public.jomcgi.dev", "/chat/share") })).toBe(

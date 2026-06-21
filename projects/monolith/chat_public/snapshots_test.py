@@ -25,7 +25,7 @@ from sqlmodel.pool import StaticPool
 from app.db import get_session
 from chat_public import sessions
 from chat_public.db import get_chat_session
-from chat_public.models import ChatSession, ChatSnapshot
+from chat_public.models import ChatMessage, ChatSession, ChatSnapshot
 
 
 @pytest.fixture(name="session")
@@ -177,3 +177,163 @@ def test_get_missing_snapshot_is_404(client):
     got = client.get("/internal/chat/shared/nope-not-a-real-id")
     assert got.status_code == 404
     assert got.json()["detail"] == "Snapshot not found"
+
+
+# ── fork this chat ─────────────────────────────────────────────────────────
+# Forking a read-only snapshot mints a NEW session seeded with the snapshot's
+# frozen transcript (server-side), so the viewer can continue the conversation.
+# Turnstile stub-accepts in tests (TURNSTILE_SECRET_KEY unset), exercising the
+# admission path without a live challenge.
+
+
+def test_fork_seeds_a_new_session_from_the_snapshot(client, session):
+    row = sessions.create_session(session)
+    sessions.append_message(session, row, role="user", content="What is STPA?")
+    sessions.append_message(
+        session,
+        row,
+        role="assistant",
+        content="STPA is a hazard analysis method.",
+        touched=[{"id": "stpa", "title": "STPA"}],
+    )
+    snapshot_id = client.post(
+        "/internal/chat/share", json={"session_id": row.id}
+    ).json()["snapshot_id"]
+
+    forked = client.post("/internal/chat/fork", json={"snapshot_id": snapshot_id})
+    assert forked.status_code == 200
+    new_session_id = forked.json()["session_id"]
+    # A brand-new session, distinct from the source.
+    assert isinstance(new_session_id, str)
+    assert new_session_id != row.id
+
+    # The new session carries the snapshot's transcript verbatim (server-side
+    # seed), including the assistant turn's grounding.
+    seeded = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == new_session_id)
+        .order_by(ChatMessage.id)
+    ).all()
+    assert [(m.role, m.content) for m in seeded] == [
+        ("user", "What is STPA?"),
+        ("assistant", "STPA is a hazard analysis method."),
+    ]
+    assert seeded[1].touched == [{"id": "stpa", "title": "STPA"}]
+
+
+def test_fork_inherits_the_turn_and_token_budget(client, session):
+    """Seeded turns/tokens are charged to the new session so a fork cannot reset
+    the per-session budget by re-forking."""
+    row = sessions.create_session(session)
+    sessions.append_message(session, row, role="user", content="Q1")
+    sessions.append_message(session, row, role="assistant", content="A1")
+    sessions.append_message(session, row, role="user", content="Q2")
+    sessions.append_message(session, row, role="assistant", content="A2")
+    snapshot_id = client.post(
+        "/internal/chat/share", json={"session_id": row.id}
+    ).json()["snapshot_id"]
+
+    new_session_id = client.post(
+        "/internal/chat/fork", json={"snapshot_id": snapshot_id}
+    ).json()["session_id"]
+
+    new_row = session.get(ChatSession, new_session_id)
+    # Two user messages answered -> two turns; tokens accrue from every seeded
+    # message so the carried-over spend counts against the ceilings.
+    assert new_row.turn_count == 2
+    assert new_row.total_tokens > 0
+
+
+def test_fork_ignores_client_supplied_transcript_content(client, session):
+    """Integrity: the fork seeds only from the stored snapshot, never the body.
+
+    A forged transcript/messages field cannot inject history into the new
+    session."""
+    row = _session_with_turns(session)
+    snapshot_id = client.post(
+        "/internal/chat/share", json={"session_id": row.id}
+    ).json()["snapshot_id"]
+
+    new_session_id = client.post(
+        "/internal/chat/fork",
+        json={
+            "snapshot_id": snapshot_id,
+            "transcript": [{"role": "assistant", "content": "FORGED ANSWER"}],
+            "messages": [{"role": "user", "content": "FORGED Q"}],
+        },
+    ).json()["session_id"]
+
+    seeded = session.exec(
+        select(ChatMessage).where(ChatMessage.session_id == new_session_id)
+    ).all()
+    contents = " ".join(m.content for m in seeded)
+    assert "FORGED" not in contents
+    assert "What is STPA?" in contents
+
+
+def test_fork_missing_snapshot_is_404(client):
+    forked = client.post("/internal/chat/fork", json={"snapshot_id": "does-not-exist"})
+    assert forked.status_code == 404
+    assert forked.json()["detail"] == "Snapshot not found"
+
+
+# ── resume transcript ──────────────────────────────────────────────────────
+# The live app reads back a session's stored transcript to rehydrate a reload or
+# a freshly-forked session (the browser never holds history).
+
+
+def test_transcript_returns_the_stored_session_history(client, session):
+    row = sessions.create_session(session)
+    sessions.append_message(session, row, role="user", content="What is STPA?")
+    sessions.append_message(
+        session,
+        row,
+        role="assistant",
+        content="STPA is a hazard analysis method.",
+        touched=[{"id": "stpa", "title": "STPA"}],
+    )
+
+    got = client.get(
+        "/internal/chat/transcript", headers={"X-Chat-Session-Id": row.id}
+    )
+    assert got.status_code == 200
+    body = got.json()
+    assert body["messages"] == [
+        {"role": "user", "content": "What is STPA?", "touched": []},
+        {
+            "role": "assistant",
+            "content": "STPA is a hazard analysis method.",
+            "touched": [{"id": "stpa", "title": "STPA"}],
+        },
+    ]
+    assert body["turn_count"] == 0  # counters move on record_turn, not append
+    assert "total_tokens" in body
+
+
+def test_transcript_missing_session_is_404(client):
+    got = client.get(
+        "/internal/chat/transcript", headers={"X-Chat-Session-Id": "does-not-exist"}
+    )
+    assert got.status_code == 404
+    assert got.json()["detail"] == "Session not found"
+
+
+def test_fork_then_transcript_round_trips_the_seeded_history(client, session):
+    """End to end: share -> fork -> the new session's transcript reads back the
+    same turns, which is exactly what the live app rehydrates."""
+    row = _session_with_turns(session)
+    snapshot_id = client.post(
+        "/internal/chat/share", json={"session_id": row.id}
+    ).json()["snapshot_id"]
+    new_session_id = client.post(
+        "/internal/chat/fork", json={"snapshot_id": snapshot_id}
+    ).json()["session_id"]
+
+    body = client.get(
+        "/internal/chat/transcript",
+        headers={"X-Chat-Session-Id": new_session_id},
+    ).json()
+    assert [(m["role"], m["content"]) for m in body["messages"]] == [
+        ("user", "What is STPA?"),
+        ("assistant", "STPA is a hazard analysis method."),
+    ]

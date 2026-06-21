@@ -152,6 +152,54 @@ def append_message(
     return message
 
 
+def append_messages(
+    db: Session,
+    session: ChatSession,
+    entries: list[dict],
+) -> list[ChatMessage]:
+    """Persist several transcript messages under the session in one write.
+
+    Each entry is a ``{role, content, tokens?, touched?}`` dict. Built and
+    inserted with a single ``add_all`` (never ``session.add`` in a loop, per the
+    monolith semgrep rule); the autoincrement id preserves insertion order, which
+    is the transcript order ``get_transcript`` reads back. Used to seed a forked
+    session from an immutable snapshot's frozen transcript.
+    """
+    messages = [
+        ChatMessage(
+            session_id=session.id,
+            role=entry["role"],
+            content=entry["content"],
+            tokens=entry.get("tokens", 0),
+            touched=entry.get("touched") or [],
+        )
+        for entry in entries
+    ]
+    db.add_all(messages)
+    db.commit()
+    return messages
+
+
+def set_counters(
+    db: Session,
+    session: ChatSession,
+    *,
+    turn_count: int,
+    total_tokens: int,
+) -> None:
+    """Set the per-session budget counters directly (not an increment).
+
+    Used to seed a forked session so the carried-over history counts against the
+    per-session turn/token ceilings from the first new turn (a fork inherits the
+    conversation's spend; it cannot reset the budget by re-forking).
+    """
+    session.turn_count = turn_count
+    session.total_tokens = total_tokens
+    session.last_seen_at = _utcnow()
+    db.add(session)
+    db.commit()
+
+
 def record_turn(
     db: Session,
     session: ChatSession,

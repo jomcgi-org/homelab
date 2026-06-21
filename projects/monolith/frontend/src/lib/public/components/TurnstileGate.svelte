@@ -13,15 +13,22 @@
    * https://challenges.cloudflare.com. The app sets no Content-Security-Policy
    * (a CSP hardening layer is deferred to a later pass).
    *
+   * `admit` is the token-exchange seam: it takes the solved Turnstile token and
+   * resolves to `{ ok }`. It defaults to `createChatSession` (open a fresh
+   * session); the shared-snapshot "fork this chat" flow passes a variant that
+   * forks the snapshot instead. Keeping it a prop lets one gate serve both
+   * admission paths without duplicating the widget lifecycle.
+   *
    * @type {{
    *   siteKey: string,
    *   onAdmitted?: () => void,
+   *   admit?: (token: string) => Promise<{ ok: boolean }>,
    * }}
    */
-  let { siteKey, onAdmitted } = $props();
-
   import { onMount } from "svelte";
   import { createChatSession } from "$lib/public/chat/admission.js";
+
+  let { siteKey, onAdmitted, admit = createChatSession } = $props();
 
   const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
 
@@ -40,7 +47,7 @@
   async function onSolve(token) {
     status = "verifying";
     try {
-      const { ok } = await createChatSession(token);
+      const { ok } = await admit(token);
       if (ok) {
         status = "ready";
         onAdmitted?.();
