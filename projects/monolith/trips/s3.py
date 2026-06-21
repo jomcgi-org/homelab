@@ -41,7 +41,7 @@ def put_image(image_key: str, data: bytes, content_type: str) -> None:
     # pre-commit boto3-endpoint-url-missing-scheme hook (the Bazel
     # main_semgrep_test, which ignores nosemgrep, is covered by exclude_rules in
     # projects/monolith/BUILD).
-    client = boto3.client(  # nosemgrep
+    client = boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),

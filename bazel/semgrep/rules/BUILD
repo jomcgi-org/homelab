@@ -334,6 +334,22 @@ semgrep_test(
     tags = ["semgrep"],
 )
 
+# no-bare-nosemgrep uses languages: [python] and is tested by python_rules_test via the
+# colocated python/no-bare-nosemgrep.py fixture. This target also wires the rule to the
+# tests/fixtures version for an independent dedicated test.
+filegroup(
+    name = "no_bare_nosemgrep_rule",
+    srcs = ["python/no-bare-nosemgrep.yaml"],
+)
+
+semgrep_test(
+    name = "no_bare_nosemgrep_test",
+    srcs = ["//bazel/semgrep/tests:no_bare_nosemgrep_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":no_bare_nosemgrep_rule"],
+    tags = ["semgrep"],
+)
+
 # no-pytest-mark-asyncio-without-plugin is excluded from python_rules because
 # semgrep-core ignores paths: filters (pysemgrep-only feature) and the rule would
 # produce false positives for project files that legitimately use @pip//pytest_asyncio.

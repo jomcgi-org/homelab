@@ -49,7 +49,7 @@ def _s3_client():
     # Scheme is guaranteed by the guard above; the inline nosemgrep clears the
     # pre-commit hook (boto3-endpoint-url-missing-scheme). Bare nosemgrep: this
     # line has no other rule matches.
-    return boto3.client(  # nosemgrep
+    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
