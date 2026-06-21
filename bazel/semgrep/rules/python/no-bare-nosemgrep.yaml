@@ -1,0 +1,24 @@
+rules:
+  - id: no-bare-nosemgrep
+    pattern-regex: '#\s*nosemgrep\s*$'
+    message: >-
+      Bare `# nosemgrep` suppresses ALL semgrep rules on this line, making the
+      suppression impossible to audit and scope. Always specify the rule ID:
+      `# nosemgrep: <rule-id>`. To find the rule ID, run semgrep locally or
+      check the CI log for the check_id on the failing line. Example:
+      `# nosemgrep: boto3-endpoint-url-missing-scheme`
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: best-practices
+      subcategory: semgrep
+      confidence: HIGH
+      likelihood: HIGH
+      impact: LOW
+      technology: [python, semgrep]
+      description: >-
+        Bare # nosemgrep (without a colon + rule ID) suppresses all rules on the
+        line. Use # nosemgrep: rule-id to scope the suppression to one rule.
+    paths:
+      include:
+        - "**/*.py"
