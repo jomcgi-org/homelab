@@ -125,7 +125,7 @@
     return Number.isNaN(n) ? fallback : n;
   }
 
-  // The days any walk is actually viable on (union of viable_days across the
+  // The days any walk is actually doable on (union of viable_days across the
   // corpus). met.no's compact forecast only carries hourly data for ~3 days, so
   // the corpus only covers ~today..+2; without this the strip would render dead
   // chips for days 4-7 that match no walk ("picking a day shows nothing").
@@ -200,8 +200,10 @@
       );
     }
     if (selectedDay != null) {
-      // viable_days is the server-computed set of UK days with a viable window;
-      // membership is a cheap O(1) check, no hourly windows to re-parse.
+      // viable_days is the server-computed set of UK days the walk is DOABLE on:
+      // days whose good hours hold a slot long enough for the walk's duration
+      // (not merely one good hour). Membership is a cheap O(1) check, no hourly
+      // windows to re-parse.
       result = result.filter((w) => w.viable_days?.includes(selectedDay));
     }
     return result;

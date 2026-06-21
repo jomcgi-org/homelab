@@ -3,10 +3,12 @@
 Two read endpoints back the /app/hikes walk planner:
 
 - ``GET /api/hikes/walks``, the whole walk corpus as a LIGHT list (stats,
-  coordinates, and the set of viable UK-local days), for the map + filters.
+  coordinates, and the set of doable UK-local days), for the map + filters.
   Deliberately omits the hour-by-hour ``windows`` and the prose ``summary``:
   shipping ~49 hourly tuples for all ~1600 walks was ~3 MB, and the map and
-  day filter only need "which days is this walk viable".
+  day filter only need "which days is this walk doable". A day is doable when
+  its good hours hold a slot long enough for the walk's advertised duration
+  (see _doable_days), not merely one good hour.
 - ``GET /api/hikes/walks/{uuid}``, the per-walk detail (``summary`` +
   hourly ``windows``) the selected-walk card fetches on demand.
 
@@ -73,20 +75,88 @@ def _iso(value: datetime | None) -> str | None:
     return coerced.isoformat() if coerced is not None else None
 
 
-def _viable_days(hours: list[datetime]) -> list[str]:
-    """Distinct UK-local calendar days (YYYY-MM-DD) covered by the given hours.
+# A day is "doable" for a walk when its good hours contain a long-enough slot to
+# actually complete the walk, not merely one good hour (the old, length-blind
+# rule). The slot must hold at least DURATION_GOOD_HOUR_FRACTION of the walk's
+# advertised duration in good hours, tolerating one bad hour embedded in the run.
+# Walks longer than LONG_WALK_HOURS get DARK_SHOULDER_HOURS of extra credit: you
+# can start before sunrise and finish after sunset in the dark, so the two
+# shoulder hours extend a real daylight run. The shoulder hours are never stored
+# (the forecast pipeline keeps only daylight hours), so we credit them rather than
+# weather-check them; winter daylight length, not dawn/dusk weather, is the
+# binding constraint for a long Scottish walk.
+DURATION_GOOD_HOUR_FRACTION = 0.8
+LONG_WALK_HOURS = 7.0
+DARK_SHOULDER_HOURS = 2
+# Guards float drift on the 0.8 * duration_h threshold (e.g. 0.8 * 5.0 landing at
+# 4.0000000001) so an exactly-met requirement is not rejected.
+_REQUIREMENT_EPSILON = 1e-9
 
-    We emit ABSOLUTE dates (not "next 7 days") so the value is independent of
-    when it was computed and stays correct in a CDN cache across midnight; the
-    client intersects them with its own rolling 7-day strip.
+
+def _longest_good_run(hour_indices: list[int]) -> int:
+    """Longest contiguous run of good hours, tolerating one single-hour gap.
+
+    ``hour_indices`` are the sorted, unique integer hour buckets (UTC hours since
+    the epoch) of a single day's good hours. Stored hours are always within the
+    walk's daylight band, so an interior missing hour means bad weather, not
+    darkness: bridging exactly one such gap implements "I'll accept one bad hour
+    in the slot". The return value counts GOOD hours only; the tolerated bad hour
+    is not counted toward the run length. A gap of two or more missing hours, or a
+    second single-hour gap, ends the run.
     """
-    days: set[str] = set()
+    if not hour_indices:
+        return 0
+
+    best = 0
+    run = 1  # good hours in the current run (the first hour starts it)
+    gap_used = False
+    for i in range(1, len(hour_indices)):
+        delta = hour_indices[i] - hour_indices[i - 1]
+        if delta == 1:
+            run += 1
+        elif delta == 2 and not gap_used:
+            # One missing hour: bridge it once, spending the bad-hour allowance.
+            run += 1
+            gap_used = True
+        else:
+            best = max(best, run)
+            run = 1
+            gap_used = False
+    return max(best, run)
+
+
+def _doable_days(hours: list[datetime], duration_h: float) -> list[str]:
+    """Distinct UK-local days on which the walk is actually DOABLE given its length.
+
+    A day qualifies when its good hours hold a contiguous slot of at least
+    ``DURATION_GOOD_HOUR_FRACTION * duration_h`` good hours (tolerating one bad
+    hour mid-slot), plus ``DARK_SHOULDER_HOURS`` of credit for walks longer than
+    ``LONG_WALK_HOURS``. The shoulder credit only applies when there is a real
+    daylight run to extend (``run > 0``): a fully washed-out day is never doable.
+
+    We emit ABSOLUTE dates (not "next 7 days") so the value is independent of when
+    it was computed and stays correct in a CDN cache across midnight; the client
+    intersects them with its own rolling 7-day strip.
+    """
+    required = DURATION_GOOD_HOUR_FRACTION * duration_h
+    shoulder = DARK_SHOULDER_HOURS if duration_h > LONG_WALK_HOURS else 0
+
+    indices_by_day: dict[str, list[int]] = {}
     for hour_time in hours:
         coerced = _as_utc(hour_time)
         if coerced is None:
             continue
-        days.add(coerced.astimezone(_UK_TZ).date().isoformat())
-    return sorted(days)
+        day = coerced.astimezone(_UK_TZ).date().isoformat()
+        indices_by_day.setdefault(day, []).append(int(coerced.timestamp()) // 3600)
+
+    doable: list[str] = []
+    for day, indices in indices_by_day.items():
+        run = _longest_good_run(sorted(set(indices)))
+        if run <= 0:
+            continue
+        if run + shoulder + _REQUIREMENT_EPSILON >= required:
+            doable.append(day)
+    return sorted(doable)
 
 
 def _window_tuple(row: WalkHour) -> list:
@@ -115,7 +185,9 @@ def _window_tuple(row: WalkHour) -> list:
 # History: v2 = dropped hourly `windows` + `summary`, added `viable_days`.
 #          v3 = windows backed by typed walk_hours; ETag folds in the hourly
 #               top_of_hour cutoff so the CDN turns over each clock hour.
-_WALKS_SCHEMA_VERSION = "v3"
+#          v4 = `viable_days` is now duration-aware doability (a long-enough good
+#               slot for the walk's length), not "any one good hour".
+_WALKS_SCHEMA_VERSION = "v4"
 
 
 def _walks_etag(walk_count: int, cutoff: datetime, max_fetched: datetime | None) -> str:
@@ -170,9 +242,13 @@ def get_walks(
             "duration_h": walk.duration_h,
             "latitude": walk.latitude,
             "longitude": walk.longitude,
-            # Light: the days this walk is viable, not the hourly windows.
-            # The card fetches windows + summary from /walks/{uuid}.
-            "viable_days": _viable_days(hours_by_walk.get(walk.uuid, [])),
+            # Light: the days this walk is doable given its length, not the hourly
+            # windows. The card fetches windows + summary from /walks/{uuid}. The
+            # wire field stays `viable_days` (the frontend keys off it); its
+            # meaning is now duration-aware (see _doable_days).
+            "viable_days": _doable_days(
+                hours_by_walk.get(walk.uuid, []), walk.duration_h
+            ),
         }
         for walk in walk_rows
     ]
