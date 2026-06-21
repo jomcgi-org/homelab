@@ -32,6 +32,22 @@ at the pixel level. Never commit baselines captured on a workstation. The mock
 server, capture, and diff logic CAN and SHOULD be smoke-run locally (pages
 render, diff math works); only the committed pixel baselines must come from CI.
 
+## Reseeding baselines: do not auto-merge the sentinel PR
+
+To accept a render change, commit an empty `.reseed-baselines` sentinel. The
+PR-triggered visual action then reseeds the baselines, commits them back to the
+PR branch as `visual-baseline-bot`, and deletes the sentinel (one-shot). That
+reseed runs ONLY in `pull_request` context (there is no `push: main` trigger),
+and the action is informational (no `depends_on`), so it does not gate merge.
+
+Consequence: never enable auto-merge on a reseed PR. Auto-merge can pass the
+required checks and merge the raw sentinel onto main in a couple of minutes,
+before the slower visual action (npm install + chromium + screenshots) pushes
+the baseline commit. A sentinel that reaches main is then stuck (nothing
+consumes it on `push: main`) and the next unrelated PR silently reseeds. Instead
+wait for the `visual-baseline-bot` commit to land on the PR branch, confirm the
+baselines updated, then merge.
+
 ## Basemap interception (Option A: flat backdrop)
 
 Map pages render maplibre against `tiles.openfreemap.org`, a third-party host
