@@ -10,6 +10,10 @@ from sqlmodel import Field, Session, SQLModel, select, text
 
 from app.db import get_engine
 
+# Off-pod job execution (Argo Workflows), re-exported as part of the scheduler's
+# public surface so domains route batch jobs via scheduler.api.
+from scheduler.argo import jobs_use_argo, submit_job_workflow  # noqa: F401
+
 logger = logging.getLogger("monolith.scheduler")
 
 _HOSTNAME = platform.node()

@@ -1,0 +1,28 @@
+# Cross-namespace submit grant: the monolith API pod (ServiceAccount 'monolith'
+# in the 'monolith' namespace) needs to create and inspect Workflows here so it
+# can dispatch batch jobs to the Argo controller. Namespace-scoped Role only -
+# this install owns zero cluster RBAC. Lives with the argo-workflows app because
+# it owns this namespace; the consumer (monolith) is in another namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monolith-workflow-submit
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monolith-workflow-submit
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: monolith
+    namespace: monolith
+roleRef:
+  kind: Role
+  name: monolith-workflow-submit
+  apiGroup: rbac.authorization.k8s.io

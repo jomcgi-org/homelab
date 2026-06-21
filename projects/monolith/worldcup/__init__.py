@@ -26,12 +26,12 @@ def on_startup_jobs(session) -> None:
     at module load time.
     """
     from scheduler.api import register_job
-    from worldcup.jobs import refresh_handler
+    from worldcup.jobs import refresh_dispatch
 
     register_job(
         session,
         name="worldcup.refresh",
         interval_secs=1800,
-        handler=refresh_handler,
+        handler=refresh_dispatch,
         ttl_secs=600,
     )
