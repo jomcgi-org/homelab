@@ -230,9 +230,7 @@ class TestLoadActiveSession:
         row = _make_session(db, status="purged")
         assert sessions.load_active_session(db, row.id) is None
 
-    def test_expired_session_flipped_to_expired_and_returns_none(
-        self, db, monkeypatch
-    ):
+    def test_expired_session_flipped_to_expired_and_returns_none(self, db, monkeypatch):
         # Place last_seen_at well past the TTL so _is_expired returns True.
         stale = datetime.now(timezone.utc) - timedelta(
             seconds=limits.SESSION_TTL_SECONDS + 3600
@@ -285,7 +283,9 @@ class TestTouch:
         assert isinstance(updated, datetime)
         # The updated value must be strictly later than the past timestamp.
         # Coerce to UTC for comparison since SQLite returns naive datetimes.
-        updated_utc = updated if updated.tzinfo else updated.replace(tzinfo=timezone.utc)
+        updated_utc = (
+            updated if updated.tzinfo else updated.replace(tzinfo=timezone.utc)
+        )
         past_utc = past if past.tzinfo else past.replace(tzinfo=timezone.utc)
         assert updated_utc > past_utc
 
@@ -509,9 +509,7 @@ class TestCompactIfNeeded:
             captured["older"] = older
             return "Updated summary"
 
-        await sessions.compact_if_needed(
-            db, row, transcript, summarize=_fake_summarize
-        )
+        await sessions.compact_if_needed(db, row, transcript, summarize=_fake_summarize)
 
         # Summarize gets the existing rolling summary and only the older messages.
         assert captured["existing"] == "Prior summary"
