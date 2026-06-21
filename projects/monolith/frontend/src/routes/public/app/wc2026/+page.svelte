@@ -198,6 +198,58 @@
       {/if}
     </section>
 
+    <!-- HOW IT WORKS (expandable) -->
+    <details class="explainer">
+      <summary class="explainer-summary">
+        <span>How does this work?</span>
+        <span class="explainer-toggle" aria-hidden="true"></span>
+      </summary>
+      <div class="explainer-body">
+        <p>
+          The percentage is not a bookmaker's price or a gut feel. It comes from
+          replaying the rest of the group stage thousands of times and counting
+          how often Scotland comes through.
+        </p>
+        <ol class="explainer-steps">
+          <li>
+            <strong>Rate every team.</strong> Each side carries an Elo rating
+            (Scotland's is mid-table), so a bigger gap means a bigger favourite.
+            Ratings are fixed at the tournament's start.
+          </li>
+          <li>
+            <strong>Play out each remaining match.</strong> For every game still
+            to come, the simulation rolls a realistic scoreline, the stronger
+            team more likely to score more. Evenly matched sides draw about a
+            quarter of the time, just like real football.
+          </li>
+          <li>
+            <strong>Apply the World Cup rules.</strong> The top two of every
+            group go through, plus the eight best third-placed teams, ranked by
+            points, then goal difference, then goals scored. Scotland's likeliest
+            route runs through those best-third places.
+          </li>
+          <li>
+            <strong>Do it 20,000 times.</strong> Each run gives a different set
+            of results. Scotland's chance is simply how many of those runs end
+            with them in the Round of 32.
+          </li>
+          <li>
+            <strong>Find what matters.</strong> "Matches that could change it"
+            compares Scotland's chance across each possible result of every
+            remaining game, then ranks them by how far the needle moves. That is
+            how games in other groups show up here: they decide who Scotland is
+            racing for a third-place spot.
+          </li>
+        </ol>
+        <p class="explainer-fine">
+          It is a model, not a crystal ball: matches are treated as independent,
+          ratings do not move during the tournament, and the last two FIFA
+          tiebreakers (disciplinary record and world ranking) are left as
+          coin-flips. The numbers shift as real results land.
+        </p>
+      </div>
+    </details>
+
     <!-- FOOTER -->
     <footer class="foot">
       <p>
@@ -602,6 +654,98 @@
     color: var(--ink-3);
   }
 
+  /* ── How it works (expandable) ───────────── */
+  .explainer {
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .explainer-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .explainer-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .explainer[open] .explainer-summary {
+    background: var(--accent);
+  }
+
+  /* Custom plus/minus toggle (no JS, reflects the native open state). */
+  .explainer-toggle {
+    position: relative;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    border: 2px solid var(--ink);
+  }
+
+  .explainer-toggle::before,
+  .explainer-toggle::after {
+    content: "";
+    position: absolute;
+    background: var(--ink);
+  }
+
+  .explainer-toggle::before {
+    top: 50%;
+    left: 3px;
+    right: 3px;
+    height: 2px;
+    transform: translateY(-50%);
+  }
+
+  .explainer-toggle::after {
+    left: 50%;
+    top: 3px;
+    bottom: 3px;
+    width: 2px;
+    transform: translateX(-50%);
+  }
+
+  .explainer[open] .explainer-toggle::after {
+    display: none;
+  }
+
+  .explainer-body {
+    padding: 0 14px 16px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--ink-3);
+  }
+
+  .explainer-body > p {
+    margin: 0 0 10px;
+  }
+
+  .explainer-steps {
+    margin: 0 0 10px;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .explainer-steps strong {
+    color: var(--ink);
+  }
+
+  .explainer-fine {
+    margin: 0;
+    font-size: 12px;
+  }
+
   /* ── Desktop scale-up ────────────────────── */
   @media (min-width: 768px) {
     .page {
@@ -634,6 +778,12 @@
     }
     .grid {
       font-size: 14px;
+    }
+    .explainer-summary {
+      padding: 18px 24px;
+    }
+    .explainer-body {
+      padding: 0 24px 20px;
     }
     .foot {
       padding: 20px 24px;
