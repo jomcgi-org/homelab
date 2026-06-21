@@ -38,10 +38,22 @@ Handler = Callable[[Session], Awaitable[datetime | None]]
 # In-memory handler registry (populated at startup)
 _registry: dict[str, Handler] = {}
 
+# Names of jobs flagged memory-heavy at registration. The dispatcher runs at most
+# ``max_heavy`` of these at once (default 1) so two big jobs (e.g. the FA2 graph
+# layout) never pile up and OOMKill the shared pod. Light jobs stay fully
+# parallel. Bounding concurrency by COUNT alone (the old semaphore) does not stop
+# this: several heavy jobs can be admitted in one tick before any has spiked.
+_heavy: set[str] = set()
+
 
 def is_registered(name: str) -> bool:
     """True if a handler is registered for name (public view of the registry)."""
     return name in _registry
+
+
+def is_heavy(name: str) -> bool:
+    """True if the job is flagged memory-heavy (serialized against other heavies)."""
+    return name in _heavy
 
 
 def registered_names() -> list[str]:
@@ -56,9 +68,18 @@ def register_job(
     interval_secs: int,
     handler: Handler,
     ttl_secs: int = 1200,
+    heavy: bool = False,
 ) -> None:
-    """Register a job handler and upsert its row in the database."""
+    """Register a job handler and upsert its row in the database.
+
+    Set ``heavy=True`` for memory-intensive jobs (e.g. the graph layout pass) so
+    the dispatcher never co-schedules two of them.
+    """
     _registry[name] = handler
+    if heavy:
+        _heavy.add(name)
+    else:
+        _heavy.discard(name)
 
     now = datetime.now(timezone.utc)
     # Upsert: insert if new, update interval/ttl if changed, preserve timing
@@ -96,30 +117,42 @@ def purge_stale_jobs(session: Session) -> None:
     session.commit()
 
 
-async def run_scheduler_loop(poll_interval: int = 30, max_concurrent: int = 5) -> None:
+async def run_scheduler_loop(
+    poll_interval: int = 30, max_concurrent: int = 5, max_heavy: int = 1
+) -> None:
     """Poll for due jobs and run them with bounded concurrency. Runs forever."""
     logger.info(
-        "Scheduler loop started (poll=%ds, max_concurrent=%d)",
+        "Scheduler loop started (poll=%ds, max_concurrent=%d, max_heavy=%d)",
         poll_interval,
         max_concurrent,
+        max_heavy,
     )
     while True:
         try:
-            await dispatch_due_jobs(max_concurrent=max_concurrent)
+            await dispatch_due_jobs(max_concurrent=max_concurrent, max_heavy=max_heavy)
         except Exception:
             logger.exception("Scheduler tick failed")
         await asyncio.sleep(poll_interval)
 
 
-async def dispatch_due_jobs(max_concurrent: int = 5) -> int:
+async def dispatch_due_jobs(max_concurrent: int = 5, max_heavy: int = 1) -> int:
     """Claim every currently-due job and run it, up to ``max_concurrent`` in
     parallel. Awaits all spawned handlers before returning.
+
+    Concurrency is bounded two ways. ``max_concurrent`` caps total simultaneous
+    handlers; ``max_heavy`` additionally caps how many memory-heavy jobs (those
+    registered ``heavy=True``) run at once. A heavy job holds BOTH a heavy slot
+    and a regular slot, so it still counts toward the total while guaranteeing no
+    two big jobs (e.g. graph layout + a large rollup) overlap and OOMKill the
+    shared pod. Light jobs are unaffected and stay fully parallel.
 
     Each handler runs on its own ``Session`` because SQLAlchemy sessions are
     not safe to share across concurrently awaiting coroutines.
     """
     if max_concurrent < 1:
         raise ValueError(f"max_concurrent must be >= 1, got {max_concurrent}")
+    if max_heavy < 1:
+        raise ValueError(f"max_heavy must be >= 1, got {max_heavy}")
 
     job_names: list[str] = []
     with Session(get_engine()) as session:
@@ -132,11 +165,18 @@ async def dispatch_due_jobs(max_concurrent: int = 5) -> int:
     if not job_names:
         return 0
 
-    semaphore = asyncio.Semaphore(max_concurrent)
+    slots = asyncio.Semaphore(max_concurrent)
+    heavy_slots = asyncio.Semaphore(max_heavy)
 
     async def _run(name: str) -> None:
-        async with semaphore:
-            await _run_claimed_job(name)
+        if name in _heavy:
+            # A heavy job takes a heavy slot first, then a regular slot, so it is
+            # serialized against other heavies AND counts toward the total cap.
+            async with heavy_slots, slots:
+                await _run_claimed_job(name)
+        else:
+            async with slots:
+                await _run_claimed_job(name)
 
     await asyncio.gather(*(_run(name) for name in job_names))
     return len(job_names)

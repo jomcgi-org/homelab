@@ -4,10 +4,14 @@ backend:
   otelEndpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318/v1/traces"
   resources:
     requests:
-      memory: "3Gi"
+      # 3Gi -> 4Gi: headroom above baseline RSS + one heavy scheduled job (the
+      # FA2 graph layout), which OOMKilled the pod when several jobs piled up.
+      # The scheduler now also serializes heavy jobs (heavy=True); this is the
+      # belt-and-suspenders. requests==limits per the repo memory convention.
+      memory: "4Gi"
       cpu: "10m"
     limits:
-      memory: "3Gi"
+      memory: "4Gi"
 
 frontend:
   otelCollectorUrl: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
