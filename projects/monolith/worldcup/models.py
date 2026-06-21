@@ -66,8 +66,10 @@ class Qualification(SQLModel, table=True):  # nosemgrep
 class SwingMatch(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     __tablename__ = "swing_matches"
     __table_args__ = _SCHEMA
+    # Composite key: one swing row per (remaining match, country whose qualify
+    # chance it moves). Replaces the old single-focus-team (Scotland) model.
     match_id: str = Field(primary_key=True)
-    focus_team_id: str
+    country_code: str = Field(primary_key=True)
     group_name: str
     home_code: str
     away_code: str
@@ -76,5 +78,5 @@ class SwingMatch(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-
     p_qualify_home_win: float
     p_qualify_draw: float
     p_qualify_away_win: float
-    is_own_match: bool = False
+    is_own_match: bool = False  # match involves country_code
     computed_at: datetime | None = None

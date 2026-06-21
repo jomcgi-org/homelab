@@ -149,48 +149,32 @@ class TestBuildFinishedGames:
 
 
 def _sim_result():
-    """A small hand-built SimResult: SCO qualifying with two swing matches."""
+    """A small hand-built SimResult: SCO and GER in contention (each with swings)
+    plus an eliminated HAI whose swing rows must NOT be persisted."""
     per_team = {
-        "SCO": TeamProb(
-            "SCO",
-            prob_qualify=0.62,
-            prob_top2=0.40,
-            prob_third=0.22,
-            status="contention",
-        ),
-        "GER": TeamProb(
-            "GER",
-            prob_qualify=0.55,
-            prob_top2=0.45,
-            prob_third=0.10,
-            status="contention",
-        ),
+        "SCO": TeamProb("SCO", 0.62, 0.40, 0.22, "contention"),
+        "GER": TeamProb("GER", 0.55, 0.45, 0.10, "contention"),
+        "HAI": TeamProb("HAI", 0.0, 0.0, 0.0, "eliminated"),
     }
-    swings = [
-        Swing(
-            "F-SCO-GER",
-            "A",
-            "SCO",
-            "GER",
-            swing=0.5,
-            p_qualify_home_win=0.9,
-            p_qualify_draw=0.6,
-            p_qualify_away_win=0.4,
-            is_own_match=True,
-        ),
-        Swing(
-            "F-FRA-AND",
-            "A",
-            "FRA",
-            "AND",
-            swing=0.1,
-            p_qualify_home_win=0.65,
-            p_qualify_draw=0.62,
-            p_qualify_away_win=0.6,
-            is_own_match=False,
-        ),
-    ]
-    return SimResult(per_team=per_team, swings=swings, n=5000)
+    swings_by_country = {
+        "SCO": [
+            Swing("F-SCO-GER", "A", "SCO", "GER", 0.5, 0.9, 0.6, 0.4, True),
+            Swing("F-FRA-AND", "A", "FRA", "AND", 0.1, 0.65, 0.62, 0.6, False),
+        ],
+        "GER": [
+            Swing("F-SCO-GER", "A", "SCO", "GER", 0.4, 0.3, 0.5, 0.85, True),
+        ],
+        # Eliminated team: present in the result but must be filtered out.
+        "HAI": [
+            Swing("F-SCO-GER", "A", "SCO", "GER", 0.0, 0.0, 0.0, 0.0, False),
+        ],
+    }
+    return SimResult(
+        per_team=per_team,
+        swings=swings_by_country["SCO"],
+        n=5000,
+        swings_by_country=swings_by_country,
+    )
 
 
 class TestPersistSim:
@@ -215,9 +199,12 @@ class TestPersistSim:
             assert sco.n_sims == 5000
 
             swings = session.exec(select(SwingMatch)).all()
-            assert len(swings) == 2  # one row per swing
-            own = session.get(SwingMatch, "F-SCO-GER")
-            assert own.focus_team_id == "id-SCO"
+            # SCO's two + GER's one; eliminated HAI's row is filtered out.
+            assert len(swings) == 3
+            assert session.get(SwingMatch, ("F-SCO-GER", "HAI")) is None
+            # Composite key is (match_id, country_code).
+            own = session.get(SwingMatch, ("F-SCO-GER", "SCO"))
+            assert own.country_code == "SCO"
             assert own.is_own_match is True
             # SQLite drops tzinfo (Postgres preserves it); normalise to UTC,
             # mirroring the router's _as_utc serialisation, before comparing.
@@ -230,22 +217,23 @@ class TestPersistSim:
             session.commit()
 
             jobs._persist_sim(session, _sim_result(), 5000)
-            # Second run with a single swing must wipe the first run's rows.
+            # Second run with a single country/swing must wipe the first run's rows.
+            single_swing = Swing(
+                "F-SCO-GER", "A", "SCO", "GER", 0.5, 0.9, 0.6, 0.4, True
+            )
             single = SimResult(
-                per_team={
-                    "SCO": TeamProb("SCO", 0.7, 0.5, 0.2, "contention"),
-                },
-                swings=[
-                    Swing("F-SCO-GER", "A", "SCO", "GER", 0.5, 0.9, 0.6, 0.4, True),
-                ],
+                per_team={"SCO": TeamProb("SCO", 0.7, 0.5, 0.2, "contention")},
+                swings=[single_swing],
                 n=6000,
+                swings_by_country={"SCO": [single_swing]},
             )
             jobs._persist_sim(session, single, 6000)
 
         with Session(engine) as session:
             swings = session.exec(select(SwingMatch)).all()
-            assert len(swings) == 1  # no duplicates, F-FRA-AND was removed
+            assert len(swings) == 1  # no duplicates; prior SCO/GER/HAI rows gone
             assert swings[0].match_id == "F-SCO-GER"
+            assert swings[0].country_code == "SCO"
             assert session.get(Qualification, "id-SCO").n_sims == 6000
 
 

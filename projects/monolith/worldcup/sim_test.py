@@ -255,3 +255,28 @@ def test_epistemic_uncertainty_regularises_the_favourite():
     )
     assert wide.per_team["FAV"].prob_top2 < point.per_team["FAV"].prob_top2
     assert wide.per_team["P2"].prob_top2 > point.per_team["P2"].prob_top2
+
+
+def test_swings_are_computed_per_country():
+    # Every team gets its own ranked swing list, and a bubble team's swing on its
+    # own matches dwarfs a near-certain favourite's (whose fate barely moves).
+    states, fixtures, elo = _scenario_open_group()
+    res = simulate(states, fixtures, elo, focus="FAV", n=6000, seed=9, swing_n=3000)
+    assert set(res.swings_by_country) == {"FAV", "P2", "P3", "P4"}
+    # The back-compat .swings field is exactly the focus team's list.
+    assert res.swings is res.swings_by_country["FAV"]
+    fav_top = res.swings_by_country["FAV"][0].swing
+    p2_top = res.swings_by_country["P2"][0].swing
+    assert p2_top > fav_top
+    # A team's own matches are flagged in its own list.
+    assert any(s.is_own_match for s in res.swings_by_country["P2"])
+
+
+def test_swing_n_zero_yields_no_swing():
+    # With no trials fed to the swing tally every conditional falls back to the
+    # unconditional qualify prob, so swing is 0 everywhere; qualification, which
+    # always uses all n trials, is unaffected.
+    states, fixtures, elo = _scenario_open_group()
+    res = simulate(states, fixtures, elo, focus="FAV", n=3000, seed=9, swing_n=0)
+    assert all(s.swing == 0.0 for s in res.swings_by_country["FAV"])
+    assert 0.0 <= res.per_team["FAV"].prob_qualify <= 1.0
