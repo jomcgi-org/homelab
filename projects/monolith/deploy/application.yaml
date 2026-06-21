@@ -21,6 +21,27 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith
+  # Kyverno's inject-otel-env-vars ClusterPolicy mutates this Deployment at
+  # admission to add the otel.injected-by annotation and two env vars
+  # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL); a stale
+  # kubectl.kubernetes.io/restartedAt also lingers from an April manual restart.
+  # A global resource.customizations.ignoreDifferences in argocd-cm covers these,
+  # but resource.customizations are loaded at application-controller startup and
+  # are not hot-reloaded, so monolith sat permanently OutOfSync (Healthy) and hid
+  # genuine drift. This app-level ignoreDifferences is read fresh every reconcile,
+  # so it holds regardless of when the controller last restarted. Match the global
+  # block exactly: ignore only the two injected env names (charts define their own
+  # OTEL_* vars, so a startswith match would manufacture a fresh diff) plus the two
+  # injected/restart annotations.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jqPathExpressions:
+        - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
+        - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
+      jsonPointers:
+        - /spec/template/metadata/annotations/otel.injected-by
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
   syncPolicy:
     automated:
       prune: true
