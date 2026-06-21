@@ -127,7 +127,9 @@ def _get_note_row(engine, note_id: str) -> Note:
     """Fetch the raw Note ORM row (carries columns get_note_by_id omits)."""
     with Session(engine) as session:
         # test helper: intentionally reads any row (including soft-deleted).
-        stmt = select(Note).where(Note.note_id == note_id)  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
+        stmt = select(Note).where(
+            Note.note_id == note_id
+        )  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
         return session.exec(stmt).one()
 
 
