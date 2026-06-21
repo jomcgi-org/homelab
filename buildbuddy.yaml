@@ -247,6 +247,122 @@ actions:
     steps:
       - run: ./bazel/helm/ci-diff-manifests.sh
 
+  # Visual regression - screenshots public pages against committed mock data,
+  # diffs vs committed baselines, posts inline before/after/diff to the PR.
+  # Standalone Node tool (NOT bazel test). Runs in ubuntu-24.04 so the bb/bazel
+  # wrapper + repo tooling work natively; only chromium is added at runtime.
+  # Baselines are only valid from this image; regenerate via a commit message
+  # containing [update-baselines]. Informational (no depends_on), like Manifest diff.
+  - name: "Visual regression"
+    container_image: "ubuntu-24.04"
+    max_retries: 1
+    resource_requests:
+      cpu: "4"
+      memory: "8GB"
+      disk: "20GB"
+    triggers:
+      pull_request:
+        branches:
+          - "*"
+        merge_with_base: false
+    steps:
+      # POSIX sh-safe (no `pipefail` - the runner shell may be dash, see Buck2
+      # rules). apt is run with sudo only when not already root. bazel builds are
+      # not piped through `tail`, so a build failure propagates under `set -e`.
+      - run: |
+          # Skip the baseline bot's own push and digest-only image-updater
+          # commits. NOT ci-format-bot: its commit is the PR head, so we must
+          # screenshot it or the head shows a stale result.
+          AUTHOR="$(git log -1 --format='%an')"
+          case "$AUTHOR" in
+            visual-baseline-bot|argocd-image-updater)
+              echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
+          esac
+
+          set -eu
+          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+
+          # jq (report-to-pr.sh), curl, tar (gh + nodesource installers) are not
+          # in the minimal runner image.
+          if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+            $SUDO apt-get update && $SUDO apt-get install -y jq curl ca-certificates gnupg tar
+          fi
+
+          # gh: install the pinned release binary directly. We deliberately do
+          # NOT use @multitool//tools/gh + `find ... | head -1` (the idiom in
+          # ci-diff-manifests.sh) because that find picks the first of multitool's
+          # several staged per-arch binaries and can hand back a wrong-arch gh
+          # that dies with "cannot execute binary file: Exec format error" (the
+          # exact bug that silently breaks the Manifest diff PR comment). dpkg's
+          # architecture (amd64/arm64) matches gh's release asset suffix.
+          if ! command -v gh >/dev/null 2>&1; then
+            GH_VER="2.62.0"
+            GH_ARCH="$(dpkg --print-architecture)"
+            curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_${GH_ARCH}.tar.gz" | $SUDO tar -xz -C /usr/local --strip-components=1
+          fi
+
+          # System Node 20: the mock server, capture and diff scripts (and npm /
+          # npx for chromium) run on system Node. The bazel build uses its own
+          # hermetic node toolchain, so the runner ships no system node.
+          if ! command -v node >/dev/null 2>&1; then
+            curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -
+            $SUDO apt-get install -y nodejs
+          fi
+
+          # Build the public adapter-node app. --config=ci is REQUIRED: without
+          # it the build resolves the wrong exec toolchain (arm64 coreutils/tar
+          # on this runner) and dies with "Syntax error". Read the output path
+          # from the `bazel-bin` convenience symlink the build creates, NOT from
+          # `bazel info bazel-bin --config=ci` (that fails to resolve
+          # @@buildbuddy_toolchain).
+          REPO_ROOT="$(git rev-parse --show-toplevel)"
+          # --remote_download_outputs=all is REQUIRED: build_public is consumed
+          # by node OUTSIDE bazel, so on a remote action-cache hit Bazel would
+          # otherwise leave the tree artifact in the remote CAS and the local
+          # build_public/ dir empty (index.js "exists=no"). Forcing the download
+          # materializes it on disk.
+          bazel build //projects/monolith/frontend:build_public --config=ci --remote_download_outputs=all
+          # serve.mjs boots the SvelteKit app from this entry (out_dirs=build_public).
+          # The bazel-bin convenience symlink resolves the tree artifact, which
+          # --remote_download_outputs=all guarantees is materialized on disk.
+          APP_ENTRY="$REPO_ROOT/bazel-bin/projects/monolith/frontend/build_public/index.js"
+
+          # Resolve the PR number from the checked-out branch rather than
+          # BUILDBUDDY_PULL_REQUEST_NUMBER (which is unset in this action env, the
+          # second reason the Manifest diff comment never posts). Export it under
+          # the name the visual scripts already read.
+          export GH_TOKEN="${GHCR_TOKEN:-}"
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          # `// empty` so a closed/absent PR yields "" (not the string "null",
+          # which would pass the scripts' [ -z ] guard and then fail gh).
+          BUILDBUDDY_PULL_REQUEST_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          export BUILDBUDDY_PULL_REQUEST_NUMBER
+
+          # Visual tool deps + chromium only (pinned via @playwright/test 1.49.1).
+          cd projects/monolith/frontend/visual
+          npm install
+          # Split install: system libs need root (apt), but the browser binary
+          # must land in the RUNNING user's cache (capture.mjs runs as that user,
+          # not root), so do not sudo the browser download.
+          $SUDO npx playwright install-deps chromium
+          npx playwright install chromium
+          APP_ENTRY="$APP_ENTRY" node capture.mjs
+          node diff.mjs
+
+          # Seed/refresh baselines when the sentinel file is present, else post
+          # the before/after/diff PR comment. A sentinel FILE (not a HEAD commit
+          # message) is the trigger because chart-version-bot lands chart-bump
+          # commits on top of the trigger commit, which would bury a HEAD marker;
+          # the file persists regardless. update-baselines.sh removes the
+          # sentinel in its own bot commit, so the reseed is one-shot.
+          # GHCR_TOKEN is injected into every action by BuildBuddy.
+          cd "$REPO_ROOT"
+          if [ -f projects/monolith/frontend/visual/.reseed-baselines ]; then
+            ./projects/monolith/frontend/visual/update-baselines.sh
+          else
+            ./projects/monolith/frontend/visual/report-to-pr.sh
+          fi
+
   # Buck2 rules — builds & tests the Buck2 image/helm rules under buck2/**
   # (the Buck2 counterparts to bazel/helm + bazel/tools/oci, consumed by the
   # `loom` repo as an external cell). homelab is otherwise a Bazel repo, so this
