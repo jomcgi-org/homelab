@@ -168,13 +168,6 @@ filegroup(
     srcs = ["fixtures/migration-destructive-ddl.sql"],
 )
 
-# Fixture for the no-bare-nosemgrep rule (languages: python).
-# Referenced by //bazel/semgrep/rules:no_bare_nosemgrep_test.
-filegroup(
-    name = "no_bare_nosemgrep_fixtures",
-    srcs = ["fixtures/no-bare-nosemgrep.py"],
-)
-
 # New rule fixtures should be added here as they are created.
 filegroup(
     name = "kubernetes_yaml_fixtures",
