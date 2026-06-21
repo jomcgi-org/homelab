@@ -3,6 +3,8 @@ import {
   monthLabel,
   monthShort,
   monthBars,
+  projectHistory,
+  historyView,
   relativeMax,
   heatWeightExpression,
   isUpcoming,
@@ -10,6 +12,14 @@ import {
   liveWindows,
   starsNights,
 } from "./heat.js";
+
+// A full 12-element month array with the given {monthNumber: value} entries set
+// and the rest zero, mirroring the /history payload's `clear`/`dark` shape.
+function months(entries) {
+  const arr = Array(12).fill(0);
+  for (const [m, v] of Object.entries(entries)) arr[Number(m) - 1] = v;
+  return arr;
+}
 
 describe("monthLabel / monthShort", () => {
   it("maps 1..12 to month names", () => {
@@ -61,6 +71,83 @@ describe("monthBars", () => {
     expect(bars[1].value).toBe(0);
     expect(bars[2].value).toBe(0);
     expect(bars[3]).toMatchObject({ value: 6, frac: 1, isMax: true });
+  });
+
+  it("accepts a 12-element array (index 0 = January), the /history shape", () => {
+    const bars = monthBars(months({ 1: 5, 6: 20, 12: 10 }));
+    expect(bars[0]).toMatchObject({ value: 5, frac: 0.25, isMax: false });
+    expect(bars[5]).toMatchObject({ value: 20, frac: 1, isMax: true });
+    expect(bars[11]).toMatchObject({ value: 10, frac: 0.5, isMax: false });
+  });
+});
+
+describe("projectHistory", () => {
+  const site = {
+    id: "galloway-forest",
+    name: "Galloway Forest Park",
+    lat: 55.083,
+    lon: -4.4,
+    clear: months({ 1: 8, 12: 25 }),
+    dark: months({ 1: 30, 12: 50 }),
+  };
+
+  it("projects a single month (1-indexed) to scalar headline counts", () => {
+    const row = projectHistory(site, 12);
+    expect(row).toMatchObject({
+      id: "galloway-forest",
+      name: "Galloway Forest Park",
+      lat: 55.083,
+      clear_dark_hours: 25,
+      dark_hours: 50,
+      clear_rate: 0.5,
+    });
+    // The per-site array rides along so the card chart needs no extra request.
+    expect(row.clear).toBe(site.clear);
+  });
+
+  it("sums every month for the all-year view (month 0)", () => {
+    const row = projectHistory(site, 0);
+    expect(row.clear_dark_hours).toBe(8 + 25);
+    expect(row.dark_hours).toBe(30 + 50);
+    expect(row.clear_rate).toBeCloseTo(33 / 80);
+  });
+
+  it("returns null when the selected month has no dark hours (drops the site)", () => {
+    expect(projectHistory(site, 6)).toBe(null); // June: zero dark
+    const allZero = { ...site, clear: months({}), dark: months({}) };
+    expect(projectHistory(allZero, 0)).toBe(null);
+    expect(projectHistory(null, 0)).toBe(null);
+  });
+});
+
+describe("historyView", () => {
+  const sites = [
+    {
+      id: "tomintoul",
+      clear: months({ 6: 9 }),
+      dark: months({ 6: 10 }),
+    },
+    {
+      id: "galloway-forest",
+      clear: months({ 1: 8, 12: 25 }),
+      dark: months({ 1: 30, 12: 50 }),
+    },
+  ];
+
+  it("projects, drops zero-dark sites, and sorts by clear-dark hours desc", () => {
+    // December: only galloway has dark hours.
+    const dec = historyView(sites, 12);
+    expect(dec.map((s) => s.id)).toEqual(["galloway-forest"]);
+    expect(dec[0].clear_dark_hours).toBe(25);
+
+    // All year: galloway (33) leads tomintoul (9).
+    const year = historyView(sites, 0);
+    expect(year.map((s) => s.id)).toEqual(["galloway-forest", "tomintoul"]);
+  });
+
+  it("tolerates a missing site list", () => {
+    expect(historyView(null, 0)).toEqual([]);
+    expect(historyView(undefined, 6)).toEqual([]);
   });
 });
 
