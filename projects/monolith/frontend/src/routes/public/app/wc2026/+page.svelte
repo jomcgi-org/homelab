@@ -121,6 +121,18 @@
 
   const pctNum = (x) => Math.round((x ?? 0) * 100);
 
+  // Standings rows arrive pre-sorted, so finishing position is the row index.
+  // World Cup groups are always four teams: the top two qualify automatically,
+  // third place enters the best-third pool (eight of twelve advance), fourth is
+  // out. The zone colours mirror the hero outcome bar (ink / accent / grey) so
+  // the table reads as the same system, not a second unrelated widget.
+  const zoneOf = (i) => (i < 2 ? "top2" : i === 2 ? "third" : "out");
+
+  // Per-team live qualify chance, read from the same qualification map the
+  // headline uses. Settled teams collapse to a verdict; the rest show a percent.
+  const rowQual = (code) => data.qualification?.[code] ?? {};
+  const gdClass = (gd) => (gd > 0 ? "gd-pos" : gd < 0 ? "gd-neg" : "gd-zero");
+
   // The current (unconditional) qualify chance. The swing cards plot each
   // outcome relative to this "Now" point.
   const baselinePct = $derived(pctNum(q.prob_qualify));
@@ -382,20 +394,30 @@
         <table class="grid">
           <thead>
             <tr>
+              <th class="col-pos" scope="col" title="Position">#</th>
               <th class="col-team" scope="col">Team</th>
-              <th scope="col">P</th>
-              <th scope="col">W</th>
-              <th scope="col">D</th>
-              <th scope="col">L</th>
-              <th scope="col">GF</th>
-              <th scope="col">GA</th>
+              <th class="muted" scope="col">P</th>
+              <th class="sec" scope="col">W</th>
+              <th class="sec" scope="col">D</th>
+              <th class="sec" scope="col">L</th>
+              <th class="sec" scope="col">GF</th>
+              <th class="sec" scope="col">GA</th>
               <th scope="col">GD</th>
               <th class="col-pts" scope="col">Pts</th>
+              <th class="col-chance" scope="col">Chance</th>
             </tr>
           </thead>
           <tbody>
-            {#each table as t (t.team_id)}
-              <tr class:focus={t.fifa_code === selectedCode}>
+            {#each table as t, i (t.team_id)}
+              {@const z = zoneOf(i)}
+              {@const ql = rowQual(t.fifa_code)}
+              <tr
+                class:focus={t.fifa_code === selectedCode}
+                class:cut={i === 1}
+              >
+                <td class="col-pos">
+                  <span class="pos pos-{z}">{i + 1}</span>
+                </td>
                 <td class="col-team">
                   <span class="team">
                     {#if t.flag_url}
@@ -404,19 +426,41 @@
                     <span class="team-name">{t.name}</span>
                   </span>
                 </td>
-                <td>{t.mp}</td>
-                <td>{t.w}</td>
-                <td>{t.d}</td>
-                <td>{t.l}</td>
-                <td>{t.gf}</td>
-                <td>{t.ga}</td>
-                <td>{fmtGd(t.gd)}</td>
+                <td class="muted">{t.mp}</td>
+                <td class="sec">{t.w}</td>
+                <td class="sec">{t.d}</td>
+                <td class="sec">{t.l}</td>
+                <td class="sec">{t.gf}</td>
+                <td class="sec">{t.ga}</td>
+                <td class="gd {gdClass(t.gd)}">{fmtGd(t.gd)}</td>
                 <td class="col-pts">{t.pts}</td>
+                <td class="col-chance">
+                  {#if ql.status === "qualified"}
+                    <span class="verdict in">In</span>
+                  {:else if ql.status === "eliminated"}
+                    <span class="verdict out">Out</span>
+                  {:else}
+                    <span class="chance">
+                      <span class="chance-num">{pct(ql.prob_qualify)}</span>
+                      <span class="chance-bar">
+                        <span
+                          class="chance-fill"
+                          style="width:{pctNum(ql.prob_qualify)}%"
+                        ></span>
+                      </span>
+                    </span>
+                  {/if}
+                </td>
               </tr>
             {/each}
           </tbody>
         </table>
       </div>
+      <ul class="zone-legend">
+        <li><span class="zone-key zone-top2"></span>1&ndash;2 qualify</li>
+        <li><span class="zone-key zone-third"></span>3rd: best-third route</li>
+        <li><span class="zone-key zone-out"></span>4th: out</li>
+      </ul>
     </section>
 
     <!-- SWING MATCHES -->
@@ -935,6 +979,8 @@
     border-collapse: collapse;
     font-family: var(--mono);
     font-size: 13px;
+    /* Tabular figures so every column of digits lines up vertically. */
+    font-variant-numeric: tabular-nums;
   }
 
   .grid th {
@@ -944,14 +990,14 @@
     text-transform: uppercase;
     color: var(--ink-3);
     text-align: right;
-    padding: 6px 6px;
+    padding: 7px 6px;
     border-bottom: 2px solid var(--ink);
     white-space: nowrap;
   }
 
   .grid td {
     text-align: right;
-    padding: 8px 6px;
+    padding: 9px 6px;
     border-bottom: 1px solid var(--rule);
     white-space: nowrap;
   }
@@ -960,17 +1006,75 @@
     border-bottom: none;
   }
 
+  /* The automatic-qualification line: a heavy rule under 2nd place separates the
+     two teams who are through from the rest. */
+  .grid tbody tr.cut td {
+    border-bottom: 3px solid var(--ink);
+  }
+
+  /* Secondary stats (W/D/L/GF/GA) and matches-played are de-emphasised so the
+     eye lands on points, goal difference and the live chance. */
+  .grid .muted,
+  .grid .sec {
+    color: var(--ink-3);
+  }
+
   .col-team {
     text-align: left !important;
     width: 100%;
   }
 
+  /* ── Position badge ──────────────────────── */
+  .col-pos {
+    text-align: center !important;
+    padding-left: 10px;
+    padding-right: 4px;
+  }
+
+  .pos {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 21px;
+    height: 21px;
+    font-size: 11px;
+    font-weight: 700;
+    border: 1.5px solid var(--ink);
+  }
+
+  /* Zone colours mirror the hero outcome bar above. */
+  .pos-top2 {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .pos-third {
+    background: var(--accent);
+    color: var(--ink);
+  }
+
+  .pos-out {
+    background: var(--paper);
+    color: var(--ink-3);
+    border-color: var(--rule);
+  }
+
   .col-pts {
     font-weight: 700;
+    font-size: 15px;
   }
 
   .grid th.col-pts {
     color: var(--ink);
+  }
+
+  /* Goal difference: negatives flagged coral, the rest stays neutral (the "+"
+     already signals a positive). */
+  .gd-neg {
+    color: var(--coral);
+  }
+  .gd-zero {
+    color: var(--ink-3);
   }
 
   .team {
@@ -990,12 +1094,109 @@
     font-size: 14px;
   }
 
-  .grid tbody tr.focus {
-    background: var(--accent);
+  /* ── Live qualify chance ─────────────────── */
+  .col-chance {
+    min-width: 56px;
   }
 
+  .chance {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+
+  .chance-num {
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .chance-bar {
+    display: block;
+    width: 44px;
+    height: 5px;
+    background: var(--rule);
+    border: 1px solid var(--ink);
+  }
+
+  .chance-fill {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+
+  .verdict {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border: 1.5px solid var(--ink);
+  }
+
+  .verdict.in {
+    background: color-mix(in srgb, var(--green) 55%, var(--paper));
+  }
+
+  .verdict.out {
+    background: var(--rule);
+    color: var(--ink-3);
+  }
+
+  /* Selected team: a light accent wash plus a solid ink bar down the left edge.
+     A wash (not the full accent fill) keeps this distinct from the solid-accent
+     3rd-place zone badge, which matters because the default team (Scotland) is
+     itself 3rd, so a full-accent row would swallow its own zone marker. */
   .grid tbody tr.focus td {
+    background: color-mix(in srgb, var(--accent) 32%, var(--paper));
     border-bottom-color: var(--ink);
+  }
+
+  .grid tbody tr.focus td:first-child {
+    box-shadow: inset 3px 0 0 var(--ink);
+  }
+
+  .grid tbody tr.focus.cut td {
+    border-bottom-width: 3px;
+  }
+
+  /* ── Qualification-zone legend ───────────── */
+  .zone-legend {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--ink-3);
+  }
+
+  .zone-legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .zone-key {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid var(--ink);
+    flex-shrink: 0;
+  }
+
+  .zone-top2 {
+    background: var(--ink);
+  }
+  .zone-third {
+    background: var(--accent);
+  }
+  .zone-out {
+    background: var(--paper);
+    border-color: var(--rule);
   }
 
   /* ── Swing matches ───────────────────────── */
@@ -1398,6 +1599,16 @@
     }
     .foot {
       padding: 20px 24px;
+    }
+  }
+
+  /* On phones the per-result breakdown (W/D/L/GF/GA) would force a horizontal
+     scroll, which is worse than dropping it. Keep position, team, played, GD,
+     points and the live chance, the columns that actually answer "who's going
+     through". The full breakdown returns on wider screens. */
+  @media (max-width: 519px) {
+    .grid .sec {
+      display: none;
     }
   }
 
