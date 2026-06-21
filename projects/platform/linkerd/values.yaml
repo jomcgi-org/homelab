@@ -30,11 +30,15 @@ linkerd-control-plane:
     tracing:
       enabled: false
 
-    # Resource limits for proxy sidecars
+    # Resource requests for proxy sidecars.
+    # CPU: request only, no limit. Measured usage across 49 meshed pods is
+    # ~0.5m each (27m total cluster-wide), so the previous 100m request
+    # reserved ~4.9 cores of phantom capacity. 20m leaves headroom while
+    # cutting the reservation. No CPU limit, per the repo convention that
+    # CPU limits cause throttling (memory is requests=limits, not CPU).
     resources:
       cpu:
-        request: 100m
-        limit: 1000m
+        request: 20m
       memory:
         request: 20Mi
         limit: 250Mi
