@@ -114,7 +114,13 @@ py_venv_binary(
     imports = ["."],  # keep
     main = "app/jobs_main.py",
     visibility = ["//:__subpackages__"],
-    deps = [":monolith_backend"],  # keep
+    # typer is the jobs entrypoint's CLI framework but is NOT a serving dep, so
+    # it is absent from :monolith_backend; the binary must depend on it directly
+    # or the jobs image fails at startup with `ModuleNotFoundError: typer`.
+    deps = [
+        ":monolith_backend",
+        "@pip//typer",
+    ],  # keep
 )
 
 # Phase-1 vault-mutation script: walk a vault and inject `visibility:` lines
