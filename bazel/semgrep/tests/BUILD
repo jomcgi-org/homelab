@@ -175,13 +175,6 @@ filegroup(
     srcs = ["fixtures/no-bare-nosemgrep.py"],
 )
 
-# Fixture for the migration-destructive-ddl rule (languages: generic, paths: **/chart/migrations/*.sql).
-# Referenced by //bazel/semgrep/rules:migration_destructive_ddl_test.
-filegroup(
-    name = "migration_destructive_ddl_fixtures",
-    srcs = ["fixtures/migration-destructive-ddl.sql"],
-)
-
 # New rule fixtures should be added here as they are created.
 filegroup(
     name = "kubernetes_yaml_fixtures",
