@@ -1,11 +1,54 @@
 <script>
   let { data } = $props();
 
-  const focus = $derived(data.focus ?? "SCO");
-  const groupName = $derived(data.group ?? "");
-  const table = $derived(data.group_table ?? []);
-  const q = $derived(data.qualification ?? {});
-  const swings = $derived(data.swing_matches ?? []);
+  // The whole tournament arrives in one payload; the visitor picks a country and
+  // the page switches client-side with no refetch.
+  const groups = $derived(data.groups ?? {});
+  const allTeams = $derived(
+    Object.values(groups)
+      .flat()
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  );
+  const codeToGroup = $derived(
+    Object.fromEntries(allTeams.map((t) => [t.fifa_code, t.group_name])),
+  );
+  const codeToName = $derived(
+    Object.fromEntries(allTeams.map((t) => [t.fifa_code, t.name])),
+  );
+
+  // Selected country: the page opens on the default (Scotland). Guarded so a
+  // code missing from the data falls back to the default rather than blanking.
+  let picked = $state(data.default_country ?? "SCO");
+  const selectedCode = $derived(
+    codeToGroup[picked] ? picked : (data.default_country ?? "SCO"),
+  );
+  const countryName = $derived(codeToName[selectedCode] ?? selectedCode);
+
+  const groupName = $derived(codeToGroup[selectedCode] ?? "");
+  const table = $derived(groups[groupName] ?? []);
+  const q = $derived(data.qualification?.[selectedCode] ?? {});
+  const swings = $derived(data.swing_by_country?.[selectedCode] ?? []);
+
+  // Country dropdown: a neo-brutalist box in the headline that opens a
+  // type-to-filter list. Closed by default (so the SSR screenshot is stable).
+  let pickerOpen = $state(false);
+  let pickerQuery = $state("");
+  const pickerList = $derived(
+    pickerQuery.trim()
+      ? allTeams.filter((t) =>
+          t.name.toLowerCase().includes(pickerQuery.trim().toLowerCase()),
+        )
+      : allTeams,
+  );
+  function choose(code) {
+    picked = code;
+    pickerOpen = false;
+    pickerQuery = "";
+  }
+  function togglePicker() {
+    pickerOpen = !pickerOpen;
+    pickerQuery = "";
+  }
 
   // Probabilities arrive as raw 0..1 floats; the page is the only place they
   // become percentages.
@@ -64,7 +107,9 @@
 
   // Thousands-formatted simulation count (pinned locale for a deterministic
   // SSR render / screenshot).
-  const nSims = $derived(q.n_sims ? q.n_sims.toLocaleString("en-US") : "many");
+  const nSims = $derived(
+    data.n_sims ? data.n_sims.toLocaleString("en-US") : "many",
+  );
 
   // Shared number-line domain for the swing cards: a tidy lower bound (rounded
   // down to a 10) so every match sits on the same comparable scale, with 100%
@@ -115,10 +160,10 @@
 </script>
 
 <svelte:head>
-  <title>Scotland at the 2026 World Cup</title>
+  <title>Will {countryName} get out of the World Cup group stage?</title>
   <meta
     name="description"
-    content="Scotland's chance of reaching the 2026 World Cup Round of 32, and the remaining matches that most change it. Elo-weighted Monte Carlo simulation."
+    content="Live odds that a 2026 World Cup team escapes the group stage, and the remaining matches that most change its chance. Elo-weighted Monte Carlo simulation."
   />
   <meta name="robots" content="noindex" />
 </svelte:head>
@@ -139,16 +184,67 @@
           <p class="stats"><strong>Group {groupName}</strong></p>
         {/if}
       </div>
-      <h1 class="title">Scotland at the 2026 World Cup</h1>
-      <p class="source">
-        Scotland's chance of reaching the Round of 32, and the remaining matches
-        that most change it.
-      </p>
+      <h1 class="title">
+        Will <span class="picker" class:open={pickerOpen}>
+          <button
+            type="button"
+            class="picker-btn"
+            aria-haspopup="true"
+            aria-expanded={pickerOpen}
+            onclick={togglePicker}
+          >
+            {countryName}<span class="picker-caret" aria-hidden="true">▾</span>
+          </button>
+          {#if pickerOpen}
+            <button
+              type="button"
+              class="picker-backdrop"
+              aria-label="Close country list"
+              onclick={() => (pickerOpen = false)}
+            ></button>
+            <span class="picker-panel">
+              <input
+                class="picker-search"
+                type="text"
+                placeholder="Type a country..."
+                aria-label="Search countries"
+                bind:value={pickerQuery}
+                onkeydown={(e) => {
+                  if (e.key === "Escape") pickerOpen = false;
+                  if (e.key === "Enter" && pickerList.length)
+                    choose(pickerList[0].fifa_code);
+                }}
+                autocomplete="off"
+              />
+              <span class="picker-list">
+                {#each pickerList as t (t.fifa_code)}
+                  <button
+                    type="button"
+                    class="picker-opt"
+                    class:sel={t.fifa_code === selectedCode}
+                    onclick={() => choose(t.fifa_code)}
+                  >
+                    {#if t.flag_url}
+                      <img class="flag" src={t.flag_url} alt="" width="20" height="14" loading="lazy" />
+                    {/if}
+                    <span class="picker-opt-name">{t.name}</span>
+                    <span class="picker-opt-grp">{t.group_name}</span>
+                  </button>
+                {:else}
+                  <span class="picker-empty">No team matches.</span>
+                {/each}
+              </span>
+            </span>
+          {/if}
+        </span> get out of the World Cup group stage?
+      </h1>
     </header>
 
     <!-- HEADLINE -->
     <section class="headline">
-      <p class="headline-label">Scotland's chance of reaching the Round of 32</p>
+      <p class="headline-label">
+        {countryName}'s chance of reaching the Round of 32
+      </p>
       <p class="headline-figure" class:verdict={q.status === "qualified" || q.status === "eliminated"}>
         {headline}
       </p>
@@ -191,10 +287,6 @@
         </li>
       </ul>
 
-      <p class="route-note">
-        Almost all of Scotland's path runs through the best third-placed places,
-        the group top-two route is the long shot.
-      </p>
     </section>
 
     <!-- HOW IT WORKS (expandable, directly under the headline) -->
@@ -265,7 +357,7 @@
           </thead>
           <tbody>
             {#each table as t (t.team_id)}
-              <tr class:focus={t.fifa_code === focus}>
+              <tr class:focus={t.fifa_code === selectedCode}>
                 <td class="col-team">
                   <span class="team">
                     {#if t.flag_url}
@@ -293,8 +385,8 @@
     <section class="block">
       <h2 class="block-title">Matches that could change it</h2>
       <p class="block-sub">
-        Each remaining match, ranked by how much its result moves Scotland's
-        qualify chance. The three figures are Scotland's qualify chance after
+        Each remaining match, ranked by how much its result moves {countryName}'s
+        qualify chance. The three figures are {countryName}'s qualify chance after
         each outcome.
       </p>
 
@@ -315,13 +407,13 @@
                   <span class="rank">{String(i + 1).padStart(2, "0")}</span>
                   {m.home_code} <span class="v">v</span> {m.away_code}
                   {#if m.is_own_match}
-                    <span class="badge own">Scotland</span>
+                    <span class="badge own">{countryName}</span>
                   {/if}
                   <span class="badge grp">Group {m.group_name}</span>
                 </span>
                 <span
                   class="swing-mag"
-                  title="How much this match moves Scotland's chance"
+                  title="How much this match moves {countryName}'s chance"
                 >
                   <span class="swing-track">
                     <span
@@ -493,14 +585,132 @@
     font-family: var(--serif);
     font-weight: 400;
     letter-spacing: -0.02em;
-    line-height: 1;
+    line-height: 1.2;
     font-size: 30px;
   }
 
-  .source {
+  /* ── Country picker (neo-brutalist inline dropdown) ─────── */
+  .picker {
+    position: relative;
+    display: inline-block;
+  }
+
+  .picker-btn {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    margin: 0 2px;
+    padding: 1px 8px 3px;
+    font-family: var(--serif);
+    font-size: inherit;
+    line-height: 1;
+    color: var(--ink);
+    background: var(--accent);
+    border: 2.5px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    cursor: pointer;
+    transition:
+      transform 0.05s ease,
+      box-shadow 0.05s ease;
+  }
+  .picker-btn:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+  .picker.open .picker-btn {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0 var(--ink);
+  }
+  .picker-caret {
+    font-size: 0.55em;
+    line-height: 1;
+  }
+
+  /* Full-viewport catcher so a click anywhere else closes the panel. */
+  .picker-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    padding: 0;
+    background: transparent;
+    border: none;
+    cursor: default;
+  }
+
+  .picker-panel {
+    position: absolute;
+    z-index: 21;
+    top: calc(100% + 6px);
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    width: 240px;
+    max-width: 78vw;
+    background: var(--paper);
+    border: 2.5px solid var(--ink);
+    box-shadow: 5px 5px 0 var(--ink);
+  }
+
+  .picker-search {
     margin: 0;
+    padding: 8px 10px;
+    font-family: var(--mono);
     font-size: 13px;
-    line-height: 1.4;
+    color: var(--ink);
+    background: var(--cream);
+    border: none;
+    border-bottom: 2px solid var(--ink);
+    outline: none;
+  }
+  .picker-search::placeholder {
+    color: var(--ink-3);
+  }
+
+  .picker-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+
+  .picker-opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    font-family: var(--mono);
+    font-size: 13px;
+    text-align: left;
+    color: var(--ink);
+    background: var(--paper);
+    border: none;
+    border-bottom: 1px solid var(--rule);
+    cursor: pointer;
+  }
+  .picker-opt:hover {
+    background: var(--blue);
+  }
+  .picker-opt.sel {
+    background: var(--accent);
+    font-weight: 700;
+  }
+  .picker-opt-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .picker-opt-grp {
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .picker-opt.sel .picker-opt-grp {
+    color: var(--ink);
+  }
+  .picker-empty {
+    padding: 10px;
+    font-family: var(--mono);
+    font-size: 12px;
     color: var(--ink-3);
   }
 
@@ -632,14 +842,6 @@
 
   .key-elim {
     background: var(--rule);
-  }
-
-  .route-note {
-    margin: 12px auto 0;
-    max-width: 480px;
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--ink-3);
   }
 
   /* ── Generic block ───────────────────────── */

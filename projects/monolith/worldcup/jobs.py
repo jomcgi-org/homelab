@@ -22,8 +22,11 @@ from worldcup.models import Fixture, Qualification, Standing, SwingMatch
 
 logger = logging.getLogger("monolith.worldcup")
 
-# The focus team the simulation reports swings for: Scotland.
+# The default team the page opens on; the dropdown can switch to any of the 48.
 FOCUS_CODE = "SCO"
+
+# How many of each contending team's remaining matches to store, ranked by swing.
+_TOP_SWING_PER_COUNTRY = 8
 
 
 def _upsert(standings_rows: list[dict], fixture_rows: list[dict]) -> bool:
@@ -175,9 +178,12 @@ def _persist_sim(session, result: sim.SimResult, n: int) -> None:
     """Persist a SimResult into worldcup.qualification and worldcup.swing_matches.
 
     Qualification rows are upserted per team (keyed on team_id, resolved from
-    standings). Swing rows are delete-then-insert: the table only ever holds the
-    focus team's currently-remaining matches, so wiping and reinserting is the
-    simplest way to guarantee no stale or duplicate rows survive a re-run.
+    standings). Swing rows are delete-then-insert and now country-aware: for each
+    team still in contention we store its top-N most decisive remaining matches
+    keyed by (match_id, country_code). Already-qualified or eliminated teams have
+    ~0 swing everywhere (their fate is settled), so they get no rows; the page's
+    dropdown still lists all 48 and an at-rest team simply shows an empty list.
+    Wiping and reinserting guarantees no stale or duplicate rows survive a re-run.
     """
     from sqlmodel import select
 
@@ -209,23 +215,20 @@ def _persist_sim(session, result: sim.SimResult, n: int) -> None:
             )
         )
 
-    focus_team_id = code_to_id.get(FOCUS_CODE)
-    # Delete every existing swing row, then insert one per swing in this result.
+    # Delete every existing swing row, then insert each contending team's set.
     for existing in session.exec(select(SwingMatch)).all():
         session.delete(existing)
-    if focus_team_id is None:
-        logger.warning(
-            "worldcup: focus team %s not in standings, skipping swing rows",
-            FOCUS_CODE,
-        )
-    else:
-        # add_all in one call (not session.add in a loop) so a partial failure
-        # does not leave half the swing set committed.
-        session.add_all(
-            [
+
+    swings_by_country = result.swings_by_country or {}
+    rows: list[SwingMatch] = []
+    for code, prob in result.per_team.items():
+        if prob.status != "contention":
+            continue  # clinched/eliminated: ~0 swing, no rows
+        for swing in swings_by_country.get(code, [])[:_TOP_SWING_PER_COUNTRY]:
+            rows.append(
                 SwingMatch(
                     match_id=swing.match_id,
-                    focus_team_id=focus_team_id,
+                    country_code=code,
                     group_name=swing.group,
                     home_code=swing.home_code,
                     away_code=swing.away_code,
@@ -237,9 +240,11 @@ def _persist_sim(session, result: sim.SimResult, n: int) -> None:
                     is_own_match=swing.is_own_match,
                     computed_at=now,
                 )
-                for swing in result.swings
-            ]
-        )
+            )
+    # add_all in one call (not session.add in a loop) so a partial failure does
+    # not leave half the swing set committed.
+    if rows:
+        session.add_all(rows)
     session.commit()
 
 
@@ -263,6 +268,9 @@ def _simulate_and_store(inputs_changed: bool) -> None:
     from app.db import get_engine
 
     current_n = int(os.environ.get("WORLDCUP_SIM_N", "500000"))
+    # Swing is only a ranking, so its expensive per-country cross-product rides a
+    # capped subset of trials while qualification uses all current_n.
+    current_swing_n = int(os.environ.get("WORLDCUP_SWING_SIM_N", "100000"))
     with Session(get_engine()) as session:
         existing = session.exec(
             select(Qualification).where(Qualification.fifa_code == FOCUS_CODE)
@@ -304,6 +312,7 @@ def _simulate_and_store(inputs_changed: bool) -> None:
             n=current_n,
             seed=None,
             sigma=posterior_sigma,
+            swing_n=current_swing_n,
         )
         _persist_sim(session, result, result.n)
 

@@ -2,8 +2,9 @@
 
 In-memory SQLite seeded with a realistic Group C scenario, mounted on a minimal
 FastAPI app via app.dependency_overrides[get_session], mirroring
-dr_jobs/router_test. Asserts the focus team + group, the group-table sort,
-the qualification payload, the swing-match ordering, and the ETag/304 path.
+dr_jobs/router_test. Asserts the all-country payload shape (group tables,
+qualification map, per-country swing map), the group-table sort, the swing
+ordering, and the ETag/304 path.
 """
 
 from __future__ import annotations
@@ -108,10 +109,11 @@ def _seed(session):
         )
     )
 
+    # Scotland's two swing rows (the focus by default).
     session.add(
         SwingMatch(
             match_id="m-bra-mar",
-            focus_team_id="sco",
+            country_code="SCO",
             group_name="C",
             home_code="BRA",
             away_code="MAR",
@@ -126,7 +128,7 @@ def _seed(session):
     session.add(
         SwingMatch(
             match_id="m-sco-hai",
-            focus_team_id="sco",
+            country_code="SCO",
             group_name="C",
             home_code="SCO",
             away_code="HAI",
@@ -138,50 +140,72 @@ def _seed(session):
             is_own_match=True,
         )
     )
+    # A different country's swing on the same match, to prove per-country grouping.
+    session.add(
+        SwingMatch(
+            match_id="m-bra-mar",
+            country_code="BRA",
+            group_name="C",
+            home_code="BRA",
+            away_code="MAR",
+            kickoff=NOW,
+            swing=0.33,
+            p_qualify_home_win=0.95,
+            p_qualify_draw=0.80,
+            p_qualify_away_win=0.62,
+            is_own_match=True,
+        )
+    )
     session.commit()
 
 
 class TestSummary:
-    def test_focus_and_group(self, client, session):
+    def test_default_country_and_groups(self, client, session):
         _seed(session)
         body = client.get("/api/wc2026/summary").json()
-        assert body["focus"] == "SCO"
-        assert body["group"] == "C"
+        assert body["default_country"] == "SCO"
+        # Every group present (C and the lone Group A team).
+        assert set(body["groups"]) == {"C", "A"}
+        assert body["n_sims"] == 20000
         assert body["updated_at"] is not None
 
-    def test_group_table_sorted_and_complete(self, client, session):
+    def test_group_tables_sorted_and_complete(self, client, session):
         _seed(session)
         body = client.get("/api/wc2026/summary").json()
-        codes = [r["fifa_code"] for r in body["group_table"]]
-        # Only Group C teams; Argentina (Group A) excluded.
+        codes = [r["fifa_code"] for r in body["groups"]["C"]]
         assert codes == ["BRA", "MAR", "SCO", "HAI"]
+        assert [r["fifa_code"] for r in body["groups"]["A"]] == ["ARG"]
         # Brazil ahead of Morocco on goal difference (4 vs 3) at equal points.
-        bra = body["group_table"][0]
+        bra = body["groups"]["C"][0]
         assert bra["pts"] == 7 and bra["gd"] == 4
-        # Raw fields carried through.
         assert bra["name"] == "Brazil"
         assert bra["flag_url"].endswith("BRA.svg")
 
-    def test_qualification_payload(self, client, session):
+    def test_qualification_map(self, client, session):
         _seed(session)
         body = client.get("/api/wc2026/summary").json()
-        q = body["qualification"]
-        # Probabilities stay as raw 0..1 floats (not pre-multiplied).
-        assert q["prob_qualify"] == 0.62
-        assert q["prob_top2"] == 0.41
-        assert q["prob_third"] == 0.21
-        assert q["status"] == "contention"
-        assert q["n_sims"] == 20000
-        assert q["computed_at"] is not None
+        # Keyed by fifa_code; raw 0..1 floats (not pre-multiplied).
+        sco = body["qualification"]["SCO"]
+        assert sco["prob_qualify"] == 0.62
+        assert sco["prob_top2"] == 0.41
+        assert sco["prob_third"] == 0.21
+        assert sco["status"] == "contention"
+        # A team with no qualification row yet falls back to a sane default.
+        bra = body["qualification"]["BRA"]
+        assert bra["prob_qualify"] == 0.0
+        assert bra["status"] == "contention"
 
-    def test_swing_matches_sorted_desc(self, client, session):
+    def test_swing_by_country_grouped_and_sorted(self, client, session):
         _seed(session)
         body = client.get("/api/wc2026/summary").json()
-        swings = body["swing_matches"]
-        assert [m["match_id"] for m in swings] == ["m-sco-hai", "m-bra-mar"]
-        assert swings[0]["swing"] == 0.44
-        assert swings[0]["is_own_match"] is True
-        assert swings[1]["is_own_match"] is False
+        swings = body["swing_by_country"]
+        # Scotland's two, biggest swing first.
+        assert [m["match_id"] for m in swings["SCO"]] == ["m-sco-hai", "m-bra-mar"]
+        assert swings["SCO"][0]["swing"] == 0.44
+        assert swings["SCO"][0]["is_own_match"] is True
+        # Brazil's own row is grouped separately under its own code.
+        assert [m["match_id"] for m in swings["BRA"]] == ["m-bra-mar"]
+        assert swings["BRA"][0]["is_own_match"] is True
 
     def test_cache_and_etag_headers(self, client, session):
         _seed(session)
@@ -197,13 +221,13 @@ class TestSummary:
         assert second.status_code == 304
         assert second.headers["ETag"] == etag
 
-    def test_missing_scotland_returns_503(self, client, session):
+    def test_no_standings_returns_503(self, client, session):
         # No standings rows at all: the page cannot render.
         r = client.get("/api/wc2026/summary")
         assert r.status_code == 503
 
     def test_qualification_default_when_sim_not_run(self, client, session):
-        # Scotland standings present but no qualification row yet.
+        # Standings present but no qualification row yet: defaults, top-level n=0.
         session.add(
             _standing(
                 "sco", "Scotland", "SCO", "C", pts=4, gf=3, ga=3, mp=3, w=1, d=1, l=1
@@ -211,8 +235,8 @@ class TestSummary:
         )
         session.commit()
         body = client.get("/api/wc2026/summary").json()
-        q = body["qualification"]
+        q = body["qualification"]["SCO"]
         assert q["status"] == "contention"
         assert q["prob_qualify"] == 0.0
-        assert q["n_sims"] == 0
         assert q["computed_at"] is None
+        assert body["n_sims"] == 0

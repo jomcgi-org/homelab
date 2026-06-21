@@ -56,11 +56,20 @@ class Swing:
 @dataclass
 class SimResult:
     per_team: dict[str, TeamProb]  # keyed by fifa_code
-    swings: list[Swing]  # sorted by swing desc
+    swings: list[Swing]  # the focus team's swings, sorted desc (back-compat)
     n: int
+    # Every team's ranked swing list, keyed by fifa_code. swings == the focus
+    # team's entry; the page lets a visitor pick any country from this map.
+    swings_by_country: dict[str, list[Swing]] | None = None
 
 
-def simulate(states, fixtures, elo, focus, n=20000, seed=None, sigma=None) -> SimResult:
+# Fixed outcome ordering, mapped to integer indices for the hot swing tally.
+_OC_IDX = {"home_win": 0, "draw": 1, "away_win": 2}
+
+
+def simulate(
+    states, fixtures, elo, focus, n=20000, seed=None, sigma=None, swing_n=None
+) -> SimResult:
     """Monte Carlo over the remaining fixtures.
 
     ``elo`` maps fifa_code -> rating (the posterior mean strength). ``sigma`` is
@@ -72,6 +81,12 @@ def simulate(states, fixtures, elo, focus, n=20000, seed=None, sigma=None) -> Si
     trial. The draw is per team per trial (NOT per match) because a team has one
     unknown true strength within a single simulated tournament; drawing per match
     would average the epistemic uncertainty straight back out.
+
+    ``swing_n`` caps how many trials feed the per-country swing tally (None means
+    all ``n``). Qualification probabilities always use all ``n`` trials, but the
+    swing cross-product (remaining matches x qualified teams) is the expensive
+    part, and swing is only a ranking, so a subset (e.g. 100k) keeps it accurate
+    while bounding cost.
     """
     rng = random.Random(seed)
     by_code = {s.fifa_code: s for s in states}
@@ -82,17 +97,23 @@ def simulate(states, fixtures, elo, focus, n=20000, seed=None, sigma=None) -> Si
     top2_count = {s.fifa_code: 0 for s in states}
     third_count = {s.fifa_code: 0 for s in states}
 
-    swing_tally = {
-        f.match_id: {"home_win": [0, 0], "draw": [0, 0], "away_win": [0, 0]}
-        for f in fixtures
-    }  # each value = [focus_qualified, total]
+    # Per-country swing tally. code_to_idx maps each team to a column; for every
+    # (match, outcome) we keep a total trial count plus a per-team count of how
+    # often that team qualified given the outcome. P(team qualifies | outcome) is
+    # then count / total, and swing is the spread across the three outcomes.
+    codes = list(by_code)
+    code_to_idx = {c: i for i, c in enumerate(codes)}
+    match_to_idx = {f.match_id: i for i, f in enumerate(fixtures)}
+    swing_counts = [[[0] * len(codes) for _ in range(3)] for _ in fixtures]
+    swing_totals = [[0, 0, 0] for _ in fixtures]
+    swing_cap = n if swing_n is None else min(swing_n, n)
 
     # precompute group membership
     group_codes = {}
     for s in states:
         group_codes.setdefault(s.group, []).append(s.fifa_code)
 
-    for _ in range(n):
+    for t in range(n):
         acc = {c: [s.pts, s.gf, s.ga] for c, s in by_code.items()}  # [pts, gf, ga]
         # One strength draw per team per trial (epistemic uncertainty). With no
         # sigma the effective rating is just the point estimate, so the rng is
@@ -151,12 +172,19 @@ def simulate(states, fixtures, elo, focus, n=20000, seed=None, sigma=None) -> Si
         for c in qualified:
             qualify_count[c] += 1
 
-        focus_q = focus in qualified
-        for mid, oc in outcomes.items():
-            cell = swing_tally[mid][oc]
-            cell[1] += 1
-            if focus_q:
-                cell[0] += 1
+        # Per-country swing tally over the first swing_cap trials only: for each
+        # match's outcome this trial, bump the total and, for every team that
+        # qualified, its count. Iterating the qualified set (~32 of 48) keeps the
+        # cross-product to qualified-teams x remaining-matches per trial.
+        if t < swing_cap:
+            qidx = [code_to_idx[c] for c in qualified]
+            for mid, oc in outcomes.items():
+                m = match_to_idx[mid]
+                o = _OC_IDX[oc]
+                swing_totals[m][o] += 1
+                cm = swing_counts[m][o]
+                for ci in qidx:
+                    cm[ci] += 1
 
     per_team = {}
     for c in by_code:
@@ -173,26 +201,41 @@ def simulate(states, fixtures, elo, focus, n=20000, seed=None, sigma=None) -> Si
             else "contention",
         )
 
-    focus_prob = per_team[focus].prob_qualify if focus in per_team else 0.0
-    swings = []
-    for f in fixtures:
-        conds = {}
-        for oc in ("home_win", "draw", "away_win"):
-            q, t = swing_tally[f.match_id][oc]
-            conds[oc] = (q / t) if t else focus_prob
-        swing = max(conds.values()) - min(conds.values())
-        swings.append(
-            Swing(
-                match_id=f.match_id,
-                group=f.group,
-                home_code=f.home_code,
-                away_code=f.away_code,
-                swing=swing,
-                p_qualify_home_win=conds["home_win"],
-                p_qualify_draw=conds["draw"],
-                p_qualify_away_win=conds["away_win"],
-                is_own_match=f.is_own,
+    # Build each country's ranked swing list from the tally. When an outcome was
+    # never sampled (totals 0, e.g. swing_n == 0 or an impossible result) fall
+    # back to the team's unconditional qualify probability so its swing is 0.
+    swings_by_country: dict[str, list[Swing]] = {}
+    for c in by_code:
+        ci = code_to_idx[c]
+        cprob = per_team[c].prob_qualify
+        rows = []
+        for f in fixtures:
+            m = match_to_idx[f.match_id]
+            conds = {}
+            for oc, o in _OC_IDX.items():
+                tot = swing_totals[m][o]
+                conds[oc] = (swing_counts[m][o][ci] / tot) if tot else cprob
+            swing = max(conds.values()) - min(conds.values())
+            rows.append(
+                Swing(
+                    match_id=f.match_id,
+                    group=f.group,
+                    home_code=f.home_code,
+                    away_code=f.away_code,
+                    swing=swing,
+                    p_qualify_home_win=conds["home_win"],
+                    p_qualify_draw=conds["draw"],
+                    p_qualify_away_win=conds["away_win"],
+                    is_own_match=c in (f.home_code, f.away_code),
+                )
             )
-        )
-    swings.sort(key=lambda s: s.swing, reverse=True)
-    return SimResult(per_team=per_team, swings=swings, n=n)
+        rows.sort(key=lambda s: s.swing, reverse=True)
+        swings_by_country[c] = rows
+
+    swings = swings_by_country.get(focus, [])
+    return SimResult(
+        per_team=per_team,
+        swings=swings,
+        n=n,
+        swings_by_country=swings_by_country,
+    )
