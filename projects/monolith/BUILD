@@ -2652,6 +2652,16 @@ py_test(
 )
 
 py_test(
+    name = "worldcup_strength_test",
+    srcs = ["worldcup/strength_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "worldcup_client_test",
     srcs = ["worldcup/client_test.py"],
     imports = ["."],

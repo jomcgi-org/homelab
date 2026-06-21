@@ -60,11 +60,22 @@ def _standing(code, group="A", pts=3, gf=3, ga=2):
     )
 
 
-def _fixture(match_id, home, away, *, finished, group="A", kickoff=None):
+def _fixture(
+    match_id,
+    home,
+    away,
+    *,
+    finished,
+    group="A",
+    kickoff=None,
+    matchday=3,
+    home_score=None,
+    away_score=None,
+):
     return Fixture(
         match_id=match_id,
         group_name=group,
-        matchday=3,
+        matchday=matchday,
         home_id=f"id-{home}",
         home_name=home,
         home_code=home,
@@ -73,6 +84,8 @@ def _fixture(match_id, home, away, *, finished, group="A", kickoff=None):
         away_code=away,
         finished=finished,
         kickoff=kickoff,
+        home_score=home_score,
+        away_score=away_score,
     )
 
 
@@ -103,6 +116,35 @@ class TestBuildSimInputs:
     # (the columns are NOT NULL); they are filtered upstream at parse time in
     # client.parse_fixtures, covered by client_test, so there is nothing to
     # exercise here at the _build_sim_inputs layer.
+
+
+class TestBuildFinishedGames:
+    def test_returns_finished_games_with_scores_only(self, engine):
+        with Session(engine) as session:
+            # Finished with scores -> usable as likelihood.
+            session.add(
+                _fixture(
+                    "F-GER-FRA",
+                    "GER",
+                    "FRA",
+                    finished=True,
+                    matchday=1,
+                    home_score=2,
+                    away_score=1,
+                )
+            )
+            # Unfinished -> excluded (no result yet).
+            session.add(_fixture("F-SCO-GER", "SCO", "GER", finished=False))
+            # Marked finished but scores absent -> excluded defensively.
+            session.add(_fixture("F-WAL-NIR", "WAL", "NIR", finished=True, matchday=2))
+            session.commit()
+
+            games = jobs._build_finished_games(session)
+
+        assert [g.home_code for g in games] == ["GER"]
+        assert games[0].away_code == "FRA"
+        assert (games[0].home_score, games[0].away_score) == (2, 1)
+        assert games[0].matchday == 1
 
 
 def _sim_result():

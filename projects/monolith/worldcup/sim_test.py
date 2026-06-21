@@ -200,3 +200,58 @@ def test_swing_identifies_own_match_as_high_impact():
     assert own_swing.p_qualify_home_win > own_swing.p_qualify_away_win
     # swings are sorted descending, so the top entry dominates the own match.
     assert res.swings[0].swing >= own_swing.swing
+
+
+def _scenario_open_group():
+    """One group of four, every team level on zero points with all six
+    round-robin fixtures still to play, so qualification is driven purely by the
+    sampled scorelines. FAV is much stronger than the three peers, which is the
+    setup the epistemic-uncertainty tests perturb.
+    """
+    states = [
+        _team("FAV", "A", pts=0, gf=0, ga=0),
+        _team("P2", "A", pts=0, gf=0, ga=0),
+        _team("P3", "A", pts=0, gf=0, ga=0),
+        _team("P4", "A", pts=0, gf=0, ga=0),
+    ]
+    fixtures = [
+        Fixture("A-FAV-P2", "A", "FAV", "P2"),
+        Fixture("A-FAV-P3", "A", "FAV", "P3"),
+        Fixture("A-FAV-P4", "A", "FAV", "P4"),
+        Fixture("A-P2-P3", "A", "P2", "P3"),
+        Fixture("A-P2-P4", "A", "P2", "P4"),
+        Fixture("A-P3-P4", "A", "P3", "P4"),
+    ]
+    elo = {"FAV": 2100.0, "P2": 1600.0, "P3": 1600.0, "P4": 1600.0}
+    return states, fixtures, elo
+
+
+def test_sigma_preserves_probability_invariants():
+    # The new uncertainty path must still produce valid probabilities: every
+    # value in [0, 1] and the two qualification routes partitioning the qualify
+    # count, exactly as the deterministic path does.
+    states, fixtures, elo = _scenario_open_group()
+    sigma = {c: 60.0 for c in elo}
+    res = simulate(states, fixtures, elo, focus="FAV", n=4000, seed=7, sigma=sigma)
+    for tp in res.per_team.values():
+        assert 0.0 <= tp.prob_qualify <= 1.0
+        assert abs(tp.prob_qualify - (tp.prob_top2 + tp.prob_third)) < 1e-9
+
+
+def test_epistemic_uncertainty_regularises_the_favourite():
+    # Injecting strength uncertainty pulls outcomes toward the coin-flip: a
+    # heavy favourite qualifies LESS often than under a point estimate (its win
+    # rate was saturating), and a weaker peer correspondingly MORE often.
+    states, fixtures, elo = _scenario_open_group()
+    point = simulate(states, fixtures, elo, focus="FAV", n=8000, seed=5)
+    wide = simulate(
+        states,
+        fixtures,
+        elo,
+        focus="FAV",
+        n=8000,
+        seed=5,
+        sigma={c: 500.0 for c in elo},
+    )
+    assert wide.per_team["FAV"].prob_top2 < point.per_team["FAV"].prob_top2
+    assert wide.per_team["P2"].prob_top2 > point.per_team["P2"].prob_top2
