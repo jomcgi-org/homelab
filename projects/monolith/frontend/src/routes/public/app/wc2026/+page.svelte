@@ -49,6 +49,65 @@
   }
 
   const fmtGd = (gd) => (gd > 0 ? `+${gd}` : `${gd}`);
+
+  const pctNum = (x) => Math.round((x ?? 0) * 100);
+
+  // The current (unconditional) qualify chance. The swing cards plot each
+  // outcome relative to this "Now" point.
+  const baselinePct = $derived(pctNum(q.prob_qualify));
+
+  // Hero outcome split. Top-two and best-third are the two qualifying routes;
+  // the remainder is elimination. Integer percents that always sum to 100.
+  const top2Pct = $derived(pctNum(q.prob_top2));
+  const thirdPct = $derived(pctNum(q.prob_third));
+  const elimPct = $derived(Math.max(0, 100 - top2Pct - thirdPct));
+
+  // Shared number-line domain for the swing cards: a tidy lower bound (rounded
+  // down to a 10) so every match sits on the same comparable scale, with 100%
+  // as the upper bound.
+  const _allCond = $derived(
+    swings.flatMap((m) => [
+      pctNum(m.p_qualify_home_win),
+      pctNum(m.p_qualify_draw),
+      pctNum(m.p_qualify_away_win),
+    ]),
+  );
+  const lineLo = $derived(
+    swings.length
+      ? Math.max(0, Math.floor(Math.min(baselinePct, ..._allCond) / 10) * 10)
+      : 0,
+  );
+  const linePos = (x) => {
+    const span = 100 - lineLo;
+    return span <= 0 ? 0 : ((pctNum(x) - lineLo) / span) * 100;
+  };
+
+  // Swing magnitude bar, scaled to the biggest mover so the cards are
+  // comparable at a glance.
+  const maxSwing = $derived(
+    swings.length ? Math.max(...swings.map((m) => m.swing ?? 0)) : 1,
+  );
+  const swingBar = (s) => (maxSwing > 0 ? ((s ?? 0) / maxSwing) * 100 : 0);
+
+  // Each outcome's shift versus the current qualify chance, in points.
+  const delta = (x) => pctNum(x) - baselinePct;
+  const UP_TRI = "▲";
+  const DOWN_TRI = "▼";
+  const deltaArrow = (x) => {
+    const d = delta(x);
+    return d > 0 ? UP_TRI : d < 0 ? DOWN_TRI : "";
+  };
+  const deltaAbs = (x) => Math.abs(delta(x));
+  const deltaClass = (x) => {
+    const d = delta(x);
+    return d > 0 ? "up" : d < 0 ? "down" : "flat";
+  };
+  const bestCond = (m) =>
+    Math.max(
+      pctNum(m.p_qualify_home_win),
+      pctNum(m.p_qualify_draw),
+      pctNum(m.p_qualify_away_win),
+    );
 </script>
 
 <svelte:head>
@@ -90,19 +149,47 @@
         {headline}
       </p>
 
-      <div class="routes">
-        <div class="route">
-          <span class="route-num">{pct(q.prob_top2)}</span>
-          <span class="route-text">As group winner or runner-up</span>
-        </div>
-        <div class="route">
-          <span class="route-num">{pct(q.prob_third)}</span>
-          <span class="route-text">As one of the 8 best third-placed teams</span>
-        </div>
+      <div
+        class="outcome-bar"
+        role="img"
+        aria-label="Top-two finish {top2Pct}%, best third {thirdPct}%, eliminated {elimPct}%"
+      >
+        {#if top2Pct > 0}
+          <div class="seg seg-top2" style="width:{top2Pct}%">
+            <span class="seg-num">{top2Pct}%</span>
+          </div>
+        {/if}
+        {#if thirdPct > 0}
+          <div class="seg seg-third" style="width:{thirdPct}%">
+            <span class="seg-num">{thirdPct}%</span>
+            <span class="seg-label">Best third-placed route</span>
+          </div>
+        {/if}
+        {#if elimPct > 0}
+          <div class="seg seg-elim" style="width:{elimPct}%">
+            <span class="seg-num">{elimPct}%</span>
+          </div>
+        {/if}
       </div>
+
+      <ul class="outcome-legend">
+        <li>
+          <span class="key key-top2"></span>Top-two finish
+          <strong>{top2Pct}%</strong>
+        </li>
+        <li>
+          <span class="key key-third"></span>Best third
+          <strong>{thirdPct}%</strong>
+        </li>
+        <li>
+          <span class="key key-elim"></span>Eliminated
+          <strong>{elimPct}%</strong>
+        </li>
+      </ul>
+
       <p class="route-note">
-        The top-two route is the long shot: most of Scotland's path runs through
-        the best third-placed places, not a podium finish in the group.
+        Almost all of Scotland's path runs through the best third-placed places,
+        the group top-two route is the long shot.
       </p>
     </section>
 
@@ -163,33 +250,97 @@
         <p class="empty">No remaining matches to model right now.</p>
       {:else}
         <ul class="swings">
-          {#each swings as m (m.match_id)}
+          {#each swings as m, i (m.match_id)}
+            {@const ph = linePos(m.p_qualify_home_win)}
+            {@const pd = linePos(m.p_qualify_draw)}
+            {@const pa = linePos(m.p_qualify_away_win)}
+            {@const lo = Math.min(ph, pd, pa)}
+            {@const hi = Math.max(ph, pd, pa)}
+            {@const best = bestCond(m)}
             <li class="swing">
               <div class="swing-head">
                 <span class="fixture">
+                  <span class="rank">{String(i + 1).padStart(2, "0")}</span>
                   {m.home_code} <span class="v">v</span> {m.away_code}
                   {#if m.is_own_match}
                     <span class="badge own">Scotland</span>
                   {/if}
                   <span class="badge grp">Group {m.group_name}</span>
                 </span>
-                <span class="swing-mag" title="Swing magnitude">
-                  &plusmn;{points(m.swing)} pts
+                <span
+                  class="swing-mag"
+                  title="How much this match moves Scotland's chance"
+                >
+                  <span class="swing-track">
+                    <span
+                      class="swing-fill"
+                      style="width:{swingBar(m.swing)}%"
+                    ></span>
+                  </span>
+                  &plusmn;{points(m.swing)}
                 </span>
               </div>
               <p class="kickoff">{fmtKick(m.kickoff)}</p>
+
+              <div class="line">
+                <span class="line-track">
+                  <span
+                    class="line-span"
+                    style="left:{lo}%; right:{100 - hi}%"
+                  ></span>
+                  <span class="dot dot-lo" style="left:{lo}%"></span>
+                  <span class="dot dot-hi" style="left:{hi}%"></span>
+                  <span class="now" style="left:{linePos(q.prob_qualify)}%">
+                    <span class="now-tick"></span>
+                    <span class="now-label">Now</span>
+                  </span>
+                </span>
+                <span class="line-lo">{lineLo}%</span>
+                <span class="line-hi">100%</span>
+              </div>
+
               <div class="outcomes">
-                <span class="out">
+                <span
+                  class="out {deltaClass(m.p_qualify_home_win)}"
+                  class:best={pctNum(m.p_qualify_home_win) === best}
+                >
                   <span class="out-label">If {m.home_code} win</span>
                   <span class="out-num">{pct(m.p_qualify_home_win)}</span>
+                  {#if deltaAbs(m.p_qualify_home_win) > 0}
+                    <span class="out-delta"
+                      >{deltaArrow(m.p_qualify_home_win)}{deltaAbs(
+                        m.p_qualify_home_win,
+                      )}</span
+                    >
+                  {/if}
                 </span>
-                <span class="out">
+                <span
+                  class="out {deltaClass(m.p_qualify_draw)}"
+                  class:best={pctNum(m.p_qualify_draw) === best}
+                >
                   <span class="out-label">Draw</span>
                   <span class="out-num">{pct(m.p_qualify_draw)}</span>
+                  {#if deltaAbs(m.p_qualify_draw) > 0}
+                    <span class="out-delta"
+                      >{deltaArrow(m.p_qualify_draw)}{deltaAbs(
+                        m.p_qualify_draw,
+                      )}</span
+                    >
+                  {/if}
                 </span>
-                <span class="out">
+                <span
+                  class="out {deltaClass(m.p_qualify_away_win)}"
+                  class:best={pctNum(m.p_qualify_away_win) === best}
+                >
                   <span class="out-label">If {m.away_code} win</span>
                   <span class="out-num">{pct(m.p_qualify_away_win)}</span>
+                  {#if deltaAbs(m.p_qualify_away_win) > 0}
+                    <span class="out-delta"
+                      >{deltaArrow(m.p_qualify_away_win)}{deltaAbs(
+                        m.p_qualify_away_win,
+                      )}</span
+                    >
+                  {/if}
                 </span>
               </div>
             </li>
@@ -385,36 +536,102 @@
     font-size: 56px;
   }
 
-  .routes {
+  /* Outcome bar: top-two / best-third / eliminated, widths sum to 100. */
+  .outcome-bar {
     display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 14px;
-  }
-
-  .route {
-    flex: 1 1 200px;
-    max-width: 280px;
+    margin-top: 16px;
+    height: 40px;
     border: 2px solid var(--ink);
-    padding: 10px 12px;
-    text-align: left;
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
+    overflow: hidden;
   }
 
-  .route-num {
+  .seg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
     font-family: var(--mono);
     font-weight: 700;
-    font-size: 22px;
-    white-space: nowrap;
   }
 
-  .route-text {
-    font-size: 13px;
-    line-height: 1.25;
+  .seg + .seg {
+    border-left: 2px solid var(--ink);
+  }
+
+  .seg-top2 {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .seg-third {
+    background: var(--accent);
+    color: var(--ink);
+  }
+
+  .seg-elim {
+    background: var(--rule);
     color: var(--ink-3);
+  }
+
+  .seg-num {
+    font-size: 13px;
+  }
+
+  .seg-label {
+    display: none;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .outcome-legend {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 16px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  .outcome-legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .outcome-legend strong {
+    color: var(--ink);
+  }
+
+  .key {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid var(--ink);
+    flex-shrink: 0;
+  }
+
+  .key-top2 {
+    background: var(--ink);
+  }
+
+  .key-third {
+    background: var(--accent);
+  }
+
+  .key-elim {
+    background: var(--rule);
   }
 
   .route-note {
@@ -558,7 +775,15 @@
     font-weight: 600;
   }
 
+  .rank {
+    color: var(--ink-3);
+    font-weight: 700;
+  }
+
   .swing-mag {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 700;
@@ -566,12 +791,110 @@
     white-space: nowrap;
   }
 
+  .swing-track {
+    width: 46px;
+    height: 8px;
+    border: 1.5px solid var(--ink);
+    background: var(--paper);
+  }
+
+  .swing-fill {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+
   .kickoff {
-    margin: 4px 0 10px;
+    margin: 4px 0 6px;
     font-family: var(--mono);
     font-size: 11px;
     letter-spacing: 0.02em;
     color: var(--ink-3);
+  }
+
+  /* Number line: each outcome's qualify chance on a shared axis, "Now" the
+     current baseline, with the worst (orange) and best (yellow) outcomes
+     marking the range. */
+  .line {
+    position: relative;
+    padding: 20px 8px 16px;
+  }
+
+  .line-track {
+    position: relative;
+    height: 4px;
+    background: var(--rule);
+  }
+
+  .line-span {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: var(--ink);
+  }
+
+  .dot {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--ink);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .dot-lo {
+    background: var(--coral);
+  }
+
+  .dot-hi {
+    background: var(--accent);
+  }
+
+  .now {
+    position: absolute;
+    top: 50%;
+  }
+
+  .now-tick {
+    position: absolute;
+    left: 0;
+    top: -8px;
+    width: 2px;
+    height: 16px;
+    background: var(--ink-3);
+    transform: translateX(-50%);
+  }
+
+  .now-label {
+    position: absolute;
+    left: 0;
+    bottom: 10px;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+
+  .line-lo,
+  .line-hi {
+    position: absolute;
+    bottom: 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+  }
+
+  .line-lo {
+    left: 0;
+  }
+
+  .line-hi {
+    right: 0;
   }
 
   .outcomes {
@@ -600,6 +923,26 @@
     font-family: var(--mono);
     font-weight: 700;
     font-size: 18px;
+  }
+
+  .out.best {
+    background: var(--accent);
+    border-color: var(--ink);
+  }
+
+  .out-delta {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .out.up .out-delta {
+    color: var(--ink);
+  }
+
+  .out.down .out-delta {
+    color: var(--coral);
   }
 
   .badge {
@@ -772,6 +1115,12 @@
     }
     .headline-figure.verdict {
       font-size: 72px;
+    }
+    .outcome-bar {
+      height: 46px;
+    }
+    .seg-label {
+      display: inline;
     }
     .block {
       padding: 20px 24px;
