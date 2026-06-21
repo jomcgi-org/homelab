@@ -66,6 +66,12 @@ FORBIDDEN_MODULES = [
     "cluster.kubernetes",
     "cluster.mcp",
     "cluster.summarize",
+    # Worldcup write/heavy path: the scheduled poll job, the odds HTTP client,
+    # and the Monte Carlo sim. The public binary mounts only worldcup.router
+    # (read-only summary); these must never enter its closure (scheduler/httpx).
+    "worldcup.jobs",
+    "worldcup.client",
+    "worldcup.sim",
 ]
 
 # Snippet run in the child: import the public app, then dump every loaded module
