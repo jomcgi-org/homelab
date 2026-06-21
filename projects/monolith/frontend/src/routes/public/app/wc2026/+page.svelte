@@ -63,6 +63,19 @@
     pickerQuery = "";
   }
 
+  // Each option's qualification status drives its dropdown affordance: a green
+  // row for a team that has clinched a Round-of-32 place, a struck-through row
+  // for one that is out. Undefined for teams still in contention (no styling).
+  const statusOf = (code) => data.qualification?.[code]?.status;
+
+  // Focus the search box the instant the panel opens, so a single click on the
+  // country lets you start typing right away. The input is freshly mounted on
+  // each open, so a use: action fires every time; an action keeps the a11y
+  // linter quiet where the bare autofocus attribute would warn.
+  function focusOnOpen(node) {
+    node.focus();
+  }
+
   // Probabilities arrive as raw 0..1 floats; the page is the only place they
   // become percentages.
   const pct = (x) => `${Math.round((x ?? 0) * 100)}%`;
@@ -221,6 +234,7 @@
                 type="text"
                 placeholder="Type a country..."
                 aria-label="Search countries"
+                use:focusOnOpen
                 bind:value={pickerQuery}
                 onkeydown={(e) => {
                   if (e.key === "Escape") pickerOpen = false;
@@ -235,6 +249,13 @@
                     type="button"
                     class="picker-opt"
                     class:sel={t.fifa_code === selectedCode}
+                    class:qualified={statusOf(t.fifa_code) === "qualified"}
+                    class:eliminated={statusOf(t.fifa_code) === "eliminated"}
+                    title={statusOf(t.fifa_code) === "qualified"
+                      ? "Qualified"
+                      : statusOf(t.fifa_code) === "eliminated"
+                        ? "Eliminated"
+                        : null}
                     onclick={() => choose(t.fifa_code)}
                   >
                     {#if t.flag_url}
@@ -703,6 +724,22 @@
     border: none;
     border-bottom: 1px solid var(--rule);
     cursor: pointer;
+  }
+  /* Qualified: a calm green wash (overridden by hover/selection below, which
+     share specificity, so source order lets those win when active). Eliminated:
+     the name is struck through in coral and muted, an affordance that survives
+     hover and selection since it styles the text, not the row background. */
+  .picker-opt.qualified {
+    background: color-mix(in srgb, var(--green) 32%, var(--paper));
+  }
+  .picker-opt.qualified .picker-opt-name {
+    font-weight: 700;
+  }
+  .picker-opt.eliminated .picker-opt-name {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+    text-decoration-color: var(--coral);
+    color: var(--ink-3);
   }
   .picker-opt:hover {
     background: var(--blue);
