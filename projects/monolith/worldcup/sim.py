@@ -60,9 +60,24 @@ class SimResult:
     n: int
 
 
-def simulate(states, fixtures, elo, focus, n=20000, seed=None) -> SimResult:
+def simulate(states, fixtures, elo, focus, n=20000, seed=None, sigma=None) -> SimResult:
+    """Monte Carlo over the remaining fixtures.
+
+    ``elo`` maps fifa_code -> rating (the posterior mean strength). ``sigma`` is
+    optional: when None the ratings are used as exact point estimates (the
+    original deterministic-strength behaviour, byte-identical rng stream). When a
+    fifa_code -> std map is given, each team's true strength is treated as
+    uncertain: once per trial we draw a single rating ~ Normal(elo[code],
+    sigma[code]) and reuse it for ALL of that team's remaining fixtures in that
+    trial. The draw is per team per trial (NOT per match) because a team has one
+    unknown true strength within a single simulated tournament; drawing per match
+    would average the epistemic uncertainty straight back out.
+    """
     rng = random.Random(seed)
     by_code = {s.fifa_code: s for s in states}
+    # Teams whose strength is actually sampled: those in a remaining fixture.
+    # Precomputed so the per-trial draw loop stays tight.
+    fixture_codes = {c for f in fixtures for c in (f.home_code, f.away_code)}
     qualify_count = {s.fifa_code: 0 for s in states}
     top2_count = {s.fifa_code: 0 for s in states}
     third_count = {s.fifa_code: 0 for s in states}
@@ -79,9 +94,16 @@ def simulate(states, fixtures, elo, focus, n=20000, seed=None) -> SimResult:
 
     for _ in range(n):
         acc = {c: [s.pts, s.gf, s.ga] for c, s in by_code.items()}  # [pts, gf, ga]
+        # One strength draw per team per trial (epistemic uncertainty). With no
+        # sigma the effective rating is just the point estimate, so the rng is
+        # never touched and the deterministic path is byte-identical to before.
+        if sigma:
+            strength = {c: rng.gauss(elo[c], sigma.get(c, 0.0)) for c in fixture_codes}
+        else:
+            strength = elo
         outcomes = {}
         for f in fixtures:
-            h, a = sample_scoreline(elo[f.home_code], elo[f.away_code], rng)
+            h, a = sample_scoreline(strength[f.home_code], strength[f.away_code], rng)
             acc[f.home_code][1] += h
             acc[f.home_code][2] += a
             acc[f.away_code][1] += a

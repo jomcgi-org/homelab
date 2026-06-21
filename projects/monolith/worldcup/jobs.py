@@ -17,7 +17,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from worldcup import client, ratings, sim
+from worldcup import client, ratings, sim, strength
 from worldcup.models import Fixture, Qualification, Standing, SwingMatch
 
 logger = logging.getLogger("monolith.worldcup")
@@ -83,6 +83,36 @@ def _build_sim_inputs(session) -> tuple[list[sim.TeamState], list[sim.Fixture]]:
             )
         )
     return states, fixtures
+
+
+def _build_finished_games(session) -> list["strength.FinishedGame"]:
+    """Read finished group fixtures as the likelihood for the Elo posterior.
+
+    Only fixtures that are finished with both FIFA codes and both scores present
+    are usable; anything else is skipped. These feed strength.posterior_strengths
+    to roll the frozen snapshot forward over results already played.
+    """
+    from sqlmodel import select
+
+    games: list[strength.FinishedGame] = []
+    for f in session.exec(select(Fixture).where(Fixture.finished == True)).all():  # noqa: E712 - SQLAlchemy needs == not is
+        if (
+            f.home_code is None
+            or f.away_code is None
+            or f.home_score is None
+            or f.away_score is None
+        ):
+            continue
+        games.append(
+            strength.FinishedGame(
+                matchday=f.matchday,
+                home_code=f.home_code,
+                away_code=f.away_code,
+                home_score=f.home_score,
+                away_score=f.away_score,
+            )
+        )
+    return games
 
 
 def _persist_sim(session, result: sim.SimResult, n: int) -> None:
@@ -172,6 +202,7 @@ def _simulate_and_store() -> None:
 
     with Session(get_engine()) as session:
         states, fixtures = _build_sim_inputs(session)
+        finished = _build_finished_games(session)
         elo = ratings.load_elo()
 
         needed = {f.home_code for f in fixtures} | {f.away_code for f in fixtures}
@@ -184,13 +215,21 @@ def _simulate_and_store() -> None:
             )
             return
 
+        # Roll the frozen snapshot forward over results already played to get a
+        # per-team Elo posterior (mean rating + sigma). The means feed the sim as
+        # strengths and the sigmas inject epistemic uncertainty per trial.
+        strengths = strength.posterior_strengths(elo, finished)
+        posterior_elo = {c: ts.rating for c, ts in strengths.items()}
+        posterior_sigma = {c: ts.sigma for c, ts in strengths.items()}
+
         result = sim.simulate(
             states,
             fixtures,
-            elo,
+            posterior_elo,
             focus=FOCUS_CODE,
             n=int(os.environ.get("WORLDCUP_SIM_N", "500000")),
             seed=None,
+            sigma=posterior_sigma,
         )
         _persist_sim(session, result, result.n)
 
