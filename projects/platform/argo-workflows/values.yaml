@@ -1,0 +1,100 @@
+# Argo Workflows configuration for the homelab.
+#
+# Purpose: an off-pod execution engine for the monolith's batch jobs (worldcup
+# sim, KG jobs) so the API pod stays lean. The monolith stays the orchestrator
+# (scheduling, retries, dedup); Argo is a "dumb" stateless executor that runs a
+# container to completion and reports status. See the jobs Typer image
+# (projects/monolith :jobs_image) and the follow-up Hera submission wiring.
+#
+# Scope: NAMESPACE-SCOPED. singleNamespace=true makes the controller and server
+# run with --namespaced and creates Roles (not ClusterRoles) bound only in the
+# release namespace 'argo'. Workflow pods also run in 'argo'.
+#
+# Why a dedicated 'argo' namespace and NOT the monolith namespace: the monolith
+# namespace is Linkerd-meshed (linkerd.io/inject: enabled). A meshed pod's
+# linkerd-proxy never exits when the main container completes, so a Workflow pod
+# would never reach Completed and the controller would think it is stuck forever
+# (the classic mesh + Job problem). The 'argo' namespace is intentionally NOT
+# injected, so Workflow pods terminate cleanly with zero sidecar-kill hacks.
+# monolith-pg has no AuthorizationPolicy/Server in the monolith namespace, so
+# unmeshed jobs reach it over plaintext in-cluster without being denied.
+#
+# Values are wrapped under the `argo-workflows:` key because the upstream
+# argoproj/argo-workflows chart is pulled in as a subchart dependency (Chart.yaml).
+argo-workflows:
+  # Namespace-scoped install: Roles instead of ClusterRoles, controller+server
+  # restricted to the 'argo' namespace.
+  singleNamespace: true
+
+  # Do NOT create the cluster-wide aggregate view/edit/admin ClusterRoles: this
+  # install is fully namespace-scoped, so it should own zero cluster-scoped RBAC.
+  createAggregateRoles: false
+
+  # Install and keep the Workflow/WorkflowTemplate/CronWorkflow CRDs as plain,
+  # declarative manifests that ArgoCD syncs directly.
+  #   full: false  -> render the MINIMAL CRDs inline (x-kubernetes-preserve-
+  #                   unknown-fields instead of full OpenAPI schemas). The
+  #                   default (full: true) installs CRDs via a pre-install hook
+  #                   Job that DOWNLOADS CRD YAML from GitHub and pulls a kubectl
+  #                   image at sync time, which is non-hermetic and ArgoCD-hostile.
+  # The workflows CRD still exceeds the 256 KiB client-side apply cap, so the
+  # Application uses ServerSideApply=true.
+  crds:
+    install: true
+    keep: true
+    full: false
+
+  # Service account that Workflow pods run as. The chart wires the namespaced
+  # Role/RoleBinding it needs to report pod/workflow status back to the controller.
+  workflow:
+    serviceAccount:
+      create: true
+      name: argo-workflow
+
+  controller:
+    # Single replica is plenty for the homelab's job volume.
+    replicas: 1
+    # ClusterWorkflowTemplates are cluster-scoped; a namespace-scoped controller
+    # must not manage them (would need cluster RBAC + the cluster-scoped CRD).
+    clusterWorkflowTemplates:
+      enabled: false
+    # Pre-populate the Kyverno OTEL mutation annotation to match the cluster
+    # webhook (prevents ArgoCD drift, see the argocd-otel-outofsync saga) and
+    # expose the controller's :9090 telemetry endpoint for SigNoz autodiscovery.
+    podAnnotations:
+      otel.injected-by: kyverno/inject-otel-env-vars
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9090"
+      prometheus.io/path: "/metrics"
+    # Cluster convention: CPU requests but NO CPU limit (avoid throttling);
+    # memory request == limit.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+
+  server:
+    enabled: true
+    # 'server' auth mode uses the argo-server service account, so the UI is
+    # usable without per-request bearer tokens. The server is ClusterIP-only
+    # (no ingress wired in this PR); reach it via `kubectl -n argo port-forward`.
+    # Wiring it behind Cloudflare Access is a small follow-up.
+    authModes:
+      - server
+    # Namespace-scoped: the UI must not try to list/manage cluster-scoped
+    # templates (no cluster RBAC granted).
+    clusterWorkflowTemplates:
+      enabled: false
+    podAnnotations:
+      otel.injected-by: kyverno/inject-otel-env-vars
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9090"
+      prometheus.io/path: "/metrics"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
