@@ -181,15 +181,21 @@
   // Window rows for the selected walk's card, grouped by UK-local day. Windows
   // come from the per-walk detail fetch (selectedDetail), not the light list.
   // We show the day the user filtered to (the parent's selectedDay chip) when
-  // this walk has windows on it, so clicking a marker that survived a
-  // "Saturday" filter shows Saturday's rows. Otherwise we fall back to the
-  // earliest day with a future window.
+  // this walk is doable on it, so clicking a marker that survived a "Saturday"
+  // filter shows Saturday's rows. Otherwise we fall back to the earliest DOABLE
+  // day.
   let cardDays = $derived(selectedDetail ? groupWindowsByDay(selectedDetail) : {});
   let cardDayKeys = $derived(Object.keys(cardDays).sort());
+  // The days the server judged DOABLE for this walk's length (duration-aware: a
+  // long-enough run of good hours, see router._doable_days). The card must honour
+  // it: otherwise an 8 h walk with 3 good evening hours would still read "Next
+  // viable: today". We only ever land on a day that is both doable AND present in
+  // cardDays, so there is always an hourly table to show beneath the label.
+  let doableDays = $derived(new Set(selected?.viable_days ?? []));
   let cardDayKey = $derived(
-    selectedDay && cardDays[selectedDay]?.length
+    selectedDay && cardDays[selectedDay]?.length && doableDays.has(selectedDay)
       ? selectedDay
-      : (cardDayKeys[0] ?? null),
+      : (cardDayKeys.find((d) => doableDays.has(d)) ?? null),
   );
   let cardRows = $derived(
     cardDayKey ? cardDays[cardDayKey].map(windowFields) : [],
@@ -378,6 +384,12 @@
             {/each}
           </tbody>
         </table>
+      {:else if cardDayKeys.length}
+        <p class="card-empty">
+          Not enough good daylight hours for this {fmtDuration(
+            selected.duration_h,
+          )} walk on any day in the forecast.
+        </p>
       {:else}
         <p class="card-empty">No viable weather windows in the forecast.</p>
       {/if}
