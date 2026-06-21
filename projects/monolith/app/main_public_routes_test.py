@@ -75,6 +75,9 @@ ALLOWED_PREFIXES = (
     "/api/hikes",
     "/api/dr-jobs",
     "/api/trips",
+    # SSR-only Scotland WC2026 qualification summary (kept off the public
+    # HTTPRoute; reached only via the in-pod SSR fetch, never directly).
+    "/api/wc2026",
     "/api/knowledge/public",
     "/api/home/observability",
     # Internal-only public chat API. It is mounted on the public binary but is
