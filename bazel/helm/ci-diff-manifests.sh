@@ -27,8 +27,15 @@ main() {
 
 	# ── Phase 1: Setup tools ──────────────────────────────────────────
 	echo "==> Building tools..."
-	bazel build @multitool//tools/helm @multitool//tools/dyff @multitool//tools/gh 2>&1 | tail -1
-	BAZEL_BIN=$(bazel info bazel-bin 2>/dev/null)
+	# --config=ci is REQUIRED: it disables the shared ~/.cache disk cache
+	# (.bazelrc `build:ci --disk_cache=`). BuildBuddy's workflow pool is
+	# mixed-arch, so a plain build pulls a wrong-arch helm/dyff/gh out of that
+	# cross-arch-contaminated disk cache and it dies with "cannot execute binary
+	# file: Exec format error" (why the manifest comment never posted). Read the
+	# output path from the bazel-bin convenience symlink, NOT `bazel info
+	# bazel-bin --config=ci` (that fails to resolve @@buildbuddy_toolchain).
+	bazel build @multitool//tools/helm @multitool//tools/dyff @multitool//tools/gh --config=ci 2>&1 | tail -1
+	BAZEL_BIN="$(git rev-parse --show-toplevel)/bazel-bin"
 
 	HELM=$(find -L "$BAZEL_BIN/external" -name "helm" -type f -perm /111 2>/dev/null | head -1)
 	DYFF=$(find -L "$BAZEL_BIN/external" -name "dyff" -type f -perm /111 2>/dev/null | head -1)
@@ -240,6 +247,24 @@ main() {
 	CHANGED_COUNT=0
 	TOTAL_COUNT=0
 
+	# Blank out helm-template-nondeterministic fields so the diff shows only real
+	# config changes. Charts like linkerd mint webhook TLS certs at TEMPLATE time
+	# via genSignedCert/genCA, so every render produces different cert material
+	# and the dependent checksum/* annotations churn too; these renders are never
+	# applied (the operator regenerates certs at deploy). Redacting also keeps
+	# key-looking material out of the public PR comment. GNU sed (CI is Linux).
+	# Assumes single-line base64 values (what `genSignedCert | b64enc` emits); a
+	# YAML block-scalar cert would leak continuation lines, but no chart here uses
+	# that form.
+	redact_volatile() {
+		local f="$1"
+		[ -f "$f" ] || return 0
+		sed -E -i \
+			-e 's#^([[:space:]]*(tls\.crt|tls\.key|ca\.crt|caBundle):[[:space:]]*).+#\1<redacted>#' \
+			-e 's#^([[:space:]]*"?checksum/[A-Za-z0-9._-]+"?:[[:space:]]*).+#\1<redacted>#' \
+			"$f"
+	}
+
 	for app_spec in "${APPS[@]}"; do
 		IFS='|' read -r release_name _ _ _ <<<"$app_spec"
 
@@ -250,6 +275,10 @@ main() {
 		if [ ! -f "$main_file" ] && [ ! -f "$pr_file" ]; then
 			continue
 		fi
+
+		# Normalize volatile fields before any diff or excerpt.
+		redact_volatile "$main_file"
+		redact_volatile "$pr_file"
 
 		TOTAL_COUNT=$((TOTAL_COUNT + 1))
 
@@ -319,8 +348,14 @@ No manifest changes detected across $TOTAL_COUNT application(s)."
 ${DIFF_BODY}"
 	fi
 
-	# Post or update PR comment
+	# Post or update PR comment. BUILDBUDDY_PULL_REQUEST_NUMBER is unset in this
+	# action's env (the other reason the comment never posted), so fall back to
+	# resolving the open PR from the checked-out branch via gh.
 	PR_NUMBER="${BUILDBUDDY_PULL_REQUEST_NUMBER:-}"
+	if [ -z "$PR_NUMBER" ] && [ -n "$GH_TOKEN" ]; then
+		PR_NUMBER=$("$GH" pr list --head "$(git rev-parse --abbrev-ref HEAD)" \
+			--state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+	fi
 	if [ -z "$PR_NUMBER" ]; then
 		echo ""
 		echo "No PR number found (not a PR build?). Printing diff to stdout:"
