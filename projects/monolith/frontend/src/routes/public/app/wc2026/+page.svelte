@@ -62,6 +62,10 @@
   const thirdPct = $derived(pctNum(q.prob_third));
   const elimPct = $derived(Math.max(0, 100 - top2Pct - thirdPct));
 
+  // Thousands-formatted simulation count (pinned locale for a deterministic
+  // SSR render / screenshot).
+  const nSims = $derived(q.n_sims ? q.n_sims.toLocaleString("en-US") : "many");
+
   // Shared number-line domain for the swing cards: a tidy lower bound (rounded
   // down to a 10) so every match sits on the same comparable scale, with 100%
   // as the upper bound.
@@ -192,6 +196,46 @@
         the group top-two route is the long shot.
       </p>
     </section>
+
+    <!-- HOW IT WORKS (expandable, directly under the headline) -->
+    <details class="explainer">
+      <summary class="explainer-summary">
+        <span>How does this work?</span>
+        <span class="explainer-toggle" aria-hidden="true"></span>
+      </summary>
+      <div class="explainer-body">
+        <p>
+          It's a Monte Carlo simulation. Every remaining group game is played
+          out {nSims} times, and Scotland's chance is the share of those runs
+          where they reach the Round of 32.
+        </p>
+        <ol class="explainer-steps">
+          <li>
+            <strong>Score each match from Elo.</strong> Every team has an Elo
+            rating. For an unplayed match, the rating gap sets two Poisson
+            scoring rates, one per side, and a scoreline is drawn from them, so
+            the stronger team scores more and evenly matched sides draw about a
+            quarter of the time.
+          </li>
+          <li>
+            <strong>Rank by the real rules.</strong> Each simulated tournament
+            applies the actual qualification rules: top two of every group, plus
+            the eight best third-placed teams, ordered by points, then goal
+            difference, then goals scored.
+          </li>
+          <li>
+            <strong>Aggregate over the runs.</strong> Across all {nSims} runs,
+            the qualify chance, the top-two versus best-third split, and each
+            match's swing are all just counts from the same set of simulations.
+          </li>
+        </ol>
+        <p class="explainer-fine">
+          Elo ratings are frozen at kickoff, matches are independent, and the
+          two lowest FIFA tiebreakers (disciplinary record and world ranking)
+          aren't modelled, they're sampled as coin-flips.
+        </p>
+      </div>
+    </details>
 
     <!-- GROUP TABLE -->
     <section class="block">
@@ -348,58 +392,6 @@
         </ul>
       {/if}
     </section>
-
-    <!-- HOW IT WORKS (expandable) -->
-    <details class="explainer">
-      <summary class="explainer-summary">
-        <span>How does this work?</span>
-        <span class="explainer-toggle" aria-hidden="true"></span>
-      </summary>
-      <div class="explainer-body">
-        <p>
-          The percentage is not a bookmaker's price or a gut feel. It comes from
-          replaying the rest of the group stage thousands of times and counting
-          how often Scotland comes through.
-        </p>
-        <ol class="explainer-steps">
-          <li>
-            <strong>Rate every team.</strong> Each side carries an Elo rating
-            (Scotland's is mid-table), so a bigger gap means a bigger favourite.
-            Ratings are fixed at the tournament's start.
-          </li>
-          <li>
-            <strong>Play out each remaining match.</strong> For every game still
-            to come, the simulation rolls a realistic scoreline, the stronger
-            team more likely to score more. Evenly matched sides draw about a
-            quarter of the time, just like real football.
-          </li>
-          <li>
-            <strong>Apply the World Cup rules.</strong> The top two of every
-            group go through, plus the eight best third-placed teams, ranked by
-            points, then goal difference, then goals scored. Scotland's likeliest
-            route runs through those best-third places.
-          </li>
-          <li>
-            <strong>Do it 20,000 times.</strong> Each run gives a different set
-            of results. Scotland's chance is simply how many of those runs end
-            with them in the Round of 32.
-          </li>
-          <li>
-            <strong>Find what matters.</strong> "Matches that could change it"
-            compares Scotland's chance across each possible result of every
-            remaining game, then ranks them by how far the needle moves. That is
-            how games in other groups show up here: they decide who Scotland is
-            racing for a third-place spot.
-          </li>
-        </ol>
-        <p class="explainer-fine">
-          It is a model, not a crystal ball: matches are treated as independent,
-          ratings do not move during the tournament, and the last two FIFA
-          tiebreakers (disciplinary record and world ranking) are left as
-          coin-flips. The numbers shift as real results land.
-        </p>
-      </div>
-    </details>
 
     <!-- FOOTER -->
     <footer class="foot">
