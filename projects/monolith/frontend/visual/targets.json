@@ -6,6 +6,7 @@
   "pages": [
     { "id": "home", "path": "/" },
     { "id": "dr-jobs", "path": "/app/dr-jobs" },
+    { "id": "wc2026", "path": "/app/wc2026" },
     { "id": "hikes", "path": "/app/hikes", "map": true },
     { "id": "ships", "path": "/app/ships", "map": true },
     { "id": "stars", "path": "/app/stars", "map": true },
