@@ -59,7 +59,7 @@
   .docs-hero h1 {
     font-family: var(--serif);
     font-weight: 400;
-    font-size: 3rem;
+    font-size: 3em;
     letter-spacing: -0.02em;
     line-height: 1;
     margin: 6px 0 14px;
@@ -67,7 +67,7 @@
 
   .lede {
     font-family: var(--sans);
-    font-size: 1.05rem;
+    font-size: 1.05em;
     line-height: 1.6;
     color: var(--ink-2);
     max-width: 64ch;
@@ -79,7 +79,7 @@
 
   .ov-group h2 {
     font-family: var(--mono);
-    font-size: 0.95rem;
+    font-size: 0.95em;
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -101,7 +101,7 @@
   .ov-card {
     display: block;
     font-family: var(--mono);
-    font-size: 0.85rem;
+    font-size: 0.85em;
     font-weight: 600;
     color: var(--ink);
     text-decoration: none;
@@ -123,7 +123,7 @@
 
   .ov-note {
     font-family: var(--mono);
-    font-size: 0.85rem;
+    font-size: 0.85em;
     margin: 0 0 14px;
   }
 
@@ -156,14 +156,14 @@
 
   .ov-cat-name {
     font-family: var(--mono);
-    font-size: 0.82rem;
+    font-size: 0.82em;
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: capitalize;
   }
 
   .ov-cat-count {
-    font-size: 0.78rem;
+    font-size: 0.78em;
     font-weight: 700;
     color: var(--ink);
     background: var(--accent);
