@@ -26,6 +26,7 @@ DOMAINS = {
     "home",
     "scheduler",
     "agent",
+    "worldcup",
 }
 
 # Documented exceptions only, as (importing_domain, imported_module). Keep this

@@ -19,6 +19,7 @@ import scheduler
 import ships
 import stars
 import trips
+import worldcup
 from home.observability.rollup import prime_snapshots
 
 configure_logging()
@@ -72,6 +73,7 @@ async def lifespan(app: FastAPI):
         hikes.on_startup_jobs(session)
         stars.on_startup_jobs(session)
         dr_jobs.on_startup_jobs(session)
+        worldcup.on_startup_jobs(session)
         knowledge.on_startup_jobs(session)
 
         from home.observability import rollup as observability_rollup
@@ -213,6 +215,7 @@ hikes.register(app)
 stars.register(app)
 trips.register(app)
 dr_jobs.register(app)
+worldcup.register(app)
 app.mount("/mcp", _mcp_app)
 
 
