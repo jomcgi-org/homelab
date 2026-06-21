@@ -11,9 +11,11 @@ from scheduler.api import (
     ScheduledJob,
     _complete_job,
     _fail_job,
+    _heavy,
     _registry,
     _release_lock,
     _run_claimed_job,
+    dispatch_due_jobs,
     run_scheduler_loop,
 )
 
@@ -50,8 +52,10 @@ def session_fixture():
 def _clear_registry():
     """Ensure a clean handler registry for each test."""
     _registry.clear()
+    _heavy.clear()
     yield
     _registry.clear()
+    _heavy.clear()
 
 
 def _make_job(
@@ -330,3 +334,43 @@ class TestRunSchedulerLoop:
         assert call_count >= 3
         # sleep was called between dispatch calls
         assert mock_sleep.call_count >= 2
+
+
+class TestDispatchHeavyJobs:
+    @pytest.mark.asyncio
+    async def test_heavy_jobs_serialized_light_jobs_parallel(self):
+        """With several heavy jobs claimed in one tick, at most max_heavy run at
+        once, while light jobs still run in parallel."""
+        import asyncio
+
+        claimed = ["h1", "h2", "h3", "l1", "l2"]
+        _heavy.update({"h1", "h2", "h3"})
+        state = {"heavy_now": 0, "heavy_max": 0, "light_now": 0, "light_max": 0}
+
+        async def fake_run(name):
+            kind = "heavy" if name in _heavy else "light"
+            state[f"{kind}_now"] += 1
+            state[f"{kind}_max"] = max(state[f"{kind}_max"], state[f"{kind}_now"])
+            await asyncio.sleep(0.02)  # hold the slot so overlaps are observable
+            state[f"{kind}_now"] -= 1
+
+        seq = iter(claimed + [None])
+
+        with (
+            patch("scheduler.api.get_engine"),
+            patch("scheduler.api.Session"),
+            patch("scheduler.api._claim_next_job", side_effect=lambda *_: next(seq)),
+            patch("scheduler.api._run_claimed_job", side_effect=fake_run),
+        ):
+            ran = await dispatch_due_jobs(max_concurrent=5, max_heavy=1)
+
+        assert ran == 5
+        assert state["heavy_max"] == 1  # heavy jobs never overlap
+        assert state["light_max"] >= 2  # light jobs run concurrently
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_bounds(self):
+        with pytest.raises(ValueError):
+            await dispatch_due_jobs(max_concurrent=0)
+        with pytest.raises(ValueError):
+            await dispatch_due_jobs(max_heavy=0)

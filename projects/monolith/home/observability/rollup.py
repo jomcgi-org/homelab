@@ -84,6 +84,9 @@ def register(session: Session) -> None:
         name="observability.topology_rollup",
         interval_secs=TOPOLOGY_ROLLUP_INTERVAL_SECS,
         handler=lambda _: topology_rollup(),
+        # Builds the full topology payload from ClickHouse; co-resident with the
+        # graph layout in the OOM that motivated heavy-job serialization.
+        heavy=True,
     )
     register_job(
         session,

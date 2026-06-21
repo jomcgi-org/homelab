@@ -279,6 +279,9 @@ def on_startup(session: Session) -> None:
         interval_secs=_INTERVAL_SECS,
         handler=layout_handler,
         ttl_secs=_TTL_SECS,
+        # FA2 layout loads the whole graph and is memory-heavy: serialize it
+        # against other heavy jobs so the shared pod is not OOMKilled.
+        heavy=True,
     )
 
     from knowledge.ingest_queue import ingest_handler
