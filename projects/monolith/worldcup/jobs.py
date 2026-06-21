@@ -26,25 +26,81 @@ logger = logging.getLogger("monolith.worldcup")
 FOCUS_CODE = "SCO"
 
 
-def _upsert(standings_rows: list[dict], fixture_rows: list[dict]) -> None:
+def _upsert(standings_rows: list[dict], fixture_rows: list[dict]) -> bool:
     """Upsert standings (by team_id) and fixtures (by match_id) idempotently.
 
+    Only writes rows whose values actually changed (so updated_at reflects a real
+    data change, not just the poll cadence). Returns True if any SIM-RELEVANT
+    field moved, so the caller can skip the expensive Monte Carlo when nothing
+    that affects the odds changed. Sim-relevant inputs are exactly: a team's
+    (group, points, GF, GA) and a fixture's (group, team codes, finished flag,
+    and, once finished, its score, which feeds the Elo posterior). Live
+    in-progress scores on an unfinished fixture update the row for display but do
+    NOT trigger a re-simulation.
+
     Opens its own Session from get_engine() (this runs in a worker thread, off
-    the scheduler event loop). session.merge() inserts a new row or replaces an
-    existing one keyed on the primary key, so re-running over the same payload
-    converges to the same state.
+    the scheduler event loop).
     """
     from sqlmodel import Session
 
     from app.db import get_engine
 
     now = datetime.now(timezone.utc)
+    sim_changed = False
     with Session(get_engine()) as session:
         for row in standings_rows:
-            session.merge(Standing(**row, updated_at=now))
+            existing = session.get(Standing, row["team_id"])
+            any_diff = existing is None or any(
+                getattr(existing, k) != v for k, v in row.items()
+            )
+            sim_diff = existing is None or (
+                existing.pts,
+                existing.gf,
+                existing.ga,
+                existing.group_name,
+            ) != (row["pts"], row["gf"], row["ga"], row["group_name"])
+            if any_diff:
+                session.merge(Standing(**row, updated_at=now))
+            if sim_diff:
+                sim_changed = True
+
         for row in fixture_rows:
-            session.merge(Fixture(**row, updated_at=now))
+            existing = session.get(Fixture, row["match_id"])
+            any_diff = existing is None or any(
+                getattr(existing, k) != v for k, v in row.items()
+            )
+            # The finished flag, the team codes, the group, and (once finished)
+            # the score all feed the simulation; a score only matters once the
+            # match is final, so an in-progress score on an unfinished fixture is
+            # not sim-relevant.
+            new_finished = bool(row["finished"])
+            new_score = (row["home_score"], row["away_score"]) if new_finished else None
+            old_finished = bool(existing.finished) if existing is not None else None
+            old_score = (
+                (existing.home_score, existing.away_score)
+                if existing is not None and old_finished
+                else None
+            )
+            sim_diff = existing is None or (
+                old_finished,
+                existing.home_code,
+                existing.away_code,
+                existing.group_name,
+                old_score,
+            ) != (
+                new_finished,
+                row["home_code"],
+                row["away_code"],
+                row["group_name"],
+                new_score,
+            )
+            if any_diff:
+                session.merge(Fixture(**row, updated_at=now))
+            if sim_diff:
+                sim_changed = True
+
         session.commit()
+    return sim_changed
 
 
 def _build_sim_inputs(session) -> tuple[list[sim.TeamState], list[sim.Fixture]]:
@@ -187,8 +243,14 @@ def _persist_sim(session, result: sim.SimResult, n: int) -> None:
     session.commit()
 
 
-def _simulate_and_store() -> None:
+def _simulate_and_store(inputs_changed: bool) -> None:
     """Read sim inputs from the DB, run the Monte Carlo, persist the result.
+
+    Short-circuits the expensive simulation when nothing that affects the result
+    has moved: it runs only if a sim-relevant input changed this poll, if the
+    configured iteration count changed (a deploy bumping WORLDCUP_SIM_N should
+    recompute once), or if no results exist yet. Otherwise the cached
+    qualification/swing rows are left in place.
 
     Opens its own Session (runs in a worker thread). If any unfinished fixture
     references a FIFA code missing from the frozen Elo snapshot we log a warning
@@ -196,11 +258,23 @@ def _simulate_and_store() -> None:
     rating is a data problem to surface loudly, not silently paper over, and it
     must not crash the scheduler.
     """
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from app.db import get_engine
 
+    current_n = int(os.environ.get("WORLDCUP_SIM_N", "500000"))
     with Session(get_engine()) as session:
+        existing = session.exec(
+            select(Qualification).where(Qualification.fifa_code == FOCUS_CODE)
+        ).first()
+        n_changed = existing is None or existing.n_sims != current_n
+        if not inputs_changed and not n_changed:
+            logger.info(
+                "worldcup: no sim-relevant change (N=%d unchanged); skipping simulation",
+                current_n,
+            )
+            return
+
         states, fixtures = _build_sim_inputs(session)
         finished = _build_finished_games(session)
         elo = ratings.load_elo()
@@ -227,7 +301,7 @@ def _simulate_and_store() -> None:
             fixtures,
             posterior_elo,
             focus=FOCUS_CODE,
-            n=int(os.environ.get("WORLDCUP_SIM_N", "500000")),
+            n=current_n,
             seed=None,
             sigma=posterior_sigma,
         )
@@ -255,6 +329,6 @@ async def refresh_handler(session) -> datetime | None:
         stats.get("errors", []),
     )
 
-    await asyncio.to_thread(_upsert, standings_rows, fixture_rows)
-    await asyncio.to_thread(_simulate_and_store)
+    sim_changed = await asyncio.to_thread(_upsert, standings_rows, fixture_rows)
+    await asyncio.to_thread(_simulate_and_store, sim_changed)
     return None

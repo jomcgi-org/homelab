@@ -13,6 +13,7 @@ never touch the network: refresh_handler's httpx call is not exercised here.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -246,3 +247,134 @@ class TestPersistSim:
             assert len(swings) == 1  # no duplicates, F-FRA-AND was removed
             assert swings[0].match_id == "F-SCO-GER"
             assert session.get(Qualification, "id-SCO").n_sims == 6000
+
+
+def _standing_row(code, *, group="A", pts=3, gf=3, ga=2):
+    return {
+        "team_id": f"id-{code}",
+        "name": code,
+        "fifa_code": code,
+        "flag_url": None,
+        "group_name": group,
+        "mp": 2,
+        "w": 1,
+        "d": 0,
+        "l": 1,
+        "pts": pts,
+        "gf": gf,
+        "ga": ga,
+        "gd": gf - ga,
+    }
+
+
+def _fixture_row(
+    match_id, home, away, *, finished, group="A", home_score=None, away_score=None
+):
+    return {
+        "match_id": match_id,
+        "group_name": group,
+        "matchday": 3,
+        "home_id": f"id-{home}",
+        "home_name": home,
+        "home_code": home,
+        "away_id": f"id-{away}",
+        "away_name": away,
+        "away_code": away,
+        "home_score": home_score,
+        "away_score": away_score,
+        "finished": finished,
+        "kickoff": None,
+    }
+
+
+class TestUpsertChangeDetection:
+    def test_first_insert_is_sim_changed(self, engine):
+        changed = jobs._upsert(
+            [_standing_row("SCO")], [_fixture_row("F1", "SCO", "GER", finished=False)]
+        )
+        assert changed is True
+
+    def test_identical_rerun_not_changed(self, engine):
+        s = [_standing_row("SCO")]
+        f = [_fixture_row("F1", "SCO", "GER", finished=False)]
+        jobs._upsert(s, f)
+        assert jobs._upsert(s, f) is False
+
+    def test_points_change_is_sim_changed(self, engine):
+        jobs._upsert([_standing_row("SCO", pts=3)], [])
+        assert jobs._upsert([_standing_row("SCO", pts=6, gf=4)], []) is True
+
+    def test_fixture_finished_flip_is_sim_changed(self, engine):
+        jobs._upsert([], [_fixture_row("F1", "SCO", "GER", finished=False)])
+        flipped = _fixture_row(
+            "F1", "SCO", "GER", finished=True, home_score=1, away_score=0
+        )
+        assert jobs._upsert([], [flipped]) is True
+
+    def test_live_score_on_unfinished_is_not_sim_changed(self, engine):
+        # A score ticking up on an in-progress (unfinished) match updates the row
+        # for display but must NOT re-trigger the expensive simulation: an
+        # unfinished score does not feed the Elo posterior.
+        jobs._upsert([], [_fixture_row("F1", "SCO", "GER", finished=False)])
+        live = _fixture_row(
+            "F1", "SCO", "GER", finished=False, home_score=1, away_score=0
+        )
+        assert jobs._upsert([], [live]) is False
+
+
+def _fake_result():
+    return SimResult(
+        per_team={"SCO": TeamProb("SCO", 0.8, 0.1, 0.7, "contention")},
+        swings=[],
+        n=0,
+    )
+
+
+class TestSimulateGate:
+    def _seed(self, session, *, qual_n):
+        session.add_all([_standing("SCO"), _standing("GER", pts=4)])
+        session.add(_fixture("F-SCO-GER", "SCO", "GER", finished=False))
+        session.add(
+            Qualification(
+                team_id="id-SCO",
+                fifa_code="SCO",
+                prob_qualify=0.8,
+                prob_top2=0.1,
+                prob_third=0.7,
+                status="contention",
+                n_sims=qual_n,
+            )
+        )
+        session.commit()
+
+    def test_skips_when_unchanged_and_n_matches(self, engine, monkeypatch):
+        current_n = int(os.environ.get("WORLDCUP_SIM_N", "500000"))
+        with Session(engine) as session:
+            self._seed(session, qual_n=current_n)
+        calls = []
+        monkeypatch.setattr(jobs.sim, "simulate", lambda *a, **k: calls.append(1))
+        jobs._simulate_and_store(inputs_changed=False)
+        assert calls == []  # simulation skipped
+
+    def test_runs_when_inputs_changed(self, engine, monkeypatch):
+        current_n = int(os.environ.get("WORLDCUP_SIM_N", "500000"))
+        with Session(engine) as session:
+            self._seed(session, qual_n=current_n)
+        calls = []
+        monkeypatch.setattr(
+            jobs.sim, "simulate", lambda *a, **k: (calls.append(1), _fake_result())[1]
+        )
+        jobs._simulate_and_store(inputs_changed=True)
+        assert len(calls) == 1
+
+    def test_runs_when_n_changed_even_if_inputs_same(self, engine, monkeypatch):
+        # Stored qualification used a different N (a deploy bumped WORLDCUP_SIM_N):
+        # recompute once even though no match result moved.
+        with Session(engine) as session:
+            self._seed(session, qual_n=123)
+        calls = []
+        monkeypatch.setattr(
+            jobs.sim, "simulate", lambda *a, **k: (calls.append(1), _fake_result())[1]
+        )
+        jobs._simulate_and_store(inputs_changed=False)
+        assert len(calls) == 1
