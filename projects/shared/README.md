@@ -71,6 +71,7 @@ Adjust the relative path depth as needed (services nested one level deeper use
 | `agent_platform/orchestrator` | `projects/agent_platform/chart/orchestrator` |
 | `agent_platform/mcp-servers` | `projects/agent_platform/chart/mcp-servers` |
 | `mcp/context-forge-gateway` | `projects/mcp/context-forge-gateway/chart` |
+| `monolith-public` | `projects/monolith-public/chart` |
 
 ### Bumping the version
 
