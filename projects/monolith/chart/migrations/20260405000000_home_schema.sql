@@ -1,4 +1,6 @@
 -- Replace todo schema with home schema to match the renamed Python module.
+-- nosemgrep: migration-destructive-ddl (safe: todo schema is being replaced by home;
+-- no production data to preserve, tables are recreated below)
 DROP SCHEMA IF EXISTS todo CASCADE;
 
 CREATE SCHEMA IF NOT EXISTS home;

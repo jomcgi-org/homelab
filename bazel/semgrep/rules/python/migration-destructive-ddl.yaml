@@ -1,0 +1,26 @@
+rules:
+  - id: migration-destructive-ddl
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      Found destructive DDL (`DROP TABLE`, `DROP SCHEMA`, or `TRUNCATE`) in a
+      migration file. These operations are irreversible and can cause permanent
+      data loss. If this is intentional (e.g. retiring a table after a safe
+      cutover, or clearing ephemeral computed data before repopulating), suppress
+      with `-- nosemgrep: migration-destructive-ddl` and a comment explaining
+      why the operation is safe to run.
+    metadata:
+      category: security
+      subcategory: data-safety
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [postgresql, sql]
+      description: >-
+        Detects DROP TABLE, DROP SCHEMA, and TRUNCATE in SQL migration files.
+        These are irreversible and can cause permanent data loss if run
+        against a production database without a prior backup or safe cutover.
+    paths:
+      include:
+        - "**/chart/migrations/*.sql"
+    pattern-regex: '(?i)\b(DROP\s+TABLE|DROP\s+SCHEMA|TRUNCATE)\b'
