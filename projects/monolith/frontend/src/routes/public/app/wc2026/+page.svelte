@@ -821,6 +821,7 @@
   }
 
   .line-track {
+    display: block;
     position: relative;
     height: 4px;
     background: var(--rule);
