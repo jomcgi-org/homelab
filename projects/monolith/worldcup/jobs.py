@@ -124,6 +124,7 @@ def _build_sim_inputs(session) -> tuple[list[sim.TeamState], list[sim.Fixture]]:
             pts=s.pts,
             gf=s.gf,
             ga=s.ga,
+            gp=s.mp,
         )
         for s in session.exec(select(Standing)).all()
     ]
@@ -271,6 +272,9 @@ def _simulate_and_store(inputs_changed: bool) -> None:
     # Swing is only a ranking, so its expensive per-country cross-product rides a
     # capped subset of trials while qualification uses all current_n.
     current_swing_n = int(os.environ.get("WORLDCUP_SWING_SIM_N", "100000"))
+    # Dixon-Coles low-score dependence: mildly negative lifts the 0-0 / 1-1
+    # cells that independent Poisson under-produces. 0 falls back to independent.
+    current_rho = float(os.environ.get("WORLDCUP_DC_RHO", "-0.1"))
     with Session(get_engine()) as session:
         existing = session.exec(
             select(Qualification).where(Qualification.fifa_code == FOCUS_CODE)
@@ -304,6 +308,13 @@ def _simulate_and_store(inputs_changed: bool) -> None:
         posterior_elo = {c: ts.rating for c, ts in strengths.items()}
         posterior_sigma = {c: ts.sigma for c, ts in strengths.items()}
 
+        # Already-played group results feed the within-group head-to-head
+        # tiebreaker (a team that beat a group rival outranks it on points ties,
+        # even with a worse overall goal difference: FIFA 2026 Article 13).
+        finished_results = [
+            (g.home_code, g.away_code, g.home_score, g.away_score) for g in finished
+        ]
+
         result = sim.simulate(
             states,
             fixtures,
@@ -313,6 +324,8 @@ def _simulate_and_store(inputs_changed: bool) -> None:
             seed=None,
             sigma=posterior_sigma,
             swing_n=current_swing_n,
+            rho=current_rho,
+            finished_results=finished_results,
         )
         _persist_sim(session, result, result.n)
 

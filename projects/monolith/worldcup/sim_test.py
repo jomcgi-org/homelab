@@ -280,3 +280,78 @@ def test_swing_n_zero_yields_no_swing():
     res = simulate(states, fixtures, elo, focus="FAV", n=3000, seed=9, swing_n=0)
     assert all(s.swing == 0.0 for s in res.swings_by_country["FAV"])
     assert 0.0 <= res.per_team["FAV"].prob_qualify <= 1.0
+
+
+def _scenario_head_to_head_tie():
+    """A finished group of four where SCO and BRA are level on points for 2nd.
+
+    BRA carries a much bigger overall goal difference (+5 vs -1), but SCO won
+    the head-to-head meeting. The group is fully played out (no remaining
+    fixtures) so the result is deterministic: only the tiebreaker decides who
+    takes 2nd (top-two) and who drops to the third-place pool.
+    """
+    states = [
+        _team("FRA", "A", pts=9, gf=9, ga=1),  # clear 1st
+        _team("BRA", "A", pts=4, gf=6, ga=1),  # overall GD +5
+        _team("SCO", "A", pts=4, gf=3, ga=4),  # overall GD -1, but beat BRA
+        _team("AND", "A", pts=0, gf=0, ga=12),  # clear 4th
+    ]
+    fixtures = []  # group already complete
+    elo = {c: _BASE for c in ("FRA", "BRA", "SCO", "AND")}
+    # SCO won the head-to-head 2-1 (BRA at home, SCO away).
+    finished = [("BRA", "SCO", 1, 2)]
+    return states, fixtures, elo, finished
+
+
+def test_head_to_head_breaks_tie_for_second():
+    # FIFA 2026 Article 13: head-to-head outranks overall goal difference, so
+    # SCO (who beat BRA) takes 2nd despite the worse overall GD, and BRA drops
+    # to the third-place pool. Deterministic, so any n and seed agree.
+    states, fixtures, elo, finished = _scenario_head_to_head_tie()
+    res = simulate(
+        states, fixtures, elo, focus="SCO", n=50, seed=1, finished_results=finished
+    )
+    assert res.per_team["SCO"].prob_top2 == 1.0
+    assert res.per_team["BRA"].prob_top2 == 0.0
+
+
+def test_without_head_to_head_overall_gd_decides():
+    # Control: with no head-to-head result supplied, the tie falls through to
+    # overall goal difference, so BRA's larger GD takes 2nd instead. This guards
+    # the mechanism: the only difference from the test above is finished_results.
+    states, fixtures, elo, _finished = _scenario_head_to_head_tie()
+    res = simulate(
+        states, fixtures, elo, focus="SCO", n=50, seed=1, finished_results=None
+    )
+    assert res.per_team["BRA"].prob_top2 == 1.0
+    assert res.per_team["SCO"].prob_top2 == 0.0
+
+
+def test_attack_defence_factors_neutral_without_games():
+    # The TeamState default gp=0 must leave every attack/defence factor at 1.0
+    # so a sim built from games-less states is identical to the plain Elo split.
+    from worldcup.sim import attack_defence
+
+    states, _fixtures, elo = _scenario_open_group()
+    factors = attack_defence(states)
+    assert set(factors) == set(elo)
+    for att, dfn in factors.values():
+        assert att == 1.0 and dfn == 1.0
+
+
+def test_attack_defence_reflects_observed_scoring():
+    # A team that has scored freely and conceded little earns attack > 1 and
+    # defence < 1; a leaky low-scoring team is the mirror image.
+    from worldcup.sim import attack_defence
+
+    states = [
+        _team("HOT", "A", pts=6, gf=8, ga=1, team_id="id-HOT"),  # 2 games, prolific
+        _team("LEK", "A", pts=0, gf=1, ga=8, team_id="id-LEK"),  # 2 games, leaky
+    ]
+    states[0].gp = 2
+    states[1].gp = 2
+    factors = attack_defence(states)
+    hot_att, hot_def = factors["HOT"]
+    lek_att, lek_def = factors["LEK"]
+    assert hot_att > 1.0 and hot_def < 1.0
+    assert lek_att < 1.0 and lek_def > 1.0
