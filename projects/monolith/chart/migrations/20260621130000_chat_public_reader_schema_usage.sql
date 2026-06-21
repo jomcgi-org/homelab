@@ -1,0 +1,19 @@
+-- Grant public_reader USAGE on the chat_public schema so the public read route
+-- can serve shared chat snapshots (ADR 005 "share this chat").
+--
+-- chat_public.shared_snapshots already grants SELECT to public_reader
+-- (20260620000000_chat_public_shared_snapshots.sql), but that grant was dead on
+-- its own: public_reader was never granted USAGE on the chat_public schema, and
+-- Postgres requires schema USAGE to reach ANY object inside a schema even when a
+-- table-level SELECT exists. So GET /shared/{id} (which runs as public_reader on
+-- the read replica) failed with "permission denied for schema chat_public", and
+-- the SvelteKit SSR loader collapsed that 5xx into a 404. Every freshly minted
+-- share link 404'd as a result, regardless of the URL path.
+--
+-- USAGE on the schema does NOT expose sessions or messages: public_reader still
+-- holds table SELECT only on shared_snapshots (the chat_public default-privilege
+-- grant is scoped to public_writer), so transcripts, IP/UA hashes, and the
+-- response cache stay unreadable. This restores the single read the share route
+-- needs and nothing more. See 20260617000000_public_reader_role.sql for the
+-- role's other schema grants.
+GRANT USAGE ON SCHEMA chat_public TO public_reader;

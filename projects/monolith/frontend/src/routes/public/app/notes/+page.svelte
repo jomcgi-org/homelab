@@ -373,7 +373,7 @@
         return;
       }
       const { snapshot_id: snapshotId } = await resp.json();
-      const shareUrl = `${location.origin}/public/app/notes/s/${snapshotId}`;
+      const shareUrl = `${location.origin}/app/notes/s/${snapshotId}`;
       try {
         await navigator.clipboard.writeText(shareUrl);
         flashShare("LINK COPIED");

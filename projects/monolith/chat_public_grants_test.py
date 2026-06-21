@@ -125,3 +125,61 @@ def test_public_reader_cannot_write_chat_public(pg):
             assert "permission denied" in str(exc.value).lower()
     finally:
         engine.dispose()
+
+
+def test_public_reader_can_read_shared_snapshots(pg):
+    """The share read route (GET /shared/{id}, ADR 005) runs as public_reader on
+    the replica, so public_reader MUST be able to SELECT a snapshot that
+    public_writer minted. Regression for the missing GRANT USAGE ON SCHEMA
+    chat_public TO public_reader: without schema USAGE the table SELECT was dead
+    and every share link 404'd (the SSR loader collapsed the permission error)."""
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            # Mint a snapshot as the writer role. source_session_id is nullable,
+            # so no session row is needed to exercise the read grant.
+            session.execute(text("SET ROLE public_writer"))
+            session.execute(
+                text(
+                    "INSERT INTO chat_public.shared_snapshots "
+                    "(id, transcript, message_count) "
+                    "VALUES ('grant-test-snap', '[]'::jsonb, 0)"
+                )
+            )
+            session.execute(text("RESET ROLE"))
+
+            # Read it back as the read-only public_reader role.
+            session.execute(text("SET ROLE public_reader"))
+            count = session.execute(
+                text(
+                    "SELECT count(*) FROM chat_public.shared_snapshots "
+                    "WHERE id = 'grant-test-snap'"
+                )
+            ).scalar_one()
+            assert count == 1
+            # Never commit: the row and the role changes are rolled back.
+            session.rollback()
+    finally:
+        engine.dispose()
+
+
+def test_public_reader_cannot_read_chat_transcripts(pg):
+    """Schema USAGE on chat_public does not leak conversations: public_reader has
+    table SELECT only on shared_snapshots, so reading sessions or messages still
+    raises permission denied. Keeps the share-read grant least-privilege (no
+    transcripts, IP/UA hashes, or response cache exposed to the public reader)."""
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            for tbl in ("sessions", "messages", "response_cache"):
+                # Re-set the role each iteration: the prior aborted statement is
+                # rolled back, which also unwinds the SET ROLE.
+                session.execute(text("SET ROLE public_reader"))
+                with pytest.raises(Exception) as exc:
+                    session.execute(
+                        text(f"SELECT count(*) FROM chat_public.{tbl}")
+                    ).all()
+                assert "permission denied" in str(exc.value).lower()
+                session.rollback()
+    finally:
+        engine.dispose()
