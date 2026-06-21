@@ -15,6 +15,7 @@
 # gazelle:exclude stars
 # gazelle:exclude trips
 # gazelle:exclude dr_jobs
+# gazelle:exclude worldcup
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
@@ -61,6 +62,7 @@ py_venv_binary(
             "stars/**/*.py",
             "trips/**/*.py",
             "dr_jobs/**/*.py",
+            "worldcup/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -78,6 +80,10 @@ py_venv_binary(
         ],
     ),  # keep
     data = [
+        # ratings.py reads this committed Elo snapshot at runtime via
+        # Path(__file__).parent/"ratings"/"elo_2026.json"; the "worldcup/**/*.py"
+        # glob does not capture the .json, so ship it explicitly into runfiles.
+        "worldcup/ratings/elo_2026.json",
         "knowledge/repo_docs_manifest.ndjson",
         ":frontend_dist",
     ],
@@ -154,6 +160,7 @@ py_library(
             "stars/**/*.py",
             "trips/**/*.py",
             "dr_jobs/**/*.py",
+            "worldcup/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -277,6 +284,19 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "trips/s3.py",
     "trips/exif.py",
     "trips/transform.py",
+    # Worldcup: only the read path (models.py + router.py + __init__.py) ships in
+    # the public image. __init__.register_public imports worldcup.router, and
+    # router imports worldcup.models; neither pulls the sim/poller graph. The
+    # simulate/poll-only modules (jobs/client/sim/outcome/ratings) and the Elo
+    # snapshot data stay out (httpx/scheduler/sim closure is private-only).
+    "worldcup/jobs.py",
+    "worldcup/client.py",
+    "worldcup/sim.py",
+    "worldcup/outcome.py",
+    "worldcup/ratings.py",
+    # The "*.py" include glob never captures the JSON; listed for defence in
+    # depth (the public binary also omits it from `data`).
+    "worldcup/ratings/elo_2026.json",
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
@@ -312,6 +332,7 @@ py_library(
             "dr_jobs/**/*.py",
             "chat_public/**/*.py",
             "trips/**/*.py",
+            "worldcup/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -365,6 +386,7 @@ py_venv_binary(
             "dr_jobs/**/*.py",
             "chat_public/**/*.py",
             "trips/**/*.py",
+            "worldcup/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -420,6 +442,7 @@ py_test(
             "home/**/*.py",
             "scheduler/**/*.py",
             "agent/**/*.py",
+            "worldcup/**/*.py",
         ],
         exclude = [
             "**/*_test.py",
@@ -2590,6 +2613,76 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "worldcup_ratings_test",
+    srcs = ["worldcup/ratings_test.py"],
+    # ratings.load_elo() reads the committed Elo snapshot at runtime.
+    data = ["worldcup/ratings/elo_2026.json"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "worldcup_outcome_test",
+    srcs = ["worldcup/outcome_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "worldcup_sim_test",
+    srcs = ["worldcup/sim_test.py"],
+    data = ["worldcup/ratings/elo_2026.json"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "worldcup_client_test",
+    srcs = ["worldcup/client_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "worldcup_jobs_test",
+    srcs = ["worldcup/jobs_test.py"],
+    data = ["worldcup/ratings/elo_2026.json"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "worldcup_router_test",
+    srcs = ["worldcup/router_test.py"],
+    data = ["worldcup/ratings/elo_2026.json"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
