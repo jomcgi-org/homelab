@@ -68,7 +68,7 @@
     "prob_top2": 0.19,
     "prob_third": 0.33,
     "status": "contention",
-    "n_sims": 20000,
+    "n_sims": 500000,
     "computed_at": "2026-06-20T12:00:00Z"
   },
   "swing_matches": [

@@ -189,7 +189,7 @@ def _simulate_and_store() -> None:
             fixtures,
             elo,
             focus=FOCUS_CODE,
-            n=int(os.environ.get("WORLDCUP_SIM_N", "20000")),
+            n=int(os.environ.get("WORLDCUP_SIM_N", "500000")),
             seed=None,
         )
         _persist_sim(session, result, result.n)
