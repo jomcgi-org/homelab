@@ -80,6 +80,16 @@ try {
         body: placeholderPng,
       }),
     );
+    // External flag CDN (wc2026 group table): serve the same placeholder so the
+    // flags render deterministically instead of hitting the network (which the
+    // CI container cannot reach, which would stall networkidle).
+    await ctx.route("**/flagcdn.com/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        body: placeholderPng,
+      }),
+    );
     // Chat SSE: abort so the open stream never blocks networkidle.
     await ctx.route("**/chat/message", (route) => route.abort());
     await ctx.route("**/chat/session", (route) => route.abort());

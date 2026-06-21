@@ -1,0 +1,113 @@
+{
+  "focus": "SCO",
+  "group": "C",
+  "group_table": [
+    {
+      "team_id": "9",
+      "name": "Brazil",
+      "fifa_code": "BRA",
+      "flag_url": "https://flagcdn.com/w80/br.png",
+      "group_name": "C",
+      "mp": 2,
+      "w": 1,
+      "d": 1,
+      "l": 0,
+      "pts": 4,
+      "gf": 4,
+      "ga": 1,
+      "gd": 3
+    },
+    {
+      "team_id": "10",
+      "name": "Morocco",
+      "fifa_code": "MAR",
+      "flag_url": "https://flagcdn.com/w80/ma.png",
+      "group_name": "C",
+      "mp": 2,
+      "w": 1,
+      "d": 1,
+      "l": 0,
+      "pts": 4,
+      "gf": 2,
+      "ga": 1,
+      "gd": 1
+    },
+    {
+      "team_id": "12",
+      "name": "Scotland",
+      "fifa_code": "SCO",
+      "flag_url": "https://flagcdn.com/w80/gb-sct.png",
+      "group_name": "C",
+      "mp": 2,
+      "w": 1,
+      "d": 0,
+      "l": 1,
+      "pts": 3,
+      "gf": 1,
+      "ga": 1,
+      "gd": 0
+    },
+    {
+      "team_id": "11",
+      "name": "Haiti",
+      "fifa_code": "HAI",
+      "flag_url": "https://flagcdn.com/w80/ht.png",
+      "group_name": "C",
+      "mp": 2,
+      "w": 0,
+      "d": 0,
+      "l": 2,
+      "pts": 0,
+      "gf": 0,
+      "ga": 4,
+      "gd": -4
+    }
+  ],
+  "qualification": {
+    "prob_qualify": 0.52,
+    "prob_top2": 0.19,
+    "prob_third": 0.33,
+    "status": "contention",
+    "n_sims": 20000,
+    "computed_at": "2026-06-20T12:00:00Z"
+  },
+  "swing_matches": [
+    {
+      "match_id": "36",
+      "group_name": "C",
+      "home_code": "SCO",
+      "away_code": "BRA",
+      "kickoff": "2026-06-24T22:00:00Z",
+      "swing": 0.61,
+      "p_qualify_home_win": 0.93,
+      "p_qualify_draw": 0.55,
+      "p_qualify_away_win": 0.32,
+      "is_own_match": true
+    },
+    {
+      "match_id": "35",
+      "group_name": "C",
+      "home_code": "MAR",
+      "away_code": "HAI",
+      "kickoff": "2026-06-24T20:00:00Z",
+      "swing": 0.14,
+      "p_qualify_home_win": 0.48,
+      "p_qualify_draw": 0.58,
+      "p_qualify_away_win": 0.62,
+      "is_own_match": false
+    },
+    {
+      "match_id": "48",
+      "group_name": "D",
+      "home_code": "SEN",
+      "away_code": "PAR",
+      "kickoff": "2026-06-25T19:00:00Z",
+      "swing": 0.07,
+      "p_qualify_home_win": 0.5,
+      "p_qualify_draw": 0.54,
+      "p_qualify_away_win": 0.49,
+      "is_own_match": false
+    }
+  ],
+  "updated_at": "2026-06-20T12:05:00Z"
+}

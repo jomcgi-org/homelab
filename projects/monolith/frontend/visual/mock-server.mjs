@@ -10,6 +10,7 @@ const ROUTES = [
   ["/api/home/observability/topology", "fixtures/api/home_topology.json"],
   ["/api/home/observability/stats", "fixtures/api/home_stats.json"],
   ["/api/dr-jobs/listings", "fixtures/api/dr_jobs_listings.json"],
+  ["/api/wc2026/summary", "fixtures/api/wc2026_summary.json"],
   ["/api/hikes/walks", "fixtures/api/hikes_walks.json"],
   ["/api/ships/snapshot", "fixtures/api/ships_snapshot.json"],
   ["/api/stars/sites", "fixtures/api/stars_sites.json"],
