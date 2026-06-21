@@ -146,13 +146,14 @@ def parse_fixtures(games_payload: dict, team_index: dict) -> list[dict]:
         away_ident = team_index.get(away_id) if away_id else None
         home_code = home_ident["fifa_code"] if home_ident else None
         away_code = away_ident["fifa_code"] if away_ident else None
-        if home_code is None or away_code is None:
+        if not home_id or not away_id or home_code is None or away_code is None:
             logger.warning(
-                "worldcup fixtures: unresolved code for game %s (home=%s away=%s)",
+                "worldcup fixtures: unresolved code for game %s (home=%s away=%s), dropping",
                 game.get("id"),
                 home_id,
                 away_id,
             )
+            continue
 
         finished = (game.get("finished") or "").upper() == "TRUE"
         home_score = _to_int(game.get("home_score")) if finished else None
