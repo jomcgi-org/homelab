@@ -448,6 +448,12 @@
     background: var(--paper);
     box-shadow: var(--shadow-hard);
     padding: 40px 44px;
+    /* Pin a fixed 16px base so the doc typography (expressed in `em`
+       below) is immune to the fluid root font-size in global.css
+       (`html { font-size: clamp(16px, max(1.6vw, 2.6vh), 48px) }`).
+       `rem` here would resolve against that fluid root and blow the
+       prose up ~46% on desktop; `em` resolves against this 16px. */
+    font-size: 16px;
   }
 
   /* ── Right TOC ───────────────────────────────────────────── */
@@ -541,26 +547,26 @@
   }
 
   .docs-card :global(h1) {
-    font-size: 2.2rem;
+    font-size: 2.2em;
     letter-spacing: -0.01em;
     margin: 0 0 20px;
   }
 
   .docs-card :global(h2) {
-    font-size: 1.5rem;
+    font-size: 1.5em;
     margin: 34px 0 14px;
     padding-bottom: 8px;
     border-bottom: 2px solid var(--ink);
   }
 
   .docs-card :global(h3) {
-    font-size: 1.2rem;
+    font-size: 1.2em;
     margin: 26px 0 10px;
   }
 
   .docs-card :global(h4) {
     font-family: var(--mono);
-    font-size: 1rem;
+    font-size: 1em;
     font-weight: 600;
     margin: 22px 0 8px;
   }
@@ -568,7 +574,7 @@
   .docs-card :global(p),
   .docs-card :global(li) {
     font-family: var(--sans);
-    font-size: 0.98rem;
+    font-size: 0.98em;
     line-height: 1.65;
     color: var(--ink-2);
   }
@@ -640,7 +646,7 @@
   .docs-card :global(pre.doc-code) {
     position: relative;
     font-family: var(--mono);
-    font-size: 0.82rem;
+    font-size: 0.82em;
     line-height: 1.5;
     background: var(--ink);
     color: var(--cream); /* cream on ink: brutalist code panel */
@@ -684,7 +690,7 @@
     border-collapse: collapse;
     margin: 0 0 22px;
     font-family: var(--mono);
-    font-size: 0.8rem;
+    font-size: 0.8em;
     border: 2px solid var(--ink);
   }
 
