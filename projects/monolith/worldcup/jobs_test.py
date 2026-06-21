@@ -99,18 +99,10 @@ class TestBuildSimInputs:
         assert [f.match_id for f in fixtures] == ["F-SCO-GER"]
         assert fixtures[0].is_own is True  # involves the focus team SCO
 
-    def test_skips_fixtures_with_missing_codes(self, engine):
-        with Session(engine) as session:
-            session.add_all([_standing("SCO"), _standing("GER")])
-            bad = _fixture("F-bad", "SCO", "GER", finished=False)
-            bad.away_code = None
-            session.add(bad)
-            session.add(_fixture("F-ok", "SCO", "GER", finished=False))
-            session.commit()
-
-            _, fixtures = jobs._build_sim_inputs(session)
-
-        assert [f.match_id for f in fixtures] == ["F-ok"]
+    # Note: fixtures with an unresolved home_code/away_code cannot reach the DB
+    # (the columns are NOT NULL); they are filtered upstream at parse time in
+    # client.parse_fixtures, covered by client_test, so there is nothing to
+    # exercise here at the _build_sim_inputs layer.
 
 
 def _sim_result():
@@ -184,7 +176,9 @@ class TestPersistSim:
             own = session.get(SwingMatch, "F-SCO-GER")
             assert own.focus_team_id == "id-SCO"
             assert own.is_own_match is True
-            assert own.kickoff == kickoff  # joined from the fixture row
+            # SQLite drops tzinfo (Postgres preserves it); normalise to UTC,
+            # mirroring the router's _as_utc serialisation, before comparing.
+            assert own.kickoff.replace(tzinfo=timezone.utc) == kickoff
 
     def test_rerun_replaces_swing_rows_without_duplicates(self, engine):
         with Session(engine) as session:
