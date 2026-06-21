@@ -4038,6 +4038,22 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): unit tests for the
+# session lifecycle pure functions and DB helpers (hash_value, _as_utc,
+# _is_expired, load_active_session, touch, record_turn, get_transcript,
+# compact_if_needed). SQLite + StaticPool, no HTTP layer.
+py_test(
+    name = "chat_public_sessions_test",
+    srcs = ["chat_public/sessions_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Hand-registered (knowledge is gazelle-excluded): pure HTTP-cache helpers
 # (_as_utc, _graph_etag, _GRAPH_CACHE_CONTROL).
 py_test(
