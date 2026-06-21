@@ -180,35 +180,48 @@
 
   // Window rows for the selected walk's card, grouped by UK-local day. Windows
   // come from the per-walk detail fetch (selectedDetail), not the light list.
-  // We show the day the user filtered to (the parent's selectedDay chip) when
-  // this walk is doable on it, so clicking a marker that survived a "Saturday"
-  // filter shows Saturday's rows. Otherwise we fall back to the earliest DOABLE
-  // day.
   let cardDays = $derived(selectedDetail ? groupWindowsByDay(selectedDetail) : {});
   let cardDayKeys = $derived(Object.keys(cardDays).sort());
   // The days the server judged DOABLE for this walk's length (duration-aware: a
-  // long-enough run of good hours, see router._doable_days). The card must honour
-  // it: otherwise an 8 h walk with 3 good evening hours would still read "Next
-  // viable: today". We only ever land on a day that is both doable AND present in
-  // cardDays, so there is always an hourly table to show beneath the label.
+  // long-enough run of good hours, see router._doable_days). The card honours it
+  // so a walk only ever lists days it actually fits, not every day with a single
+  // good hour.
   let doableDays = $derived(new Set(selected?.viable_days ?? []));
-  let cardDayKey = $derived(
-    selectedDay && cardDays[selectedDay]?.length && doableDays.has(selectedDay)
-      ? selectedDay
-      : (cardDayKeys.find((d) => doableDays.has(d)) ?? null),
-  );
-  let cardRows = $derived(
-    cardDayKey ? cardDays[cardDayKey].map(windowFields) : [],
-  );
-  let cardDayLabel = $derived(
-    cardDayKey
-      ? new Date(`${cardDayKey}T12:00:00Z`).toLocaleDateString("en-GB", {
-          weekday: "long",
-          day: "numeric",
-          month: "short",
-          timeZone: "Europe/London",
-        })
-      : "",
+
+  function dayLabel(key) {
+    return new Date(`${key}T12:00:00Z`).toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "short",
+      timeZone: "Europe/London",
+    });
+  }
+
+  // The day-separated sections the card shows. With a specific day chip selected
+  // we show just that day; in "Any" mode we stack EVERY doable day (a long
+  // day-separated list, like the stars site card) so the card represents the
+  // week ahead rather than only the next good day. Each group is {key, label,
+  // rows} and only includes days that are both doable and have hourly rows.
+  let cardGroups = $derived.by(() => {
+    if (!selectedDetail) return [];
+    const days =
+      selectedDay && doableDays.has(selectedDay)
+        ? [selectedDay]
+        : cardDayKeys.filter((d) => doableDays.has(d));
+    return days
+      .filter((d) => cardDays[d]?.length)
+      .map((d) => ({
+        key: d,
+        label: dayLabel(d),
+        rows: cardDays[d].map(windowFields),
+      }));
+  });
+  // One section is labelled "Next viable: <day>"; several read as the week's
+  // good days. The in-table day headers carry the per-day labels when stacked.
+  let cardEyebrow = $derived(
+    cardGroups.length === 1
+      ? `Next viable: ${cardGroups[0].label}`
+      : "Good days ahead",
   );
 
   function fmtTime(date) {
@@ -360,8 +373,8 @@
         <p class="card-empty">Loading forecast…</p>
       {:else if detailError}
         <p class="card-empty">Couldn't load the forecast. Try again.</p>
-      {:else if cardRows.length}
-        <p class="eyebrow card-windows-title">Next viable: {cardDayLabel}</p>
+      {:else if cardGroups.length}
+        <p class="eyebrow card-windows-title">{cardEyebrow}</p>
         <table class="card-windows">
           <thead>
             <tr>
@@ -373,14 +386,24 @@
             </tr>
           </thead>
           <tbody>
-            {#each cardRows as w (w.ts)}
-              <tr>
-                <td>{fmtTime(w.date)}</td>
-                <td>{Math.round(w.temp_c)}C</td>
-                <td>{w.precip_mm.toFixed(1)}mm</td>
-                <td>{Math.round(w.wind_kmh)}km/h</td>
-                <td>{Math.round(w.cloud_pct)}%</td>
-              </tr>
+            {#each cardGroups as g (g.key)}
+              <!-- A full-width day header separates each day's hours. Shown only
+                   when stacking several days; with one section the eyebrow above
+                   already names the day. -->
+              {#if cardGroups.length > 1}
+                <tr class="day-head">
+                  <th colspan="5" scope="colgroup">{g.label}</th>
+                </tr>
+              {/if}
+              {#each g.rows as w (w.ts)}
+                <tr>
+                  <td>{fmtTime(w.date)}</td>
+                  <td>{Math.round(w.temp_c)}C</td>
+                  <td>{w.precip_mm.toFixed(1)}mm</td>
+                  <td>{Math.round(w.wind_kmh)}km/h</td>
+                  <td>{Math.round(w.cloud_pct)}%</td>
+                </tr>
+              {/each}
             {/each}
           </tbody>
         </table>
@@ -612,6 +635,26 @@
     color: var(--ink-3);
     border-bottom: 2px solid var(--ink);
     padding: 4px 6px 4px 0;
+  }
+
+  /* Day section header inside the stacked "Any" list: a full-width label that
+     divides each day's hours. A top rule separates day groups; it drops the
+     column row's heavy underline (that belongs to the Time/Temp/... header). */
+  .card-windows .day-head th {
+    border-top: 2px solid var(--ink);
+    border-bottom: 1px solid var(--rule-2);
+    padding: 11px 0 5px;
+    color: var(--ink);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* The first day header sits right under the column row, so it needs no extra
+     top rule. */
+  .card-windows .day-head:first-of-type th {
+    border-top: none;
+    padding-top: 8px;
   }
 
   .card-windows td {
