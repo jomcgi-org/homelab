@@ -20,6 +20,7 @@ import stays cheap and side-effect free, then dispatch to it.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 
 import typer
@@ -147,6 +148,71 @@ def stars_load_climatology() -> None:
     with Session(get_engine()) as session:
         asyncio.run(load_climatology_handler(session))
     logger.info("stars-load-climatology: done")
+
+
+def _run_job(name: str, import_path: str, handler_name: str) -> None:
+    """Run a session-taking async scheduler handler as a one-shot.
+
+    Shared body for the simple cutovers: import the handler lazily (keeps CLI
+    startup cheap), open a fresh session mirroring the scheduler's contract, and
+    run it to completion. Each command below is a thin wrapper so Typer still
+    sees a distinct, documented subcommand per job.
+    """
+    from sqlmodel import Session
+
+    from app.db import get_engine
+
+    handler = getattr(importlib.import_module(import_path), handler_name)
+    configure_logging()
+    logger.info("%s: starting", name)
+    with Session(get_engine()) as session:
+        asyncio.run(handler(session))
+    logger.info("%s: done", name)
+
+
+@app.command("ships-heat-rollup")
+def ships_heat_rollup() -> None:
+    """Rebuild the ships traffic-heat rollup (one-shot of ships.heat_rollup)."""
+    _run_job("ships-heat-rollup", "ships.heat", "heat_rollup_handler")
+
+
+@app.command("ships-partition-maintenance")
+def ships_partition_maintenance() -> None:
+    """Roll ships position partitions (one-shot of ships.partition_maintenance)."""
+    _run_job(
+        "ships-partition-maintenance",
+        "ships.retention",
+        "partition_maintenance_handler",
+    )
+
+
+@app.command("dr-jobs-scrape-nhs")
+def dr_jobs_scrape_nhs() -> None:
+    """Scrape NHS Scotland vacancies (one-shot of dr_jobs.scrape_nhs)."""
+    _run_job("dr-jobs-scrape-nhs", "dr_jobs.jobs", "scrape_nhs_handler")
+
+
+@app.command("stars-load-grid")
+def stars_load_grid() -> None:
+    """Reload the stars site grid from S3 (one-shot of stars.load_grid)."""
+    _run_job("stars-load-grid", "stars.grid", "load_grid_handler")
+
+
+@app.command("stars-refresh")
+def stars_refresh() -> None:
+    """Refresh stars site clear-dark-hours scoring (one-shot of stars.refresh)."""
+    _run_job("stars-refresh", "stars.jobs", "refresh_handler")
+
+
+@app.command("knowledge-repo-docs-reconcile")
+def knowledge_repo_docs_reconcile() -> None:
+    """Reconcile baked repo-docs manifest into the KG (one-shot of
+    knowledge.repo_docs_reconcile)."""
+    _run_job(
+        "knowledge-repo-docs-reconcile",
+        "knowledge.repo_docs",
+        "repo_docs_reconcile_handler",
+    )
 
 
 if __name__ == "__main__":
