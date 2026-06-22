@@ -89,7 +89,19 @@ def register_job(
 
     Set ``heavy=True`` for memory-intensive jobs (e.g. the graph layout pass) so
     the dispatcher never co-schedules two of them.
+
+    Jobs an active Argo CronWorkflow owns (listed in ARGO_JOBS) are skipped here
+    so they never run both in-process and as a CronWorkflow. This is centralized
+    so every module's on_startup_jobs gets the skip for free - callers do not
+    each need to gate on argo_handled. A previously-registered row is left for
+    purge_unregistered_jobs to drop on the next sweep.
     """
+    if argo_handled(name):
+        logger.info(
+            "%s: owned by Argo CronWorkflow, skipping in-process register", name
+        )
+        return
+
     _registry[name] = handler
     if heavy:
         _heavy.add(name)
