@@ -39,6 +39,7 @@ sh_binary(
 multirun(
     name = "push_all",
     commands = [
+        "//bazel/tools/format/ci-image:format.push",
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
         "//projects/agent_platform/chart:chart.push",

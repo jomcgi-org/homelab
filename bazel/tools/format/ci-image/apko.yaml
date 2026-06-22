@@ -1,0 +1,51 @@
+# CI-execution-only image for the BuildBuddy "Format check" action (NOT a
+# deployed runtime artifact), published under the ci/ GHCR namespace. It lets
+# the Format check run the formatters + buildifier + the custom gazelle binary
+# DIRECTLY, with no `bazel run` / RBE roundtrip.
+#
+# This apko config supplies ONLY the Wolfi userland the format shell scripts
+# need. Every actual tool (ruff, shfmt, gofumpt, prettier, node, buildifier and
+# the custom //:gazelle_binary) is layered on top as a Bazel-built tar in BUILD,
+# so the binaries are byte-identical to what `bazel run //bazel/tools/format`
+# uses today: version parity is guaranteed by construction, not by matching
+# Wolfi package versions to Bazel-pinned ones.
+#
+# Wolfi is glibc-based, which the cgo gazelle binary and the hermetic Node
+# runtime both need.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    - glibc
+    - ca-certificates-bundle
+    # Shell + GNU userland the format scripts (fast-format.sh, the generate
+    # scripts, validate-generate-scripts.sh) shell out to. coreutils alone is
+    # not enough: find/xargs (findutils), grep, sed and awk (gawk) are all used.
+    - bash
+    - coreutils
+    - findutils
+    - grep
+    - sed
+    - gawk
+    # git: the Format check does git diff/add/commit/push and the manifest
+    # generators discover files via `git ls-files`.
+    - git
+    # python3: validate-generate-scripts.sh runs the repo-docs and docs-site
+    # manifest generators with system python3 (pure stdlib, no pip).
+    - python3
+    # libstdc++: required by the hermetic Node runtime and the cgo gazelle
+    # binary (tree-sitter). libgcc comes transitively.
+    - libstdc++
+
+archs:
+  - x86_64
+  - aarch64
+
+environment:
+  # git config / any HOME-relative writes land somewhere writable. The runner
+  # executes as root (uid 0) like the ubuntu-24.04 image it replaces, so it can
+  # write the checked-out workspace and run git.
+  HOME: /root
