@@ -17,17 +17,17 @@ express that model, primitive by primitive, and names what is missing.
 
 ## 2. Loom primitives (what we are mapping onto)
 
-| Primitive            | Shape                                                                                                                          | Source                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------ |
-| `ObjectType`         | name + ordered typed `PropertyDef`s + `derived` (aggregate-over-link) + backing `TableRef` + optional `identity` (PK property) | `ontology.rs:32`                                    |
-| `PropertyDef`        | `{name, ty (logical type string), required}` bound to a physical DuckLake column                                               | `ontology.rs:24`                                    |
-| `LinkDef`            | directed `from -> to`, `Cardinality::{One,Many}`, `LinkBacking::{ForeignKey, JoinTable}`, reversible                           | `ontology.rs:104`                                   |
-| `DerivedPropertyDef` | computed `Count/Sum/Avg/Min/Max` over **one** named link                                                                       | `ontology.rs:127`                                   |
-| `ActionDef`          | named write. **Part-1 semantics: insert ONE new instance of `target`.** No update/delete.                                      | `ontology.rs:149`                                   |
-| `Policy`             | per `(role, target=Type                                                                                                        | Table)`: `row_filter`+`deny_columns`+`mask_columns` | `acl.rs:106` |
-| `RowFilter`          | boolean tree of `Compare{property, op, value}` over **literal** `ScalarValue::{Text,Int,Bool,List}`                            | `acl.rs:90`                                         |
-| `Acl::check`         | coarse `(subject, Read                                                                                                         | Write, target)` grant, Deny-wins                    | `acl.rs`     |
-| Lineage              | OpenLineage event emitted atomically with each snapshot commit                                                                 | `ARCHITECTURE.md`                                   |
+| Primitive            | Shape                                                                                                                          | Source            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| `ObjectType`         | name + ordered typed `PropertyDef`s + `derived` (aggregate-over-link) + backing `TableRef` + optional `identity` (PK property) | `ontology.rs:32`  |
+| `PropertyDef`        | `{name, ty (logical type string), required}` bound to a physical DuckLake column                                               | `ontology.rs:24`  |
+| `LinkDef`            | directed `from -> to`, `Cardinality::{One,Many}`, `LinkBacking::{ForeignKey, JoinTable}`, reversible                           | `ontology.rs:104` |
+| `DerivedPropertyDef` | computed `Count/Sum/Avg/Min/Max` over **one** named link                                                                       | `ontology.rs:127` |
+| `ActionDef`          | named write. **Part-1 semantics: insert ONE new instance of `target`.** No update/delete.                                      | `ontology.rs:149` |
+| `Policy`             | per `(role, target=Type` or `Table)`: `row_filter` + `deny_columns` + `mask_columns`                                           | `acl.rs:106`      |
+| `RowFilter`          | boolean tree of `Compare{property, op, value}` over **literal** `ScalarValue::{Text,Int,Bool,List}`                            | `acl.rs:90`       |
+| `Acl::check`         | coarse `(subject, Read` or `Write, target)` grant, Deny-wins                                                                   | `acl.rs`          |
+| Lineage              | OpenLineage event emitted atomically with each snapshot commit                                                                 | `ARCHITECTURE.md` |
 
 Two hard constraints fall straight out of these types:
 
