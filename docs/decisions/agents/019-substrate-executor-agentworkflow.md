@@ -1,7 +1,7 @@
 # ADR 019: Substrate Executor Interface and AgentWorkflow over Argo
 
 **Author:** jomcgi
-**Status:** Proposed
+**Status:** Accepted
 **Created:** 2026-06-21
 **Revisits:** [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md) (its dismissal of warm pools as "not load-bearing")
 **Builds on:** [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md) (the executor abstraction, not its rejected implementations), [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)
@@ -142,6 +142,16 @@ Snapshot/restore is ideal because it gives no-memory-tax and sub-second together
 ### Trust axis
 
 Workloads are **trusted today** (no external jobs), so no VM isolation is required and cold-on-demand or a warm pool is sufficient. When untrusted/external work arrives, isolation flips from optional to mandatory and the seam absorbs it additively: `runtimeClassName: kata-fc` gives Firecracker microVM isolation with no executor change, and a `Snapshotable` executor can be added for the no-tax sub-second case. Neither touches the `AgentWorkflow` or `job-mcp` consumers.
+
+---
+
+## Execution shape
+
+Latency is not critical today, so the work splits into two independent tracks. The `Substrate` seam is what lets them run separately: the MVP ships the cold-on-demand executor, the PoC swaps in a different executor, and the `AgentWorkflow` consumer is unchanged across both. (The `AgentWorkflow` name overlaps with Argo's internal "agent" pod; the overlap is accepted as low-risk.)
+
+**MVP (ship): consolidate the durable tier onto Argo Workflows.** Move remaining batch and scheduled jobs onto `AgentWorkflow` with the cold-on-demand executor and Argo on the hot path. No streaming is required for the current use case, which keeps the MVP small. The payoff is deprecating a large amount of older dispatch and scheduling tooling, so this track earns its keep on simplification alone, independent of any sub-second ambition.
+
+**PoC (explore): Firecracker executor under `AgentWorkflow` semantics.** Prove hot / warm / instant scheduling: a `Snapshotable` Firecracker executor behind the same `Substrate` interface, validating sub-second restore, snapshot disk cost, and the quiescent-snapshot / reconnect pattern (Open Questions 1 and 2). Gated and non-blocking; it informs whether the instant-scheduling end state is viable without holding up the MVP.
 
 ---
 
