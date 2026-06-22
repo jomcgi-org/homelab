@@ -29,54 +29,71 @@ SCRAPE_TIMEOUT_SECS = 30.0
 FORECAST_TIMEOUT_SECS = 30.0
 
 
-def _persist_walks(walks: list[ScrapedWalk]) -> tuple[int, int]:
-    """Upsert scraped walks in a fresh session. Returns (new, updated).
+def _upsert_walks(session: Session, walks: list[ScrapedWalk]) -> tuple[int, int]:
+    """Upsert scraped walks into ``session`` (no commit). Returns (new, updated).
 
-    Upserts only the scraped columns plus scraped_at; the typed walk_hours
-    rows belong to the forecast job and are never touched here. Runs off the
-    event loop via asyncio.to_thread.
+    Dedupes the batch by uuid first: two walk pages can share a trailhead
+    coordinate, and the uuid is uuid5 of "lat,lon", so the scraped list may carry
+    duplicate uuids. Without deduping, two not-yet-persisted rows with the same
+    uuid both take the insert path and the batch INSERT trips ``walks_pkey``,
+    rolling back the entire upsert (which is exactly how the corpus stayed frozen
+    once scraping started succeeding again). Last occurrence wins.
+
+    Upserts only the scraped columns plus scraped_at; the typed walk_hours rows
+    belong to the forecast job and are never touched here. Takes an explicit
+    session so the SQLite create_all fixtures can drive it.
+    """
+    now = datetime.now(timezone.utc)
+    deduped = list({walk.uuid: walk for walk in walks}.values())
+    new_rows: list[models.Walk] = []
+    updated = 0
+    for walk in deduped:
+        existing = session.get(models.Walk, walk.uuid)
+        if existing is None:
+            new_rows.append(
+                models.Walk(
+                    uuid=walk.uuid,
+                    name=walk.name,
+                    url=walk.url,
+                    distance_km=walk.distance_km,
+                    ascent_m=walk.ascent_m,
+                    duration_h=walk.duration_h,
+                    summary=walk.summary,
+                    latitude=walk.latitude,
+                    longitude=walk.longitude,
+                    scraped_at=now,
+                )
+            )
+            continue
+        existing.name = walk.name
+        existing.url = walk.url
+        existing.distance_km = walk.distance_km
+        existing.ascent_m = walk.ascent_m
+        existing.duration_h = walk.duration_h
+        existing.summary = walk.summary
+        existing.latitude = walk.latitude
+        existing.longitude = walk.longitude
+        existing.scraped_at = now
+        updated += 1
+        # Rows fetched via session.get are already tracked; attribute mutations
+        # flush on commit without a session.add in the loop.
+
+    if new_rows:
+        session.add_all(new_rows)
+    return len(new_rows), updated
+
+
+def _persist_walks(walks: list[ScrapedWalk]) -> tuple[int, int]:
+    """Open a fresh session and upsert the scraped walks. Runs off the event
+    loop via asyncio.to_thread (so it must own its session, never the
+    scheduler's). Delegates the testable upsert to ``_upsert_walks``.
     """
     from app.db import get_engine
 
-    now = datetime.now(timezone.utc)
-    new_rows: list[models.Walk] = []
-    updated = 0
     with Session(get_engine()) as session:
-        for walk in walks:
-            existing = session.get(models.Walk, walk.uuid)
-            if existing is None:
-                new_rows.append(
-                    models.Walk(
-                        uuid=walk.uuid,
-                        name=walk.name,
-                        url=walk.url,
-                        distance_km=walk.distance_km,
-                        ascent_m=walk.ascent_m,
-                        duration_h=walk.duration_h,
-                        summary=walk.summary,
-                        latitude=walk.latitude,
-                        longitude=walk.longitude,
-                        scraped_at=now,
-                    )
-                )
-                continue
-            existing.name = walk.name
-            existing.url = walk.url
-            existing.distance_km = walk.distance_km
-            existing.ascent_m = walk.ascent_m
-            existing.duration_h = walk.duration_h
-            existing.summary = walk.summary
-            existing.latitude = walk.latitude
-            existing.longitude = walk.longitude
-            existing.scraped_at = now
-            updated += 1
-            # Rows fetched via session.get are already tracked; attribute
-            # mutations flush on commit without a session.add in the loop.
-
-        if new_rows:
-            session.add_all(new_rows)
+        result = _upsert_walks(session, walks)
         session.commit()
-    return len(new_rows), updated
+    return result
 
 
 async def scrape_walks_handler(session: Session) -> datetime | None:
