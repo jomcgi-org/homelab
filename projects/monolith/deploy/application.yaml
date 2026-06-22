@@ -42,6 +42,11 @@ spec:
       jsonPointers:
         - /spec/template/metadata/annotations/otel.injected-by
         - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
+        # The backend HPA owns the replica count (chart/templates/hpa.yaml). The
+        # deployment omits spec.replicas when autoscaling is enabled, but with
+        # selfHeal on ArgoCD would still revert any HPA scale-up to the default;
+        # ignore /spec/replicas so the HPA holds. Mirrors the monolith-public app.
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true

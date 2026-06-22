@@ -10,6 +10,22 @@ backend:
       cpu: "200m"
     limits:
       memory: "256Mi"
+  # Autoscaling: steady state stays at minReplicas (1); scale out under CPU load.
+  # Safe to run >1 replica because the in-process singletons are leader-gated
+  # (app/leadership.py) so only the lease holder runs them, while every replica
+  # serves HTTP/MCP. When enabled the deployment omits spec.replicas and the
+  # ArgoCD Application ignores /spec/replicas (deploy/application.yaml), so the
+  # HPA owns the count instead of ArgoCD reverting it.
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 60
+  # Disruption budget: maxUnavailable (not minAvailable) so a node drain can
+  # still evict-and-reschedule the single pod at the 1-replica floor.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
 
 # Off-pod batch-job execution via Argo CronWorkflows.
 #
