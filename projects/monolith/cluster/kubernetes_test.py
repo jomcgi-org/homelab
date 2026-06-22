@@ -201,3 +201,37 @@ async def test_close_cleans_up(k8s_client):
 
     mock_api.close.assert_called_once()
     assert k8s_client._api is None
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_passes_correct_args_and_returns_name(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    server_response = {"metadata": {"name": "my-workflow-xyz"}}
+    mock_custom.create_namespaced_custom_object = AsyncMock(return_value=server_response)
+
+    body = {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Workflow",
+        "metadata": {"generateName": "my-workflow-"},
+        "spec": {"entrypoint": "main", "templates": []},
+    }
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch(
+            "cluster.kubernetes.client.CustomObjectsApi",
+            return_value=mock_custom,
+        ),
+    ):
+        name = await k8s_client.create_workflow(namespace="monolith-workflows", body=body)
+
+    mock_custom.create_namespaced_custom_object.assert_called_once_with(
+        group="argoproj.io",
+        version="v1alpha1",
+        namespace="monolith-workflows",
+        plural="workflows",
+        body=body,
+    )
+    assert name == "my-workflow-xyz"
