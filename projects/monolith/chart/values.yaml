@@ -46,29 +46,6 @@ jobs:
           memory: 512Mi
         limits:
           memory: 1Gi
-    # Substrate probe: reads recent scheduler activity, asks on-cluster Qwen to
-    # summarize it, logs the result. No `replaces` (net-new, not a cutover) and
-    # suspend=false so it actually runs - this proves the Argo CronWorkflow +
-    # on-cluster-Qwen path end to end before porting real agents onto it.
-    - name: test-agent
-      args: ["test-agent"]
-      # @every <duration> (robfig/cron interval form) is how Argo expresses a
-      # sub-minute cadence; standard 5-field cron floors at 1/min. This is a
-      # throwaway substrate probe, so run it hot for fast feedback. Forbid keeps
-      # runs from overlapping if one Qwen call runs long. Dial down or suspend
-      # once the path is proven.
-      schedule: "@every 30s"
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 300
-      suspend: false
-      env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""
