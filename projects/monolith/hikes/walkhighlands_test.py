@@ -73,16 +73,23 @@ SUB_AREA_HTML_NO_TBODY = """
 </body></html>
 """
 
+# Mirrors WalkHighlands' current layout: the title is an <h1 class="wtitle">
+# ABOVE #content (alongside unrelated "app expired" <h1>s), and the Summary is
+# an <h3> whose paragraph is wrapped in a div rather than a direct sibling.
 WALK_PAGE_HTML = """
 <html>
 <head>
   <link rel="canonical" href="https://www.walkhighlands.co.uk/sutherland/sandwood-bay.shtml">
 </head>
 <body>
+<h1 class="wtitle">Sandwood Bay</h1>
+<div id="wrapper">
 <div id="content">
-  <h1>Sandwood Bay</h1>
-  <h2>Summary</h2>
-  <p>A magnificent walk to one of the wildest and most beautiful bays.</p>
+  <h1>This version of the Walkhighlands App has expired</h1>
+  <h3>Summary</h3>
+  <div class="box1 pad2 bg1"><p style="font-weight:bold">A magnificent walk to one of the wildest and most beautiful bays.</p></div>
+  <p class="noprint">Hear pronunciation</p>
+</div>
 </div>
 <div id="col">
   <dl>
@@ -102,10 +109,12 @@ WALK_PAGE_NO_COORDS_HTML = """
   <link rel="canonical" href="https://www.walkhighlands.co.uk/sutherland/sandwood-bay.shtml">
 </head>
 <body>
+<h1 class="wtitle">Sandwood Bay</h1>
+<div id="wrapper">
 <div id="content">
-  <h1>Sandwood Bay</h1>
-  <h2>Summary</h2>
-  <p>A magnificent walk.</p>
+  <h3>Summary</h3>
+  <div class="box1 pad2 bg1"><p>A magnificent walk.</p></div>
+</div>
 </div>
 <div id="col">
   <dl>
