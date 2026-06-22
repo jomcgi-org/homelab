@@ -89,5 +89,24 @@ def knowledge_layout() -> None:
     logger.info("knowledge-layout: done")
 
 
+@app.command("observability-topology-rollup")
+def observability_topology_rollup() -> None:
+    """Build the service-topology payload from ClickHouse and snapshot it to
+    Postgres as a one-shot.
+
+    One-shot form of the ``observability.topology_rollup`` scheduled job. Unlike
+    the other handlers it takes no session (it opens its own inside the
+    snapshot writer), so there is no Session wrapper here. Needs CLICKHOUSE_URL
+    plus the CLICKHOUSE_USER / CLICKHOUSE_PASSWORD secret env (cloned into
+    monolith-workflows); without them build_topology returns an empty payload.
+    """
+    from home.observability.rollup import topology_rollup
+
+    configure_logging()
+    logger.info("observability-topology-rollup: starting")
+    asyncio.run(topology_rollup())
+    logger.info("observability-topology-rollup: done")
+
+
 if __name__ == "__main__":
     app()

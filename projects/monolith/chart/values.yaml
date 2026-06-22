@@ -69,6 +69,34 @@ jobs:
           memory: 4Gi
         limits:
           memory: 4Gi
+    # observability.topology_rollup: queries ClickHouse for the service-topology
+    # graph and snapshots it to Postgres (observability.topology_snapshot, single
+    # upsert row). Light footprint (heavy=True is for serialization, not memory).
+    # First job needing ClickHouse: CLICKHOUSE_URL is a plain in-cluster svc URL
+    # (literal env), USER/PASSWORD come from the monolith-clickhouse Secret cloned
+    # into monolith-workflows by Kyverno. */15 matches the 900s in-process cadence.
+    - name: observability-topology-rollup
+      replaces: observability.topology_rollup
+      args: ["observability-topology-rollup"]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      env:
+        CLICKHOUSE_URL: "http://chi-signoz-clickhouse-cluster-0-0.signoz.svc.cluster.local:8123"
+      secretEnv:
+        CLICKHOUSE_USER:
+          secretName: monolith-clickhouse
+          key: USER
+        CLICKHOUSE_PASSWORD:
+          secretName: monolith-clickhouse
+          key: PASSWORD
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""
