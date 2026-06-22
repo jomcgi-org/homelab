@@ -201,3 +201,20 @@ def test_parse_duration_single_value():
 
 def test_parse_duration_range_takes_upper_bound():
     assert _parse_duration_hours("5.5 - 6.5 hours") == 6.5
+
+
+def test_parse_duration_hours_slash_days_keeps_hours():
+    # WalkHighlands' "18 hours/2 days" must NOT sum to 66h (18 + 2*24); the
+    # single-push hours figure is what the doability model needs.
+    assert _parse_duration_hours("18 hours/2 days") == 18.0
+
+
+def test_parse_duration_hours_or_days_strips_plus_and_days():
+    # "12 hours+ or 2 days" -> 12.0 (drop the trailing + and the multi-day option).
+    assert _parse_duration_hours("12 hours+ or 2 days") == 12.0
+
+
+def test_parse_duration_pure_days_falls_through():
+    # No hours figure: a genuinely multi-day route still yields a real number
+    # (2 days = 48h), so it stays in the corpus as inherently multi-day.
+    assert _parse_duration_hours("2 days") == 48.0
