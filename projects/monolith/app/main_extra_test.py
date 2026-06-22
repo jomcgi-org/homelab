@@ -9,7 +9,12 @@ import pytest
 # Ensure no valid STATIC_DIR is set (mirrors main_coverage_test.py approach)
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import app, lifespan  # noqa: E402
+from app.main import (  # noqa: E402
+    _start_singletons,
+    _stop_singletons,
+    app,
+    lifespan,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -69,14 +74,16 @@ def _lifespan_patches_with_discord(mock_bot):
 # ---------------------------------------------------------------------------
 
 
-class TestLifespanBotCloseException:
+class TestSingletonBotClose:
     @pytest.mark.asyncio
-    async def test_bot_close_exception_propagates(self):
-        """When bot.close() raises during shutdown the exception propagates out of lifespan."""
+    async def test_bot_close_exception_is_swallowed_on_stop(self):
+        """_stop_singletons logs and swallows bot.close() errors so a resign or
+        shutdown never crashes (the leader must be able to step down cleanly)."""
         tasks, capture = _make_task_capturer()
 
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock(side_effect=RuntimeError("Discord connection lost"))
+        mock_bot.start = AsyncMock()
 
         patches = _lifespan_patches_with_discord(mock_bot)
         with (
@@ -91,17 +98,19 @@ class TestLifespanBotCloseException:
             patches[6],
             patches[7],
         ):
-            with pytest.raises(RuntimeError, match="Discord connection lost"):
-                async with lifespan(app):
-                    pass
+            await _start_singletons(app)
+            await _stop_singletons(app)  # must NOT raise
+
+        mock_bot.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_bot_close_exception_does_not_prevent_task_creation(self):
-        """Even when bot.close() will later raise, all 4 tasks are still created at startup."""
+    async def test_start_singletons_creates_four_tasks(self):
+        """The leader starts bot + scheduler + ships ingest + sweep = 4 tasks."""
         tasks, capture = _make_task_capturer()
 
         mock_bot = MagicMock()
-        mock_bot.close = AsyncMock(side_effect=RuntimeError("close error"))
+        mock_bot.close = AsyncMock()
+        mock_bot.start = AsyncMock()
 
         patches = _lifespan_patches_with_discord(mock_bot)
         with (
@@ -116,13 +125,8 @@ class TestLifespanBotCloseException:
             patches[6],
             patches[7],
         ):
-            try:
-                async with lifespan(app):
-                    pass
-            except RuntimeError:
-                pass  # expected
+            await _start_singletons(app)
 
-        # bot + scheduler + ships ingest + sweep = 4 tasks must have been created
         assert len(tasks) == 4
 
 

@@ -386,7 +386,7 @@ async def test_wait_for_sidecar_logs_ready_message():
 @pytest.mark.asyncio
 async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
     """_start_bot_when_ready awaits _wait_for_sidecar before calling bot.start."""
-    from app.main import app, lifespan
+    from app.main import _start_singletons, app
 
     call_order = []
 
@@ -434,8 +434,7 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
         patches[6],
         patches[7],
     ):
-        async with lifespan(app):
-            pass
+        await _start_singletons(app)
 
         assert len(captured_bot_coro) == 1, (
             "Expected exactly one bot coroutine captured from create_task"
@@ -451,7 +450,7 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
 @pytest.mark.asyncio
 async def test_start_bot_when_ready_not_scheduled_when_no_token():
     """When DISCORD_BOT_TOKEN is absent, no bot task (and thus no sidecar wait) is created."""
-    from app.main import app, lifespan
+    from app.main import _start_singletons, app
 
     created_tasks: list = []
 
@@ -476,8 +475,7 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
         patches[3],
         patches[4],
     ):
-        async with lifespan(app):
-            pass
+        await _start_singletons(app)
 
     # Scheduler + ships ingest task (no bot task)
     assert len(created_tasks) == 2, (

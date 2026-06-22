@@ -18,7 +18,7 @@ import pytest
 # Ensure no valid static directory before importing main
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import app, lifespan, _log_task_exception  # noqa: E402
+from app.main import _log_task_exception, _start_singletons, app  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +105,7 @@ class TestChatStartupHook:
             patch("chat.summarizer.build_llm_caller", return_value=MagicMock()),
             patch("chat.bot.create_bot", return_value=mock_bot),
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         mock_chat_startup.assert_called_once()
 
@@ -140,8 +139,7 @@ class TestChatStartupHook:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(task_mocks) == 4
         # Tasks: 0=bot, 1=scheduler, 2=ships ingest, 3=sweep, all have done callbacks
@@ -187,8 +185,7 @@ class TestSummaryLoopLogging:
             patch("hikes.on_startup_jobs"),
             patch("scheduler.api.run_scheduler_loop", new_callable=AsyncMock),
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         # chat_startup should never have been imported/called since the discord
         # branch was not entered

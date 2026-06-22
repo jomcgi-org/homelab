@@ -20,7 +20,7 @@ from sqlmodel.pool import StaticPool
 os.environ.pop("STATIC_DIR", None)
 
 from app.db import get_session  # noqa: E402
-from app.main import app  # noqa: E402
+from app.main import _start_singletons, _stop_singletons, app  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +177,7 @@ async def test_lifespan_creates_one_background_task_on_startup():
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
     assert len(created_tasks) == 2
 
@@ -200,8 +199,8 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
+            await _stop_singletons(app)
 
     assert len(mock_tasks) == 2
     for task in mock_tasks:
@@ -225,12 +224,13 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            async with lifespan(app):
-                assert len(mock_tasks) == 2
-                for task in mock_tasks:
-                    task.cancel.assert_not_called()
+            await _start_singletons(app)
+            assert len(mock_tasks) == 2
+            for task in mock_tasks:
+                task.cancel.assert_not_called()
+            await _stop_singletons(app)
 
-    # After lifespan exits, task must have been cancelled
+    # After _stop_singletons, every task must have been cancelled
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -263,8 +263,7 @@ async def test_lifespan_scheduler_task_is_run_scheduler_loop():
     ]
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
     mock_scheduler.assert_called_once()
 
@@ -477,8 +476,7 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
                 patches[7],
             ):
                 with patch("app.main.logger") as mock_logger:
-                    async with lifespan(app):
-                        pass
+                    await _start_singletons(app)
 
     logged_messages = [str(c) for c in mock_logger.info.call_args_list]
     assert any("Discord bot starting" in m for m in logged_messages), (
@@ -516,8 +514,7 @@ async def test_lifespan_creates_three_tasks_when_discord_token_set():
                 patches[6],
                 patches[7],
             ):
-                async with lifespan(app):
-                    pass
+                await _start_singletons(app)
 
     assert len(created_tasks) == 4
 
