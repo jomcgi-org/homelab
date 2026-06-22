@@ -1,0 +1,20 @@
+{{- if and .Values.backend.pdb .Values.backend.pdb.enabled }}
+# PodDisruptionBudget for the monolith backend. maxUnavailable (NOT minAvailable)
+# is deliberate: at the 1-replica steady state a minAvailable:1 budget would
+# block node drains entirely (the only pod can never be evicted), wedging node
+# maintenance. maxUnavailable:1 lets a drain evict-and-reschedule the single pod
+# (a brief gap, accepted) and, once the HPA has scaled out, caps voluntary
+# disruption to one pod at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "monolith.fullname" . }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.backend.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "monolith.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: app
+{{- end }}

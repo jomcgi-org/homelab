@@ -1,0 +1,35 @@
+{{- if and .Values.backend.autoscaling .Values.backend.autoscaling.enabled }}
+# HPA for the monolith backend deployment. Scales on the backend container's CPU
+# (ContainerResource, GA in k8s 1.27+) so the linkerd-proxy sidecar's CPU does
+# not dilute the signal. CPU, not memory: Python/Node hold memory after a spike,
+# so a memory-based HPA would never scale back down. Steady state stays at
+# minReplicas; scaling out is safe because the in-process singletons (Discord
+# bot, outbox drain, AIS ingest, lock sweep) are leader-gated via the Postgres
+# lease in app/leadership.py, so only the lease holder runs them while every
+# replica serves HTTP/MCP. Mirrors monolith-public's hpa.yaml.
+#
+# Requires the deployment to omit spec.replicas when autoscaling is enabled (see
+# deployment.yaml) AND the ArgoCD Application to ignore /spec/replicas (see
+# deploy/application.yaml), otherwise ArgoCD reverts every scale-up to replicas.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "monolith.fullname" . }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "monolith.fullname" . }}
+  minReplicas: {{ .Values.backend.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.backend.autoscaling.maxReplicas }}
+  metrics:
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: backend
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.backend.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

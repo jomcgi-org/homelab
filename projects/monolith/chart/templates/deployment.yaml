@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "monolith.labels" . | nindent 4 }}
 spec:
+  {{- if not (and .Values.backend.autoscaling .Values.backend.autoscaling.enabled) }}
   replicas: {{ .Values.backend.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "monolith.selectorLabels" . | nindent 6 }}
