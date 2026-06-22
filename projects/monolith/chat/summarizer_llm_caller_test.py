@@ -85,7 +85,12 @@ class TestBuildLlmCaller:
         assert payload["model"] == "qwen3.6-27b"
         assert payload["messages"][0]["role"] == "user"
         assert payload["messages"][0]["content"] == "Summarize this conversation."
-        assert payload["max_tokens"] == 32768
+        # max_tokens must leave room for the prompt within the 32768 context;
+        # reserving the whole window 400s on any non-empty prompt.
+        assert payload["max_tokens"] == 8192
+        # Thinking disabled so the model returns the summary in content, not a
+        # content:null thinking response.
+        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
 
     @pytest.mark.asyncio
     async def test_raises_runtime_error_on_missing_choices(self):
