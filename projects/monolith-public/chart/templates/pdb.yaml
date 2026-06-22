@@ -1,0 +1,23 @@
+{{- range $component := list "web" "frontend" "imgproxy" }}
+{{- $vals := index $.Values $component }}
+{{- if and $vals.enabled $vals.pdb $vals.pdb.enabled }}
+# PodDisruptionBudget for the {{ $component }} component. maxUnavailable (NOT
+# minAvailable) is deliberate: web and frontend sit at a 1-replica floor (HPA
+# minReplicas: 1), and a minAvailable:1 budget would block node drains entirely
+# there (the only pod could never be evicted). maxUnavailable:1 lets a drain
+# evict-and-reschedule the single pod, and caps voluntary disruption to one pod
+# at a time once the HPA has scaled out (or, for imgproxy, across its 2 replicas).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "monolith-public.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "homelab.componentLabels" (dict "context" $ "component" $component) | nindent 4 }}
+spec:
+  maxUnavailable: {{ $vals.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "homelab.componentSelectorLabels" (dict "context" $ "component" $component) | nindent 6 }}
+---
+{{- end }}
+{{- end }}

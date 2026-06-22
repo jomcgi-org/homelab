@@ -174,6 +174,12 @@ imgproxySigning:
 web:
   enabled: true
   replicas: 1
+  # Disruption budget: maxUnavailable (not minAvailable) so a node drain can
+  # evict-and-reschedule at the 1-replica floor; caps disruption to 1 at a time
+  # once the HPA has scaled out.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/public-backend
     tag: latest
@@ -316,6 +322,10 @@ web:
 frontend:
   enabled: true
   replicas: 1
+  # Disruption budget (see web.pdb): maxUnavailable so drains work at 1 replica.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/public-frontend
     tag: latest
@@ -410,6 +420,11 @@ frontend:
 imgproxy:
   enabled: true
   replicas: 2
+  # Disruption budget (see web.pdb). imgproxy runs 2 replicas, so maxUnavailable:1
+  # keeps one serving through a drain.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
   image:
     repository: darthsim/imgproxy
     tag: v3.25.0
