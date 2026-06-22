@@ -46,7 +46,7 @@ playwright_bin.playwright_test(
     # visual_chromium), which bakes those libs + fonts. Pinned by digest for
     # reproducibility; bump when the image is rebuilt.
     exec_properties = {
-        "container-image": "docker://ghcr.io/jomcgi/homelab/ci/visual-chromium@sha256:53b9f9b03371a5691ca1843f9c283069a1f25b1f72ee46c6640cacd235350593",
+        "container-image": "docker://ghcr.io/jomcgi/homelab/ci/visual-chromium@sha256:ae978cf40315d549bbf34930fbd50c53caa2142b8fe25299f9921e182c1091b9",
     },
     # Disables Bazel's local sandbox so chromium can spawn its helper processes;
     # does not prevent remote (RBE) execution, which is what we want to exercise.
