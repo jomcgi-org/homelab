@@ -279,6 +279,12 @@ use_repo(npm, "npm")
 playwright = use_extension("@rules_playwright//playwright:extensions.bzl", "playwright")
 playwright.repo(
     name = "playwright",
+    # rules_playwright 0.5.3 defaults to playwright.azureedge.net, which
+    # Microsoft deprecated: it 400/404s for current chromium revisions (CI log
+    # showed rev 1208 missing there). The live CDN is cdn.playwright.dev; the
+    # rule appends /builds/chromium/<rev>/... and Bazel follows the 307 to the
+    # blob backend.
+    browsers_download_urls = ["https://cdn.playwright.dev/dbazure/download/playwright"],
     playwright_version = "1.58.2",
 )
 use_repo(playwright, "playwright")
