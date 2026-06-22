@@ -25,6 +25,9 @@ gazelle_binary(
         "@gazelle//language/proto",
         "@rules_python_gazelle_plugin//python",
     ],
+    # Exposed to the ci/format image package so the same binary the format
+    # multirun runs can be baked into the CI-execution image.
+    visibility = ["//bazel/tools/format/ci-image:__pkg__"],
 )
 
 gazelle(
