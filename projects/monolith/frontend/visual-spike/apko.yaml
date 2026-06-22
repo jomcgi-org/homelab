@@ -26,11 +26,12 @@ contents:
     - coreutils
     - libstdc++
     - ca-certificates-bundle
-    # chromium runtime shared libraries
-    - nss
-    - nspr
-    - atk
-    - at-spi2-atk
+    # chromium runtime shared libraries (Wolfi package names resolved from the
+    # APKINDEX by the .so each provides, not guessed).
+    - libnss
+    - libnspr
+    - libatk-1.0
+    - libatk-bridge-2.0
     - at-spi2-core
     - libx11
     - libxcomposite
@@ -46,9 +47,11 @@ contents:
     - libxshmfence
     - cups-libs
     - dbus-libs
+    - libexpat1
     # fonts: deterministic text rasterization
-    - fontconfig
-    - font-dejavu
+    - libfontconfig1
+    - freetype
+    - ttf-dejavu
 
 archs:
   - x86_64
