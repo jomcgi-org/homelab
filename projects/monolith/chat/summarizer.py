@@ -194,6 +194,21 @@ async def generate_channel_summaries(
     logger.info("Channel summary generation complete for %d channels", len(channels))
 
 
+async def run_summary_generation(
+    session: "Session",
+    llm_call: Callable[[str], Awaitable[str]] | None = None,
+) -> None:
+    """Generate per-user and per-channel chat summaries.
+
+    Module-level entrypoint so the one-shot jobs image (jobs_main
+    chat-summary-generation) can run it without the scheduler closure. Builds
+    its own LLM caller (Qwen via LLAMA_CPP_URL) when one is not injected."""
+    if llm_call is None:
+        llm_call = build_llm_caller()
+    await generate_summaries(session, llm_call)
+    await generate_channel_summaries(session, llm_call)
+
+
 def on_startup(
     session: "Session",
     *,
@@ -207,8 +222,7 @@ def on_startup(
         llm_call = build_llm_caller()
 
     async def _summary_handler(session: "Session") -> None:
-        await generate_summaries(session, llm_call)
-        await generate_channel_summaries(session, llm_call)
+        await run_summary_generation(session, llm_call)
         return None
 
     register_job(

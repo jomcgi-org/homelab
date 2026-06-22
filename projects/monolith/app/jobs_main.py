@@ -278,5 +278,12 @@ def home_calendar_poll() -> None:
     logger.info("home-calendar-poll: done")
 
 
+@app.command("chat-summary-generation")
+def chat_summary_generation() -> None:
+    """Generate per-user and per-channel chat summaries (one-shot of
+    chat.summary_generation). Needs LLAMA_CPP_URL (Qwen); no bot required."""
+    _run_job("chat-summary-generation", "chat.api", "run_summary_generation")
+
+
 if __name__ == "__main__":
     app()

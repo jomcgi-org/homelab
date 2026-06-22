@@ -333,6 +333,25 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # chat.summary_generation: per-user + per-channel LLM summaries. LLM-only
+    # (Qwen via LLAMA_CPP_URL), no Discord bot needed, so it is a clean cutover.
+    # Daily (was 86400s); generous deadline since it loops users/channels with
+    # an LLM call each.
+    - name: chat-summary-generation
+      replaces: chat.summary_generation
+      args: ["chat-summary-generation"]
+      schedule: "30 5 * * *" # daily 05:30 UTC
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: false
+      env:
+        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""
