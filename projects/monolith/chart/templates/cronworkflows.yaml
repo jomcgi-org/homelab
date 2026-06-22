@@ -66,6 +66,17 @@ spec:
                   name: {{ $ref.secretName }}
                   key: {{ $ref.key }}
             {{- end }}
+            {{- if .s3 }}
+            # Shared SeaweedFS S3 endpoint + creds (sourced from the stars block,
+            # which always sets them; creds are the cluster's dummy duckdb pair).
+            # Bucket/key env stay per-entry since they differ by job.
+            - name: SEAWEEDFS_S3_ENDPOINT
+              value: {{ $.Values.stars.seaweedfsS3Endpoint | quote }}
+            - name: S3_ACCESS_KEY_ID
+              value: {{ $.Values.stars.s3AccessKeyId | quote }}
+            - name: S3_SECRET_ACCESS_KEY
+              value: {{ $.Values.stars.s3SecretAccessKey | quote }}
+            {{- end }}
           {{- with .resources }}
           resources:
             {{- toYaml . | nindent 12 }}
