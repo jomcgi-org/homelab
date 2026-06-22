@@ -46,21 +46,26 @@ jobs:
           memory: 512Mi
         limits:
           memory: 1Gi
-    # knowledge.layout: FA2 graph layout, the heaviest in-process job (3.12GiB
-    # peak). Cutting it off the API pod is what unblocks shrinking monolith
-    # 4Gi -> ~1Gi. Schedule matches the in-process 5-min cadence; Forbid so a
-    # slow layout never overlaps. memory request==limit at 4Gi (repo convention)
-    # to cover the peak; CPU-bound so a generous CPU request, no CPU limit.
+    # knowledge.layout: FA2 graph layout, ~2.7GiB peak / 1 core / ~3 min,
+    # measured live. It recomputes the WHOLE graph every run with no
+    # change-detection, but the graph (notes + links) is static for days at a
+    # time (e.g. 0 note changes in 24h, 36 in 7d), so a 5-min cadence meant
+    # ~860 identical recomputes over 3 days. Run it WEEKLY instead: a
+    # change-gate would still have to reserve the memory and spin a pod every
+    # tick, so cutting the cadence is the cleaner win. Trigger a one-off
+    # Workflow by hand after a bulk note import if an immediate relayout is
+    # needed. Forbid so a slow layout never overlaps; 4Gi request==limit covers
+    # the 2.7GiB peak with growth headroom; cpu:1 (single-threaded FA2).
     - name: knowledge-layout
       replaces: knowledge.layout
       args: ["knowledge-layout"]
-      schedule: "*/5 * * * *"
+      schedule: "0 4 * * 0" # weekly, Sunday 04:00 UTC
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
       suspend: false
       resources:
         requests:
-          cpu: "2"
+          cpu: "1"
           memory: 4Gi
         limits:
           memory: 4Gi
