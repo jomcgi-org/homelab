@@ -1,0 +1,26 @@
+rules:
+  - id: cronworkflow-values-missing-activedeadline
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      CronWorkflow entry has `schedule:` but no `activeDeadlineSeconds`. Without
+      this limit a stuck workflow pod runs indefinitely, consuming cluster
+      resources until manually killed. Add `activeDeadlineSeconds` to cap the
+      maximum pod lifetime for each CronWorkflow entry.
+    metadata:
+      category: correctness
+    paths:
+      include:
+        - "**/values.yaml"
+    patterns:
+      - pattern: |
+          - schedule: ...
+            ...
+      - pattern-not: |
+          - schedule: ...
+            ...
+            activeDeadlineSeconds: ...
+      - pattern-not: |
+          - activeDeadlineSeconds: ...
+            ...
+            schedule: ...
