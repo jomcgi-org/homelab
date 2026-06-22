@@ -7,5 +7,6 @@ Other domains must import from ``chat.api`` (enforced by
 from __future__ import annotations
 
 from chat.bot import send_message  # re-exported
+from chat.summarizer import run_summary_generation  # re-exported
 
-__all__ = ["send_message"]
+__all__ = ["run_summary_generation", "send_message"]
