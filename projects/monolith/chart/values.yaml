@@ -216,6 +216,74 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # Phase A: remaining Postgres / HTTP jobs. All small; cadences match the
+    # in-process intervals. Per-run pod overhead is ~10s (measured), trivial
+    # even at the 5-min cadences.
+    - name: hikes-refresh-forecasts
+      replaces: hikes.refresh_forecasts
+      args: ["hikes-refresh-forecasts"]
+      schedule: "20 */2 * * *" # every 2h (was 7200s)
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: false
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    - name: hikes-prune-windows
+      replaces: hikes.prune_windows
+      args: ["hikes-prune-windows"]
+      schedule: "40 * * * *" # hourly (was 3600s)
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
+    - name: stars-prune-hours
+      replaces: stars.prune_hours
+      args: ["stars-prune-hours"]
+      schedule: "50 * * * *" # hourly (was 3600s)
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
+    - name: knowledge-ingest
+      replaces: knowledge.ingest
+      args: ["knowledge-ingest"]
+      schedule: "*/5 * * * *" # every 5 min (was 300s)
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    - name: knowledge-discover-gaps
+      replaces: knowledge.discover-gaps
+      args: ["knowledge-discover-gaps"]
+      schedule: "2-59/5 * * * *" # every 5 min, offset from ingest
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""

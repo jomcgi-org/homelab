@@ -215,5 +215,35 @@ def knowledge_repo_docs_reconcile() -> None:
     )
 
 
+@app.command("hikes-refresh-forecasts")
+def hikes_refresh_forecasts() -> None:
+    """Refresh hike weather forecasts (one-shot of hikes.refresh_forecasts)."""
+    _run_job("hikes-refresh-forecasts", "hikes.jobs", "refresh_forecasts_handler")
+
+
+@app.command("hikes-prune-windows")
+def hikes_prune_windows() -> None:
+    """Prune stale hike forecast windows (one-shot of hikes.prune_windows)."""
+    _run_job("hikes-prune-windows", "hikes.jobs", "prune_windows_handler")
+
+
+@app.command("stars-prune-hours")
+def stars_prune_hours() -> None:
+    """Prune stale stars live-hours rows (one-shot of stars.prune_hours)."""
+    _run_job("stars-prune-hours", "stars.jobs", "prune_hours_handler")
+
+
+@app.command("knowledge-ingest")
+def knowledge_ingest() -> None:
+    """Drain the knowledge ingest queue (one-shot of knowledge.ingest)."""
+    _run_job("knowledge-ingest", "knowledge.ingest_queue", "ingest_handler")
+
+
+@app.command("knowledge-discover-gaps")
+def knowledge_discover_gaps() -> None:
+    """Discover knowledge-graph gaps (one-shot of knowledge.discover-gaps)."""
+    _run_job("knowledge-discover-gaps", "knowledge.service", "discover_gaps_handler")
+
+
 if __name__ == "__main__":
     app()
