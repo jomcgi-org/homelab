@@ -87,6 +87,20 @@ spec:
             - name: STARS_CLIMATOLOGY_S3_KEY
               value: {{ $.Values.stars.climatologyKey | quote }}
             {{- end }}
+            {{- if .changelog }}
+            # chat.changelog needs the full config list (to look up the named
+            # config) + a GitHub token. CHANGELOG_CONFIGS mirrors the deployment;
+            # GITHUB_TOKEN comes from the monolith-chat-secrets Secret cloned into
+            # monolith-workflows. No bot token is referenced - the job only
+            # enqueues; the leader's drain posts.
+            - name: CHANGELOG_CONFIGS
+              value: {{ $.Values.chat.changelogs | toJson | quote }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: monolith-chat-secrets
+                  key: GITHUB_TOKEN
+            {{- end }}
           {{- with .resources }}
           resources:
             {{- toYaml . | nindent 12 }}

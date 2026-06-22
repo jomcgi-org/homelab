@@ -7,7 +7,13 @@ Other domains must import from ``chat.api`` (enforced by
 from __future__ import annotations
 
 from chat.bot import send_message  # re-exported
+from chat.changelog import run_changelog_for_config  # re-exported
 from chat.outbox import enqueue_message  # re-exported
 from chat.summarizer import run_summary_generation  # re-exported
 
-__all__ = ["enqueue_message", "run_summary_generation", "send_message"]
+__all__ = [
+    "enqueue_message",
+    "run_changelog_for_config",
+    "run_summary_generation",
+    "send_message",
+]

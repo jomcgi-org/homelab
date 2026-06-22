@@ -1,6 +1,7 @@
 """Tests for the hourly changelog notifier module."""
 
 import json
+import os
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,7 @@ from chat.changelog import (
     _filter_changelog_commits,
     _summarize_with_qwen,
     load_changelog_configs,
+    run_changelog_for_config,
     run_changelog_iteration,
 )
 
@@ -400,8 +402,6 @@ class TestRunChangelogIteration:
         config = _make_config()
 
         with patch.dict("os.environ", {}, clear=True):
-            import os
-
             os.environ.pop("GITHUB_TOKEN", None)
             await run_changelog_iteration(bot, mock_llm, config)
 
@@ -670,3 +670,92 @@ class TestRunChangelogIteration:
         prompt_used = mock_llm.call_args[0][0]
         assert "roasting" not in prompt_used
         assert "changelog writer" in prompt_used
+
+
+def _configs_json(name="homelab", channel="999"):
+    return json.dumps(
+        [
+            {
+                "name": name,
+                "githubRepo": "owner/repo",
+                "channelId": channel,
+                "prompt": "professional",
+                "embedTitle": "Homelab Changelog",
+                "embedColor": "2ECC71",
+                "intervalHours": 1,
+            }
+        ]
+    )
+
+
+def _http_client(commits):
+    response = MagicMock()
+    response.json.return_value = commits
+    response.raise_for_status = MagicMock()
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=response)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
+
+
+class TestRunChangelogForConfig:
+    """The off-pod Argo entrypoint: compute the embed and enqueue it (no bot)."""
+
+    @pytest.mark.asyncio
+    async def test_enqueues_embed_for_matching_config(self):
+        mock_llm = AsyncMock(return_value="Added a great new feature.")
+        client = _http_client([_make_commit("feat: amazing thing", "Alice")])
+        with (
+            patch.dict(
+                "os.environ",
+                {"GITHUB_TOKEN": "ghp_tok", "CHANGELOG_CONFIGS": _configs_json()},
+            ),
+            patch("chat.changelog.httpx.AsyncClient", return_value=client),
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            await run_changelog_for_config("homelab", mock_llm)
+
+        mock_llm.assert_called_once()
+        enqueue.assert_called_once()
+        assert enqueue.call_args.args[0] == "999"  # channel_id
+        assert isinstance(enqueue.call_args.args[1], dict)  # serialised embed
+
+    @pytest.mark.asyncio
+    async def test_no_matching_config_does_not_enqueue(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {"GITHUB_TOKEN": "ghp_tok", "CHANGELOG_CONFIGS": "[]"},
+            ),
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            await run_changelog_for_config("nope", AsyncMock())
+        enqueue.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_commits_does_not_enqueue(self):
+        client = _http_client([])
+        with (
+            patch.dict(
+                "os.environ",
+                {"GITHUB_TOKEN": "ghp_tok", "CHANGELOG_CONFIGS": _configs_json()},
+            ),
+            patch("chat.changelog.httpx.AsyncClient", return_value=client),
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            await run_changelog_for_config("homelab", AsyncMock())
+        enqueue.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_github_token_does_not_enqueue(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {"CHANGELOG_CONFIGS": _configs_json()},
+                clear=True,
+            ),
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            await run_changelog_for_config("homelab", AsyncMock())
+        enqueue.assert_not_called()

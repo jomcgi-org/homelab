@@ -352,6 +352,58 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # chat.changelog.* (one per config): fetch new commits, summarize via Qwen,
+    # ENQUEUE the embed to the Discord outbox (the leader's bot drains + posts).
+    # No bot in the job. `changelog: true` injects CHANGELOG_CONFIGS + GITHUB_TOKEN.
+    # Hourly (was intervalHours=1), offset so the three do not fire together.
+    - name: chat-changelog-homelab
+      replaces: chat.changelog.homelab
+      args: ["chat-changelog", "homelab"]
+      schedule: "5 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      changelog: true
+      env:
+        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    - name: chat-changelog-colin-homelab
+      replaces: chat.changelog.colin-homelab
+      args: ["chat-changelog", "colin-homelab"]
+      schedule: "10 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      changelog: true
+      env:
+        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    - name: chat-changelog-loom
+      replaces: chat.changelog.loom
+      args: ["chat-changelog", "loom"]
+      schedule: "15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      changelog: true
+      env:
+        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""
