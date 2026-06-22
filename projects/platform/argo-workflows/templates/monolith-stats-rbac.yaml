@@ -1,0 +1,55 @@
+# Dedicated least-privilege ServiceAccount for the observability.stats_rollup
+# CronWorkflow. stats_rollup's build_stats() counts cluster resources (nodes,
+# pods, deployments, ArgoCD applications) and aggregates node capacity/metrics,
+# so its job pod needs cluster-read that the shared argo-workflow executor SA
+# (deliberately) lacks. Rather than broaden every batch pod's permissions
+# (overprivileged-SA anti-pattern, docs/security.md), give just this one job a
+# dedicated SA bound to a read-only ClusterRole scoped to exactly what
+# build_stats reads: no secrets, no pods/log, no write verbs (the in-process
+# job only ever reads; the patch verb the monolith API SA has for triggering
+# ArgoCD syncs is intentionally omitted here).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monolith-stats
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monolith-stats-read
+rules:
+  # count_nodes / count_pods + aggregate_node_resources (list_node).
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  # aggregate_node_resources reads the kubelet Summary API for honest RSS.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  # count_deployments.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  # count_argocd_applications + get_argocd_app_status. Read-only: no patch
+  # (stats never triggers a sync).
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+  # aggregate_node_resources reads metrics.k8s.io for per-node CPU usage.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: monolith-stats-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monolith-stats-read
+subjects:
+  - kind: ServiceAccount
+    name: monolith-stats
+    namespace: {{ .Release.Namespace }}

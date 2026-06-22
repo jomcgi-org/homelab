@@ -109,6 +109,23 @@ def observability_topology_rollup() -> None:
     logger.info("observability-topology-rollup: done")
 
 
+@app.command("observability-stats-rollup")
+def observability_stats_rollup() -> None:
+    """Build the cluster-stats payload and snapshot it to Postgres as a one-shot.
+
+    One-shot form of ``observability.stats_rollup``. build_stats counts cluster
+    resources via the in-cluster K8s API, so this job runs under a dedicated
+    least-privilege SA (monolith-stats) rather than the shared executor SA. Also
+    needs CLICKHOUSE_URL + USER/PASSWORD for the GPU metrics queries. No session
+    (the snapshot writer opens its own)."""
+    from home.observability.rollup import stats_rollup
+
+    configure_logging()
+    logger.info("observability-stats-rollup: starting")
+    asyncio.run(stats_rollup())
+    logger.info("observability-stats-rollup: done")
+
+
 @app.command("hikes-scrape-walks")
 def hikes_scrape_walks() -> None:
     """Run the full WalkHighlands corpus scrape as a one-shot.

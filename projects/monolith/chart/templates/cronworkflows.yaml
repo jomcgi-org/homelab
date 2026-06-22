@@ -35,7 +35,9 @@ spec:
   failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 5 }}
   workflowSpec:
     entrypoint: run
-    serviceAccountName: argo-workflow
+    # Most jobs use the shared executor SA; a job needing extra cluster access
+    # (e.g. stats_rollup reading node/pod counts) sets its own least-privilege SA.
+    serviceAccountName: {{ .serviceAccountName | default "argo-workflow" }}
     {{- if .activeDeadlineSeconds }}
     activeDeadlineSeconds: {{ .activeDeadlineSeconds }}
     {{- end }}

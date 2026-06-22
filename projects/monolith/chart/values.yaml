@@ -97,6 +97,34 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # stats_rollup counts cluster resources via the in-cluster K8s API, so it
+    # runs under the dedicated least-privilege monolith-stats SA (defined in the
+    # argo-workflows platform chart) instead of the shared executor SA. Also
+    # needs ClickHouse for GPU metrics. 2-min cadence (was 120s); per-run pod
+    # overhead ~10s is fine.
+    - name: observability-stats-rollup
+      replaces: observability.stats_rollup
+      args: ["observability-stats-rollup"]
+      schedule: "*/2 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 120
+      suspend: false
+      serviceAccountName: monolith-stats
+      env:
+        CLICKHOUSE_URL: "http://chi-signoz-clickhouse-cluster-0-0.signoz.svc.cluster.local:8123"
+      secretEnv:
+        CLICKHOUSE_USER:
+          secretName: monolith-clickhouse
+          key: USER
+        CLICKHOUSE_PASSWORD:
+          secretName: monolith-clickhouse
+          key: PASSWORD
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # MANUAL-ONLY jobs: replaces disables the in-process job, suspend:true keeps
     # the CronWorkflow from ever auto-firing, but it stays submittable by hand
     # (argo submit --from cronworkflow/<name>, or kubectl create from its
