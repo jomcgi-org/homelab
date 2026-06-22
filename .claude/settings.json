@@ -195,6 +195,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-large-migration-sql.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-cronworkflow-custom-sa-executor-rbac.sh",
+            "timeout": 10
           }
         ]
       }
