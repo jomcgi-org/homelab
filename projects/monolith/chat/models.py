@@ -90,3 +90,29 @@ class ChannelSummary(SQLModel, table=True):
     message_count: int = Field(default=0)
     last_message_id: int = Field(foreign_key="chat.messages.id")
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (posted_at is intentionally NULL until the drain posts the row)
+class DiscordOutbox(SQLModel, table=True):
+    """Pending Discord posts. Producers on any replica (or an Argo job) insert a
+    row; the leader's bot drain loop posts it and stamps posted_at. Decouples
+    'who computed the message' from 'who holds the bot connection' (the leader),
+    so posting works regardless of which replica a request lands on.
+
+    embed_json holds a JSON-serialised Discord embed dict (TEXT, not JSONB, so
+    the SQLite test fixtures build it cleanly); content is plain text. Exactly
+    one of the two is set.
+    """
+
+    __tablename__ = "discord_outbox"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str
+    content: str | None = Field(default=None)
+    embed_json: str | None = Field(default=None)
+    level: str = Field(default="info")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    posted_at: datetime | None = Field(default=None)
+    attempts: int = Field(default=0)
+    last_error: str | None = Field(default=None)

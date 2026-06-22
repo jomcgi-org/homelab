@@ -89,6 +89,15 @@ async def _start_singletons(app: FastAPI) -> None:
         tasks.append(bot_task)
         logger.info("Discord bot starting")
 
+        # Leader-only Discord outbox drain: posts rows enqueued by any replica
+        # or Argo job (notify, changelog) through this pod's bot connection.
+        from chat.outbox import run_outbox_drain
+
+        drain_task = asyncio.create_task(run_outbox_drain(bot, get_engine()))
+        drain_task.add_done_callback(_log_task_exception)
+        tasks.append(drain_task)
+        logger.info("Discord outbox drain starting")
+
     # Purge stale jobs (registry housekeeping the leader owns).
     with Session(get_engine()) as session:
         purge_stale_jobs(session)

@@ -759,6 +759,17 @@ py_test(
 )
 
 py_test(
+    name = "chat_outbox_test",
+    srcs = ["chat/outbox_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "chat_web_search_test",
     srcs = ["chat/web_search_test.py"],
     imports = ["."],
