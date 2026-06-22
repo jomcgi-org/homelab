@@ -24,6 +24,12 @@ contents:
     - glibc
     - bash
     - coreutils
+    # Userland the rules_js js_test launcher + Bazel test-setup wrapper shell out
+    # to (exit 127 without them); coreutils alone is not enough.
+    - findutils
+    - grep
+    - sed
+    - gawk
     - libstdc++
     - ca-certificates-bundle
     # chromium runtime shared libraries (Wolfi package names resolved from the
