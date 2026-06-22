@@ -77,6 +77,14 @@
   const DATE_HORIZON = 7;
   let selectedDay = $state(initial.selectedDay);
 
+  // The open route card's walk uuid, mirrored to ?walk= so a specific hike is
+  // deep-linkable. HikesMap owns the live card; it calls onSelectWalk on
+  // open/close to keep this in sync, and opens initial.selectedWalk on load.
+  let selectedWalkUuid = $state(initial.selectedWalk);
+  function handleSelectWalk(uuid) {
+    selectedWalkUuid = uuid;
+  }
+
   // "Near" filter: a preset hub key, GEO_SENTINEL for the device location, or
   // "" for off. userCoords resolves async once the browser grants permission.
   let nearKey = $state(initial.nearKey);
@@ -246,6 +254,7 @@
     const url = new URL($page.url);
     writeHikeParams(url.searchParams, {
       selectedDay,
+      selectedWalk: selectedWalkUuid,
       nearKey,
       minDuration,
       maxDuration,
@@ -290,7 +299,13 @@
 <div class="hikes-page">
   <h1 class="sr-only">Hike planner, Scotland walks by weather window</h1>
 
-  <HikesMap walks={filtered} {selectedDay} {maxima} />
+  <HikesMap
+    walks={filtered}
+    {selectedDay}
+    {maxima}
+    initialUuid={initial.selectedWalk}
+    onSelectWalk={handleSelectWalk}
+  />
 
   <!-- Floating controls: day chips always visible, the rest expands on demand. -->
   <div class="controls">
