@@ -36,7 +36,7 @@ import pytest
 # Ensure no valid STATIC_DIR is set before importing main
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import app, lifespan, _log_task_exception  # noqa: E402
+from app.main import _log_task_exception, _start_singletons, app  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +158,7 @@ class TestSweepTaskRegistration:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         sweep_task_mock.add_done_callback.assert_called_once_with(_log_task_exception)
 
@@ -188,8 +187,7 @@ class TestSweepTaskRegistration:
             patches[7],
             patch("app.main.logger") as mock_logger,
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert any("Message lock sweep started" in m for m in messages), (
@@ -224,8 +222,7 @@ class TestSweepTaskRegistration:
             patches[4],
             patch("app.main.logger") as mock_logger,
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         # 2 tasks should be created (scheduler + ships ingest)
         assert len(tasks_created) == 2
@@ -265,8 +262,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -320,8 +316,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -373,8 +368,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -430,8 +424,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -495,8 +488,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -554,8 +546,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -613,8 +604,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -675,8 +665,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -734,8 +723,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 
@@ -790,8 +778,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                pass
+            await _start_singletons(app)
 
         assert len(coros) == 1
 

@@ -14,7 +14,6 @@ assignments or the timeout kwarg.
 from __future__ import annotations
 
 import os
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +21,7 @@ import pytest
 # Ensure no valid static directory is set before importing main
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import app, lifespan, _wait_for_sidecar  # noqa: E402
+from app.main import _start_singletons, _wait_for_sidecar, app, lifespan  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +129,11 @@ class TestWaitForSidecarTimeoutKwarg:
 class TestLifespanAppStateBotAssignment:
     @pytest.mark.asyncio
     async def test_app_state_bot_is_set_to_bot_when_token_present(self):
-        """app.state.bot is set to the create_bot() return value during lifespan."""
+        """app.state.bot is set to the create_bot() return value when the leader
+        starts the singletons (the bot now runs only on the elected leader)."""
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
+        mock_bot.start = AsyncMock()
 
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
@@ -152,11 +153,10 @@ class TestLifespanAppStateBotAssignment:
             patches[6],
             patches[7],
         ):
-            async with lifespan(app):
-                # During the lifespan body, app.state.bot must be the created bot
-                assert app.state.bot is mock_bot, (
-                    "app.state.bot was not set to the bot created by create_bot()"
-                )
+            await _start_singletons(app)
+            assert app.state.bot is mock_bot, (
+                "app.state.bot was not set to the bot created by create_bot()"
+            )
 
     @pytest.mark.asyncio
     async def test_app_state_bot_is_none_when_no_token(self):

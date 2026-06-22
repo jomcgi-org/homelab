@@ -906,6 +906,17 @@ py_test(
 )
 
 py_test(
+    name = "leadership_test",
+    srcs = ["app/leadership_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "chat_agent_extra_test",
     srcs = ["chat/agent_extra_test.py"],
     imports = ["."],

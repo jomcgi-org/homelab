@@ -54,35 +54,21 @@ def _log_task_exception(task: "asyncio.Task[object]") -> None:
         )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _start_singletons(app: FastAPI) -> None:
+    """Start the background singletons. Invoked only on the elected leader replica.
+
+    These (Discord bot, scheduler dispatch loop, AIS ingest, bot-coupled lock
+    sweep) must run on exactly one replica, so they live behind leader election
+    rather than starting unconditionally in the lifespan.
+    """
     from app.db import get_engine
     from scheduler.api import purge_stale_jobs, run_scheduler_loop
     from sqlmodel import Session
 
-    app.state.bot = None
-    app.state.backfill_task = None
+    tasks: list[asyncio.Task] = []
 
-    # Register all scheduled jobs
-    with Session(get_engine()) as session:
-        from knowledge.service import on_startup as knowledge_startup
-
-        knowledge_startup(session)
-        home.on_startup_jobs(session)
-        ships.on_startup_jobs(session)
-        hikes.on_startup_jobs(session)
-        stars.on_startup_jobs(session)
-        dr_jobs.on_startup_jobs(session)
-        worldcup.on_startup_jobs(session)
-        knowledge.on_startup_jobs(session)
-
-        from home.observability import rollup as observability_rollup
-
-        observability_rollup.register(session)
-
-    # Start Discord bot + chat jobs if configured
+    # Discord bot + chat jobs if configured.
     bot = None
-    bot_task = None
     discord_token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if discord_token:
         from chat.bot import create_bot
@@ -91,7 +77,6 @@ async def lifespan(app: FastAPI):
 
         bot = create_bot()
         app.state.bot = bot
-
         with Session(get_engine()) as session:
             chat_startup(session, bot=bot, llm_call=build_llm_caller())
 
@@ -101,28 +86,28 @@ async def lifespan(app: FastAPI):
 
         bot_task = asyncio.create_task(_start_bot_when_ready())
         bot_task.add_done_callback(_log_task_exception)
+        tasks.append(bot_task)
         logger.info("Discord bot starting")
 
-    # Purge stale jobs from DB (e.g. removed changelog channels)
+    # Purge stale jobs (registry housekeeping the leader owns).
     with Session(get_engine()) as session:
         purge_stale_jobs(session)
 
-    # Start the shared scheduler loop (replaces 4 separate asyncio tasks)
+    # Scheduler dispatch loop.
     scheduler_task = asyncio.create_task(run_scheduler_loop())
     scheduler_task.add_done_callback(_log_task_exception)
+    tasks.append(scheduler_task)
 
-    # Start the supervised AISStream ingest listener. It reconnects forever and
-    # never raises out (only CancelledError on shutdown), so it can never crash
-    # the app. Disabled automatically when AISSTREAM_API_KEY is unset.
+    # Supervised AISStream ingest (reconnects forever; CancelledError on stop).
     from ships.ingest import ais_stream_loop
 
     app.state.ships_stop = asyncio.Event()
-    app.state.ships_task = asyncio.create_task(ais_stream_loop(app.state.ships_stop))
-    app.state.ships_task.add_done_callback(_log_task_exception)
+    ships_task = asyncio.create_task(ais_stream_loop(app.state.ships_stop))
+    ships_task.add_done_callback(_log_task_exception)
+    tasks.append(ships_task)
     logger.info("Ships AISStream ingest started")
 
-    # Lock sweep stays in-memory (30s, bot-coupled, already multi-pod safe via SKIP LOCKED)
-    sweep_task = None
+    # Bot-coupled lock sweep (reclaims expired message locks via SKIP LOCKED).
     if discord_token and bot:
 
         async def _lock_sweep_loop():
@@ -154,34 +139,87 @@ async def lifespan(app: FastAPI):
 
         sweep_task = asyncio.create_task(_lock_sweep_loop())
         sweep_task.add_done_callback(_log_task_exception)
+        tasks.append(sweep_task)
         logger.info("Message lock sweep started (30s interval)")
+
+    app.state.singleton_tasks = tasks
+
+
+async def _stop_singletons(app: FastAPI) -> None:
+    """Stop the background singletons. Idempotent; runs on resign or shutdown."""
+    bot = getattr(app.state, "bot", None)
+    if bot is not None:
+        try:
+            await bot.close()
+        except Exception:
+            logger.exception("Discord bot close failed")
+        app.state.bot = None
+
+    ships_stop = getattr(app.state, "ships_stop", None)
+    if ships_stop is not None:
+        ships_stop.set()
+        app.state.ships_stop = None
+
+    for task in getattr(app.state, "singleton_tasks", []):
+        task.cancel()  # cancelling an already-done task is a safe no-op
+    app.state.singleton_tasks = []
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.db import get_engine
+    from sqlmodel import Session
+
+    app.state.bot = None
+    app.state.backfill_task = None
+
+    # Register all scheduled jobs
+    with Session(get_engine()) as session:
+        from knowledge.service import on_startup as knowledge_startup
+
+        knowledge_startup(session)
+        home.on_startup_jobs(session)
+        ships.on_startup_jobs(session)
+        hikes.on_startup_jobs(session)
+        stars.on_startup_jobs(session)
+        dr_jobs.on_startup_jobs(session)
+        worldcup.on_startup_jobs(session)
+        knowledge.on_startup_jobs(session)
+
+        from home.observability import rollup as observability_rollup
+
+        observability_rollup.register(session)
 
     # Prime the observability snapshots (topology + stats) once at startup so the
     # first request has data; the scheduled rollup jobs refresh them thereafter.
-    # Best-effort: failures are logged and the scheduler retries (ADR 004 Layer 4).
+    # Runs on every replica (best-effort; the scheduler rollup refreshes later).
     await prime_snapshots()
 
-    logger.info("Monolith started")
+    # Background singletons (Discord bot, scheduler loop, AIS ingest, lock sweep)
+    # run on ONLY ONE replica at a time, elected via a Postgres heartbeat lease,
+    # so the web tier can scale horizontally without N duplicate bots/streams.
+    # Followers just serve HTTP. See app/leadership.py.
+    from app.leadership import LeaderElector
+
+    elector = LeaderElector()
+    app.state.elector = elector
+    app.state.singleton_tasks = []
+    elector_task = asyncio.create_task(
+        elector.run(
+            on_acquire=lambda: _start_singletons(app),
+            on_resign=lambda: _stop_singletons(app),
+        )
+    )
+    elector_task.add_done_callback(_log_task_exception)
+
+    logger.info("Monolith started (leader election active)")
     yield
 
+    elector_task.cancel()
+    await _stop_singletons(app)
     backfill_task = getattr(app.state, "backfill_task", None)
     if backfill_task and not backfill_task.done():
         backfill_task.cancel()
-    if sweep_task:
-        sweep_task.cancel()
-    if bot:
-        await bot.close()
-    if bot_task:
-        bot_task.cancel()
-    scheduler_task.cancel()
-
-    # Stop the ships ingest loop: signal it and cancel (cancel-only, matching the
-    # bot/scheduler/sweep teardown above). The supervised loop re-raises
-    # CancelledError on shutdown; its done callback (_log_task_exception) handles
-    # it. We do not await here so the path stays robust when tests patch
-    # asyncio.create_task into a non-awaitable mock.
-    app.state.ships_stop.set()
-    app.state.ships_task.cancel()
 
     if _tracer_provider is not None:
         _tracer_provider.shutdown()
