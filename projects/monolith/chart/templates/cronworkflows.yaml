@@ -23,7 +23,11 @@ metadata:
     {{- include "monolith.labels" $ | nindent 4 }}
     app.kubernetes.io/component: cron-job
 spec:
-  schedule: {{ .schedule | quote }}
+  # Argo Workflows v4 replaced the singular `schedule` string with a `schedules`
+  # list; the v4 controller rejects a bare `schedule` as "must have at least one
+  # schedule" and never fires. Render the single cron expression as a one-item list.
+  schedules:
+    - {{ .schedule | quote }}
   concurrencyPolicy: {{ .concurrencyPolicy | default "Forbid" }}
   suspend: {{ .suspend | default false }}
   startingDeadlineSeconds: {{ .startingDeadlineSeconds | default 30 }}

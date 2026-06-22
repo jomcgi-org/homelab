@@ -52,7 +52,12 @@ jobs:
     # on-cluster-Qwen path end to end before porting real agents onto it.
     - name: test-agent
       args: ["test-agent"]
-      schedule: "*/30 * * * *"
+      # @every <duration> (robfig/cron interval form) is how Argo expresses a
+      # sub-minute cadence; standard 5-field cron floors at 1/min. This is a
+      # throwaway substrate probe, so run it hot for fast feedback. Forbid keeps
+      # runs from overlapping if one Qwen call runs long. Dial down or suspend
+      # once the path is proven.
+      schedule: "@every 30s"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 300
       suspend: false
