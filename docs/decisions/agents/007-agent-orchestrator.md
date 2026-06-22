@@ -1,7 +1,7 @@
 # ADR 007: Agent Run Orchestration Service
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Implemented
 **Created:** 2026-03-07
 **Supersedes:** None (extends [004-autonomous-agents](004-autonomous-agents.md))
 

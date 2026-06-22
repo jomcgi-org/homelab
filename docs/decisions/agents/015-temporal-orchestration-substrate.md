@@ -1,7 +1,7 @@
 # ADR 015: Temporal as the Orchestration Substrate
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Deprecated (Temporal removed 2026-06-14)
 **Created:** 2026-05-30
 **Supersedes:** [014 — AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)
 **Depends on:** [016 — NATS as Canonical Event Stream](016-nats-canonical-event-stream.md), [017 — Domain Event Schema](017-domain-event-schema.md)

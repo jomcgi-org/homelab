@@ -1,7 +1,7 @@
 # ADR 010: Recipe-Driven Agent Registry
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Deprecated (superseded by claude.ai routines)
 **Created:** 2026-03-12
 **Extends:** [007-agent-orchestrator](007-agent-orchestrator.md)
 

@@ -1,7 +1,7 @@
 # ADR 003: Spec-First CLI and Skills
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-04-25
 
 ---

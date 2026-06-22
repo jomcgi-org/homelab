@@ -1,7 +1,7 @@
 # RFC: Autonomous Coding Agents
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-02-28
 **Supersedes:** [001-background-agents](001-background-agents.md), [002-openhands-agent-sandbox](002-openhands-agent-sandbox.md)
 

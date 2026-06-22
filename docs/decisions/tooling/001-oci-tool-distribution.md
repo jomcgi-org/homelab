@@ -1,7 +1,7 @@
 # ADR 001: OCI-Based Tool Distribution
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Implemented
 **Created:** 2026-03-07
 
 ---

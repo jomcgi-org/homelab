@@ -1,7 +1,7 @@
 # ADR 002: Path-Based Ingress Tiers with Automatic DNS
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Implemented
 **Created:** 2026-03-29
 **Relates to:** [ADR 001: Cloudflare + Envoy Gateway](001-cloudflare-envoy-gateway.md)
 

@@ -1,7 +1,7 @@
 # ADR 003: Knowledge Search Overlay
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-04-09
 
 ---
