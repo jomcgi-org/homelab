@@ -53,3 +53,34 @@ subjects:
   - kind: ServiceAccount
     name: monolith-stats
     namespace: {{ .Release.Namespace }}
+---
+# Every Argo workflow pod's `wait` sidecar reports step results by creating a
+# workflowtaskresults object as the pod's own SA. The shared argo-workflow SA
+# gets this from the chart's argo-workflows-workflow Role, but a custom SA does
+# not - without it the work runs fine (main exits 0) yet the Workflow is marked
+# Error on the wait sidecar's RBAC denial. Grant monolith-stats the same minimal
+# executor permission via a self-contained Role (not bound to the chart's Role
+# name, to avoid coupling to an upstream rename).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monolith-stats-executor
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monolith-stats-executor
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: monolith-stats-executor
+subjects:
+  - kind: ServiceAccount
+    name: monolith-stats
+    namespace: {{ .Release.Namespace }}
