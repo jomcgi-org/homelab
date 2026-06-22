@@ -16,4 +16,11 @@ rules:
         Detects stale references to the pre-reorganisation directory layout.
         Use 'projects/<service>/deploy', 'projects/<service>/chart', or
         'projects/<service>/backend' instead.
-    pattern-regex: '(overlays/prod/|//services/[a-z]|//charts/[a-z])'
+    pattern-regex: "(overlays/prod/|//services/[a-z]|//charts/[a-z])"
+    paths:
+      # ADRs are immutable, point-in-time records. They legitimately reference
+      # the repo layout that existed when the decision was made (e.g. an ADR
+      # whose action item was "remove overlays/prod/openhands/"). Keeping the
+      # rule active for runbooks and live config, exclude the decision log.
+      exclude:
+        - "docs/decisions/**"
