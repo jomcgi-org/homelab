@@ -81,7 +81,7 @@ def _capture_sweep_coro():
     """Capture the _lock_sweep_loop coroutine (task 4) without closing it.
 
     Task order when DISCORD_BOT_TOKEN is set:
-      1=bot, 2=scheduler, 3=ships ingest, 4=sweep
+      1=bot, 2=outbox drain, 3=ships ingest, 4=sweep
     """
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
@@ -93,8 +93,8 @@ def _capture_sweep_coro():
     def capture_create_task(coro, **kwargs):
         task_counter[0] += 1
         t = MagicMock()
-        # 5th task is the lock sweep (bot, outbox drain, scheduler, ships, sweep).
-        if task_counter[0] == 5:
+        # 4th task is the lock sweep (bot, outbox drain, ships, sweep).
+        if task_counter[0] == 4:
             coros.append(coro)  # preserve — do NOT close
         else:
             if hasattr(coro, "close"):
@@ -130,7 +130,7 @@ class TestSweepTaskRegistration:
     async def test_sweep_task_registers_done_callback_with_log_task_exception(self):
         """When DISCORD_BOT_TOKEN is set, sweep_task.add_done_callback(_log_task_exception) is called.
 
-        Task order: 1=bot, 2=scheduler, 3=ships ingest, 4=sweep.
+        Task order: 1=bot, 2=outbox drain, 3=ships ingest, 4=sweep.
         """
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
@@ -142,8 +142,8 @@ class TestSweepTaskRegistration:
             if hasattr(coro, "close"):
                 coro.close()
             task_counter[0] += 1
-            # 5th task is the lock sweep (bot, outbox drain, scheduler, ships, sweep).
-            if task_counter[0] == 5:
+            # 4th task is the lock sweep (bot, outbox drain, ships, sweep).
+            if task_counter[0] == 4:
                 return sweep_task_mock
             return MagicMock()
 
@@ -226,8 +226,8 @@ class TestSweepTaskRegistration:
         ):
             await _start_singletons(app)
 
-        # 2 tasks should be created (scheduler + ships ingest)
-        assert len(tasks_created) == 2
+        # 1 task should be created (ships ingest only; scheduler loop removed)
+        assert len(tasks_created) == 1
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 

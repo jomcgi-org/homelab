@@ -110,8 +110,8 @@ class TestChatStartupHook:
         mock_chat_startup.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_bot_task_and_scheduler_task_both_get_done_callback(self):
-        """Both the bot task and scheduler task register done callbacks."""
+    async def test_singleton_tasks_all_get_done_callback(self):
+        """Every singleton task registers a done callback."""
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
 
@@ -141,17 +141,16 @@ class TestChatStartupHook:
         ):
             await _start_singletons(app)
 
-        assert len(task_mocks) == 5
-        # Tasks: 0=bot, 1=outbox drain, 2=scheduler, 3=ships ingest, 4=sweep, all
-        # have done callbacks.
+        assert len(task_mocks) == 4
+        # Tasks: 0=bot, 1=outbox drain, 2=ships ingest, 3=sweep, all have done
+        # callbacks. (The scheduler dispatch loop was removed - all batch jobs
+        # run as Argo CronWorkflows now.)
         bot_task = task_mocks[0]
         drain_task = task_mocks[1]
-        scheduler_task = task_mocks[2]
-        ships_task = task_mocks[3]
-        sweep_task = task_mocks[4]
+        ships_task = task_mocks[2]
+        sweep_task = task_mocks[3]
         bot_task.add_done_callback.assert_called_once_with(_log_task_exception)
         drain_task.add_done_callback.assert_called_once_with(_log_task_exception)
-        scheduler_task.add_done_callback.assert_called_once_with(_log_task_exception)
         ships_task.add_done_callback.assert_called_once_with(_log_task_exception)
         sweep_task.add_done_callback.assert_called_once_with(_log_task_exception)
 
