@@ -208,7 +208,9 @@ async def test_create_workflow_passes_correct_args_and_returns_name(k8s_client):
     mock_api = MagicMock()
     mock_custom = MagicMock()
     server_response = {"metadata": {"name": "my-workflow-xyz"}}
-    mock_custom.create_namespaced_custom_object = AsyncMock(return_value=server_response)
+    mock_custom.create_namespaced_custom_object = AsyncMock(
+        return_value=server_response
+    )
 
     body = {
         "apiVersion": "argoproj.io/v1alpha1",
@@ -225,7 +227,9 @@ async def test_create_workflow_passes_correct_args_and_returns_name(k8s_client):
             return_value=mock_custom,
         ),
     ):
-        name = await k8s_client.create_workflow(namespace="monolith-workflows", body=body)
+        name = await k8s_client.create_workflow(
+            namespace="monolith-workflows", body=body
+        )
 
     mock_custom.create_namespaced_custom_object.assert_called_once_with(
         group="argoproj.io",
