@@ -48,6 +48,8 @@ type Persistent interface{ /* durable volumes survive Release */ }
 
 The capability seam keeps the interface from being a leaky rename of agent-sandbox: snapshot/restore is a `Snapshotable` capability the core never requires, so agent-sandbox is not forced to fake it and a Firecracker backend is not forced to hide it. The interface is proven by shipping a second implementation (a raw-`Pod`/`Job` executor) plus an in-memory test fake alongside impl #1, so we learn immediately if the interface only expresses agent-sandbox. The fake also lets the consumers be tested with no cluster, which matters given this repo has no local test loop.
 
+The **harness** that runs inside the executor is a separate seam and is out of scope here: `Exec` runs an opaque process and streams its output, so the harness (Goose recipes today, the Claude CLI subprocess elsewhere) is a property of the workload image, not the platform. Goose stays for now; whether to keep it versus a thinner runner is a distinct decision governed by [ADR 010](010-recipe-driven-agent-registry.md), and nothing in this ADR is coupled to it. The crux for that future evaluation is single-provider versus genuinely multi-provider use, and the recipe format you value is separable from Goose-the-runtime.
+
 **3. The executor is a sequence, not a single choice, and the `Substrate` seam makes the sequence throwaway-free for consumers.**
 
 | Executor                                            | Memory tax                 | Latency                       | Status                                                                             |
