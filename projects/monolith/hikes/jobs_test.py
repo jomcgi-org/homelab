@@ -18,8 +18,25 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 import hikes.jobs as jobs
-from hikes.models import WalkHour
+from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
+
+
+def _scraped(uuid, **over):
+    """A scraped Walk (hikes.walkhighlands.Walk == hikes.models.Walk)."""
+    fields = dict(
+        uuid=uuid,
+        name="A Walk",
+        url=f"https://example.invalid/{uuid}.shtml",
+        distance_km=10.0,
+        ascent_m=500,
+        duration_h=4.0,
+        summary="A fine walk.",
+        latitude=57.0,
+        longitude=-4.0,
+    )
+    fields.update(over)
+    return Walk(**fields)
 
 
 @pytest.fixture(name="session")
@@ -158,3 +175,35 @@ def test_prune_elapsed_drops_only_elapsed_hours(session):
 
     remaining = {_utc(r.hour_time) for r in session.exec(select(WalkHour)).all()}
     assert remaining == {current, future}
+
+
+def test_upsert_walks_inserts_new(session):
+    new, updated = jobs._upsert_walks(session, [_scraped("u1"), _scraped("u2")])
+    session.commit()
+    assert (new, updated) == (2, 0)
+    assert {w.uuid for w in session.exec(select(Walk)).all()} == {"u1", "u2"}
+
+
+def test_upsert_walks_updates_existing(session):
+    session.add(_scraped("u1", duration_h=66.0, name="Old"))
+    session.commit()
+    new, updated = jobs._upsert_walks(session, [_scraped("u1", duration_h=18.0)])
+    session.commit()
+    assert (new, updated) == (0, 1)
+    row = session.get(Walk, "u1")
+    assert row.duration_h == 18.0 and row.name == "A Walk"
+
+
+def test_upsert_walks_dedupes_batch_by_uuid(session):
+    # Two walk pages at the same trailhead share uuid5(lat,lon). Both would take
+    # the insert path and trip walks_pkey; dedup keeps the last and the commit
+    # must succeed (the bug that froze the corpus once scraping worked again).
+    new, updated = jobs._upsert_walks(
+        session,
+        [_scraped("dup", duration_h=18.0), _scraped("dup", duration_h=12.0)],
+    )
+    session.commit()  # must not raise UniqueViolation
+    assert (new, updated) == (1, 0)
+    rows = session.exec(select(Walk).where(Walk.uuid == "dup")).all()
+    assert len(rows) == 1
+    assert rows[0].duration_h == 12.0  # last occurrence wins
