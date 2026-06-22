@@ -2,7 +2,12 @@ actions:
   # Format check - runs formatters and gazelle, auto-commits fixes on PR branches
   # Runs in parallel with Test and Push images
   - name: "Format check"
-    container_image: "ubuntu-24.04"
+    # CI-execution-only image (ci/ GHCR namespace) that bakes the formatters +
+    # buildifier + the custom gazelle binary, so this step runs them DIRECTLY
+    # with no `bazel run` / RBE roundtrip. Pinned by digest; rebuilt by the Push
+    # images action and bumped here when the image inputs change. See
+    # bazel/tools/format/ci-image/.
+    container_image: "ghcr.io/jomcgi/homelab/ci/format@sha256:03ad7dbe447574643678298f955fb2481cf88c63ccd507d85365d9fb6f56c124"
     max_retries: 2
     resource_requests:
       memory: "8GB"
@@ -24,13 +29,21 @@ actions:
             exit 0
           fi
 
-          # Run all formatters, generators, and gazelle in a single Bazel invocation.
-          # This replaces the previous 3-call approach (bazel build + fast-format.sh + bazel run gazelle)
-          # with one gRPC session, reducing transient connection failures.
-          bazel run //bazel/tools/format:format --config=ci
+          # Run all formatters, generators, buildifier and the custom gazelle
+          # DIRECTLY from the ci/format image -- no `bazel run` / RBE roundtrip.
+          # fast-format.sh runs the formatters + generate scripts + buildifier;
+          # it swallows gazelle errors (|| true), so skip gazelle there and run
+          # the baked custom gazelle explicitly below where failures surface.
+          SKIP_GAZELLE=1 bash bazel/tools/format/fast-format.sh
+          # generate-routes is in the format multirun but not fast-format.sh.
+          bash projects/monolith/generate-routes.sh
+          # Custom gazelle (helm/wrangler/semgrep extensions), baked at /usr/bin/gazelle.
+          gazelle
 
-          # Validate grep-based generate scripts against bazel query
-          ./bazel/images/validate-generate-scripts.sh
+          # Validate the bazel-free generate scripts (home-cluster + the two
+          # repo-doc manifests). The bazel-query drift checks moved to the Test
+          # action, which has bazel; this image does not.
+          ./bazel/images/validate-generate-scripts.sh --no-queries
 
           # Reject non-ASCII characters in commit messages.
           # Wrangler Pages (Cloudflare) fails with error 8000111 when commits
@@ -101,6 +114,12 @@ actions:
           # not-yet-built features): those are intentionally red and must not
           # gate merges. The non-required "BDD future features" action runs them.
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+
+          # Cross-check the grep-based generate scripts against the actual build
+          # graph (kind(oci_push/apko_push/helm_push/wrangler_pages_push)). Moved
+          # here from the Format check, which now runs in the bazel-free ci/format
+          # image; this action has bazel.
+          ./bazel/images/validate-generate-scripts.sh --queries-only
 
           # OCaml multi-arch shard (ADR 006/008): the example/test ladder again,
           # targeting linux/arm64. Toolchain resolution routes ocaml actions to

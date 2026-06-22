@@ -2,8 +2,30 @@
 # CI validation: cross-check grep-based generate scripts against bazel query output.
 # This ensures the grep approximations haven't drifted from the actual Bazel build graph.
 #
-# Only intended to run in CI where Bazel is available.
+# Modes (the Format check now runs in the bazel-free ci/format image, so the
+# bazel-query validations are split out to the Test action which has bazel):
+#   --all          (default) run everything; needs bazel. For local use.
+#   --queries-only run only the bazel-query drift checks (push-all,
+#                  push-all-pages). Runs in the Test action.
+#   --no-queries   run only the bazel-free checks (home-cluster, repo-docs
+#                  manifest, docs-site manifest). Runs in the Format check.
 set -euo pipefail
+
+MODE="all"
+case "${1:-}" in
+--queries-only) MODE="queries" ;;
+--no-queries) MODE="no-queries" ;;
+--all | "") MODE="all" ;;
+*)
+	echo "usage: $0 [--all|--queries-only|--no-queries]" >&2
+	exit 2
+	;;
+esac
+
+# run_queries: the bazel-query drift checks (need bazel).
+run_queries() { [ "$MODE" = "all" ] || [ "$MODE" = "queries" ]; }
+# run_nonqueries: the bazel-free checks (python3/bash only).
+run_nonqueries() { [ "$MODE" = "all" ] || [ "$MODE" = "no-queries" ]; }
 
 cd "${BUILD_WORKSPACE_DIRECTORY:-$(git rev-parse --show-toplevel)}"
 
