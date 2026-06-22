@@ -1,7 +1,7 @@
 # ADR: Role-Based MCP Access
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-03-01
 **Relates to:** [003-context-forge](003-context-forge.md), [006-oidc-auth-mcp-gateway](006-oidc-auth-mcp-gateway.md)
 

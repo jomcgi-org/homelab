@@ -1,7 +1,7 @@
 # ADR 013: Knowledge Gardener Gemma4-Only Pipeline
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Deprecated (superseded by claude.ai routines)
 **Created:** 2026-04-09
 **Supersedes:** [ADR 012](012-knowledge-gardener-model-pipeline.md)
 

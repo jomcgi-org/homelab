@@ -1,7 +1,7 @@
 # ADR 001: Reduce Cloudflare Operator Scope via Envoy Gateway
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Implemented
 **Created:** 2026-02-28
 **Relates to:** [K8s API Tunnel RFC](../../../docs/plans/2026-02-26-k8s-api-tunnel.md)
 

@@ -1,7 +1,7 @@
 # ADR 018: Event-Driven Gardener Triggering via Remote-Trigger Runs
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Deprecated (gardener runs as claude.ai routines)
 **Created:** 2026-06-14
 
 ---

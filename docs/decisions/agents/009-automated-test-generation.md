@@ -1,7 +1,7 @@
 # ADR 009: Automated Test Generation Bots
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-03-11
 
 ---

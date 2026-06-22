@@ -1,7 +1,7 @@
 # ADR 011: Cloudflare Managed OAuth for MCP Gateway
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-03-29
 **Supersedes:** [006-oidc-auth-mcp-gateway](006-oidc-auth-mcp-gateway.md)
 

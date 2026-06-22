@@ -1,7 +1,7 @@
 # ADR 004: D&D Sourcebook Knowledge Graph Integration
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-04-10
 
 ---

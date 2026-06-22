@@ -1,7 +1,7 @@
 # ADR 005: Public Chat Adversarial Hardening
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Implemented
 **Created:** 2026-06-16
 **Relates to:** [ADR 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md), [ADR 010: FastMonolith Modular Framework](../services/010-fastmonolith-modular-framework.md), [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
 

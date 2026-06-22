@@ -1,7 +1,7 @@
 # RL-Finetuned Model for Security-Incident-Driven Semgrep Rule Generation
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Deprecated
 **Created:** 2026-03-28
 **See also:** [ADR 001: Bazel Semgrep](001-bazel-semgrep.md), [Pipeline Design Doc](../../plans/2026-03-28-semgrep-rl-pipeline-design.md)
 

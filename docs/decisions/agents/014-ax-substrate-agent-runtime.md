@@ -1,7 +1,7 @@
 # ADR 014: AX + Substrate as the Agent Runtime Substrate
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Deprecated (AX+Substrate not adopted)
 **Created:** 2026-05-22
 **Supersedes:** None (retires the dispatch plumbing of [007-agent-orchestrator](007-agent-orchestrator.md) and the autonomous-loop plumbing of [008-cluster-patrol-loop-resilience](008-cluster-patrol-loop-resilience.md))
 **Depends on:** [security/003 — gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)

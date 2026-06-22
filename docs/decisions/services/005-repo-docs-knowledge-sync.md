@@ -1,7 +1,7 @@
 # ADR 005: Repo Markdown Knowledge Graph Sync via OCI Volume
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Implemented
 **Created:** 2026-04-11
 
 ---
