@@ -111,15 +111,23 @@ def test_agent() -> None:
             ],
             "max_tokens": int(os.environ.get("MAX_TOKENS", "200")),
             "temperature": 0,
+            # qwen3.6 is a thinking model: left on, it spends the whole
+            # max_tokens budget on <think> reasoning and returns content=null
+            # (the reasoning lands in reasoning_content). Disable it so the
+            # tokens produce the summary, matching chat/vision.py.
+            "chat_template_kwargs": {"enable_thinking": False},
         },
         timeout=120,
     )
     resp.raise_for_status()
     try:
-        summary = resp.json()["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, ValueError) as exc:
+        content = resp.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as exc:
         logger.error("test-agent: unexpected Qwen response shape: %s", exc)
         raise
+    if not content:
+        raise ValueError("test-agent: Qwen returned empty content")
+    summary = content.strip()
 
     # 3. Log the result (the whole point of the probe).
     logger.info("test-agent: Qwen says: %s", summary)
