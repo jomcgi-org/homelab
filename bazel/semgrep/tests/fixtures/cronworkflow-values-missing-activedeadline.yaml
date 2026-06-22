@@ -1,0 +1,39 @@
+# Tests for cronworkflow-values-missing-activedeadline rule.
+# CronWorkflow entries in values.yaml must include activeDeadlineSeconds to
+# prevent stuck pods from running indefinitely on the cluster.
+---
+# ruleid: cronworkflow-values-missing-activedeadline
+cronWorkflows:
+  - name: my-job
+    schedule: "*/5 * * * *"
+    concurrencyPolicy: Forbid
+    suspend: false
+
+---
+# ruleid: cronworkflow-values-missing-activedeadline
+cronWorkflows:
+  - name: another-job
+    schedule: "0 0 * * *"
+    suspend: true
+
+---
+# ruleid: cronworkflow-values-missing-activedeadline
+cronWorkflows:
+  - name: bare-schedule-job
+    schedule: "0 4 * * 0"
+
+---
+# ok: cronworkflow-values-missing-activedeadline — activeDeadlineSeconds present after schedule
+cronWorkflows:
+  - name: my-job
+    schedule: "*/5 * * * *"
+    activeDeadlineSeconds: 600
+    concurrencyPolicy: Forbid
+
+---
+# ok: cronworkflow-values-missing-activedeadline — activeDeadlineSeconds present before schedule
+cronWorkflows:
+  - name: my-job
+    activeDeadlineSeconds: 300
+    schedule: "0 * * * *"
+    concurrencyPolicy: Forbid
