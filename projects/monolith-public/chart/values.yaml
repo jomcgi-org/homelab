@@ -282,14 +282,15 @@ web:
           name: monolith-public-turnstile
           key: IP_HASH_SALT
   # CPU request is sized so the HPA's per-container CPU utilization is a
-  # meaningful signal (idle is ~1m). Memory request covers the FastAPI baseline
-  # (~110Mi idle: SQLModel + psycopg + pgvector + the knowledge internals); the
-  # old 64Mi request was below actual. No CPU limit: let it burst (the HPA scales
+  # meaningful signal (idle is ~1m). No CPU limit: let it burst (the HPA scales
   # out on sustained CPU rather than throttling).
+  # Memory request == limit (was 160/384) per the sizing convention: req<limit
+  # risks an overcommit OOM-kill below the limit under node memory pressure. 384
+  # is ~1.6x the 7-day working-set peak of 238Mi (SigNoz k8s.pod.memory.working_set).
   resources:
     requests:
       cpu: 100m
-      memory: 160Mi
+      memory: 384Mi
     limits:
       memory: 384Mi
   service:
@@ -386,15 +387,16 @@ frontend:
         secretKeyRef:
           name: monolith-public-imgproxy-signing
           key: IMGPROXY_SALT
-  # SSR Node needs more headroom than the read-only backend. CPU request sized
-  # for a meaningful HPA signal (Node SSR is CPU-bound under concurrent renders).
-  # Memory request keeps headroom above the ~37Mi idle baseline for load spikes.
+  # SSR Node: CPU request sized for a meaningful HPA signal (Node SSR is
+  # CPU-bound under concurrent renders); no CPU limit.
+  # Memory request == limit (was 128/512) per the sizing convention. 384 is ~1.6x
+  # the 7-day working-set peak of 234Mi (SigNoz); the old 512 limit was overspec.
   resources:
     requests:
       cpu: 100m
-      memory: 128Mi
+      memory: 384Mi
     limits:
-      memory: 512Mi
+      memory: 384Mi
   service:
     type: ClusterIP
     port: 3000
@@ -536,11 +538,13 @@ imgproxy:
       value: "50"
   # CPU request only (no limit): image decode is bursty CPU-bound work and a
   # limit would only throttle it. Memory request == limit per the sizing
-  # convention.
+  # convention (was 128/512, which violated it). 512 is ~1.4x the 7-day
+  # working-set peak of 360Mi (SigNoz); transcodes are spiky (p99 only 132Mi),
+  # so keep the higher ceiling here rather than trim to the peak.
   resources:
     requests:
       cpu: 100m
-      memory: 128Mi
+      memory: 512Mi
     limits:
       memory: 512Mi
   service:
