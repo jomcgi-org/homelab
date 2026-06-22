@@ -40,4 +40,15 @@ playwright_bin.playwright_test(
     # Disables Bazel's local sandbox so chromium can spawn its helper processes;
     # does not prevent remote (RBE) execution, which is what we want to exercise.
     tags = ["no-sandbox"],
+    # The default RBE exec image (gcr.io/flame-public/rbe-ubuntu22-04) lacks
+    # chromium's shared-library runtime (libnss3, libgbm1, libasound2, ...), so
+    # the launch fails there. Override the per-action exec image to one that has
+    # those libs + fonts. This stock public Playwright image is a MECHANISM PROOF
+    # (does this RBE honor a per-target container-image override, can it pull an
+    # external image, does chromium render); ADR tooling/010's production target
+    # is a dedicated apko image, which replaces this ref once it is built and
+    # published. Pinned by digest for reproducibility.
+    exec_properties = {
+        "container-image": "docker://mcr.microsoft.com/playwright:v1.55.0-jammy@sha256:55db7b712a981e9cc1ec757a4511cd01c5ed4e20bd7c84b2dee4e1d320102b9d",
+    },
 )
