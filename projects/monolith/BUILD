@@ -2064,13 +2064,12 @@ py_test(
 )
 
 py_test(
-    name = "scheduler_argo_test",
-    srcs = ["scheduler/argo_test.py"],
+    name = "scheduler_argo_handled_test",
+    srcs = ["scheduler/argo_handled_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
         "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 
@@ -2768,17 +2767,6 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "worldcup_dispatch_test",
-    srcs = ["worldcup/dispatch_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 

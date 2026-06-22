@@ -25,13 +25,19 @@ def on_startup_jobs(session) -> None:
     binary imports worldcup but must not drag in the scheduler/httpx/sim graph
     at module load time.
     """
-    from scheduler.api import register_job
-    from worldcup.jobs import refresh_dispatch
+    from scheduler.api import argo_handled, register_job
+
+    # Skip the in-process job when an active Argo CronWorkflow owns it (the chart
+    # sets ARGO_JOBS from the non-suspended cronWorkflows entries).
+    if argo_handled("worldcup.refresh"):
+        return
+
+    from worldcup.jobs import refresh_handler
 
     register_job(
         session,
         name="worldcup.refresh",
         interval_secs=1800,
-        handler=refresh_dispatch,
+        handler=refresh_handler,
         ttl_secs=600,
     )
