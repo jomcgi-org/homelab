@@ -10,6 +10,12 @@ const config = {
     // the same Bazel package. Defaults to "build" for the normal build.
     adapter: adapter({
       out: process.env.SVELTE_OUT_DIR || "build",
+      // Build-time gzip + brotli of static assets (/_app/*.js, CSS). These are
+      // served by adapter-node's sirv layer BEFORE the SvelteKit handler, so the
+      // hooks.server.js compression hook never sees them; precompress is how the
+      // JS bundle stops shipping uncompressed. sirv serves the .br/.gz variant
+      // when the client accepts it, at zero runtime cost.
+      precompress: true,
     }),
     // No Content-Security-Policy is set by the app. The markdown renderer
     // (components/notes/markdown.js) HTML-escapes untrusted public-chat output
