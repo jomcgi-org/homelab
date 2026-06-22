@@ -108,5 +108,46 @@ def observability_topology_rollup() -> None:
     logger.info("observability-topology-rollup: done")
 
 
+@app.command("hikes-scrape-walks")
+def hikes_scrape_walks() -> None:
+    """Run the full WalkHighlands corpus scrape as a one-shot.
+
+    One-shot form of the ``hikes.scrape_walks`` job. The corpus barely changes
+    and a full scrape can take a couple of hours, so the CronWorkflow ships
+    suspended (manual-only): trigger this by hand when the corpus needs a
+    refresh.
+    """
+    from sqlmodel import Session
+
+    from app.db import get_engine
+    from hikes.jobs import scrape_walks_handler
+
+    configure_logging()
+    logger.info("hikes-scrape-walks: starting")
+    with Session(get_engine()) as session:
+        asyncio.run(scrape_walks_handler(session))
+    logger.info("hikes-scrape-walks: done")
+
+
+@app.command("stars-load-climatology")
+def stars_load_climatology() -> None:
+    """Wholesale-reload the stars climatology table from the S3 backfill.
+
+    One-shot form of the ``stars.load_climatology`` job. The source is a static
+    annual CERRA/ERA5 backfill, so the CronWorkflow ships suspended
+    (manual-only): trigger this by hand after the backfill is regenerated.
+    """
+    from sqlmodel import Session
+
+    from app.db import get_engine
+    from stars.grid import load_climatology_handler
+
+    configure_logging()
+    logger.info("stars-load-climatology: starting")
+    with Session(get_engine()) as session:
+        asyncio.run(load_climatology_handler(session))
+    logger.info("stars-load-climatology: done")
+
+
 if __name__ == "__main__":
     app()

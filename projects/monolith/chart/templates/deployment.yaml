@@ -39,13 +39,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-pg-app
                   key: uri
-            # Jobs that an ACTIVE (non-suspended) Argo CronWorkflow now owns;
-            # on_startup_jobs skips registering these in-process so they don't
-            # run in both places. Derived from the cronWorkflows list, so flipping
-            # an entry's suspend:false both activates the CronWorkflow and removes
-            # the in-process job - one git change, both sides.
+            # Jobs an Argo CronWorkflow now owns; on_startup_jobs skips
+            # registering these in-process so they never run in both places.
+            # Membership is driven by `replaces` alone, NOT suspend: `replaces`
+            # means "Argo owns this job", while `suspend` only controls whether
+            # the CronWorkflow auto-runs on its schedule. That lets an entry be
+            # manual-only (replaces + suspend:true): in-process off, no auto-run,
+            # still submittable by hand.
             - name: ARGO_JOBS
-              value: "{{- range .Values.jobs.cronWorkflows }}{{- if and (not .suspend) .replaces }}{{ .replaces }},{{- end }}{{- end }}"
+              value: "{{- range .Values.jobs.cronWorkflows }}{{- if .replaces }}{{ .replaces }},{{- end }}{{- end }}"
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
               valueFrom:

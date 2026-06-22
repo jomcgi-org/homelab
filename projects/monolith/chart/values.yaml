@@ -97,6 +97,44 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # MANUAL-ONLY jobs: replaces disables the in-process job, suspend:true keeps
+    # the CronWorkflow from ever auto-firing, but it stays submittable by hand
+    # (argo submit --from cronworkflow/<name>, or kubectl create from its
+    # workflowSpec). The yearly schedule is inert belt-and-suspenders: even an
+    # accidental un-suspend can only fire it once a year, not constantly.
+    #
+    # hikes.scrape_walks: full WalkHighlands corpus scrape, ~hours. The corpus
+    # barely changes; trigger by hand when a refresh is wanted.
+    - name: hikes-scrape-walks
+      replaces: hikes.scrape_walks
+      args: ["hikes-scrape-walks"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 14400 # 4h headroom for the full scrape
+      suspend: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 1Gi
+        limits:
+          memory: 1Gi
+    # stars.load_climatology: wholesale-replaces stars.site_month_climatology
+    # from a STATIC annual CERRA/ERA5 S3 backfill, so daily runs just re-loaded
+    # identical data. Trigger by hand after regenerating the backfill.
+    - name: stars-load-climatology
+      replaces: stars.load_climatology
+      args: ["stars-load-climatology"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: true
+      s3: true # _fetch_climatology reads the S3 backfill; needs the endpoint set
+      resources:
+        requests:
+          cpu: 250m
+          memory: 1Gi
+        limits:
+          memory: 1Gi
 
 frontend:
   otelCollectorUrl: ""
