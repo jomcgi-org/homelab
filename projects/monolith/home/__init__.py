@@ -29,3 +29,10 @@ def on_startup_jobs(session) -> None:
         handler=lambda _: calendar_poll_handler(),
         ttl_secs=120,
     )
+
+
+def get_today_events(session) -> list[dict]:
+    """Home domain public API: today's calendar events from the snapshot row."""
+    from home.schedule import get_today_events as _get
+
+    return _get(session)
