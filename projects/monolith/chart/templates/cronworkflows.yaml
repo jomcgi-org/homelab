@@ -67,15 +67,23 @@ spec:
                   key: {{ $ref.key }}
             {{- end }}
             {{- if .s3 }}
-            # Shared SeaweedFS S3 endpoint + creds (sourced from the stars block,
-            # which always sets them; creds are the cluster's dummy duckdb pair).
-            # Bucket/key env stay per-entry since they differ by job.
+            # Full SeaweedFS + stars S3 env, mirroring the monolith deployment
+            # exactly. Endpoint/creds AND the bucket/key names must all be set:
+            # the handlers' in-code defaults (e.g. STARS_GRID_S3_KEY defaulting
+            # to "stars/grid.json") do NOT match the configured keys, so omitting
+            # them makes the job fetch a wrong path and silently load 0 rows.
             - name: SEAWEEDFS_S3_ENDPOINT
               value: {{ $.Values.stars.seaweedfsS3Endpoint | quote }}
             - name: S3_ACCESS_KEY_ID
               value: {{ $.Values.stars.s3AccessKeyId | quote }}
             - name: S3_SECRET_ACCESS_KEY
               value: {{ $.Values.stars.s3SecretAccessKey | quote }}
+            - name: STARS_GRID_S3_BUCKET
+              value: {{ $.Values.stars.gridBucket | quote }}
+            - name: STARS_GRID_S3_KEY
+              value: {{ $.Values.stars.gridKey | quote }}
+            - name: STARS_CLIMATOLOGY_S3_KEY
+              value: {{ $.Values.stars.climatologyKey | quote }}
             {{- end }}
           {{- with .resources }}
           resources:

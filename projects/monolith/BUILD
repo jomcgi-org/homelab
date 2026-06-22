@@ -106,11 +106,17 @@ py_venv_binary(
 # own image (:jobs_image) so an ephemeral pod (e.g. an Argo Workflow) can run a
 # single job to completion off the API pod. Only the worldcup Elo snapshot is
 # shipped as data; the jobs entrypoint never serves the frontend, so the static
-# bundle and the repo-docs manifest are deliberately omitted.
+# bundle is omitted. The repo-docs manifest IS needed: the
+# knowledge.repo_docs_reconcile job (knowledge-repo-docs-reconcile subcommand)
+# reads it from runfiles, so ship it here too (it is data on :main, which does
+# not propagate to this separate binary).
 py_venv_binary(
     name = "jobs",
     srcs = _BACKEND_SRCS,  # keep
-    data = ["worldcup/ratings/elo_2026.json"],
+    data = [
+        "knowledge/repo_docs_manifest.ndjson",
+        "worldcup/ratings/elo_2026.json",
+    ],
     imports = ["."],  # keep
     main = "app/jobs_main.py",
     visibility = ["//:__subpackages__"],
