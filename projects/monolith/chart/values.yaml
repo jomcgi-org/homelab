@@ -39,7 +39,7 @@ jobs:
       schedule: "*/30 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
-      suspend: true # flip to false to cut worldcup.refresh over to Argo
+      suspend: false # worldcup.refresh cut over to Argo 2026-06-22
       resources:
         requests:
           cpu: 250m
