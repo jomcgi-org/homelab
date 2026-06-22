@@ -104,8 +104,9 @@ class TestSingletonBotClose:
         mock_bot.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_start_singletons_creates_four_tasks(self):
-        """The leader starts bot + scheduler + ships ingest + sweep = 4 tasks."""
+    async def test_start_singletons_creates_five_tasks(self):
+        """The leader starts bot + outbox drain + scheduler + ships ingest + sweep
+        = 5 tasks."""
         tasks, capture = _make_task_capturer()
 
         mock_bot = MagicMock()
@@ -127,7 +128,7 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        assert len(tasks) == 4
+        assert len(tasks) == 5
 
 
 # ---------------------------------------------------------------------------
