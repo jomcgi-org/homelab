@@ -4,14 +4,19 @@ backend:
   otelEndpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318/v1/traces"
   resources:
     requests:
-      # 3Gi -> 4Gi: headroom above baseline RSS + one heavy scheduled job (the
-      # FA2 graph layout), which OOMKilled the pod when several jobs piled up.
-      # The scheduler now also serializes heavy jobs (heavy=True); this is the
-      # belt-and-suspenders. requests==limits per the repo memory convention.
-      memory: "4Gi"
-      cpu: "10m"
+      # 4Gi -> 1Gi: the old 4Gi was headroom for the in-process FA2 graph-layout
+      # job that OOMKilled the API pod when heavy jobs piled up. All batch jobs
+      # now run off-pod as Argo CronWorkflows (knowledge.layout carries its own
+      # 4Gi request), so the API pod only serves HTTP/MCP: live baseline RSS is
+      # ~250Mi, and 1Gi is ~4x headroom for request-path spikes. requests==limits
+      # per the repo memory convention.
+      memory: "1Gi"
+      # cpu 10m -> 250m: 10m was too low for fair scheduling and made a CPU-based
+      # HPA meaningless (any load reads as a huge % of 10m). No CPU limit per the
+      # repo convention (avoid throttling).
+      cpu: "250m"
     limits:
-      memory: "4Gi"
+      memory: "1Gi"
 
 frontend:
   otelCollectorUrl: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
