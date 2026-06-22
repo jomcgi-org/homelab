@@ -1,0 +1,59 @@
+{{- /*
+Off-pod batch jobs as Argo CronWorkflows, one per jobs.cronWorkflows entry,
+rendered into jobs.workflowNamespace. Argo's controller owns scheduling,
+concurrency, timeout, and history; ArgoCD syncs these CRs declaratively.
+
+The container runs the digest-pinned jobs image (helm_images_values pins
+jobs.image) with the entry's args, getting DATABASE_URL via secretKeyRef from
+the Kyverno-cloned pg secret. `suspend` is the per-job cutover flag.
+
+Guarded on jobs.image being set: it is only populated by the build-time image
+pin, so a plain `helm template` (no pin) renders nothing - matching the JOBS
+image guard elsewhere.
+*/ -}}
+{{- if .Values.jobs.image }}
+{{- range .Values.jobs.cronWorkflows }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: cron-job
+spec:
+  schedule: {{ .schedule | quote }}
+  concurrencyPolicy: {{ .concurrencyPolicy | default "Forbid" }}
+  suspend: {{ .suspend | default false }}
+  startingDeadlineSeconds: {{ .startingDeadlineSeconds | default 30 }}
+  successfulJobsHistoryLimit: {{ .successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 5 }}
+  workflowSpec:
+    entrypoint: run
+    serviceAccountName: argo-workflow
+    {{- if .activeDeadlineSeconds }}
+    activeDeadlineSeconds: {{ .activeDeadlineSeconds }}
+    {{- end }}
+    ttlStrategy:
+      secondsAfterCompletion: 3600
+      secondsAfterSuccess: 3600
+      secondsAfterFailure: 86400
+    templates:
+      - name: run
+        container:
+          image: "{{ $.Values.jobs.image.repository }}:{{ $.Values.jobs.image.tag }}"
+          args:
+            {{- toYaml .args | nindent 12 }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.jobs.dbSecretName }}
+                  key: {{ $.Values.jobs.dbSecretKey }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import platform
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -10,13 +11,23 @@ from sqlmodel import Field, Session, SQLModel, select, text
 
 from app.db import get_engine
 
-# Off-pod job execution (Argo Workflows), re-exported as part of the scheduler's
-# public surface so domains route batch jobs via scheduler.api.
-from scheduler.argo import jobs_use_argo, submit_job_workflow  # noqa: F401
-
 logger = logging.getLogger("monolith.scheduler")
 
 _HOSTNAME = platform.node()
+
+
+def argo_handled(job_name: str) -> bool:
+    """True if an active Argo CronWorkflow owns this job (set via ARGO_JOBS env).
+
+    on_startup_jobs callers skip register_job for these so the job does not run
+    both in-process and as a CronWorkflow. ARGO_JOBS is a comma-separated list of
+    in-process job names, derived by the chart from the non-suspended
+    cronWorkflows entries (see chart/templates/deployment.yaml).
+    """
+    handled = {
+        n.strip() for n in os.environ.get("ARGO_JOBS", "").split(",") if n.strip()
+    }
+    return job_name in handled
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (last_run_at/locked_at are intentionally NULL until set)
