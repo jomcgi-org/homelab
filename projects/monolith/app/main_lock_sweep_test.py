@@ -93,7 +93,8 @@ def _capture_sweep_coro():
     def capture_create_task(coro, **kwargs):
         task_counter[0] += 1
         t = MagicMock()
-        if task_counter[0] == 4:
+        # 5th task is the lock sweep (bot, outbox drain, scheduler, ships, sweep).
+        if task_counter[0] == 5:
             coros.append(coro)  # preserve — do NOT close
         else:
             if hasattr(coro, "close"):
@@ -141,7 +142,8 @@ class TestSweepTaskRegistration:
             if hasattr(coro, "close"):
                 coro.close()
             task_counter[0] += 1
-            if task_counter[0] == 4:
+            # 5th task is the lock sweep (bot, outbox drain, scheduler, ships, sweep).
+            if task_counter[0] == 5:
                 return sweep_task_mock
             return MagicMock()
 

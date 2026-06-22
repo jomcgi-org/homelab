@@ -62,8 +62,9 @@ def _capture():
 
 class TestSingletons:
     @pytest.mark.asyncio
-    async def test_start_singletons_starts_four_tasks_with_token(self):
-        """With a token, the leader starts bot + scheduler + ships + sweep = 4 tasks."""
+    async def test_start_singletons_starts_five_tasks_with_token(self):
+        """With a token, the leader starts bot + outbox drain + scheduler + ships +
+        sweep = 5 tasks."""
         created, cap = _capture()
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
@@ -83,7 +84,7 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert len(created) == 4
+        assert len(created) == 5
 
     @pytest.mark.asyncio
     async def test_start_singletons_two_tasks_without_token(self):
