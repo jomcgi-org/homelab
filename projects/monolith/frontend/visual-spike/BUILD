@@ -1,3 +1,6 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//projects/monolith/frontend/visual-spike:@playwright/test/package_json.bzl", playwright_bin = "bin")
+
 # gazelle:ignore
 #
 # ADR tooling/010 de-risking spike. Isolated, throwaway target that proves the
@@ -6,8 +9,6 @@
 # real frontend/visual capture is migrated off its runtime `playwright install`.
 # Not part of any shipped image; deleted once the substrate is settled.
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
-load("@npm//:defs.bzl", "npm_link_all_packages")
-load("@npm//projects/monolith/frontend/visual-spike:@playwright/test/package_json.bzl", playwright_bin = "bin")
 
 npm_link_all_packages(name = "node_modules")
 
