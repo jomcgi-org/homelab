@@ -27,6 +27,12 @@ bazel_dep(name = "aspect_rules_js", version = "3.0.0-rc4")
 bazel_dep(name = "aspect_rules_ts", version = "3.8.3")
 bazel_dep(name = "aspect_rules_esbuild", version = "0.25.0")
 
+# Vendored Playwright browser binaries (ADR tooling/010). Replaces the runtime
+# `npx playwright install` in the visual-regression CI step with a hermetic,
+# cached browser fetch. 0.5.3 is the BCR-published top (0.5.4 is a GitHub
+# release only). Spiked first under projects/monolith/frontend/visual-spike.
+bazel_dep(name = "rules_playwright", version = "0.5.3")
+
 # We have to take a dependency on rules_python in order to set bootstrap=script
 # for transitive dependencies, even if there are no Python rules used in this repo.
 # See .bazelrc
@@ -264,6 +270,18 @@ npm.npm_translate_lock(
     pnpm_lock = "//:pnpm-lock.yaml",
 )
 use_repo(npm, "npm")
+
+# Vendored Playwright chromium for the hermetic visual-regression spike (ADR
+# tooling/010). playwright_version MUST match the @playwright/test pinned in
+# pnpm-lock.yaml (1.58.2, already vendored via projects/hikes/frontend), so the
+# browser build and the driver agree. integrity_path_map (pinned download
+# hashes) is intentionally omitted for the spike; pin it before productionizing.
+playwright = use_extension("@rules_playwright//playwright:extensions.bzl", "playwright")
+playwright.repo(
+    name = "playwright",
+    playwright_version = "1.58.2",
+)
+use_repo(playwright, "playwright")
 
 rules_ts_ext = use_extension(
     "@aspect_rules_ts//ts:extensions.bzl",

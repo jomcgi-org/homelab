@@ -9,4 +9,5 @@ packages:
   - projects/hikes/frontend
   - projects/grimoire/frontend
   - projects/monolith/frontend
+  - projects/monolith/frontend/visual-spike
   - projects/agent_platform/orchestrator/ui

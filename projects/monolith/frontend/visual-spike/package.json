@@ -1,0 +1,10 @@
+{
+  "name": "monolith-visual-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ADR tooling/010 de-risking spike: prove rules_playwright-vendored chromium launches and renders as a Bazel test action on linux RBE. Isolated from the live frontend/visual tool. Not shipped.",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}
