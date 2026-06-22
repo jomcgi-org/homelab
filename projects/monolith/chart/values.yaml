@@ -312,6 +312,27 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # calendar_poll fetches the iCal feed and snapshots today's events to
+    # home.calendar_snapshot (so all API replicas read one shared row instead of
+    # each warming an in-memory cache). Needs ICAL_FEED_URL from the cloned
+    # monolith-secrets secret. 15min cadence (was 900s).
+    - name: home-calendar-poll
+      replaces: home.calendar_poll
+      args: ["home-calendar-poll"]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 120
+      suspend: false
+      secretEnv:
+        ICAL_FEED_URL:
+          secretName: monolith-secrets
+          key: ICAL_FEED_URL
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
 
 frontend:
   otelCollectorUrl: ""

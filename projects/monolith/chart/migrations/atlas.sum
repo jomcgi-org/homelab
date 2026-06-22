@@ -1,4 +1,4 @@
-h1:z07tOEvvBv4WKoKGcBUa1sJj4IbQj/Two0U5Sjfo5hQ=
+h1:Pa1f752P7oC8DL5V4WA1+7XRUUUARKnZ9U5+Mp7/JIU=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -62,3 +62,4 @@ h1:z07tOEvvBv4WKoKGcBUa1sJj4IbQj/Two0U5Sjfo5hQ=
 20260621120000_worldcup_swing_per_country.sql h1:PF2X+SOSRkR4sMD1fgd+fu0eoJ0BgiiItGI9IZn7ugw=
 20260621130000_chat_public_reader_schema_usage.sql h1:UuKhDAWNrOK/vOEcI7UA89nvKxSRiSAVQTgRwZexRn8=
 20260621140000_leader_lease.sql h1:5IFOe64jbZr4zA1LpMBFBaInGOKZGFUZJfO84qr1vcw=
+20260622120000_home_calendar_snapshot.sql h1:thRmlSLVQzonjgIBOBKpA7/Of4fyFC3r8l22sFNZkw8=
