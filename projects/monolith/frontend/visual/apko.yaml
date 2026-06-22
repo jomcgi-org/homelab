@@ -54,6 +54,11 @@ contents:
     - cups-libs
     - dbus-libs
     - libexpat1
+    # headless_shell DT_NEEDED that the Playwright apt list omits: libudev.so.1
+    # (the loader error), and glib (libglib/libgobject/libgio) pinned explicitly
+    # since chromium links it directly rather than relying on a transitive pull.
+    - libudev
+    - glib
     # fonts: deterministic text rasterization
     - libfontconfig1
     - freetype
