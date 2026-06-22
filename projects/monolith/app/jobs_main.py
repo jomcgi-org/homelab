@@ -67,5 +67,27 @@ def worldcup_sim() -> None:
     logger.info("worldcup-sim: done")
 
 
+@app.command("knowledge-layout")
+def knowledge_layout() -> None:
+    """Recompute knowledge-graph node positions as a one-shot.
+
+    Runs the full-graph + public FA2 layout passes (CPU-bound, dispatched to a
+    worker thread inside the handler). One-shot form of the ``knowledge.layout``
+    scheduled job; opens its own session to mirror the scheduler's handler
+    contract. The handler swallows per-pass exceptions and logs them, so a
+    silent layout failure still exits 0 - check the ``pass succeeded`` log line.
+    """
+    from sqlmodel import Session
+
+    from app.db import get_engine
+    from knowledge.service import layout_handler
+
+    configure_logging()
+    logger.info("knowledge-layout: starting")
+    with Session(get_engine()) as session:
+        asyncio.run(layout_handler(session))
+    logger.info("knowledge-layout: done")
+
+
 if __name__ == "__main__":
     app()

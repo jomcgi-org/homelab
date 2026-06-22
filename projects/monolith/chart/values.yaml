@@ -46,6 +46,24 @@ jobs:
           memory: 512Mi
         limits:
           memory: 1Gi
+    # knowledge.layout: FA2 graph layout, the heaviest in-process job (3.12GiB
+    # peak). Cutting it off the API pod is what unblocks shrinking monolith
+    # 4Gi -> ~1Gi. Schedule matches the in-process 5-min cadence; Forbid so a
+    # slow layout never overlaps. memory request==limit at 4Gi (repo convention)
+    # to cover the peak; CPU-bound so a generous CPU request, no CPU limit.
+    - name: knowledge-layout
+      replaces: knowledge.layout
+      args: ["knowledge-layout"]
+      schedule: "*/5 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+        limits:
+          memory: 4Gi
 
 frontend:
   otelCollectorUrl: ""
