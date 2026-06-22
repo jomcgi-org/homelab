@@ -51,6 +51,10 @@ spec:
                 secretKeyRef:
                   name: {{ $.Values.jobs.dbSecretName }}
                   key: {{ $.Values.jobs.dbSecretKey }}
+            {{- range $k, $v := .env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
           {{- with .resources }}
           resources:
             {{- toYaml . | nindent 12 }}
