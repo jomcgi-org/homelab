@@ -301,63 +301,46 @@ actions:
             curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_${GH_ARCH}.tar.gz" | $SUDO tar -xz -C /usr/local --strip-components=1
           fi
 
-          # System Node 20: the mock server, capture and diff scripts (and npm /
-          # npx for chromium) run on system Node. The bazel build uses its own
-          # hermetic node toolchain, so the runner ships no system node.
-          if ! command -v node >/dev/null 2>&1; then
-            curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -
-            $SUDO apt-get install -y nodejs
-          fi
-
-          # Build the public adapter-node app. --config=ci is REQUIRED: without
-          # it the build resolves the wrong exec toolchain (arm64 coreutils/tar
-          # on this runner) and dies with "Syntax error". Read the output path
-          # from the `bazel-bin` convenience symlink the build creates, NOT from
-          # `bazel info bazel-bin --config=ci` (that fails to resolve
-          # @@buildbuddy_toolchain).
+          # Capture + diff run as hermetic, cached bazel actions: :diff depends on
+          # :capture, which boots :build_public + the mock seam and screenshots
+          # the pages with chromium INSIDE the ci/visual-chromium exec image (the
+          # browser is vendored via rules_playwright). No system node / npm / npx /
+          # playwright-install on the runner any more.
+          #   --config=ci: the mixed-arch workflow pool shares ~/.cache; build:ci
+          #     disables the disk cache, avoiding wrong-arch binaries.
+          #   --remote_download_outputs=all: the outputs are consumed below OUTSIDE
+          #     bazel (staged + read by gh/jq), so force them onto disk even on a
+          #     remote action-cache hit. On a non-frontend PR this is a cache hit
+          #     and no browser runs.
           REPO_ROOT="$(git rev-parse --show-toplevel)"
-          # --remote_download_outputs=all is REQUIRED: build_public is consumed
-          # by node OUTSIDE bazel, so on a remote action-cache hit Bazel would
-          # otherwise leave the tree artifact in the remote CAS and the local
-          # build_public/ dir empty (index.js "exists=no"). Forcing the download
-          # materializes it on disk.
-          bazel build //projects/monolith/frontend:build_public --config=ci --remote_download_outputs=all
-          # serve.mjs boots the SvelteKit app from this entry (out_dirs=build_public).
-          # The bazel-bin convenience symlink resolves the tree artifact, which
-          # --remote_download_outputs=all guarantees is materialized on disk.
-          APP_ENTRY="$REPO_ROOT/bazel-bin/projects/monolith/frontend/build_public/index.js"
+          bazel build //projects/monolith/frontend/visual:diff --config=ci --remote_download_outputs=all
 
-          # Resolve the PR number from the checked-out branch rather than
-          # BUILDBUDDY_PULL_REQUEST_NUMBER (which is unset in this action env, the
-          # second reason the Manifest diff comment never posts). Export it under
-          # the name the visual scripts already read.
+          # Resolve the PR number from the checked-out branch (BuildBuddy does not
+          # set BUILDBUDDY_PULL_REQUEST_NUMBER in this action env). `// empty` so a
+          # closed/absent PR yields "" (not the string "null", which would pass the
+          # scripts' [ -z ] guard then fail gh).
           export GH_TOKEN="${GHCR_TOKEN:-}"
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-          # `// empty` so a closed/absent PR yields "" (not the string "null",
-          # which would pass the scripts' [ -z ] guard and then fail gh).
           BUILDBUDDY_PULL_REQUEST_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           export BUILDBUDDY_PULL_REQUEST_NUMBER
 
-          # Visual tool deps + chromium only (pinned via @playwright/test 1.49.1).
-          cd projects/monolith/frontend/visual
-          npm install
-          # Split install: system libs need root (apt), but the browser binary
-          # must land in the RUNNING user's cache (capture.mjs runs as that user,
-          # not root), so do not sudo the browser download.
-          $SUDO npx playwright install-deps chromium
-          npx playwright install chromium
-          APP_ENTRY="$APP_ENTRY" node capture.mjs
-          node diff.mjs
+          # Stage the cached bazel outputs into the out/ layout the scripts expect:
+          # current PNGs + manifest.json from :capture (bazel-bin .../visual/out),
+          # report.json + diff/ from :diff (bazel-bin .../visual/diff_out). Read via
+          # the bazel-bin convenience symlink (NOT `bazel info bazel-bin --config=ci`,
+          # which fails to resolve @@buildbuddy_toolchain). cp -L derefs the output
+          # symlinks. out/ is gitignored, so this is ephemeral.
+          VDIR="$REPO_ROOT/projects/monolith/frontend/visual"
+          BB="$REPO_ROOT/bazel-bin/projects/monolith/frontend/visual"
+          rm -rf "$VDIR/out" && mkdir -p "$VDIR/out"
+          cp -rL "$BB/out/." "$VDIR/out/"
+          cp -rL "$BB/diff_out/." "$VDIR/out/"
 
-          # Seed/refresh baselines when the sentinel file is present, else post
-          # the before/after/diff PR comment. A sentinel FILE (not a HEAD commit
-          # message) is the trigger because chart-version-bot lands chart-bump
-          # commits on top of the trigger commit, which would bury a HEAD marker;
-          # the file persists regardless. update-baselines.sh removes the
-          # sentinel in its own bot commit, so the reseed is one-shot.
-          # GHCR_TOKEN is injected into every action by BuildBuddy.
-          cd "$REPO_ROOT"
-          if [ -f projects/monolith/frontend/visual/.reseed-baselines ]; then
+          # Seed/refresh baselines when the sentinel file is present, else post the
+          # before/after/diff PR comment. A sentinel FILE (not a HEAD commit marker)
+          # is used because chart-version-bot lands commits on top of the trigger;
+          # update-baselines.sh removes it in its own bot commit (one-shot).
+          if [ -f "$VDIR/.reseed-baselines" ]; then
             ./projects/monolith/frontend/visual/update-baselines.sh
           else
             ./projects/monolith/frontend/visual/report-to-pr.sh

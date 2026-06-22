@@ -70,11 +70,13 @@ Baseline per `docs/security.md`. The new apko chromium image is a CI-execution-o
 | Vendoring chromium adds toolchain maintenance (version bumps, multi-arch)                   | Medium     | Low    | Treat the chromium repo rule like other pinned tools; only the linux exec arch is needed for CI capture                                                                                                                                                  |
 | Effort exceeds the value for a still-young tool                                             | Medium     | Medium | The capability already works in production; this is a substrate swap with a clear cut-over, not a rewrite, and can be staged so the current path keeps running until the hermetic path is proven                                                         |
 
-## Open Questions
+## Open Questions (resolved in implementation)
 
-1. Whether the capture action runs on RBE (with the apko image as the remote exec platform) or as a local Bazel action on a runner that mounts the image, and which gives more reliable headless chromium behaviour.
-2. The exact apko package set for chromium's runtime (font packages in particular) needed for renders to match the current baselines.
-3. Whether to vendor chromium via a bespoke repository rule or adopt an existing community ruleset, weighed against that ruleset's maturity.
+All three were settled by the de-risking spike and the capture migration:
+
+1. **RBE vs local exec.** RBE, with the apko image as a per-target exec environment via `exec_properties.container-image` (BuildBuddy honors the override and pulls the public image). No local-runner mount needed.
+2. **apko package set.** Resolved by parsing chromium's ELF `DT_NEEDED` and mapping each `.so` to a Wolfi package: the chromium runtime libs + a shell userland (`findutils`/`grep`/`sed`/`gawk`) + `libudev` + `glib` + `cairo`/`pango`, with `fontconfig`/`freetype`/`ttf-dejavu` for fonts. swiftshader/ANGLE/Vulkan are bundled inside chromium, so no system GL stack is needed. See `projects/monolith/frontend/visual/apko.yaml`.
+3. **Ruleset.** Adopted the community `rules_playwright` (BCR), pinned to Playwright 1.55.0 with `browsers_download_urls` overridden to the live `cdn.playwright.dev` mirror. Maturity caveat (it lags the latest Playwright x64 layout) handled by the version pin.
 
 ## References
 
