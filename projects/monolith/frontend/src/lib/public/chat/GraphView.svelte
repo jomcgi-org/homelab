@@ -23,6 +23,10 @@
     initialGraphSelection,
     selectionForFocus,
   } from "$lib/public/chat/chat-state.js";
+  import {
+    getCachedGraph,
+    setCachedGraph,
+  } from "$lib/public/chat/graph-cache.js";
 
   /** @type {{
    *   touched?: { id: any, title: string }[],
@@ -64,6 +68,17 @@
   });
 
   async function loadGraph() {
+    // Toggling Chat <-> Graph remounts this component. Reuse the parsed graph
+    // from a prior open in this page session instead of re-fetching and
+    // re-parsing ~3.4 MB every time (the HTTP layer's s-maxage/ETag still
+    // governs freshness across full page loads, when the module cache resets).
+    const cached = getCachedGraph();
+    if (cached) {
+      nodes = cached.nodes;
+      edges = cached.edges;
+      status = "ready";
+      return;
+    }
     status = "loading";
     try {
       const res = await fetch("/app/notes/graph", {
@@ -76,6 +91,7 @@
       const graph = await res.json();
       nodes = graph.nodes ?? [];
       edges = graph.edges ?? [];
+      setCachedGraph({ nodes, edges });
       status = "ready";
     } catch {
       status = "error";

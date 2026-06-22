@@ -80,6 +80,9 @@
   let quadtree;
   let transform = zoomIdentity;
   let zoomBehavior;
+  // Pending requestAnimationFrame id for coalesced repaints (see
+  // scheduleRender). 0 means no frame is queued.
+  let rafId = 0;
 
   let simNodes = [];
   let simEdges = [];
@@ -234,6 +237,20 @@
 
   // ───────────────────────── render ─────────────────────────
 
+  // Coalesce repaints to one per animation frame. d3-zoom fires many "zoom"
+  // events per wheel/drag gesture, and mousemove fires a hover repaint per
+  // pixel; calling render() synchronously on each made a 4.6k-node / 24.5k-edge
+  // graph janky (every frame re-walks all edges twice + the O(n^2) label
+  // collision pass). Requesting a single frame collapses a burst of input
+  // events into one paint that reads the latest `transform`/`hovered`.
+  function scheduleRender() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      render();
+    });
+  }
+
   function render() {
     if (!ctx || !stage) return;
     const w = stage.clientWidth;
@@ -353,8 +370,6 @@
     ctx.restore();
 
     drawLabels(w, h, filtering, matchSet, selectedNode);
-
-    rebuildQuadtree();
   }
 
   function drawLabels(w, h, filtering, matchSet, selectedNode) {
@@ -666,7 +681,7 @@
         onNodeHover(
           n ? { id: n.id, title: n.title } : { id: null, title: null },
         );
-        render();
+        scheduleRender();
       }
     }
   }
@@ -688,7 +703,7 @@
       hovered = null;
       overNode = false;
       onNodeHover({ id: null, title: null });
-      render();
+      scheduleRender();
     }
   }
 
@@ -731,7 +746,7 @@
         if (e.sourceEvent && e.sourceEvent.type === "mousemove") {
           panning = true;
         }
-        render();
+        scheduleRender();
       })
       .on("end", () => {
         panning = false;
@@ -746,7 +761,7 @@
 
     resizeObserver = new ResizeObserver(() => {
       resize();
-      render();
+      scheduleRender();
     });
     resizeObserver.observe(stage);
 
@@ -758,6 +773,7 @@
     // to the SSR export and crashes on client (svelte/package.json
     // exports map's `default` is the server bundle).
     return () => {
+      if (rafId) cancelAnimationFrame(rafId);
       if (resizeObserver) resizeObserver.disconnect();
       if (canvas) {
         canvas.removeEventListener("mousedown", handleMouseDown);
