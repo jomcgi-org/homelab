@@ -1,9 +1,11 @@
 """Extra coverage tests for home/schedule.py — timezone-aware events,
 date-type DTEND, get_today_events(), and DTSTART with no value."""
 
-from datetime import date
-from unittest.mock import patch
+from datetime import date, datetime
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
+
+from sqlalchemy.exc import OperationalError
 
 import home.schedule as svc
 from home.schedule import get_today_events, parse_events_for_date
@@ -12,45 +14,56 @@ TZ = ZoneInfo("America/Vancouver")
 
 
 # ---------------------------------------------------------------------------
-# get_today_events
+# get_today_events — reads the home.calendar_snapshot row
 # ---------------------------------------------------------------------------
 
 
+def _session(row=None, *, raises=None):
+    """Fake session whose execute().first() returns `row`, or whose execute()
+    raises `raises` (to exercise the missing-table degradation)."""
+    session = MagicMock()
+    if raises is not None:
+        session.execute = MagicMock(side_effect=raises)
+    else:
+        result = MagicMock()
+        result.first = MagicMock(return_value=row)
+        session.execute = MagicMock(return_value=result)
+    return session
+
+
+def _today():
+    return datetime.now(svc.TZ).date()
+
+
 class TestGetTodayEvents:
-    def test_returns_empty_list_when_cache_empty(self):
-        """get_today_events returns [] when the in-memory cache is unpopulated."""
-        # Patch the module-level cache to be empty
-        with patch.object(svc, "_cached_events", []):
-            result = get_today_events()
-        assert result == []
+    def test_returns_empty_when_no_snapshot(self):
+        """No snapshot row -> []."""
+        assert get_today_events(_session(None)) == []
 
-    def test_returns_copy_of_cached_events(self):
-        """get_today_events returns a shallow copy, not the original list."""
-        fake_events = [{"time": "09:00", "title": "Standup", "allDay": False}]
-        with patch.object(svc, "_cached_events", fake_events):
-            result = get_today_events()
-        assert result == fake_events
-        assert result is not fake_events  # must be a copy
+    def test_returns_events_for_today(self):
+        """A snapshot dated today returns its events."""
+        events = [{"time": "09:00", "title": "Standup", "allDay": False}]
+        assert get_today_events(_session((_today(), events))) == events
 
-    def test_mutation_of_result_does_not_affect_cache(self):
-        """Mutating the returned list does not change the internal cache."""
-        original = [{"title": "Meeting"}]
-        with patch.object(svc, "_cached_events", list(original)):
-            result = get_today_events()
-            result.append({"title": "Extra"})
-            # Re-read the cache
-            assert len(get_today_events()) == 1
+    def test_returns_empty_when_stale(self):
+        """A snapshot from an earlier day returns [] (not stale events)."""
+        events = [{"time": None, "title": "Yesterday", "allDay": True}]
+        assert get_today_events(_session((date(2000, 1, 1), events))) == []
 
-    def test_returns_all_cached_events(self):
-        """get_today_events returns every item in the cache."""
-        fake_events = [
+    def test_returns_empty_when_table_missing(self):
+        """A missing table degrades to [] rather than raising (SQLite fixtures /
+        not-yet-migrated environments)."""
+        err = OperationalError("no such table", None, Exception())
+        assert get_today_events(_session(raises=err)) == []
+
+    def test_returns_all_events(self):
+        """Every event in the snapshot is returned."""
+        events = [
             {"time": None, "title": "Holiday", "allDay": True},
             {"time": "10:00", "title": "Sync", "allDay": False},
             {"time": "14:00", "title": "Demo", "allDay": False},
         ]
-        with patch.object(svc, "_cached_events", fake_events):
-            result = get_today_events()
-        assert len(result) == 3
+        assert len(get_today_events(_session((_today(), events)))) == 3
 
 
 # ---------------------------------------------------------------------------

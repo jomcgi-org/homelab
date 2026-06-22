@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from icalendar import Calendar
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import Session, text
 
 logger = logging.getLogger(__name__)
@@ -77,11 +78,18 @@ def get_today_events(session: Session) -> list[dict]:
 
     Reads the single home.calendar_snapshot row written by poll_calendar. If the
     snapshot is for an earlier day (the poll has not run yet today) or is absent,
-    returns an empty list rather than stale events.
+    returns an empty list rather than stale events. A missing table (the SQLite
+    test fixtures build tables from SQLModel metadata, not migrations, and this
+    snapshot is raw-SQL; likewise a not-yet-migrated environment) degrades to an
+    empty list so the home page renders rather than 500ing.
     """
-    row = session.execute(
-        text("SELECT event_date, events FROM home.calendar_snapshot WHERE id = 1")
-    ).first()
+    try:
+        row = session.execute(
+            text("SELECT event_date, events FROM home.calendar_snapshot WHERE id = 1")
+        ).first()
+    except (OperationalError, ProgrammingError):
+        session.rollback()
+        return []
     if row is None:
         return []
     event_date, events = row
