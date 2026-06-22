@@ -262,5 +262,21 @@ def knowledge_discover_gaps() -> None:
     _run_job("knowledge-discover-gaps", "knowledge.service", "discover_gaps_handler")
 
 
+@app.command("home-calendar-poll")
+def home_calendar_poll() -> None:
+    """Fetch the iCal feed and snapshot today's events to Postgres.
+
+    One-shot of home.calendar_poll. The handler takes no session (poll_calendar
+    opens its own to write the home.calendar_snapshot row). Needs ICAL_FEED_URL
+    from the cloned monolith-secrets secret; without it the poll logs a warning
+    and no-ops."""
+    from home.schedule import calendar_poll_handler
+
+    configure_logging()
+    logger.info("home-calendar-poll: starting")
+    asyncio.run(calendar_poll_handler())
+    logger.info("home-calendar-poll: done")
+
+
 if __name__ == "__main__":
     app()

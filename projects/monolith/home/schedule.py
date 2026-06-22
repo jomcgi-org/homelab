@@ -1,17 +1,16 @@
+import asyncio
+import json
 import logging
 import os
-from datetime import date, datetime, time
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import httpx
 from icalendar import Calendar
-from sqlmodel import Session
+from sqlmodel import Session, text
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo("America/Vancouver")
-
-# In-memory cache, populated by poll_calendar()
-_cached_events: list[dict] = []
 
 ICAL_FEED_URL = os.environ.get("ICAL_FEED_URL", "")
 
@@ -73,12 +72,52 @@ def parse_events_for_date(ics_text: str, target_date: date, tz: ZoneInfo) -> lis
     return all_day + timed
 
 
-def get_today_events() -> list[dict]:
-    return list(_cached_events)
+def get_today_events(session: Session) -> list[dict]:
+    """Return the snapshotted events for today.
+
+    Reads the single home.calendar_snapshot row written by poll_calendar. If the
+    snapshot is for an earlier day (the poll has not run yet today) or is absent,
+    returns an empty list rather than stale events.
+    """
+    row = session.execute(
+        text("SELECT event_date, events FROM home.calendar_snapshot WHERE id = 1")
+    ).first()
+    if row is None:
+        return []
+    event_date, events = row
+    today = datetime.now(TZ).date()
+    # SQLite test fixtures hand back event_date as an ISO string; Postgres as a
+    # date. Normalise before comparing.
+    if isinstance(event_date, str):
+        event_date = date.fromisoformat(event_date)
+    if event_date != today:
+        return []
+    return list(events)
+
+
+def _write_calendar_snapshot(event_date: date, events: list[dict]) -> None:
+    """Upsert today's parsed events into the single snapshot row. Opens its own
+    session so it can run in a worker thread off the event loop."""
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO home.calendar_snapshot (id, event_date, events, snapshot_at)
+                VALUES (1, :event_date, :events, now())
+                ON CONFLICT (id) DO UPDATE
+                    SET event_date = EXCLUDED.event_date,
+                        events = EXCLUDED.events,
+                        snapshot_at = EXCLUDED.snapshot_at
+                """
+            ),
+            {"event_date": event_date, "events": json.dumps(events)},
+        )
+        session.commit()
 
 
 async def poll_calendar() -> None:
-    global _cached_events
     if not ICAL_FEED_URL:
         logger.warning("ICAL_FEED_URL not set, skipping calendar poll")
         return
@@ -87,8 +126,9 @@ async def poll_calendar() -> None:
             resp = await client.get(ICAL_FEED_URL, timeout=30)
             resp.raise_for_status()
         today = datetime.now(TZ).date()
-        _cached_events = parse_events_for_date(resp.text, today, TZ)
-        logger.info("Calendar refreshed: %d events for %s", len(_cached_events), today)
+        events = parse_events_for_date(resp.text, today, TZ)
+        await asyncio.to_thread(_write_calendar_snapshot, today, events)
+        logger.info("Calendar refreshed: %d events for %s", len(events), today)
     except Exception:
         logger.exception("Failed to fetch calendar feed")
 

@@ -29,9 +29,3 @@ def on_startup_jobs(session) -> None:
         handler=lambda _: calendar_poll_handler(),
         ttl_secs=120,
     )
-
-
-def get_today_events() -> list[dict]:
-    from home.schedule import get_today_events as _get
-
-    return _get()
