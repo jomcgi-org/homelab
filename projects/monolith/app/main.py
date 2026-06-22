@@ -57,12 +57,11 @@ def _log_task_exception(task: "asyncio.Task[object]") -> None:
 async def _start_singletons(app: FastAPI) -> None:
     """Start the background singletons. Invoked only on the elected leader replica.
 
-    These (Discord bot, scheduler dispatch loop, AIS ingest, bot-coupled lock
+    These (Discord bot, Discord outbox drain, AIS ingest, bot-coupled lock
     sweep) must run on exactly one replica, so they live behind leader election
     rather than starting unconditionally in the lifespan.
     """
     from app.db import get_engine
-    from scheduler.api import purge_stale_jobs, run_scheduler_loop
     from sqlmodel import Session
 
     tasks: list[asyncio.Task] = []
@@ -97,15 +96,6 @@ async def _start_singletons(app: FastAPI) -> None:
         drain_task.add_done_callback(_log_task_exception)
         tasks.append(drain_task)
         logger.info("Discord outbox drain starting")
-
-    # Purge stale jobs (registry housekeeping the leader owns).
-    with Session(get_engine()) as session:
-        purge_stale_jobs(session)
-
-    # Scheduler dispatch loop.
-    scheduler_task = asyncio.create_task(run_scheduler_loop())
-    scheduler_task.add_done_callback(_log_task_exception)
-    tasks.append(scheduler_task)
 
     # Supervised AISStream ingest (reconnects forever; CancelledError on stop).
     from ships.ingest import ais_stream_loop
@@ -176,28 +166,14 @@ async def _stop_singletons(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.db import get_engine
-    from sqlmodel import Session
-
     app.state.bot = None
     app.state.backfill_task = None
 
-    # Register all scheduled jobs
-    with Session(get_engine()) as session:
-        from knowledge.service import on_startup as knowledge_startup
-
-        knowledge_startup(session)
-        home.on_startup_jobs(session)
-        ships.on_startup_jobs(session)
-        hikes.on_startup_jobs(session)
-        stars.on_startup_jobs(session)
-        dr_jobs.on_startup_jobs(session)
-        worldcup.on_startup_jobs(session)
-        knowledge.on_startup_jobs(session)
-
-        from home.observability import rollup as observability_rollup
-
-        observability_rollup.register(session)
+    # All formerly in-process scheduled jobs now run as Argo CronWorkflows in the
+    # monolith-workflows namespace (one-flag cutover via jobs.cronWorkflows). The
+    # in-process scheduler dispatch loop and its register_job startup hooks were
+    # removed, so the monolith is purely orchestration + APIs - no batch work on
+    # the request-serving pods.
 
     # Prime the observability snapshots (topology + stats) once at startup so the
     # first request has data; the scheduled rollup jobs refresh them thereafter.

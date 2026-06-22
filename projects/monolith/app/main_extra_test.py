@@ -1,6 +1,5 @@
 """Extra coverage for app/main.py lifespan -- exception paths in background tasks and bot.close()."""
 
-import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -104,9 +103,10 @@ class TestSingletonBotClose:
         mock_bot.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_start_singletons_creates_five_tasks(self):
-        """The leader starts bot + outbox drain + scheduler + ships ingest + sweep
-        = 5 tasks."""
+    async def test_start_singletons_creates_four_tasks(self):
+        """The leader starts bot + outbox drain + ships ingest + sweep = 4 tasks
+        (the scheduler dispatch loop was removed - jobs run as Argo
+        CronWorkflows)."""
         tasks, capture = _make_task_capturer()
 
         mock_bot = MagicMock()
@@ -128,73 +128,7 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        assert len(tasks) == 5
-
-
-# ---------------------------------------------------------------------------
-# run_scheduler_loop raises (background task failure)
-# ---------------------------------------------------------------------------
-
-
-class TestLifespanRunSchedulerLoopException:
-    @pytest.mark.asyncio
-    async def test_lifespan_still_starts_when_run_scheduler_loop_raises(self):
-        """Lifespan yields normally even if run_scheduler_loop() raises immediately."""
-        started = False
-
-        async def failing_run_scheduler_loop():
-            raise RuntimeError("scheduler db error")
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-
-        with (
-            patch.dict(os.environ, {"DISCORD_BOT_TOKEN": ""}),
-            patch("app.db.get_engine", return_value=MagicMock()),
-            patch("sqlmodel.Session", return_value=mock_session),
-            patch("home.on_startup_jobs"),
-            patch("ships.on_startup_jobs"),
-            patch("hikes.on_startup_jobs"),
-            patch(
-                "scheduler.api.run_scheduler_loop",
-                new=failing_run_scheduler_loop,
-            ),
-        ):
-            async with lifespan(app):
-                await asyncio.sleep(0)
-                started = True
-
-        assert started, (
-            "lifespan should have yielded despite run_scheduler_loop failure"
-        )
-
-    @pytest.mark.asyncio
-    async def test_lifespan_shuts_down_cleanly_after_run_scheduler_loop_failure(self):
-        """Lifespan completes shutdown even when run_scheduler_loop already raised."""
-
-        async def failing_run_scheduler_loop():
-            raise RuntimeError("scheduler db error")
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-
-        with (
-            patch.dict(os.environ, {"DISCORD_BOT_TOKEN": ""}),
-            patch("app.db.get_engine", return_value=MagicMock()),
-            patch("sqlmodel.Session", return_value=mock_session),
-            patch("home.on_startup_jobs"),
-            patch("ships.on_startup_jobs"),
-            patch("hikes.on_startup_jobs"),
-            patch(
-                "scheduler.api.run_scheduler_loop",
-                new=failing_run_scheduler_loop,
-            ),
-        ):
-            # Should not raise — background task exceptions are not re-raised
-            async with lifespan(app):
-                await asyncio.sleep(0)
+        assert len(tasks) == 4
 
 
 # ---------------------------------------------------------------------------

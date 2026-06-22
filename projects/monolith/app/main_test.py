@@ -162,7 +162,8 @@ def _lifespan_patches_no_discord():
 
 @pytest.mark.asyncio
 async def test_lifespan_creates_one_background_task_on_startup():
-    """Lifespan creates two asyncio tasks (scheduler_loop + ships ingest) on startup without discord."""
+    """Without discord, the leader creates a single task (ships ingest); the
+    scheduler dispatch loop was removed - batch jobs run as Argo CronWorkflows."""
     from app.main import lifespan
 
     created_tasks = []
@@ -179,7 +180,7 @@ async def test_lifespan_creates_one_background_task_on_startup():
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
 
-    assert len(created_tasks) == 2
+    assert len(created_tasks) == 1
 
 
 @pytest.mark.asyncio
@@ -202,7 +203,7 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await _start_singletons(app)
             await _stop_singletons(app)
 
-    assert len(mock_tasks) == 2
+    assert len(mock_tasks) == 1
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -225,7 +226,7 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
-            assert len(mock_tasks) == 2
+            assert len(mock_tasks) == 1
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await _stop_singletons(app)
@@ -233,39 +234,6 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     # After _stop_singletons, every task must have been cancelled
     for task in mock_tasks:
         task.cancel.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_lifespan_scheduler_task_is_run_scheduler_loop():
-    """The scheduler task wraps run_scheduler_loop (the single scheduler loop)."""
-    from app.main import lifespan
-
-    mock_scheduler = AsyncMock()
-
-    def capture_create_task(coro, **kwargs):
-        if hasattr(coro, "close"):
-            coro.close()
-        return MagicMock()
-
-    patches = [
-        patch("app.db.get_engine", return_value=MagicMock()),
-        patch(
-            "sqlmodel.Session",
-            return_value=MagicMock(
-                __enter__=MagicMock(return_value=MagicMock()),
-                __exit__=MagicMock(return_value=False),
-            ),
-        ),
-        patch("home.on_startup_jobs"),
-        patch("scheduler.api.run_scheduler_loop", mock_scheduler),
-        patch("ships.on_startup_jobs"),
-        patch("hikes.on_startup_jobs"),
-    ]
-    with patch("asyncio.create_task", side_effect=capture_create_task):
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            await _start_singletons(app)
-
-    mock_scheduler.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -485,9 +453,9 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_creates_five_tasks_when_discord_token_set():
-    """When DISCORD_BOT_TOKEN is set, the leader creates five tasks (bot, outbox
-    drain, scheduler, ships ingest, sweep)."""
+async def test_lifespan_creates_four_tasks_when_discord_token_set():
+    """When DISCORD_BOT_TOKEN is set, the leader creates four tasks (bot, outbox
+    drain, ships ingest, sweep). The scheduler dispatch loop was removed."""
     from app.main import lifespan
 
     mock_bot = MagicMock()
@@ -517,7 +485,7 @@ async def test_lifespan_creates_five_tasks_when_discord_token_set():
             ):
                 await _start_singletons(app)
 
-    assert len(created_tasks) == 5
+    assert len(created_tasks) == 4
 
 
 @pytest.mark.asyncio

@@ -62,9 +62,9 @@ def _capture():
 
 class TestSingletons:
     @pytest.mark.asyncio
-    async def test_start_singletons_starts_five_tasks_with_token(self):
-        """With a token, the leader starts bot + outbox drain + scheduler + ships +
-        sweep = 5 tasks."""
+    async def test_start_singletons_starts_four_tasks_with_token(self):
+        """With a token, the leader starts bot + outbox drain + ships + sweep = 4
+        tasks (the scheduler dispatch loop was removed)."""
         created, cap = _capture()
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
@@ -84,11 +84,12 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert len(created) == 5
+        assert len(created) == 4
 
     @pytest.mark.asyncio
-    async def test_start_singletons_two_tasks_without_token(self):
-        """Without a token: scheduler + ships ingest = 2 tasks (no bot, no sweep)."""
+    async def test_start_singletons_one_task_without_token(self):
+        """Without a token: ships ingest = 1 task (no bot, no drain, no sweep; the
+        scheduler dispatch loop was removed - jobs run as Argo CronWorkflows)."""
         created, cap = _capture()
         env = {k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"}
         env["DISCORD_BOT_TOKEN"] = ""
@@ -104,7 +105,7 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert len(created) == 2
+        assert len(created) == 1
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):

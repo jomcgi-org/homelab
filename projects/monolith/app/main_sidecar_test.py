@@ -477,7 +477,8 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
     ):
         await _start_singletons(app)
 
-    # Scheduler + ships ingest task (no bot task)
-    assert len(created_tasks) == 2, (
-        f"Expected 2 tasks without a bot token, got {len(created_tasks)}"
+    # Ships ingest task only (no bot task; the scheduler dispatch loop was
+    # removed - batch jobs run as Argo CronWorkflows).
+    assert len(created_tasks) == 1, (
+        f"Expected 1 task without a bot token, got {len(created_tasks)}"
     )
