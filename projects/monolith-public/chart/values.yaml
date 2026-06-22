@@ -482,8 +482,16 @@ imgproxy:
     # This caps imgproxy to the exact sizes the trips frontend requests instead
     # of serving arbitrary resizes of the bucket. The names here MUST match the
     # PRESETS set in projects/monolith/frontend/src/lib/trips/images.js.
+    #
+    # The quality:NN here is the OPERATIVE output quality: it overrides
+    # IMGPROXY_FORMAT_QUALITY / IMGPROXY_QUALITY for the delivered format (verified
+    # empirically: changing FORMAT_QUALITY left WebP bytes byte-for-byte unchanged,
+    # while the preset quality drives them). So quality is tuned HERE, per size.
+    # Lowered from 85/88/90/92/95: at these levels WebP is visually near
+    # indistinguishable for photos while shipping meaningfully fewer bytes; the
+    # large display/full presets stay a little higher since they are viewed big.
     - name: IMGPROXY_PRESETS
-      value: "thumb=resize:fit:300:300/quality:85,gallery=resize:fit:600:600/quality:88,preview=resize:fit:1200:1200/quality:90,display=resize:fit:1920:1080/quality:92,full=quality:95"
+      value: "thumb=resize:fit:300:300/quality:78,gallery=resize:fit:600:600/quality:80,preview=resize:fit:1200:1200/quality:82,display=resize:fit:1920:1080/quality:82,full=quality:90"
     # Reject any URL whose processing options are not one of the named presets
     # above. Combined with ALLOWED_SOURCES this is the resize allow-list.
     - name: IMGPROXY_ONLY_PRESETS
@@ -493,27 +501,19 @@ imgproxy:
     # default; pin it so it survives any future default change).
     - name: IMGPROXY_TTL
       value: "31536000"
+    # Fallback quality only: applies when a processing op carries no explicit
+    # quality. Every preset above sets quality:NN, so in practice this is unused;
+    # kept as a sane default. (IMGPROXY_FORMAT_QUALITY was removed: it is overridden
+    # by the preset quality:NN, so it did nothing but mislead.)
     - name: IMGPROXY_QUALITY
       value: "82"
-    # Output quality per delivered format. This takes priority over the per-preset
-    # quality:NN above for webp/avif/jpeg, so it is what actually governs the bytes
-    # on the wire (the preset quality:NN only applies to formats not listed here).
-    # Lowered from 92/90/90: for photo galleries WebP ~82 / AVIF ~78 is visually
-    # near-indistinguishable from the low-90s while cutting ~25-40% of the bytes.
-    # AVIF is set a few points lower than WebP because its encoder holds perceived
-    # quality better at the same numeric value.
-    - name: IMGPROXY_FORMAT_QUALITY
-      value: "webp=82,avif=78,jpeg=82"
+    # WebP auto-negotiation (Accept: image/webp). AVIF detection is deliberately
+    # NOT enabled: at the preset quality levels above, imgproxy's AVIF encode comes
+    # out LARGER than WebP at both gallery (37KB vs 28KB) and display (186KB vs
+    # 128KB) sizes, because AVIF's quality scale is far more aggressive (a "90"
+    # on AVIF is near-lossless). Making AVIF a net win needs per-format quality
+    # (AVIF ~55-63 vs WebP ~80) plus a visual-QA pass, tracked as a follow-up.
     - name: IMGPROXY_ENABLE_WEBP_DETECTION
-      value: "true"
-    # Serve AVIF to browsers that advertise it (Accept: image/avif), falling
-    # back to WebP then JPEG. AVIF is ~20-30% smaller than WebP at equal quality;
-    # avif=... in IMGPROXY_FORMAT_QUALITY was already defined but unreachable
-    # without this. Safe to enable because imgproxy sets Vary: Accept, so the CDN
-    # caches each format variant separately. Trade-off: AVIF encode is more
-    # CPU-heavy than WebP, but every result is cached (IMGPROXY_TTL=1y + the
-    # Cloudflare immutable edge cache), so the encode cost is paid once per image.
-    - name: IMGPROXY_ENABLE_AVIF_DETECTION
       value: "true"
     - name: IMGPROXY_STRIP_METADATA
       value: "true"
