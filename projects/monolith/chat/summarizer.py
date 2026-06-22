@@ -13,7 +13,11 @@ from chat.models import ChannelSummary, Message, UserChannelSummary
 
 logger = logging.getLogger(__name__)
 
-_LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "32768"))
+# Output token budget. Must leave room for the prompt: the qwen3.6-27b alias has
+# a 32768-token context, so reserving the whole window for output leaves 0 tokens
+# for input and vLLM rejects every non-empty prompt with a 400. 8192 (matching the
+# vision path) is far more than a summary/changelog needs and leaves ~24k for input.
+_LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 
 
 async def generate_summaries(
@@ -310,13 +314,24 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
                         "model": "qwen3.6-27b",
                         "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": _LLM_MAX_TOKENS,
+                        # Disable thinking so the budget is spent on the summary,
+                        # not <think> reasoning -- a thinking response puts the
+                        # reasoning in reasoning_content and returns content:null
+                        # behind a 200, which would slip past raise_for_status.
+                        "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
                 resp.raise_for_status()
                 try:
-                    return resp.json()["choices"][0]["message"]["content"]
+                    content = resp.json()["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, ValueError) as e:
                     raise RuntimeError(f"unexpected LLM response shape: {e}") from e
+                if not content:
+                    raise RuntimeError(
+                        "LLM returned empty content (thinking may have consumed "
+                        "the token budget)"
+                    )
+                return content
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in _RETRYABLE_STATUS_CODES:
                     raise
