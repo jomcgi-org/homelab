@@ -128,13 +128,23 @@ def parse_walk_links(html: str, base_url: str) -> list[str]:
 def _parse_duration_hours(text: str) -> float | None:
     """Parse a walk duration via TimeLength; ranges take the upper bound.
 
-    "5.5 - 6.5 hours" parses the part after the dash (6.5), matching the
-    original scraper exactly.
+    "5.5 - 6.5 hours" parses the part after the dash (6.5), matching the original
+    scraper. WalkHighlands also offers some long routes as both a single-push and
+    a multi-day option, e.g. "18 hours/2 days" or "12 hours+ or 2 days". Passed
+    whole, TimeLength SUMS every token (18h + 2 days = 66h), which is meaningless
+    for the per-day doability model (it wants walking hours, not elapsed days).
+    So when an hours alternative is present, keep only it and drop the "N days"
+    framing. A pure "2 days" with no hours figure falls through to TimeLength
+    unchanged (such routes are inherently multi-day).
     """
+    segments = re.split(r"\s*/\s*|\s+or\s+", text)
+    hour_segments = [seg for seg in segments if "hour" in seg.lower()]
+    # "12 hours+" -> "12 hours": the trailing + would trip TimeLength.
+    candidate = (hour_segments[0] if hour_segments else text).replace("+", " ").strip()
     try:
-        if "-" in text:
-            return TimeLength(text.split("-")[1]).to_hours()
-        return TimeLength(text).to_hours()
+        if "-" in candidate:
+            return TimeLength(candidate.split("-")[1]).to_hours()
+        return TimeLength(candidate).to_hours()
     except Exception:
         logger.warning("hikes scrape: could not parse duration %r", text)
         return None
