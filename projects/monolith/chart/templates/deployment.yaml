@@ -45,7 +45,7 @@ spec:
             # an entry's suspend:false both activates the CronWorkflow and removes
             # the in-process job - one git change, both sides.
             - name: ARGO_JOBS
-              value: "{{- range .Values.jobs.cronWorkflows }}{{- if not .suspend }}{{ .replaces }},{{- end }}{{- end }}"
+              value: "{{- range .Values.jobs.cronWorkflows }}{{- if and (not .suspend) .replaces }}{{ .replaces }},{{- end }}{{- end }}"
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
               valueFrom:
