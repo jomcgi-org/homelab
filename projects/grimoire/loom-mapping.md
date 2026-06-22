@@ -13,9 +13,8 @@
 > **Substrate note.** Loom is mid-migration to **Iceberg-default**
 > (`fut-replace-ducklake-decision`) with a **DataFusion-native serving engine**
 > (`road-iceberg-datafusion-serving`, done; no DuckDB in the read path) and
-> per-column-stats predicate pushdown. Read "lakehouse" below as Iceberg + Arrow
->
-> - DataFusion.
+> per-column-stats predicate pushdown. Read "lakehouse" below as the Iceberg,
+> Arrow, and DataFusion stack.
 
 ## 1. Purpose
 
