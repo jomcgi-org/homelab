@@ -5,10 +5,23 @@
 # test action on the linux RBE executors (the substrate question), before the
 # real frontend/visual capture is migrated off its runtime `playwright install`.
 # Not part of any shipped image; deleted once the substrate is settled.
+load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/monolith/frontend/visual-spike:@playwright/test/package_json.bzl", playwright_bin = "bin")
 
 npm_link_all_packages(name = "node_modules")
+
+# Production exec image for the capture action (ADR tooling/010): a Wolfi/apko
+# image carrying chromium's runtime shared libs + fonts, glibc-based to match
+# Playwright's chromium. CI-execution-only (not a shipped runtime image). Once
+# published to GHCR and made public, its digest replaces the stock Playwright
+# image in spike_test's exec_properties below.
+apko_image(
+    name = "chromium_exec_image",
+    config = "apko.yaml",
+    contents = "@visual_spike_chromium_lock//:contents",
+    repository = "ghcr.io/jomcgi/homelab/visual-spike-chromium",
+)
 
 # No `chdir`: the $(rootpath) browser path is relative to the exec root, so
 # changing cwd would break PLAYWRIGHT_BROWSERS_PATH. Playwright resolves the

@@ -467,7 +467,11 @@ apko.translate_lock(
     name = "monolith_frontend_lock",
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
-use_repo(apko, "goose_agent_lock", "grimoire_frontend_lock", "monolith_frontend_lock")
+apko.translate_lock(
+    name = "visual_spike_chromium_lock",
+    lock = "//projects/monolith/frontend/visual-spike:apko.lock.json",
+)
+use_repo(apko, "goose_agent_lock", "grimoire_frontend_lock", "monolith_frontend_lock", "visual_spike_chromium_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")

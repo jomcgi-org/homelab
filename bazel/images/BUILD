@@ -53,6 +53,7 @@ multirun(
         "//projects/hikes/update_forecast:update_image.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
+        "//projects/monolith/frontend/visual-spike:chromium_exec_image.push",
         "//projects/monolith/frontend:image.push",
         "//projects/monolith/frontend:image_public.push",
         "//projects/monolith:image.push",
