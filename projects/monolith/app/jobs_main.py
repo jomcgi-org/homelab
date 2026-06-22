@@ -285,5 +285,18 @@ def chat_summary_generation() -> None:
     _run_job("chat-summary-generation", "chat.api", "run_summary_generation")
 
 
+@app.command("chat-changelog")
+def chat_changelog(name: str) -> None:
+    """Compute the changelog for one config and enqueue it to the Discord outbox
+    (one-shot of chat.changelog.<name>; the leader's drain posts it). Needs
+    GITHUB_TOKEN, CHANGELOG_CONFIGS, LLAMA_CPP_URL; no bot required."""
+    from chat.api import run_changelog_for_config
+
+    configure_logging()
+    logger.info("chat-changelog[%s]: starting", name)
+    asyncio.run(run_changelog_for_config(name))
+    logger.info("chat-changelog[%s]: done", name)
+
+
 if __name__ == "__main__":
     app()
