@@ -1,4 +1,4 @@
-h1:Q1j/VDdB0jWwNh/bXVJkcqnz/aTTaBk6T7w4NmRiMeE=
+h1:z07tOEvvBv4WKoKGcBUa1sJj4IbQj/Two0U5Sjfo5hQ=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -61,4 +61,4 @@ h1:Q1j/VDdB0jWwNh/bXVJkcqnz/aTTaBk6T7w4NmRiMeE=
 20260620120100_worldcup_public_reader_grant.sql h1:gAXxMO9FNfGw1xAjmbb0GciI59awvH9WFzjtVuw9muQ=
 20260621120000_worldcup_swing_per_country.sql h1:PF2X+SOSRkR4sMD1fgd+fu0eoJ0BgiiItGI9IZn7ugw=
 20260621130000_chat_public_reader_schema_usage.sql h1:UuKhDAWNrOK/vOEcI7UA89nvKxSRiSAVQTgRwZexRn8=
-20260621130000_leader_lease.sql h1:XtX+yhjGVAOmLyP+9iwVnr/fcIsxklUTqD5Y8OllIuo=
+20260621140000_leader_lease.sql h1:5IFOe64jbZr4zA1LpMBFBaInGOKZGFUZJfO84qr1vcw=
