@@ -161,7 +161,50 @@ Workarounds, all imperfect:
   matters most here.
 
 Neither is satisfying. The grant model wants **attribute-based, data-driven row
-policy** (filter referencing the subject and a join), which Loom does not have.
+policy** (a filter referencing the subject and a join), which Loom does not have.
+
+This is not a Grimoire quirk. It is **fine-grained access control (FGAC)**, the
+mainstream enterprise governance pattern, and Loom missing it is a gap on its own
+"open-source Foundry" thesis, not an impedance mismatch with this app. See
+[Enterprise framing](#65-enterprise-framing-this-is-fgac-not-a-grimoire-quirk).
+
+### 6.5 Enterprise framing: this is FGAC, not a Grimoire quirk
+
+"A subject sees a row because of an attribute it carries, or a grant/relationship
+row that links them to it" is the definition of fine-grained access control. It is
+the same shape as the most common enterprise row-level-security (RLS) rules:
+
+- **Multi-tenancy:** `row.tenant_id == subject.tenant` — the single most common
+  RLS rule in SaaS.
+- **Need-to-know / ownership:** visible if you are the owner, on the row's ACL, or
+  your org-unit matches.
+- **Entitlement tables:** healthcare care-relationship rows, deal-team membership,
+  data-sharing grants. `KnowledgeGrant` is exactly this, scaled down.
+
+Every serious governance system expresses these: Postgres RLS
+(`current_setting`-parameterized policies), Snowflake row-access policies,
+BigQuery row-level security, Databricks Unity Catalog, Immuta/Privacera. And it is
+core Foundry: static **Markings** are only half the model; Foundry also has
+object-level / data-derived security. A platform that does only static markings +
+literal row filters has implemented the _easy_ half of governance.
+
+The fix is **not** policy-as-data (millions of policies) nor app-side filtering.
+It is **one policy rule that is a function of the querying principal**, closed by
+two `RowFilter` extensions:
+
+1. **Subject-attribute references** — a `ScalarValue::SubjectAttr("tenant")` so
+   `region == $subject.region` compiles. Cheap; handles multi-tenancy / ABAC
+   outright.
+2. **An entitlement-join / `Exists` leaf** — "row's id appears in `grants` for
+   this subject." One rule, data-driven membership. This is the `KnowledgeGrant`
+   case.
+
+The Query API already holds the authenticated subject (it authorizes the request),
+so threading subject context into filter compilation is natural. The constraint to
+relax is the ACL crate's "control plane never interprets a filter" stance
+(`acl.rs:8`). Loom's ACL is explicitly an early slice (P4: "stores and serves
+policy; does NOT enforce"), so the literal-only `RowFilter` reads as a deliberate
+v1 floor, not a design dead-end. FGAC is the inevitable next layer.
 
 ## 7. Operational tables -> stay in Postgres
 
@@ -200,18 +243,29 @@ This is the clearest place Loom adds value over the Postgres design.
 
 ## 10. Exact gap list (prioritized)
 
-| #   | Gap                                                                                | Loom today                                | Needed for                                      | Size                                       |
-| --- | ---------------------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------- | ------------------------------------------ |
-| 1   | **Vector property + ANN search** with metadata filters                             | absent, out of scope                      | Pipeline 5 entry; all RAG                       | Large (new capability)                     |
-| 2   | **Data-driven / attribute-based row policy** (filter referencing subject + a join) | `RowFilter` is literal-only               | `KnowledgeGrant` per-player gating              | Large (ACL model change)                   |
-| 3   | **Governed UPDATE / DELETE actions**                                               | `ActionDef` is insert-one-only            | grant flips, homebrew edits, any mutation       | Medium-Large (open transactional question) |
-| 4   | **External client wire** (Quack server or committed HTTP write API)                | serving embedded in-process               | Grimoire Go services + monolith talking to Loom | Medium                                     |
-| 5   | **2-hop / chained traversal in one query**                                         | single-hop built; adjacency via `links()` | Pipeline 5 graph traversal                      | Medium (on roadmap)                        |
-| 6   | **Document / nested-value properties** (struct, jsonb-ish)                         | typed scalar columns only                 | homebrew + nested stat blocks                   | Medium (or accept per-type schemas)        |
+Each gap is tagged **[gov]** if it is a general enterprise-governance capability
+Loom needs for its own Foundry thesis, or **[app]** if it is a retrieval/app need
+Loom deliberately scopes out.
 
-Gaps 1, 2, 3 are each load-bearing and none is on Loom's near roadmap. Gaps 4
-and 5 are on the roadmap. Gap 6 is partly a modeling choice (accept per-type
-ObjectTypes) rather than a hard miss.
+| #   | Gap                                                                               | Class | Loom today                                | Needed for                                    | Size                                       |
+| --- | --------------------------------------------------------------------------------- | ----- | ----------------------------------------- | --------------------------------------------- | ------------------------------------------ |
+| 1   | **Vector property + ANN search** with metadata filters                            | [app] | absent, out of scope (AIP-adjacent)       | Pipeline 5 entry; all RAG                     | Large (new capability)                     |
+| 2   | **Fine-grained access control** (subject-attribute + entitlement-join row policy) | [gov] | `RowFilter` is literal-only               | `KnowledgeGrant`; multi-tenancy; any RLS      | Large (ACL model change, but standard)     |
+| 3   | **Governed UPDATE / DELETE actions**                                              | [gov] | `ActionDef` is insert-one-only            | grant flips, homebrew edits, any mutation     | Medium-Large (open transactional question) |
+| 4   | **External client wire** (Quack server or committed HTTP write API)               | [gov] | serving embedded in-process               | any client (Grimoire Go, monolith) using Loom | Medium (on roadmap)                        |
+| 5   | **2-hop / chained traversal in one query**                                        | [app] | single-hop built; adjacency via `links()` | Pipeline 5 graph traversal                    | Medium (on roadmap)                        |
+| 6   | **Document / nested-value properties** (struct, jsonb-ish)                        | [app] | typed scalar columns only                 | homebrew + nested stat blocks                 | Medium (or accept per-type schemas)        |
+
+The reframe: gaps **2 and 3 are [gov]** — fine-grained access control and governed
+mutation are table-stakes for any "governance follows the data" platform, not
+Grimoire-specific. Foundry has both; Loom has neither yet. Gap 4 is also [gov]
+(governance is moot if no external client can reach the front door) and is already
+on the roadmap. Gaps 1, 5, 6 are [app] — vector and nested documents are
+deliberately out of scope, multi-hop is a planned read enrichment.
+
+So the headline is not "Loom is missing Grimoire features." It is **"Loom is
+missing the harder half of enterprise governance (FGAC + governed write-back),
+which it needs regardless, and Grimoire happens to exercise exactly that half."**
 
 ## 11. Read of the result
 
@@ -222,10 +276,15 @@ governance feature), **vectors** (the retrieval entry point), and **any
 mutation** (insert-only actions).
 
 So Loom can express the _static, ingested, analytical_ half of the knowledge
-graph well, and the _dynamic, per-player, mutable, vector-retrieved_ half not at
+graph well, and the _dynamic, per-subject, mutable, vector-retrieved_ half not at
 all today. Grimoire's KG is mostly the second half. A personal KG leans the same
 way (pgvector RAG + frequent note edits + private/public gating already work in
 the monolith).
+
+Crucially, the missing half is not "app features." Two of its three pillars
+(per-subject access, governed mutation) are **enterprise governance** Loom owes
+its own thesis; only vector retrieval is genuinely an out-of-scope app concern.
+That is what reframes the A/B decision below.
 
 ## 12. Recommendation feeding the A/B choice
 
@@ -234,16 +293,26 @@ the monolith).
   which is the exact set Loom is missing.
 - Loom's defensible role is the **governed analytical/provenance tier over the
   ingested corpus** (entities, relationships, chunks, lineage), reachable once
-  gaps 1, 4, 5 land. The per-player grant gate (gap 2) and live mutation (gap 3)
-  are arguably _never_ Loom's job and should stay in the operational store
-  regardless.
-- Therefore "make Grimoire drive Loom" only pays off if you specifically want
-  gaps 1-2 built into Loom. Gap 2 in particular is a real ACL-model extension
-  (attribute-based row policy), not a small feature. That is a Loom-roadmap
-  decision worth its own discussion, not a Grimoire wiring task.
+  gaps 2, 3, 4 land. Correcting the earlier draft of this doc: the per-subject
+  access gate (gap 2) and governed mutation (gap 3) are **not** "never Loom's
+  job." They are FGAC and write-back, the harder half of the governance Loom
+  exists to provide. They belong on Loom's roadmap on their own merit; Grimoire
+  just exercises them early.
+- So "make Grimoire drive Loom" is a reasonable forcing function **provided gap 2
+  is built for the general FGAC case** (subject-attribute references +
+  entitlement-join row policy), not a bespoke `KnowledgeGrant` feature. Built
+  generally, it pays back across multi-tenancy, need-to-know, and any future
+  tenant of the platform; Grimoire becomes the proof-of-use, not the design
+  driver. The [app] gaps (1 vector, 6 nested docs) stay out of scope; keep those
+  in the operational store.
 
-Concrete next step if continuing: turn gaps 1-3 into Loom roadmap items (vector
-property type; attribute/subject-referencing row policy; update/delete actions
-with a settled transactional model) and decide whether the lore corpus is a
-strong enough forcing function to prioritize them over Loom's current ingest/
-query hardening.
+Concrete next step if continuing: turn gaps 2, 3, 4 into Loom roadmap items framed
+as **enterprise governance**, not Grimoire support —
+(2) FGAC: `RowFilter` gains subject-attribute references and an entitlement-join /
+`Exists` leaf, compiled by the Query API which already holds the subject;
+(3) governed UPDATE/DELETE actions with a settled transactional model (the open
+question in `ARCHITECTURE.md`);
+(4) the external client wire (already roadmapped).
+Then decide whether the lore corpus is a strong enough forcing function to pull
+these ahead of Loom's current ingest/query hardening. Gap 1 (vector) stays an
+[app] concern unless Loom deliberately revisits its AIP-out-of-scope line.
