@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { startMock } from "./mock-server.mjs";
 
-const APP_ENTRY = process.env.APP_ENTRY;
+// APP_ENTRY is execroot-relative under Bazel (bazel-out/.../bin/...), but the
+// js_run_binary action runs with cwd under <execroot>/bazel-out/..., so a bare
+// relative path would double the prefix. Resolve to absolute via the execroot
+// (cwd cut at /bazel-out/) when running under Bazel; use as-is locally.
+const _appEntry = process.env.APP_ENTRY;
+const APP_ENTRY =
+  _appEntry && process.cwd().includes("/bazel-out/")
+    ? join(process.cwd().split("/bazel-out/")[0], _appEntry)
+    : _appEntry;
 const APP_PORT = Number(process.env.APP_PORT || 3000);
 const MOCK_PORT = Number(process.env.MOCK_PORT || 8099);
 
@@ -25,7 +34,10 @@ async function waitFor(url, ms = 30000) {
 
 export async function serve() {
   const mock = await startMock(MOCK_PORT);
-  const app = spawn("node", [APP_ENTRY], {
+  // process.execPath, not "node": under Bazel the node runtime comes from the
+  // hermetic toolchain (in runfiles), and the apko exec image has no system
+  // node on PATH, so a bare "node" would not be found.
+  const app = spawn(process.execPath, [APP_ENTRY], {
     env: {
       ...process.env,
       PORT: String(APP_PORT),

@@ -20,10 +20,12 @@
 //     pages flagged `static_initial` are additionally loaded with
 //     `domcontentloaded` + a fixed settle so we capture their static initial
 //     state rather than hanging on a live stream.
-import { chromium } from "@playwright/test";
+// @playwright/test is imported DYNAMICALLY below, after PLAYWRIGHT_BROWSERS_PATH
+// is absolutized: Playwright reads that env when its module is first evaluated,
+// and a static import would be hoisted above the env fix.
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { serve } from "./serve.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -42,15 +44,50 @@ const FROZEN = Date.UTC(2026, 0, 1, 12, 0, 0); // deterministic wall clock
 // identical to production (only the URL bar differs, which screenshots ignore).
 const ROUTE_PREFIX = process.env.ROUTE_PREFIX ?? "/public";
 
-const outDir = join(HERE, "out");
+// Under Bazel (js_run_binary) the tool's own dir is read-only runfiles, so write
+// captures to the declared out_dir. The action runs with cwd under
+// <execroot>/bazel-out/...; BAZEL_BINDIR + CAPTURE_OUT_SUBDIR are execroot-
+// relative, so resolve them to an absolute path via the execroot (cwd cut at
+// /bazel-out/). Fall back to HERE/out for a non-Bazel local smoke run.
+const outDir = process.env.BAZEL_BINDIR
+  ? join(
+      process.cwd().split("/bazel-out/")[0],
+      process.env.BAZEL_BINDIR,
+      process.env.CAPTURE_OUT_SUBDIR ?? "projects/monolith/frontend/visual/out",
+    )
+  : join(HERE, "out");
 mkdirSync(outDir, { recursive: true });
+
+// The BUILD sets PLAYWRIGHT_BROWSERS_PATH to an execroot-relative $(execpath)
+// (this js_run_binary runs from the execroot, so a runfiles-relative $(rootpath)
+// would not resolve). cwd is under <execroot>/bazel-out/..., so make it absolute
+// via the execroot before Playwright reads it at launch.
+if (
+  process.env.PLAYWRIGHT_BROWSERS_PATH &&
+  process.cwd().includes("/bazel-out/")
+) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = resolve(
+    process.cwd().split("/bazel-out/")[0],
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+  );
+}
+
+// Dynamic import AFTER the env fix so Playwright's registry picks up the
+// absolutized PLAYWRIGHT_BROWSERS_PATH.
+const { chromium } = await import("@playwright/test");
 
 const app = await serve();
 const browser = await chromium.launch({
   args: [
+    // swiftshader gives deterministic software WebGL for the map pages...
     "--use-gl=angle",
     "--use-angle=swiftshader",
     "--enable-unsafe-swiftshader",
+    // ...and these let chromium run inside the apko exec image on RBE (no user
+    // namespaces for the sandbox; small /dev/shm). NOT --disable-gpu: that would
+    // disable the swiftshader GL path the maps need.
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
   ],
 });
 try {
