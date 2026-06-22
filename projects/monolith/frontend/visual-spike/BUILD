@@ -7,22 +7,10 @@ load("@npm//projects/monolith/frontend/visual-spike:@playwright/test/package_jso
 # rules_playwright-vendored chromium launches and renders as a hermetic Bazel
 # test action on the linux RBE executors (the substrate question), before the
 # real frontend/visual capture is migrated off its runtime `playwright install`.
-# Not part of any shipped image; deleted once the substrate is settled.
-load("//bazel/tools/oci:apko_image.bzl", "apko_image")
+# Not part of any shipped image; deleted once the substrate is settled. The
+# production exec image it consumes lives at //projects/monolith/frontend/visual.
 
 npm_link_all_packages(name = "node_modules")
-
-# Production exec image for the capture action (ADR tooling/010): a Wolfi/apko
-# image carrying chromium's runtime shared libs + fonts, glibc-based to match
-# Playwright's chromium. CI-execution-only (not a shipped runtime image). Once
-# published to GHCR and made public, its digest replaces the stock Playwright
-# image in spike_test's exec_properties below.
-apko_image(
-    name = "chromium_exec_image",
-    config = "apko.yaml",
-    contents = "@visual_spike_chromium_lock//:contents",
-    repository = "ghcr.io/jomcgi/homelab/visual-spike-chromium",
-)
 
 # No `chdir`: the $(rootpath) browser path is relative to the exec root, so
 # changing cwd would break PLAYWRIGHT_BROWSERS_PATH. Playwright resolves the
@@ -54,11 +42,10 @@ playwright_bin.playwright_test(
     # The default RBE exec image (gcr.io/flame-public/rbe-ubuntu22-04) lacks
     # chromium's shared-library runtime (libnss3, libgbm1, libasound2, ...), so
     # the launch fails there. Override the per-action exec image to one that has
-    # those libs + fonts. This stock public Playwright image is a MECHANISM PROOF
-    # (does this RBE honor a per-target container-image override, can it pull an
-    # external image, does chromium render); ADR tooling/010's production target
-    # is a dedicated apko image, which replaces this ref once it is built and
-    # published. Pinned by digest for reproducibility.
+    # those libs + fonts. This stock public Playwright image is the MECHANISM
+    # PROOF; it is swapped for the ci/visual-chromium apko image
+    # (//projects/monolith/frontend/visual:visual_chromium) once that image is
+    # published and made public. Pinned by digest for reproducibility.
     exec_properties = {
         "container-image": "docker://mcr.microsoft.com/playwright:v1.55.0-jammy@sha256:55db7b712a981e9cc1ec757a4511cd01c5ed4e20bd7c84b2dee4e1d320102b9d",
     },
