@@ -9,10 +9,15 @@
   // `maxima` holds the corpus p95 of duration/ascent/distance, the ceilings the
   // effort score normalizes against (passed in so the colour is stable as the
   // filtered set changes).
+  // `initialUuid` is a deep-linked walk to open on load (from ?walk=); we open
+  // it once the layer is ready and fly to it. `onSelectWalk(uuid|null)` lifts the
+  // open/closed card up to the page so it can mirror the selection to the URL.
   let {
     walks = [],
     selectedDay = null,
     maxima = { duration: 1, ascent: 1, distance: 1 },
+    initialUuid = null,
+    onSelectWalk = () => {},
   } = $props();
 
   // Effort ramp: the universal trail-difficulty convention, green (easy) ->
@@ -80,6 +85,7 @@
 
   async function selectWalk(walk) {
     selected = walk;
+    onSelectWalk(walk.uuid); // lift to the page so it mirrors ?walk=
     selectedDetail = null;
     detailError = false;
     detailLoading = true;
@@ -172,6 +178,7 @@
 
   function closeCard() {
     selected = null;
+    onSelectWalk(null); // clear ?walk= on the page
     selectedDetail = null;
     detailError = false;
     detailLoading = false;
@@ -327,6 +334,23 @@
         });
 
         syncWalks();
+
+        // Deep link (?walk=): open that route's card on load and fly to it so a
+        // shared link lands on the marker. Only if it survived the active
+        // filters (it is in the plotted set / index); otherwise there is no
+        // marker to show. fitToWalks already ran in syncWalks, so override the
+        // frame with a closer view centred on the selected walk.
+        if (initialUuid) {
+          const walk = index.get(initialUuid);
+          if (walk && validLatLon(walk.latitude, walk.longitude)) {
+            selectWalk(walk);
+            map.flyTo({
+              center: [walk.longitude, walk.latitude],
+              zoom: Math.max(map.getZoom(), 9),
+              duration: 0,
+            });
+          }
+        }
       });
 
       cleanup = () => {
