@@ -220,17 +220,66 @@ These are OLTP + realtime by shape and do **not** belong in Loom at all:
 The split is the same one the existing `architecture.md` already draws: hot state
 in Postgres/Redis/WS, knowledge in the graph store.
 
-## 8. Embeddings -> the vector gap
+## 8. Embeddings -> governed vectors + a derived ANN index
 
 `Entity.embedding`, `KnowledgeChunk.embedding`, `SessionTranscript.embedding` are
-all 3072-dim vectors with HNSW cosine search and metadata filters. Loom has **no
-vector property type and no ANN index**; vector search is out of scope
-(`README.md`). This is the single hardest miss, because vector retrieval is the
-_entry point_ of Pipeline 5 (parallel vector search + graph traversal), not a
-peripheral feature.
+all 3072-dim vectors with ANN cosine search and metadata filters. "Vector support"
+is really three separable concerns, and they have different homes. Loom not being
+an ANN engine does **not** mean embeddings live outside Loom.
 
-DuckDB's VSS extension exists, but an HNSW index over object-storage Parquet
-snapshots is not a live-RAG substrate, and Loom does not wire it.
+1. **Store** the embedding as a normal Iceberg column — Arrow
+   `FixedSizeList<Float32, 3072>`. It is governed, lineage-tracked, and time-
+   traveled like any other column. Loom can carry this through the ingest/landing
+   and DataFusion-serving path today; it is just an Arrow type.
+2. **Generate** the embedding as a Loom **Transform**: read new/changed chunks
+   (queue-driven, snapshot-aware), call the embedding model, write the embedding
+   column back as a new snapshot + lineage. This is exactly the shape of
+   `road-iceberg-transform-writes` (planned). The payoff is **governed,
+   reproducible embeddings**: every vector records which model version and which
+   source snapshot produced it. Ad-hoc pgvector ingestion gives none of that.
+3. **Serve** ANN from a **derived pgvector index materialised out of Iceberg** —
+   because neither DataFusion nor Parquet maintains an HNSW index, and a full scan
+   over object-store Parquet is fine for batch but not for live top-k. The index
+   is a serving projection kept fresh from snapshots, not the source of truth.
+   This is the Databricks Vector Search model (Delta = truth, index synced off it)
+   and the feature-store offline/online split.
+
+"Vector on Iceberg" and "materialise into Postgres as a search tool" are therefore
+the two halves of one design, not alternatives.
+
+### 8.5 The governance seam (why this leans on FGAC)
+
+If search hits pgvector directly, it has **left Loom's chokepoint and bypassed
+FGAC** (gap 2). So the derived index must be an **unprivileged candidate
+generator**:
+
+```
+query embedding -> pgvector ANN -> top-K' candidate IDs   (vectors + IDs only;
+                                        |                   no payload, no per-subject filter)
+                                        v
+                        Loom governed read (hydrate IDs)   <- FGAC applies here
+                                        |
+                        drop ungranted rows, refill from K' -> top-K result
+```
+
+The index holds **vectors + IDs only**; the payload and the per-subject grant
+resolve in Loom on hydration. Over-fetch `K' > K` so the ACL drop can refill. This
+keeps governance in exactly one place. The alternative — pushing ACL predicates
+into the pgvector query — re-implements FGAC outside the chokepoint and
+reintroduces gap 2 in a second store.
+
+Residual leak to be explicit about: an ungoverned ANN index can leak the
+_existence/similarity_ of ungranted rows through ranking (Grimoire's spoiler
+case, and any need-to-know setting). Mitigations: re-rank after the ACL drop, and
+optionally partition the index by a **coarse, non-secret** key (e.g.
+`campaign_id`, `tenant_id`) for safe pre-filtering — but never encode per-subject
+grants in the index; those always resolve in Loom.
+
+So the refined verdict: Loom should **own embedding storage, generation, lineage,
+and the materialize-and-re-gate flow**, and should **not** be the ANN engine. That
+is a much smaller and more roadmap-aligned ask than "build a vector engine," and
+it is strictly better than the Postgres-only design (opaque embeddings) because
+the vectors become governed and reproducible.
 
 ## 9. Provenance -> lineage (a genuine win)
 
@@ -247,25 +296,32 @@ Each gap is tagged **[gov]** if it is a general enterprise-governance capability
 Loom needs for its own Foundry thesis, or **[app]** if it is a retrieval/app need
 Loom deliberately scopes out.
 
-| #   | Gap                                                                               | Class | Loom today                                | Needed for                                    | Size                                       |
-| --- | --------------------------------------------------------------------------------- | ----- | ----------------------------------------- | --------------------------------------------- | ------------------------------------------ |
-| 1   | **Vector property + ANN search** with metadata filters                            | [app] | absent, out of scope (AIP-adjacent)       | Pipeline 5 entry; all RAG                     | Large (new capability)                     |
-| 2   | **Fine-grained access control** (subject-attribute + entitlement-join row policy) | [gov] | `RowFilter` is literal-only               | `KnowledgeGrant`; multi-tenancy; any RLS      | Large (ACL model change, but standard)     |
-| 3   | **Governed UPDATE / DELETE actions**                                              | [gov] | `ActionDef` is insert-one-only            | grant flips, homebrew edits, any mutation     | Medium-Large (open transactional question) |
-| 4   | **External client wire** (Quack server or committed HTTP write API)               | [gov] | serving embedded in-process               | any client (Grimoire Go, monolith) using Loom | Medium (on roadmap)                        |
-| 5   | **2-hop / chained traversal in one query**                                        | [app] | single-hop built; adjacency via `links()` | Pipeline 5 graph traversal                    | Medium (on roadmap)                        |
-| 6   | **Document / nested-value properties** (struct, jsonb-ish)                        | [app] | typed scalar columns only                 | homebrew + nested stat blocks                 | Medium (or accept per-type schemas)        |
+| #   | Gap                                                                                | Class | Loom today                                             | Needed for                                    | Size                                           |
+| --- | ---------------------------------------------------------------------------------- | ----- | ------------------------------------------------------ | --------------------------------------------- | ---------------------------------------------- |
+| 1a  | **Embedding storage + generation + lineage** (Iceberg vector column via Transform) | [gov] | storable as Arrow column; Transform-to-Iceberg planned | governed, reproducible embeddings             | Medium (rides `road-iceberg-transform-writes`) |
+| 1b  | **ANN serving** (live top-k)                                                       | [app] | absent; not an ANN engine, by design                   | Pipeline 5 entry                              | External (derived pgvector index, §8)          |
+| 2   | **Fine-grained access control** (subject-attribute + entitlement-join row policy)  | [gov] | `RowFilter` is literal-only                            | `KnowledgeGrant`; multi-tenancy; any RLS      | Large (ACL model change, but standard)         |
+| 3   | **Governed UPDATE / DELETE actions**                                               | [gov] | `ActionDef` is insert-one-only                         | grant flips, homebrew edits, any mutation     | Medium-Large (open transactional question)     |
+| 4   | **External client wire** (Quack server or committed HTTP write API)                | [gov] | serving embedded in-process                            | any client (Grimoire Go, monolith) using Loom | Medium (on roadmap)                            |
+| 5   | **2-hop / chained traversal in one query**                                         | [app] | single-hop built; adjacency via `links()`              | Pipeline 5 graph traversal                    | Medium (on roadmap)                            |
+| 6   | **Document / nested-value properties** (struct, jsonb-ish)                         | [app] | typed scalar columns only                              | homebrew + nested stat blocks                 | Medium (or accept per-type schemas)            |
 
 The reframe: gaps **2 and 3 are [gov]** — fine-grained access control and governed
 mutation are table-stakes for any "governance follows the data" platform, not
 Grimoire-specific. Foundry has both; Loom has neither yet. Gap 4 is also [gov]
 (governance is moot if no external client can reach the front door) and is already
-on the roadmap. Gaps 1, 5, 6 are [app] — vector and nested documents are
-deliberately out of scope, multi-hop is a planned read enrichment.
+on the roadmap. **Gap 1 splits** (§8): embedding storage + generation + lineage
+(1a) belongs _in_ Loom as an Iceberg vector column written by a Transform, and
+rides the existing `road-iceberg-transform-writes`; only live ANN serving (1b) is
+external, by design, as a derived pgvector index re-gated through Loom. Gaps 5, 6
+stay [app] — multi-hop is a planned read enrichment, nested documents a modeling
+choice.
 
 So the headline is not "Loom is missing Grimoire features." It is **"Loom is
 missing the harder half of enterprise governance (FGAC + governed write-back),
-which it needs regardless, and Grimoire happens to exercise exactly that half."**
+which it needs regardless; embeddings belong in Loom as governed Iceberg columns
+with ANN served from a derived index; and Grimoire happens to exercise exactly
+that shape."**
 
 ## 11. Read of the result
 
@@ -276,15 +332,17 @@ governance feature), **vectors** (the retrieval entry point), and **any
 mutation** (insert-only actions).
 
 So Loom can express the _static, ingested, analytical_ half of the knowledge
-graph well, and the _dynamic, per-subject, mutable, vector-retrieved_ half not at
-all today. Grimoire's KG is mostly the second half. A personal KG leans the same
-way (pgvector RAG + frequent note edits + private/public gating already work in
-the monolith).
+graph well, and the _dynamic, per-subject, mutable_ half not yet. Grimoire's KG is
+mostly the second half. A personal KG leans the same way (pgvector RAG + frequent
+note edits + private/public gating already work in the monolith).
 
-Crucially, the missing half is not "app features." Two of its three pillars
-(per-subject access, governed mutation) are **enterprise governance** Loom owes
-its own thesis; only vector retrieval is genuinely an out-of-scope app concern.
-That is what reframes the A/B decision below.
+Crucially, the missing half is not "app features." Two of its pillars (per-subject
+access, governed mutation) are **enterprise governance** Loom owes its own thesis.
+The third, embeddings, is _also_ mostly in-scope: storage + generation + lineage
+belong in Loom as a governed Iceberg vector column (§8), and only the ANN-serving
+index is deliberately external. So the genuinely out-of-scope surface shrinks to
+"be an ANN engine," which Loom should not be. That is what reframes the A/B
+decision below.
 
 ## 12. Recommendation feeding the A/B choice
 
@@ -303,16 +361,33 @@ That is what reframes the A/B decision below.
   entitlement-join row policy), not a bespoke `KnowledgeGrant` feature. Built
   generally, it pays back across multi-tenancy, need-to-know, and any future
   tenant of the platform; Grimoire becomes the proof-of-use, not the design
-  driver. The [app] gaps (1 vector, 6 nested docs) stay out of scope; keep those
-  in the operational store.
+  driver.
+- Embeddings (gap 1) are **mostly in-scope and roadmap-aligned**: store the vector
+  as an Iceberg column, generate it with a Transform (lineage included), and
+  materialise a derived pgvector index that Loom keeps fresh and re-gates through
+  the chokepoint (§8). Only "be an ANN engine" stays out of scope. Nested
+  documents (gap 6) remain a modeling choice.
 
-Concrete next step if continuing: turn gaps 2, 3, 4 into Loom roadmap items framed
-as **enterprise governance**, not Grimoire support —
+Concrete next steps if continuing: turn the [gov] gaps into Loom roadmap items
+framed as **enterprise governance**, not Grimoire support —
 (2) FGAC: `RowFilter` gains subject-attribute references and an entitlement-join /
 `Exists` leaf, compiled by the Query API which already holds the subject;
 (3) governed UPDATE/DELETE actions with a settled transactional model (the open
 question in `ARCHITECTURE.md`);
-(4) the external client wire (already roadmapped).
+(4) the external client wire (already roadmapped);
+(1a) an **embedding Transform + derived-index materialization** flow on top of
+`road-iceberg-transform-writes`, with the candidate-generator + governed-hydration
+contract from §8.5 as the safety invariant.
 Then decide whether the lore corpus is a strong enough forcing function to pull
-these ahead of Loom's current ingest/query hardening. Gap 1 (vector) stays an
-[app] concern unless Loom deliberately revisits its AIP-out-of-scope line.
+these ahead of Loom's current ingest/query hardening.
+
+> **Substrate note (correcting the README-era framing above).** This doc's early
+> sections say "DuckLake / DuckDB serving" from `README.md`, but at HEAD `cb70424`
+> Loom is mid-migration to **Iceberg-default** (`fut-replace-ducklake-decision`)
+> with a **DataFusion-native serving engine** (`road-iceberg-datafusion-serving`,
+> done — no DuckDB in the read path) and per-column-stats predicate pushdown. This
+> strengthens the vector story: DataFusion carries Arrow vector types natively, the
+> Transform-to-Iceberg write path is the embedding-generation hook, and a
+> DataFusion↔Postgres `TableProvider` already exists in the roadmap
+> (`road-df-postgres-tableprovider`). Read "DuckLake/DuckDB" in §2-§9 as
+> "the lakehouse format + serving engine," now Iceberg + DataFusion.
