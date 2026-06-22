@@ -1,7 +1,7 @@
 # ADR 019: Substrate Executor Interface and AgentWorkflow over Argo
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Proposed
 **Created:** 2026-06-21
 **Revisits:** [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md) (its dismissal of warm pools as "not load-bearing")
 **Builds on:** [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md) (the executor abstraction, not its rejected implementations), [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)
@@ -18,29 +18,26 @@ Agent dispatch has a lineage of reversals:
 
 A new workload now exists that 015's batch-only premise did not anticipate: **synchronous, caller-blocked MCP dispatch.** A chat or agent issues an MCP call that runs a research agent or executes trusted code, and **blocks** on the response. The work itself is tens of seconds to a couple of minutes. The pain is not the work; it is the **cold pod schedule** in front of it: scheduling a pod (and, on a full node, waiting for the cluster autoscaler) adds a large, highly variable latency that a blocked caller feels directly.
 
-Two things have changed since 015 dismissed warm pools, and together they reopen the question:
+Beyond that concrete workload there is an ambition: if dispatch could be made **sub-second**, it would unlock a much wider class of uses (every chat turn or tool call cheaply spinning isolated compute). That ambition is what forces the hard questions this ADR has to answer honestly, because sub-second collides with two properties of the Argo model: its control-loop latency and, at volume, its etcd write rate.
 
-1. **A qualifying workload exists.** Caller-blocked dispatch is exactly the latency-sensitive, bursty class a warm pool serves. 015's "nothing sits idle waiting" no longer holds.
-2. **A mature warm-pool primitive exists.** `kubernetes-sigs/agent-sandbox` (SIG-standard `Sandbox` / `SandboxTemplate` / `SandboxClaim` / `SandboxWarmPool`) is the production-grade successor to what `agent-substrate/substrate` was at v0.0.0. A `SandboxClaim` binds a pre-warmed pod in milliseconds, with destroy-and-replenish on release giving clean isolation by construction.
-
-So the task is to capture the warm pool's value without re-adopting the twice-superseded AX/Substrate code, and without coupling our design to a single executor.
+So the task is to capture the warm-dispatch value without re-adopting the twice-superseded AX/Substrate code, without coupling to a single executor, and without pretending Argo scales to sub-second-at-volume when its storage model says otherwise.
 
 ---
 
 ## Decision
 
-Three decisions, one rule.
+Three structural decisions, then the two axes that route a job.
 
-**1. Keep Argo Workflows as the durable orchestration plane.** It won over Temporal in practice, it is mature, and its CronWorkflow / Workflow semantics are familiar. For tens-of-seconds-to-minutes jobs, Argo's reconcile-loop overhead (roughly 1 to 5 seconds) is noise against the job duration, even when a caller is blocked. We do **not** route synchronous dispatch around Argo by default.
+**1. Keep Argo Workflows as the orchestration plane for the durable, manageable tier.** It won over Temporal in practice (partly by attrition: Temporal was decommissioned), it is mature, and its CronWorkflow / Workflow semantics are familiar. For tens-of-seconds-to-minutes jobs at low volume, Argo's reconcile overhead is noise against the job duration even when a caller is blocked.
 
 **2. Define our own thin `Substrate` executor interface.** This reclaims the abstraction ADR 015 correctly identified as small and then threw away with the implementations. A minimal core plus optional capability interfaces:
 
 ```go
 // Core: every executor satisfies this.
 type Substrate interface {
-    Claim(ctx, ClaimSpec) (Handle, error) // acquire an isolated env (warm or cold)
+    Claim(ctx, ClaimSpec) (Handle, error)     // acquire an isolated env (cold, warm, or restored)
     Exec(ctx, Handle, Request) (Stream, error) // run work, stream output
-    Release(ctx, Handle) error // return/destroy; pool replenishes
+    Release(ctx, Handle) error                 // return/destroy
 }
 
 // Optional capabilities an executor advertises; consumers type-assert.
@@ -49,23 +46,31 @@ type Snapshotable interface{ Snapshot(Handle) (SnapshotRef, error); Restore(Snap
 type Persistent interface{ /* durable volumes survive Release */ }
 ```
 
-The capability seam is what keeps the interface from being a leaky rename of agent-sandbox: Substrate-style memory multiplexing becomes a `Snapshotable` capability the core never requires, so agent-sandbox is not forced to fake it and a future Firecracker backend is not forced to hide it.
+The capability seam keeps the interface from being a leaky rename of agent-sandbox: snapshot/restore is a `Snapshotable` capability the core never requires, so agent-sandbox is not forced to fake it and a Firecracker backend is not forced to hide it. The interface is proven by shipping a second implementation (a raw-`Pod`/`Job` executor) plus an in-memory test fake alongside impl #1, so we learn immediately if the interface only expresses agent-sandbox. The fake also lets the consumers be tested with no cluster, which matters given this repo has no local test loop.
 
-**3. agent-sandbox is `Substrate` impl #1, and the seam is proven by a second impl on day one.** A trivial raw-`Pod`/`Job` executor (cold, no pool) plus an in-memory test fake ship alongside it. If the core interface expresses agent-sandbox **and** raw-Pod cleanly, it is a real abstraction; if it only expresses agent-sandbox, we have renamed agent-sandbox and we find out immediately. The test fake also lets the consumers be tested with no cluster, which matters given this repo has no local test loop.
+**3. The executor is a sequence, not a single choice, and the `Substrate` seam makes the sequence throwaway-free for consumers.**
 
-**The rule that picks the topology: job duration divided by orchestration overhead.**
+| Executor                                            | Memory tax                 | Latency                       | Status                                                                             |
+| --------------------------------------------------- | -------------------------- | ----------------------------- | ---------------------------------------------------------------------------------- |
+| **Cold-on-demand** (raw Pod, no pool)               | none                       | cold start per call (seconds) | **Ship now.** Zero idle RAM; tolerable for the tens-of-seconds workload            |
+| **Warm pod pool** (agent-sandbox `SandboxWarmPool`) | standing RAM per image     | sub-second claim              | Middle option where affordable and sub-second is needed before snapshots land      |
+| **Firecracker snapshot** (`Snapshotable`)           | disk + RAM only while live | sub-second restore            | **Target end state.** No-tax and sub-second together; gated on a feasibility spike |
 
-| Aspect                       | Today (Argo, cold pods)      | Decided                                                                                                     |
-| ---------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Orchestration                | Argo Workflows               | Argo Workflows (unchanged)                                                                                  |
-| Executor coupling            | Direct pod-per-step          | `Substrate` interface (core + capabilities)                                                                 |
-| Warm dispatch                | None (cold schedule per run) | agent-sandbox `SandboxWarmPool`, claimed per run                                                            |
-| Durable plane                | CronWorkflow / Workflow      | `AgentWorkflow`: Argo on the hot path, steps are HTTP templates into the claimed warm pod                   |
-| Interactive sub-second plane | n/a                          | `job-mcp`: direct `SandboxClaim`, Argo bypassed. Reserved for genuinely sub-second needs; **not built now** |
-| Isolation                    | host kernel (runc)           | trusted today; `runtimeClassName: kata-fc` (Firecracker microVM) when untrusted arrives                     |
-| Sub-second cold start        | n/a                          | future `Snapshotable` executor (Firecracker / CRIU), additive                                               |
+The key realization on "ideal": no-memory-tax and sub-second come from different places. Avoiding the tax means **not keeping things warm** (cold-on-demand, free today). Sub-second means **not cold-starting** (warm pool, paid in RAM; or snapshot, paid in integration effort). Firecracker is the only executor that delivers both at once, which is exactly why it is the target _and_ the most ambitious. We get the no-tax property immediately by not pooling, and pursue the conjunction (no-tax + sub-second) via snapshots as the end state.
 
-`AgentWorkflow` and `job-mcp` are two consumers of the **same** `Substrate`. `AgentWorkflow` is the common case; `job-mcp` is the exception reserved for when a job is short enough that Argo's 1-to-5-second floor would dominate.
+**The two axes that route a job:**
+
+- **Duration / orchestration-overhead** decides whether Argo can sit on the hot path. Long job: yes, overhead is noise. Short job: Argo's overhead is a large fraction.
+- **Volume** decides whether a job may be a first-class Argo `Workflow` object at all (see the etcd ceiling below). Low volume: yes. High volume: no.
+
+| Aspect                        | Today (Argo, cold pods) | Decided                                                                                                        |
+| ----------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Orchestration (durable tier)  | Argo Workflows          | Argo Workflows (unchanged)                                                                                     |
+| Executor coupling             | Direct pod-per-step     | `Substrate` interface (core + capabilities)                                                                    |
+| Executor (now)                | cold schedule per run   | cold-on-demand; warm pool / Firecracker snapshot added behind the seam                                         |
+| Durable tier                  | CronWorkflow / Workflow | `AgentWorkflow`: Argo on the hot path, steps are HTTP templates into the claimed executor                      |
+| High-volume / sub-second tier | n/a                     | `job-mcp`: direct claim, **not** an etcd-backed Workflow object; selective/aggregated mirror for observability |
+| Isolation                     | host kernel (runc)      | trusted today; `runtimeClassName: kata-fc` (Firecracker microVM) when untrusted arrives                        |
 
 ---
 
@@ -73,54 +78,84 @@ The capability seam is what keeps the interface from being a leaky rename of age
 
 ```mermaid
 graph TB
-    Chat[MCP client / chat] -->|blocked MCP call| Dispatch
+    Chat[MCP client / chat] -->|blocked MCP call| Router
     Cron[CronWorkflow schedule] --> AW
-    Dispatch{duration vs overhead}
 
-    Dispatch -->|tens of sec to min| AW[AgentWorkflow<br/>Argo on hot path]
-    Dispatch -->|genuinely sub-second<br/>NOT built now| JM[job-mcp<br/>direct claim, Argo bypassed]
+    Router{duration / overhead<br/>and volume}
+    Router -->|long, low-volume, durable| AW[AgentWorkflow<br/>Argo on hot path<br/>= a Workflow object in etcd]
+    Router -->|short, high-volume, sub-second| JM[job-mcp<br/>direct claim, NOT an etcd object]
 
     AW -->|HTTP template, no per-step pod| Substrate
     JM -->|Claim / Exec / Release| Substrate
+    JM -.->|selective / aggregated| Mirror[observability record<br/>off the hot path]
 
-    Substrate[Substrate interface<br/>Claim · Exec · Release<br/>+ Suspendable / Snapshotable / Persistent]
+    Substrate[Substrate interface<br/>Claim / Exec / Release<br/>+ Suspendable / Snapshotable / Persistent]
 
-    Substrate -->|impl #1| AS[agent-sandbox<br/>SandboxWarmPool]
-    Substrate -->|impl #2: proves the seam| Pod[raw Pod / Job<br/>cold, no pool]
+    Substrate -->|ship now| Cold[cold-on-demand<br/>raw Pod, no tax]
+    Substrate -->|where affordable| Warm[agent-sandbox<br/>warm pool, pays RAM]
+    Substrate -.->|target, spike-gated| Snap[Firecracker snapshot<br/>no tax + sub-second]
     Substrate -.->|test| Fake[in-memory fake]
-    Substrate -.->|future: untrusted| Kata[agent-sandbox + kata-fc<br/>Firecracker isolation]
-    Substrate -.->|future: sub-second cold| Snap[Snapshotable<br/>Firecracker / CRIU]
+    Substrate -.->|untrusted future| Kata[+ kata-fc runtimeClass]
 
-    AS -->|claim warm pod| Pool[Warm pod pool per image]
-    Pool -->|exec trusted harness| Work[research agent / code]
+    Cold --> Work[research agent / code]
+    Warm --> Work
     Work -->|OpenAI API| VLLM[vLLM]
     Work -->|MCP| Forge[Context Forge]
 
     style Substrate fill:#F7B93E,color:#000
     style AW fill:#326CE5,color:#fff
-    style AS fill:#326CE5,color:#fff
+    style Snap fill:#326CE5,color:#fff
     style JM fill:#999,color:#fff
 ```
 
-### Tuned low-latency Argo dispatch
+### Sub-second and the etcd ceiling (the load-bearing constraint)
 
-The largest lever is **not scheduling a step pod at all**: when a step is an HTTP (or Plugin) template that calls the pre-warmed sandbox, Argo's per-workflow agent pod makes the call and no per-step pod is created. Combined with a warm pool, dispatch becomes `Workflow CR create -> reconcile -> agent pod -> HTTP into warm pod`. Supporting knobs: `--workflow-workers` and client `--qps`/`--burst` for queue throughput, and submitting the Workflow CR directly to the K8s API rather than through the Argo Server to drop a hop. The residual floor is the per-workflow agent-pod spin-up (a second or two cold); the upstream direction toward a global agent pod ([argo-workflows#7891](https://github.com/argoproj/argo-workflows/issues/7891)) would remove even that. None of this tunes Argo below an irreducible control-plane round-trip of roughly 1 to 2 seconds, which is why the sub-second `job-mcp` path exists as a separate option rather than a tuning target.
+Argo stores every `Workflow` as a Kubernetes CRD, and every CRD lives in the cluster's **shared etcd**. Three intrinsic consequences, confirmed by Argo's own scaling docs:
+
+1. **Write amplification.** Each state transition (node starts, completes, status update) is a Raft-consensus write. Workflow throughput is bounded by etcd write throughput.
+2. **Object-size limit.** etcd caps objects near 1MB, which is _why_ Argo added status compression and node-status offload to an external SQL DB. Those features are evidence of the ceiling.
+3. **Noisy-neighbor.** Argo does not get its own etcd; it shares the one backing every pod, service, and controller. Argo-at-volume degrades the whole cluster's control plane, not just Argo.
+
+This produces an over-constrained triangle: **sub-second x high-volume x full-Argo-semantics-per-job.** Pick two. Live workflow state _is_ etcd state (archive/offload only help completed or oversized workflows, not the write rate of live small ones), so there is no Argo config that keeps every high-volume job a first-class Workflow object without approaching the etcd ceiling. The sub-second ambition _is_ a high-write-rate regime: lower latency invites more calls, more calls means more etcd writes.
+
+The resolution is to **tier by volume**: durable, multi-step, manageable jobs become Argo `Workflow` objects (low volume, etcd-fine); high-volume sub-second interactive jobs dispatch directly and are _not_ made into etcd objects, mirrored selectively or in aggregate for observability. This converges with the latency analysis from the opposite direction: both the reconcile floor and the etcd write rate say the high-volume sub-second hot path should not traverse Argo's CRD lifecycle.
+
+### Tuned low-latency Argo dispatch (for the durable tier)
+
+The earlier draft asserted an "irreducible 1 to 2 second" Argo floor. That is a **production-scale** figure (loaded etcd, queue contention, cold agent pods), not a fundamental limit. At single-tenant homelab scale, the dispatch path is event-driven (informers, not polling), and the control-plane overhead for a single or few-step workflow is plausibly **100 to 300ms**, pending measurement. The levers that matter:
+
+- **Do not schedule a step pod.** An HTTP (or Plugin) template calls the executor via the per-workflow agent pod; no per-step pod is created. A `container` template always creates a pod.
+- **`DEFAULT_REQUEUE_TIME` (default 10s).** If a step waits by polling (for example a `resource` template `successCondition` on a claim), Argo re-checks at this interval, turning a millisecond bind into a 10-second wait. Tune to ~100-250ms or avoid polling waits. This is the single biggest hidden latency.
+- **Warm agent pod.** Cold spin-up is ~1-2s one-time; keep one warm or track the global-agent-pod direction ([argo-workflows#7891](https://github.com/argoproj/argo-workflows/issues/7891)).
+- **`--workflow-workers`, client `--qps`/`--burst`, fast etcd (local NVMe), submit the CR directly to the API server** (skip the Argo Server hop).
+
+Whether this actually reaches sub-second at our scale is a measurement, not an assertion (see Open Questions). Each state transition is one reconcile cycle, so sub-second is a single/few-step property; deep DAGs add up.
+
+### Firecracker snapshot: the target executor, with honest catches
+
+Snapshot/restore is ideal because it gives no-memory-tax and sub-second together, which is why E2B, Fly Machines, and Modal all use it. Three things are not free:
+
+1. **The tax transforms, it does not vanish.** RAM becomes disk (a snapshot is roughly the VM's memory image, hundreds of MB to GB per image) plus RAM only while a VM is live. The famous ~5ms resume is the snapshot-already-in-page-cache number; a genuinely cold restore reads the image from disk (~100s of ms on NVMe). Still sub-second, not 5ms.
+2. **Snapshots must be taken at a quiescent point.** This is ADR 014's open question #2: a snapshot freezes memory, so live TCP connections (vLLM, MCP gateway, Postgres) are dead on restore. You snapshot a "ready, idle, will-reconnect" state and the harness needs reconnect logic; you cannot snapshot mid-completion.
+3. **agent-sandbox does not expose snapshots today.** This is a multi-week integration (Kata-fc VM templating, firecracker-containerd with custom snapshot orchestration, or upstreaming), with hardware unknowns. It is the most ambitious path with the least turnkey support.
 
 ### Trust axis
 
-Workloads are **trusted today** (no external jobs), so the warm pod pool needs no VM isolation and tuned-Argo-plus-warm-pool is sufficient. When untrusted/external work arrives, isolation flips from optional to mandatory and the seam absorbs it additively: `runtimeClassName: kata-fc` on the agent-sandbox `SandboxTemplate` gives Firecracker microVM isolation with no executor change, and a `Snapshotable` Firecracker/CRIU executor can be added if sub-second cold start without standing warm RAM becomes necessary. Neither touches the `AgentWorkflow` or `job-mcp` consumers.
+Workloads are **trusted today** (no external jobs), so no VM isolation is required and cold-on-demand or a warm pool is sufficient. When untrusted/external work arrives, isolation flips from optional to mandatory and the seam absorbs it additively: `runtimeClassName: kata-fc` gives Firecracker microVM isolation with no executor change, and a `Snapshotable` executor can be added for the no-tax sub-second case. Neither touches the `AgentWorkflow` or `job-mcp` consumers.
 
 ---
 
 ## Alternatives Considered
 
-- **Re-adopt google/ax + agent-substrate/substrate (ADR 014).** Rejected: twice-superseded, and at the time of writing still pre-stability. We keep the abstraction, not the code.
-- **Temporal worker pools (ADR 015).** Rejected: decommissioned; Argo is the live, familiar substrate and we are not reintroducing a second workflow engine.
-- **Bypass Argo for all caller-blocked dispatch.** Rejected: for tens-of-seconds jobs the orchestration overhead is noise, and Argo's durability, observability, and retries are worth keeping. Bypass is reserved for genuinely sub-second work.
-- **Warm worker pool with in-process isolation (the fastest trusted option).** Held in reserve: sub-millisecond routing, but isolation is in-process, so it is unsafe the moment work becomes untrusted. Not chosen as the default because it does not survive the trust transition.
+- **Re-adopt google/ax + agent-substrate/substrate (ADR 014).** Rejected: twice-superseded, pre-stability. We keep the abstraction, not the code.
+- **Port the Argo _interface_ onto a faster/non-etcd backend.** There is no drop-in: the Argo interface _is_ Kubernetes CRDs, so live state is etcd state. The closest options: (a) **vcluster + KINE backed by Postgres**, which keeps the exact Argo interface but runs it on a virtual control plane whose datastore is Postgres, isolating Argo's writes off the host etcd (solves the noisy-neighbor, though raw throughput is comparable, not magically higher); (b) Argo **node-status offload** to Postgres (mitigates object-size and churn, not write rate). Recorded as the realistic levers if the etcd ceiling is approached; neither changes the conclusion that high-volume jobs should not each be a Workflow object.
+- **Flyte.** A workflow orchestrator that is Postgres-native by design (metadata in its own DB, k8s for execution), built to scale past CRD-per-workflow systems. Rejected for now: a different interface and a second engine to operate; revisit only if the durable tier itself outgrows Argo.
+- **Temporal (own DB).** The decommissioned ADR 015 choice, and genuinely stronger on the one axis this ADR flags (workflow state in sharded Postgres, decoupled from etcd). Not reintroduced; noted honestly as the dimension where going back to Argo was a regression.
+- **Bypass Argo for all caller-blocked dispatch.** Rejected as a blanket rule: for long, low-volume jobs Argo's durability and observability are worth keeping. Bypass is scoped to the high-volume sub-second tier, justified by both latency and etcd write rate.
+- **Warm worker pool with in-process isolation.** Held in reserve: sub-millisecond routing, but isolation is in-process, so it is unsafe the moment work becomes untrusted.
 - **WebAssembly / WASI.** Rejected for general use: near-instant start but a restricted runtime that cannot run an arbitrary CLI or a full agent harness.
-- **Managed sandboxes (E2B / Modal / Daytona).** Rejected as the primary path: they are the Firecracker-snapshot approach as a service, but the goal is in-cluster on our hardware. They remain a candidate `Substrate` adapter if ever wanted.
-- **Hardwire agent-sandbox with no interface.** Rejected: yields a leaky single-impl design with no test fake and no room for Kata/Firecracker; the interface costs little and is proven by a second impl.
+- **Managed sandboxes (E2B / Modal / Daytona).** Rejected as the primary path (in-cluster on our hardware is the goal); they remain a candidate `Substrate` adapter.
+- **Hardwire agent-sandbox with no interface.** Rejected: a leaky single-impl design with no test fake and no room for cold-on-demand / Kata / Firecracker.
 
 ---
 
@@ -128,51 +163,55 @@ Workloads are **trusted today** (no external jobs), so the warm pod pool needs n
 
 Baseline in `docs/security.md`. Deviations and notes:
 
-- **Trusted-only today.** The warm pod pool runs our own harnesses; no VM boundary is required yet. This is a standing assumption, not a permanent one.
-- **Isolation path for untrusted work** is pre-designed: gVisor (`runsc`) per [security/003](../security/003-gvisor-runtime-class.md) and/or Kata Firecracker via `runtimeClassName`, applied to the agent-sandbox `SandboxTemplate`. Adopting untrusted execution is gated on this boundary being in place.
-- **Clean isolation by construction.** A `SandboxClaim` adopts a fresh pod and, on release, that pod is destroyed (not handed to the next claimant) while the pool replenishes a clean one. No reset logic to get wrong.
-- **Snapshots are never load-bearing.** If a `Snapshotable` executor is added later, snapshots include process memory and must be treated as ephemeral; durable state always lives in monolith Postgres, echoing the snapshot-safety note in ADR 014.
-- **Memory is the binding cluster resource.** Warm pods spend standing RAM per image; pool sizing is a real cost knob, and snapshot/restore (trading RAM for disk) is the lever if image variety makes warm pools too expensive.
-- **No new ingress.** Dispatch stays internal: monolith / Argo to the warm pool; external access continues through monolith and Cloudflare.
+- **Trusted-only today.** Harnesses are our own; no VM boundary required yet. A standing assumption, not permanent.
+- **Isolation path for untrusted work** is pre-designed: gVisor (`runsc`) per [security/003](../security/003-gvisor-runtime-class.md) and/or Kata Firecracker via `runtimeClassName`. Adopting untrusted execution is gated on this boundary being in place first.
+- **Clean isolation by construction** (warm pool): a `SandboxClaim` adopts a fresh pod and destroys it on release while the pool replenishes a clean one. Verify the controller destroys rather than recycles (Open Questions).
+- **Snapshots are never load-bearing.** Snapshot memory is ephemeral; durable state always lives in monolith Postgres, echoing ADR 014.
+- **Memory is the binding cluster resource.** Cold-on-demand spends none; warm pools spend standing RAM per image; snapshots trade RAM for disk. The executor sequence is partly a memory-budget decision.
+- **No new ingress.** Dispatch stays internal; external access continues through monolith and Cloudflare.
 
 ---
 
 ## Risks
 
-| Risk                                                                   | Likelihood | Impact | Mitigation                                                                                                    |
-| ---------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------- |
-| `Substrate` interface becomes a single-impl rename of agent-sandbox    | Medium     | Medium | Ship a raw-Pod impl and a test fake on day one; the interface must express all three or it is wrong           |
-| Warm pools cost standing RAM on a memory-bound cluster                 | High       | Medium | Size pools per image conservatively; reserve `Snapshotable` (RAM-for-disk) for when variety bites             |
-| Argo control-loop floor (1 to 2s) disappoints a sub-second expectation | Low        | Low    | Documented as irreducible; the `job-mcp` bypass exists precisely for that case                                |
-| Trust assumption silently outlives "trusted only"                      | Medium     | High   | Untrusted adoption is explicitly gated on Kata/gVisor isolation being applied first                           |
-| Reviving a conclusion ADR 015 rejected reads as churn                  | Low        | Low    | The premise changed (a qualifying workload now exists); this ADR records why, not a reversal for its own sake |
-| agent-sandbox is pre-1.0 and APIs may shift                            | Medium     | Low    | It is impl #1 behind the interface; the blast radius of an upstream change is one adapter                     |
+| Risk                                                                                       | Likelihood | Impact | Mitigation                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------ | ---------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| etcd write rate from high-volume sub-second jobs degrades the shared cluster control plane | Medium     | High   | Tier by volume: high-volume jobs are not Workflow objects. If the durable tier itself grows, isolate via vcluster+KINE or revisit Flyte/Temporal. Invisible in dashboards until cluster-wide, so watch it early |
+| `Substrate` interface becomes a single-impl rename of agent-sandbox                        | Medium     | Medium | Ship cold-on-demand + a test fake alongside impl #1; the interface must express all of them                                                                                                                     |
+| Firecracker snapshot integration is multi-week and may not mature on our hardware          | Medium     | Medium | Gate it behind a feasibility spike; cold-on-demand ships value meanwhile; warm pool is the fallback for sub-second-where-affordable                                                                             |
+| Warm pools cost standing RAM on a memory-bound cluster                                     | High       | Medium | Prefer cold-on-demand for long jobs; reserve warm/snapshot for where sub-second is genuinely needed                                                                                                             |
+| Tuned Argo still misses sub-second at our scale                                            | Medium     | Low    | It is a measurement, not an assertion; if it misses, the high-volume tier already bypasses Argo                                                                                                                 |
+| Trust assumption silently outlives "trusted only"                                          | Medium     | High   | Untrusted adoption gated on Kata/gVisor isolation first                                                                                                                                                         |
+| agent-sandbox is pre-1.0 and APIs may shift                                                | Medium     | Low    | One impl behind the interface; blast radius is one adapter                                                                                                                                                      |
 
 ---
 
 ## Open Questions
 
-1. Does the interactive `job-mcp` workload ever actually need sub-second response, or does tuned `AgentWorkflow` cover all of it? Build the bypass only when a real call demands it.
-2. What is the right warm-pool size per image given the memory ceiling, and at what image-variety count does `Snapshotable` become cheaper than warm RAM?
-3. Does the agent-sandbox `SandboxClaim` controller destroy-and-replenish on release exactly as assumed, or recycle a used pod? Verify before relying on clean-by-construction isolation.
-4. For untrusted work later, is Kata Firecracker via RuntimeClass sufficient, or is a dedicated `Snapshotable` Firecracker executor warranted for the sub-second case?
-5. Where does the per-workflow agent-pod spin-up land in practice, and is the global-agent-pod direction worth tracking upstream?
+These are answered during execution, not gates on the decision.
+
+1. **Argo-tuning spike (cheap, first).** Measure p50/p99 submit-to-first-byte at homelab scale with a tuned controller (low `DEFAULT_REQUEUE_TIME`, warm agent pod, HTTP template into a stub). Does the orchestrator half reach sub-second? This gates whether Argo can stay on the hot path for short jobs.
+2. **Firecracker feasibility spike (multi-week, second).** Sub-second restore of an initialized harness on bare-metal KVM? Snapshot disk cost per image? The quiescent-snapshot + reconnect pattern? Copy-on-write fan-out for concurrent restores?
+3. At what job volume does the etcd write rate become a concern at our scale, and is vcluster+KINE worth pre-empting it?
+4. What fraction of jobs genuinely need to be first-class Workflow objects versus direct-dispatch with aggregated observability?
+5. Does the agent-sandbox `SandboxClaim` controller destroy-and-replenish on release, or recycle a used pod?
+6. For untrusted work later, is Kata Firecracker via RuntimeClass sufficient, or is a dedicated `Snapshotable` executor warranted?
 
 ---
 
 ## References
 
-| Resource                                                                                              | Relevance                                                                               |
-| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)                               | Origin of the executor abstraction; its implementations rejected                        |
-| [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md)                  | Dismissed warm pools as "not load-bearing"; this ADR revisits that under a new workload |
-| [007 - Agent Run Orchestration Service](007-agent-orchestrator.md)                                    | Earlier dispatch plumbing, retired                                                      |
-| [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)                         | Isolation boundary for the untrusted future                                             |
-| [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)                     | `Substrate` impl #1: Sandbox / SandboxClaim / SandboxWarmPool                           |
-| [Argo Workflows: Executor Plugins](https://argo-workflows.readthedocs.io/en/latest/executor_plugins/) | HTTP/Plugin templates avoid per-step pods on the hot path                               |
-| [argo-workflows#7891](https://github.com/argoproj/argo-workflows/issues/7891)                         | Global agent pod direction; removes the per-workflow agent-pod floor                    |
-| [Kata Containers](https://katacontainers.io/)                                                         | Firecracker microVM as a K8s RuntimeClass; isolation without a new executor             |
-| [Firecracker](https://firecracker-microvm.github.io/)                                                 | Sub-second microVM snapshot/restore; the `Snapshotable` future backend                  |
-
-</content>
-</invoke>
+| Resource                                                                                                        | Relevance                                                                                |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)                                         | Origin of the executor abstraction; implementations rejected                             |
+| [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md)                            | Dismissed warm pools; stronger on etcd decoupling; this ADR revisits both                |
+| [007 - Agent Run Orchestration Service](007-agent-orchestrator.md)                                              | Earlier dispatch plumbing, retired                                                       |
+| [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)                                   | Isolation boundary for the untrusted future                                              |
+| [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)                               | `Substrate` impl: Sandbox / SandboxClaim / SandboxWarmPool                               |
+| [Argo: Running at Massive Scale](https://argo-workflows.readthedocs.io/en/latest/running-at-massive-scale/)     | Argo's own acknowledgement of the etcd ceiling                                           |
+| [Argo: Offloading Large Workflows](https://argo-workflows.readthedocs.io/en/latest/offloading-large-workflows/) | node-status offload to Postgres/MySQL; evidence of the object-size limit                 |
+| [argo-workflows#7891](https://github.com/argoproj/argo-workflows/issues/7891)                                   | Global agent pod direction; removes the per-workflow agent-pod floor                     |
+| [vCluster + KINE backing store](https://www.vcluster.com/docs/)                                                 | Keep the Argo interface, isolate its writes onto a Postgres-backed virtual control plane |
+| [Flyte](https://flyte.org/)                                                                                     | Postgres-native workflow orchestrator; the alternative if the durable tier outgrows Argo |
+| [Kata Containers](https://katacontainers.io/)                                                                   | Firecracker microVM as a K8s RuntimeClass; isolation without a new executor              |
+| [Firecracker](https://firecracker-microvm.github.io/)                                                           | Sub-second microVM snapshot/restore; the `Snapshotable` target backend                   |
