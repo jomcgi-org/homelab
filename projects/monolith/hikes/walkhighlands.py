@@ -155,7 +155,11 @@ def parse_walk(html: str) -> Walk | None:
     soup = BeautifulSoup(html, "html.parser")
     data: dict = {}
 
-    name_tag = soup.select_one("#content h1")
+    # The route title is an <h1 class="wtitle"> that now sits ABOVE #content
+    # (WalkHighlands moved it out of the content div, and the page also carries
+    # unrelated "app expired" <h1>s, so target the class). Fall back to the old
+    # "#content h1" so a partial revert does not re-break parsing.
+    name_tag = soup.select_one("h1.wtitle") or soup.select_one("#content h1")
     if name_tag:
         data["name"] = name_tag.get_text(strip=True)
 
@@ -163,9 +167,12 @@ def parse_walk(html: str) -> Walk | None:
     if canonical and canonical.get("href"):
         data["url"] = canonical["href"]
 
-    # The H2 titled "Summary" is followed by the summary paragraph.
-    summary_h2 = soup.find("h2", string=lambda t: t and "Summary" in t)
-    summary_p = summary_h2.find_next_sibling("p") if summary_h2 else None
+    # The heading titled "Summary" is followed by the summary paragraph. The page
+    # now uses <h3> (was <h2>) and wraps the paragraph in a div rather than making
+    # it a direct sibling, so match either heading level and take the next <p> in
+    # document order (find_next), which works for both the old and new layouts.
+    summary_heading = soup.find(["h2", "h3"], string=lambda t: t and "Summary" in t)
+    summary_p = summary_heading.find_next("p") if summary_heading else None
     if summary_p:
         data["summary"] = summary_p.get_text(strip=True)
 
