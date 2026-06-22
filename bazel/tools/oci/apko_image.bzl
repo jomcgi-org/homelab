@@ -17,7 +17,8 @@ def apko_image(
         visibility = ["//bazel/images:__pkg__"],
         tars = None,
         multiarch_tars = None,
-        multiplatform_tars = None):
+        multiplatform_tars = None,
+        archs = ["amd64", "arm64"]):
     """Create a multi-platform apko OCI image, optionally with additional tar layers.
 
     Args:
@@ -36,6 +37,11 @@ def apko_image(
         multiplatform_tars: DEPRECATED. Use tars and multiarch_tars instead.
                            Optional list of multiplatform tar dicts from multiplatform_tar().
                            Each dict should have "amd64" and/or "arm64" keys with tar targets.
+        archs: Architectures to build when layering tars. Defaults to
+               ["amd64", "arm64"] (a multi-platform index). Pass ["amd64"] for a
+               single-arch image (no index; :{name} is the lone oci_image) -- use
+               this for CI-execution-only images whose layered binaries cannot be
+               cross-compiled to the other arch.
 
     Creates:
         :{name} - The apko image target (or oci_image_index if tars are provided)
@@ -106,60 +112,51 @@ def apko_image(
         push_image = name
         use_oci_push = False
     else:
-        # Create platform-specific base images
-        _apko_image(
-            name = name + "_base_amd64",
-            architecture = "x86_64",
-            config = config,
-            contents = contents,
-            tag = "latest",
-        )
+        _apko_arch = {"amd64": "x86_64", "arm64": "aarch64"}
+        _go_platform = {
+            "amd64": "@rules_go//go/toolchain:linux_amd64",
+            "arm64": "@rules_go//go/toolchain:linux_arm64",
+        }
+        _arch_tars = {"amd64": tars_amd64, "arm64": tars_arm64}
 
-        _apko_image(
-            name = name + "_base_arm64",
-            architecture = "aarch64",
-            config = config,
-            contents = contents,
-            tag = "latest",
-        )
+        images = []
+        for arch in archs:
+            # Per-arch apko base (Wolfi userland).
+            _apko_image(
+                name = name + "_base_" + arch,
+                architecture = _apko_arch[arch],
+                config = config,
+                contents = contents,
+                tag = "latest",
+            )
 
-        # Transition the base images to their target platforms
-        # (apko bases are already platform-specific, this just sets the platform metadata)
-        platform_transition_filegroup(
-            name = name + "_base_amd64_transitioned",
-            srcs = [":" + name + "_base_amd64"],
-            target_platform = "@rules_go//go/toolchain:linux_amd64",
-        )
+            # Transition the base to set its target-platform metadata
+            # (apko bases are already platform-specific).
+            platform_transition_filegroup(
+                name = name + "_base_" + arch + "_transitioned",
+                srcs = [":" + name + "_base_" + arch],
+                target_platform = _go_platform[arch],
+            )
 
-        platform_transition_filegroup(
-            name = name + "_base_arm64_transitioned",
-            srcs = [":" + name + "_base_arm64"],
-            target_platform = "@rules_go//go/toolchain:linux_arm64",
-        )
+            # Layer tars on top of the transitioned base. tars are NOT
+            # transitioned (built on the exec platform). For a single requested
+            # arch the layered image IS `name` (no index); otherwise it is
+            # name_<arch> and gets indexed below.
+            image_name = name if len(archs) == 1 else name + "_" + arch
+            oci_image(
+                name = image_name,
+                base = ":" + name + "_base_" + arch + "_transitioned",
+                tars = _arch_tars[arch],
+            )
+            images.append(":" + image_name)
 
-        # Layer tars on top of the transitioned bases
-        # Note: tars are NOT transitioned because they contain platform-independent files
-        # (e.g., JavaScript bundles, config files) that are built on the exec platform
-        oci_image(
-            name = name + "_amd64",
-            base = ":" + name + "_base_amd64_transitioned",
-            tars = tars_amd64,
-        )
-
-        oci_image(
-            name = name + "_arm64",
-            base = ":" + name + "_base_arm64_transitioned",
-            tars = tars_arm64,
-        )
-
-        # Create multi-platform index
-        oci_image_index(
-            name = name,
-            images = [
-                ":" + name + "_amd64",
-                ":" + name + "_arm64",
-            ],
-        )
+        # Combine multiple arches into a multi-platform index. A single arch is
+        # already exposed as `name` by the loop above.
+        if len(images) > 1:
+            oci_image_index(
+                name = name,
+                images = images,
+            )
 
         push_image = name
         use_oci_push = True

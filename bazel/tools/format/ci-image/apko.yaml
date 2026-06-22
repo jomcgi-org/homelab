@@ -33,6 +33,10 @@ contents:
     # git: the Format check does git diff/add/commit/push and the manifest
     # generators discover files via `git ls-files`.
     - git
+    # tar (gnutar) + gzip: the BuildBuddy workflow runner uses them to
+    # checkout/cache the workspace inside the container.
+    - gnutar
+    - gzip
     # python3: validate-generate-scripts.sh runs the repo-docs and docs-site
     # manifest generators with system python3 (pure stdlib, no pip).
     - python3
@@ -40,9 +44,11 @@ contents:
     # binary (tree-sitter). libgcc comes transitively.
     - libstdc++
 
+# Single-arch: this image only runs on BuildBuddy's amd64 workflow pool, and the
+# cgo gazelle binary cannot be cross-compiled to aarch64 here (no aarch64 C++
+# toolchain). See the BUILD header.
 archs:
   - x86_64
-  - aarch64
 
 environment:
   # git config / any HOME-relative writes land somewhere writable. The runner

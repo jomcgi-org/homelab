@@ -6,145 +6,91 @@
 # buildifier + the custom gazelle binary DIRECTLY, with no `bazel run` / RBE
 # roundtrip.
 #
-# Design: a minimal Wolfi userland (apko.yaml) with every actual tool layered
-# on top as a Bazel-built tar, so each baked binary is byte-identical to what
-# `bazel run //bazel/tools/format:format` builds today. Version parity is
-# guaranteed by construction (same Bazel artifacts), not by matching Wolfi
-# package versions to Bazel-pinned ones.
-#
-# Per-architecture handling: apko_image layers `multiarch_tars` onto per-arch
-# bases using {base}_amd64 / {base}_arm64 suffixes, so every arch-specific tool
-# is provided as both. ruff/shfmt/gofumpt come from the per-arch multitool repos
-# (the same binaries fast-format.sh uses locally); the cgo gazelle binary and
-# the buildifier binary are produced per-arch via a rules_go platform
-# transition; node comes from the hermetic rules_nodejs per-arch repos. prettier
-# is arch-independent JS and is layered once via `tars`.
+# Single-arch (linux/amd64) by design: this image only ever executes on
+# BuildBuddy's amd64 workflow pool, and the custom //:gazelle_binary links cgo
+# (the rules_python gazelle plugin pulls in the tree-sitter C bindings) which
+# cannot be cross-compiled to aarch64 here -- the repo has no aarch64 C++
+# toolchain yet (see bazel/ocaml/platforms, the `no-arm64`-tagged examples).
+# The dual-arch convention is for deployed images pulled onto mixed-arch cluster
+# nodes; a CI-execution image has exactly one consumer arch. Because the whole
+# build runs on the amd64 exec host, every tool is baked natively (no platform
+# transition), so each binary is byte-identical to what
+# `bazel run //bazel/tools/format:format` builds today: version parity by
+# construction.
 
-load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 package(default_visibility = ["//bazel/images:__pkg__"])
 
-# --- Custom gazelle binary (//:gazelle_binary) -----------------------------
-# Classic bazel-contrib gazelle with the in-repo helm/wrangler/semgrep Go
-# extensions compiled in. This is the gazelle the format multirun runs today
-# (NOT the aspect-gazelle release binary that the tools image ships for local
-# dev). Transitioned per-arch because it is built by rules_go (cgo).
-[
-    platform_transition_filegroup(
-        name = "gazelle_bin_" + arch,
-        srcs = ["//:gazelle_binary"],
-        target_platform = "@rules_go//go/toolchain:linux_" + arch,
-    )
-    for arch in [
-        "amd64",
-        "arm64",
-    ]
-]
+# --- Tool tars (all linux/amd64, baked natively) ---------------------------
+# Each genrule drops one or more binaries into /usr/bin inside a tar that
+# oci_image layers onto the apko base.
 
-[
-    genrule(
-        name = "gazelle_tar_" + arch,
-        srcs = [":gazelle_bin_" + arch],
-        outs = ["gazelle_" + arch + ".tar"],
-        cmd = "\n".join([
-            "mkdir -p tmp/usr/bin",
-            "cp $(location :gazelle_bin_" + arch + ") tmp/usr/bin/gazelle",
-            "chmod 0755 tmp/usr/bin/gazelle",
-            "tar -C tmp -cf $@ .",
-        ]),
-    )
-    for arch in [
-        "amd64",
-        "arm64",
-    ]
-]
+# Custom gazelle: classic bazel-contrib gazelle with the in-repo
+# helm/wrangler/semgrep Go extensions compiled in -- the gazelle the format
+# multirun runs today (NOT the aspect-gazelle release binary the tools image
+# ships for local dev). cgo, hence amd64-only.
+genrule(
+    name = "gazelle_tar",
+    srcs = ["//:gazelle_binary"],
+    outs = ["gazelle.tar"],
+    cmd = "\n".join([
+        "mkdir -p tmp/usr/bin",
+        "cp $(location //:gazelle_binary) tmp/usr/bin/gazelle",
+        "chmod 0755 tmp/usr/bin/gazelle",
+        "tar -C tmp -cf $@ .",
+    ]),
+)
 
-# --- buildifier (@buildifier_prebuilt//:buildifier) ------------------------
-# The Starlark formatter the format multirun runs via Bazel. Not shipped in the
-# tools image, so it must be baked here. Transitioned per-arch to select the
-# matching prebuilt download.
-[
-    platform_transition_filegroup(
-        name = "buildifier_bin_" + arch,
-        srcs = ["@buildifier_prebuilt//:buildifier"],
-        target_platform = "@rules_go//go/toolchain:linux_" + arch,
-    )
-    for arch in [
-        "amd64",
-        "arm64",
-    ]
-]
+# buildifier: the Starlark formatter the format multirun runs via Bazel. Not
+# shipped in the tools image, so it must be baked here.
+genrule(
+    name = "buildifier_tar",
+    srcs = ["@buildifier_prebuilt//:buildifier"],
+    outs = ["buildifier.tar"],
+    cmd = "\n".join([
+        "mkdir -p tmp/usr/bin",
+        "cp $(location @buildifier_prebuilt//:buildifier) tmp/usr/bin/buildifier",
+        "chmod 0755 tmp/usr/bin/buildifier",
+        "tar -C tmp -cf $@ .",
+    ]),
+)
 
-[
-    genrule(
-        name = "buildifier_tar_" + arch,
-        srcs = [":buildifier_bin_" + arch],
-        outs = ["buildifier_" + arch + ".tar"],
-        cmd = "\n".join([
-            "mkdir -p tmp/usr/bin",
-            "cp $(location :buildifier_bin_" + arch + ") tmp/usr/bin/buildifier",
-            "chmod 0755 tmp/usr/bin/buildifier",
-            "tar -C tmp -cf $@ .",
-        ]),
-    )
-    for arch in [
-        "amd64",
-        "arm64",
-    ]
-]
+# Standalone formatters ruff/shfmt/gofumpt, from the multitool repos -- the
+# exact binaries fast-format.sh resolves from $PATH locally (the established
+# "fast format" path).
+genrule(
+    name = "fmt_tar",
+    srcs = [
+        "@multitool.ruff.linux_x86_64//tools/ruff:linux_x86_64_executable",
+        "@multitool.shfmt.linux_x86_64//tools/shfmt:linux_x86_64_executable",
+        "@multitool.gofumpt.linux_x86_64//tools/gofumpt:linux_x86_64_executable",
+    ],
+    outs = ["fmt.tar"],
+    cmd = "\n".join([
+        "mkdir -p tmp/usr/bin",
+        "cp $(location @multitool.ruff.linux_x86_64//tools/ruff:linux_x86_64_executable) tmp/usr/bin/ruff",
+        "cp $(location @multitool.shfmt.linux_x86_64//tools/shfmt:linux_x86_64_executable) tmp/usr/bin/shfmt",
+        "cp $(location @multitool.gofumpt.linux_x86_64//tools/gofumpt:linux_x86_64_executable) tmp/usr/bin/gofumpt",
+        "chmod 0755 tmp/usr/bin/ruff tmp/usr/bin/shfmt tmp/usr/bin/gofumpt",
+        "tar -C tmp -cf $@ .",
+    ]),
+)
 
-# --- Standalone formatters: ruff, shfmt, gofumpt ---------------------------
-# Sourced from the per-arch multitool repos (the exact binaries fast-format.sh
-# resolves from $PATH locally, which is the established "fast format" path).
-_MULTITOOL_CPU = {
-    "amd64": "x86_64",
-    "arm64": "arm64",
-}
+# Node.js runtime (hermetic), needed only so prettier.cjs can launch.
+genrule(
+    name = "node_tar",
+    srcs = ["@nodejs_linux_amd64//:node_bin"],
+    outs = ["node.tar"],
+    cmd = "\n".join([
+        "mkdir -p tmp/usr/bin",
+        "cp $(location @nodejs_linux_amd64//:node_bin) tmp/usr/bin/node",
+        "chmod 0755 tmp/usr/bin/node",
+        "tar -C tmp -cf $@ .",
+    ]),
+)
 
-[
-    genrule(
-        name = "fmt_tar_" + arch,
-        srcs = [
-            "@multitool.ruff.linux_{cpu}//tools/ruff:linux_{cpu}_executable".format(cpu = cpu),
-            "@multitool.shfmt.linux_{cpu}//tools/shfmt:linux_{cpu}_executable".format(cpu = cpu),
-            "@multitool.gofumpt.linux_{cpu}//tools/gofumpt:linux_{cpu}_executable".format(cpu = cpu),
-        ],
-        outs = ["fmt_" + arch + ".tar"],
-        cmd = "\n".join([
-            "mkdir -p tmp/usr/bin",
-            "cp $(location @multitool.ruff.linux_{cpu}//tools/ruff:linux_{cpu}_executable) tmp/usr/bin/ruff".format(cpu = cpu),
-            "cp $(location @multitool.shfmt.linux_{cpu}//tools/shfmt:linux_{cpu}_executable) tmp/usr/bin/shfmt".format(cpu = cpu),
-            "cp $(location @multitool.gofumpt.linux_{cpu}//tools/gofumpt:linux_{cpu}_executable) tmp/usr/bin/gofumpt".format(cpu = cpu),
-            "chmod 0755 tmp/usr/bin/ruff tmp/usr/bin/shfmt tmp/usr/bin/gofumpt",
-            "tar -C tmp -cf $@ .",
-        ]),
-    )
-    for arch, cpu in _MULTITOOL_CPU.items()
-]
-
-# --- Node.js runtime (per-arch, hermetic) ----------------------------------
-# Needed only so prettier.cjs can launch (`#!/usr/bin/env node`).
-[
-    genrule(
-        name = "node_tar_" + arch,
-        srcs = ["@nodejs_linux_" + arch + "//:node_bin"],
-        outs = ["node_" + arch + ".tar"],
-        cmd = "\n".join([
-            "mkdir -p tmp/usr/bin",
-            "cp $(location @nodejs_linux_" + arch + "//:node_bin) tmp/usr/bin/node",
-            "chmod 0755 tmp/usr/bin/node",
-            "tar -C tmp -cf $@ .",
-        ]),
-    )
-    for arch in [
-        "amd64",
-        "arm64",
-    ]
-]
-
-# --- prettier (arch-independent JS) ----------------------------------------
-# The same pnpm-managed prettier package the format multirun and the tools
+# prettier: the same pnpm-managed package the format multirun and the tools
 # image use. Placed at /usr/local/lib/node_modules/prettier with a /usr/bin
 # symlink, mirroring bazel/tools/image:prettier_tar.
 genrule(
@@ -166,16 +112,21 @@ genrule(
     """,
 )
 
+# --- Single-arch image -----------------------------------------------------
+# apko provides the Wolfi userland; the tool tars are layered on top. archs is
+# pinned to amd64 (see the header) so the macro emits a lone oci_image plus one
+# format.push, not a multi-platform index.
 apko_image(
     name = "format",
+    archs = ["amd64"],
     config = "apko.yaml",
     contents = "@ci_format_lock//:contents",
-    multiarch_tars = [
+    repository = "ghcr.io/jomcgi/homelab/ci/format",
+    tars = [
         ":gazelle_tar",
         ":buildifier_tar",
         ":fmt_tar",
         ":node_tar",
+        ":prettier_tar",
     ],
-    repository = "ghcr.io/jomcgi/homelab/ci/format",
-    tars = [":prettier_tar"],
 )
