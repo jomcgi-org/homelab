@@ -228,28 +228,6 @@ WHERE metric_name = 'llamacpp:tokens_predicted_total'
 ) AND unix_milli >= toUnixTimestamp(now() - INTERVAL 5 MINUTE) * 1000"""
 
 
-def _nats_storage_query() -> str:
-    """Metric query: JetStream storage used in MB."""
-    return """\
-SELECT round(max(value) / 1048576, 1) AS value
-FROM signoz_metrics.distributed_samples_v4
-WHERE metric_name = 'nats_varz_jetstream_stats_storage'
-  AND unix_milli >= toUnixTimestamp(now() - INTERVAL 5 MINUTE) * 1000"""
-
-
-def _nats_queue_depth_query() -> str:
-    """Metric query: total pending messages across all JetStream consumers."""
-    return """\
-WITH latest AS (
-  SELECT fingerprint, argMax(value, unix_milli) AS v
-  FROM signoz_metrics.distributed_samples_v4
-  WHERE metric_name = 'nats_consumer_num_pending'
-    AND unix_milli >= toUnixTimestamp(now() - INTERVAL 5 MINUTE) * 1000
-  GROUP BY fingerprint
-)
-SELECT round(sum(v)) AS value FROM latest"""
-
-
 def _linkerd_p99_rps_query(src: str, dst_ns: str, dst_svc: str) -> str:
     """Metric query: P99 per-minute request rate over 7 days (Linkerd outbound).
 
@@ -520,36 +498,6 @@ TOPOLOGY = TopologyConfig(
             ],
         ),
         NodeConfig(
-            id="nats",
-            label="NATS",
-            tier="critical",
-            description="jetstream message bus",
-            slo=_slo(_container_ready_query("nats", "nats")),
-            metrics=[
-                MetricConfig(key="storage", query=_nats_storage_query(), unit=" MB"),
-                MetricConfig(key="pending", query=_nats_queue_depth_query()),
-            ],
-        ),
-        NodeConfig(
-            id="agent-platform",
-            label="AGENT PLATFORM",
-            tier="critical",
-            ingress=True,
-            description="orchestrator + mcp clients",
-            slo=_slo(_envoy_success_rate_query("agent-orchestrator")),
-            metrics=[
-                MetricConfig(
-                    key="rps",
-                    query=_envoy_rps_query("agent-orchestrator"),
-                ),
-                MetricConfig(
-                    key="latency",
-                    query=_envoy_avg_latency_query("agent-orchestrator"),
-                    unit="ms",
-                ),
-            ],
-        ),
-        NodeConfig(
             id="llama-cpp",
             label="QWEN 3",
             tier="critical",
@@ -682,7 +630,6 @@ TOPOLOGY = TopologyConfig(
     edges=[
         EdgeConfig(source="external", target="cloudflare"),
         EdgeConfig(source="cloudflare", target="monolith"),
-        EdgeConfig(source="cloudflare", target="agent-platform"),
         EdgeConfig(source="knowledge", target="postgres"),
         EdgeConfig(
             source="knowledge",
@@ -702,16 +649,6 @@ TOPOLOGY = TopologyConfig(
         EdgeConfig(source="chat", target="discord"),
         EdgeConfig(source="chat", target="knowledge"),
         EdgeConfig(source="mcp", target="knowledge"),
-        EdgeConfig(source="nats", target="agent-platform", bidi=True),
-        EdgeConfig(
-            source="agent-platform",
-            target="context-forge",
-            linkerd=_linkerd(
-                "agent-platform-agent-orchestrator",
-                "mcp",
-                "context-forge-gateway-mcp-stack-mcpgateway",
-            ),
-        ),
         EdgeConfig(
             source="context-forge",
             target="mcp",

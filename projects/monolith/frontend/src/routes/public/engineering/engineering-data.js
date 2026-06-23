@@ -20,7 +20,6 @@ export const marqueeItems = [
   "Rust",
   "Python",
   "Kubernetes Operators",
-  "NATS JetStream",
   "vLLM on a 4090",
   "Postgres + pgvector",
   "Bazel + BuildBuddy",
@@ -42,11 +41,12 @@ export const projects = [
   {
     id: "agent-platform",
     category: "agents",
+    status: "Deprecated",
     title: "Agent Platform",
     oneLiner:
-      "Autonomous Claude and Goose agents in sandboxed Kubernetes pods, dispatched over NATS. Every tool call governed by an MCP gateway.",
+      "Retired. Autonomous Claude and Goose agents in sandboxed Kubernetes pods, dispatched over NATS, with every tool call governed by an MCP gateway. Wound down after Claude terms-of-service changes made running unattended Claude agents this way untenable.",
     motivation:
-      "I wanted agents that do real platform work: triage alerts, fix failing PRs, keep docs fresh. That means handing an LLM tools with blast radius, so the platform is built around containment. Every agent runs in its own sandbox pod, and every tool call passes through a gateway that knows who is asking.",
+      "The bet was agents that do real platform work: triage alerts, fix failing PRs, keep docs fresh, each in its own sandbox pod with every tool call passing through a gateway that knows who is asking. When Claude's terms of service changed around unattended agent use, the dispatch model no longer held, and a local model alone was not capable enough to take its place. So the platform was retired rather than quietly degraded. The durable pieces outlived it: local inference became its own service, the knowledge-graph MCP surface moved into the monolith, and scheduled maintenance now runs as Claude routines and Argo Workflows.",
     facts: [
       {
         k: "Orchestrator",
@@ -71,8 +71,8 @@ export const projects = [
     ],
     links: [
       {
-        label: "projects/agent_platform",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/agent_platform",
+        label: "projects/inference",
+        href: "https://github.com/jomcgi/homelab/tree/main/projects/inference",
       },
     ],
   },
