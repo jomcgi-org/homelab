@@ -10,7 +10,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: cluster-agents
-    targetRevision: 0.7.0
+    targetRevision: 0.7.1
     helm:
       releaseName: cluster-agents
       # IMPORTANT: Do NOT add podAnnotations here. The chart-version-bot regenerates
