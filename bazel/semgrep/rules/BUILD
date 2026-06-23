@@ -28,6 +28,11 @@ filegroup(
     srcs = glob(
         ["yaml/*.yaml"],
         allow_empty = True,
+        # memory-request-ne-limit is path-scoped to **/deploy/values.yaml and
+        # **/chart/values.yaml. Excluded here to prevent yaml_rules_test from
+        # running it against yaml_fixtures (which include require-resource-limits.yaml
+        # with intentional request!=limit mismatches). Tested via its own target below.
+        exclude = ["yaml/memory-request-ne-limit.yaml"],
     ),
 )
 
@@ -481,5 +486,22 @@ semgrep_test(
     srcs = ["//bazel/semgrep/tests:svelte_hardcoded_color_in_style_fixtures"],
     env = {"SEMGREP_TEST_MODE": "1"},
     rules = [":svelte_hardcoded_color_in_style_rule"],
+    tags = ["semgrep"],
+)
+
+# memory-request-ne-limit enforces requests==limits for memory in deploy and chart
+# values files. Excluded from yaml_rules_test (which would run it against fixtures
+# containing intentional request!=limit mismatches from other rules). Tested here
+# against dedicated ok/bad fixture files in bazel/semgrep/tests/yaml/.
+filegroup(
+    name = "memory_request_ne_limit_rule",
+    srcs = ["yaml/memory-request-ne-limit.yaml"],
+)
+
+semgrep_test(
+    name = "memory_request_ne_limit_test",
+    srcs = ["//bazel/semgrep/tests:memory_request_ne_limit_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":memory_request_ne_limit_rule"],
     tags = ["semgrep"],
 )

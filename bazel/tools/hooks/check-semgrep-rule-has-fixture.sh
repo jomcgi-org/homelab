@@ -2,10 +2,11 @@
 # PreToolUse hook: warn when writing/editing a semgrep rule YAML file that has
 # no corresponding test fixture.
 #
-# Fixtures can live in two places:
+# Fixtures can live in three places:
 #   1. bazel/semgrep/tests/fixtures/<rule-stem>.<ext>  (central fixtures dir)
 #   2. bazel/semgrep/rules/<subdir>/<rule-stem>.<ext>  (colocated, any non-yaml ext)
 #      Python fixtures use underscore naming: <rule_stem>.py
+#   3. bazel/semgrep/tests/yaml/<rule-stem>/  (directory with ok.yaml + bad.yaml)
 #
 # Input: JSON on stdin from Claude Code hook system
 # Exit 0: allow (warnings emitted on stderr — advisory only)
@@ -53,6 +54,12 @@ if compgen -G "${FIXTURES_DIR}/${STEM}."'*' >/dev/null 2>&1; then
 	exit 0
 fi
 
+# Check 1b: tests/yaml/<stem>/ directory (ok.yaml + bad.yaml convention)
+YAML_TEST_DIR="${PROJECT_DIR}/bazel/semgrep/tests/yaml/${STEM}"
+if [[ -d "$YAML_TEST_DIR" ]]; then
+	exit 0
+fi
+
 # Check 2: colocated fixture with dash-named stem (non-yaml)
 if has_non_yaml_fixture "${RULE_DIR}/${STEM}"; then
 	exit 0
@@ -68,6 +75,7 @@ WARNING: No test fixture found for semgrep rule '${STEM}'.
 
 Expected a fixture in one of:
   ${FIXTURES_DIR}/${STEM}.<ext>
+  ${YAML_TEST_DIR}/  (directory with ok.yaml + bad.yaml)
   ${RULE_DIR}/${STEM}.<ext>  (colocated)
   ${RULE_DIR}/${STEM_UNDERSCORED}.<ext>  (colocated, Python naming)
 

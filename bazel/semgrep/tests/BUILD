@@ -184,3 +184,10 @@ filegroup(
         "fixtures/require-tmp-emptydir.yaml",
     ]),
 )
+
+# Fixtures for the memory-request-ne-limit rule (ok and bad cases in separate files).
+# Referenced by //bazel/semgrep/rules:memory_request_ne_limit_test.
+filegroup(
+    name = "memory_request_ne_limit_fixtures",
+    srcs = glob(["yaml/memory-request-ne-limit/*.yaml"]),
+)
