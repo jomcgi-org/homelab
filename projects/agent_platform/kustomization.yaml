@@ -6,4 +6,3 @@ resources:
   - ./api_gateway/deploy
 
   - ./cluster_agents/deploy
-  - ./inference/deploy
