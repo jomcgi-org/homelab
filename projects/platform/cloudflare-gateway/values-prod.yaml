@@ -33,12 +33,6 @@ tunnel:
       # catchAll, which has no matching gateway route, so they stop resolving.
       - hostname: grimoire.jomcgi.dev
         service: http://grimoire-frontend.grimoire.svc.cluster.local:8080
-      - hostname: api.jomcgi.dev
-        service: http://api-gateway.api-gateway.svc.cluster.local:80
-        originRequest:
-          keepAliveConnections: 100
-          keepAliveTimeout: 90s
-          tcpKeepAlive: 30s
     catchAll:
       service: http://cloudflare-ingress.envoy-gateway-system.svc.cluster.local:80
 

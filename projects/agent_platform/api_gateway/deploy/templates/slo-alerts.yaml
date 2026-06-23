@@ -1,3 +1,0 @@
-{{- range .Values.slos }}
-{{ include "signoz-alerts.slo" (dict "slo" . "Chart" $.Chart "Release" $.Release "defaults" $.Values.sloDefaults) }}
-{{- end }}

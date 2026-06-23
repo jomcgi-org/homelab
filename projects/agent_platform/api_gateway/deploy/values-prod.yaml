@@ -1,2 +1,0 @@
-# Production overrides for api-gateway
-# Defaults in charts/api-gateway/values.yaml are sufficient for now
