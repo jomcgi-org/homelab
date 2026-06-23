@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from kubernetes_asyncio.client.exceptions import ApiException
 
-from cluster.kubernetes import KubernetesClient, UnknownKindError, _parse_cpu, _parse_memory
+from cluster.kubernetes import (
+    KubernetesClient,
+    UnknownKindError,
+    _parse_cpu,
+    _parse_memory,
+)
 
 
 @pytest.fixture
@@ -507,7 +512,9 @@ async def test_get_resource_namespaced_kind_hit(k8s_client):
         patch("cluster.kubernetes.ApiClient", return_value=mock_api),
         patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
     ):
-        result = await k8s_client.get_resource("pods", "my-pod", namespace="kube-system")
+        result = await k8s_client.get_resource(
+            "pods", "my-pod", namespace="kube-system"
+        )
 
     mock_v1.read_namespaced_pod.assert_called_once_with("my-pod", "kube-system")
     assert result == {"kind": "Pod"}
@@ -630,10 +637,10 @@ async def test_list_events_namespaced_with_involved_object(k8s_client):
     mock_api = MagicMock()
     mock_v1 = MagicMock()
     event_items = [MagicMock(), MagicMock()]
-    mock_v1.list_namespaced_event = AsyncMock(
-        return_value=MagicMock(items=event_items)
+    mock_v1.list_namespaced_event = AsyncMock(return_value=MagicMock(items=event_items))
+    mock_api.sanitize_for_serialization = MagicMock(
+        side_effect=lambda x: {"event": True}
     )
-    mock_api.sanitize_for_serialization = MagicMock(side_effect=lambda x: {"event": True})
 
     with (
         patch("cluster.kubernetes.config.load_incluster_config"),
@@ -658,7 +665,9 @@ async def test_list_events_all_namespaces_without_involved_object(k8s_client):
     mock_v1.list_event_for_all_namespaces = AsyncMock(
         return_value=MagicMock(items=event_items)
     )
-    mock_api.sanitize_for_serialization = MagicMock(side_effect=lambda x: {"event": True})
+    mock_api.sanitize_for_serialization = MagicMock(
+        side_effect=lambda x: {"event": True}
+    )
 
     with (
         patch("cluster.kubernetes.config.load_incluster_config"),
