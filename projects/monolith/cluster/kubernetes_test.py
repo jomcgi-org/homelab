@@ -6,8 +6,9 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from kubernetes_asyncio.client.exceptions import ApiException
 
-from cluster.kubernetes import KubernetesClient, _parse_cpu, _parse_memory
+from cluster.kubernetes import KubernetesClient, UnknownKindError, _parse_cpu, _parse_memory
 
 
 @pytest.fixture
@@ -239,3 +240,491 @@ async def test_create_workflow_passes_correct_args_and_returns_name(k8s_client):
         body=body,
     )
     assert name == "my-workflow-xyz"
+
+
+# ---------------------------------------------------------------------------
+# count_pods
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_pods_calls_list_pod_for_all_namespaces_and_returns_len(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    mock_v1.list_pod_for_all_namespaces = AsyncMock(
+        return_value=MagicMock(items=[MagicMock(), MagicMock()])
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        count = await k8s_client.count_pods()
+
+    mock_v1.list_pod_for_all_namespaces.assert_called_once()
+    assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# count_deployments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_deployments_calls_list_deployment_for_all_namespaces_and_returns_len(
+    k8s_client,
+):
+    mock_api = MagicMock()
+    mock_apps = MagicMock()
+    mock_apps.list_deployment_for_all_namespaces = AsyncMock(
+        return_value=MagicMock(items=[MagicMock(), MagicMock(), MagicMock()])
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.AppsV1Api", return_value=mock_apps),
+    ):
+        count = await k8s_client.count_deployments()
+
+    mock_apps.list_deployment_for_all_namespaces.assert_called_once()
+    assert count == 3
+
+
+# ---------------------------------------------------------------------------
+# get_argocd_app_status
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_argocd_app_status_returns_status_dict(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    status = {"health": {"status": "Healthy"}, "sync": {"status": "Synced"}}
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        return_value={"metadata": {"name": "my-app"}, "status": status}
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.get_argocd_app_status("my-app")
+
+    mock_custom.get_namespaced_custom_object.assert_called_once_with(
+        group="argoproj.io",
+        version="v1alpha1",
+        namespace="argocd",
+        plural="applications",
+        name="my-app",
+    )
+    assert result == status
+
+
+@pytest.mark.asyncio
+async def test_get_argocd_app_status_returns_none_on_api_exception(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        side_effect=ApiException(status=404, reason="Not Found")
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.get_argocd_app_status("missing-app")
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# list_resources
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_resources_applications_uses_custom_objects_api(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    app_items = [{"metadata": {"name": "app1"}}, {"metadata": {"name": "app2"}}]
+    mock_custom.list_namespaced_custom_object = AsyncMock(
+        return_value={"items": app_items}
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.list_resources("applications")
+
+    mock_custom.list_namespaced_custom_object.assert_called_once_with(
+        group="argoproj.io",
+        version="v1alpha1",
+        namespace="argocd",
+        plural="applications",
+        label_selector=None,
+    )
+    assert result == app_items
+
+
+@pytest.mark.asyncio
+async def test_list_resources_namespaced_kind_with_namespace(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    pod_items = [MagicMock(), MagicMock()]
+    mock_v1.list_namespaced_pod = AsyncMock(return_value=MagicMock(items=pod_items))
+    mock_api.sanitize_for_serialization = MagicMock(side_effect=lambda x: {"pod": True})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.list_resources("pods", namespace="default")
+
+    mock_v1.list_namespaced_pod.assert_called_once_with("default")
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_resources_namespaced_kind_without_namespace_uses_all_namespaces(
+    k8s_client,
+):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    pod_items = [MagicMock()]
+    mock_v1.list_pod_for_all_namespaces = AsyncMock(
+        return_value=MagicMock(items=pod_items)
+    )
+    mock_api.sanitize_for_serialization = MagicMock(side_effect=lambda x: {"pod": True})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.list_resources("pods")
+
+    mock_v1.list_pod_for_all_namespaces.assert_called_once()
+    assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_resources_cluster_scoped_kind_ignores_namespace(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    node_items = [MagicMock(), MagicMock(), MagicMock()]
+    mock_v1.list_node = AsyncMock(return_value=MagicMock(items=node_items))
+    mock_api.sanitize_for_serialization = MagicMock(
+        side_effect=lambda x: {"node": True}
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.list_resources("nodes", namespace="some-ns")
+
+    mock_v1.list_node.assert_called_once()
+    assert len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_list_resources_unknown_kind_raises(k8s_client):
+    mock_api = MagicMock()
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+    ):
+        with pytest.raises(UnknownKindError):
+            await k8s_client.list_resources("fluxcapacitors")
+
+
+# ---------------------------------------------------------------------------
+# get_resource
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_resource_applications_returns_custom_object(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    app_obj = {"metadata": {"name": "my-app"}, "spec": {}}
+    mock_custom.get_namespaced_custom_object = AsyncMock(return_value=app_obj)
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.get_resource("applications", "my-app")
+
+    mock_custom.get_namespaced_custom_object.assert_called_once_with(
+        group="argoproj.io",
+        version="v1alpha1",
+        namespace="argocd",
+        plural="applications",
+        name="my-app",
+    )
+    assert result == app_obj
+
+
+@pytest.mark.asyncio
+async def test_get_resource_applications_returns_none_on_api_exception(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        side_effect=ApiException(status=404, reason="Not Found")
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.get_resource("applications", "no-such-app")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_resource_namespaced_kind_hit(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    pod_obj = MagicMock()
+    mock_v1.read_namespaced_pod = AsyncMock(return_value=pod_obj)
+    mock_api.sanitize_for_serialization = MagicMock(return_value={"kind": "Pod"})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.get_resource("pods", "my-pod", namespace="kube-system")
+
+    mock_v1.read_namespaced_pod.assert_called_once_with("my-pod", "kube-system")
+    assert result == {"kind": "Pod"}
+
+
+@pytest.mark.asyncio
+async def test_get_resource_namespaced_kind_miss_returns_none(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    mock_v1.read_namespaced_pod = AsyncMock(
+        side_effect=ApiException(status=404, reason="Not Found")
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.get_resource("pods", "ghost-pod")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_resource_cluster_scoped_kind(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    node_obj = MagicMock()
+    mock_v1.read_node = AsyncMock(return_value=node_obj)
+    mock_api.sanitize_for_serialization = MagicMock(return_value={"kind": "Node"})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.get_resource("nodes", "worker-1")
+
+    mock_v1.read_node.assert_called_once_with("worker-1")
+    assert result == {"kind": "Node"}
+
+
+@pytest.mark.asyncio
+async def test_get_resource_unknown_kind_raises(k8s_client):
+    mock_api = MagicMock()
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+    ):
+        with pytest.raises(UnknownKindError):
+            await k8s_client.get_resource("widgets", "my-widget")
+
+
+# ---------------------------------------------------------------------------
+# get_pod_logs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_pod_logs_passes_all_args_to_read_namespaced_pod_log(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    mock_v1.read_namespaced_pod_log = AsyncMock(return_value="log line 1\nlog line 2\n")
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        logs = await k8s_client.get_pod_logs(
+            namespace="prod",
+            name="my-pod",
+            container="app",
+            tail_lines=50,
+            since_seconds=300,
+            previous=True,
+        )
+
+    mock_v1.read_namespaced_pod_log.assert_called_once_with(
+        name="my-pod",
+        namespace="prod",
+        container="app",
+        tail_lines=50,
+        since_seconds=300,
+        previous=True,
+        timestamps=True,
+    )
+    assert logs == "log line 1\nlog line 2\n"
+
+
+@pytest.mark.asyncio
+async def test_get_pod_logs_uses_default_tail_lines(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    mock_v1.read_namespaced_pod_log = AsyncMock(return_value="")
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        await k8s_client.get_pod_logs(namespace="default", name="my-pod")
+
+    _, kwargs = mock_v1.read_namespaced_pod_log.call_args
+    assert kwargs["tail_lines"] == 200
+    assert kwargs["container"] is None
+    assert kwargs["since_seconds"] is None
+    assert kwargs["previous"] is False
+    assert kwargs["timestamps"] is True
+
+
+# ---------------------------------------------------------------------------
+# list_events
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_events_namespaced_with_involved_object(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    event_items = [MagicMock(), MagicMock()]
+    mock_v1.list_namespaced_event = AsyncMock(
+        return_value=MagicMock(items=event_items)
+    )
+    mock_api.sanitize_for_serialization = MagicMock(side_effect=lambda x: {"event": True})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.list_events(
+            namespace="prod", involved_object="my-pod"
+        )
+
+    mock_v1.list_namespaced_event.assert_called_once_with(
+        "prod", field_selector="involvedObject.name=my-pod"
+    )
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_events_all_namespaces_without_involved_object(k8s_client):
+    mock_api = MagicMock()
+    mock_v1 = MagicMock()
+    event_items = [MagicMock()]
+    mock_v1.list_event_for_all_namespaces = AsyncMock(
+        return_value=MagicMock(items=event_items)
+    )
+    mock_api.sanitize_for_serialization = MagicMock(side_effect=lambda x: {"event": True})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CoreV1Api", return_value=mock_v1),
+    ):
+        result = await k8s_client.list_events()
+
+    mock_v1.list_event_for_all_namespaces.assert_called_once_with(field_selector=None)
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# sync_argocd_app
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_argocd_app_patches_correct_body_and_returns_dict(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.patch_namespaced_custom_object = AsyncMock(return_value={})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.sync_argocd_app("my-app", prune=True, dry_run=False)
+
+    expected_body = {
+        "operation": {
+            "initiatedBy": {"username": "monolith-k8s-mcp"},
+            "sync": {"prune": True, "dryRun": False},
+        }
+    }
+    mock_custom.patch_namespaced_custom_object.assert_called_once_with(
+        group="argoproj.io",
+        version="v1alpha1",
+        namespace="argocd",
+        plural="applications",
+        name="my-app",
+        body=expected_body,
+        _content_type="application/merge-patch+json",
+    )
+    assert result == {"app": "my-app", "synced": True, "prune": True, "dry_run": False}
+
+
+@pytest.mark.asyncio
+async def test_sync_argocd_app_dry_run_mode(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.patch_namespaced_custom_object = AsyncMock(return_value={})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        result = await k8s_client.sync_argocd_app(
+            "my-app", namespace="custom-ns", prune=False, dry_run=True
+        )
+
+    _, kwargs = mock_custom.patch_namespaced_custom_object.call_args
+    assert kwargs["namespace"] == "custom-ns"
+    assert kwargs["body"]["operation"]["sync"]["dryRun"] is True
+    assert kwargs["body"]["operation"]["sync"]["prune"] is False
+    assert result["dry_run"] is True
+    assert result["prune"] is False
