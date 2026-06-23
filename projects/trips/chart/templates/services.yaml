@@ -1,5 +1,0 @@
-{{- include "homelab.service" (dict "context" . "component" "imgproxy") }}
----
-{{- include "homelab.service" (dict "context" . "component" "nginx") }}
----
-{{- include "homelab.service" (dict "context" . "component" "api") }}

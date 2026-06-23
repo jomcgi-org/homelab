@@ -10,4 +10,3 @@ resources:
   - ../../projects/monolith/deploy
   - ../../projects/operators/oci-model-cache/deploy
   - ../../projects/platform
-  - ../../projects/trips/deploy
