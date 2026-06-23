@@ -1,0 +1,19 @@
+{{- if .Values.embeddings.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "inference.fullname" . }}-embeddings
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embeddings
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.server.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "inference.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: embeddings
+{{- end }}

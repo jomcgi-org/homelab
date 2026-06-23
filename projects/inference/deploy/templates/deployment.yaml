@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inference.fullname" . }}
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "inference.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: inference
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "inference.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: inference
+    spec:
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: llama-server
+          image: "{{ .Values.image.vllm.repository }}:{{ .Values.image.vllm.tag }}"
+          imagePullPolicy: {{ .Values.image.vllm.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Auto-discover model: HuggingFace format (config.json) or GGUF.
+              MODEL=$(find {{ .Values.modelVolume.mountPath }} -maxdepth 2 -name 'config.json' -type f -exec dirname {} \; | head -1)
+              if [ -z "$MODEL" ]; then
+                MODEL=$(find {{ .Values.modelVolume.mountPath }} -maxdepth 2 -name '*.gguf' ! -name 'mmproj*' -type f | sort | head -1)
+              fi
+              if [ -z "$MODEL" ]; then
+                echo "ERROR: no model found under {{ .Values.modelVolume.mountPath }}" >&2
+                exit 1
+              fi
+              echo "Auto-discovered model: $MODEL"
+              exec vllm serve "$MODEL" \
+                {{ include "inference.vllmArgs" . | indent 16 | trim }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.modelVolume.enabled }}
+            - name: model
+              mountPath: {{ .Values.modelVolume.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.server.chatTemplate }}
+            - name: chat-template
+              mountPath: /etc/chat-template
+              readOnly: true
+            {{- end }}
+            - name: vllm-cache
+              mountPath: /root/.cache
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        {{- if .Values.modelVolume.enabled }}
+        - name: model
+          image:
+            reference: {{ .Values.modelVolume.reference }}
+            pullPolicy: IfNotPresent
+        {{- end }}
+        {{- if .Values.server.chatTemplate }}
+        - name: chat-template
+          configMap:
+            name: {{ include "inference.fullname" . }}-chat-template
+        {{- end }}
+        - name: vllm-cache
+          persistentVolumeClaim:
+            claimName: {{ include "inference.fullname" . }}-vllm-cache
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "1Gi"
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
