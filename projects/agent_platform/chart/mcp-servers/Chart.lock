@@ -1,6 +1,0 @@
-dependencies:
-- name: homelab-library
-  repository: file://../../../shared/helm/homelab-library/chart
-  version: 0.5.0
-digest: sha256:ed671de3d1ca863bbec5ffed9c1dba1c7ec61d22fd5ed551bfacf6504a6821fe
-generated: "2026-06-17T18:35:24.025755-07:00"

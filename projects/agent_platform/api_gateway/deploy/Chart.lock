@@ -1,6 +1,0 @@
-dependencies:
-- name: signoz-alerts
-  repository: file://../signoz-alerts
-  version: 0.1.0
-digest: sha256:5da2ca115a342366dc3dd6786f04dc2244ca4bc1d0eaf9eb149821e514828703
-generated: "2026-03-08T11:34:25.566803-07:00"
