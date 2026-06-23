@@ -29,8 +29,6 @@ from home.observability.topology_config import (
     _linkerd_p99_rps_query,
     _llamacpp_requests_query,
     _llamacpp_tokens_query,
-    _nats_queue_depth_query,
-    _nats_storage_query,
     _seaweedfs_disk_query,
     _slo,
 )
@@ -305,35 +303,6 @@ class TestLlamaCppTokensQuery:
         assert "max(value) - min(value)" in q
 
 
-class TestNatsStorageQuery:
-    def test_returns_string(self):
-        q = _nats_storage_query()
-        assert isinstance(q, str)
-
-    def test_contains_metric_name(self):
-        q = _nats_storage_query()
-        assert "nats_varz_jetstream_stats_storage" in q
-
-    def test_converts_to_mb(self):
-        q = _nats_storage_query()
-        assert "1048576" in q
-
-
-class TestNatsQueueDepthQuery:
-    def test_returns_string(self):
-        q = _nats_queue_depth_query()
-        assert isinstance(q, str)
-
-    def test_contains_metric_name(self):
-        q = _nats_queue_depth_query()
-        assert "nats_consumer_num_pending" in q
-
-    def test_uses_latest_value_per_fingerprint(self):
-        # argMax picks the most recent value per consumer
-        q = _nats_queue_depth_query()
-        assert "argMax" in q
-
-
 class TestLinkerdP99RpsQuery:
     def test_returns_string(self):
         q = _linkerd_p99_rps_query("monolith", "llama-cpp", "llama-cpp")
@@ -505,8 +474,6 @@ class TestQueryParameterIsolation:
             _cnpg_db_size_query,
             _seaweedfs_disk_query,
             _argocd_apps_synced_query,
-            _nats_storage_query,
-            _nats_queue_depth_query,
         ],
     )
     def test_no_arg_queries_return_nonempty_string(self, query_fn):
@@ -522,8 +489,6 @@ class TestQueryParameterIsolation:
             _cnpg_db_size_query,
             _seaweedfs_disk_query,
             _argocd_apps_synced_query,
-            _nats_storage_query,
-            _nats_queue_depth_query,
         ],
     )
     def test_no_arg_queries_contain_select_and_from(self, query_fn):

@@ -24,7 +24,7 @@ class TestTopologyConfig:
                 )
 
     def test_has_nodes(self):
-        assert len(TOPOLOGY.nodes) == 20
+        assert len(TOPOLOGY.nodes) == 18
 
     def test_external_nodes_have_no_slo(self):
         ext = next(n for n in TOPOLOGY.nodes if n.id == "external")
@@ -39,7 +39,7 @@ class TestTopologyConfig:
                 assert n.slo.window_days == 30
 
     def test_edges(self):
-        assert len(TOPOLOGY.edges) == 14
+        assert len(TOPOLOGY.edges) == 11
 
     def test_edge_references_valid_nodes_or_groups(self):
         node_ids = {n.id for n in TOPOLOGY.nodes}
