@@ -157,7 +157,13 @@ actions:
             echo "Skipping automated commit from $AUTHOR"
             exit 0
           fi
-          TARGETS="$(bazel query 'attr(tags, "\bfuture\b", tests(//...))' 2>/dev/null || true)"
+          # grep '^//' keeps only real target labels. The bb CLI interleaves its
+          # own operational log lines (connection warnings, a capabilities JSON
+          # blob) into stdout, which transient proxy resets make frequent; without
+          # this filter that noise lands in $TARGETS and `bazel test` then chokes
+          # on log text as target names ("invalid target name"), failing the step
+          # for a network blip rather than a real spec result.
+          TARGETS="$(bazel query 'attr(tags, "\bfuture\b", tests(//...))' 2>/dev/null | grep '^//' || true)"
           if [ -z "$TARGETS" ]; then
             echo "No future-feature BDD specs (nothing tagged 'future'). Nothing to run."
             exit 0
