@@ -448,10 +448,6 @@ apko.translate_lock(
     lock = "//projects/grimoire/frontend:apko.lock.json",
 )
 apko.translate_lock(
-    name = "goose_agent_lock",
-    lock = "//projects/agent_platform/goose_agent/image:apko.lock.json",
-)
-apko.translate_lock(
     name = "monolith_frontend_lock",
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
