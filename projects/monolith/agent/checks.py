@@ -146,12 +146,10 @@ async def check_firing_alerts(
 ) -> list[dict]:
     """Return SigNoz alert rules whose ``state`` is ``firing``.
 
-    Mirrors the Go ``AlertCollector`` in
-    ``projects/agent_platform/cluster_agents/collector_alerts.go`` —
-    same endpoint (``/api/v1/rules``), same auth header
-    (``SIGNOZ-API-KEY``), same ``state == "firing"`` filter. Reads
-    ``SIGNOZ_URL`` and (optional) ``SIGNOZ_API_KEY`` from the
-    environment.
+    Queries the SigNoz ``/api/v1/rules`` endpoint, authenticating with the
+    ``SIGNOZ-API-KEY`` header, and filters the returned rules down to those
+    with ``state == "firing"``. Reads ``SIGNOZ_URL`` and (optional)
+    ``SIGNOZ_API_KEY`` from the environment.
 
     The optional ``transport`` arg exists only for tests; production
     callers always omit it.

@@ -44,7 +44,7 @@
   }
 
   // ── Filter for homepage: remove nodes, mark same-rank edges ──
-  const excludeIds = new Set(["agent-platform", "nats", "external"]);
+  const excludeIds = new Set(["external"]);
   const sameRankEdges = new Set(["cloudflare->context-forge"]);
   const fullFiltered = $derived.by(() => {
     const groups = (topology.groups || []).filter((g) => !excludeIds.has(g.id));
