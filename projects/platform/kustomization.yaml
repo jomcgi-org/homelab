@@ -14,9 +14,6 @@ resources:
   - ./kyverno
   - ./linkerd
   - ./longhorn
-  - ./nack # NATS JetStream controller; must reconcile before nats-streams (Stream CRDs)
-  - ./nats
-  - ./nats-streams
   - ./nvidia-gpu-operator
   - ./opentelemetry-operator
   - ./seaweedfs
