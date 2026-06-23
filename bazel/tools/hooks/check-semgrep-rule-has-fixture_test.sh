@@ -85,6 +85,7 @@ export PATH="${TEST_TMPDIR}/bin:${PATH}"
 FAKE_ROOT="${TEST_TMPDIR}/project"
 FAKE_RULES="${FAKE_ROOT}/bazel/semgrep/rules"
 FAKE_FIXTURES="${FAKE_ROOT}/bazel/semgrep/tests/fixtures"
+FAKE_YAML_TESTS="${FAKE_ROOT}/bazel/semgrep/tests/yaml"
 mkdir -p "${FAKE_RULES}/kubernetes" "${FAKE_RULES}/python" "${FAKE_RULES}/yaml" "${FAKE_FIXTURES}"
 
 # ---------------------------------------------------------------------------
@@ -218,6 +219,24 @@ touch "$RULE_G"
 run_test "rule_no_dashes_in_stem_no_fixture_warns" \
 	"$(make_json "$RULE_G")" \
 	0 "WARNING.*noprivileged"
+
+# 11. Rule has a tests/yaml/<stem>/ directory (ok.yaml + bad.yaml convention) → silent
+RULE_H="${FAKE_RULES}/yaml/memory-request-ne-limit.yaml"
+touch "$RULE_H"
+mkdir -p "${FAKE_YAML_TESTS}/memory-request-ne-limit"
+touch "${FAKE_YAML_TESTS}/memory-request-ne-limit/ok.yaml"
+touch "${FAKE_YAML_TESTS}/memory-request-ne-limit/bad.yaml"
+run_test "rule_with_yaml_test_dir_silent" \
+	"$(make_json "$RULE_H")" \
+	0 ""
+
+# 12. Rule with tests/yaml/<stem>/ directory that is empty still counts → silent
+RULE_I="${FAKE_RULES}/yaml/another-rule.yaml"
+touch "$RULE_I"
+mkdir -p "${FAKE_YAML_TESTS}/another-rule"
+run_test "rule_with_empty_yaml_test_dir_silent" \
+	"$(make_json "$RULE_I")" \
+	0 ""
 
 # ---------------------------------------------------------------------------
 # Summary

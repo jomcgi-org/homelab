@@ -1,0 +1,27 @@
+# Ok cases for memory-request-ne-limit rule.
+# Each resources block below has requests.memory == limits.memory and must not fire.
+---
+# ok: memory-request-ne-limit
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 256Mi
+
+---
+# ok: memory-request-ne-limit
+resources:
+  requests:
+    memory: 512Mi
+  limits:
+    memory: 512Mi
+
+---
+# ok: memory-request-ne-limit
+resources:
+  requests:
+    cpu: 250m
+    memory: 384Mi
+  limits:
+    memory: 384Mi

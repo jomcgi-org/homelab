@@ -1,0 +1,27 @@
+# Bad cases for memory-request-ne-limit rule.
+# Each resources block below has requests.memory != limits.memory and must fire.
+---
+# ruleid: memory-request-ne-limit
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+---
+# ruleid: memory-request-ne-limit
+resources:
+  requests:
+    memory: 64Mi
+  limits:
+    memory: 512Mi
+
+---
+# ruleid: memory-request-ne-limit
+resources:
+  requests:
+    cpu: 250m
+    memory: 160Mi
+  limits:
+    memory: 384Mi

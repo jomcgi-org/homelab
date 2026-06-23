@@ -1,0 +1,32 @@
+rules:
+  - id: memory-request-ne-limit
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      resources.requests.memory ($REQ) differs from resources.limits.memory
+      ($LIM). The repo convention is requests==limits for memory to prevent
+      overcommit OOM-kills: a request below the limit allows the kernel to
+      overcommit, which can kill the pod below its own ceiling under node
+      memory pressure. Set both to the same value, sized to the observed
+      working-set peak with headroom.
+    metadata:
+      category: correctness
+    paths:
+      include:
+        - "**/deploy/values.yaml"
+        - "**/chart/values.yaml"
+      exclude:
+        - "projects/inference/**"
+    patterns:
+      - pattern: |
+          resources:
+            requests:
+              memory: $REQ
+            limits:
+              memory: $LIM
+      - pattern-not: |
+          resources:
+            requests:
+              memory: $MEM
+            limits:
+              memory: $MEM
