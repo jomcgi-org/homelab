@@ -1,0 +1,16 @@
+apiVersion: v2
+name: inference
+description: A Helm chart for LLM inference (vLLM LLM serving + llama.cpp CPU embeddings)
+type: application
+version: 2.5.3
+appVersion: "b5270"
+keywords:
+  - llm
+  - inference
+  - vllm
+  - embeddings
+  - gpu
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"
