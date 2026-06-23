@@ -300,7 +300,7 @@ run_test "warning_includes_service_name" \
 
 # 12. deploy/values.yaml Edit where autoscaling already enabled in file on disk
 write_app_yaml_no_ignore
-echo "$AUTOSCALING_VALUES" > "$FAKE_DEPLOY_VALUES"
+echo "$AUTOSCALING_VALUES" >"$FAKE_DEPLOY_VALUES"
 run_test "deploy_values_edit_autoscaling_in_file_warns" \
 	"$(make_edit_json "$FAKE_DEPLOY_VALUES" 'maxReplicas: 5')" \
 	0 "WARNING.*ignoreDifferences"
