@@ -1,7 +1,7 @@
 # RFC: MCP Context Forge as Agent Tool Gateway
 
 **Author:** Joe McGinley
-**Status:** Implemented
+**Status:** Superseded by [020 - Deprecate Context Forge](020-deprecate-context-forge-mcp-gateway.md)
 **Created:** 2026-02-27
 
 ---
