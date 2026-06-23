@@ -200,6 +200,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-cronworkflow-custom-sa-executor-rbac.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-hpa-ignoredifferences-replicas.sh",
+            "timeout": 10
           }
         ]
       }

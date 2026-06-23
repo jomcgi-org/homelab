@@ -105,3 +105,9 @@ sh_test(
     srcs = ["check-large-migration-sql_test.sh"],
     data = [":check-large-migration-sql.sh"],
 )
+
+sh_test(
+    name = "check_hpa_ignoredifferences_replicas_test",
+    srcs = ["check-hpa-ignoredifferences-replicas_test.sh"],
+    data = [":check-hpa-ignoredifferences-replicas.sh"],
+)
