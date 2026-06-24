@@ -81,14 +81,41 @@
   const pct = (x) => `${Math.round((x ?? 0) * 100)}%`;
   const points = (x) => Math.round((x ?? 0) * 100);
 
-  // The headline reads the status first: a settled group shows the verdict,
-  // otherwise the live qualify probability.
+  // A contending team's headline must never round to a bare 100%/0%: those read
+  // as certainty, but certainty is its own status (qualified / near_certain and
+  // their mirrors). Clamp the live figure to 1..99% so the only routes to
+  // "effectively certain" language are the dedicated tiers below.
+  const pctClamped = (x) =>
+    `${Math.min(99, Math.max(1, Math.round((x ?? 0) * 100)))}%`;
+
+  // The headline reads the status first. Exact certainties show a verdict word;
+  // the near_* tiers show a bounded ">99.9%"/"<0.1%" figure (no swing cards,
+  // because no realistic combination of results changes the outcome); a live
+  // contender shows its clamped qualify probability.
   const headline = $derived(
     q.status === "qualified"
       ? "Qualified"
       : q.status === "eliminated"
         ? "Eliminated"
-        : pct(q.prob_qualify),
+        : q.status === "near_certain"
+          ? ">99.9%"
+          : q.status === "near_eliminated"
+            ? "<0.1%"
+            : pctClamped(q.prob_qualify),
+  );
+
+  // The swing section's empty-state copy depends on WHY there are no matches to
+  // model: a settled or near-settled team has nothing left that can move it.
+  const emptyMsg = $derived(
+    q.status === "near_certain"
+      ? `No realistic combination of remaining results can stop ${countryName} now.`
+      : q.status === "near_eliminated"
+        ? `No realistic combination of remaining results can save ${countryName} now.`
+        : q.status === "qualified"
+          ? `${countryName} has already qualified.`
+          : q.status === "eliminated"
+            ? `${countryName} can no longer qualify.`
+            : "No remaining matches to model right now.",
   );
 
   const MONTHS = [
@@ -441,7 +468,7 @@
                     <span class="verdict out">Out</span>
                   {:else}
                     <span class="chance">
-                      <span class="chance-num">{pct(ql.prob_qualify)}</span>
+                      <span class="chance-num">{pctClamped(ql.prob_qualify)}</span>
                       <span class="chance-bar">
                         <span
                           class="chance-fill"
@@ -473,7 +500,7 @@
       </p>
 
       {#if swings.length === 0}
-        <p class="empty">No remaining matches to model right now.</p>
+        <p class="empty">{emptyMsg}</p>
       {:else}
         <ul class="swings">
           {#each swings as m, i (m.match_id)}

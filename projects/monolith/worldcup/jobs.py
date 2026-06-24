@@ -224,7 +224,7 @@ def _persist_sim(session, result: sim.SimResult, n: int) -> None:
     rows: list[SwingMatch] = []
     for code, prob in result.per_team.items():
         if prob.status != "contention":
-            continue  # clinched/eliminated: ~0 swing, no rows
+            continue  # settled (qualified/eliminated/near_*): ~0 swing, no rows
         for swing in swings_by_country.get(code, [])[:_TOP_SWING_PER_COUNTRY]:
             rows.append(
                 SwingMatch(
