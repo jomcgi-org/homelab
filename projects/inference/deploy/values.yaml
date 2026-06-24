@@ -187,13 +187,17 @@ server:
     {%- endif %}
 
 vllm:
-  # 32768 (was 49152): 35B-A3B int4-mixed weights are ~21-22GB resident (MoE keeps
-  # all experts loaded; mixed precision adds ~2GB over plain INT4), leaving thin KV
-  # headroom on a 24GB card. If load OOMs, add --enforce-eager (frees ~1-2GB of
-  # CUDA-graph capture) before lowering ctx further; raise back toward 49152 only
-  # after confirming KV headroom in the vLLM startup logs.
+  # 32768 (was 49152): with MTP spec decode the model loads at 20.08 GiB (19.66 +
+  # ~0.42 for the extra MTP layer; embeddings + lm_head are shared, not duplicated).
+  # Hybrid KV is tiny (only full-attn layers carry KV): 32K context needs just 0.49
+  # GiB. Those MTP weights dropped available KV to 0.24 GiB at util 0.95 (below the
+  # 0.49 floor => boot fails), so KV is restored via gpuMemoryUtilization 0.97
+  # (~0.73 GiB KV, ~0.24 margin, ~0.74 GiB card still free). NOTE: --enforce-eager is
+  # NOT the lever for this squeeze (spec decode forces PIECEWISE graphs, only ~0.13
+  # GiB); gpu-mem-util is. Raise ctx toward 49152 only after confirming KV headroom
+  # in the vLLM startup logs.
   maxModelLen: 32768
-  gpuMemoryUtilization: 0.95
+  gpuMemoryUtilization: 0.97
   dtype: "auto"
   quantization: ""
   tokenizer: ""
