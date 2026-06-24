@@ -74,6 +74,35 @@ class SimResult:
 # Fixed outcome ordering, mapped to integer indices for the hot swing tally.
 _OC_IDX = {"home_win": 0, "draw": 1, "away_win": 2}
 
+# A team is "qualified"/"eliminated" only when it advances/fails in EVERY trial
+# (an exact combinatorial certainty the Monte Carlo reproduces as pq == 1.0/0.0).
+# Between those extremes and the certainties sit two "effectively settled" tiers:
+# at or beyond these thresholds no realistic combination of remaining results
+# changes the outcome, so we label them distinctly and drop their swing cards
+# (which would otherwise all read a rounded 100%/0%). The thresholds also bound
+# what "contention" can be, so a contending team's headline never rounds to a
+# misleading 100%/0% (the page clamps the contention figure to 1..99%).
+NEAR_CERTAIN_THRESHOLD = 0.999
+NEAR_ELIMINATED_THRESHOLD = 0.001
+
+
+def _status(pq: float) -> str:
+    """Map a qualify probability to a display status tier.
+
+    Exact 1.0/0.0 are combinatorial certainties ("qualified"/"eliminated"). The
+    near_* tiers are "all but settled": overwhelmingly likely but not provably
+    certain. Everything else is live "contention".
+    """
+    if pq >= 1.0:
+        return "qualified"
+    if pq <= 0.0:
+        return "eliminated"
+    if pq >= NEAR_CERTAIN_THRESHOLD:
+        return "near_certain"
+    if pq <= NEAR_ELIMINATED_THRESHOLD:
+        return "near_eliminated"
+    return "contention"
+
 
 def attack_defence(
     states, shrink: float = ATT_DEF_SHRINK
@@ -306,19 +335,16 @@ def simulate(
             prob_qualify=pq,
             prob_top2=top2_count[c] / n,
             prob_third=third_count[c] / n,
-            status="qualified"
-            if pq == 1.0
-            else "eliminated"
-            if pq == 0.0
-            else "contention",
+            status=_status(pq),
         )
 
     # Build each country's ranked swing list from the tally. When an outcome was
     # never sampled (totals 0, e.g. swing_n == 0 or an impossible result) fall
     # back to the team's unconditional qualify probability so its swing is 0.
     #
-    # A match between two teams whose fates are already sealed (each one qualified
-    # or eliminated) is skipped entirely: it cannot move ANY team's qualification.
+    # A match between two teams whose fates are already settled (each one
+    # qualified, eliminated, or in a near_* tier, i.e. status != "contention") is
+    # skipped entirely: it cannot move ANY team's qualification.
     # Neither participant's own standing matters anymore, and a settled team is
     # never a best-third contender whose goal difference could shift the cutoff, so
     # the match's true swing is exactly 0 for everyone. We drop it rather than

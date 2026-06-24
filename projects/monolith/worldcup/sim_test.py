@@ -6,7 +6,16 @@ analytically from the construction (independent of the rng seed where the
 docstring says "guaranteed").
 """
 
-from worldcup.sim import Fixture, TeamState, simulate
+import pytest
+
+from worldcup.sim import (
+    NEAR_CERTAIN_THRESHOLD,
+    NEAR_ELIMINATED_THRESHOLD,
+    Fixture,
+    TeamState,
+    _status,
+    simulate,
+)
 
 # A neutral baseline Elo used wherever the exact strength does not change the
 # logical outcome of a scenario.
@@ -157,6 +166,33 @@ def _scenario_swing():
     fixtures = [Fixture("A-SCO-GER", "A", "SCO", "GER", is_own=True)]
     elo = {"SCO": 1750.0, "GER": 1750.0, "FRA": 1900.0, "AND": 1300.0}
     return states, fixtures, elo
+
+
+@pytest.mark.parametrize(
+    "pq,expected",
+    [
+        # Exact combinatorial certainties.
+        (1.0, "qualified"),
+        (0.0, "eliminated"),
+        # Near_* tiers: overwhelmingly likely but not provably certain. The
+        # boundary itself belongs to the near_* tier (>= / <=).
+        (NEAR_CERTAIN_THRESHOLD, "near_certain"),
+        (0.9995, "near_certain"),
+        (0.99999, "near_certain"),
+        (NEAR_ELIMINATED_THRESHOLD, "near_eliminated"),
+        (0.0005, "near_eliminated"),
+        (0.00001, "near_eliminated"),
+        # Live contention sits strictly between the thresholds. The values just
+        # inside each boundary must NOT be swallowed by a near_* tier.
+        (0.99, "contention"),
+        (0.9989, "contention"),
+        (0.5, "contention"),
+        (0.0011, "contention"),
+        (0.01, "contention"),
+    ],
+)
+def test_status_tiers(pq, expected):
+    assert _status(pq) == expected
 
 
 def test_clinched_team_is_certain():
