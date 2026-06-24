@@ -211,6 +211,18 @@ vllm:
     - "3"
     - "--kv-cache-dtype"
     - "fp8"
+    # MTP speculative decoding: the checkpoint ships a 1-layer Multi-Token
+    # Prediction head (config.json mtp_num_hidden_layers=1, weights mtp.layers.0.*),
+    # and vLLM 0.19.1 registers Qwen3_5MoeMTP for model_type qwen3_5_moe. At our
+    # batch=1 workload decode is bandwidth-bound, so verifying the 1 drafted token
+    # is nearly free => expect ~1.4-1.8x decode tok/s when acceptance is healthy.
+    # num_speculative_tokens MUST stay 1 (the head has a single layer; >1 reuses it
+    # autoregressively and acceptance collapses). Lossless: the main model verifies
+    # every token, so output is unchanged; only speed varies with acceptance rate.
+    # If load OOMs on the extra MTP weights (~1GB) + spec-decode CUDA graphs, add
+    # --enforce-eager (same lever the maxModelLen note above calls out).
+    - "--speculative-config"
+    - '{"method": "mtp", "num_speculative_tokens": 1}'
 
 runtimeClassName: nvidia
 
