@@ -80,12 +80,14 @@ else
 	}
 
 	rows=""
-	# Changed pages have a baseline and a current capture. A pixel diff image
-	# exists only when dimensions matched; a height/width change (e.g. text
-	# reflow on a fullPage shot) is reported as changed with no diff PNG, so the
-	# diff cell must be guarded or the missing-file upload aborts the script.
+	# Changed pages render on both main (before) and the PR (after). "before" is
+	# main's render, staged by the workflow into out/baseline/; "after" is the PR
+	# render in out/. A pixel diff image exists only when dimensions matched; a
+	# height/width change (e.g. text reflow on a fullPage shot) is reported as
+	# changed with no diff PNG, so the diff cell must be guarded or the
+	# missing-file upload aborts the script.
 	for name in $changed; do
-		before=$(upload "${name}-before" "$VDIR/baseline/${name}.png")
+		before=$(upload "${name}-before" "$VDIR/out/baseline/${name}.png")
 		after=$(upload "${name}-after" "$VDIR/out/${name}.png")
 		diff_file="$VDIR/out/diff/${name}.png"
 		if [ -f "$diff_file" ]; then
@@ -103,7 +105,8 @@ else
 
 </details>"
 	done
-	# Added pages have no baseline yet, so only the current capture is uploaded.
+	# Added pages exist on the PR but not on main (a brand-new public page), so
+	# there is no "before" render; only the current capture is uploaded.
 	for name in $added; do
 		after=$(upload "${name}-after" "$VDIR/out/${name}.png")
 		rows="${rows}
@@ -120,9 +123,9 @@ else
 	n_added=$(printf '%s' "$added" | grep -c . || true)
 	BODY="${MARKER}
 ## Public page visual diff
-Changed: **${n_changed}**, New: **${n_added}**, commit \`${SHA}\`
+Changed: **${n_changed}**, New: **${n_added}**, commit \`${SHA}\` (vs \`origin/main\`)
 
-To accept these as the new baseline, commit an empty file at \`projects/monolith/frontend/visual/.reseed-baselines\` (the CI run regenerates and commits the baselines, then removes the sentinel).
+These are the pixel differences this PR introduces against the current \`main\` render. There is nothing to accept: once the PR merges, main's render becomes the new reference automatically.
 ${rows}"
 fi
 

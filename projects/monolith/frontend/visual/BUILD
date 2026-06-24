@@ -6,7 +6,9 @@
 #  - capture: a js_run_binary that boots the :build_public app + the mock seam and
 #    screenshots the public pages with the rules_playwright-vendored chromium,
 #    running inside visual_chromium via exec_properties. Output: the out/ PNG tree
-#    + manifest.json. (diff target lands in a later task.)
+#    + manifest.json.
+#  - diff_bin: pixel-diffs two staged capture dirs (PR vs main). No committed
+#    baselines; the workflow step supplies both renders. See diff.mjs.
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library", "js_run_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
@@ -71,10 +73,15 @@ js_run_binary(
     tool = ":capture_bin",
 )
 
-# Pixel-diff sources (pixelmatch + pngjs); isChanged is unit-tested separately.
+# Pixel-diff binary (pixelmatch + pngjs); isChanged is unit-tested separately.
+# There are NO committed baselines: the "Visual regression" workflow step renders
+# the PR and main (in-place ref-switch), stages both PNG sets, and runs this with
+# CAPTURE_DIR/BASELINE_DIR/OUT_DIR pointed at those staged dirs (see diff.mjs).
+# It is not a js_run_binary because its two inputs come from two separate Bazel
+# invocations (PR tree + main tree), which cannot live in one action graph.
 js_library(
     name = "diff_srcs",
-    srcs = ["diff.mjs"] + glob(["baseline/**"]),
+    srcs = ["diff.mjs"],
     deps = [
         ":node_modules/pixelmatch",
         ":node_modules/pngjs",
@@ -87,26 +94,7 @@ js_binary(
     entry_point = "diff.mjs",
 )
 
-# Diff the freshly captured PNGs against the committed baselines. Pure node
-# (no chromium), so it runs in the default RBE image. Output: report.json + the
-# diff/ PNG tree. The Bazel graph ends here; the workflow step consumes these.
-js_run_binary(
-    name = "diff",
-    srcs = [
-        ":capture",
-        ":diff_srcs",
-    ],
-    env = {
-        # Execroot-relative path to the capture out tree; diff.mjs absolutizes it.
-        "CAPTURE_OUT": "$(execpath :capture)",
-        "DIFF_OUT_SUBDIR": "projects/monolith/frontend/visual/diff_out",
-    },
-    out_dirs = ["diff_out"],
-    tool = ":diff_bin",
-)
-
-# NOTE: deliberately NO build_test over :capture/:diff. Per ADR tooling/010 the
-# capture + diff run only in the dedicated (non-gating, input-cached) "Visual
-# regression" workflow step (`bazel build :diff`), keeping chromium out of the
-# gating `bazel test //...` lane. Breakage surfaces in that step, like the
-# Manifest diff check.
+# NOTE: deliberately NO build_test over :capture. Per ADR tooling/010 the capture
+# runs only in the dedicated (non-gating, input-cached) "Visual regression"
+# workflow step, keeping chromium out of the gating `bazel test //...` lane.
+# Breakage surfaces in that step, like the Manifest diff check.
