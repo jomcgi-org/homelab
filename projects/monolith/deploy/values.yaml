@@ -133,7 +133,7 @@ chat:
       embedColor: "0x2ECC71"
       intervalHours: 1
       # No commitFilter: small 2-person repo, so report every commit (all types)
-      roastChance: 0.1
+      roastChance: 0
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
