@@ -32,16 +32,16 @@ Three decisions.
 
 **3. Smoothness across many threads is delivered by 019's `Snapshotable` Firecracker executor, not by keeping threads warm.** An idle thread (awaiting a human reply, awaiting CI, between turns) is snapshotted and its live compute released; when it resumes, the microVM is restored in sub-second time. This is the conjunction 019 calls the target end state: no standing memory tax and sub-second resume together. It is the mechanism that lets a dozen half-finished Discord threads coexist cheaply and each wake instantly. Per 019, Firecracker is gated on a feasibility spike, so the **MVP ships on the cold-on-demand executor** and the multi-thread smoothness is the end state this consumer is designed for, not a day-one property.
 
-| Aspect | Today (claude.ai `/fire` option) | Decided (this ADR) |
-| ------ | -------------------------------- | ------------------ |
-| Trigger | bot to `/fire` with `text` context | bot (qwen gate) to monolith to `AgentWorkflow` submit |
-| Orchestration | Anthropic-managed, opaque | Argo `AgentWorkflow` (ADR 019), in-cluster |
-| Coding model | Claude (subscription) | fast hosted model via OpenAI-compatible seam (config knob) |
-| Status / stream | none | Argo Workflow phase (CRD) + harness self-narration to Discord |
-| Live steering | no (new `/fire` only) | suspend node + Discord reply resumes the thread |
-| Idle thread cost | n/a (managed) | near-zero via snapshot; live RAM only when running |
-| Resume latency | n/a | sub-second (Firecracker restore, end state); cold pod (MVP) |
-| Inference location | Anthropic | hosted Google API (new egress) |
+| Aspect             | Today (claude.ai `/fire` option)   | Decided (this ADR)                                            |
+| ------------------ | ---------------------------------- | ------------------------------------------------------------- |
+| Trigger            | bot to `/fire` with `text` context | bot (qwen gate) to monolith to `AgentWorkflow` submit         |
+| Orchestration      | Anthropic-managed, opaque          | Argo `AgentWorkflow` (ADR 019), in-cluster                    |
+| Coding model       | Claude (subscription)              | fast hosted model via OpenAI-compatible seam (config knob)    |
+| Status / stream    | none                               | Argo Workflow phase (CRD) + harness self-narration to Discord |
+| Live steering      | no (new `/fire` only)              | suspend node + Discord reply resumes the thread               |
+| Idle thread cost   | n/a (managed)                      | near-zero via snapshot; live RAM only when running            |
+| Resume latency     | n/a                                | sub-second (Firecracker restore, end state); cold pod (MVP)   |
+| Inference location | Anthropic                          | hosted Google API (new egress)                                |
 
 ---
 
@@ -92,14 +92,14 @@ Carried forward from [ADR 019](019-substrate-executor-agentworkflow.md) (and 014
 
 Choosing a hosted model for the coding driver is the most consequential divergence from the surrounding ADRs, which assume in-cluster vLLM. The trade is real in both directions:
 
-| Dimension | Hosted (Gemini 3.5 Flash) | Self-hosted (vLLM) |
-| --------- | ------------------------- | ------------------ |
-| Memory tax | none (no weights on cluster) | standing GPU RAM per model, contends with everything |
-| Latency / capability | fast, sonnet-class, no warmup | depends on what we can fit and keep hot |
-| Marginal cost | per-token to Google | sunk hardware, near-zero marginal |
-| Dependency | external API, subject to outage and ToS | fully in our control |
-| Network posture | new egress from the harness pod to Google | trusted internal plane, no new egress |
-| Data exposure | prompts (repo context) leave the cluster | stays in-cluster |
+| Dimension            | Hosted (Gemini 3.5 Flash)                 | Self-hosted (vLLM)                                   |
+| -------------------- | ----------------------------------------- | ---------------------------------------------------- |
+| Memory tax           | none (no weights on cluster)              | standing GPU RAM per model, contends with everything |
+| Latency / capability | fast, sonnet-class, no warmup             | depends on what we can fit and keep hot              |
+| Marginal cost        | per-token to Google                       | sunk hardware, near-zero marginal                    |
+| Dependency           | external API, subject to outage and ToS   | fully in our control                                 |
+| Network posture      | new egress from the harness pod to Google | trusted internal plane, no new egress                |
+| Data exposure        | prompts (repo context) leave the cluster  | stays in-cluster                                     |
 
 The memory-tax avoidance is the strongest pull: 019 frames the executor sequence partly as a memory-budget decision, and a hosted model removes the largest line item entirely while still delivering the speed the snapshot work is meant to exploit. The egress and data-exposure cost is the strongest push back, and is the reason this remains a config knob: nothing in the harness or the `AgentWorkflow` consumer is coupled to Google, so a future move back to self-hosted inference for sensitive repos is an environment change, not a redesign.
 
@@ -131,15 +131,15 @@ Baseline in `docs/security.md`. Deviations and notes specific to this consumer:
 
 ## Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-| ---- | ---------- | ------ | ---------- |
-| Firecracker snapshot does not mature on our hardware, so the multi-thread smoothness never lands | Medium | Medium | MVP ships on cold-on-demand and is useful without it; warm pool is the interim for sub-second-where-needed; the smoothness is an end state, not a gate on shipping |
-| A flash-tier model is too weak to drive autonomous multi-file coding reliably | Medium | Medium | Model is a config knob: route harder tasks to a stronger model, keep flash for the gate and simple edits; measure PR success rate per model before committing |
-| Egress of repo context to a hosted provider is unacceptable for some repos | Medium | Medium | Per-repo enablement; self-hosted vLLM remains a drop-in via the OpenAI-compatible seam |
-| Reconnect-after-restore bugs corrupt an in-flight thread | Medium | Low | Snapshot only at quiescent (between-turns / awaiting-reply) boundaries; durable state in Postgres so a bad restore loses working memory only; never snapshot mid-completion |
-| Hosted API outage or ToS change breaks the coding path | Low | Medium | Fallback to self-hosted inference is an environment change, not a redesign; gate decisions still run locally on qwen |
-| New egress widens the cluster's external surface | Low | Medium | Scope egress to the single model host via network policy; key is 1Password-sourced and namespace-scoped |
-| Bot becomes a high-volume submitter and pressures Argo etcd | Low | Medium | 019's volume tiering applies: if the bot's rate climbs, route to the `job-mcp` direct-dispatch tier rather than first-class Workflow objects |
+| Risk                                                                                             | Likelihood | Impact | Mitigation                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------ | ---------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Firecracker snapshot does not mature on our hardware, so the multi-thread smoothness never lands | Medium     | Medium | MVP ships on cold-on-demand and is useful without it; warm pool is the interim for sub-second-where-needed; the smoothness is an end state, not a gate on shipping          |
+| A flash-tier model is too weak to drive autonomous multi-file coding reliably                    | Medium     | Medium | Model is a config knob: route harder tasks to a stronger model, keep flash for the gate and simple edits; measure PR success rate per model before committing               |
+| Egress of repo context to a hosted provider is unacceptable for some repos                       | Medium     | Medium | Per-repo enablement; self-hosted vLLM remains a drop-in via the OpenAI-compatible seam                                                                                      |
+| Reconnect-after-restore bugs corrupt an in-flight thread                                         | Medium     | Low    | Snapshot only at quiescent (between-turns / awaiting-reply) boundaries; durable state in Postgres so a bad restore loses working memory only; never snapshot mid-completion |
+| Hosted API outage or ToS change breaks the coding path                                           | Low        | Medium | Fallback to self-hosted inference is an environment change, not a redesign; gate decisions still run locally on qwen                                                        |
+| New egress widens the cluster's external surface                                                 | Low        | Medium | Scope egress to the single model host via network policy; key is 1Password-sourced and namespace-scoped                                                                     |
+| Bot becomes a high-volume submitter and pressures Argo etcd                                      | Low        | Medium | 019's volume tiering applies: if the bot's rate climbs, route to the `job-mcp` direct-dispatch tier rather than first-class Workflow objects                                |
 
 ---
 
@@ -158,14 +158,14 @@ Answered during execution, not gates on the decision.
 
 ## References
 
-| Resource | Relevance |
-| -------- | --------- |
-| [019 - Substrate Executor + AgentWorkflow over Argo](019-substrate-executor-agentworkflow.md) | The tier and `Snapshotable` executor this consumer rides |
-| [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md) | Origin of the executor abstraction and the self-hosted-inference assumption this diverges from |
-| [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md) | Isolation boundary for the untrusted/external future |
-| [020 - Deprecate Context Forge](020-deprecate-context-forge-mcp-gateway.md) | The MCP surface the harness calls |
-| [services/002 - Discord Chat Automation](../services/002-discord-chat-automation.md) | The bot and outbox this rides on |
-| [Firecracker](https://firecracker-microvm.github.io/) | Sub-second microVM snapshot/restore, the smoothness mechanism |
-| [Kata Containers](https://katacontainers.io/) | Firecracker microVM as a RuntimeClass for the untrusted future |
-| [Trigger a routine via API](https://platform.claude.com/docs/en/api/claude-code/routines-fire) | The claude.ai `/fire` path evaluated and set aside as primary |
-| [Managed Agents: session event stream](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) | The managed-agents streaming/steering surface, considered and deferred |
+| Resource                                                                                                        | Relevance                                                                                      |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| [019 - Substrate Executor + AgentWorkflow over Argo](019-substrate-executor-agentworkflow.md)                   | The tier and `Snapshotable` executor this consumer rides                                       |
+| [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)                                         | Origin of the executor abstraction and the self-hosted-inference assumption this diverges from |
+| [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)                                   | Isolation boundary for the untrusted/external future                                           |
+| [020 - Deprecate Context Forge](020-deprecate-context-forge-mcp-gateway.md)                                     | The MCP surface the harness calls                                                              |
+| [services/002 - Discord Chat Automation](../services/002-discord-chat-automation.md)                            | The bot and outbox this rides on                                                               |
+| [Firecracker](https://firecracker-microvm.github.io/)                                                           | Sub-second microVM snapshot/restore, the smoothness mechanism                                  |
+| [Kata Containers](https://katacontainers.io/)                                                                   | Firecracker microVM as a RuntimeClass for the untrusted future                                 |
+| [Trigger a routine via API](https://platform.claude.com/docs/en/api/claude-code/routines-fire)                  | The claude.ai `/fire` path evaluated and set aside as primary                                  |
+| [Managed Agents: session event stream](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) | The managed-agents streaming/steering surface, considered and deferred                         |
