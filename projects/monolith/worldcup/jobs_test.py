@@ -232,6 +232,9 @@ class TestPersistSim:
         with Session(engine) as session:
             swings = session.exec(select(SwingMatch)).all()
             assert len(swings) == 1  # no duplicates; prior SCO/GER/HAI rows gone
+            assert swings[0].match_id == "F-SCO-GER"
+            assert swings[0].country_code == "SCO"
+            assert session.get(Qualification, "id-SCO").n_sims == 6000
 
     def test_sub_threshold_swings_are_dropped(self, engine):
         """A contending team's matches whose swing is below the minimum (every
@@ -260,9 +263,6 @@ class TestPersistSim:
             assert len(swings) == 1
             assert swings[0].match_id == "F-SCO-GER"
             assert session.get(SwingMatch, ("F-FRA-AND", "SCO")) is None
-            assert swings[0].match_id == "F-SCO-GER"
-            assert swings[0].country_code == "SCO"
-            assert session.get(Qualification, "id-SCO").n_sims == 6000
 
 
 def _standing_row(code, *, group="A", pts=3, gf=3, ga=2):
