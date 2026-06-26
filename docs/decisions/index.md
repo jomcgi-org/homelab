@@ -27,6 +27,7 @@ ADRs document significant architectural decisions and their context.
 | [018 - Event-Driven Gardener Triggering](agents/018-event-driven-gardener-trigger.md)                | Monolith pushes gardening sessions via remote-trigger `run` on note edits; drops cron + queue                                                     |
 | [019 - Substrate Executor + AgentWorkflow over Argo](agents/019-substrate-executor-agentworkflow.md) | Thin Substrate executor interface (agent-sandbox warm pool impl #1) under Argo; revisits 015's warm-pool dismissal for caller-blocked dispatch    |
 | [020 - Deprecate Context Forge](agents/020-deprecate-context-forge-mcp-gateway.md)                   | Remove the MCP gateway; serve the monolith's MCP directly (auth stays at the Cloudflare edge). Supersedes 003. Validated plan, deferred execution |
+| [021 - Discord-Triggered AgentWorkflow with Fast Hosted Model](agents/021-discord-triggered-agentworkflow-fast-model.md) | Discord bot (qwen gate) as a new AgentWorkflow consumer riding 019's submit path; fast hosted model (Gemini 3.5 Flash) over an OpenAI-compatible seam; snapshot/resume for smooth many-thread work. Draft |
 
 ## Docs
 
