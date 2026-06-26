@@ -105,7 +105,9 @@
   );
 
   // The swing section's empty-state copy depends on WHY there are no matches to
-  // model: a settled or near-settled team has nothing left that can move it.
+  // model: a settled or near-settled team has nothing left that can move it, and
+  // a contending team can still have no cards when every remaining match leaves
+  // its chances within a percentage point (all sub-threshold swings are dropped).
   const emptyMsg = $derived(
     q.status === "near_certain"
       ? `No realistic combination of remaining results can stop ${countryName} now.`
@@ -115,7 +117,9 @@
           ? `${countryName} has already qualified.`
           : q.status === "eliminated"
             ? `${countryName} can no longer qualify.`
-            : "No remaining matches to model right now.",
+            : q.status === "contention"
+              ? `No remaining match meaningfully changes whether ${countryName} qualifies.`
+              : "No remaining matches to model right now.",
   );
 
   const MONTHS = [

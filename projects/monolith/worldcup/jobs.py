@@ -28,6 +28,14 @@ FOCUS_CODE = "SCO"
 # How many of each contending team's remaining matches to store, ranked by swing.
 _TOP_SWING_PER_COUNTRY = 8
 
+# Smallest swing worth showing as a card. Swing is the spread between a team's
+# best- and worst-case conditional qualify probability for a match, so below this
+# every outcome leaves the team's chances within one percentage point: the card
+# would read "if X win / draw / if Y win" at three near-identical figures with a
+# +-0 magnitude, telling the viewer nothing. We drop those rather than pad each
+# country's top-8 with dead matches.
+_MIN_SWING_TO_STORE = 0.01
+
 
 def _upsert(standings_rows: list[dict], fixture_rows: list[dict]) -> bool:
     """Upsert standings (by team_id) and fixtures (by match_id) idempotently.
@@ -225,7 +233,10 @@ def _persist_sim(session, result: sim.SimResult, n: int) -> None:
     for code, prob in result.per_team.items():
         if prob.status != "contention":
             continue  # settled (qualified/eliminated/near_*): ~0 swing, no rows
-        for swing in swings_by_country.get(code, [])[:_TOP_SWING_PER_COUNTRY]:
+        ranked = [
+            s for s in swings_by_country.get(code, []) if s.swing >= _MIN_SWING_TO_STORE
+        ]
+        for swing in ranked[:_TOP_SWING_PER_COUNTRY]:
             rows.append(
                 SwingMatch(
                     match_id=swing.match_id,

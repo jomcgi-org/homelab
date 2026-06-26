@@ -232,6 +232,34 @@ class TestPersistSim:
         with Session(engine) as session:
             swings = session.exec(select(SwingMatch)).all()
             assert len(swings) == 1  # no duplicates; prior SCO/GER/HAI rows gone
+
+    def test_sub_threshold_swings_are_dropped(self, engine):
+        """A contending team's matches whose swing is below the minimum (every
+        outcome within a percentage point) must not be stored as dead cards."""
+        with Session(engine) as session:
+            session.add_all([_standing("SCO"), _standing("GER")])
+            session.add(_fixture("F-SCO-GER", "SCO", "GER", finished=False))
+            session.add(_fixture("F-FRA-AND", "FRA", "AND", finished=False))
+            session.commit()
+
+            real = Swing("F-SCO-GER", "A", "SCO", "GER", 0.5, 0.9, 0.6, 0.4, True)
+            # 0.005 spread: all three outcomes within a percentage point.
+            flat = Swing(
+                "F-FRA-AND", "A", "FRA", "AND", 0.005, 0.62, 0.62, 0.615, False
+            )
+            result = SimResult(
+                per_team={"SCO": TeamProb("SCO", 0.62, 0.40, 0.22, "contention")},
+                swings=[real, flat],
+                n=5000,
+                swings_by_country={"SCO": [real, flat]},
+            )
+            jobs._persist_sim(session, result, 5000)
+
+        with Session(engine) as session:
+            swings = session.exec(select(SwingMatch)).all()
+            assert len(swings) == 1
+            assert swings[0].match_id == "F-SCO-GER"
+            assert session.get(SwingMatch, ("F-FRA-AND", "SCO")) is None
             assert swings[0].match_id == "F-SCO-GER"
             assert swings[0].country_code == "SCO"
             assert session.get(Qualification, "id-SCO").n_sims == 6000
