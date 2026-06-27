@@ -1,0 +1,105 @@
+{{- if .Values.toolRefresh.enabled }}
+# Periodic Context Forge tool-catalog refresh.
+#
+# CF caches each gateway's tool catalog in its own Postgres and does NOT
+# re-discover on its own: its auto-refresh runs inside the health-check loop and
+# only fires after a healthy tick, but that loop speaks streamablehttp while the
+# monolith gateway serves SSE, so the monolith gateway's last_seen never advances
+# and CF's built-in auto-refresh never fires for it. Without this, every new or
+# changed monolith MCP tool stays invisible to the homelab connector until
+# someone POSTs the refresh endpoint by hand.
+#
+# This CronJob mints a short-lived admin JWT (JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL
+# come from the context-forge secret, the same envFrom the gateway uses), looks
+# up the target gateway id by name, and POSTs /gateways/{id}/tools/refresh. It
+# reuses the gateway image, which already bundles mcpgateway + httpx.
+#
+# The pod opts out of the Linkerd mesh (linkerd.io/inject: disabled) so the
+# proxy sidecar does not keep the Job alive forever; it reaches the meshed
+# gateway over plaintext on the in-cluster Service.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-tool-refresh
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.toolRefresh.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 120
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.toolRefresh.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            {{- include "context-forge.selectorLabels" . | nindent 12 }}
+          annotations:
+            linkerd.io/inject: disabled
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: tool-refresh
+              image: "{{ .Values.toolRefresh.image.repository }}:{{ .Values.toolRefresh.image.tag }}"
+              imagePullPolicy: {{ .Values.toolRefresh.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.secret.name }}
+              env:
+                - name: CF_GATEWAY_URL
+                  value: "http://{{ .Release.Name }}-mcp-stack-mcpgateway:80"
+                - name: CF_GATEWAY_NAME
+                  value: {{ .Values.toolRefresh.gatewayName | quote }}
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  TOKEN=$(python3 -m mcpgateway.utils.create_jwt_token -u "$PLATFORM_ADMIN_EMAIL" --admin -e 600 | tail -1)
+                  export TOKEN
+                  python3 - <<'PY'
+                  import os, httpx
+                  base = os.environ["CF_GATEWAY_URL"]
+                  name = os.environ["CF_GATEWAY_NAME"]
+                  headers = {"Authorization": "Bearer " + os.environ["TOKEN"]}
+                  resp = httpx.get(f"{base}/gateways", headers=headers, timeout=30)
+                  resp.raise_for_status()
+                  body = resp.json()
+                  # The API may return a bare list or wrap it; handle both.
+                  items = body if isinstance(body, list) else body.get("data", body.get("gateways", []))
+                  gid = next((g["id"] for g in items if g.get("name") == name), None)
+                  if not gid:
+                      raise SystemExit(f"gateway {name!r} not found among {len(items)} gateways")
+                  r = httpx.post(f"{base}/gateways/{gid}/tools/refresh", headers=headers, timeout=90)
+                  print(name, r.status_code, r.text[:400])
+                  r.raise_for_status()
+                  PY
+              resources:
+                {{- toYaml .Values.toolRefresh.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}
