@@ -8,7 +8,9 @@ from agent import dispatch
 
 
 def test_submit_creates_pending_thread(agent_db):
-    result = dispatch.submit("fix the flaky test", repo="homelab", discord_thread="dt-1")
+    result = dispatch.submit(
+        "fix the flaky test", repo="homelab", discord_thread="dt-1"
+    )
     tid = result["thread_id"]
     assert result["action"] == "create"
 
@@ -44,7 +46,9 @@ def test_submit_with_thread_id_resumes(agent_db):
     created = dispatch.submit("task", repo="homelab")
     tid = created["thread_id"]
     agent_db.execute(
-        text("UPDATE claude_agent.agent_threads SET state = 'IDLE' WHERE thread_id = :id"),
+        text(
+            "UPDATE claude_agent.agent_threads SET state = 'IDLE' WHERE thread_id = :id"
+        ),
         {"id": tid},
     )
     agent_db.commit()
@@ -61,7 +65,9 @@ def test_wake_for_discord_thread(agent_db):
     created = dispatch.submit("task", repo="homelab", discord_thread="dt-42")
     tid = created["thread_id"]
     agent_db.execute(
-        text("UPDATE claude_agent.agent_threads SET state = 'IDLE' WHERE thread_id = :id"),
+        text(
+            "UPDATE claude_agent.agent_threads SET state = 'IDLE' WHERE thread_id = :id"
+        ),
         {"id": tid},
     )
     agent_db.commit()

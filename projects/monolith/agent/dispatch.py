@@ -130,5 +130,14 @@ def wake_for_discord_thread(discord_thread: str) -> dict:
         ).fetchone()
         session.commit()
     if row is None:
-        return {"ok": False, "discord_thread": discord_thread, "reason": "no idle thread for that discord thread"}
-    return {"ok": True, "discord_thread": discord_thread, "thread_id": row.thread_id, "wake_requested": True}
+        return {
+            "ok": False,
+            "discord_thread": discord_thread,
+            "reason": "no idle thread for that discord thread",
+        }
+    return {
+        "ok": True,
+        "discord_thread": discord_thread,
+        "thread_id": row.thread_id,
+        "wake_requested": True,
+    }
