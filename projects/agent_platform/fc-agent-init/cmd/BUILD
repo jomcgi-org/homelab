@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/agent_platform/fc-agent-init/internal/harness",
         "//projects/agent_platform/fc-agent-init/internal/idle",
         "//projects/agent_platform/fc-agent-init/internal/reconnect",
         "//projects/agent_platform/vsockproto",

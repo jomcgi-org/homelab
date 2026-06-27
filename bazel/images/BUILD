@@ -44,6 +44,7 @@ multirun(
         "//projects/agent_platform/fc-agent-init:image.push",
         "//projects/agent_platform/fc-agentd/chart:chart.push",
         "//projects/agent_platform/fc-agentd:image.push",
+        "//projects/agent_platform/harness:image.push",
         "//projects/grimoire/api:image.push",
         "//projects/grimoire/frontend:image.push",
         "//projects/grimoire/ws-gateway:image.push",
