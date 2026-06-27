@@ -42,6 +42,7 @@ multirun(
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
         "//projects/agent_platform/fc-agent-init:image.push",
+        "//projects/agent_platform/fc-agentd/helm/fc-agentd:chart.push",
         "//projects/agent_platform/fc-agentd:image.push",
         "//projects/grimoire/api:image.push",
         "//projects/grimoire/frontend:image.push",

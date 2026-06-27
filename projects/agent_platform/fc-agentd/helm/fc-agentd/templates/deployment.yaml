@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fc-agentd.fullname" . }}
+  labels:
+    {{- include "fc-agentd.labels" . | nindent 4 }}
+spec:
+  # Single replica: the controller is node-affine (snapshots are node-bound) and
+  # owns its node's microVMs. Recreate, never run two against the same node.
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "fc-agentd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fc-agentd.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "fc-agentd.serviceAccountName" . }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.firecracker.enabled }}
+      # Driving Firecracker needs the host KVM device, the kata binary + kernel,
+      # the devmapper pool, and the snapshot dir.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      {{- else }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: fc-agentd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.firecracker.enabled }}
+          securityContext:
+            privileged: true
+          {{- else }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- end }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.secretKey }}
+            - name: FC_AGENTD_NODE
+              value: {{ .Values.node | quote }}
+            - name: FC_AGENTD_ARCH
+              value: {{ .Values.arch | quote }}
+            - name: FC_AGENTD_RECONCILE_INTERVAL
+              value: {{ .Values.reconcileInterval | quote }}
+            - name: FC_AGENTD_SNAPSHOT_ROOT
+              value: {{ .Values.firecracker.snapshotRoot | quote }}
+            {{- if .Values.firecracker.enabled }}
+            - name: FC_AGENTD_FIRECRACKER_BIN
+              value: {{ .Values.firecracker.binPath | quote }}
+            - name: FC_AGENTD_KERNEL_IMAGE
+              value: {{ .Values.firecracker.kernelImagePath | quote }}
+            {{- with .Values.firecracker.rootfsPath }}
+            - name: FC_AGENTD_ROOTFS_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.tracing.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.tracing.serviceName | quote }}
+            {{- with .Values.tracing.serviceVersion }}
+            - name: OTEL_SERVICE_VERSION
+              value: {{ . | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.firecracker.enabled }}
+          volumeMounts:
+            - name: dev-kvm
+              mountPath: /dev/kvm
+            - name: kata
+              mountPath: /opt/kata
+              readOnly: true
+            - name: dev-mapper
+              mountPath: /dev/mapper
+            - name: snapshots
+              mountPath: {{ .Values.firecracker.snapshotRoot }}
+          {{- end }}
+      {{- if .Values.firecracker.enabled }}
+      volumes:
+        - name: dev-kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        - name: kata
+          hostPath:
+            path: /opt/kata
+            type: Directory
+        - name: dev-mapper
+          hostPath:
+            path: /dev/mapper
+            type: Directory
+        - name: snapshots
+          hostPath:
+            path: {{ .Values.firecracker.snapshotRoot }}
+            type: DirectoryOrCreate
+      {{- end }}

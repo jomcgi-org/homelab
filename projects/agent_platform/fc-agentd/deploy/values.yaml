@@ -1,0 +1,14 @@
+# Cluster overrides for fc-agentd (ADR 022). The controller runs on node-4,
+# connected to the monolith Postgres registry, reconciling agent threads.
+#
+# firecracker.enabled is false for this first rollout: the daemon runs the
+# reconcile loop against the registry and idles (an empty registry means it
+# never claims a microVM), so it deploys non-privileged with no host mounts.
+# Flip to true (adding /dev/kvm + kata + devmapper + nvme host mounts and a
+# privileged securityContext) when enabling real microVM snapshot/restore.
+node: node-4
+arch: amd64
+
+firecracker:
+  enabled: false
+  snapshotRoot: /disks/nvme-02/agent-threads

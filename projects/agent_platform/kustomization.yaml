@@ -1,0 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Aggregator for the agent platform (ADR 022). Includes each agent-platform
+# service's deploy/ so the home-cluster root can reference this one directory.
+resources:
+  - fc-agentd/deploy
