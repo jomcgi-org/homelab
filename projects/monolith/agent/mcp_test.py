@@ -1,4 +1,4 @@
-"""Smoke test that all 22 monolith-agent-* MCP tools are registered."""
+"""Smoke test that all 24 monolith-agent-* MCP tools are registered."""
 
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ EXPECTED_TOOLS = {
     "monolith_agent_list_agent_bases",
     "monolith_agent_request_base_rebuild",
     "monolith_agent_run_agent_backstop",
+    "monolith_agent_submit_agent_task",
+    "monolith_agent_wake_agent_thread_for_discord",
 }
 
 
@@ -43,6 +45,6 @@ async def test_all_agent_tools_registered():
     assert not missing, f"Missing agent tools: {missing}"
 
 
-def test_expected_tool_count_is_twenty_two():
+def test_expected_tool_count_is_twenty_four():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 22
+    assert len(EXPECTED_TOOLS) == 24

@@ -1,6 +1,6 @@
 """MCP tools for the claude-routine-agent surface.
 
-Twenty-two tools across seven families — each is a thin async wrapper that
+Twenty-four tools across eight families — each is a thin async wrapper that
 calls into the corresponding ``agent.*`` operation module and serializes
 datetimes / UUIDs as strings for JSON transport. The Python function
 names use underscores; FastMCP's wire identifiers use the dashed form
@@ -16,6 +16,9 @@ names use underscores; FastMCP's wire identifiers use the dashed form
              trigger_routine_job  (claude_agent.routine_jobs)
   Threads  : list_agent_threads, get_agent_thread, resume_agent_thread
              (claude_agent.agent_threads, ADR 022)
+  Bases    : list_agent_bases, request_base_rebuild, run_agent_backstop
+             (claude_agent.agent_base_snapshots + the backstop sweep, ADR 022)
+  Dispatch : submit_agent_task, wake_agent_thread_for_discord (ADR 022)
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
-from agent import backstop, base_snapshots, checks, locks
+from agent import backstop, base_snapshots, checks, dispatch, locks
 from agent import notify as notify_mod
 from agent import routine_jobs, threads
 from app.mcp_app import mcp
@@ -326,3 +329,40 @@ async def monolith_agent_run_agent_backstop(stuck_threshold_mins: int = 60) -> d
             level="warn",
         )
     return summary
+
+
+# --- AgentWorkflow dispatch (ADR 022, Phase 5) ---------------------------
+
+
+@mcp.tool
+async def monolith_agent_submit_agent_task(
+    task: str,
+    thread_id: str | None = None,
+    repo: str = "",
+    branch: str = "main",
+    discord_thread: str = "",
+    arch: str = "amd64",
+) -> dict:
+    """Submit a task to the snapshot-managed agent substrate.
+
+    Without ``thread_id`` this creates a new agent thread the controller boots
+    (from the repo's warm base when one is built) and runs. With ``thread_id``
+    it resumes that IDLE thread. Returns the thread_id and the action taken.
+    """
+    return dispatch.submit(
+        task,
+        thread_id=thread_id,
+        repo=repo,
+        branch=branch,
+        discord_thread=discord_thread,
+        arch=arch,
+    )
+
+
+@mcp.tool
+async def monolith_agent_wake_agent_thread_for_discord(discord_thread: str) -> dict:
+    """Wake the IDLE agent thread fronting a Discord thread (a reply arrived).
+
+    Returns ok=False when no IDLE thread fronts that Discord thread.
+    """
+    return dispatch.wake_for_discord_thread(discord_thread)

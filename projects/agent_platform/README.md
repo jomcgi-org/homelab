@@ -53,3 +53,27 @@ PENDING --restore(base)--> RUNNING --idle--> pause+snapshot --> IDLE
                              +--------restore(thread)<---wake-----+
 RUNNING --task done--> COMPLETED --> reclaim (delete snapshot + volume)
 ```
+
+## Dispatch and catalog (the monolith side)
+
+The control plane is Postgres (`claude_agent.agent_threads` +
+`claude_agent.agent_base_snapshots`), so consumers never talk to Firecracker
+directly: they read and write the registry over the monolith MCP surface, and
+`fc-agentd` reconciles it.
+
+- **Dispatch** (`projects/monolith/agent/dispatch.py`, ADR 019/021 seam):
+  `submit(task, thread_id?)` creates a new `PENDING` thread (resolving the
+  repo's built warm base when one exists) or resumes an existing `IDLE` thread;
+  `status(thread_id)` reads the row. Wake triggers: `wake(thread_id)` (manual /
+  CI event for a known id) and `wake_for_discord_thread(discord_thread)` (a
+  reply arrived). Exposed as `monolith-agent-submit-agent-task` and
+  `monolith-agent-wake-agent-thread-for-discord`.
+- **Catalog**: `monolith-agent-list-agent-threads`, `-get-agent-thread`,
+  `-resume-agent-thread`, `-list-agent-bases`, `-request-base-rebuild`,
+  `-run-agent-backstop`.
+
+The ADR 021 Discord consumer (qwen gate) and the CI webhook call `submit` / the
+wake triggers; that bolt-in and a read-only catalog UI page are the remaining
+integration follow-ups. End-to-end validation of snapshot/restore continuity
+runs on node-4 (where `/dev/kvm` exists); CI covers the controller logic, the
+registry, and the catalog with unit and real-Postgres BDD tests.
