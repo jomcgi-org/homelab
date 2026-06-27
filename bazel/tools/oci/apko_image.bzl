@@ -215,11 +215,15 @@ def apko_image(
             visibility = visibility,
         )
 
-    # Expose OciImageInfo provider for use by helm_chart(images = {...})
+    # Expose OciImageInfo provider for use by helm_chart(images = {...}). The
+    # image is referenced so the chart-version bot's dependency closure reaches
+    # content layered into the image (e.g. fc-agent-init bundled into the harness
+    # image), not just this package; see oci_image_info in providers.bzl.
     oci_image_info(
         name = name + ".info",
         repository = _repository,
         image_tags = name + "_stamped_ci.tags.txt",
+        image = ":" + name,
         visibility = ["//visibility:public"],
     )
 
