@@ -24,6 +24,9 @@ spec:
         {{- include "inference.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: inference
     spec:
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.runtimeClassName }}
       runtimeClassName: {{ . }}
       {{- end }}

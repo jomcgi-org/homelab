@@ -1,0 +1,36 @@
+# Cluster-scoped PriorityClasses for the memory-oversubscription policy.
+# See ADR docs/decisions/platform/010-memory-oversubscription-burstable-priorityclass.md
+#
+# Hierarchy (existing classes shown for context):
+#   system-node-critical     2000001000  (k8s)
+#   system-cluster-critical  2000000000  (k8s)
+#   longhorn-critical        1000000000  (longhorn chart)
+#   homelab-critical              100000  (this file)
+#   <default>                         0  (pods with no class)
+#   homelab-disposable            -1000  (this file)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: homelab-critical
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Critical homelab workloads that must survive memory pressure (inference, and
+  later the database, ClickHouse, and the monolith API). Ranks above
+  default-priority workloads so the kubelet evicts and the scheduler preempts
+  cheaper tenants first. See ADR platform/010.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: homelab-disposable
+value: -1000
+globalDefault: false
+# Never preempts other pods: a disposable workload that cannot schedule simply
+# waits. Other classes still preempt and evict it (it is the lowest value).
+preemptionPolicy: Never
+description: >-
+  Disposable, resumable workloads (Firecracker agent microVMs per ADRs 019/021)
+  whose state is never load-bearing. Lowest priority: the designated victim
+  under coincident-peak memory pressure. See ADR platform/010.

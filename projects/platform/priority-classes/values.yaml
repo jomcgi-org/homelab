@@ -1,0 +1,2 @@
+# This chart renders only cluster-scoped PriorityClasses (static manifests in
+# templates/priorityclasses.yaml). There are no configurable values.

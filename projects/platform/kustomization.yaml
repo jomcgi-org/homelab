@@ -16,6 +16,7 @@ resources:
   - ./longhorn
   - ./nvidia-gpu-operator
   - ./opentelemetry-operator
+  - ./priority-classes # Cluster-scoped PriorityClasses (ADR platform/010)
   - ./seaweedfs
   - ./signoz
   - ./signoz-addons # Must be after signoz
