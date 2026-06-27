@@ -1,0 +1,16 @@
+apiVersion: v2
+name: priority-classes
+description: Cluster-scoped PriorityClasses for the memory-oversubscription policy (ADR platform/010)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: jomcgi
+keywords:
+  - priorityclass
+  - scheduling
+  - oversubscription
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"

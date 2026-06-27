@@ -264,12 +264,22 @@ readinessProbe:
   periodSeconds: 10
   failureThreshold: 3
 
+# Critical-tier priority (ADR platform/010): inference must survive node-4
+# memory pressure now that its memory request is set to steady-state, not peak.
+priorityClassName: homelab-critical
+
+# Burstable memory (ADR platform/010): request = steady-state, limit = peak.
+# 7-day SigNoz peak memory is ~20Gi (vLLM KV cache), but steady-state is ~5Gi and
+# sub-peaks ~6.6Gi, and the 20Gi spike is rare and uncorrelated with other node-4
+# workloads. Requesting 8Gi (steady + margin) instead of 24Gi frees ~16Gi of
+# node-4 reservation for the agent-microVM tier; the 32Gi limit still covers the
+# burst.
 # CPU request trimmed 4 -> 2: vLLM decode is GPU-bound, 7-day SigNoz peak CPU is
-# ~1715m (avg ~7m), so 2 cores covers peak with headroom and frees node-4 reservation.
+# ~1715m (avg ~7m), so 2 cores covers peak with headroom.
 resources:
   requests:
     cpu: 2
-    memory: "24Gi"
+    memory: "8Gi"
     nvidia.com/gpu: 1
   limits:
     memory: "32Gi"
