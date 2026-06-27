@@ -1,5 +1,0 @@
-# ArgoCD Image Updater — cluster-critical overlay
-#
-# All subchart values live in projects/platform/argocd-image-updater/deploy/values.yaml under the
-# `argocd-image-updater:` key. Top-level keys here do NOT reach the subchart
-# (Helm scoping), so this file only contains parent-chart overrides if needed.

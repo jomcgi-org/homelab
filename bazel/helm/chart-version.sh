@@ -64,7 +64,7 @@ while IFS= read -r subject; do
 
 	# Skip automated commits
 	case "$subject" in
-	*"argocd-image-updater"* | *"ci-format-bot"* | *"chart-version-bot"*) continue ;;
+	*"ci-format-bot"* | *"chart-version-bot"*) continue ;;
 	esac
 
 	# Check for breaking change (! before colon)
@@ -92,7 +92,7 @@ while IFS= read -r subject; do
 		;;
 	esac
 done < <(git log --format='%an|||%s' "${VERSION_COMMIT}..HEAD" -- "${GIT_PATHS[@]}" 2>/dev/null |
-	grep -v '^\(argocd-image-updater\|ci-format-bot\|chart-version-bot\)|||' |
+	grep -v '^\(ci-format-bot\|chart-version-bot\)|||' |
 	sed 's/^[^|]*|||//')
 
 # --- Apply bump ---

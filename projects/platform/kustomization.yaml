@@ -3,7 +3,6 @@ kind: Kustomization
 
 resources:
   - ./argocd
-  - ./argocd-image-updater
   - ./argo-workflows # Namespace-scoped (monolith-workflows ns) batch-job executor for the monolith
   - ./atlas-operator/deploy
   - ./cert-manager # Must be before linkerd
