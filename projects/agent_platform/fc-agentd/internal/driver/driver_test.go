@@ -61,12 +61,27 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 	return &fakeProcess{srv: srv}, nil
 }
 
+// shortTempDir returns a temp dir under /tmp with a short path. The fake
+// launcher binds a unix socket inside it, and macOS caps sun_path at 104 bytes,
+// which t.TempDir()'s long /var/folders/... paths exceed (bind: invalid
+// argument). On node-4 the snapshot root is the short /disks/nvme-02, so this is
+// a test-only portability shim.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := os.MkdirTemp("/tmp", "fc")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	return d
+}
+
 func testDriver(t *testing.T) *Driver {
 	t.Helper()
 	return New(Config{
 		KernelImagePath: "/opt/kata/vmlinux",
 		RootfsPath:      "/dev/mapper/thread",
-		SnapshotRoot:    t.TempDir(),
+		SnapshotRoot:    shortTempDir(t),
 		Node:            "node-4",
 		Arch:            "amd64",
 	}, &fakeLauncher{}, nil)

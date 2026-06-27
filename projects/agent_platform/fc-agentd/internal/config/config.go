@@ -33,8 +33,13 @@ type Config struct {
 	FirecrackerBin string
 	// KernelImagePath is the guest kernel (kata vmlinux.container on node-4).
 	KernelImagePath string
-	// RootfsPath is the host path to the thread rootfs block device.
+	// RootfsPath is a shared/static rootfs, used only when BaseRootfsPath is empty.
 	RootfsPath string
+	// BaseRootfsPath is the read-only base rootfs image (the flattened harness
+	// image). When set, each thread gets its own writable copy.
+	BaseRootfsPath string
+	// HarnessInit is the in-guest init the kernel boots into (fc-agent-init).
+	HarnessInit string
 	// GuestVCPUs and GuestMemMib size each microVM.
 	GuestVCPUs  int
 	GuestMemMib int
@@ -52,6 +57,8 @@ func Load() (Config, error) {
 		FirecrackerBin:    getenvDefault("FC_AGENTD_FIRECRACKER_BIN", "/opt/kata/bin/firecracker"),
 		KernelImagePath:   getenvDefault("FC_AGENTD_KERNEL_IMAGE", "/opt/kata/share/kata-containers/vmlinux.container"),
 		RootfsPath:        os.Getenv("FC_AGENTD_ROOTFS_PATH"),
+		BaseRootfsPath:    os.Getenv("FC_AGENTD_BASE_ROOTFS"),
+		HarnessInit:       getenvDefault("FC_AGENTD_HARNESS_INIT", "/usr/local/bin/fc-agent-init"),
 		GuestVCPUs:        atoiDefault("FC_AGENTD_GUEST_VCPUS", 1),
 		GuestMemMib:       atoiDefault("FC_AGENTD_GUEST_MEM_MIB", 1024),
 	}

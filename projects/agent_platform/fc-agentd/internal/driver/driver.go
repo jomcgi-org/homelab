@@ -29,8 +29,16 @@ type Config struct {
 	KernelImagePath string
 	// KernelBootArgs are appended to the kernel command line on cold boot.
 	KernelBootArgs string
-	// RootfsPath is the host path to the thread rootfs block device.
+	// RootfsPath is the host path to a shared/static rootfs, used only when no
+	// BaseRootfsPath is set (e.g. the kata rootfs for a heartbeat smoke test).
 	RootfsPath string
+	// BaseRootfsPath is the read-only base rootfs image (the flattened harness
+	// image). When set, each thread gets its own writable copy (CopyProvisioner).
+	BaseRootfsPath string
+	// HarnessInit, when set, is appended to the kernel command line as
+	// init=<path> so the guest boots straight into fc-agent-init (raw FC boot
+	// ignores the OCI entrypoint).
+	HarnessInit string
 	// VCPUs and MemMib size the guest.
 	VCPUs  int
 	MemMib int
@@ -81,9 +89,10 @@ type fcAPI interface {
 
 // Driver implements substrate.Substrate and substrate.Snapshotable for FC-direct.
 type Driver struct {
-	cfg       Config
-	launcher  Launcher
-	newClient func(socketPath string) fcAPI
+	cfg         Config
+	launcher    Launcher
+	newClient   func(socketPath string) fcAPI
+	provisioner RootfsProvisioner // nil => use cfg.RootfsPath (shared/static)
 
 	mu   sync.Mutex
 	live map[string]*instance // handle ID -> instance
@@ -108,13 +117,20 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 	if newClient == nil {
 		newClient = func(sock string) fcAPI { return fcclient.New(sock) }
 	}
-	return &Driver{
+	d := &Driver{
 		cfg:       cfg.withDefaults(),
 		launcher:  launcher,
 		newClient: newClient,
 		live:      make(map[string]*instance),
 	}
+	if cfg.BaseRootfsPath != "" {
+		d.provisioner = &CopyProvisioner{Base: cfg.BaseRootfsPath}
+	}
+	return d
 }
+
+// SetProvisioner overrides the rootfs provisioner (tests inject a fake).
+func (d *Driver) SetProvisioner(p RootfsProvisioner) { d.provisioner = p }
 
 func newID(prefix string) string {
 	var b [8]byte
@@ -133,6 +149,17 @@ func (d *Driver) snapfilePath(threadID string) string {
 
 func (d *Driver) memfilePath(threadID string) string {
 	return filepath.Join(d.threadDir(threadID), "memfile")
+}
+
+// bootArgs is the kernel command line. When HarnessInit is set it appends
+// init=<path> so the guest boots straight into fc-agent-init (raw FC boot does
+// not honour the OCI image entrypoint).
+func (d *Driver) bootArgs() string {
+	args := d.cfg.KernelBootArgs
+	if d.cfg.HarnessInit != "" {
+		args += " init=" + d.cfg.HarnessInit
+	}
+	return args
 }
 
 // baseDir is the bundle directory for a warm base, keyed by an opaque base key
@@ -212,13 +239,24 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	}
 	client := d.newClient(sock)
 
+	// Each thread gets its own writable rootfs (from the base image) so threads
+	// never share or corrupt one disk. With no provisioner, fall back to the
+	// shared/static rootfs (e.g. a kata rootfs smoke test).
+	rootfsPath := d.cfg.RootfsPath
+	if d.provisioner != nil {
+		rootfsPath, err = d.provisioner.Provision(ctx, threadID, dir)
+		if err != nil {
+			return d.abort(proc, err)
+		}
+	}
+
 	if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: d.cfg.VCPUs, MemSizeMib: d.cfg.MemMib}); err != nil {
 		return d.abort(proc, err)
 	}
-	if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.cfg.KernelBootArgs}); err != nil {
+	if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgs()}); err != nil {
 		return d.abort(proc, err)
 	}
-	if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: d.cfg.RootfsPath, IsRootDevice: true}); err != nil {
+	if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true}); err != nil {
 		return d.abort(proc, err)
 	}
 	if err := client.Start(ctx); err != nil {
