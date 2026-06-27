@@ -249,6 +249,10 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create snapshot: %w", err)
 	}
 	if err := inst.client.Resume(ctx); err != nil {
+		// Resume failed: the VM is stranded paused. Tear it down so a dead handle
+		// is not leaked into `live`; the thread re-inits from Postgres on the next
+		// reconcile (snapshots are never load-bearing).
+		_ = d.Release(ctx, h)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after snapshot: %w", err)
 	}
 
@@ -305,6 +309,7 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create base snapshot: %w", err)
 	}
 	if err := inst.client.Resume(ctx); err != nil {
+		_ = d.Release(ctx, h)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after base snapshot: %w", err)
 	}
 	return substrate.SnapshotRef{
