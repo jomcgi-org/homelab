@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -26,6 +27,17 @@ type Config struct {
 	SnapshotRoot string
 	// ReconcileInterval is how often the loop polls desired vs actual state.
 	ReconcileInterval time.Duration
+
+	// FirecrackerBin is the firecracker binary the driver launches
+	// (/opt/kata/bin/firecracker on node-4).
+	FirecrackerBin string
+	// KernelImagePath is the guest kernel (kata vmlinux.container on node-4).
+	KernelImagePath string
+	// RootfsPath is the host path to the thread rootfs block device.
+	RootfsPath string
+	// GuestVCPUs and GuestMemMib size each microVM.
+	GuestVCPUs  int
+	GuestMemMib int
 }
 
 // Load resolves configuration from the environment, applying defaults. It
@@ -37,6 +49,11 @@ func Load() (Config, error) {
 		Arch:              os.Getenv("FC_AGENTD_ARCH"),
 		SnapshotRoot:      getenvDefault("FC_AGENTD_SNAPSHOT_ROOT", "/disks/nvme-02/agent-threads"),
 		ReconcileInterval: 5 * time.Second,
+		FirecrackerBin:    getenvDefault("FC_AGENTD_FIRECRACKER_BIN", "/opt/kata/bin/firecracker"),
+		KernelImagePath:   getenvDefault("FC_AGENTD_KERNEL_IMAGE", "/opt/kata/share/kata-containers/vmlinux.container"),
+		RootfsPath:        os.Getenv("FC_AGENTD_ROOTFS_PATH"),
+		GuestVCPUs:        atoiDefault("FC_AGENTD_GUEST_VCPUS", 1),
+		GuestMemMib:       atoiDefault("FC_AGENTD_GUEST_MEM_MIB", 1024),
 	}
 
 	if c.Node == "" {
@@ -61,6 +78,15 @@ func Load() (Config, error) {
 func getenvDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func atoiDefault(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }
