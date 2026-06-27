@@ -61,6 +61,8 @@ func run(logger *slog.Logger) error {
 	fcDriver := driver.New(driver.Config{
 		KernelImagePath: cfg.KernelImagePath,
 		RootfsPath:      cfg.RootfsPath,
+		BaseRootfsPath:  cfg.BaseRootfsPath,
+		HarnessInit:     cfg.HarnessInit,
 		VCPUs:           cfg.GuestVCPUs,
 		MemMib:          cfg.GuestMemMib,
 		SnapshotRoot:    cfg.SnapshotRoot,

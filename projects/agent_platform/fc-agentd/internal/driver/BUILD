@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "driver.go",
         "launcher.go",
+        "provisioner.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/driver",
     visibility = ["//projects/agent_platform/fc-agentd:__subpackages__"],
@@ -16,7 +17,10 @@ go_library(
 
 go_test(
     name = "driver_test",
-    srcs = ["driver_test.go"],
+    srcs = [
+        "driver_test.go",
+        "provisioner_test.go",
+    ],
     embed = [":driver"],
     deps = ["//projects/agent_platform/substrate"],
 )
