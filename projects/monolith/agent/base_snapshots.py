@@ -74,7 +74,9 @@ def request_rebuild(repo: str, arch: str, main_sha: str) -> dict:
         """
     )
     with Session(get_engine()) as session:
-        row = session.execute(sql, {"base_ref": base_ref, "repo": repo, "arch": arch, "sha": main_sha}).fetchone()
+        row = session.execute(
+            sql, {"base_ref": base_ref, "repo": repo, "arch": arch, "sha": main_sha}
+        ).fetchone()
         session.commit()
     return {
         "base_ref": row.base_ref,

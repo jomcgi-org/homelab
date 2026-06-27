@@ -299,7 +299,9 @@ async def monolith_agent_list_agent_bases() -> dict:
 
 
 @mcp.tool
-async def monolith_agent_request_base_rebuild(repo: str, arch: str, main_sha: str) -> dict:
+async def monolith_agent_request_base_rebuild(
+    repo: str, arch: str, main_sha: str
+) -> dict:
     """Request the controller rebuild a repo's warm base at ``main_sha``.
 
     Call when a repo's main advances. Idempotent: a repeat at the same sha is a
