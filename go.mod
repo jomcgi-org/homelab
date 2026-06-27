@@ -7,6 +7,7 @@ require (
 	github.com/cloudflare/cloudflare-go v0.115.0
 	github.com/google/go-containerregistry v0.20.6
 	github.com/hay-kot/scaffold v0.10.3
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
@@ -45,6 +46,9 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect
