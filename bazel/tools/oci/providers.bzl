@@ -12,6 +12,7 @@ def _oci_image_info_impl(ctx):
     """Write the repository URL to a file and expose OciImageInfo."""
     repo_file = ctx.actions.declare_file(ctx.label.name + ".repository")
     ctx.actions.write(repo_file, ctx.attr.repository)
+
     # ctx.attr.image is intentionally not read here: it exists only so the image
     # (and its bundled tars) sits in this target's dependency graph. That widens
     # the dependency-query closure the chart-version bot walks
