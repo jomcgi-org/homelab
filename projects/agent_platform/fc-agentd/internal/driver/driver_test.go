@@ -163,6 +163,55 @@ func TestDriverRestoreMissingBundleErrors(t *testing.T) {
 	}
 }
 
+// TestDriverWarmBaseStartReusesBaseBundle proves Phase 4's warm-base path: snap
+// a warmed VM to a base bundle, then a new thread claims from that base for an
+// instant ready start (a fresh microVM keyed by its own thread id).
+func TestDriverWarmBaseStartReusesBaseBundle(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+
+	warm, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "warm"})
+	if err != nil {
+		t.Fatalf("Claim warm: %v", err)
+	}
+	baseRef, err := d.SnapshotBase(ctx, warm, "base-homelab-amd64")
+	if err != nil {
+		t.Fatalf("SnapshotBase: %v", err)
+	}
+	if !baseRef.Base || baseRef.ID != "base-homelab-amd64" || baseRef.SizeBytes == 0 {
+		t.Fatalf("unexpected base ref: %+v", baseRef)
+	}
+	if err := d.Release(ctx, warm); err != nil {
+		t.Fatalf("Release warm: %v", err)
+	}
+
+	// New thread starts from the base.
+	h, err := d.Claim(ctx, substrate.ClaimSpec{
+		ThreadID:        "fresh",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "base-homelab-amd64", Arch: "amd64", Base: true},
+	})
+	if err != nil {
+		t.Fatalf("Claim from base: %v", err)
+	}
+	if h.ThreadID != "fresh" {
+		t.Fatalf("base-started thread id = %q, want fresh", h.ThreadID)
+	}
+	if d.LiveCount() != 1 {
+		t.Fatalf("LiveCount = %d, want 1", d.LiveCount())
+	}
+}
+
+func TestDriverClaimFromMissingBaseErrors(t *testing.T) {
+	d := testDriver(t)
+	_, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        "x",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "ghost-base", Arch: "amd64", Base: true},
+	})
+	if err == nil {
+		t.Fatal("claim from a non-existent base bundle should error")
+	}
+}
+
 func TestDriverExecNotHostProvided(t *testing.T) {
 	d := testDriver(t)
 	if _, err := d.Exec(context.Background(), substrate.Handle{}, substrate.Request{}); err == nil {

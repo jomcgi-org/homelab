@@ -135,20 +135,70 @@ func (d *Driver) memfilePath(threadID string) string {
 	return filepath.Join(d.threadDir(threadID), "memfile")
 }
 
+// baseDir is the bundle directory for a warm base, keyed by an opaque base key
+// (one per repo env-image version). Bases live under bases/ so they are never
+// confused with per-thread bundles and survive thread GC.
+func (d *Driver) baseDir(key string) string {
+	return filepath.Join(d.cfg.SnapshotRoot, "bases", key)
+}
+
+func (d *Driver) baseSnapfile(key string) string { return filepath.Join(d.baseDir(key), "snapfile") }
+func (d *Driver) baseMemfile(key string) string  { return filepath.Join(d.baseDir(key), "memfile") }
+
+// loadInto launches a fresh Firecracker process for threadID and restores it
+// from the given snapfile + memfile (File backend, resume). Used by both
+// thread-snapshot restore and warm-base restore.
+func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
+	dir := d.threadDir(threadID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
+	}
+	sock := filepath.Join(dir, sockName)
+	_ = os.Remove(sock)
+	vmID := newID("vm")
+
+	proc, err := d.launcher.Launch(ctx, vmID, sock)
+	if err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
+	}
+	client := d.newClient(sock)
+	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
+		SnapshotPath: snapPath,
+		MemBackend:   &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
+		ResumeVM:     true,
+	}); err != nil {
+		return d.abort(proc, err)
+	}
+	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
+	return h, nil
+}
+
 // Claim boots a microVM. With a BaseSnapshotRef it restores from that warm base
 // for an instant ready start; otherwise it cold-boots from the kernel + rootfs.
 func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
 	if spec.Arch != "" && d.cfg.Arch != "" && spec.Arch != d.cfg.Arch {
 		return substrate.Handle{}, fmt.Errorf("driver: arch mismatch: spec %q != node %q (snapshots non-portable)", spec.Arch, d.cfg.Arch)
 	}
-	if spec.BaseSnapshotRef.ID != "" {
-		return d.Restore(ctx, spec.BaseSnapshotRef)
-	}
-
 	threadID := spec.ThreadID
 	if threadID == "" {
 		threadID = newID("thread")
 	}
+
+	// Warm-base start: restore the new thread from a base bundle for an instant
+	// ready start, skipping boot + harness init.
+	if spec.BaseSnapshotRef.ID != "" {
+		ref := spec.BaseSnapshotRef
+		if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
+			return substrate.Handle{}, fmt.Errorf("driver: base arch mismatch: ref %q != node %q", ref.Arch, d.cfg.Arch)
+		}
+		snap := d.baseSnapfile(ref.ID)
+		if _, err := os.Stat(snap); err != nil {
+			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
+		}
+		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
+	}
+
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -227,32 +277,55 @@ func (d *Driver) Restore(ctx context.Context, ref substrate.SnapshotRef) (substr
 		return substrate.Handle{}, errors.New("driver: restore requires a ThreadID on the ref")
 	}
 	snapPath := d.snapfilePath(threadID)
-	memPath := d.memfilePath(threadID)
 	if _, err := os.Stat(snapPath); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: snapshot bundle missing for thread %q: %w", threadID, err)
 	}
+	return d.loadInto(ctx, threadID, snapPath, d.memfilePath(threadID), "restore.sock")
+}
 
-	dir := d.threadDir(threadID)
-	sock := filepath.Join(dir, "restore.sock")
-	_ = os.Remove(sock)
-	vmID := newID("vm")
-
-	proc, err := d.launcher.Launch(ctx, vmID, sock)
-	if err != nil {
-		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
+// SnapshotBase captures a warmed microVM into a shared base bundle keyed by
+// baseKey (one per repo env-image version). New threads restore from it for an
+// instant ready start. Like Snapshot it pauses, writes, and resumes.
+func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey string) (substrate.SnapshotRef, error) {
+	inst := d.get(h.ID)
+	if inst == nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-base of unknown handle %q", h.ID)
 	}
-	client := d.newClient(sock)
-	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
-		SnapshotPath: snapPath,
-		MemBackend:   &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
-		ResumeVM:     true,
-	}); err != nil {
-		return d.abort(proc, err)
+	if err := os.MkdirAll(d.baseDir(baseKey), 0o750); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base bundle: %w", err)
 	}
+	snapPath := d.baseSnapfile(baseKey)
+	memPath := d.baseMemfile(baseKey)
 
-	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
-	return h, nil
+	if err := inst.client.Pause(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath}); err != nil {
+		_ = inst.client.Resume(ctx)
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create base snapshot: %w", err)
+	}
+	if err := inst.client.Resume(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after base snapshot: %w", err)
+	}
+	return substrate.SnapshotRef{
+		ID:        baseKey,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		Base:      true,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}, nil
+}
+
+// RemoveBaseBundle deletes a warm base's on-disk bundle (when a base is
+// superseded by a newer env-image version).
+func (d *Driver) RemoveBaseBundle(baseKey string) error {
+	if baseKey == "" {
+		return fmt.Errorf("driver: RemoveBaseBundle requires a baseKey")
+	}
+	if err := os.RemoveAll(d.baseDir(baseKey)); err != nil {
+		return fmt.Errorf("driver: remove base bundle: %w", err)
+	}
+	return nil
 }
 
 // Exec is provided by the in-VM harness over the wrapper channel (Phase 2); the
