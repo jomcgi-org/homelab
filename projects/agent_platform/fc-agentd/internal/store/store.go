@@ -32,6 +32,9 @@ type Thread struct {
 	CreatedAt         time.Time
 	LastActiveAt      time.Time
 	TTLSeconds        int
+	// Recipe and Task are the work assignment delivered to the guest over vsock.
+	Recipe string
+	Task   string
 	// WakeRequestedAt is non-zero when a caller has asked an IDLE thread to be
 	// restored (the one piece of desired state callers set). Zero means no
 	// pending wake.
@@ -103,6 +106,7 @@ const threadColumns = `thread_id, state, repo, branch, node, arch,
 		COALESCE(base_snapshot_ref, ''), COALESCE(thread_snapshot_ref, ''),
 		COALESCE(size_bytes, 0), COALESCE(discord_thread, ''),
 		created_at, last_active_at, COALESCE(ttl_secs, 0),
+		COALESCE(recipe, ''), COALESCE(task, ''),
 		COALESCE(wake_requested_at, 'epoch'::timestamptz)`
 
 func (s *Store) queryThreads(ctx context.Context, where string, args ...any) ([]Thread, error) {
@@ -118,7 +122,8 @@ func (s *Store) queryThreads(ctx context.Context, where string, args ...any) ([]
 		if err := rows.Scan(
 			&t.ThreadID, &t.State, &t.Repo, &t.Branch, &t.Node, &t.Arch,
 			&t.BaseSnapshotRef, &t.ThreadSnapshotRef, &t.SizeBytes, &t.DiscordThread,
-			&t.CreatedAt, &t.LastActiveAt, &t.TTLSeconds, &t.WakeRequestedAt,
+			&t.CreatedAt, &t.LastActiveAt, &t.TTLSeconds,
+			&t.Recipe, &t.Task, &t.WakeRequestedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan thread: %w", err)
 		}

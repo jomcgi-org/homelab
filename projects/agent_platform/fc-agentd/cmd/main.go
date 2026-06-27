@@ -71,11 +71,12 @@ func run(logger *slog.Logger) error {
 	}, &driver.ExecLauncher{Bin: cfg.FirecrackerBin}, nil)
 
 	loop := &reconcile.Loop{
-		Executor:  fcDriver,
-		Reclaimer: fcDriver,
-		Node:      cfg.Node,
-		Interval:  cfg.ReconcileInterval,
-		Logger:    logger,
+		Executor:   fcDriver,
+		Reclaimer:  fcDriver,
+		Node:       cfg.Node,
+		Interval:   cfg.ReconcileInterval,
+		Logger:     logger,
+		ControlUDS: fcDriver.VsockUDSPath,
 	}
 
 	if cfg.DatabaseURL != "" {
