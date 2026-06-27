@@ -21,6 +21,7 @@ import (
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/harness"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/idle"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/reconnect"
+	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/vsockdial"
 	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
 )
 
@@ -51,47 +52,88 @@ func run(logger *slog.Logger) error {
 	// harness image's client config); the manager + ordering live here.
 	rec := &reconnect.Manager{Attempts: 5, Backoff: 200 * time.Millisecond}
 
-	// Launch the harness. The command is the wrapper's argv after a "--", or the
-	// FC_HARNESS_CMD env. With neither, idle/reconnect still run (useful for a
-	// warm-base boot that has no task yet).
-	harness := harnessCommand()
+	// Connect to the controller over vsock. On cluster this is the guest's only
+	// channel to the host; off-cluster (no host listener) it returns nil and we
+	// fall back to env/argv so the binary still exercises cleanly.
+	conn := dialController(ctx, logger)
+	if conn != nil {
+		defer conn.Close()
+	}
+
+	// Determine the work. A raw FC boot gives PID 1 no env, so the task arrives
+	// over vsock (Hello -> Assign). Fall back to env/argv when there is no
+	// controller (tests, a warm-base probe with no task yet).
+	harnessArgv := assignedHarness(logger, conn, threadID)
+	if harnessArgv == nil {
+		harnessArgv = harnessCommand()
+	}
+
 	var harnessProc *exec.Cmd
-	if len(harness) > 0 {
-		harnessProc = exec.CommandContext(ctx, harness[0], harness[1:]...)
+	if len(harnessArgv) > 0 {
+		harnessProc = exec.CommandContext(ctx, harnessArgv[0], harnessArgv[1:]...)
 		harnessProc.Stdout = os.Stdout
 		harnessProc.Stderr = os.Stderr
 		harnessProc.Env = os.Environ()
 		if err := harnessProc.Start(); err != nil {
 			return err
 		}
-		logger.Info("harness started", "argv", harness)
+		logger.Info("harness started", "argv", harnessArgv)
 	}
 
-	// Connect to the controller. Without a transport configured (off-cluster),
-	// run the idle loop without a channel so the binary still exercises cleanly.
-	conn := dialController(logger)
 	if conn != nil {
-		defer conn.Close()
 		go serveControl(ctx, logger, conn, rec, threadID)
-	}
-
-	go det.Run(ctx, time.Second, func(wake vsockproto.WakeCondition) {
-		logger.Info("idle boundary reached; signalling controller", "wake", string(wake))
-		if conn != nil {
+		go det.Run(ctx, time.Second, func(wake vsockproto.WakeCondition) {
+			logger.Info("idle boundary reached; signalling controller", "wake", string(wake))
 			if err := conn.Send(vsockproto.Message{Kind: vsockproto.KindIdle, ThreadID: threadID, Wake: wake}); err != nil {
 				logger.Warn("failed to send idle signal", "err", err)
 			}
-		}
-	})
+		})
+	}
 
 	// Block until shutdown or the harness exits.
 	if harnessProc != nil {
 		err := harnessProc.Wait()
 		logger.Info("harness exited", "err", err)
+		if conn != nil {
+			status := "ok"
+			if err != nil {
+				status = err.Error()
+			}
+			if serr := conn.Send(vsockproto.Message{Kind: vsockproto.KindDone, ThreadID: threadID, Status: status}); serr != nil {
+				logger.Warn("failed to send done signal", "err", serr)
+			}
+		}
 		return nil
 	}
 	<-ctx.Done()
 	return nil
+}
+
+// assignedHarness performs the control-channel handshake: announce Hello, wait
+// for the controller's Assign, and build the harness command from it. Returns
+// nil if there is no controller or no usable assignment, so the caller falls
+// back to env/argv.
+func assignedHarness(logger *slog.Logger, conn *vsockproto.Conn, threadID string) []string {
+	if conn == nil {
+		return nil
+	}
+	if err := conn.Send(vsockproto.Message{Kind: vsockproto.KindHello, ThreadID: threadID}); err != nil {
+		logger.Warn("failed to announce hello", "err", err)
+		return nil
+	}
+	// Blocking read: the controller replies with Assign immediately after Hello.
+	// This is the only reader until serveControl starts, so there is no race.
+	msg, err := conn.Recv()
+	if err != nil {
+		logger.Warn("failed to receive task assignment", "err", err)
+		return nil
+	}
+	if msg.Kind != vsockproto.KindAssign {
+		logger.Warn("expected task assignment, got other message", "kind", string(msg.Kind))
+		return nil
+	}
+	logger.Info("task assignment received", "recipe", msg.Recipe)
+	return harness.GooseCommand(harness.Config{Recipe: msg.Recipe, Task: msg.Task})
 }
 
 // serveControl handles host->guest messages: on a wake, reconnect then ack.
@@ -140,16 +182,29 @@ func harnessCommand() []string {
 	return nil
 }
 
-// dialController returns a framed connection to the host controller, or nil if
-// no transport is configured. Real vsock dialing is host-kernel specific and is
-// finalized in Phase 5; until then this is a no-op off-cluster.
-func dialController(logger *slog.Logger) *vsockproto.Conn {
-	if os.Getenv("FC_CONTROLLER_VSOCK") == "" {
-		logger.Info("no controller transport configured; idle/reconnect run locally")
-		return nil
+// dialController opens the control channel to the host over vsock (host CID 2,
+// ControlPort). It retries briefly: the guest can boot to this point before the
+// controller has its per-thread listener ready, so connection-refused is normal
+// for the first attempts. It returns nil when no controller answers (off-cluster
+// or no vsock device), and the caller then runs from env/argv with no channel.
+func dialController(ctx context.Context, logger *slog.Logger) *vsockproto.Conn {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rwc, err := vsockdial.Dial(vsockproto.HostCID, vsockproto.ControlPort)
+		if err == nil {
+			logger.Info("controller control channel connected", "port", vsockproto.ControlPort)
+			return vsockproto.NewConn(rwc)
+		}
+		if time.Now().After(deadline) {
+			logger.Info("no controller on vsock; idle/reconnect run locally", "err", err)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
-	logger.Warn("vsock transport configured but dialing is finalized in Phase 5")
-	return nil
 }
 
 func durationEnv(key string, def time.Duration) time.Duration {
