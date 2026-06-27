@@ -4,6 +4,7 @@
 **Status:** Accepted
 **Created:** 2026-06-21
 **Revisits:** [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md) (its dismissal of warm pools as "not load-bearing")
+**Superseded in part:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) decision 6 drops the `AgentWorkflow` (Argo Workflows) hot-path framing for the snapshot-managed agent-thread tier, in favour of the Postgres-reconcile controller (the `job-mcp` branch). Argo Workflows is retained only for batch CronWorkflows and optional future multi-agent DAG fan-out above the controller.
 **Builds on:** [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md) (the executor abstraction, not its rejected implementations), [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)
 
 ---
