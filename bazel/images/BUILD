@@ -41,6 +41,7 @@ multirun(
     commands = [
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
+        "//projects/agent_platform/fc-agentd:image.push",
         "//projects/grimoire/api:image.push",
         "//projects/grimoire/frontend:image.push",
         "//projects/grimoire/ws-gateway:image.push",
