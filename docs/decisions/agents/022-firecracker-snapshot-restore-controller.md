@@ -25,7 +25,7 @@ So the task is to build a thin controller on the Firecracker primitive we alread
 
 ## Decision
 
-Four decisions.
+Five decisions.
 
 **1. Build a thin Kubernetes controller for the snapshot/restore lifecycle.** No reusable component exists. The controller is the `Snapshotable` executor behind ADR 019's `Substrate` interface and the engine behind 021's idle-thread smoothness. It is keyed by a **stable thread ID** that outlives every microVM and correlates the Discord thread, the Postgres task state, and the snapshot refs.
 
@@ -34,6 +34,8 @@ Four decisions.
 **3. Firecracker, not gVisor.** GKE's self-hostable-shaped reference uses gVisor checkpoint/restore, which is lighter, but gVisor is userspace-kernel isolation (weaker than a hardware microVM boundary) and slower in practice for this workload. For untrusted/agentic code the microVM boundary is the right bar, and the substrate is already live. gVisor is rejected.
 
 **4. Port E2B's open-source architecture rather than invent.** E2B's `e2b-dev/infra` (Apache-2.0 Go) implements our exact semantic: a snapshot bundle of a memory diff + a rootfs disk diff + the Firecracker snapfile, an explicit pause/resume lifecycle with idle auto-pause (an evictor and an autoresume path that returns the target node for routing), and UFFD lazy-paging resume (5 to 30 ms). It is coupled to Nomad/Consul, so we port the architecture, not import a library; the hard parts (diff bundle format, UFFD wiring, resume-then-resnapshot) are reference-able rather than guessed.
+
+**5. Control plane and registry in Postgres, not a Kubernetes CRD.** Thread state (id, lifecycle state, node, snapshot refs, TTL) lives in a Postgres table in the monolith, and the controller is a **Postgres-reconcile loop** (a node-4 daemon reads desired state, drives Firecracker, writes actual state back), not a CRD-watch operator. Reason: a CRD puts high-churn agent-thread state in the shared etcd, the exact ceiling ADR 019 raised as the reason to tier by volume. Postgres keeps the many-idle-threads churn off the cluster control plane entirely and matches the homelab's existing monolith-centric registries (scheduler, routine jobs); the catalog (list/view/resume) reads the same table via the monolith MCP and UI.
 
 | Aspect            | Today (019/021 MVP)                        | Decided (this ADR)                             |
 | ----------------- | ------------------------------------------ | ---------------------------------------------- |
@@ -95,7 +97,7 @@ Snapshot create (~822 ms) happens off the user-facing hot path (the thread is id
 
 **Delegated** (not built): Firecracker `Pause`/`CreateSnapshot`/`LoadSnapshot`+resume and full memory/device/vCPU capture; the memfile + rootfs-diff bundle format and UFFD lazy-paging fast resume (ported/learned from E2B); the microVM + devmapper rootfs substrate (kata-fc work, containerd).
 
-**Owned** by the controller (what nothing upstream gives us): (1) idle detection per thread (turn boundaries, CI/human waits); (2) snapshot-on-idle hook (pause then create, only at quiescent boundaries); (3) snapshot storage + garbage collection (diff retention, TTL/idle eviction); (4) restore routing / wake-on-request; (5) node and CPU-arch affinity pinning (FC snapshots are non-portable); (6) guest-network and connection re-establishment after restore; (7) Argo AgentWorkflow dispatch via the thin Substrate interface, plus a catalog/registry to list, view, and resume threads.
+**Owned, split across two components.** An in-microVM **wrapper** (the VM's supervisor, launching the agent) owns what only something inside the guest can observe: idle detection (no activity AND quiescent, meaning no in-flight model/MCP call), signalling the controller when it is safe to snapshot, and re-establishing connections on resume. The out-of-VM **controller** (the Postgres-reconcile daemon on node-4) owns: the snapshot-on-idle and restore mechanics (driving Firecracker), snapshot storage + garbage collection (TTL/idle eviction), restore routing / wake-on-request, node and CPU-arch affinity pinning (FC snapshots are non-portable), the Postgres registry + catalog (list/view/resume), and Argo AgentWorkflow dispatch via the thin Substrate interface. A periodic **backstop** (a scheduled Goose routine over the registry) parks or alerts threads the wrapper missed and drives the per-repo warm-base refresh.
 
 ---
 
@@ -138,14 +140,10 @@ Baseline in `docs/security.md`. Notes specific to this controller:
 
 ## Open Questions
 
-Answered during execution, not gates on the decision.
+The execution-level questions are settled and recorded in the implementation plan (`docs/plans/2026-06-27-firecracker-snapshot-restore-controller.md`): full snapshots first with diffs as a fast follow; the registry in Postgres (decision 5); idle detection via the in-VM wrapper with a Goose-routine timeout backstop; two repo-specific warm bases rebuilt every 15 to 30 minutes when `main` advances. What remains genuinely open:
 
-1. Snapshot bundle specifics: full vs diff snapshots, where the base lives, and the on-disk layout (port from E2B vs simplify for homelab scale).
-2. Registry home: a Kubernetes CRD + controller, a Postgres table surfaced through the monolith MCP/UI (mirroring the scheduler/routine-jobs registry), or both (CRD for k8s-native ops, mirrored to Postgres for the catalog UI).
-3. Idle detection mechanism: agent-signaled (the harness declares "waiting on CI/human") vs an idle timeout vs an AgentWorkflow step boundary.
-4. Base-snapshot warming depth: harness-only vs harness plus a repo/package cache; deeper is faster to ready but less reusable across repos.
-5. Scale characteristics (deferred, homelab-fine for now; revisit before any open-sourcing): diff sizes per idle thread, GC budget, restore p50/p99 under contention, arch-affine bin-packing across a future multi-node same-ISA pool.
-6. When to revisit FC-direct vs firecracker-containerd / a patched kata-fc shim, if kubelet-managed pod semantics become worth the integration.
+1. Scale characteristics (deferred, homelab-fine for now; revisit before any open-sourcing): diff sizes per idle thread, GC budget, restore p50/p99 under contention, arch-affine bin-packing across a future multi-node same-ISA pool.
+2. When to revisit FC-direct vs firecracker-containerd / a patched kata-fc shim, if kubelet-managed pod semantics become worth the integration.
 
 ---
 
