@@ -4,3 +4,12 @@
 smokeTest:
   enabled: false
   image: docker.io/library/busybox:1.37
+
+# PVC-persistence derisk: a kata-fc pod writes to a Longhorn (block-backed) PVC;
+# the data survives the pod being replaced (the ADR 021 filesystem-state model -
+# tear down the microVM, keep the volume, resume on a fresh one). Real per-thread
+# volumes size to the repo working tree (Longhorn allowVolumeExpansion=true).
+pvcDerisk:
+  enabled: true
+  image: docker.io/library/busybox:1.37
+  size: 1Gi
