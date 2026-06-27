@@ -19,7 +19,7 @@ actions:
       - run: |
           # Skip automated commits to avoid loops
           AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "argocd-image-updater" ] || [ "$AUTHOR" = "ci-format-bot" ]; then
+          if [ "$AUTHOR" = "ci-format-bot" ]; then
             echo "Skipping automated commit from $AUTHOR"
             exit 0
           fi
@@ -82,13 +82,6 @@ actions:
         merge_with_base: false
     steps:
       - run: |
-          # Skip automated commits (no code to test)
-          AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "argocd-image-updater" ]; then
-            echo "Skipping automated commit from $AUTHOR"
-            exit 0
-          fi
-
           # Authenticate Docker Hub so rules_oci base-image manifest fetches
           # (ubuntu, osgeo/gdal, python_base, ...) are not subject to the
           # anonymous ~100-pull/6h quota, which 429s and aborts the build.
@@ -151,12 +144,6 @@ actions:
         merge_with_base: false
     steps:
       - run: |
-          # Skip automated commits (no code to test)
-          AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "argocd-image-updater" ]; then
-            echo "Skipping automated commit from $AUTHOR"
-            exit 0
-          fi
           # grep '^//' keeps only real target labels. The bb CLI interleaves its
           # own operational log lines (connection warnings, a capabilities JSON
           # blob) into stdout, which transient proxy resets make frequent; without
@@ -176,9 +163,9 @@ actions:
           bazel test $TARGETS --config=ci --deleted_packages=bazel/tools/python
 
   # Push images — runs in parallel with Test (no dependency).
-  # PR images are tagged with the source branch name (not "main"),
-  # so ArgoCD Image Updater ignores them. This ensures image builds are
-  # verified before merge. PR merge is still gated on Test passing.
+  # PR images are tagged with the source branch name (not "main") so they do not
+  # touch the main rollout. This ensures image builds are verified before merge.
+  # PR merge is still gated on Test passing.
   - name: "Push images"
     container_image: "ubuntu-24.04"
     max_retries: 1
@@ -196,13 +183,6 @@ actions:
         merge_with_base: false
     steps:
       - run: |
-          # Skip automated commits (digest-only bumps, nothing to push)
-          AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "argocd-image-updater" ]; then
-            echo "Skipping automated commit from $AUTHOR"
-            exit 0
-          fi
-
           # GHCR_TOKEN set in BuildBuddy Settings → Secrets
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
 
@@ -228,13 +208,6 @@ actions:
           - "main"
     steps:
       - run: |
-          # Skip automated commits (digest-only bumps, no pages to deploy)
-          AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "argocd-image-updater" ]; then
-            echo "Skipping automated commit from $AUTHOR"
-            exit 0
-          fi
-
           # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID set in BuildBuddy Settings → Secrets
           bazel run //projects/websites:push_all_pages --config=ci
 
@@ -276,12 +249,11 @@ actions:
       # rules). apt is run with sudo only when not already root. bazel builds are
       # not piped through `tail`, so a build failure propagates under `set -e`.
       - run: |
-          # Skip the baseline bot's own push and digest-only image-updater
-          # commits. NOT ci-format-bot: its commit is the PR head, so we must
-          # screenshot it or the head shows a stale result.
+          # Skip the baseline bot's own push. NOT ci-format-bot: its commit is the
+          # PR head, so we must screenshot it or the head shows a stale result.
           AUTHOR="$(git log -1 --format='%an')"
           case "$AUTHOR" in
-            visual-baseline-bot|argocd-image-updater)
+            visual-baseline-bot)
               echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
           esac
 
@@ -378,13 +350,6 @@ actions:
       # with sudo only when not already root, so it works regardless of how the
       # BuildBuddy runner is provisioned.
       - run: |
-          # Skip bot commits with nothing to build (NOT ci-format-bot — its commit
-          # is the PR head, so we must build it or the head shows a false green).
-          AUTHOR="$(git log -1 --format='%an')"
-          case "$AUTHOR" in
-            argocd-image-updater) echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
-          esac
-
           set -eu
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 

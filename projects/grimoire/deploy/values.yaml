@@ -1,24 +1,5 @@
 # Development overrides for grimoire
 
-# ArgoCD Image Updater
-imageUpdater:
-  enabled: true
-  images:
-    - alias: frontend
-      imageName: ghcr.io/jomcgi/homelab/projects/grimoire/frontend:main
-      helm:
-        name: frontend.image.repository
-        tag: frontend.image.tag
-    - alias: ws-gateway
-      imageName: ghcr.io/jomcgi/homelab/projects/grimoire/ws-gateway:main
-      helm:
-        name: wsGateway.image.repository
-        tag: wsGateway.image.tag
-  writeBack:
-    method: git:secret:argocd/argocd-image-updater-token
-    repository: https://github.com/jomcgi/homelab.git
-    branch: main
-    target: helmvalues:projects/grimoire/deploy/values.yaml
 # Enable image pull secret for GHCR
 imagePullSecret:
   enabled: true

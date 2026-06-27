@@ -26,13 +26,16 @@ hfToken:
   type: "onepassword"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/oci-model-cache"
-imageUpdater:
-  enabled: false
 extraResources:
   - apiVersion: onepassword.com/v1
     kind: OnePasswordItem
     metadata:
       name: ghcr-pull-secret
     spec:
+      # GHCR pull credentials (dockerconfigjson) for the operator's image pulls.
+      # The 1Password item is named "argocd-image-updater" for historical reasons
+      # only; it is unrelated to the now-decommissioned image-updater controller.
+      # Follow-up: repoint to the canonical "ghcr-read-permissions" item, then the
+      # legacy 1Password item can be deleted (verify pulls before removing it).
       itemPath: "vaults/k8s-homelab/items/argocd-image-updater"
     type: "kubernetes.io/dockerconfigjson"

@@ -124,13 +124,4 @@ webhook:
   # -- Issuer kind: "Issuer" (namespace) or "ClusterIssuer"
   certIssuerKind: ""
 
-imageUpdater:
-  enabled: false
-  images: []
-  writeBack:
-    method: ""
-    repository: ""
-    branch: main
-    target: ""
-
 extraResources: []
