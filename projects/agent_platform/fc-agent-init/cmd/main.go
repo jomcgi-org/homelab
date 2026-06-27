@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/harness"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/idle"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/reconnect"
 	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
@@ -123,6 +124,15 @@ func harnessCommand() []string {
 		if a == "--" {
 			return os.Args[i+1:]
 		}
+	}
+	// Goose mode (Plan B): a turn-capped recipe run is the agent harness. The
+	// recipe's own max_turns bounds it and the between-turns boundary is what the
+	// idle detector snapshots on.
+	if g := harness.GooseCommand(harness.Config{
+		Recipe: os.Getenv("FC_GOOSE_RECIPE"),
+		Task:   os.Getenv("FC_TASK"),
+	}); g != nil {
+		return g
 	}
 	if cmd := os.Getenv("FC_HARNESS_CMD"); cmd != "" {
 		return []string{"/bin/sh", "-c", cmd}
