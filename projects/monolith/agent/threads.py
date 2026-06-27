@@ -89,7 +89,12 @@ def request_resume(thread_id: str) -> dict:
         row = session.execute(sql, {"thread_id": thread_id}).fetchone()
         session.commit()
     if row is not None:
-        return {"ok": True, "thread_id": thread_id, "state": "IDLE", "wake_requested": True}
+        return {
+            "ok": True,
+            "thread_id": thread_id,
+            "state": "IDLE",
+            "wake_requested": True,
+        }
 
     current = get_thread(thread_id)
     if current is None:
