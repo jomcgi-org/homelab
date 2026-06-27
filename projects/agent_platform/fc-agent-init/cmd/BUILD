@@ -9,6 +9,7 @@ go_library(
         "//projects/agent_platform/fc-agent-init/internal/harness",
         "//projects/agent_platform/fc-agent-init/internal/idle",
         "//projects/agent_platform/fc-agent-init/internal/reconnect",
+        "//projects/agent_platform/fc-agent-init/internal/vsockdial",
         "//projects/agent_platform/vsockproto",
     ],
 )
