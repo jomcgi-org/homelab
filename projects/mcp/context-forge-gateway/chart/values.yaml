@@ -101,3 +101,28 @@ httpRoute:
   gatewayRef:
     name: cloudflare-ingress
     namespace: envoy-gateway-system
+
+# Periodic tool-catalog refresh. CF does not auto-discover new monolith MCP
+# tools (its health-gated auto-refresh never fires for the SSE monolith gateway,
+# whose last_seen never advances under the streamablehttp health tick), so a
+# CronJob POSTs the gateways/<id>/tools/refresh admin endpoint on a schedule.
+# Reuses the gateway image (bundles mcpgateway + httpx) and the context-forge
+# secret (JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL) to mint a short-lived admin JWT.
+toolRefresh:
+  enabled: true
+  # Every 10 minutes: tool changes follow a monolith rollout, not a tight loop.
+  schedule: "*/10 * * * *"
+  # Cap each run's lifetime so a hung refresh pod cannot linger.
+  activeDeadlineSeconds: 120
+  # Gateway whose catalog to refresh, matched by name via the gateways API.
+  gatewayName: monolith
+  image:
+    repository: ghcr.io/ibm/mcp-context-forge
+    tag: "v1.0.0-RC1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      memory: 128Mi
