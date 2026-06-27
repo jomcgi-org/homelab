@@ -29,6 +29,7 @@ ADRs document significant architectural decisions and their context.
 | [020 - Deprecate Context Forge](agents/020-deprecate-context-forge-mcp-gateway.md)                                       | Remove the MCP gateway; serve the monolith's MCP directly (auth stays at the Cloudflare edge). Supersedes 003. Validated plan, deferred execution                                                                                              |
 | [021 - Discord-Triggered AgentWorkflow with Fast Hosted Model](agents/021-discord-triggered-agentworkflow-fast-model.md) | Discord bot (qwen gate) as a new AgentWorkflow consumer riding 019's submit path; fast hosted model (Gemini 3.5 Flash) over an OpenAI-compatible seam; snapshot/resume for smooth many-thread work. Draft                                      |
 | [022 - Firecracker Snapshot/Restore Controller for AgentWorkflow](agents/022-firecracker-snapshot-restore-controller.md) | Build a thin k8s controller (no turnkey OSS exists); FC-direct, porting E2B's architecture; controller owns idle-detect/snapshot/GC/restore-routing/affinity/reconnect, delegates snapshot to Firecracker. Feasibility derisked (28ms restore) |
+| [023 - Egress Secret Proxy for Agent Sandboxes](agents/023-egress-secret-proxy.md) | Guest holds only placeholders; real secrets swapped in at the vsock 1025 egress hop (not eBPF: microVM has its own kernel, Go has no OpenSSL). Per-secret allowlist is the exfil control. v1 = TLS-terminating sidecar in the fc-agentd DaemonSet; CRD/operator deferred. Draft |
 
 ## Docs
 
