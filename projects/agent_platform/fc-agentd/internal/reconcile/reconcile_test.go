@@ -76,6 +76,19 @@ func (f *fakeRegistry) SetState(_ context.Context, id string, st substrate.State
 	return nil
 }
 
+func (f *fakeRegistry) SetThreadSnapshot(_ context.Context, id, ref string, sizeBytes int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t, ok := f.threads[id]; ok {
+		t.State = substrate.StateIdle
+		t.ThreadSnapshotRef = ref
+		t.SizeBytes = sizeBytes
+		t.WakeRequestedAt = time.Time{}
+		t.LastActiveAt = time.Now()
+	}
+	return nil
+}
+
 func (f *fakeRegistry) ClearWake(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -104,12 +117,13 @@ func (f *fakeRegistry) state(id string) substrate.State {
 
 // fakeExec is an in-memory executor + reclaimer.
 type fakeExec struct {
-	mu       sync.Mutex
-	claims   int
-	restores int
-	releases int
-	removed  []string
-	failNext error
+	mu        sync.Mutex
+	claims    int
+	restores  int
+	releases  int
+	snapshots int
+	removed   []string
+	failNext  error
 }
 
 func (e *fakeExec) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
@@ -138,6 +152,15 @@ func (e *fakeExec) Release(_ context.Context, _ substrate.Handle) error {
 	return nil
 }
 
+// Snapshot makes fakeExec satisfy substrate.Snapshotable so snapshot-on-idle is
+// exercised.
+func (e *fakeExec) Snapshot(_ context.Context, h substrate.Handle) (substrate.SnapshotRef, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.snapshots++
+	return substrate.SnapshotRef{ID: "snap-" + h.ThreadID, ThreadID: h.ThreadID, Node: h.Node, SizeBytes: 1024}, nil
+}
+
 func (e *fakeExec) RemoveBundle(threadID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -163,6 +186,32 @@ func TestReconcileCreatesPending(t *testing.T) {
 	}
 	if l.LiveThreads() != 1 {
 		t.Fatalf("live = %d, want 1", l.LiveThreads())
+	}
+}
+
+func TestReconcileSnapshotsOnIdle(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	ctx := context.Background()
+	// Claim it so it is live + RUNNING.
+	l.reconcileOnce(ctx, testLogger())
+	if l.LiveThreads() != 1 {
+		t.Fatalf("live = %d, want 1 before idle", l.LiveThreads())
+	}
+	// An idle boundary snapshots the VM, records it as the IDLE form, and releases.
+	l.snapshotIdle(ctx, testLogger(), idleEvent{threadID: "t1"})
+	if ex.snapshots != 1 {
+		t.Fatalf("snapshots = %d, want 1", ex.snapshots)
+	}
+	if ex.releases != 1 {
+		t.Fatalf("releases = %d, want 1", ex.releases)
+	}
+	if reg.state("t1") != substrate.StateIdle {
+		t.Fatalf("state = %q, want IDLE", reg.state("t1"))
+	}
+	if l.LiveThreads() != 0 {
+		t.Fatalf("live = %d, want 0 after snapshot", l.LiveThreads())
 	}
 }
 

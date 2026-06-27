@@ -28,6 +28,7 @@ type Registry interface {
 	ListWakeRequestedForNode(ctx context.Context, node string) ([]store.Thread, error)
 	ListIdleExpiredForNode(ctx context.Context, node string) ([]store.Thread, error)
 	SetState(ctx context.Context, threadID string, state substrate.State) error
+	SetThreadSnapshot(ctx context.Context, threadID, ref string, sizeBytes int64) error
 	ClearWake(ctx context.Context, threadID string) error
 	Delete(ctx context.Context, threadID string) error
 }
@@ -61,6 +62,15 @@ type Loop struct {
 
 	live    map[string]substrate.Handle   // threadID -> live microVM handle
 	control map[string]context.CancelFunc // threadID -> cancel its control server
+	idle    chan idleEvent                // guest idle boundaries, handled on the loop goroutine
+}
+
+// idleEvent is a guest's quiescent idle-boundary signal, delivered from a
+// control-server goroutine to the loop goroutine so the snapshot runs without
+// racing the loop's live/control maps.
+type idleEvent struct {
+	threadID string
+	wake     vsockproto.WakeCondition
 }
 
 // Run ticks until ctx is cancelled. It returns nil on graceful shutdown.
@@ -74,6 +84,9 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 	if l.control == nil {
 		l.control = make(map[string]context.CancelFunc)
+	}
+	if l.idle == nil {
+		l.idle = make(chan idleEvent, 32)
 	}
 	interval := l.Interval
 	if interval <= 0 {
@@ -92,8 +105,44 @@ func (l *Loop) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			l.reconcileOnce(ctx, log)
+		case ev := <-l.idle:
+			l.snapshotIdle(ctx, log, ev)
 		}
 	}
+}
+
+// snapshotIdle captures a thread's microVM at a quiescent boundary, records the
+// snapshot as the thread's durable IDLE form, and releases the live VM so an
+// idle thread costs nothing but disk. It runs on the loop goroutine, so live and
+// control are safe to touch. Restore-on-wake rebuilds the VM from the snapshot.
+func (l *Loop) snapshotIdle(ctx context.Context, log *slog.Logger, ev idleEvent) {
+	h, ok := l.live[ev.threadID]
+	if !ok {
+		return // already gone (reclaimed, or a duplicate idle signal)
+	}
+	snapshotter, ok := l.Executor.(substrate.Snapshotable)
+	if !ok {
+		log.Warn("reconcile: executor cannot snapshot; leaving thread running", "thread", ev.threadID)
+		return
+	}
+	ref, err := snapshotter.Snapshot(ctx, h)
+	if err != nil {
+		log.Error("reconcile: snapshot on idle", "thread", ev.threadID, "err", err)
+		return
+	}
+	if err := l.Registry.SetThreadSnapshot(ctx, ev.threadID, ref.ID, ref.SizeBytes); err != nil {
+		log.Error("reconcile: record idle snapshot", "thread", ev.threadID, "err", err)
+		return
+	}
+	if err := l.Executor.Release(ctx, h); err != nil {
+		log.Error("reconcile: release after snapshot", "thread", ev.threadID, "err", err)
+	}
+	delete(l.live, ev.threadID)
+	if cancel, ok := l.control[ev.threadID]; ok {
+		cancel()
+		delete(l.control, ev.threadID)
+	}
+	log.Info("reconcile: thread idled and snapshotted", "thread", ev.threadID, "snapshot", ref.ID, "size", ref.SizeBytes)
 }
 
 func (l *Loop) reconcileOnce(ctx context.Context, log *slog.Logger) {
@@ -157,8 +206,12 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task}
 	handlers := control.Handlers{
 		OnIdle: func(threadID string, wake vsockproto.WakeCondition) {
-			// Snapshot-on-idle is wired in a later task; for now record the boundary.
 			log.Info("reconcile: thread reached idle boundary", "thread", threadID, "wake", string(wake))
+			// Hand off to the loop goroutine so the snapshot does not race live/control.
+			select {
+			case l.idle <- idleEvent{threadID: threadID, wake: wake}:
+			case <-cctx.Done():
+			}
 		},
 		OnDone: func(threadID, status string) {
 			log.Info("reconcile: thread harness done", "thread", threadID, "status", status)
