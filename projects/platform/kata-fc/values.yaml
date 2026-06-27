@@ -1,5 +1,6 @@
 # Smoke test boots a microVM via the kata-fc RuntimeClass and prints the guest
-# kernel. Flip enabled=false once the runtime is validated.
+# kernel. Validated 2026-06-27 (guest_kernel 6.18.35 vs node-4 host 6.8.0-87),
+# so it is disabled to avoid re-running daily; flip enabled=true to re-test.
 smokeTest:
-  enabled: true
+  enabled: false
   image: docker.io/library/busybox:1.37
