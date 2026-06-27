@@ -22,6 +22,7 @@ def _clean(conn) -> None:
     conn.execute(text("DELETE FROM claude_agent.agent_locks"))
     conn.execute(text("DELETE FROM claude_agent.routine_jobs"))
     conn.execute(text("DELETE FROM claude_agent.agent_threads"))
+    conn.execute(text("DELETE FROM claude_agent.agent_base_snapshots"))
     conn.commit()
 
 

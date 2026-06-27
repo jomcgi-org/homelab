@@ -1,6 +1,6 @@
 """MCP tools for the claude-routine-agent surface.
 
-Nineteen tools across six families — each is a thin async wrapper that
+Twenty-two tools across seven families — each is a thin async wrapper that
 calls into the corresponding ``agent.*`` operation module and serializes
 datetimes / UUIDs as strings for JSON transport. The Python function
 names use underscores; FastMCP's wire identifiers use the dashed form
@@ -20,13 +20,14 @@ names use underscores; FastMCP's wire identifiers use the dashed form
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
-from agent import checks, locks
+from agent import backstop, base_snapshots, checks, locks
 from agent import notify as notify_mod
 from agent import routine_jobs, threads
 from app.mcp_app import mcp
@@ -282,6 +283,44 @@ async def monolith_agent_resume_agent_thread(thread_id: str) -> dict:
     """Request the controller restore an IDLE agent thread.
 
     Stamps a wake request the reconcile loop picks up. Only IDLE threads are
-    resumable; for any other state this returns ok=False with the current state.
+    resumable. For any other state this returns ok=False with the current state.
     """
     return threads.request_resume(thread_id)
+
+
+# --- Warm bases + backstop (ADR 022, Phase 4) ----------------------------
+
+
+@mcp.tool
+async def monolith_agent_list_agent_bases() -> dict:
+    """List the per-repo warm-base snapshots and their build status."""
+    rows = base_snapshots.list_bases()
+    return {"bases": [base_snapshots.serialize(r) for r in rows]}
+
+
+@mcp.tool
+async def monolith_agent_request_base_rebuild(repo: str, arch: str, main_sha: str) -> dict:
+    """Request the controller rebuild a repo's warm base at ``main_sha``.
+
+    Call when a repo's main advances. Idempotent: a repeat at the same sha is a
+    no-op for the controller.
+    """
+    return base_snapshots.request_rebuild(repo, arch, main_sha)
+
+
+@mcp.tool
+async def monolith_agent_run_agent_backstop(stuck_threshold_mins: int = 60) -> dict:
+    """Sweep for stuck RUNNING threads and alert if any are found.
+
+    A thread RUNNING with no activity for longer than the threshold likely missed
+    its idle signal or hung. Posts a single Discord alert when any are found.
+    Intended to be run every 15-30 minutes by a scheduled routine.
+    """
+    summary = await asyncio.to_thread(backstop.sweep, stuck_threshold_mins * 60)
+    if summary["stuck_count"]:
+        ids = ", ".join(s["thread_id"] for s in summary["stuck_threads"])
+        await notify_mod.notify(
+            f"agent-thread backstop: {summary['stuck_count']} stuck thread(s): {ids}",
+            level="warn",
+        )
+    return summary

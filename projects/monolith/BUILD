@@ -3859,6 +3859,15 @@ bdd_test(
     ],
 )
 
+bdd_test(
+    name = "agent_bdd_agent_backstop_test",
+    srcs = [
+        "agent/tests/__init__.py",
+        "agent/tests/bdd_agent_backstop_test.py",
+        "agent/tests/conftest.py",
+    ],
+)
+
 py_test(
     name = "agent_checks_firing_alerts_test",
     srcs = ["agent/checks_firing_alerts_test.py"],
