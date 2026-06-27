@@ -60,6 +60,16 @@ type Loop struct {
 	// control serving (dry-run / tests with no vsock).
 	ControlUDS func(threadID string) string
 
+	// GooseEnv is harness environment injected into every guest via the Assign
+	// message (goose provider/model + the in-cluster model base URL). Empty means
+	// no injection.
+	GooseEnv map[string]string
+
+	// EgressSidecar, when set, is the localhost address of the egress-proxy
+	// sidecar (ADR 023). The loop forwards each thread's vsock egress connections
+	// to it. Empty disables egress forwarding.
+	EgressSidecar string
+
 	live    map[string]substrate.Handle   // threadID -> live microVM handle
 	control map[string]context.CancelFunc // threadID -> cancel its control server
 	idle    chan idleEvent                // guest idle boundaries, handled on the loop goroutine
@@ -203,7 +213,15 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	cctx, cancel := context.WithCancel(ctx)
 	l.control[t.ThreadID] = cancel
 	uds := l.ControlUDS(t.ThreadID)
-	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task}
+	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: l.GooseEnv}
+	// Forward the guest's vsock egress to the secret-free sidecar (ADR 023).
+	if l.EgressSidecar != "" {
+		go func() {
+			if err := control.ServeEgress(cctx, log, uds, l.EgressSidecar); err != nil && cctx.Err() == nil {
+				log.Warn("reconcile: egress forwarder exited", "thread", t.ThreadID, "err", err)
+			}
+		}()
+	}
 	handlers := control.Handlers{
 		OnIdle: func(threadID string, wake vsockproto.WakeCondition) {
 			log.Info("reconcile: thread reached idle boundary", "thread", threadID, "wake", string(wake))

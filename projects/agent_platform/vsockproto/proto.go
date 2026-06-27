@@ -78,6 +78,11 @@ type Message struct {
 	// `goose run --recipe <Recipe> --params task_description=<Task>`.
 	Recipe string `json:"recipe,omitempty"`
 	Task   string `json:"task,omitempty"`
+	// Env carries harness environment the controller injects on KindAssign (e.g.
+	// the goose provider/model and the in-cluster model base URL). A raw FC boot
+	// gives PID 1 no env, and these values are cluster config that must not be
+	// hardcoded in the guest binary, so they arrive over the control channel.
+	Env map[string]string `json:"env,omitempty"`
 	// Status is the harness exit status on KindDone.
 	Status string `json:"status,omitempty"`
 	// Reason is a human-readable note for logs/observability.

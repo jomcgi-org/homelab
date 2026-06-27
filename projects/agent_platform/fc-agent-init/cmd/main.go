@@ -11,7 +11,9 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -44,6 +46,9 @@ func run(logger *slog.Logger) error {
 	// goose's config under /home/goose-agent (matching the harness image).
 	ensureEnv("PATH", "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/local/sbin")
 	ensureEnv("HOME", "/home/goose-agent")
+	// The harness image stores recipes here; goose's default search path does not
+	// include it, so point goose at it explicitly.
+	ensureEnv("GOOSE_RECIPE_PATH", "/home/goose-agent/recipes")
 
 	threadID := os.Getenv("FC_THREAD_ID")
 	idleAfter := durationEnv("FC_IDLE_AFTER", 60*time.Second)
@@ -65,6 +70,15 @@ func run(logger *slog.Logger) error {
 	conn := dialController(ctx, logger)
 	if conn != nil {
 		defer conn.Close()
+		// Route all harness egress through a local proxy that tunnels to the
+		// controller's vsock egress forwarder (ADR 023). The harness never reaches
+		// the network directly; its only egress is what the host sidecar allows.
+		go runEgressProxy(ctx, logger, guestProxyAddr)
+		proxyURL := "http://" + guestProxyAddr
+		ensureEnv("HTTP_PROXY", proxyURL)
+		ensureEnv("HTTPS_PROXY", proxyURL)
+		ensureEnv("http_proxy", proxyURL)
+		ensureEnv("https_proxy", proxyURL)
 	}
 
 	// Determine the work. A raw FC boot gives PID 1 no env, so the task arrives
@@ -139,7 +153,12 @@ func assignedHarness(logger *slog.Logger, conn *vsockproto.Conn, threadID string
 		logger.Warn("expected task assignment, got other message", "kind", string(msg.Kind))
 		return nil
 	}
-	logger.Info("task assignment received", "recipe", msg.Recipe)
+	// Apply the controller-injected harness env (goose provider/model + the
+	// in-cluster model base URL): cluster config the guest cannot hardcode.
+	for k, v := range msg.Env {
+		_ = os.Setenv(k, v)
+	}
+	logger.Info("task assignment received", "recipe", msg.Recipe, "env_keys", len(msg.Env))
 	return harness.GooseCommand(harness.Config{Recipe: msg.Recipe, Task: msg.Task})
 }
 
@@ -212,6 +231,52 @@ func dialController(ctx context.Context, logger *slog.Logger) *vsockproto.Conn {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// guestProxyAddr is where the in-guest egress proxy listens; the harness's
+// HTTP(S)_PROXY points here. Every connection is tunnelled over vsock to the
+// host, so the harness has no direct network path.
+const guestProxyAddr = "127.0.0.1:3128"
+
+// runEgressProxy accepts local TCP connections (the harness's proxied egress)
+// and tunnels each over vsock EgressPort to the controller's forwarder, which
+// hands them to the egress-proxy sidecar (ADR 023). It returns when ctx is done.
+func runEgressProxy(ctx context.Context, logger *slog.Logger, addr string) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Warn("egress proxy listen failed; harness egress will fail", "addr", addr, "err", err)
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+	for {
+		local, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Warn("egress proxy accept", "err", err)
+			}
+			return
+		}
+		go tunnelEgress(logger, local)
+	}
+}
+
+// tunnelEgress dials the host over vsock and copies bytes both ways until either
+// side closes.
+func tunnelEgress(logger *slog.Logger, local net.Conn) {
+	defer local.Close()
+	up, err := vsockdial.Dial(vsockproto.HostCID, vsockproto.EgressPort)
+	if err != nil {
+		logger.Warn("egress vsock dial", "err", err)
+		return
+	}
+	defer up.Close()
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(up, local); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(local, up); done <- struct{}{} }()
+	<-done
 }
 
 // ensureEnv sets key to def only when it is unset, so an injected value (e.g. a

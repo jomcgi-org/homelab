@@ -21,6 +21,9 @@ type Assignment struct {
 	ThreadID string
 	Recipe   string
 	Task     string
+	// Env is harness environment injected into the guest (goose provider/model,
+	// the in-cluster model base URL): cluster config the guest cannot hardcode.
+	Env map[string]string
 }
 
 // Handlers are invoked for the guest's lifecycle signals. They run on the
@@ -83,6 +86,7 @@ func Serve(ctx context.Context, logger *slog.Logger, udsPath string, a Assignmen
 		ThreadID: a.ThreadID,
 		Recipe:   a.Recipe,
 		Task:     a.Task,
+		Env:      a.Env,
 	}); err != nil {
 		return fmt.Errorf("control: send assign: %w", err)
 	}
