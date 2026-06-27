@@ -1,8 +1,8 @@
 {
   "version": "v1",
   "config": {
-    "name": "projects/agent_platform/harness/apko.yaml",
-    "checksum": "sha256-49zfH5dUL4bgznNldW1jM4TRRVkbEh25ckrSw2FvdTY="
+    "name": "apko.yaml",
+    "checksum": "sha256-cHV+P/6/riqVCEwBlX1oO3v23HHxBP0eYXNCOGynNzo="
   },
   "contents": {
     "keyring": [
@@ -882,6 +882,44 @@
         "checksum": "Q1fkVDC/bDA3hU118vMt6gB8GJhQ0="
       },
       {
+        "name": "libgomp",
+        "url": "https://packages.wolfi.dev/os/x86_64/libgomp-16.1.0-r4.apk",
+        "version": "16.1.0-r4",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-9950",
+          "checksum": "sha1-DNNAGr+SuPFV8GopHFKqj8GEpik="
+        },
+        "data": {
+          "range": "bytes=9951-208397",
+          "checksum": "sha256-FQ2+sGAbiflvVkKKQy+r6K0/WaG/I7tUxZjhJ5GqRak="
+        },
+        "checksum": "Q1DNNAGr+SuPFV8GopHFKqj8GEpik="
+      },
+      {
+        "name": "libstdc++",
+        "url": "https://packages.wolfi.dev/os/x86_64/libstdc++-16.1.0-r4.apk",
+        "version": "16.1.0-r4",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-9949",
+          "checksum": "sha1-0G/kziut8KEYt22cLifRa9QA+HQ="
+        },
+        "data": {
+          "range": "bytes=9950-1261924",
+          "checksum": "sha256-+PxUlxtKRnSh9H8NjtevLTb3x4S8Bl3jFaJMzHYEGlg="
+        },
+        "checksum": "Q10G/kziut8KEYt22cLifRa9QA+HQ="
+      },
+      {
         "name": "c-ares",
         "url": "https://packages.wolfi.dev/os/x86_64/c-ares-1.34.6-r1.apk",
         "version": "1.34.6-r1",
@@ -918,25 +956,6 @@
           "checksum": "sha256-j096fD6K9n0KSD6/VNWVNnGGiGvvkv2sOjNHLQVkP+g="
         },
         "checksum": "Q1oI1UH/9+yaXly/8uY+aUUoI+vWE="
-      },
-      {
-        "name": "libstdc++",
-        "url": "https://packages.wolfi.dev/os/x86_64/libstdc++-16.1.0-r4.apk",
-        "version": "16.1.0-r4",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-9949",
-          "checksum": "sha1-0G/kziut8KEYt22cLifRa9QA+HQ="
-        },
-        "data": {
-          "range": "bytes=9950-1261924",
-          "checksum": "sha256-+PxUlxtKRnSh9H8NjtevLTb3x4S8Bl3jFaJMzHYEGlg="
-        },
-        "checksum": "Q10G/kziut8KEYt22cLifRa9QA+HQ="
       },
       {
         "name": "libicu78",
@@ -1946,6 +1965,44 @@
         "checksum": "Q1jKH+oZ2TweiVbH2CFgpYlH0+DnQ="
       },
       {
+        "name": "libgomp",
+        "url": "https://packages.wolfi.dev/os/aarch64/libgomp-16.1.0-r4.apk",
+        "version": "16.1.0-r4",
+        "architecture": "aarch64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-9990",
+          "checksum": "sha1-uP05uqv3R9xWQxnHLYXugL/DkOo="
+        },
+        "data": {
+          "range": "bytes=9991-198850",
+          "checksum": "sha256-i7aWJl0adaaH4xzFyie35BWu4UuAIu0AC970+KcCilk="
+        },
+        "checksum": "Q1uP05uqv3R9xWQxnHLYXugL/DkOo="
+      },
+      {
+        "name": "libstdc++",
+        "url": "https://packages.wolfi.dev/os/aarch64/libstdc++-16.1.0-r4.apk",
+        "version": "16.1.0-r4",
+        "architecture": "aarch64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-9975",
+          "checksum": "sha1-UknHYoUowwYP/yjIaxIFq8CaEUg="
+        },
+        "data": {
+          "range": "bytes=9976-1178043",
+          "checksum": "sha256-LFku50w/HG35xaMJmM1fWes2JiJR31JYex1BzQNfwrk="
+        },
+        "checksum": "Q1UknHYoUowwYP/yjIaxIFq8CaEUg="
+      },
+      {
         "name": "c-ares",
         "url": "https://packages.wolfi.dev/os/aarch64/c-ares-1.34.6-r1.apk",
         "version": "1.34.6-r1",
@@ -1982,25 +2039,6 @@
           "checksum": "sha256-F8CQub8+rDi67BIfhgrXx61uvKVTyp4nS9ayuhjBXvI="
         },
         "checksum": "Q1/vCM27CcICaymtO0luSBaJg22d4="
-      },
-      {
-        "name": "libstdc++",
-        "url": "https://packages.wolfi.dev/os/aarch64/libstdc++-16.1.0-r4.apk",
-        "version": "16.1.0-r4",
-        "architecture": "aarch64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-9975",
-          "checksum": "sha1-UknHYoUowwYP/yjIaxIFq8CaEUg="
-        },
-        "data": {
-          "range": "bytes=9976-1178043",
-          "checksum": "sha256-LFku50w/HG35xaMJmM1fWes2JiJR31JYex1BzQNfwrk="
-        },
-        "checksum": "Q1UknHYoUowwYP/yjIaxIFq8CaEUg="
       },
       {
         "name": "libicu78",
