@@ -19,7 +19,6 @@ Personal site. Built with Astro (Vite internally), React components, and Tailwin
 | `/engineering` | `src/pages/engineering.astro`     | Homelab architecture detail                    |
 | `/cv`          | `src/pages/cv.astro`              | CV rendered from `src/assets/cv.md`            |
 | `/stargazer`   | `src/pages/stargazer.astro`       | Dark sky locations in Scotland with forecasts  |
-| `/frank`       | `src/pages/frank.html`            | Static trip page                               |
 | `/justin-demo` | `src/pages/justin-demo.astro`     | Demo page                                      |
 | `/nelly-demo`  | `src/pages/nelly-demo.astro`      | Demo page                                      |
 
