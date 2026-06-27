@@ -1,0 +1,27 @@
+# Tools image for the fc-agentd base-rootfs initContainer (ADR 022). It builds
+# the agent base rootfs in-cluster from the pinned harness image, so no human on
+# node-4 with sudo is needed: crane exports the harness image filesystem and
+# mkfs.ext4 (e2fsprogs) bakes it into an ext4 image on the mounted nvme disk.
+# Runs as root (apko default) because it writes to the root-owned snapshot dir.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - bash
+    - busybox
+    - ca-certificates-bundle
+    - coreutils
+    - crane
+    - e2fsprogs
+
+archs:
+  - x86_64
+  - aarch64
+
+environment:
+  HOME: /root
+
+entrypoint:
+  command: /bin/bash

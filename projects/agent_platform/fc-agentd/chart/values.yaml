@@ -6,6 +6,23 @@ image:
   tag: latest
   pullPolicy: Always
 
+# The harness image (projects/agent_platform/harness) the base rootfs is built
+# from. The base-rootfs initContainer exports this image and bakes it into
+# firecracker.baseRootfsPath, so the base always matches the deployed harness
+# (the vsock-dialing fc-agent-init). Bazel pins repository + tag at build time.
+harnessImage:
+  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/harness
+  tag: latest
+
+# Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build the
+# ext4 base rootfs in-cluster, removing the manual node-4 sudo step. Bazel-pinned.
+rootfsBuilder:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd/rootfs-builder
+    tag: latest
+  # Size of the ext4 base rootfs image built from the harness filesystem.
+  rootfsSize: 3G
+
 replicas: 1
 
 # node + arch the controller manages. Firecracker snapshots are node/arch-bound,
