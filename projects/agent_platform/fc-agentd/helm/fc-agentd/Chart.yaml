@@ -1,0 +1,20 @@
+apiVersion: v2
+name: fc-agentd
+description: Firecracker snapshot/restore controller (ADR 022) - the node-4 Postgres-reconcile daemon that manages agent-thread microVMs
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - firecracker
+  - microvm
+  - agent
+  - snapshot
+  - kubernetes
+maintainers:
+  - name: jomcgi
+    url: https://github.com/jomcgi/homelab
+sources:
+  - https://github.com/jomcgi/homelab/tree/main/projects/agent_platform/fc-agentd
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"

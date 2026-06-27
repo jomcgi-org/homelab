@@ -1,0 +1,76 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd
+  tag: latest
+  pullPolicy: Always
+
+replicas: 1
+
+# node + arch the controller manages. Firecracker snapshots are node/arch-bound,
+# so the daemon is pinned to its node and only reconciles that node's threads.
+node: node-4
+arch: amd64
+
+nodeSelector:
+  kubernetes.io/hostname: node-4
+
+# Stable infrastructure controller, not a disposable victim (ADR platform/010).
+priorityClassName: homelab-critical
+
+tolerations: []
+affinity: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The monolith Postgres DSN (claude_agent.agent_threads registry). Defaults to
+# the CNPG-generated app credential. When deployed outside the monolith
+# namespace the secret must be cloned in (Kyverno) first.
+database:
+  secretName: monolith-pg-app
+  secretKey: uri
+
+# Firecracker substrate paths on node-4. Driving real microVMs (privileged +
+# these host mounts) is gated behind `firecracker.enabled`; until then the
+# daemon runs the reconcile loop against the registry and idles (an empty
+# registry means it never claims a microVM).
+firecracker:
+  enabled: false
+  binPath: /opt/kata/bin/firecracker
+  kernelImagePath: /opt/kata/share/kata-containers/vmlinux.container
+  snapshotRoot: /disks/nvme-02/agent-threads
+  rootfsPath: ""
+
+reconcileInterval: 5s
+
+tracing:
+  endpoint: ""
+  serviceName: fc-agentd
+  serviceVersion: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Non-privileged by default (uid 65532). When firecracker.enabled is true the
+# pod runs privileged with /dev/kvm + the kata/devmapper/nvme host mounts so it
+# can exec firecracker and read/write snapshots.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
