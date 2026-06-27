@@ -1,0 +1,317 @@
+// Package driver is the FC-direct Snapshotable executor (ADR 022, Phase 1). It
+// drives Firecracker processes and their snapshot API directly to boot a
+// microVM, pause -> CreateSnapshot -> resume, and LoadSnapshot + resume a fresh
+// microVM that continues exactly where the snapshot was taken.
+//
+// Storage follows the E2B bundle layout: a directory per thread under the
+// snapshot root, holding the FC API socket plus the snapfile + memfile that make
+// up a full snapshot. Snapshots are node/arch-bound (FC validates CPU on
+// restore), so the driver stamps every handle and ref with its node + arch.
+package driver
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+
+	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/fcclient"
+	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+)
+
+// Config holds the node-4 substrate paths and microVM sizing.
+type Config struct {
+	// KernelImagePath is the guest kernel (kata vmlinux.container on node-4).
+	KernelImagePath string
+	// KernelBootArgs are appended to the kernel command line on cold boot.
+	KernelBootArgs string
+	// RootfsPath is the host path to the thread rootfs block device.
+	RootfsPath string
+	// VCPUs and MemMib size the guest.
+	VCPUs  int
+	MemMib int
+	// SnapshotRoot is the directory holding per-thread bundles (/disks/nvme-02).
+	SnapshotRoot string
+	// Node and Arch pin where snapshots may be restored.
+	Node string
+	Arch string
+}
+
+func (c Config) withDefaults() Config {
+	if c.VCPUs == 0 {
+		c.VCPUs = 1
+	}
+	if c.MemMib == 0 {
+		c.MemMib = 1024
+	}
+	if c.KernelBootArgs == "" {
+		c.KernelBootArgs = "console=ttyS0 reboot=k panic=1 pci=off"
+	}
+	return c
+}
+
+// Process is a running Firecracker process.
+type Process interface {
+	Kill() error
+	Wait() error
+}
+
+// Launcher starts a Firecracker process whose API socket is at socketPath and
+// returns once the socket accepts connections.
+type Launcher interface {
+	Launch(ctx context.Context, vmID, socketPath string) (Process, error)
+}
+
+// fcAPI is the subset of the Firecracker client the driver uses, kept as an
+// interface so tests can supply a fake. *fcclient.Client satisfies it.
+type fcAPI interface {
+	PutMachineConfig(ctx context.Context, m fcclient.MachineConfig) error
+	PutBootSource(ctx context.Context, b fcclient.BootSource) error
+	PutDrive(ctx context.Context, d fcclient.Drive) error
+	Start(ctx context.Context) error
+	Pause(ctx context.Context) error
+	Resume(ctx context.Context) error
+	CreateSnapshot(ctx context.Context, s fcclient.SnapshotCreate) error
+	LoadSnapshot(ctx context.Context, s fcclient.SnapshotLoad) error
+}
+
+// Driver implements substrate.Substrate and substrate.Snapshotable for FC-direct.
+type Driver struct {
+	cfg       Config
+	launcher  Launcher
+	newClient func(socketPath string) fcAPI
+
+	mu   sync.Mutex
+	live map[string]*instance // handle ID -> instance
+}
+
+type instance struct {
+	handle substrate.Handle
+	proc   Process
+	client fcAPI
+	dir    string
+	sock   string
+}
+
+var (
+	_ substrate.Substrate    = (*Driver)(nil)
+	_ substrate.Snapshotable = (*Driver)(nil)
+)
+
+// New builds a Driver. launcher must not be nil. If newClient is nil the real
+// fcclient is used.
+func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI) *Driver {
+	if newClient == nil {
+		newClient = func(sock string) fcAPI { return fcclient.New(sock) }
+	}
+	return &Driver{
+		cfg:       cfg.withDefaults(),
+		launcher:  launcher,
+		newClient: newClient,
+		live:      make(map[string]*instance),
+	}
+}
+
+func newID(prefix string) string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return prefix + "-" + hex.EncodeToString(b[:])
+}
+
+// threadDir is the bundle directory for a thread.
+func (d *Driver) threadDir(threadID string) string {
+	return filepath.Join(d.cfg.SnapshotRoot, threadID)
+}
+
+func (d *Driver) snapfilePath(threadID string) string {
+	return filepath.Join(d.threadDir(threadID), "snapfile")
+}
+
+func (d *Driver) memfilePath(threadID string) string {
+	return filepath.Join(d.threadDir(threadID), "memfile")
+}
+
+// Claim boots a microVM. With a BaseSnapshotRef it restores from that warm base
+// for an instant ready start; otherwise it cold-boots from the kernel + rootfs.
+func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
+	if spec.Arch != "" && d.cfg.Arch != "" && spec.Arch != d.cfg.Arch {
+		return substrate.Handle{}, fmt.Errorf("driver: arch mismatch: spec %q != node %q (snapshots non-portable)", spec.Arch, d.cfg.Arch)
+	}
+	if spec.BaseSnapshotRef.ID != "" {
+		return d.Restore(ctx, spec.BaseSnapshotRef)
+	}
+
+	threadID := spec.ThreadID
+	if threadID == "" {
+		threadID = newID("thread")
+	}
+	dir := d.threadDir(threadID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
+	}
+	sock := filepath.Join(dir, "api.sock")
+	vmID := newID("vm")
+
+	proc, err := d.launcher.Launch(ctx, vmID, sock)
+	if err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker: %w", err)
+	}
+	client := d.newClient(sock)
+
+	if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: d.cfg.VCPUs, MemSizeMib: d.cfg.MemMib}); err != nil {
+		return d.abort(proc, err)
+	}
+	if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.cfg.KernelBootArgs}); err != nil {
+		return d.abort(proc, err)
+	}
+	if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: d.cfg.RootfsPath, IsRootDevice: true}); err != nil {
+		return d.abort(proc, err)
+	}
+	if err := client.Start(ctx); err != nil {
+		return d.abort(proc, err)
+	}
+
+	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
+	return h, nil
+}
+
+// Snapshot pauses the microVM, writes a full snapshot bundle, and resumes it so
+// the handle stays usable. Snapshot create is off the user-facing hot path.
+func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.SnapshotRef, error) {
+	inst := d.get(h.ID)
+	if inst == nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot of unknown handle %q", h.ID)
+	}
+	snapPath := d.snapfilePath(h.ThreadID)
+	memPath := d.memfilePath(h.ThreadID)
+
+	if err := inst.client.Pause(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause: %w", err)
+	}
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath}); err != nil {
+		// Best-effort resume so a snapshot failure does not strand the VM paused.
+		_ = inst.client.Resume(ctx)
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create snapshot: %w", err)
+	}
+	if err := inst.client.Resume(ctx); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after snapshot: %w", err)
+	}
+
+	ref := substrate.SnapshotRef{
+		ID:        newID("snap"),
+		ThreadID:  h.ThreadID,
+		Node:      d.cfg.Node,
+		Arch:      d.cfg.Arch,
+		SizeBytes: bundleSize(snapPath, memPath),
+	}
+	return ref, nil
+}
+
+// Restore launches a fresh Firecracker process and loads the snapshot bundle for
+// the ref's thread, resuming it. The microVM continues exactly where it paused;
+// the new handle keeps the stable ThreadID but gets a fresh microVM id.
+func (d *Driver) Restore(ctx context.Context, ref substrate.SnapshotRef) (substrate.Handle, error) {
+	if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
+		return substrate.Handle{}, fmt.Errorf("driver: arch mismatch on restore: ref %q != node %q", ref.Arch, d.cfg.Arch)
+	}
+	if ref.Node != "" && d.cfg.Node != "" && ref.Node != d.cfg.Node {
+		return substrate.Handle{}, fmt.Errorf("driver: node mismatch on restore: ref %q != node %q", ref.Node, d.cfg.Node)
+	}
+	threadID := ref.ThreadID
+	if threadID == "" {
+		return substrate.Handle{}, errors.New("driver: restore requires a ThreadID on the ref")
+	}
+	snapPath := d.snapfilePath(threadID)
+	memPath := d.memfilePath(threadID)
+	if _, err := os.Stat(snapPath); err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: snapshot bundle missing for thread %q: %w", threadID, err)
+	}
+
+	dir := d.threadDir(threadID)
+	sock := filepath.Join(dir, "restore.sock")
+	_ = os.Remove(sock)
+	vmID := newID("vm")
+
+	proc, err := d.launcher.Launch(ctx, vmID, sock)
+	if err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
+	}
+	client := d.newClient(sock)
+	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
+		SnapshotPath: snapPath,
+		MemBackend:   &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
+		ResumeVM:     true,
+	}); err != nil {
+		return d.abort(proc, err)
+	}
+
+	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
+	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock})
+	return h, nil
+}
+
+// Exec is provided by the in-VM harness over the wrapper channel (Phase 2); the
+// FC-direct driver does not run processes in the guest from the host.
+func (d *Driver) Exec(_ context.Context, _ substrate.Handle, _ substrate.Request) (substrate.Stream, error) {
+	return nil, errors.New("driver: Exec is handled by the in-VM harness (Phase 2), not the host driver")
+}
+
+// Release kills the microVM process and removes its API socket. The snapshot
+// bundle is left in place (Release returns/destroys the live env, not its
+// snapshots; GC reclaims bundles separately).
+func (d *Driver) Release(_ context.Context, h substrate.Handle) error {
+	d.mu.Lock()
+	inst, ok := d.live[h.ID]
+	if ok {
+		delete(d.live, h.ID)
+	}
+	d.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("driver: release of unknown handle %q", h.ID)
+	}
+	killErr := inst.proc.Kill()
+	_ = os.Remove(inst.sock)
+	if killErr != nil {
+		return fmt.Errorf("driver: kill firecracker: %w", killErr)
+	}
+	return nil
+}
+
+func (d *Driver) abort(proc Process, cause error) (substrate.Handle, error) {
+	_ = proc.Kill()
+	return substrate.Handle{}, cause
+}
+
+func (d *Driver) track(inst *instance) {
+	d.mu.Lock()
+	d.live[inst.handle.ID] = inst
+	d.mu.Unlock()
+}
+
+func (d *Driver) get(id string) *instance {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.live[id]
+}
+
+// LiveCount reports how many microVMs the driver is currently supervising.
+func (d *Driver) LiveCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.live)
+}
+
+func bundleSize(paths ...string) int64 {
+	var total int64
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
+}
