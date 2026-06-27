@@ -299,6 +299,19 @@ func (d *Driver) get(id string) *instance {
 	return d.live[id]
 }
 
+// RemoveBundle deletes a thread's on-disk snapshot bundle directory (GC/reclaim).
+// It is a no-op if the directory is already gone.
+func (d *Driver) RemoveBundle(threadID string) error {
+	if threadID == "" {
+		return fmt.Errorf("driver: RemoveBundle requires a threadID")
+	}
+	dir := d.threadDir(threadID)
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("driver: remove bundle %q: %w", dir, err)
+	}
+	return nil
+}
+
 // LiveCount reports how many microVMs the driver is currently supervising.
 func (d *Driver) LiveCount() int {
 	d.mu.Lock()

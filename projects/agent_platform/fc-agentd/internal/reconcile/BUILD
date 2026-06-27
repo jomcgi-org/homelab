@@ -7,6 +7,7 @@ go_library(
     visibility = ["//projects/agent_platform/fc-agentd:__subpackages__"],
     deps = [
         "//projects/agent_platform/fc-agentd/internal/store",
+        "//projects/agent_platform/substrate",
         "@io_opentelemetry_go_otel//:otel",
     ],
 )
@@ -15,5 +16,8 @@ go_test(
     name = "reconcile_test",
     srcs = ["reconcile_test.go"],
     embed = [":reconcile"],
-    deps = ["//projects/agent_platform/fc-agentd/internal/store"],
+    deps = [
+        "//projects/agent_platform/fc-agentd/internal/store",
+        "//projects/agent_platform/substrate",
+    ],
 )

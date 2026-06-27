@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/config"
+	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/driver"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/reconcile"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/telemetry"
@@ -57,10 +58,22 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	fcDriver := driver.New(driver.Config{
+		KernelImagePath: cfg.KernelImagePath,
+		RootfsPath:      cfg.RootfsPath,
+		VCPUs:           cfg.GuestVCPUs,
+		MemMib:          cfg.GuestMemMib,
+		SnapshotRoot:    cfg.SnapshotRoot,
+		Node:            cfg.Node,
+		Arch:            cfg.Arch,
+	}, &driver.ExecLauncher{Bin: cfg.FirecrackerBin}, nil)
+
 	loop := &reconcile.Loop{
-		Node:     cfg.Node,
-		Interval: cfg.ReconcileInterval,
-		Logger:   logger,
+		Executor:  fcDriver,
+		Reclaimer: fcDriver,
+		Node:      cfg.Node,
+		Interval:  cfg.ReconcileInterval,
+		Logger:    logger,
 	}
 
 	if cfg.DatabaseURL != "" {
