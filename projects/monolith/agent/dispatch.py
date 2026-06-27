@@ -54,6 +54,7 @@ def submit(
     task: str,
     thread_id: str | None = None,
     *,
+    recipe: str = "agent",
     repo: str = "",
     branch: str = "main",
     discord_thread: str = "",
@@ -64,9 +65,10 @@ def submit(
     """Create a new agent thread, or resume an existing one by id.
 
     Returns a dict with the ``thread_id`` and the ``action`` taken
-    ("create" or "resume"). ``task`` is accepted for the caller's intent and
-    audit; durable task/conversation state lives elsewhere in the monolith, so
-    the controller only needs the thread identity to act.
+    ("create" or "resume"). The work assignment (``recipe``, the goose recipe
+    name to run, defaulting to "agent"; and ``task``, the task description) is
+    stored on the new thread's row so the controller can hand it to the guest
+    microVM over vsock.
     """
     if thread_id:
         result = threads.request_resume(thread_id)
@@ -80,9 +82,11 @@ def submit(
                 """
                 INSERT INTO claude_agent.agent_threads
                     (thread_id, state, repo, branch, node, arch,
-                     base_snapshot_ref, discord_thread, ttl_secs)
+                     base_snapshot_ref, discord_thread, ttl_secs,
+                     recipe, task)
                 VALUES (:id, 'PENDING', :repo, :branch, :node, :arch,
-                        :base_ref, :discord_thread, :ttl)
+                        :base_ref, :discord_thread, :ttl,
+                        :recipe, :task)
                 """
             ),
             {
@@ -94,6 +98,8 @@ def submit(
                 "base_ref": base_ref,
                 "discord_thread": discord_thread,
                 "ttl": ttl_secs,
+                "recipe": recipe,
+                "task": task,
             },
         )
         session.commit()

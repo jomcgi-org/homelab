@@ -13,8 +13,10 @@ import (
 
 	"go.opentelemetry.io/otel"
 
+	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/control"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
 	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
 )
 
 var tracer = otel.Tracer("fc-agentd/reconcile")
@@ -52,7 +54,13 @@ type Loop struct {
 	Interval  time.Duration
 	Logger    *slog.Logger
 
-	live map[string]substrate.Handle // threadID -> live microVM handle
+	// ControlUDS resolves a thread's vsock control UDS path so the loop can serve
+	// the per-thread control channel (task delivery + idle/done). nil disables
+	// control serving (dry-run / tests with no vsock).
+	ControlUDS func(threadID string) string
+
+	live    map[string]substrate.Handle   // threadID -> live microVM handle
+	control map[string]context.CancelFunc // threadID -> cancel its control server
 }
 
 // Run ticks until ctx is cancelled. It returns nil on graceful shutdown.
@@ -63,6 +71,9 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 	if l.live == nil {
 		l.live = make(map[string]substrate.Handle)
+	}
+	if l.control == nil {
+		l.control = make(map[string]context.CancelFunc)
 	}
 	interval := l.Interval
 	if interval <= 0 {
@@ -125,7 +136,42 @@ func (l *Loop) createPending(ctx context.Context, log *slog.Logger) {
 		if err := l.Registry.SetState(ctx, t.ThreadID, substrate.StateRunning); err != nil {
 			log.Error("reconcile: mark running", "thread", t.ThreadID, "err", err)
 		}
+		l.startControl(ctx, log, t)
 	}
+}
+
+// startControl serves the per-thread vsock control channel: it hands the guest
+// its task (Assign) and reacts to the guest's idle/done signals. The server
+// runs until the guest disconnects or the thread is reclaimed (which cancels
+// its context). It is a no-op when ControlUDS is unset (dry-run / tests).
+func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Thread) {
+	if l.ControlUDS == nil {
+		return
+	}
+	if _, ok := l.control[t.ThreadID]; ok {
+		return
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	l.control[t.ThreadID] = cancel
+	uds := l.ControlUDS(t.ThreadID)
+	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task}
+	handlers := control.Handlers{
+		OnIdle: func(threadID string, wake vsockproto.WakeCondition) {
+			// Snapshot-on-idle is wired in a later task; for now record the boundary.
+			log.Info("reconcile: thread reached idle boundary", "thread", threadID, "wake", string(wake))
+		},
+		OnDone: func(threadID, status string) {
+			log.Info("reconcile: thread harness done", "thread", threadID, "status", status)
+			if err := l.Registry.SetState(context.WithoutCancel(cctx), threadID, substrate.StateCompleted); err != nil {
+				log.Error("reconcile: mark completed on done", "thread", threadID, "err", err)
+			}
+		},
+	}
+	go func() {
+		if err := control.Serve(cctx, log, uds, assign, handlers); err != nil && cctx.Err() == nil {
+			log.Warn("reconcile: control server exited", "thread", t.ThreadID, "err", err)
+		}
+	}()
 }
 
 // restoreWakeRequested restores IDLE threads that have a pending wake request.
@@ -219,6 +265,10 @@ func (l *Loop) reclaimBundleAndRow(ctx context.Context, log *slog.Logger, thread
 	}
 	if err := l.Registry.Delete(ctx, threadID); err != nil {
 		log.Error("reconcile: delete row", "thread", threadID, "err", err)
+	}
+	if cancel, ok := l.control[threadID]; ok {
+		cancel()
+		delete(l.control, threadID)
 	}
 	delete(l.live, threadID)
 }
