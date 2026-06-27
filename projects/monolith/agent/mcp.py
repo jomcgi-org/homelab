@@ -1,6 +1,6 @@
 """MCP tools for the claude-routine-agent surface.
 
-Sixteen tools across five families — each is a thin async wrapper that
+Nineteen tools across six families — each is a thin async wrapper that
 calls into the corresponding ``agent.*`` operation module and serializes
 datetimes / UUIDs as strings for JSON transport. The Python function
 names use underscores; FastMCP's wire identifiers use the dashed form
@@ -14,6 +14,8 @@ names use underscores; FastMCP's wire identifiers use the dashed form
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
              trigger_routine_job  (claude_agent.routine_jobs)
+  Threads  : list_agent_threads, get_agent_thread, resume_agent_thread
+             (claude_agent.agent_threads, ADR 022)
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from agent import checks, locks
 from agent import notify as notify_mod
-from agent import routine_jobs
+from agent import routine_jobs, threads
 from app.mcp_app import mcp
 
 
@@ -249,3 +251,37 @@ async def monolith_agent_deregister_routine_job(name: str) -> dict:
 async def monolith_agent_trigger_routine_job(name: str) -> dict:
     """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``."""
     return {"ok": routine_jobs.trigger_job(name)}
+
+
+# --- Agent threads (Firecracker snapshot/restore catalog, ADR 022) -------
+
+
+@mcp.tool
+async def monolith_agent_list_agent_threads(
+    state: str | None = None,
+    node: str | None = None,
+) -> dict:
+    """List Firecracker agent threads, newest-active first.
+
+    Optionally filter by lifecycle ``state`` (PENDING, RUNNING, IDLE,
+    COMPLETED, FAILED) and/or ``node``.
+    """
+    rows = threads.list_threads(state=state, node=node)
+    return {"threads": [threads.serialize(r) for r in rows]}
+
+
+@mcp.tool
+async def monolith_agent_get_agent_thread(thread_id: str) -> dict:
+    """Get one Firecracker agent thread by its stable thread id."""
+    row = threads.get_thread(thread_id)
+    return {"thread": threads.serialize(row) if row else None}
+
+
+@mcp.tool
+async def monolith_agent_resume_agent_thread(thread_id: str) -> dict:
+    """Request the controller restore an IDLE agent thread.
+
+    Stamps a wake request the reconcile loop picks up. Only IDLE threads are
+    resumable; for any other state this returns ok=False with the current state.
+    """
+    return threads.request_resume(thread_id)
