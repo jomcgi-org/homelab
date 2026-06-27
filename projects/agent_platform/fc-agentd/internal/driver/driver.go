@@ -80,6 +80,7 @@ type fcAPI interface {
 	PutMachineConfig(ctx context.Context, m fcclient.MachineConfig) error
 	PutBootSource(ctx context.Context, b fcclient.BootSource) error
 	PutDrive(ctx context.Context, d fcclient.Drive) error
+	PutVsock(ctx context.Context, v fcclient.Vsock) error
 	Start(ctx context.Context) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
@@ -149,6 +150,20 @@ func (d *Driver) snapfilePath(threadID string) string {
 
 func (d *Driver) memfilePath(threadID string) string {
 	return filepath.Join(d.threadDir(threadID), "memfile")
+}
+
+// guestCID is the vsock context id assigned to every microVM. CIDs 0-2 are
+// reserved (2 is the host), so guests start at 3. The controller reaches a guest
+// by listening on the per-thread UDS, not by CID, so a fixed value is fine.
+const guestCID = 3
+
+// VsockUDSPath is the host unix-domain socket backing a thread's vsock device.
+// Firecracker multiplexes guest connections onto "<uds>_<port>", so the control
+// server listens on VsockUDSPath(threadID)+"_"+ControlPort. The path is
+// deterministic from the bundle dir, so the reconcile loop can reach a live
+// microVM's control channel without the driver handing back extra state.
+func (d *Driver) VsockUDSPath(threadID string) string {
+	return filepath.Join(d.threadDir(threadID), "vsock.sock")
 }
 
 // bootArgs is the kernel command line. When HarnessInit is set it appends
@@ -257,6 +272,11 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		return d.abort(proc, err)
 	}
 	if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true}); err != nil {
+		return d.abort(proc, err)
+	}
+	// The vsock device is the guest's only channel to the controller (task
+	// delivery, idle signal, egress proxy). It must be configured before Start.
+	if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.VsockUDSPath(threadID)}); err != nil {
 		return d.abort(proc, err)
 	}
 	if err := client.Start(ctx); err != nil {
