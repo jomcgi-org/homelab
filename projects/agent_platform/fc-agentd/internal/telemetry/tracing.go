@@ -40,7 +40,8 @@ func Init(ctx context.Context) (*sdktrace.TracerProvider, error) {
 	exporterCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	exporter, err := otlptracegrpc.New(exporterCtx,
+	exporter, err := otlptracegrpc.New(
+		exporterCtx,
 		otlptracegrpc.WithEndpoint(endpoint),
 		otlptracegrpc.WithInsecure(),
 	)

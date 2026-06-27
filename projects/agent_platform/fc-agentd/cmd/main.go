@@ -38,7 +38,8 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("fc-agentd starting",
+	logger.Info(
+		"fc-agentd starting",
 		"node", cfg.Node,
 		"arch", cfg.Arch,
 		"snapshot_root", cfg.SnapshotRoot,
