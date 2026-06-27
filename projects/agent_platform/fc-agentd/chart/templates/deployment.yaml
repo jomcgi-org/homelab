@@ -11,7 +11,12 @@ spec:
   strategy:
     type: Recreate
   selector:
+    # Single-Deployment chart: the shared-selector collision this rule guards
+    # against cannot occur, and the Deployment is already live with this
+    # name+instance selector (immutable) - adding a component label would break
+    # ArgoCD sync rather than fix anything.
     matchLabels:
+      # nosemgrep: bazel.semgrep.rules.kubernetes.require-component-label-in-selector
       {{- include "fc-agentd.selectorLabels" . | nindent 6 }}
   template:
     metadata:
@@ -74,6 +79,10 @@ spec:
             - name: FC_AGENTD_ROOTFS_PATH
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.firecracker.baseRootfsPath }}
+            - name: FC_AGENTD_BASE_ROOTFS
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.tracing.endpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -96,8 +105,8 @@ spec:
               readOnly: true
             - name: dev-mapper
               mountPath: /dev/mapper
-            - name: snapshots
-              mountPath: {{ .Values.firecracker.snapshotRoot }}
+            - name: nvme
+              mountPath: {{ .Values.firecracker.nvmeRoot }}
           {{- end }}
       {{- if .Values.firecracker.enabled }}
       volumes:
@@ -113,8 +122,8 @@ spec:
           hostPath:
             path: /dev/mapper
             type: Directory
-        - name: snapshots
+        - name: nvme
           hostPath:
-            path: {{ .Values.firecracker.snapshotRoot }}
-            type: DirectoryOrCreate
+            path: {{ .Values.firecracker.nvmeRoot }}
+            type: Directory
       {{- end }}

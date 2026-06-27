@@ -44,7 +44,13 @@ firecracker:
   enabled: false
   binPath: /opt/kata/bin/firecracker
   kernelImagePath: /opt/kata/share/kata-containers/vmlinux.container
+  # The whole nvme dir is mounted so both the per-thread bundles (snapshotRoot)
+  # and the shared base rootfs (baseRootfsPath) are reachable.
+  nvmeRoot: /disks/nvme-02
   snapshotRoot: /disks/nvme-02/agent-threads
+  # baseRootfsPath is the read-only base rootfs image (built from the harness
+  # image). When set, each thread gets its own writable copy.
+  baseRootfsPath: ""
   rootfsPath: ""
 
 reconcileInterval: 5s
