@@ -20,6 +20,14 @@ import (
 type Kind string
 
 const (
+	// KindHello is sent guest->host first, right after the guest dials the
+	// control channel, so the controller knows the wrapper is up and ready for
+	// its task assignment.
+	KindHello Kind = "hello"
+	// KindAssign is sent host->guest in reply to KindHello: the work assignment
+	// (Recipe + Task) the harness should run. Delivering it over vsock is what
+	// lets a raw FC boot (which gives PID 1 no env) receive its task.
+	KindAssign Kind = "assign"
 	// KindIdle is sent guest->host when the wrapper detects a safe (quiescent)
 	// idle boundary and it is safe to snapshot.
 	KindIdle Kind = "idle"
@@ -29,8 +37,23 @@ const (
 	// KindResumeAck is sent guest->host once the wrapper has re-established its
 	// connections after a restore and the harness is live again.
 	KindResumeAck Kind = "resume_ack"
+	// KindDone is sent guest->host when the harness process exits, so the
+	// controller can reclaim the thread.
+	KindDone Kind = "done"
 	// KindHeartbeat is a liveness ping in either direction.
 	KindHeartbeat Kind = "heartbeat"
+)
+
+// Firecracker vsock addressing. The host is always context-id 2; guests get a
+// fixed id (the controller reaches a guest by its per-thread host UDS, not by
+// CID). The guest dials these ports on the host: ControlPort carries the
+// message channel (this protocol); EgressPort carries one tunnelled HTTP request
+// each (the egress proxy to in-cluster services).
+const (
+	HostCID     uint32 = 2
+	GuestCID    uint32 = 3
+	ControlPort uint32 = 1024
+	EgressPort  uint32 = 1025
 )
 
 // WakeCondition describes what should cause an idle thread to be restored.
@@ -51,6 +74,12 @@ type Message struct {
 	// Wake is the condition that should wake the thread (set on KindIdle) or the
 	// condition that did wake it (set on KindWake).
 	Wake WakeCondition `json:"wake,omitempty"`
+	// Recipe and Task carry the work assignment on KindAssign: the harness runs
+	// `goose run --recipe <Recipe> --params task_description=<Task>`.
+	Recipe string `json:"recipe,omitempty"`
+	Task   string `json:"task,omitempty"`
+	// Status is the harness exit status on KindDone.
+	Status string `json:"status,omitempty"`
 	// Reason is a human-readable note for logs/observability.
 	Reason string `json:"reason,omitempty"`
 }
