@@ -1,0 +1,17 @@
+apiVersion: v2
+name: kata-fc
+description: kata-fc RuntimeClass (Firecracker microVM runtime) + smoke test (ADR platform/010)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: jomcgi
+keywords:
+  - kata
+  - firecracker
+  - runtimeclass
+  - microvm
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"

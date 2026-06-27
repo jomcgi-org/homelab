@@ -9,6 +9,7 @@ resources:
   - ./cloudnative-pg/deploy
   - ./cloudflare-gateway # Envoy Gateway + Gateway API + Cloudflare Tunnel; CRDs must be before linkerd
   - ./coredns
+  - ./kata-fc # kata-fc RuntimeClass for Firecracker microVMs (ADR platform/010)
   - ./keda
   - ./kyverno
   - ./linkerd

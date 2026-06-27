@@ -1,0 +1,17 @@
+[Unit]
+Description=containerd devmapper thin-pool (kata-fc / Firecracker, ADR platform/010)
+DefaultDependencies=no
+After=local-fs.target
+# Ensure /disks/nvme-02 (the backing files' filesystem) is mounted first, and
+# that the pool exists before k3s/containerd starts and tries to use it.
+RequiresMountsFor=/disks/nvme-02/containerd-devmapper
+Before=k3s-agent.service
+ConditionPathExists=/disks/nvme-02/containerd-devmapper/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/devpool-up.sh
+
+[Install]
+WantedBy=multi-user.target

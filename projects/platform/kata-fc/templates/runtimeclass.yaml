@@ -1,0 +1,18 @@
+# kata-fc RuntimeClass: pods set `runtimeClassName: kata-fc` to run inside a
+# Firecracker microVM (ADR platform/010 / agent-microVM tier of ADRs 019/021).
+# The containerd `kata-fc` handler + devmapper snapshotter are installed on
+# node-4 only (see projects/platform/firecracker-node), so constrain scheduling.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc
+handler: kata-fc
+# Per-pod VM overhead so the scheduler accounts for the Firecracker microVM
+# itself (configuration-fc.toml: default_memory=2048, default_vcpus=1).
+overhead:
+  podFixed:
+    memory: "2Gi"
+    cpu: "250m"
+scheduling:
+  nodeSelector:
+    kubernetes.io/hostname: node-4
