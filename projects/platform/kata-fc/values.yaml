@@ -1,0 +1,5 @@
+# Smoke test boots a microVM via the kata-fc RuntimeClass and prints the guest
+# kernel. Flip enabled=false once the runtime is validated.
+smokeTest:
+  enabled: true
+  image: docker.io/library/busybox:1.37
