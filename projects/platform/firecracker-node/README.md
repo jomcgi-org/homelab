@@ -42,12 +42,22 @@ sudo install -m644 containerd-devpool.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now containerd-devpool.service  # 2. boot-persistence
 sudo bash install-kata.sh           # 3. install Kata + Firecracker to /opt/kata (non-disruptive)
 sudo bash fix-kata-containerd.sh    # 4. wire containerd + restart k3s-agent (DISRUPTIVE; auto-rollback)
+sudo bash seed-devmapper-images.sh  # 5. seed the pause/sandbox image into devmapper
 ```
 
 Step 4 restarts k3s-agent (brief node-4 perturbation) and self-reverts if the
 node does not come back healthy. After it succeeds, `k3s ctr plugins ls` shows
 the `devmapper` snapshotter `ok` and the rendered `config.toml` carries the
 `kata-fc` runtime.
+
+Step 5 is required because kata-fc runs every image as a devmapper block device,
+but the shared pause/sandbox image predates devmapper (and its layer content was
+GC'd after the original overlayfs unpack), so the first kata-fc pod fails its
+sandbox create with `content digest ... not found`. Seeding it once fixes this
+for good (the devmapper snapshot persists in `devpool`); app images the kubelet
+pulls fresh into devmapper automatically. The `--local` pull path in the seed
+script is required because containerd 2.x's default transfer service throws
+`no unpack platforms defined` with `--snapshotter`.
 
 ## Verify
 
