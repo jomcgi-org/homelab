@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,7 +44,19 @@ type Config struct {
 	// GuestVCPUs and GuestMemMib size each microVM.
 	GuestVCPUs  int
 	GuestMemMib int
+
+	// EgressSidecar is the localhost address of the egress-proxy sidecar (ADR
+	// 023) the loop forwards guest egress to. Empty disables egress forwarding.
+	EgressSidecar string
+	// InjectedEnv is harness environment injected into each guest via the Assign
+	// message, gathered from FC_AGENTD_INJECT_<NAME> env vars (the prefix is
+	// stripped). Lets chart values supply the goose provider/model + the model
+	// base URL without hardcoding cluster config in the guest binary.
+	InjectedEnv map[string]string
 }
+
+// injectEnvPrefix marks env vars fc-agentd forwards into the guest (stripped).
+const injectEnvPrefix = "FC_AGENTD_INJECT_"
 
 // Load resolves configuration from the environment, applying defaults. It
 // returns an error only for values that are present but malformed.
@@ -61,6 +74,8 @@ func Load() (Config, error) {
 		HarnessInit:       getenvDefault("FC_AGENTD_HARNESS_INIT", "/usr/local/bin/fc-agent-init"),
 		GuestVCPUs:        atoiDefault("FC_AGENTD_GUEST_VCPUS", 1),
 		GuestMemMib:       atoiDefault("FC_AGENTD_GUEST_MEM_MIB", 1024),
+		EgressSidecar:     os.Getenv("FC_AGENTD_EGRESS_SIDECAR"),
+		InjectedEnv:       injectedEnv(),
 	}
 
 	if c.Node == "" {
@@ -80,6 +95,25 @@ func Load() (Config, error) {
 	}
 
 	return c, nil
+}
+
+// injectedEnv collects FC_AGENTD_INJECT_<NAME> env vars into a {<NAME>: value}
+// map (prefix stripped), the harness env the controller forwards to each guest.
+func injectedEnv() map[string]string {
+	out := map[string]string{}
+	for _, kv := range os.Environ() {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(name, injectEnvPrefix) {
+			continue
+		}
+		if stripped := strings.TrimPrefix(name, injectEnvPrefix); stripped != "" {
+			out[stripped] = val
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func getenvDefault(key, def string) string {

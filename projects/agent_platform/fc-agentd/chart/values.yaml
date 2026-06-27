@@ -23,6 +23,33 @@ rootfsBuilder:
   # Size of the ext4 base rootfs image built from the harness filesystem.
   rootfsSize: 3G
 
+# Guest egress (ADR 023). fc-agentd forwards the guest's vsock-1025 stream to the
+# egress-proxy sidecar, which forwards only to allowlisted destinations. The goose
+# model config is injected into the guest over the Assign message (FC_AGENTD_INJECT_*)
+# so cluster config is not hardcoded in the guest binary. 6a is plain allowlisted
+# egress (no secret swap); 6b adds TLS termination + placeholder substitution.
+egress:
+  enabled: true
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/agent_platform/egress-proxy
+    tag: latest
+  # Where fc-agentd forwards guest egress (the sidecar's listen address, pod-local).
+  sidecarAddr: 127.0.0.1:8888
+  # Destinations the sidecar may forward to (exact host[:port], comma-separated).
+  allowlist: inference.inference.svc.cluster.local:8080
+  # goose provider/model + the in-cluster OpenAI-compatible base URL, injected
+  # into the guest. Kept in values (not the guest binary) as cluster config.
+  goose:
+    provider: openai
+    model: qwen3.6-27b
+    baseURL: http://inference.inference.svc.cluster.local:8080/v1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 64Mi
+
 replicas: 1
 
 # node + arch the controller manages. Firecracker snapshots are node/arch-bound,

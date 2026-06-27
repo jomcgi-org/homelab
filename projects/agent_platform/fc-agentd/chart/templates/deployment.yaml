@@ -114,6 +114,18 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
+            {{- if and .Values.firecracker.enabled .Values.egress.enabled }}
+            # Egress (ADR 023): forward guest vsock egress to the sidecar, and
+            # inject the goose model config into the guest via the Assign message.
+            - name: FC_AGENTD_EGRESS_SIDECAR
+              value: {{ .Values.egress.sidecarAddr | quote }}
+            - name: FC_AGENTD_INJECT_GOOSE_PROVIDER
+              value: {{ .Values.egress.goose.provider | quote }}
+            - name: FC_AGENTD_INJECT_GOOSE_MODEL
+              value: {{ .Values.egress.goose.model | quote }}
+            - name: FC_AGENTD_INJECT_OPENAI_BASE_URL
+              value: {{ .Values.egress.goose.baseURL | quote }}
+            {{- end }}
             {{- with .Values.tracing.endpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
@@ -138,6 +150,32 @@ spec:
             - name: nvme
               mountPath: {{ .Values.firecracker.nvmeRoot }}
           {{- end }}
+        {{- if and .Values.firecracker.enabled .Values.egress.enabled }}
+        # Egress-proxy sidecar (ADR 023): the only process that reaches the
+        # network on the guest's behalf, allowlisted. fc-agentd forwards guest
+        # vsock egress here over localhost; the sidecar never sees the guest's
+        # control frames. 6a is plain allowlist-forward; 6b adds TLS termination
+        # + placeholder secret-swap. Runs non-root (overriding the pod's root).
+        - name: egress-proxy
+          image: "{{ .Values.egress.image.repository }}:{{ .Values.egress.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: EGRESS_LISTEN
+              value: {{ .Values.egress.sidecarAddr | quote }}
+            - name: EGRESS_ALLOWLIST
+              value: {{ .Values.egress.allowlist | quote }}
+          resources:
+            {{- toYaml .Values.egress.resources | nindent 12 }}
+        {{- end }}
       {{- if .Values.firecracker.enabled }}
       volumes:
         - name: dev-kvm
