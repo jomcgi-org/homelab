@@ -38,6 +38,13 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// A raw Firecracker boot hands PID 1 no environment (the kernel ignores the
+	// OCI image config), so establish the baseline the harness needs to find its
+	// tools. goose lives in /usr/local/bin; gh/git/node in /usr/bin. HOME anchors
+	// goose's config under /home/goose-agent (matching the harness image).
+	ensureEnv("PATH", "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/local/sbin")
+	ensureEnv("HOME", "/home/goose-agent")
+
 	threadID := os.Getenv("FC_THREAD_ID")
 	idleAfter := durationEnv("FC_IDLE_AFTER", 60*time.Second)
 
@@ -204,6 +211,14 @@ func dialController(ctx context.Context, logger *slog.Logger) *vsockproto.Conn {
 			return nil
 		case <-time.After(200 * time.Millisecond):
 		}
+	}
+}
+
+// ensureEnv sets key to def only when it is unset, so an injected value (e.g. a
+// future SandboxTemplate) still wins over the boot-time baseline.
+func ensureEnv(key, def string) {
+	if os.Getenv(key) == "" {
+		_ = os.Setenv(key, def)
 	}
 }
 
