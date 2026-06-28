@@ -66,12 +66,17 @@ priorityClassName: homelab-critical
 tolerations: []
 affinity: {}
 
+# fc-agentd launches Firecracker microVMs as child processes, so each guest's
+# memory (firecracker.guestMemMib, default 1024Mi) counts against this container's
+# cgroup. The limit must hold the daemon plus the live microVMs, or the guest's
+# pages OOM-kill the whole container (137) the moment a thread does real work.
+# Burstable: a small steady-state request, a limit that fits ~1 active microVM.
 resources:
   requests:
     cpu: 50m
-    memory: 64Mi
+    memory: 512Mi
   limits:
-    memory: 256Mi
+    memory: 2Gi
 
 # The monolith Postgres DSN (claude_agent.agent_threads registry). Defaults to
 # the CNPG-generated app credential. When deployed outside the monolith
