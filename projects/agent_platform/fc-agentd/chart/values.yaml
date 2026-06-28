@@ -126,6 +126,17 @@ egress:
 
 replicas: 1
 
+# Pod annotations. The egress-proxy sidecar tunnels guest egress to upstreams;
+# its connection to the Linkerd-meshed monolith backend (port 8000, the artifact
+# publish target, ADR 024) stalls in the pod's Linkerd outbound when blind-
+# tunnelled, while unmeshed upstreams (the in-cluster model on 8080) work. Skip
+# Linkerd outbound for port 8000 so the egress-proxy reaches the monolith as a
+# plain in-cluster client (the monolith's permissive Linkerd inbound accepts it,
+# the same path unmeshed callers use). Scoped to 8000, so only the artifact
+# publish is affected; everything else stays meshed.
+podAnnotations:
+  config.linkerd.io/skip-outbound-ports: "8000"
+
 # node + arch the controller manages. Firecracker snapshots are node/arch-bound,
 # so the daemon is pinned to its node and only reconciles that node's threads.
 node: node-4
