@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 
+import artifact
 import chat_public
 import dr_jobs
 import hikes
@@ -33,7 +34,7 @@ from sqlmodel import Session, text
 
 configure_logging()
 
-logger = logging.getLogger("monolith_public")
+logger = logging.getLogger("monolith.public")
 
 app = FastAPI(title="Monolith Public")
 
@@ -46,6 +47,7 @@ worldcup.register_public(app)
 knowledge.register_public(app)
 home.register_public(app)
 chat_public.register_public(app)
+artifact.register_public(app)
 
 
 @app.get("/healthz")

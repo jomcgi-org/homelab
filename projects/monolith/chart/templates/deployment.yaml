@@ -162,6 +162,16 @@ spec:
             - name: CHAT_BLOB_S3_BUCKET
               value: {{ .Values.chat.blobBucket | quote }}
             {{- end }}
+            {{- if .Values.artifact }}
+            # goosecracker artifact store (ADR 024) reuses the shared SeaweedFS S3
+            # endpoint/creds above. The full monolith mediates artifact writes
+            # (the agent guest holds no S3 credential); ARTIFACT_PUBLIC_BASE is the
+            # origin the publish response returns the artifact URL on.
+            - name: ARTIFACTS_S3_BUCKET
+              value: {{ .Values.artifact.bucket | quote }}
+            - name: ARTIFACT_PUBLIC_BASE
+              value: {{ .Values.artifact.publicBase | quote }}
+            {{- end }}
             {{- end }}
           livenessProbe:
             httpGet:

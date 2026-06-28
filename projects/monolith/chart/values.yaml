@@ -538,6 +538,14 @@ stars:
 chat:
   blobBucket: "chat"
 
+# goosecracker artifact store (ADR 024). The full monolith writes agent-built
+# HTML to s3://<bucket>/<id>/index.html (reusing the shared SeaweedFS S3
+# endpoint/creds from the stars block) and returns the artifact URL on
+# publicBase. The bucket auto-creates on first write.
+artifact:
+  bucket: "artifacts"
+  publicBase: "https://jomcgi.dev"
+
 cfIngress:
   private:
     enabled: true

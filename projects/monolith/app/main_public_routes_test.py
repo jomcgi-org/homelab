@@ -86,6 +86,11 @@ ALLOWED_PREFIXES = (
     # only in-cluster from the SSR front door over Linkerd mTLS, never directly
     # from the internet.
     "/internal/chat",
+    # Internal-only artifact read API (ADR 024): mounted on the public binary so
+    # the SSR frontend can proxy /artifact/<id>/raw + /version in-cluster, but
+    # kept off the public HTTPRoute (the frontend is the sole public origin). The
+    # write router is NOT mounted here (the public tier stays read-only).
+    "/internal/artifact",
     "/healthz",
     # Deep health probe (DB reachable + public_reader can query). Reached via the
     # frontend /health same-origin proxy; not a private surface.
