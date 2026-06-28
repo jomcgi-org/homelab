@@ -27,8 +27,8 @@ logger = logging.getLogger("dr_jobs")
 SCRAPE_TIMEOUT_SECS = 60.0
 
 # Discord channel for the new-jobs digest (same server as the monolith bot).
-# Must be present in MONOLITH_AGENT_DISCORD_ALLOWED_CHANNEL_IDS (see
-# deploy/values.yaml agent.discord.allowedChannelIds) or notify() rejects it.
+# notify() enqueues to the outbox; the leader's bot posts it. The bot must be a
+# member of this channel's server (the operative boundary; no app allow-list).
 DISCORD_CHANNEL_ID = os.environ.get("DR_JOBS_DISCORD_CHANNEL_ID", "1516663194699960382")
 
 # Cap the digest so a large batch (or first real scrape after a long gap) cannot

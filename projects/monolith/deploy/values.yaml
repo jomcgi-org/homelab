@@ -152,8 +152,5 @@ agent:
   discord:
     defaultServerId: "1501965852042330302"
     defaultChannelId: "1501965852969402517"
-    allowedChannelIds:
-      - "1501965852969402517"
-      - "1516663194699960382" # dr-jobs new-vacancy digest
   signoz:
     url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"

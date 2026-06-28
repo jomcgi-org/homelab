@@ -12,7 +12,6 @@ from agent import notify as notify_mod
 def discord_env(monkeypatch):
     monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "S1")
     monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID", "C-default")
-    monkeypatch.setenv("MONOLITH_AGENT_DISCORD_ALLOWED_CHANNEL_IDS", "9999, 8888")
 
 
 @contextmanager
@@ -49,16 +48,10 @@ async def test_notify_passes_level_through(discord_env):
 
 
 @pytest.mark.asyncio
-async def test_notify_succeeds_for_allow_listed_channel(discord_env):
+async def test_notify_enqueues_explicit_channel(discord_env):
+    # Any channel is enqueued; the bot's server membership (not an app
+    # allow-list) bounds where it can actually post.
     with _patched_outbox() as (enqueue, session):
         result = await notify_mod.notify("hi", channel="9999")
     enqueue.assert_called_once_with(session, "9999", content="hi", level="info")
     assert result == {"ok": True, "channel": "9999", "queued": True}
-
-
-@pytest.mark.asyncio
-async def test_notify_rejects_channel_not_in_allow_list(discord_env):
-    with _patched_outbox() as (enqueue, _session):
-        with pytest.raises(ValueError, match="not in allow-list"):
-            await notify_mod.notify("hi", channel="forbidden")
-    enqueue.assert_not_called()
