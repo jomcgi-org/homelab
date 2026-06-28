@@ -46,6 +46,8 @@ multirun(
         "//projects/agent_platform/fc-agentd/chart:chart.push",
         "//projects/agent_platform/fc-agentd/rootfs-builder:image.push",
         "//projects/agent_platform/fc-agentd:image.push",
+        "//projects/agent_platform/git-mirror/chart:chart.push",
+        "//projects/agent_platform/git-mirror:image.push",
         "//projects/agent_platform/harness:image.push",
         "//projects/grimoire/api:image.push",
         "//projects/grimoire/frontend:image.push",
