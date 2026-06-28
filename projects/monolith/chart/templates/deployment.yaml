@@ -140,8 +140,6 @@ spec:
               value: {{ .Values.agent.discord.defaultServerId | quote }}
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
               value: {{ .Values.agent.discord.defaultChannelId | quote }}
-            - name: MONOLITH_AGENT_DISCORD_ALLOWED_CHANNEL_IDS
-              value: {{ join "," .Values.agent.discord.allowedChannelIds | quote }}
             - name: SIGNOZ_URL
               value: {{ .Values.agent.signoz.url | quote }}
             {{- end }}

@@ -129,8 +129,8 @@ async def monolith_agent_notify(
 ) -> dict:
     """Post a Discord message via the in-process bot.
 
-    Defaults to the homelab channel from settings. The ``channel`` arg,
-    if specified, must be in the configured allow-list.
+    Defaults to the homelab channel from settings. The ``channel`` arg, if
+    specified, must be a channel in a server the bot has been added to.
     """
     return await notify_mod.notify(message, level=level, channel=channel)
 
