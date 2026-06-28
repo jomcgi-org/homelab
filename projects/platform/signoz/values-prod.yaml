@@ -213,13 +213,16 @@ signoz:
       # Health probes are exempt and stay on /api/v1/health at the root.
       signoz_global_external__url: https://private.jomcgi.dev/app/signoz
   clickhouse:
+    # 7-day SigNoz working_set ~6.4Gi, growing, against the old 8Gi limit (~80%).
+    # Raised request 5 -> 6.5 to reserve real usage and limit 8 -> 10 for headroom
+    # (node-4 has ample room). The telemetry store is the binding signoz tenant.
     resources:
       requests:
         cpu: 2
-        memory: 5Gi
+        memory: 6.5Gi
       limits:
         cpu: 4
-        memory: 8Gi
+        memory: 10Gi
     persistence:
       size: 150Gi
     # System table TTL settings (days) - prevents unbounded growth
@@ -244,18 +247,23 @@ signoz:
         ttl: 7
     # Zookeeper is a subchart of clickhouse
     zookeeper:
+      # 7-day working_set ~1.13Gi against a 1Gi request: raised 1 -> 1.25 to
+      # reserve real usage. Lives on a small (12.3Gi) control-plane node.
       resources:
         requests:
           cpu: 100m
-          memory: 1Gi
+          memory: 1.25Gi
         limits:
           cpu: 1
           memory: 1.5Gi
   otelCollector:
+    # 7-day SigNoz peak RSS 667Mi / working_set 680Mi: the old 2Gi request / 4Gi
+    # limit reserved ~3x the real peak. Trimmed to 768Mi / 1.5Gi (above the 680Mi
+    # peak with ~2x burst headroom for incident-time telemetry spikes).
     resources:
       requests:
         cpu: 200m
-        memory: 2Gi
+        memory: 768Mi
       limits:
         cpu: 2
-        memory: 4Gi
+        memory: 1.5Gi

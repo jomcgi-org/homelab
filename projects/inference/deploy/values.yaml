@@ -268,12 +268,16 @@ readinessProbe:
 # memory pressure now that its memory request is set to steady-state, not peak.
 priorityClassName: homelab-critical
 
-# Burstable memory (ADR platform/010): request = steady-state, limit = peak.
-# 7-day SigNoz peak memory is ~20Gi (vLLM KV cache), but steady-state is ~5Gi and
-# sub-peaks ~6.6Gi, and the 20Gi spike is rare and uncorrelated with other node-4
-# workloads. Requesting 8Gi (steady + margin) instead of 24Gi frees ~16Gi of
-# node-4 reservation for the agent-microVM tier; the 32Gi limit still covers the
-# burst.
+# Burstable memory (ADR platform/010): request = steady-state, limit holds the
+# real anonymous peak. The model and its KV cache live in GPU VRAM, which is a
+# separate resource from the host RAM this limit governs. 7-day SigNoz shows host
+# RSS (the non-reclaimable part that can actually OOM) never exceeds ~5Gi.
+# working_set spikes to ~20Gi only during model load, when the ~18-20GB of int4
+# weight files transit host page cache on the way to VRAM; that cache is clean and
+# reclaimable, so the cgroup evicts it before any OOM. A 16Gi limit sits ~3x above
+# the real RSS and only forces page-cache reclaim during the rare load, which is
+# harmless (the weights are already in VRAM by then). Trimmed 32 -> 16 to keep the
+# node-4 paper overcommit honest for the agent-microVM tier.
 # CPU request trimmed 4 -> 2: vLLM decode is GPU-bound, 7-day SigNoz peak CPU is
 # ~1715m (avg ~7m), so 2 cores covers peak with headroom.
 resources:
@@ -282,7 +286,7 @@ resources:
     memory: "8Gi"
     nvidia.com/gpu: 1
   limits:
-    memory: "32Gi"
+    memory: "16Gi"
     nvidia.com/gpu: 1
 
 # Embeddings are served by llama.cpp on CPU (no GPU layers).
@@ -324,9 +328,13 @@ embeddings:
     linkerd.io/inject: disabled
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
+  # 7-day SigNoz RSS is ~5.5Gi and almost entirely anonymous (working_set == RSS:
+  # llama.cpp holds the GGUF weights in host RAM, n-gpu-layers 0), so the 4Gi
+  # request under-reserved what it actually needs. Raised 4 -> 6 to reserve the
+  # real footprint; the 8Gi limit keeps headroom for ubatch spikes.
   resources:
     requests:
       cpu: 2
-      memory: "4Gi"
+      memory: "6Gi"
     limits:
       memory: "8Gi"
