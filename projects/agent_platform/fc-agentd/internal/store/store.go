@@ -35,6 +35,11 @@ type Thread struct {
 	// Recipe and Task are the work assignment delivered to the guest over vsock.
 	Recipe string
 	Task   string
+	// Tier selects the model substrate the controller injects into the guest
+	// (ADR 024): "artifact" reaches Gemini via OpenRouter (key swapped at egress),
+	// the default/empty tier reaches in-cluster Qwen. The tier also bounds which
+	// secret placeholders the guest holds, so it is the credential trust boundary.
+	Tier string
 	// WakeRequestedAt is non-zero when a caller has asked an IDLE thread to be
 	// restored (the one piece of desired state callers set). Zero means no
 	// pending wake.
@@ -106,7 +111,7 @@ const threadColumns = `thread_id, state, repo, branch, node, arch,
 		COALESCE(base_snapshot_ref, ''), COALESCE(thread_snapshot_ref, ''),
 		COALESCE(size_bytes, 0), COALESCE(discord_thread, ''),
 		created_at, last_active_at, COALESCE(ttl_secs, 0),
-		COALESCE(recipe, ''), COALESCE(task, ''),
+		COALESCE(recipe, ''), COALESCE(task, ''), COALESCE(tier, ''),
 		COALESCE(wake_requested_at, 'epoch'::timestamptz)`
 
 func (s *Store) queryThreads(ctx context.Context, where string, args ...any) ([]Thread, error) {
@@ -123,7 +128,7 @@ func (s *Store) queryThreads(ctx context.Context, where string, args ...any) ([]
 			&t.ThreadID, &t.State, &t.Repo, &t.Branch, &t.Node, &t.Arch,
 			&t.BaseSnapshotRef, &t.ThreadSnapshotRef, &t.SizeBytes, &t.DiscordThread,
 			&t.CreatedAt, &t.LastActiveAt, &t.TTLSeconds,
-			&t.Recipe, &t.Task, &t.WakeRequestedAt,
+			&t.Recipe, &t.Task, &t.Tier, &t.WakeRequestedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan thread: %w", err)
 		}

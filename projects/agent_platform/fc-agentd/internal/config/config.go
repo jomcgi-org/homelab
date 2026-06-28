@@ -65,15 +65,31 @@ type Config struct {
 	// EgressSidecar is the localhost address of the egress-proxy sidecar (ADR
 	// 023) the loop forwards guest egress to. Empty disables egress forwarding.
 	EgressSidecar string
-	// InjectedEnv is harness environment injected into each guest via the Assign
-	// message, gathered from FC_AGENTD_INJECT_<NAME> env vars (the prefix is
-	// stripped). Lets chart values supply the goose provider/model + the model
-	// base URL without hardcoding cluster config in the guest binary.
+	// InjectedEnv is the common harness environment injected into every guest
+	// regardless of tier, gathered from FC_AGENTD_INJECT_<NAME> env vars (the
+	// prefix is stripped). This is tier-independent infrastructure (e.g. the
+	// egress CA cert), never a credential or model selector.
 	InjectedEnv map[string]string
+	// TierEnv is the per-tier harness environment (ADR 024), gathered from
+	// FC_AGENTD_TIER_<TIER>__<NAME> env vars: {<TIER>: {<NAME>: value}}. The
+	// thread's tier selects one map, which the controller merges over InjectedEnv
+	// and injects into the guest. A tier is exactly the model endpoint plus the
+	// secret PLACEHOLDERS the guest may hold, so it is the credential trust
+	// boundary: an artifact-tier guest holds the OpenRouter placeholder and no gh
+	// token, a default-tier guest holds the in-cluster Qwen config.
+	TierEnv map[string]map[string]string
 }
 
-// injectEnvPrefix marks env vars fc-agentd forwards into the guest (stripped).
+// injectEnvPrefix marks env vars fc-agentd forwards into every guest (stripped).
 const injectEnvPrefix = "FC_AGENTD_INJECT_"
+
+// tierEnvPrefix marks per-tier env vars (ADR 024). The remainder is
+// "<TIER>__<NAME>": the "__" separates the tier name (no underscores) from the
+// env name (which may contain underscores, e.g. OPENAI_API_KEY).
+const tierEnvPrefix = "FC_AGENTD_TIER_"
+
+// tierEnvSep separates the tier name from the env name in a tierEnvPrefix var.
+const tierEnvSep = "__"
 
 // Load resolves configuration from the environment, applying defaults. It
 // returns an error only for values that are present but malformed.
@@ -95,6 +111,7 @@ func Load() (Config, error) {
 		GuestOOMScoreAdj:  atoiDefault("FC_AGENTD_GUEST_OOM_SCORE_ADJ", 1000),
 		EgressSidecar:     os.Getenv("FC_AGENTD_EGRESS_SIDECAR"),
 		InjectedEnv:       injectedEnv(),
+		TierEnv:           tierEnv(),
 	}
 
 	if c.Node == "" {
@@ -128,6 +145,32 @@ func injectedEnv() map[string]string {
 		if stripped := strings.TrimPrefix(name, injectEnvPrefix); stripped != "" {
 			out[stripped] = val
 		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// tierEnv collects FC_AGENTD_TIER_<TIER>__<NAME> env vars into a nested
+// {<TIER>: {<NAME>: value}} map (ADR 024). Vars whose remainder lacks the
+// "__" separator, or whose tier/name is empty, are skipped.
+func tierEnv() map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, kv := range os.Environ() {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(name, tierEnvPrefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(name, tierEnvPrefix)
+		tier, key, ok := strings.Cut(rest, tierEnvSep)
+		if !ok || tier == "" || key == "" {
+			continue
+		}
+		if out[tier] == nil {
+			out[tier] = map[string]string{}
+		}
+		out[tier][key] = val
 	}
 	if len(out) == 0 {
 		return nil

@@ -392,3 +392,50 @@ func TestDryRunWithoutRegistry(t *testing.T) {
 }
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestEnvForTier covers ADR 024 tier selection: a tier's env is merged over the
+// common GooseEnv, an empty tier resolves to "default", and an unknown tier
+// fails safe to the common env alone (no other tier's credentials leak in).
+func TestEnvForTier(t *testing.T) {
+	l := &Loop{
+		GooseEnv: map[string]string{"EGRESS_CA_CERT": "ca"},
+		TierEnv: map[string]map[string]string{
+			"default":  {"OPENAI_HOST": "http://qwen:8080", "GITHUB_TOKEN": "kloak:gh:x"},
+			"artifact": {"OPENAI_HOST": "https://openrouter.ai/api", "OPENAI_API_KEY": "kloak:or:x"},
+		},
+	}
+	log := testLogger()
+
+	// Empty tier -> "default", merged over the common env.
+	def := l.envForTier(log, "")
+	if def["EGRESS_CA_CERT"] != "ca" || def["OPENAI_HOST"] != "http://qwen:8080" {
+		t.Fatalf("empty tier should resolve to default merged over common env: %v", def)
+	}
+
+	// Artifact tier holds the OpenRouter placeholder and, crucially, NOT the gh
+	// token (the credential trust boundary, ADR 024).
+	art := l.envForTier(log, "artifact")
+	if art["OPENAI_API_KEY"] != "kloak:or:x" {
+		t.Fatalf("artifact tier should hold the openrouter placeholder: %v", art)
+	}
+	if _, leaked := art["GITHUB_TOKEN"]; leaked {
+		t.Fatal("artifact tier must NOT hold the gh token placeholder (tier boundary leak)")
+	}
+	if art["EGRESS_CA_CERT"] != "ca" {
+		t.Fatalf("artifact tier should still get the common CA cert: %v", art)
+	}
+
+	// Unknown tier fails safe to the common env alone.
+	unk := l.envForTier(log, "nope")
+	if _, ok := unk["OPENAI_HOST"]; ok {
+		t.Fatalf("unknown tier should not get any model credential: %v", unk)
+	}
+	if unk["EGRESS_CA_CERT"] != "ca" {
+		t.Fatalf("unknown tier should still get the common env: %v", unk)
+	}
+
+	// The merge must not mutate the shared input maps.
+	if _, mutated := l.GooseEnv["OPENAI_HOST"]; mutated {
+		t.Fatal("envForTier mutated the shared GooseEnv map")
+	}
+}

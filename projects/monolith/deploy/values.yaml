@@ -137,6 +137,13 @@ chat:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
+# goosecracker artifact tier (ADR 024): sync the OpenRouter API key into the
+# `goosecracker` Secret for the fc-agentd egress proxy to swap on openrouter.ai.
+goosecracker:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/goosecracker"
+
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
 # gardener paused, the raw export / file moves can be done as a controlled
 # one-off, and the gardener stays down until the CLI-based version (Phase 4a-ii)

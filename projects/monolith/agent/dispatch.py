@@ -58,6 +58,7 @@ def submit(
     repo: str = "",
     branch: str = "main",
     discord_thread: str = "",
+    tier: str = "",
     arch: str = DEFAULT_ARCH,
     node: str = DEFAULT_NODE,
     ttl_secs: int = 86400,
@@ -69,6 +70,11 @@ def submit(
     name to run, defaulting to "agent"; and ``task``, the task description) is
     stored on the new thread's row so the controller can hand it to the guest
     microVM over vsock.
+
+    ``tier`` selects the model substrate the controller injects into the guest
+    (ADR 024): "artifact" reaches Gemini via OpenRouter (key swapped at egress),
+    the default/empty tier reaches in-cluster Qwen. The tier also bounds which
+    secret placeholders the guest holds, so it is the credential trust boundary.
     """
     if thread_id:
         result = threads.request_resume(thread_id)
@@ -83,10 +89,10 @@ def submit(
                 INSERT INTO claude_agent.agent_threads
                     (thread_id, state, repo, branch, node, arch,
                      base_snapshot_ref, discord_thread, ttl_secs,
-                     recipe, task)
+                     recipe, task, tier)
                 VALUES (:id, 'PENDING', :repo, :branch, :node, :arch,
                         :base_ref, :discord_thread, :ttl,
-                        :recipe, :task)
+                        :recipe, :task, :tier)
                 """
             ),
             {
@@ -100,6 +106,7 @@ def submit(
                 "ttl": ttl_secs,
                 "recipe": recipe,
                 "task": task,
+                "tier": tier,
             },
         )
         session.commit()

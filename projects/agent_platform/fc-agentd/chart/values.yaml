@@ -47,15 +47,34 @@ egress:
   # Destinations permitted under policy=allowlist (host[:port], comma-separated).
   # Ignored under policy=allow. secrets[*].egressTo are always permitted.
   allowlist: ""
-  # Env injected into the guest harness (provider/model/keys), carried on the
-  # Assign message. Real URLs: the guest's wildcard DNS + transparent funnel route
-  # them and the sidecar resolves the real name. OPENAI_HOST is scheme+host with no
-  # path (goose appends OPENAI_BASE_PATH). apiKey must be set though vLLM is keyless.
-  harnessEnv:
-    OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
-    OPENAI_API_KEY: sk-noauth
-    GOOSE_PROVIDER: openai
-    GOOSE_MODEL: qwen3.6-27b
+  # Per-tier env injected into the guest harness (ADR 024), carried on the Assign
+  # message. The thread's `tier` column selects one map; fc-agentd merges it over
+  # the common injected env (the CA cert) and injects the result into the guest.
+  # A tier is exactly the model endpoint plus the secret PLACEHOLDERS the guest is
+  # allowed to hold, so the tier is the credential trust boundary: the artifact
+  # tier holds the OpenRouter placeholder and NO gh token, so the sidecar's gh
+  # swap can never fire for an artifact-tier guest.
+  #
+  # Real URLs: the guest's wildcard DNS + transparent funnel route them and the
+  # sidecar resolves the real name. OPENAI_HOST is scheme+host with no path (goose
+  # appends OPENAI_BASE_PATH). OPENAI_API_KEY must be set though vLLM is keyless;
+  # for the artifact tier it is the high-entropy placeholder the sidecar swaps for
+  # the real OpenRouter key on openrouter.ai (must match secrets[].placeholder).
+  # An empty/legacy tier falls back to "default" (in-cluster Qwen).
+  tiers:
+    default:
+      OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
+      OPENAI_API_KEY: sk-noauth
+      GOOSE_PROVIDER: openai
+      GOOSE_MODEL: qwen3.6-27b
+      # The proven 6b gh flow: a default-tier guest holds the gh placeholder, which
+      # the sidecar swaps for the real token only on api.github.com.
+      GITHUB_TOKEN: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
+    artifact:
+      OPENAI_HOST: https://openrouter.ai/api
+      OPENAI_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
+      GOOSE_PROVIDER: openai
+      GOOSE_MODEL: google/gemini-3.5-flash
   # 6b CA: cert-manager generates + rotates the self-signed CA the sidecar uses to
   # mint leaf certs when it TLS-terminates a secret-bearing destination. Only
   # created when `secrets` below is non-empty.
@@ -78,6 +97,15 @@ egress:
       placeholder: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
       egressTo: [api.github.com]
       secretRef: { name: monolith-chat-secrets, key: GITHUB_TOKEN }
+    # The artifact tier's OpenRouter key (ADR 024): the guest holds this
+    # placeholder as OPENAI_API_KEY (egress.tiers.artifact); the sidecar swaps it
+    # for the real key only on openrouter.ai. The real value is synced from
+    # 1Password into the `goosecracker` Secret by the monolith chart's
+    # OnePasswordItem. placeholder MUST match egress.tiers.artifact.OPENAI_API_KEY.
+    - env: OPENROUTER_KEY
+      placeholder: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
+      egressTo: [openrouter.ai]
+      secretRef: { name: goosecracker, key: OPENROUTER_API_KEY }
   resources:
     requests:
       cpu: 50m
