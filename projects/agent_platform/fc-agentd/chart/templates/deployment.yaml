@@ -133,6 +133,15 @@ spec:
             # egress to the sidecar, which routes by SNI/Host.
             - name: FC_AGENTD_EGRESS_SIDECAR
               value: {{ .Values.egress.sidecarAddr | quote }}
+            {{- with .Values.egress.funnelPorts }}
+            # Loopback ports the guest's transparent egress funnel listens on
+            # (ADR 023). Injected as EGRESS_PORTS into every guest; fc-agent-init
+            # tunnels each to the sidecar, which routes by SNI/Host. Must include
+            # every upstream port a guest dials: 443 (OpenRouter/web), 8080 (the
+            # in-cluster model), and 8000 (the monolith artifact publish, ADR 024).
+            - name: FC_AGENTD_INJECT_EGRESS_PORTS
+              value: {{ . | quote }}
+            {{- end }}
             {{- range $tier, $env := .Values.egress.tiers }}
             {{- range $k, $v := $env }}
             - name: FC_AGENTD_TIER_{{ $tier }}__{{ $k }}
