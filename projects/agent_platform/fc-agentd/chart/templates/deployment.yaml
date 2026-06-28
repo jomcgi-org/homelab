@@ -123,8 +123,10 @@ spec:
               value: {{ .Values.egress.goose.provider | quote }}
             - name: FC_AGENTD_INJECT_GOOSE_MODEL
               value: {{ .Values.egress.goose.model | quote }}
-            - name: FC_AGENTD_INJECT_OPENAI_BASE_URL
-              value: {{ .Values.egress.goose.baseURL | quote }}
+            - name: FC_AGENTD_INJECT_OPENAI_HOST
+              value: {{ .Values.egress.goose.host | quote }}
+            - name: FC_AGENTD_INJECT_OPENAI_API_KEY
+              value: {{ .Values.egress.goose.apiKey | quote }}
             {{- end }}
             {{- with .Values.tracing.endpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
