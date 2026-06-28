@@ -105,6 +105,14 @@ spec:
               value: {{ .Values.firecracker.binPath | quote }}
             - name: FC_AGENTD_KERNEL_IMAGE
               value: {{ .Values.firecracker.kernelImagePath | quote }}
+            # Concurrency cap + per-guest RAM + OOM bias (see values.yaml `agent`).
+            # maxConcurrent * guestMemMib must fit under resources.limits.memory.
+            - name: FC_AGENTD_MAX_CONCURRENT
+              value: {{ .Values.agent.maxConcurrent | quote }}
+            - name: FC_AGENTD_GUEST_MEM_MIB
+              value: {{ .Values.agent.guestMemMib | quote }}
+            - name: FC_AGENTD_GUEST_OOM_SCORE_ADJ
+              value: {{ .Values.agent.guestOomScoreAdj | quote }}
             {{- with .Values.firecracker.rootfsPath }}
             - name: FC_AGENTD_ROOTFS_PATH
               value: {{ . | quote }}

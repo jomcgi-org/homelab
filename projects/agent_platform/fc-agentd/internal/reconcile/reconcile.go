@@ -55,6 +55,14 @@ type Loop struct {
 	Interval  time.Duration
 	Logger    *slog.Logger
 
+	// MaxConcurrent caps the number of live microVMs (RUNNING or restored) on this
+	// node. createPending and restoreWakeRequested stop claiming once the live set
+	// reaches it, leaving the rest PENDING / wake-requested for a later tick. With
+	// Firecracker's per-guest RAM cap this bounds the microVM memory in the
+	// daemon's cgroup, so a burst of submissions can never OOM the controller. 0
+	// disables the cap.
+	MaxConcurrent int
+
 	// ControlUDS resolves a thread's vsock control UDS path so the loop can serve
 	// the per-thread control channel (task delivery + idle/done). nil disables
 	// control serving (dry-run / tests with no vsock).
@@ -181,6 +189,12 @@ func (l *Loop) createPending(ctx context.Context, log *slog.Logger) {
 		if _, ok := l.live[t.ThreadID]; ok {
 			continue
 		}
+		if l.atCapacity() {
+			// Leave the rest PENDING; a later tick claims them as slots free.
+			log.Info("reconcile: at concurrency cap, deferring pending threads",
+				"max", l.MaxConcurrent, "live", len(l.live))
+			return
+		}
 		spec := substrate.ClaimSpec{ThreadID: t.ThreadID, Repo: t.Repo, Branch: t.Branch, Arch: t.Arch}
 		if t.BaseSnapshotRef != "" {
 			spec.BaseSnapshotRef = substrate.SnapshotRef{ID: t.BaseSnapshotRef, Node: t.Node, Arch: t.Arch, Base: true}
@@ -256,6 +270,12 @@ func (l *Loop) restoreWakeRequested(ctx context.Context, log *slog.Logger) {
 		if _, ok := l.live[t.ThreadID]; ok {
 			_ = l.Registry.ClearWake(ctx, t.ThreadID)
 			continue
+		}
+		if l.atCapacity() {
+			// Keep the wake request set; a later tick restores it once a slot frees.
+			log.Info("reconcile: at concurrency cap, deferring wake restores",
+				"max", l.MaxConcurrent, "live", len(l.live))
+			return
 		}
 		h, err := l.Executor.Restore(ctx, refFor(t))
 		if err != nil {
@@ -352,6 +372,12 @@ func refFor(t store.Thread) substrate.SnapshotRef {
 		Arch:      t.Arch,
 		SizeBytes: t.SizeBytes,
 	}
+}
+
+// atCapacity reports whether the live microVM set has reached MaxConcurrent. A
+// zero MaxConcurrent disables the cap (unbounded).
+func (l *Loop) atCapacity() bool {
+	return l.MaxConcurrent > 0 && len(l.live) >= l.MaxConcurrent
 }
 
 // LiveThreads reports the thread IDs the loop currently tracks (test/observability).
