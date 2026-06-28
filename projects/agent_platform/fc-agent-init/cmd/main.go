@@ -17,6 +17,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -70,15 +72,6 @@ func run(logger *slog.Logger) error {
 	conn := dialController(ctx, logger)
 	if conn != nil {
 		defer conn.Close()
-		// Route all harness egress through a local proxy that tunnels to the
-		// controller's vsock egress forwarder (ADR 023). The harness never reaches
-		// the network directly; its only egress is what the host sidecar allows.
-		go runEgressProxy(ctx, logger, guestProxyAddr)
-		proxyURL := "http://" + guestProxyAddr
-		ensureEnv("HTTP_PROXY", proxyURL)
-		ensureEnv("HTTPS_PROXY", proxyURL)
-		ensureEnv("http_proxy", proxyURL)
-		ensureEnv("https_proxy", proxyURL)
 	}
 
 	// Determine the work. A raw FC boot gives PID 1 no env, so the task arrives
@@ -87,6 +80,17 @@ func run(logger *slog.Logger) error {
 	harnessArgv := assignedHarness(logger, conn, threadID)
 	if harnessArgv == nil {
 		harnessArgv = harnessCommand()
+	}
+
+	// Make the guest a transparent egress funnel (ADR 023). The guest is
+	// vsock-only and goose's client ignores HTTP_PROXY, so instead of any proxy
+	// config we (1) answer every DNS query with 127.0.0.1 and (2) listen on the
+	// egress ports on loopback, tunnelling each accepted connection over vsock to
+	// the host sidecar, which routes it by SNI/Host. Set up after the injected env
+	// is applied and before the harness starts resolving. Only with a controller
+	// (the vsock egress hop needs the host).
+	if conn != nil {
+		setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"))
 	}
 
 	var harnessProc *exec.Cmd
@@ -233,20 +237,146 @@ func dialController(ctx context.Context, logger *slog.Logger) *vsockproto.Conn {
 	}
 }
 
-// guestProxyAddr is where the in-guest egress proxy listens; the harness's
-// HTTP(S)_PROXY points here. Every connection is tunnelled over vsock to the
-// host, so the harness has no direct network path.
-const guestProxyAddr = "127.0.0.1:3128"
+// defaultEgressPorts are the loopback ports the funnel captures when EGRESS_PORTS
+// is unset: HTTP, HTTPS, and the in-cluster model's port. With wildcard DNS every
+// name resolves to loopback, so a destination on any other port connects to
+// loopback with no listener and fails closed rather than escaping. Generic
+// any-port capture (iptables REDIRECT) is future work (ADR 023).
+var defaultEgressPorts = []int{80, 443, 8080}
 
-// runEgressProxy accepts local TCP connections (the harness's proxied egress)
-// and tunnels each over vsock EgressPort to the controller's forwarder, which
-// hands them to the egress-proxy sidecar (ADR 023). It returns when ctx is done.
-func runEgressProxy(ctx context.Context, logger *slog.Logger, addr string) {
-	ln, err := net.Listen("tcp", addr)
+// setupTransparentEgress makes the guest a dumb egress funnel (ADR 023). It
+// points the resolver at a wildcard responder that answers every name with
+// 127.0.0.1, then listens on each egress port on loopback and tunnels every
+// accepted connection over vsock to the host sidecar. The guest decides nothing
+// about routing; the sidecar recovers the real destination from the SNI/Host.
+func setupTransparentEgress(ctx context.Context, logger *slog.Logger, portsSpec string) {
+	writeResolvConf(logger)
+	go runWildcardDNS(ctx, logger)
+	for _, port := range parseEgressPorts(portsSpec) {
+		go runFunnel(ctx, logger, port)
+	}
+}
+
+// writeResolvConf points the guest's stub resolver at the in-guest wildcard DNS.
+func writeResolvConf(logger *slog.Logger) {
+	if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver 127.0.0.1\n"), 0o644); err != nil {
+		logger.Warn("write /etc/resolv.conf failed; harness name resolution may fail", "err", err)
+	}
+}
+
+// parseEgressPorts parses a comma-separated port list, falling back to
+// defaultEgressPorts when empty or fully invalid.
+func parseEgressPorts(spec string) []int {
+	var ports []int
+	for _, p := range strings.Split(spec, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 || n > 65535 {
+			continue
+		}
+		ports = append(ports, n)
+	}
+	if len(ports) == 0 {
+		return defaultEgressPorts
+	}
+	return ports
+}
+
+// runWildcardDNS answers every DNS query on 127.0.0.1:53 with an A record of
+// 127.0.0.1 (and NODATA for non-A types), so every hostname the harness resolves
+// points at the loopback funnel. It returns when ctx is done.
+func runWildcardDNS(ctx context.Context, logger *slog.Logger) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:53")
 	if err != nil {
-		logger.Warn("egress proxy listen failed; harness egress will fail", "addr", addr, "err", err)
+		logger.Warn("wildcard DNS listen failed; harness name resolution will fail", "err", err)
 		return
 	}
+	go func() {
+		<-ctx.Done()
+		_ = pc.Close()
+	}()
+	buf := make([]byte, 512)
+	for {
+		n, addr, err := pc.ReadFrom(buf)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Warn("wildcard DNS read", "err", err)
+			}
+			return
+		}
+		if resp := buildDNSResponse(buf[:n]); resp != nil {
+			if _, err := pc.WriteTo(resp, addr); err != nil {
+				logger.Warn("wildcard DNS write", "err", err)
+			}
+		}
+	}
+}
+
+// buildDNSResponse builds a minimal reply to a single-question DNS query: an A
+// query is answered with 127.0.0.1; any other type gets NODATA (NOERROR, no
+// answer) so the resolver falls back to the A record. Returns nil on a malformed
+// query.
+func buildDNSResponse(req []byte) []byte {
+	if len(req) < 12 {
+		return nil
+	}
+	// Walk the question's QNAME to find QTYPE/QCLASS (4 bytes after the root label).
+	off := 12
+	for off < len(req) {
+		l := int(req[off])
+		if l == 0 {
+			off++
+			break
+		}
+		if l&0xc0 != 0 { // a compression pointer has no place in a query QNAME
+			return nil
+		}
+		off += l + 1
+	}
+	if off+4 > len(req) {
+		return nil
+	}
+	qtype := uint16(req[off])<<8 | uint16(req[off+1])
+	qend := off + 4
+	isA := qtype == 1
+
+	resp := make([]byte, 0, qend+16)
+	resp = append(resp, req[0], req[1]) // echo ID
+	resp = append(resp, 0x81, 0x80)     // QR=1, RD=1, RA=1, RCODE=0
+	resp = append(resp, 0x00, 0x01)     // QDCOUNT=1
+	if isA {
+		resp = append(resp, 0x00, 0x01) // ANCOUNT=1
+	} else {
+		resp = append(resp, 0x00, 0x00) // ANCOUNT=0 (NODATA)
+	}
+	resp = append(resp, 0x00, 0x00, 0x00, 0x00) // NSCOUNT=0, ARCOUNT=0
+	resp = append(resp, req[12:qend]...)        // echo the question
+	if isA {
+		resp = append(resp,
+			0xc0, 0x0c, // NAME: pointer to the question name at offset 12
+			0x00, 0x01, // TYPE A
+			0x00, 0x01, // CLASS IN
+			0x00, 0x00, 0x00, 0x3c, // TTL 60s
+			0x00, 0x04, // RDLENGTH 4
+			0x7f, 0x00, 0x00, 0x01, // 127.0.0.1
+		)
+	}
+	return resp
+}
+
+// runFunnel listens on loopback:port and tunnels each accepted connection to the
+// host sidecar over vsock. It returns when ctx is done.
+func runFunnel(ctx context.Context, logger *slog.Logger, port int) {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Warn("egress funnel listen failed", "addr", addr, "err", err)
+		return
+	}
+	logger.Info("egress funnel listening", "addr", addr)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -255,24 +385,30 @@ func runEgressProxy(ctx context.Context, logger *slog.Logger, addr string) {
 		local, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() == nil {
-				logger.Warn("egress proxy accept", "err", err)
+				logger.Warn("egress funnel accept", "addr", addr, "err", err)
 			}
 			return
 		}
-		go tunnelEgress(logger, local)
+		go funnelToHost(logger, local, port)
 	}
 }
 
-// tunnelEgress dials the host over vsock and copies bytes both ways until either
-// side closes.
-func tunnelEgress(logger *slog.Logger, local net.Conn) {
+// funnelToHost dials the host over vsock, writes a one-line preamble carrying the
+// original destination port (the listener's port), then copies bytes both ways.
+// The sidecar recovers the destination host from the SNI/Host header and combines
+// it with this port to reach the real upstream.
+func funnelToHost(logger *slog.Logger, local net.Conn, port int) {
 	defer local.Close()
 	up, err := vsockdial.Dial(vsockproto.HostCID, vsockproto.EgressPort)
 	if err != nil {
-		logger.Warn("egress vsock dial", "err", err)
+		logger.Warn("egress funnel vsock dial", "port", port, "err", err)
 		return
 	}
 	defer up.Close()
+	if _, err := io.WriteString(up, strconv.Itoa(port)+"\n"); err != nil {
+		logger.Warn("egress funnel preamble write", "port", port, "err", err)
+		return
+	}
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(up, local); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(local, up); done <- struct{}{} }()
