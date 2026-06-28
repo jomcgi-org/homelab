@@ -2,7 +2,7 @@ apiVersion: v2
 name: git-mirror
 description: Hot git mirror for Firecracker agent workspaces on node-4 NVMe
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 maintainers:
   - name: jomcgi
