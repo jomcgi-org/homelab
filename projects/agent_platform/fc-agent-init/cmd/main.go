@@ -10,10 +10,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -126,12 +129,19 @@ func run(logger *slog.Logger) error {
 	if harnessProc != nil {
 		err := harnessProc.Wait()
 		logger.Info("harness exited", "err", err)
+		// Publish the artifact the harness produced (ADR 024). The monolith
+		// mediates the S3 write, so the guest just POSTs the file it built; doing
+		// it here (not in the goose recipe) makes publishing deterministic and
+		// observable (this log is captured host-side by fc-agentd, unlike the
+		// guest console which the PID-1-exit kernel panic truncates) and yields the
+		// URL for the Done result. No-op when ARTIFACT_PUBLISH_URL is unset.
+		artifactURL := publishArtifact(logger)
 		if conn != nil {
 			status := "ok"
 			if err != nil {
 				status = err.Error()
 			}
-			if serr := conn.Send(vsockproto.Message{Kind: vsockproto.KindDone, ThreadID: threadID, Status: status}); serr != nil {
+			if serr := conn.Send(vsockproto.Message{Kind: vsockproto.KindDone, ThreadID: threadID, Status: status, Result: artifactURL}); serr != nil {
 				logger.Warn("failed to send done signal", "err", serr)
 			}
 		}
@@ -455,6 +465,56 @@ func funnelToHost(logger *slog.Logger, local net.Conn, port int) {
 	go func() { _, _ = io.Copy(up, local); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(local, up); done <- struct{}{} }()
 	<-done
+}
+
+// artifactFile is where the artifact recipe writes the page to publish.
+const artifactFile = "/tmp/artifact.html"
+
+// publishArtifact POSTs the artifact the harness built to the monolith (ADR 024),
+// which performs the S3 write (the guest holds no S3 credential), and returns the
+// public URL. It is a no-op (returns "") when ARTIFACT_PUBLISH_URL is unset (any
+// non-artifact tier) or no artifact file was produced. The request egresses
+// through the transparent funnel like all guest traffic; doing the publish here
+// rather than in the goose recipe makes it deterministic and logs the exact
+// result host-side (the guest console is truncated by the PID-1-exit panic). An
+// ARTIFACT_ID re-publishes the same artifact id (hot reload across iterations).
+func publishArtifact(logger *slog.Logger) string {
+	url := os.Getenv("ARTIFACT_PUBLISH_URL")
+	if url == "" {
+		return ""
+	}
+	html, err := os.ReadFile(artifactFile)
+	if err != nil {
+		logger.Info("artifact: nothing to publish", "path", artifactFile, "err", err)
+		return ""
+	}
+	body := map[string]string{"html": string(html)}
+	if id := os.Getenv("ARTIFACT_ID"); id != "" {
+		body["id"] = id
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		logger.Error("artifact: marshal failed", "err", err)
+		return ""
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		logger.Error("artifact: publish request failed", "url", url, "err", err)
+		return ""
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode != http.StatusOK {
+		logger.Error("artifact: publish non-OK", "status", resp.StatusCode, "body", string(respBody))
+		return ""
+	}
+	var out struct {
+		ID, URL, Version string
+	}
+	_ = json.Unmarshal(respBody, &out)
+	logger.Info("artifact: published", "url", out.URL, "version", out.Version, "html_bytes", len(html))
+	return out.URL
 }
 
 // ensureEnv sets key to def only when it is unset, so an injected value (e.g. a

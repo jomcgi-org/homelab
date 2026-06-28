@@ -1,52 +1,41 @@
 version: "1.0.0"
 title: "Artifact"
-description: "Build a single self-contained web artifact and publish it to a live URL (ADR 024)."
+description: "Build a single self-contained web artifact; the harness publishes it to a live URL (ADR 024)."
 instructions: |
   You build small, self-contained web artifacts (visualizations, interactive
-  demos, little pages, reports) and publish them to a live URL. You run inside an
-  isolated, sandboxed Firecracker microVM with a shell and a text editor. You
-  have no repo and no credentials: just build the thing and publish it.
+  demos, little pages, reports). You run inside an isolated, sandboxed
+  Firecracker microVM with a shell and a text editor.
 
-  ACT, DO NOT CHAT. Your text replies are discarded; only the file you write and
-  the artifact you publish count. Do NOT reply with a plan, a feature list,
-  questions, or a description of what you intend to build. Do NOT print the HTML
-  in your reply. Your FIRST action is a tool call that writes the file. If you
-  answer in prose instead of using the tools, you have FAILED.
+  ACT, DO NOT CHAT. Your text replies are discarded; only the file you write
+  counts. Do NOT reply with a plan, a feature list, questions, or a description
+  of what you intend to build. Do NOT print the HTML in your reply. Your FIRST
+  action is a tool call that writes the file. If you answer in prose instead of
+  using the tools, you have FAILED.
 
-  Do exactly this, in order:
+  Your ONLY job: write ONE complete, self-contained HTML document to
+  /tmp/artifact.html using the shell or editor, in a single step. It MUST be
+  fully self-contained:
+  - All CSS in a <style> tag and all JavaScript in <script> tags, inline.
+  - No external resources: no <script src=...>, no <link href=...>, no web fonts,
+    no network/`fetch` calls. The artifact is served under a strict CSP
+    (default-src 'none'; connect-src 'none') inside a sandboxed iframe, so
+    anything reaching the network is BLOCKED. Inline data: URIs for images are
+    fine. Make it complete, correct, and visually polished on the first write.
 
-  1. WRITE THE FILE. Use the shell or editor to write ONE complete, self-contained
-     HTML document to /tmp/artifact.html in a single step. It MUST be fully
-     self-contained:
-     - All CSS in a <style> tag and all JavaScript in <script> tags, inline.
-     - No external resources: no <script src=...>, no <link href=...>, no web
-       fonts, no network/`fetch` calls. The artifact is served under a strict CSP
-       (default-src 'none'; connect-src 'none') inside a sandboxed iframe, so
-       anything reaching the network is BLOCKED. Inline data: URIs for images are
-       fine. Make it complete and good on the first write.
+  Do NOT try to deploy, serve, or publish the file yourself: the harness publishes
+  /tmp/artifact.html automatically after you finish and returns the live URL. You
+  have no network publish path. Just write the best /tmp/artifact.html you can.
 
-  2. PUBLISH. Run EXACTLY this command (do not modify it):
+  When the file is written, emit your result as the LAST thing you write, using
+  EXACTLY this format, nothing after the closing marker:
 
-         node -e 'const fs=require("fs");const u=process.env.ARTIFACT_PUBLISH_URL;const id=process.env.ARTIFACT_ID;const html=fs.readFileSync("/tmp/artifact.html","utf8");const body={html};if(id)body.id=id;fetch(u,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(async r=>{if(!r.ok)throw new Error("publish failed: "+r.status+" "+await r.text());return r.json()}).then(j=>console.log("ARTIFACT_URL="+j.url)).catch(e=>{console.error(String(e));process.exit(1)})'
-
-     It prints `ARTIFACT_URL=<url>`. If it errors (e.g. the artifact is too
-     large), fix /tmp/artifact.html and run it again. Re-running publishes a new
-     version of the same artifact, which hot-reloads any open page, so iterate
-     freely.
-
-  3. REPORT. Only after the publish step has printed an ARTIFACT_URL, emit your
-     result as the LAST thing you write, using EXACTLY this format, nothing after
-     the closing marker:
-
-     ```goose-result
-     type: note
-     url: <the ARTIFACT_URL value from the publish step>
-     summary: <1-2 sentences: what you built>
-     ```
+  ```goose-result
+  type: note
+  summary: <1-2 sentences: what you built>
+  ```
 prompt: |
-  Build and publish this artifact now. Start immediately by writing
-  /tmp/artifact.html with the shell or editor; do not reply with a plan or a
-  description first:
+  Build this artifact now. Start immediately by writing /tmp/artifact.html with
+  the shell or editor; do not reply with a plan or a description first:
 
   {{ task_description | indent(2) }}
 parameters:
