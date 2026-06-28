@@ -2,7 +2,11 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "cmd_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "loopback_linux.go",
+        "loopback_other.go",
+        "main.go",
+    ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
@@ -11,7 +15,15 @@ go_library(
         "//projects/agent_platform/fc-agent-init/internal/reconnect",
         "//projects/agent_platform/fc-agent-init/internal/vsockdial",
         "//projects/agent_platform/vsockproto",
-    ],
+    ] + select({
+        "@rules_go//go/platform:android": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:linux": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_binary(

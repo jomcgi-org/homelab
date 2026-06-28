@@ -52,6 +52,12 @@ func run(logger *slog.Logger) error {
 	// include it, so point goose at it explicitly.
 	ensureEnv("GOOSE_RECIPE_PATH", "/home/goose-agent/recipes")
 
+	// Raw FC boot with no init system leaves the loopback interface DOWN. Bring it
+	// up before anything uses 127.0.0.1: the transparent egress funnel and the
+	// wildcard DNS responder are loopback-only, so without this all guest egress
+	// (the harness reaching the model) fails with "could not connect".
+	bringUpLoopback(logger)
+
 	threadID := os.Getenv("FC_THREAD_ID")
 	idleAfter := durationEnv("FC_IDLE_AFTER", 60*time.Second)
 
