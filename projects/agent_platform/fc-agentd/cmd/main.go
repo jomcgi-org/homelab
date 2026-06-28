@@ -78,6 +78,7 @@ func run(logger *slog.Logger) error {
 		Logger:        logger,
 		ControlUDS:    fcDriver.VsockUDSPath,
 		GooseEnv:      cfg.InjectedEnv,
+		TierEnv:       cfg.TierEnv,
 		EgressSidecar: cfg.EgressSidecar,
 		MaxConcurrent: cfg.MaxConcurrent,
 	}

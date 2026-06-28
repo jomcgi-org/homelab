@@ -123,25 +123,28 @@ spec:
             {{- end }}
             {{- end }}
             {{- if and .Values.firecracker.enabled .Values.egress.enabled }}
-            # Egress (ADR 023): forward guest vsock egress to the sidecar, and
-            # project the harness env into the guest via the Assign message. Each
-            # harnessEnv key becomes FC_AGENTD_INJECT_<KEY> (the controller strips
-            # the prefix and injects <KEY> into the guest). Routing needs no config:
-            # the guest funnels all egress to the sidecar, which routes by SNI/Host.
+            # Egress (ADR 023 + 024): forward guest vsock egress to the sidecar,
+            # and project the PER-TIER harness env into the guest via the Assign
+            # message. Each tiers.<TIER>.<KEY> becomes FC_AGENTD_TIER_<TIER>__<KEY>;
+            # the controller selects the thread's tier, merges it over the common
+            # injected env, and injects <KEY> into the guest. "__" separates the
+            # tier name from the env name (which may itself contain underscores,
+            # e.g. OPENAI_API_KEY). Routing needs no config: the guest funnels all
+            # egress to the sidecar, which routes by SNI/Host.
             - name: FC_AGENTD_EGRESS_SIDECAR
               value: {{ .Values.egress.sidecarAddr | quote }}
-            {{- range $k, $v := .Values.egress.harnessEnv }}
-            - name: FC_AGENTD_INJECT_{{ $k }}
+            {{- range $tier, $env := .Values.egress.tiers }}
+            {{- range $k, $v := $env }}
+            - name: FC_AGENTD_TIER_{{ $tier }}__{{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-            {{- if .Values.egress.secrets }}
-            # Secret swap (ADR 023 6b): the guest holds only PLACEHOLDERS as the
-            # secret env vars, plus the CA cert (public, never the key) so it trusts
-            # the leaves the sidecar mints. The real values live only in the sidecar.
-            {{- range $s := .Values.egress.secrets }}
-            - name: FC_AGENTD_INJECT_{{ $s.env }}
-              value: {{ $s.placeholder | quote }}
             {{- end }}
+            {{- if .Values.egress.secrets }}
+            # Secret swap (ADR 023 6b): the guest holds PLACEHOLDERS as its secret
+            # env vars, but scoped PER TIER (egress.tiers above, ADR 024) rather
+            # than injected globally, so the tier bounds which credentials a guest
+            # can cause the sidecar to swap. The CA cert (public, never the key) is
+            # common to every tier so any guest trusts the leaves the sidecar mints.
             - name: FC_AGENTD_INJECT_EGRESS_CA_CERT
               valueFrom:
                 secretKeyRef:

@@ -68,10 +68,18 @@ type Loop struct {
 	// control serving (dry-run / tests with no vsock).
 	ControlUDS func(threadID string) string
 
-	// GooseEnv is harness environment injected into every guest via the Assign
-	// message (goose provider/model + the in-cluster model base URL). Empty means
-	// no injection.
+	// GooseEnv is the common harness environment injected into every guest via the
+	// Assign message regardless of tier (tier-independent infrastructure such as
+	// the egress CA cert). Empty means no common injection.
 	GooseEnv map[string]string
+
+	// TierEnv is the per-tier harness environment (ADR 024): {<tier>: {<NAME>:
+	// value}}. A thread's tier selects one map, merged over GooseEnv, to give the
+	// model endpoint + the secret placeholders that tier is allowed to hold. The
+	// tier is the credential trust boundary, so the placeholder set is scoped here
+	// rather than injected globally. An empty/unknown tier falls back to
+	// "default", and a missing "default" falls back to GooseEnv alone.
+	TierEnv map[string]map[string]string
 
 	// EgressSidecar, when set, is the localhost address of the egress-proxy
 	// sidecar (ADR 023). The loop forwards each thread's vsock egress connections
@@ -227,7 +235,7 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	cctx, cancel := context.WithCancel(ctx)
 	l.control[t.ThreadID] = cancel
 	uds := l.ControlUDS(t.ThreadID)
-	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: l.GooseEnv}
+	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: l.envForTier(log, t.Tier)}
 	// Forward the guest's vsock egress to the secret-free sidecar (ADR 023).
 	if l.EgressSidecar != "" {
 		go func() {
@@ -257,6 +265,35 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 			log.Warn("reconcile: control server exited", "thread", t.ThreadID, "err", err)
 		}
 	}()
+}
+
+// envForTier resolves the harness env injected into a guest for its tier (ADR
+// 024): the per-tier map merged over the common GooseEnv, so a tier only needs
+// to specify what differs (model endpoint, secret placeholders). An empty tier
+// means "default"; an unknown tier falls back to GooseEnv alone (fail safe: the
+// guest gets no model credential rather than another tier's). The returned map
+// is freshly allocated, so the caller may not mutate the shared inputs.
+func (l *Loop) envForTier(log *slog.Logger, tier string) map[string]string {
+	if tier == "" {
+		tier = "default"
+	}
+	te, ok := l.TierEnv[tier]
+	if !ok {
+		// No env configured for this tier. "default" with no TierEnv at all is the
+		// expected dry-run/test path, so only warn for a genuinely unknown tier.
+		if len(l.TierEnv) > 0 {
+			log.Warn("reconcile: no env for thread tier; using common env only", "tier", tier)
+		}
+		return l.GooseEnv
+	}
+	out := make(map[string]string, len(l.GooseEnv)+len(te))
+	for k, v := range l.GooseEnv {
+		out[k] = v
+	}
+	for k, v := range te {
+		out[k] = v
+	}
+	return out
 }
 
 // restoreWakeRequested restores IDLE threads that have a pending wake request.
