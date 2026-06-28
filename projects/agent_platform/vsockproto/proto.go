@@ -85,6 +85,10 @@ type Message struct {
 	Env map[string]string `json:"env,omitempty"`
 	// Status is the harness exit status on KindDone.
 	Status string `json:"status,omitempty"`
+	// Result is an optional result artifact from the run on KindDone: for the
+	// artifact tier (ADR 024) it is the published artifact URL, which the
+	// controller surfaces (e.g. to the Discord thread via discord_outbox).
+	Result string `json:"result,omitempty"`
 	// Reason is a human-readable note for logs/observability.
 	Reason string `json:"reason,omitempty"`
 }
