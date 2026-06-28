@@ -77,9 +77,16 @@ egress:
       # the sidecar swaps for the real token only on api.github.com.
       GITHUB_TOKEN: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
     artifact:
-      OPENAI_HOST: https://openrouter.ai/api
-      OPENAI_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
-      GOOSE_PROVIDER: openai
+      # goose's NATIVE openrouter provider, not the generic openai-compatible one:
+      # reasoning support is provider-specific in goose, and Gemini 3.5 Flash is a
+      # thinking model, so under the generic openai provider goose returns turns it
+      # cannot act on for generative tasks (it never emits the tool call / writes
+      # the file). The native openrouter provider handles Gemini's thinking + tool
+      # calls. The guest holds the placeholder as OPENROUTER_API_KEY (the var this
+      # provider reads); the sidecar swaps it for the real key on openrouter.ai.
+      # Host defaults to openrouter.ai, reached via the transparent egress funnel.
+      GOOSE_PROVIDER: openrouter
+      OPENROUTER_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
       GOOSE_MODEL: google/gemini-3.5-flash
       # Where the artifact recipe publishes (ADR 024 Task 3). In-cluster monolith
       # backend; the guest reaches it through the transparent egress funnel (the
