@@ -112,11 +112,12 @@ Baseline `docs/security.md`. Tier-specific posture:
 
 ## Open Questions
 
-1. Which model is the artifact-tier default (Gemini 3.5 Flash for speed + ~1M context, DeepSeek V4 Flash for cost, GLM-5.2 for hardest tool-chaining), and what is the escalation rule between them?
-2. session == thread: a Discord reply should resume the same agent thread with the new message. 022's `Wake` carries no payload and goose `run` is one-shot; resume-with-input needs a `Wake` payload extension plus a goose session-resume mode. Is that in this ADR's first cut or a follow-on?
-3. Does the artifact tier need python in the harness image (an apko-lock change that must run on linux/CI), or can Gemini/DeepSeek emit self-contained HTML+JS with no server-side runtime?
-4. Hot reload via ETag poll first, or go straight to SSE push from the monolith?
-5. Artifact retention: TTL on `s3://artifacts`, and whether a "pin this artifact" affordance is worth it.
+1. ~~Which model is the artifact-tier default?~~ **Decided: Gemini 3.5 Flash** (speed + ~1M context) for the v1 artifact tier; DeepSeek V4 Flash (cost) and GLM-5.2 (hardest tool-chaining) remain routed alternatives via the same OpenRouter knob.
+2. ~~session == thread: snapshot-resume or re-run?~~ **Decided: re-run with a curated transcript (Model B)** for v1. Each gated reply re-runs goose with the server-side goose-conversation (the user's directed messages + goose's own outputs only, never the ambient Discord thread); the artifact persists in S3 so re-running is cheap, and Gemini's ~1M window holds the transcript. This needs no `Wake`-payload or goose session-resume work. Snapshot-resume (Model A) stays available for true mid-session steering later.
+3. **Trigger and gate (v1).** `/goosecracker <prompt>` slash command starts a thread session; replies/@s in that thread continue it. The gate is server-side allowlist only (`OWNER_DISCORD_USER_ID` from the `discord-bot` Secret), no Discord-level command permissions; a denied caller gets a qwen-generated roast reply. Detailed in the build plan `docs/plans/2026-06-27-goosecracker-discord-artifact-agent.md`.
+4. Does the artifact tier need python in the harness image (an apko-lock change that must run on linux/CI), or can Gemini/DeepSeek emit self-contained HTML+JS with no server-side runtime?
+5. Hot reload via ETag poll first, or go straight to SSE push from the monolith?
+6. Artifact retention: TTL on `s3://artifacts`, and whether a "pin this artifact" affordance is worth it.
 
 ---
 
