@@ -1,0 +1,13 @@
+# Cluster overrides for git-mirror. Image tag is pinned by the Bazel pipeline
+# at build time; do not set @sha256: digests here manually.
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/git-mirror
+  tag: latest
+
+# Repos to mirror. The chart default includes homelab and loom; add more here
+# as goosecracker's workspace needs grow.
+repos:
+  - name: homelab
+    url: https://github.com/jomcgi/homelab.git
+  - name: loom
+    url: https://github.com/jomcgi/loom.git

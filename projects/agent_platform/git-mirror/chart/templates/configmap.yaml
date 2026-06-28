@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "git-mirror.fullname" . }}-refresh
+  labels:
+    {{- include "git-mirror.labels" . | nindent 4 }}
+data:
+  refresh.sh: |
+    #!/bin/sh
+    # refresh.sh: keep bare --mirror clones warm for Firecracker agent guests.
+    # Runs as uid 65532 (nonroot). Mounts /mirrors from the NVMe hostPath.
+    set -eu
+
+    MIRRORS_DIR=/mirrors
+    INTERVAL={{ .Values.refreshInterval | quote }}
+
+    {{- range .Values.repos }}
+    ensure_mirror_{{ .name | replace "-" "_" }}() {
+      REPO_DIR="$MIRRORS_DIR/{{ .name }}.git"
+      if [ ! -d "$REPO_DIR" ]; then
+        echo "Cloning {{ .url }} -> $REPO_DIR"
+        git clone --mirror {{ .url | quote }} "$REPO_DIR"
+        git -C "$REPO_DIR" config uploadpack.allowFilter true
+      fi
+    }
+    {{- end }}
+
+    refresh_all() {
+    {{- range .Values.repos }}
+      ensure_mirror_{{ .name | replace "-" "_" }}
+      echo "Refreshing {{ .name }}.git"
+      git -C "$MIRRORS_DIR/{{ .name }}.git" remote update --prune || echo "Warning: refresh failed for {{ .name }}, will retry next pass"
+    {{- end }}
+    }
+
+    echo "git-mirror refresh loop starting (interval=${INTERVAL}s)"
+    while true; do
+      refresh_all
+      echo "Refresh pass complete, sleeping ${INTERVAL}s"
+      sleep "$INTERVAL"
+    done

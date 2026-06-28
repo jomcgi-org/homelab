@@ -1,0 +1,66 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/git-mirror
+  tag: latest
+  pullPolicy: Always
+
+# List of repos to mirror. Each entry: name (used as bare clone dir <name>.git)
+# and url (the upstream fetch URL).
+repos:
+  - name: homelab
+    url: https://github.com/jomcgi/homelab.git
+  - name: loom
+    url: https://github.com/jomcgi/loom.git
+
+# Seconds to sleep between refresh passes.
+refreshInterval: "180"
+
+# NVMe hostPath configuration. The mirrors are stored at
+# <nvme.path>/<nvme.subdir>/ on node-4 and mounted at /mirrors in the pod.
+nvme:
+  path: /disks/nvme-02
+  subdir: git-mirror
+
+# Port git-daemon listens on (git:// protocol).
+gitDaemonPort: 9418
+
+# Pin to node-4: Firecracker guests are node-bound, mirrors must be local.
+nodeSelector:
+  kubernetes.io/hostname: node-4
+
+tolerations: []
+affinity: {}
+
+# Linkerd injection disabled: same pattern as fc-agentd on node-4 where
+# Linkerd sidecars interfere with direct host-path access and long-running
+# background processes. The git daemon is a cluster-internal read-only service.
+podAnnotations:
+  linkerd.io/inject: disabled
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Small footprint: the daemon and refresh loop are lightweight shell+git.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+serviceAccount:
+  create: false
+  name: ""

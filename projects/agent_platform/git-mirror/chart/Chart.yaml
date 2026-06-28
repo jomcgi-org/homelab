@@ -1,0 +1,19 @@
+apiVersion: v2
+name: git-mirror
+description: Hot git mirror for Firecracker agent workspaces on node-4 NVMe
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: jomcgi
+    url: https://github.com/jomcgi/homelab
+sources:
+  - https://github.com/jomcgi/homelab/tree/main/projects/agent_platform/git-mirror
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"
+dependencies:
+  - name: homelab-library
+    version: "0.5.0"
+    repository: "file://../../shared/helm/homelab-library/chart"

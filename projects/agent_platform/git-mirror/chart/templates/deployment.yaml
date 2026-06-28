@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "git-mirror.fullname" . }}
+  labels:
+    {{- include "git-mirror.labels" . | nindent 4 }}
+spec:
+  # Single replica pinned to node-4. Recreate: the NVMe hostPath is exclusive
+  # to this node; there is no need to run two replicas and Recreate avoids a
+  # second pod racing the refresh loop on the same directory.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      # nosemgrep: bazel.semgrep.rules.kubernetes.require-component-label-in-selector
+      {{- include "git-mirror.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "git-mirror.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ if .Values.serviceAccount.create }}{{ include "git-mirror.fullname" . }}{{ else }}{{ default "default" .Values.serviceAccount.name }}{{ end }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # git-daemon: serves bare mirror clones over the git:// protocol (port
+        # 9418). Read-only: it only needs upload-pack. Shares /mirrors volume
+        # with the refresh sidecar.
+        - name: git-daemon
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: HOME
+              value: /tmp
+          command:
+            - git
+            - daemon
+            - --reuseaddr
+            - --export-all
+            - --base-path=/mirrors
+            - --enable=upload-pack
+            - --port={{ .Values.gitDaemonPort }}
+            - /mirrors
+          ports:
+            - name: git
+              containerPort: {{ .Values.gitDaemonPort }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: git
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: git
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: mirrors
+              mountPath: /mirrors
+            - name: tmp
+              mountPath: /tmp
+        # refresh: shell loop that clones missing repos and runs
+        # `git remote update --prune` on a configurable interval. Writes to
+        # /mirrors, which the git-daemon container serves read-only.
+        - name: refresh
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/sh
+            - /scripts/refresh.sh
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: mirrors
+              mountPath: /mirrors
+            - name: refresh-script
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # NVMe hostPath: bare mirror clones live here across pod restarts.
+        - name: mirrors
+          hostPath:
+            path: {{ .Values.nvme.path }}/{{ .Values.nvme.subdir }}
+            type: DirectoryOrCreate
+        - name: refresh-script
+          configMap:
+            name: {{ include "git-mirror.fullname" . }}-refresh
+            defaultMode: 0755
+        - name: tmp
+          emptyDir: {}
