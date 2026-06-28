@@ -27,15 +27,18 @@ Adopt an explicit three-layer stack and name each layer. This is a boundary and 
 
 **2. `goosecracker` is the generic agent manager on the substrate.** It is the reusable, off-the-shelf layer: it owns goose (recipes, the harness image), the AgentThread lifecycle as _agent_ concepts (snapshot/resume of a conversation, idle/quiescence policy), and per-thread **config** (model, tier, the injected env that selects a model endpoint). It consumes the substrate through the `Substrate`/`Snapshotable` seam and is the thing new agents are built against. "Generic agent on Firecracker that handles agent snapshot/resume/config" is exactly this layer.
 
-**3. `discord-agent` is a consumer built on goosecracker.** Discord-specific concerns only: the `/goosecracker`-style slash trigger and owner gate, the curated-transcript session (024's Model B), and result-out to `discord_outbox`. It holds no Firecracker or goose lifecycle logic; it calls goosecracker's dispatch surface. The 024 artifact agent **is** this layer and is renamed off the bare `goosecracker` label (the slash command verb can stay `/goosecracker` as a user-facing name; the component is `discord-agent`).
+**3. The Discord agent is a _configuration_ of goosecracker, not its own component.** It is not a third sibling directory. goosecracker is the deployable agent manager, and the Discord agent is one instance of it expressed in goosecracker's own Helm `values` plus its image build targets / refs (which recipe, which tier, which harness image). The genuinely Discord-specific glue (the `/goosecracker` slash trigger, the owner gate, the curated-transcript session per 024's Model B, result-out to `discord_outbox`) already lives in the monolith bot (`projects/monolith/chat/`, per 024) and stays there; it calls goosecracker's dispatch surface. So "discord-agent" is the name of a goosecracker configuration, and the `goosecracker` label comes off the bare app (the slash verb can stay `/goosecracker` as user-facing).
 
-| Aspect                                           | Today                                                                | Decided                                                                     |
-| ------------------------------------------------ | -------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Name `goosecracker` denotes                      | the one Discord artifact app (a leaf consumer)                       | the reusable agent-manager layer                                            |
-| Firecracker layer's knowledge of goose           | `fc-agentd` runs goose; recipes + `GOOSE_MODEL` injection live in it | none; `Exec` runs an opaque workload (019's principle)                      |
-| Per-thread model/tier env injection (024 Task 1) | added to `fc-agentd` (substrate)                                     | owned by `goosecracker` (manager); substrate just injects an opaque env map |
-| Discord app                                      | named `goosecracker`                                                 | named `discord-agent`, a consumer of `goosecracker`                         |
-| Reusable "agent manager"                         | unnamed, fused with the substrate                                    | `goosecracker`, a distinct layer                                            |
+**4. Physical layout: `projects/agents/{firecracker-substrate,goosecracker}`, with goosecracker depending on firecracker-substrate.** Today's `projects/agent_platform/` moves to a new `projects/agents/` home holding the two layers as sibling directories. `firecracker-substrate/` is the bare-VM layer (decision 1); `goosecracker/` is the agent manager (decision 2) and declares a build/deploy dependency on `firecracker-substrate` (it consumes the substrate, never the reverse). The Discord agent's goosecracker-side footprint is values + image-build config inside `goosecracker/` (decision 3), so the directory tree has exactly two agent-platform projects, not three.
+
+| Aspect                                           | Today                                                                | Decided                                                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Name `goosecracker` denotes                      | the one Discord artifact app (a leaf consumer)                       | the reusable agent-manager layer                                                                      |
+| Firecracker layer's knowledge of goose           | `fc-agentd` runs goose; recipes + `GOOSE_MODEL` injection live in it | none; `Exec` runs an opaque workload (019's principle)                                                |
+| Per-thread model/tier env injection (024 Task 1) | added to `fc-agentd` (substrate)                                     | owned by `goosecracker` (manager); substrate just injects an opaque env map                           |
+| Discord app                                      | named `goosecracker`, its own thing                                  | a `goosecracker` configuration (values + image refs); glue stays in the monolith bot                  |
+| Reusable "agent manager"                         | unnamed, fused with the substrate                                    | `goosecracker`, a distinct layer                                                                      |
+| Directory layout                                 | `projects/agent_platform/` (one fused project)                       | `projects/agents/{firecracker-substrate,goosecracker}`, goosecracker depends on firecracker-substrate |
 
 The litmus test for which layer a piece of code belongs to: **if it would have to change to run a non-goose workload, it is not `firecracker-substrate`.** Recipe handling, `GOOSE_MODEL`, tier-to-model mapping all fail that test and belong in `goosecracker`; VM boot, snapshot files, vsock, and the egress swap pass it and stay in `firecracker-substrate`.
 
@@ -45,20 +48,20 @@ The litmus test for which layer a piece of code belongs to: **if it would have t
 
 ```mermaid
 graph TB
-    DA["discord-agent<br/>slash trigger, owner gate,<br/>curated-transcript session, result-out"]
-    GC["goosecracker (agent manager)<br/>goose recipes + harness, AgentThread<br/>snapshot/resume policy, model/tier config"]
-    FS["firecracker-substrate<br/>VM boot/pause/snapshot/restore, storage+GC,<br/>affinity, vsock, PID-1 init, egress secret-swap"]
+    DA["Discord agent<br/>(monolith bot glue +<br/>a goosecracker config: values + image refs)"]
+    GC["projects/agents/goosecracker (agent manager)<br/>goose recipes + harness, AgentThread<br/>snapshot/resume policy, model/tier config"]
+    FS["projects/agents/firecracker-substrate<br/>VM boot/pause/snapshot/restore, storage+GC,<br/>affinity, vsock, PID-1 init, egress secret-swap"]
     Other["other consumers<br/>(CI webhook, future agents)"]
 
     DA -->|"dispatch.submit(task, recipe, tier, ...)"| GC
     Other -->|dispatch| GC
-    GC -->|"Substrate: Claim / Exec(opaque workload) / Release<br/>+ Snapshotable"| FS
+    GC -->|"depends on; Substrate: Claim / Exec(opaque workload) / Release<br/>+ Snapshotable"| FS
 
     style GC fill:#F7B93E,color:#000
     style FS fill:#326CE5,color:#fff
 ```
 
-The seam between `goosecracker` and `firecracker-substrate` is ADR 019's `Substrate` interface, used as 019 intended: `goosecracker` assembles the goose-specific workload (image, recipe, injected env including `GOOSE_MODEL` per tier) and hands it to the substrate as an opaque `Exec` payload. The substrate restores a VM and runs it without parsing what is inside. The control plane stays Postgres (`claude_agent.agent_threads`): `goosecracker` owns the agent-meaningful columns (recipe, tier, model, discord_thread), the substrate owns the placement-meaningful columns (node, snapshot file, state). Mapping cleanly onto today's tree, `projects/agent_platform/` splits along this line rather than acquiring a third sibling: the goose-aware parts (`harness/recipes`, the tier/model env templates) become `goosecracker`, the VM/vsock/egress parts stay `firecracker-substrate`.
+The seam between `goosecracker` and `firecracker-substrate` is ADR 019's `Substrate` interface, used as 019 intended: `goosecracker` assembles the goose-specific workload (image, recipe, injected env including `GOOSE_MODEL` per tier) and hands it to the substrate as an opaque `Exec` payload. The substrate restores a VM and runs it without parsing what is inside. The control plane stays Postgres (`claude_agent.agent_threads`): `goosecracker` owns the agent-meaningful columns (recipe, tier, model, discord_thread), the substrate owns the placement-meaningful columns (node, snapshot file, state). On disk, today's `projects/agent_platform/` moves to `projects/agents/` and splits into two sibling projects: the goose-aware parts (`harness/recipes`, the tier/model env templates) become `projects/agents/goosecracker`, the VM/vsock/egress parts become `projects/agents/firecracker-substrate`. `goosecracker` declares the build/deploy dependency on `firecracker-substrate` and the dependency only ever points that way. The Discord agent adds no third directory: its goosecracker-side config (recipe, tier, harness image ref) is values + image-build targets inside `goosecracker`, and its trigger/gate/session glue stays in the monolith bot.
 
 This is a re-bin, not a rewrite: `fc-agentd`'s reconcile loop stays where it is, but the `GOOSE_MODEL` / tier-to-env mapping that 024 Task 1 would add to it is instead computed by `goosecracker` and passed down as an already-opaque env map, so the substrate keeps a single `InjectedEnv` it does not interpret.
 
@@ -85,12 +88,12 @@ Baseline `docs/security.md`. This ADR moves no trust boundary; it clarifies wher
 
 ## Risks
 
-| Risk                                                                                        | Likelihood | Impact | Mitigation                                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Rename churn breaks references (1Password item name, chart names, slash command) mid-flight | Medium     | Low    | Keep the user-facing `/goosecracker` verb; rename the component/dirs in one focused PR with `format` regenerating manifests; the 1Password item path can stay if renaming it is not worth the secret re-sync |
-| The seam is drawn but goose still leaks back into the substrate over time                   | Medium     | Medium | The litmus test (would it change for a non-goose workload?) is the review gate; a non-goose smoke workload through `Exec` would prove the seam, but is not required up front                                 |
-| Three layers over-engineer a one-consumer reality                                           | Low        | Low    | The layers already exist physically (`agent_platform/` vs the Discord app); this names them rather than adding machinery. If a second consumer never appears, the cost is two directory names                |
-| 024 Task 1 lands the tier env in `fc-agentd` before this re-bin                             | Medium     | Low    | Sequence this ADR ahead of (or fold into) Task 1 so the tier-to-env mapping is written in `goosecracker` from the start, not moved later                                                                     |
+| Risk                                                                                        | Likelihood | Impact | Mitigation                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rename churn breaks references (1Password item name, chart names, slash command) mid-flight | Medium     | Low    | Keep the user-facing `/goosecracker` verb; rename the component/dirs in one focused PR with `format` regenerating manifests; the 1Password item path can stay if renaming it is not worth the secret re-sync                                                                                                  |
+| The seam is drawn but goose still leaks back into the substrate over time                   | Medium     | Medium | The litmus test (would it change for a non-goose workload?) is the review gate; a non-goose smoke workload through `Exec` would prove the seam, but is not required up front                                                                                                                                  |
+| Two layers over-engineer a one-consumer reality                                             | Low        | Low    | The split already exists physically (`agent_platform/` is goose-aware and VM code fused); this is two sibling dirs under `projects/agents/`, not new machinery, and the Discord agent adds no directory (it is goosecracker config). If a second consumer never appears, the cost is one extra directory name |
+| 024 Task 1 lands the tier env in `fc-agentd` before this re-bin                             | Medium     | Low    | Sequence this ADR ahead of (or fold into) Task 1 so the tier-to-env mapping is written in `goosecracker` from the start, not moved later                                                                                                                                                                      |
 
 ---
 
@@ -98,7 +101,7 @@ Baseline `docs/security.md`. This ADR moves no trust boundary; it clarifies wher
 
 These are settled during execution, not gates on the decision.
 
-1. Does `firecracker-substrate` / `goosecracker` become two top-level dirs under `projects/agent_platform/`, or does `agent_platform/` itself get renamed to one of them with the other as a sibling? (Leaning: `agent_platform/` stays the umbrella, with `firecracker-substrate/` and `goosecracker/` as the two layers inside.)
+1. ~~Where do the two layers live on disk?~~ **Decided (decision 4): `projects/agents/{firecracker-substrate,goosecracker}`**, two sibling projects under a new `projects/agents/` home (moving today's `projects/agent_platform/`), with `goosecracker` depending on `firecracker-substrate`. The Discord agent is a goosecracker configuration, not a third directory.
 2. Is the `goosecracker` 1Password item / Secret renamed to track the layer, or left as-is to avoid a secret re-sync? (Leaning: leave the secret, rename the app.)
 3. Does the `Substrate` `Exec` payload need a richer typed shape to carry the goose workload cleanly (image + env + recipe ref), or is the existing opaque env map enough?
 4. Is a single non-goose smoke workload worth running through `Exec` to prove the substrate is genuinely harness-agnostic, or is the litmus-test review gate sufficient?
