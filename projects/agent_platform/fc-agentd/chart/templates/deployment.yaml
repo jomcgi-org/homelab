@@ -116,17 +116,16 @@ spec:
             {{- end }}
             {{- if and .Values.firecracker.enabled .Values.egress.enabled }}
             # Egress (ADR 023): forward guest vsock egress to the sidecar, and
-            # inject the goose model config into the guest via the Assign message.
+            # project the harness env into the guest via the Assign message. Each
+            # harnessEnv key becomes FC_AGENTD_INJECT_<KEY> (the controller strips
+            # the prefix and injects <KEY> into the guest). Routing needs no config:
+            # the guest funnels all egress to the sidecar, which routes by SNI/Host.
             - name: FC_AGENTD_EGRESS_SIDECAR
               value: {{ .Values.egress.sidecarAddr | quote }}
-            - name: FC_AGENTD_INJECT_GOOSE_PROVIDER
-              value: {{ .Values.egress.goose.provider | quote }}
-            - name: FC_AGENTD_INJECT_GOOSE_MODEL
-              value: {{ .Values.egress.goose.model | quote }}
-            - name: FC_AGENTD_INJECT_OPENAI_HOST
-              value: {{ .Values.egress.goose.host | quote }}
-            - name: FC_AGENTD_INJECT_OPENAI_API_KEY
-              value: {{ .Values.egress.goose.apiKey | quote }}
+            {{- range $k, $v := .Values.egress.harnessEnv }}
+            - name: FC_AGENTD_INJECT_{{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.tracing.endpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -173,8 +172,14 @@ spec:
           env:
             - name: EGRESS_LISTEN
               value: {{ .Values.egress.sidecarAddr | quote }}
+            - name: EGRESS_POLICY
+              value: {{ .Values.egress.policy | default "allow" | quote }}
+            {{- if eq (.Values.egress.policy | default "allow") "allowlist" }}
+            # Under policy=allowlist the sidecar denies any destination not in this
+            # list (plus secrets[*].egressTo, always permitted). Fail closed.
             - name: EGRESS_ALLOWLIST
               value: {{ .Values.egress.allowlist | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.egress.resources | nindent 12 }}
         {{- end }}

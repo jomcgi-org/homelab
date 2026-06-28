@@ -1,8 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/tls"
+	"io"
+	"net"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestAllowed(t *testing.T) {
@@ -162,6 +169,118 @@ func TestParseAllowlist(t *testing.T) {
 		})
 	}
 }
+
+func TestHostFromHTTP(t *testing.T) {
+	tests := []struct {
+		name string
+		req  string
+		want string
+	}{
+		{
+			name: "host with port stripped",
+			req:  "POST /v1/chat/completions HTTP/1.1\r\nHost: model.example.com:8080\r\nContent-Type: application/json\r\n\r\n{}",
+			want: "model.example.com",
+		},
+		{
+			name: "host without port",
+			req:  "GET / HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
+			want: "api.github.com",
+		},
+		{
+			name: "host header case-insensitive and whitespace tolerant",
+			req:  "GET / HTTP/1.1\r\nhOsT:   example.com  \r\n\r\n",
+			want: "example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(tt.req))
+			got, err := hostFromStream(br)
+			if err != nil {
+				t.Fatalf("hostFromStream: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("host = %q, want %q", got, tt.want)
+			}
+			// Peek must not consume: the request still forwards verbatim.
+			rest, _ := io.ReadAll(br)
+			if !strings.HasPrefix(string(rest), "POST ") && !strings.HasPrefix(string(rest), "GET ") {
+				t.Errorf("stream was consumed by peek; remainder=%q", rest)
+			}
+		})
+	}
+}
+
+func TestHostFromHTTPNoHost(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader("GET / HTTP/1.1\r\nAccept: */*\r\n\r\n"))
+	if _, err := hostFromStream(br); err == nil {
+		t.Fatal("expected error for missing Host header")
+	}
+}
+
+func TestSNIFromClientHello(t *testing.T) {
+	const name = "api.github.com"
+	hello := captureClientHello(t, name)
+	if hello[0] != 0x16 {
+		t.Fatalf("captured bytes are not a TLS handshake record: 0x%02x", hello[0])
+	}
+
+	// Direct parse.
+	got, err := parseSNI(hello)
+	if err != nil {
+		t.Fatalf("parseSNI: %v", err)
+	}
+	if got != name {
+		t.Errorf("parseSNI = %q, want %q", got, name)
+	}
+
+	// Via the peeking dispatcher, which must not consume the ClientHello.
+	br := bufio.NewReader(bytes.NewReader(hello))
+	got, err = hostFromStream(br)
+	if err != nil {
+		t.Fatalf("hostFromStream(TLS): %v", err)
+	}
+	if got != name {
+		t.Errorf("hostFromStream = %q, want %q", got, name)
+	}
+	rest, _ := io.ReadAll(br)
+	if len(rest) != len(hello) {
+		t.Errorf("ClientHello partly consumed: %d of %d bytes remain", len(rest), len(hello))
+	}
+}
+
+func TestParseSNITruncated(t *testing.T) {
+	if _, err := parseSNI([]byte{0x16, 0x03, 0x01, 0x00, 0x05, 0x01}); err == nil {
+		t.Fatal("expected error on truncated ClientHello")
+	}
+}
+
+// captureClientHello drives crypto/tls to emit a real ClientHello for name and
+// returns the raw record bytes (the handshake fails after the write, as intended).
+func captureClientHello(t *testing.T, name string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	c := &captureConn{w: &buf}
+	tlsConn := tls.Client(c, &tls.Config{ServerName: name, InsecureSkipVerify: true}) //nolint:gosec // test-only
+	_ = tlsConn.Handshake()                                                           // errors after writing ClientHello; bytes are captured
+	if buf.Len() == 0 {
+		t.Fatal("no ClientHello captured")
+	}
+	return buf.Bytes()
+}
+
+// captureConn is a net.Conn that records writes and fails reads, so a TLS client
+// writes its ClientHello and then aborts.
+type captureConn struct{ w io.Writer }
+
+func (c *captureConn) Write(b []byte) (int, error)      { return c.w.Write(b) }
+func (c *captureConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *captureConn) Close() error                     { return nil }
+func (c *captureConn) LocalAddr() net.Addr              { return nil }
+func (c *captureConn) RemoteAddr() net.Addr             { return nil }
+func (c *captureConn) SetDeadline(time.Time) error      { return nil }
+func (c *captureConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *captureConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestSplitHostPort(t *testing.T) {
 	tests := []struct {

@@ -23,11 +23,15 @@ rootfsBuilder:
   # Size of the ext4 base rootfs image built from the harness filesystem.
   rootfsSize: 3G
 
-# Guest egress (ADR 023). fc-agentd forwards the guest's vsock-1025 stream to the
-# egress-proxy sidecar, which forwards only to allowlisted destinations. The goose
-# model config is injected into the guest over the Assign message (FC_AGENTD_INJECT_*)
-# so cluster config is not hardcoded in the guest binary. 6a is plain allowlisted
-# egress (no secret swap); 6b adds TLS termination + placeholder substitution.
+# Guest egress (ADR 023). The guest is vsock-only, so fc-agent-init turns it into
+# a dumb transparent funnel: a wildcard resolver maps every name to loopback, an
+# iptables REDIRECT sends all outbound TCP to a local funnel, and the funnel
+# tunnels each connection over vsock to the egress-proxy sidecar, the single
+# mediator. The sidecar learns each connection's real destination from the TLS
+# SNI or HTTP Host header, applies policy, resolves the real name (cluster or
+# public DNS), and forwards. 6b adds TLS termination + secret swap for
+# destinations that carry a credential. No per-destination routing config: the
+# harness is configured with real URLs.
 egress:
   enabled: true
   image:
@@ -35,18 +39,30 @@ egress:
     tag: latest
   # Where fc-agentd forwards guest egress (the sidecar's listen address, pod-local).
   sidecarAddr: 127.0.0.1:8888
-  # Destinations the sidecar may forward to (exact host[:port], comma-separated).
-  allowlist: inference.inference.svc.cluster.local:8080
-  # goose provider/model + the in-cluster OpenAI-compatible base URL, injected
-  # into the guest. Kept in values (not the guest binary) as cluster config.
-  goose:
-    provider: openai
-    model: qwen3.6-27b
-    # goose's OpenAI provider reads OPENAI_HOST (scheme + host, no path; it appends
-    # OPENAI_BASE_PATH=v1/chat/completions), not OPENAI_BASE_URL. apiKey must be set
-    # even though in-cluster vLLM is keyless.
-    host: http://inference.inference.svc.cluster.local:8080
-    apiKey: sk-noauth
+  # Egress posture. "allow" (default) routes anywhere in or out of cluster, so the
+  # agent can read random docs; secrets still only materialise at their egressTo
+  # (6b), so the open path cannot leak a credential. Flip to "allowlist" to
+  # confine egress to `allowlist` + secrets[*].egressTo (fail closed), no rebuild.
+  policy: allow
+  # Destinations permitted under policy=allowlist (host[:port], comma-separated).
+  # Ignored under policy=allow. secrets[*].egressTo are always permitted.
+  allowlist: ""
+  # Env injected into the guest harness (provider/model/keys), carried on the
+  # Assign message. Real URLs: the guest's wildcard DNS + transparent funnel route
+  # them and the sidecar resolves the real name. OPENAI_HOST is scheme+host with no
+  # path (goose appends OPENAI_BASE_PATH). apiKey must be set though vLLM is keyless.
+  harnessEnv:
+    OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
+    OPENAI_API_KEY: sk-noauth
+    GOOSE_PROVIDER: openai
+    GOOSE_MODEL: qwen3.6-27b
+  # 6b: the ADR-023 secret catalog (shaped like the future SecretProxy CRD
+  # spec.secrets). egressTo is the control: the destinations a swapped-in
+  # credential may reach. The guest only ever holds the placeholder.
+  # secrets:
+  #   - env: GITHUB_TOKEN
+  #     secretRef: { name: agent-github-bot, key: token }
+  #     egressTo: [api.github.com]
   resources:
     requests:
       cpu: 50m

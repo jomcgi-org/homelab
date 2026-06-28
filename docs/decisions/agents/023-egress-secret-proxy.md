@@ -18,7 +18,7 @@ For a snapshot-managed microVM that is the wrong shape, for two compounding reas
 
 The goal, stated by the owner: **a clean way to declare which secrets a thread may use, with a hard guarantee the real value never exists anywhere the guest can reach.** The inspiration is [Kloak](https://getkloak.io/): applications reference placeholders, the real secret is swapped in on egress, so "your application code never sees real credentials." A compromised process cannot leak what it never held.
 
-Kloak's *mechanism*, however, does not fit our substrate. It attaches eBPF uprobes to OpenSSL's `SSL_write` in the host kernel and rewrites the placeholder just before encryption. That assumes the workload is a host-kernel-visible pod linked against OpenSSL. Our workload is a Firecracker guest with its **own kernel**, so a host eBPF uprobe cannot see the guest's userspace at all (that opacity is the point of the microVM boundary). It also assumes a single TLS library: our harness and tooling are polyglot, and the Go harness uses `crypto/tls` (no OpenSSL to probe). So we keep Kloak's *idea* and reject its *implementation*.
+Kloak's _mechanism_, however, does not fit our substrate. It attaches eBPF uprobes to OpenSSL's `SSL_write` in the host kernel and rewrites the placeholder just before encryption. That assumes the workload is a host-kernel-visible pod linked against OpenSSL. Our workload is a Firecracker guest with its **own kernel**, so a host eBPF uprobe cannot see the guest's userspace at all (that opacity is the point of the microVM boundary). It also assumes a single TLS library: our harness and tooling are polyglot, and the Go harness uses `crypto/tls` (no OpenSSL to probe). So we keep Kloak's _idea_ and reject its _implementation_.
 
 We already have the right interception point. ADR 022's vsock contract reserves `EgressPort = 1025` for tunnelled guest egress (`projects/agent_platform/vsockproto/proto.go`). That hop, outside the guest, is where substitution belongs.
 
@@ -38,24 +38,28 @@ Six decisions.
 
 **5. v1 data plane is a sidecar in the per-node `fc-agentd` DaemonSet.** `fc-agentd` stays a secret-free forwarder: it takes the guest's vsock 1025 stream and forwards it over localhost to a co-located `egress-proxy` sidecar that holds the mounted secrets and does terminate + swap + allowlist. A sidecar, not in-process, because `fc-agentd` parses guest-originated control frames (an attack surface from a hostile guest); keeping the secret-holding process off that surface preserves the blast-radius separation even though both run in the same pod. The per-node DaemonSet is the correct scaling unit, since egress volume scales with the number of guests, which scales with nodes; a separately-scaled proxy Deployment would add a cross-node hop to buy independence we do not need yet.
 
-**6. Values via the existing ESO / 1Password GitOps path; catalog as config shaped like the future CRD.** Secret *values* are provisioned exactly as everything else in the repo (`OnePasswordItem` syncing a k8s Secret), mounted into the sidecar container. The sidecar never talks to 1Password. A **catalog** (mounted ConfigMap / values) maps `env -> secret key -> egressTo`, deliberately shaped like the `spec.secrets` of the future `SecretProxy` CRD (see Future Work) so v2 is a lift, not a rewrite. GitOps is the source of truth for the security-critical question "what credentials can an agent ever touch," and the answer is reviewable in a PR.
+**6. Values via the existing ESO / 1Password GitOps path; catalog as config shaped like the future CRD.** Secret _values_ are provisioned exactly as everything else in the repo (`OnePasswordItem` syncing a k8s Secret), mounted into the sidecar container. The sidecar never talks to 1Password. A **catalog** (mounted ConfigMap / values) maps `env -> secret key -> egressTo`, deliberately shaped like the `spec.secrets` of the future `SecretProxy` CRD (see Future Work) so v2 is a lift, not a rewrite. GitOps is the source of truth for the security-critical question "what credentials can an agent ever touch," and the answer is reviewable in a PR.
 
 A note on the threat model, because decision 5 reverses an earlier instinct to keep `fc-agentd` entirely secret-free. Holding secrets in a node-daemon sidecar is acceptable because the Firecracker hardware boundary stops a guest from reading host memory. The threat we defend is "guest exfiltrates a value it holds," and the design ensures the guest never holds one. Secret-free `fc-agentd` was defense-in-depth, and we retain it at the container level via the sidecar split rather than as a property of the whole node.
 
-| Aspect | Today (ADR 004 injection) | Decided (this ADR) |
-| ------ | ------------------------- | ------------------ |
-| Secret in guest env/disk/RAM | yes (real value) | no (placeholder only) |
-| Secret in ADR 022 snapshot bundle | yes (real value, at rest) | no (placeholder only) |
-| Exfiltration to arbitrary host | possible (agent holds value) | fails (literal placeholder leaves) |
-| Per-tool integration work | env var per tool | none (literal swap, scheme-agnostic) |
-| Where the value lives | the workload | egress-proxy sidecar, off the guest |
-| Destination control | none | per-secret allowlist |
+| Aspect                            | Today (ADR 004 injection)    | Decided (this ADR)                   |
+| --------------------------------- | ---------------------------- | ------------------------------------ |
+| Secret in guest env/disk/RAM      | yes (real value)             | no (placeholder only)                |
+| Secret in ADR 022 snapshot bundle | yes (real value, at rest)    | no (placeholder only)                |
+| Exfiltration to arbitrary host    | possible (agent holds value) | fails (literal placeholder leaves)   |
+| Per-tool integration work         | env var per tool             | none (literal swap, scheme-agnostic) |
+| Where the value lives             | the workload                 | egress-proxy sidecar, off the guest  |
+| Destination control               | none                         | per-secret allowlist                 |
 
 ---
 
 ## Architecture
 
-The guest's only egress path is vsock 1025. `fc-agentd` forwards it to the local sidecar, which is the only process that ever materialises a real value, and only toward an allowlisted destination.
+The guest's only egress path is vsock 1025. The guest runs no proxy config: it is a transparent funnel. `fc-agent-init` answers every DNS query with `127.0.0.1` (a wildcard responder) and listens on the egress ports on loopback, tunnelling each accepted connection over vsock 1025 to `fc-agentd`, which forwards it to the local sidecar. The sidecar is a transparent proxy: it reads each connection's real destination host from the TLS SNI (a cleartext ClientHello) or the HTTP Host header, applies policy, and dials the real name (the pod resolves cluster and public DNS). It is the only process that ever materialises a real secret value, and only toward that secret's allowlisted destination.
+
+This transparent model exists because the model client (goose) ignores `HTTP_PROXY` (a known upstream gap) and the guest is vsock-only. Capturing all egress generically and routing it by SNI/Host in the sidecar means the harness is configured with real URLs and no per-destination routing config exists. Connection capture is per-port loopback listeners today (the harness uses 80/443/8080); generic any-port capture via an `iptables` REDIRECT + `SO_ORIGINAL_DST` is a localized follow-up (it needs the guest kernel built with netfilter).
+
+**Egress posture.** A policy knob governs the open path: `allow` (default) routes to any destination in or out of cluster, so the agent can read arbitrary docs. This is consistent with decision 3: the allowlist is a _per-secret exfiltration_ control (the real value only materialises at its `egressTo`; everywhere else the inert placeholder leaves), not a global egress firewall. `allowlist` is the dormant lockdown knob that additionally confines all egress to the named hosts plus `secrets[*].egressTo`, fail closed, flippable without a rebuild.
 
 ```mermaid
 graph LR
@@ -104,14 +108,14 @@ Baseline: `docs/security.md`. Deviations and security-relevant properties:
 
 ## Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-| ---- | ---------- | ------ | ---------- |
-| Transformed credentials (HTTP Basic `base64(user:token)`, AWS SigV4 / webhook HMAC signing) never appear literally on the wire, so literal swap cannot find them | Medium | Medium | Documented limitation: these inherently need the secret inside the VM to compute. Out of scope for v1 (rare in agent tooling); handle later via a per-integration broker. |
-| Guest-trusted CA private key compromise lets a node-local attacker MITM agent egress | Low | High | Key only in the sidecar, never mounted into `fc-agentd` or the guest; rotate via the image + Secret pipeline; same host-trust assumption as the rest of node-4. |
-| Placeholder collides with real content in a request body | Very low | Medium | Fixed-prefix high-entropy ULID; literal byte-string match on the full token. |
-| Placeholder spans TLS record / chunk boundaries and is missed | Low | Medium | Sidecar buffers/scans across record boundaries before forwarding. |
-| Per-node shared catalog: every thread on a node can reach every secret in that node's catalog (no per-thread subsetting in v1) | Medium | Medium | Acceptable at a single agent trust tier; per-secret allowlist still bounds each secret's destinations; per-thread/per-proxy subsetting is the Future Work CRD. |
-| Non-HTTP egress (raw TCP, git-over-SSH) bypasses an HTTP-aware swap | Medium | Low | v1 scope is HTTP(S); document that SSH-based git uses a different credential path. Revisit if needed. |
+| Risk                                                                                                                                                             | Likelihood | Impact | Mitigation                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transformed credentials (HTTP Basic `base64(user:token)`, AWS SigV4 / webhook HMAC signing) never appear literally on the wire, so literal swap cannot find them | Medium     | Medium | Documented limitation: these inherently need the secret inside the VM to compute. Out of scope for v1 (rare in agent tooling); handle later via a per-integration broker. |
+| Guest-trusted CA private key compromise lets a node-local attacker MITM agent egress                                                                             | Low        | High   | Key only in the sidecar, never mounted into `fc-agentd` or the guest; rotate via the image + Secret pipeline; same host-trust assumption as the rest of node-4.           |
+| Placeholder collides with real content in a request body                                                                                                         | Very low   | Medium | Fixed-prefix high-entropy ULID; literal byte-string match on the full token.                                                                                              |
+| Placeholder spans TLS record / chunk boundaries and is missed                                                                                                    | Low        | Medium | Sidecar buffers/scans across record boundaries before forwarding.                                                                                                         |
+| Per-node shared catalog: every thread on a node can reach every secret in that node's catalog (no per-thread subsetting in v1)                                   | Medium     | Medium | Acceptable at a single agent trust tier; per-secret allowlist still bounds each secret's destinations; per-thread/per-proxy subsetting is the Future Work CRD.            |
+| Non-HTTP egress (raw TCP, git-over-SSH) bypasses an HTTP-aware swap                                                                                              | Medium     | Low    | v1 scope is HTTP(S); document that SSH-based git uses a different credential path. Revisit if needed.                                                                     |
 
 ---
 
@@ -146,10 +150,10 @@ An operator reconciles the CRD into independently-scaled proxy Deployments + Ser
 
 ## References
 
-| Resource | Relevance |
-| -------- | --------- |
-| [Kloak (getkloak.io)](https://getkloak.io/) | The placeholder-on-egress idea; the eBPF mechanism we adapt away from |
+| Resource                                                                                            | Relevance                                                                             |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [Kloak (getkloak.io)](https://getkloak.io/)                                                         | The placeholder-on-egress idea; the eBPF mechanism we adapt away from                 |
 | [ADR 022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) | The substrate, the snapshot bundle we keep secrets out of, the vsock 1025 egress port |
-| [ADR 004 - Autonomous Agents](004-autonomous-agents.md) | The 1Password injection pattern reused for provisioning values |
-| `projects/agent_platform/vsockproto/proto.go` | The vsock contract (`EgressPort = 1025`, `KindAssign`) this builds on |
-| `docs/security.md` | Security baseline |
+| [ADR 004 - Autonomous Agents](004-autonomous-agents.md)                                             | The 1Password injection pattern reused for provisioning values                        |
+| `projects/agent_platform/vsockproto/proto.go`                                                       | The vsock contract (`EgressPort = 1025`, `KindAssign`) this builds on                 |
+| `docs/security.md`                                                                                  | Security baseline                                                                     |
