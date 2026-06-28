@@ -281,6 +281,21 @@ web:
         secretKeyRef:
           name: monolith-public-turnstile
           key: IP_HASH_SALT
+    # goosecracker artifact read path (ADR 024). The public backend reads the
+    # agent-built HTML from the shared SeaweedFS S3 gateway (in-cluster, so the
+    # public off-cluster EgressNetwork deny does not block it) and the SSR
+    # frontend proxies /artifact/<id>/raw + /version to it. Read-only: the write
+    # router is not mounted on the public binary. Creds are the cluster's dummy
+    # S3 identity (auth disabled); literals, not secrets. ARTIFACTS_S3_BUCKET must
+    # match the full monolith's artifact.bucket (where the write lands).
+    - name: SEAWEEDFS_S3_ENDPOINT
+      value: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+    - name: S3_ACCESS_KEY_ID
+      value: "duckdb"
+    - name: S3_SECRET_ACCESS_KEY
+      value: "duckdb"
+    - name: ARTIFACTS_S3_BUCKET
+      value: "artifacts"
   # CPU request is sized so the HPA's per-container CPU utilization is a
   # meaningful signal (idle is ~1m). No CPU limit: let it burst (the HPA scales
   # out on sustained CPU rather than throttling).

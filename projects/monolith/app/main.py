@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.log import configure_logging
+import artifact
 import chat
 import dr_jobs
 import hikes
@@ -239,6 +240,7 @@ stars.register(app)
 trips.register(app)
 dr_jobs.register(app)
 worldcup.register(app)
+artifact.register(app)
 app.mount("/mcp", _mcp_app)
 
 

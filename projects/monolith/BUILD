@@ -54,6 +54,7 @@ _BACKEND_SRCS = glob(
     [
         "agent/**/*.py",
         "app/**/*.py",
+        "artifact/**/*.py",
         "chat/**/*.py",
         "chat_public/**/*.py",
         "cluster/**/*.py",
@@ -184,6 +185,7 @@ py_library(
         [
             "agent/**/*.py",
             "app/**/*.py",
+            "artifact/**/*.py",
             "chat/**/*.py",
             "chat_public/**/*.py",
             "cluster/**/*.py",
@@ -381,6 +383,7 @@ py_library(
     srcs = glob(
         [
             "app/**/*.py",
+            "artifact/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "shared/**/*.py",
@@ -436,6 +439,7 @@ py_venv_binary(
     srcs = glob(
         [
             "app/**/*.py",
+            "artifact/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "shared/**/*.py",
@@ -492,6 +496,7 @@ py_test(
         include = [
             "ships/**/*.py",
             "stars/**/*.py",
+            "artifact/**/*.py",
             "chat/**/*.py",
             "chat_public/**/*.py",
             "knowledge/**/*.py",
@@ -2541,6 +2546,31 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+# goosecracker artifact service (ADR 024): TestClient unit tests for the publish
+# + read endpoints (S3 faked) and the S3 helper (boto3 mocked).
+py_test(
+    name = "artifact_router_test",
+    srcs = ["artifact/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "artifact_s3_test",
+    srcs = ["artifact/s3_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//pytest",
     ],
 )
 
