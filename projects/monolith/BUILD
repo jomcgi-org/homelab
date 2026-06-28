@@ -1,4 +1,5 @@
 # gazelle:exclude agent
+# gazelle:exclude artifact
 # gazelle:exclude chat
 # gazelle:exclude chat_public
 # gazelle:exclude cluster
