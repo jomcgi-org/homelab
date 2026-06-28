@@ -7,7 +7,7 @@ import (
 
 func TestGooseCommandWithRecipe(t *testing.T) {
 	got := GooseCommand(Config{Recipe: "/etc/goose/recipes/agent.yaml", Task: "fix the flaky test"})
-	want := "goose run --recipe /etc/goose/recipes/agent.yaml --no-profile --params task_description=fix the flaky test"
+	want := "goose run --recipe /etc/goose/recipes/agent.yaml --no-profile --with-builtin developer --params task_description=fix the flaky test"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("got %q, want %q", strings.Join(got, " "), want)
 	}
