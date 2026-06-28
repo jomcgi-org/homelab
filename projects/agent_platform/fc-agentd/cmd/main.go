@@ -68,7 +68,7 @@ func run(logger *slog.Logger) error {
 		SnapshotRoot:    cfg.SnapshotRoot,
 		Node:            cfg.Node,
 		Arch:            cfg.Arch,
-	}, &driver.ExecLauncher{Bin: cfg.FirecrackerBin}, nil)
+	}, &driver.ExecLauncher{Bin: cfg.FirecrackerBin, OOMScoreAdj: cfg.GuestOOMScoreAdj}, nil)
 
 	loop := &reconcile.Loop{
 		Executor:      fcDriver,
@@ -79,6 +79,7 @@ func run(logger *slog.Logger) error {
 		ControlUDS:    fcDriver.VsockUDSPath,
 		GooseEnv:      cfg.InjectedEnv,
 		EgressSidecar: cfg.EgressSidecar,
+		MaxConcurrent: cfg.MaxConcurrent,
 	}
 
 	if cfg.DatabaseURL != "" {

@@ -45,6 +45,23 @@ type Config struct {
 	GuestVCPUs  int
 	GuestMemMib int
 
+	// MaxConcurrent caps how many microVMs may be live (RUNNING or restored) at
+	// once on this node. The reconcile loop refuses to claim past it, leaving
+	// excess threads PENDING (a queue drained as live VMs idle or complete).
+	// Because Firecracker hard-caps each guest's RAM, MaxConcurrent * GuestMemMib
+	// is a true upper bound on the microVM memory in this daemon's cgroup, which
+	// is what keeps a burst of submissions from OOM-killing the controller. 0
+	// disables the cap (unbounded; tests/dry-run).
+	MaxConcurrent int
+
+	// GuestOOMScoreAdj is written to each Firecracker child's
+	// /proc/<pid>/oom_score_adj so the guest, never the daemon, is the kernel's
+	// first OOM victim under cgroup or node memory pressure (ADR platform/010's
+	// disposable-victim intent, applied to processes because the guests are child
+	// processes, not pods). 0 leaves the inherited score; a high value (e.g.
+	// 1000) makes guests strictly preferred for the kill.
+	GuestOOMScoreAdj int
+
 	// EgressSidecar is the localhost address of the egress-proxy sidecar (ADR
 	// 023) the loop forwards guest egress to. Empty disables egress forwarding.
 	EgressSidecar string
@@ -74,6 +91,8 @@ func Load() (Config, error) {
 		HarnessInit:       getenvDefault("FC_AGENTD_HARNESS_INIT", "/usr/local/bin/fc-agent-init"),
 		GuestVCPUs:        atoiDefault("FC_AGENTD_GUEST_VCPUS", 1),
 		GuestMemMib:       atoiDefault("FC_AGENTD_GUEST_MEM_MIB", 1024),
+		MaxConcurrent:     atoiDefault("FC_AGENTD_MAX_CONCURRENT", 8),
+		GuestOOMScoreAdj:  atoiDefault("FC_AGENTD_GUEST_OOM_SCORE_ADJ", 1000),
 		EgressSidecar:     os.Getenv("FC_AGENTD_EGRESS_SIDECAR"),
 		InjectedEnv:       injectedEnv(),
 	}

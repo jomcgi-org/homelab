@@ -189,6 +189,67 @@ func TestReconcileCreatesPending(t *testing.T) {
 	}
 }
 
+func TestReconcileAdmissionCapDefersExcess(t *testing.T) {
+	reg := newFakeRegistry(
+		store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"},
+		store.Thread{ThreadID: "t2", State: substrate.StatePending, Node: "node-4"},
+		store.Thread{ThreadID: "t3", State: substrate.StatePending, Node: "node-4"},
+	)
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.MaxConcurrent = 2
+	l.reconcileOnce(context.Background(), testLogger())
+
+	if ex.claims != 2 {
+		t.Fatalf("claims = %d, want 2 (capped at MaxConcurrent)", ex.claims)
+	}
+	if l.LiveThreads() != 2 {
+		t.Fatalf("live = %d, want 2", l.LiveThreads())
+	}
+	// Exactly one of the three stays PENDING (map order is non-deterministic, so
+	// assert the count, not which one).
+	pending := 0
+	for _, id := range []string{"t1", "t2", "t3"} {
+		if reg.state(id) == substrate.StatePending {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("pending = %d, want 1 deferred past the cap", pending)
+	}
+}
+
+func TestReconcileAdmissionCapDrainsAsSlotsFree(t *testing.T) {
+	reg := newFakeRegistry(
+		store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"},
+		store.Thread{ThreadID: "t2", State: substrate.StatePending, Node: "node-4"},
+	)
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.MaxConcurrent = 1
+	l.reconcileOnce(context.Background(), testLogger())
+	if l.LiveThreads() != 1 {
+		t.Fatalf("live after first pass = %d, want 1", l.LiveThreads())
+	}
+
+	// Complete whichever thread was admitted; the loop reclaims it and frees the
+	// slot, and a later pass admits the queued one (so the queue drains).
+	for _, id := range []string{"t1", "t2"} {
+		if reg.state(id) == substrate.StateRunning {
+			_ = reg.SetState(context.Background(), id, substrate.StateCompleted)
+		}
+	}
+	l.reconcileOnce(context.Background(), testLogger()) // reclaims completed, frees the slot
+	l.reconcileOnce(context.Background(), testLogger()) // admits the queued thread
+
+	if ex.claims != 2 {
+		t.Fatalf("claims = %d, want 2 (both admitted over time)", ex.claims)
+	}
+	if l.LiveThreads() != 1 {
+		t.Fatalf("live = %d, want 1 (still capped)", l.LiveThreads())
+	}
+}
+
 func TestReconcileSnapshotsOnIdle(t *testing.T) {
 	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"})
 	ex := &fakeExec{}
