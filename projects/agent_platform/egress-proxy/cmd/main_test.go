@@ -195,9 +195,12 @@ func TestHostFromHTTP(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			br := bufio.NewReader(strings.NewReader(tt.req))
-			got, err := hostFromStream(br)
+			got, isTLS, err := hostFromStream(br)
 			if err != nil {
 				t.Fatalf("hostFromStream: %v", err)
+			}
+			if isTLS {
+				t.Errorf("plain HTTP misdetected as TLS")
 			}
 			if got != tt.want {
 				t.Errorf("host = %q, want %q", got, tt.want)
@@ -213,7 +216,7 @@ func TestHostFromHTTP(t *testing.T) {
 
 func TestHostFromHTTPNoHost(t *testing.T) {
 	br := bufio.NewReader(strings.NewReader("GET / HTTP/1.1\r\nAccept: */*\r\n\r\n"))
-	if _, err := hostFromStream(br); err == nil {
+	if _, _, err := hostFromStream(br); err == nil {
 		t.Fatal("expected error for missing Host header")
 	}
 }
@@ -236,9 +239,12 @@ func TestSNIFromClientHello(t *testing.T) {
 
 	// Via the peeking dispatcher, which must not consume the ClientHello.
 	br := bufio.NewReader(bytes.NewReader(hello))
-	got, err = hostFromStream(br)
+	got, isTLS, err := hostFromStream(br)
 	if err != nil {
 		t.Fatalf("hostFromStream(TLS): %v", err)
+	}
+	if !isTLS {
+		t.Errorf("TLS ClientHello not detected as TLS")
 	}
 	if got != name {
 		t.Errorf("hostFromStream = %q, want %q", got, name)

@@ -68,7 +68,22 @@ func main() {
 		logger.Warn("policy=allowlist with empty EGRESS_ALLOWLIST; all egress will be denied (fail closed)")
 	}
 
-	p := &proxy{policy: policy, allowlist: allowlist, logger: logger}
+	// Secret placeholder-swap (ADR 023 6b): load the catalog and the CA the sidecar
+	// uses to TLS-terminate secret-bearing destinations. Absent CA paths or an empty
+	// catalog leave the proxy a plain transparent router (6a).
+	secrets := loadSecrets(logger)
+	var minter *caMinter
+	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
+		m, err := newCAMinter(caCert, caKey)
+		if err != nil {
+			logger.Error("egress CA load failed; secret swap disabled", "err", err)
+		} else {
+			minter = m
+			logger.Info("secret swap enabled", "secrets", len(secrets))
+		}
+	}
+
+	p := &proxy{policy: policy, allowlist: allowlist, secrets: secrets, minter: minter, logger: logger}
 
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -85,14 +100,19 @@ func main() {
 	}
 }
 
-// proxy holds the egress posture and logger.
+// proxy holds the egress posture, the secret catalog, and the CA minter.
 type proxy struct {
 	// policy is the egress posture: policyAllow (default) permits every
 	// destination, policyAllowlist permits only allowlist entries.
 	policy string
 	// allowlist is consulted only under policyAllowlist.
 	allowlist []string
-	logger    *slog.Logger
+	// secrets is the placeholder-swap catalog (ADR 023 6b); empty disables swap.
+	secrets []secretEntry
+	// minter mints leaf certs from the egress CA for TLS termination; nil disables
+	// the swap path (the proxy stays a plain transparent router).
+	minter *caMinter
+	logger *slog.Logger
 }
 
 // permits reports whether dest may be reached under the current policy.
@@ -120,7 +140,7 @@ func (p *proxy) handle(client net.Conn) {
 		return
 	}
 
-	host, err := hostFromStream(br)
+	host, isTLS, err := hostFromStream(br)
 	if err != nil {
 		p.logger.Warn("egress host detection failed", "port", port, "err", err)
 		return
@@ -130,6 +150,17 @@ func (p *proxy) handle(client net.Conn) {
 	if !p.permits(dest) {
 		p.logger.Warn("egress denied", "dest", dest)
 		return
+	}
+
+	// Secret-bearing TLS destination: terminate, swap the placeholder, re-originate
+	// (ADR 023 6b). Everything else is blind-tunnelled (6a). The swap fires only for
+	// a host in the secret's egressTo, so the real value is unreachable elsewhere.
+	if p.minter != nil && isTLS {
+		if sec := p.secretFor(host); sec != nil {
+			p.logger.Info("egress allowed (swap)", "dest", dest)
+			p.terminateAndSwap(br, client, dest, host, sec)
+			return
+		}
 	}
 	p.logger.Info("egress allowed", "dest", dest)
 
@@ -149,17 +180,20 @@ func (p *proxy) handle(client net.Conn) {
 }
 
 // hostFromStream peeks the buffered client stream and returns the destination
-// host: the TLS SNI for a handshake record, otherwise the HTTP Host header. It
-// never consumes bytes, so the stream forwards to the upstream verbatim.
-func hostFromStream(br *bufio.Reader) (string, error) {
+// host and whether the stream is TLS: the TLS SNI for a handshake record,
+// otherwise the HTTP Host header. It never consumes bytes, so the stream forwards
+// to the upstream verbatim.
+func hostFromStream(br *bufio.Reader) (host string, isTLS bool, err error) {
 	first, err := br.Peek(1)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if first[0] == 0x16 { // TLS handshake record
-		return sniFromClientHello(br)
+		host, err = sniFromClientHello(br)
+		return host, true, err
 	}
-	return hostFromHTTP(br)
+	host, err = hostFromHTTP(br)
+	return host, false, err
 }
 
 // maxHeadPeek bounds how far we peek looking for the SNI or Host header.

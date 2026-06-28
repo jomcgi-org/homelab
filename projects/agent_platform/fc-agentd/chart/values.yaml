@@ -56,13 +56,28 @@ egress:
     OPENAI_API_KEY: sk-noauth
     GOOSE_PROVIDER: openai
     GOOSE_MODEL: qwen3.6-27b
+  # 6b CA: cert-manager generates + rotates the self-signed CA the sidecar uses to
+  # mint leaf certs when it TLS-terminates a secret-bearing destination. Only
+  # created when `secrets` below is non-empty.
+  ca:
+    duration: 87600h # 10y; rotation churns guest trust, keep it rare
+    renewBefore: 2160h # 90d
   # 6b: the ADR-023 secret catalog (shaped like the future SecretProxy CRD
-  # spec.secrets). egressTo is the control: the destinations a swapped-in
-  # credential may reach. The guest only ever holds the placeholder.
-  # secrets:
-  #   - env: GITHUB_TOKEN
-  #     secretRef: { name: agent-github-bot, key: token }
-  #     egressTo: [api.github.com]
+  # spec.secrets). Each entry: a high-entropy `placeholder` the guest holds as
+  # `env`; the sidecar swaps it for the real value (literal `value` for tests, or
+  # `secretRef` {name,key} for production) only on a connection whose host is in
+  # `egressTo`. egressTo is the exfiltration control: everywhere else the inert
+  # placeholder leaves. Literal swap only (a base64'd git-Basic token is ADR-
+  # deferred). A non-empty list enables the CA + TLS-terminate path.
+  secrets:
+    # The agent's gh/API calls carry this placeholder; the sidecar swaps it for the
+    # real token (already in-namespace, synced by the monolith from 1Password) only
+    # on api.github.com. Literal swap: gh API works; raw git-over-HTTPS Basic (a
+    # base64'd token) is ADR-deferred.
+    - env: GITHUB_TOKEN
+      placeholder: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
+      egressTo: [api.github.com]
+      secretRef: { name: monolith-chat-secrets, key: GITHUB_TOKEN }
   resources:
     requests:
       cpu: 50m

@@ -96,6 +96,7 @@ func run(logger *slog.Logger) error {
 	// is applied and before the harness starts resolving. Only with a controller
 	// (the vsock egress hop needs the host).
 	if conn != nil {
+		installGuestCA(logger)
 		setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"))
 	}
 
@@ -249,6 +250,41 @@ func dialController(ctx context.Context, logger *slog.Logger) *vsockproto.Conn {
 // loopback with no listener and fails closed rather than escaping. Generic
 // any-port capture (iptables REDIRECT) is future work (ADR 023).
 var defaultEgressPorts = []int{80, 443, 8080}
+
+// guestCABundle is the system trust bundle most TLS clients (incl. Go's gh) read.
+const guestCABundle = "/etc/ssl/certs/ca-certificates.crt"
+
+// installGuestCA installs the egress CA into the guest trust store (ADR 023 6b).
+// The CA cert (public PEM) arrives in EGRESS_CA_CERT over the trusted vsock Assign
+// channel; the harness must trust it so it accepts the leaf certs the egress-proxy
+// mints when it TLS-terminates a secret-bearing destination. No-op when unset
+// (6a, or a thread with no secrets). Runs before the harness so clients pick it up
+// at startup.
+func installGuestCA(logger *slog.Logger) {
+	caPEM := os.Getenv("EGRESS_CA_CERT")
+	if strings.TrimSpace(caPEM) == "" {
+		return
+	}
+	if f, err := os.OpenFile(guestCABundle, os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
+		logger.Warn("guest CA: open trust bundle failed", "err", err)
+	} else {
+		_, werr := f.WriteString("\n" + caPEM + "\n")
+		_ = f.Close()
+		if werr != nil {
+			logger.Warn("guest CA: append to trust bundle failed", "err", werr)
+		}
+	}
+	// A standalone file + explicit env vars cover tools that do not read the bundle
+	// (node adds NODE_EXTRA_CA_CERTS to its defaults rather than replacing them).
+	const caFile = "/etc/ssl/certs/egress-ca.pem"
+	if err := os.WriteFile(caFile, []byte(caPEM), 0o644); err != nil {
+		logger.Warn("guest CA: write standalone cert failed", "err", err)
+	}
+	ensureEnv("SSL_CERT_FILE", guestCABundle)
+	ensureEnv("GIT_SSL_CAINFO", guestCABundle)
+	ensureEnv("NODE_EXTRA_CA_CERTS", caFile)
+	logger.Info("guest egress CA installed in trust store")
+}
 
 // setupTransparentEgress makes the guest a dumb egress funnel (ADR 023). It
 // points the resolver at a wildcard responder that answers every name with
