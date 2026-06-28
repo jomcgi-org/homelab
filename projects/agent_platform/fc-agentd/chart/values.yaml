@@ -39,6 +39,12 @@ egress:
     tag: latest
   # Where fc-agentd forwards guest egress (the sidecar's listen address, pod-local).
   sidecarAddr: 127.0.0.1:8888
+  # Loopback ports the guest's transparent egress funnel listens on (injected as
+  # EGRESS_PORTS). Must list every upstream port a guest dials, since wildcard DNS
+  # points all names at loopback and only these ports have a funnel listener:
+  # 443 (OpenRouter + open web), 8080 (in-cluster model), 8000 (monolith artifact
+  # publish, ADR 024). 80 kept for plain-HTTP destinations.
+  funnelPorts: "80,443,8080,8000"
   # Egress posture. "allow" (default) routes anywhere in or out of cluster, so the
   # agent can read random docs; secrets still only materialise at their egressTo
   # (6b), so the open path cannot leak a credential. Flip to "allowlist" to
