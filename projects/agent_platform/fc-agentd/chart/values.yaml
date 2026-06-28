@@ -42,7 +42,11 @@ egress:
   goose:
     provider: openai
     model: qwen3.6-27b
-    baseURL: http://inference.inference.svc.cluster.local:8080/v1
+    # goose's OpenAI provider reads OPENAI_HOST (scheme + host, no path; it appends
+    # OPENAI_BASE_PATH=v1/chat/completions), not OPENAI_BASE_URL. apiKey must be set
+    # even though in-cluster vLLM is keyless.
+    host: http://inference.inference.svc.cluster.local:8080
+    apiKey: sk-noauth
   resources:
     requests:
       cpu: 50m
