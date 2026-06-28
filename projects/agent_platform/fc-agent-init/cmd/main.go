@@ -14,12 +14,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -135,6 +137,7 @@ func run(logger *slog.Logger) error {
 		// observable (this log is captured host-side by fc-agentd, unlike the
 		// guest console which the PID-1-exit kernel panic truncates) and yields the
 		// URL for the Done result. No-op when ARTIFACT_PUBLISH_URL is unset.
+		dumpGuestDiag(logger)
 		artifactURL := publishArtifact(logger)
 		if conn != nil {
 			status := "ok"
@@ -469,6 +472,61 @@ func funnelToHost(logger *slog.Logger, local net.Conn, port int) {
 
 // artifactFile is where the artifact recipe writes the page to publish.
 const artifactFile = "/tmp/artifact.html"
+
+// dumpGuestDiag logs what the harness actually did, host-side via the controller
+// (fc-agentd captures this, unlike the guest console which the PID-1-exit panic
+// truncates): a listing of likely write targets (did goose write a file at all,
+// and where?) and the tail of goose's newest session/log file (did it emit a
+// tool call, and what did the model return?). Diagnostic only; bounded output.
+func dumpGuestDiag(logger *slog.Logger) {
+	home := os.Getenv("HOME")
+	for _, dir := range []string{"/tmp", home, "/", "/workspace"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		var names []string
+		for _, e := range entries {
+			info, _ := e.Info()
+			sz := int64(-1)
+			if info != nil {
+				sz = info.Size()
+			}
+			names = append(names, e.Name()+"("+strconv.FormatInt(sz, 10)+")")
+		}
+		logger.Info("diag: dir", "path", dir, "entries", strings.Join(names, " "))
+	}
+	// Newest goose session/log file under HOME (goose stores transcripts + logs
+	// there); its tail shows the model turns + whether a tool call was emitted.
+	var newest string
+	var newestT time.Time
+	if home != "" {
+		_ = filepath.WalkDir(home, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if strings.HasSuffix(p, ".jsonl") || strings.HasSuffix(p, ".log") {
+				if info, e := d.Info(); e == nil && info.ModTime().After(newestT) {
+					newestT, newest = info.ModTime(), p
+				}
+			}
+			return nil
+		})
+	}
+	if newest == "" {
+		logger.Info("diag: no goose session/log file found under HOME")
+		return
+	}
+	b, err := os.ReadFile(newest)
+	if err != nil {
+		logger.Info("diag: read goose log failed", "path", newest, "err", err)
+		return
+	}
+	if len(b) > 16384 {
+		b = b[len(b)-16384:]
+	}
+	logger.Info("diag: goose log tail", "path", newest, "tail", string(b))
+}
 
 // publishArtifact POSTs the artifact the harness built to the monolith (ADR 024),
 // which performs the S3 write (the guest holds no S3 credential), and returns the
