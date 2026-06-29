@@ -19,6 +19,10 @@ contents:
     - nodejs
     - openssh-client
     - pnpm
+    # sqlite3 CLI: fc-agent-init checkpoints goose's WAL into sessions.db before
+    # shipping it for session resume (ADR 026 Phase 2); goose does not checkpoint
+    # on exit, so without this the shipped db is empty.
+    - sqlite
     - tzdata
 
 archs:

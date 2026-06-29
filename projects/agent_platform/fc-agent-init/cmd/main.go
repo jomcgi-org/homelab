@@ -590,16 +590,36 @@ func publishArtifact(logger *slog.Logger) string {
 	return out.URL
 }
 
-// sessionDBPath is goose's SQLite session store (ADR 026 Phase 2). goose names it
-// under HOME, which fc-agent-init anchors at /home/goose-agent (the harness image
-// user). Persisting + restoring this single file is what makes a thread's
-// conversation portable across fresh microVMs (validated in the 2.1 spike).
+// sessionDBPath is goose's SQLite session store (ADR 026 Phase 2). goose keeps it
+// under HOME (the raw-FC-boot runtime HOME, falling back to the harness user).
 func sessionDBPath() string {
 	home := os.Getenv("HOME")
 	if home == "" {
 		home = "/home/goose-agent"
 	}
 	return filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db")
+}
+
+// checkpointSessionDB folds goose's write-ahead log into the main sessions.db so a
+// single self-contained file carries the whole conversation. goose runs the DB in
+// WAL mode and does NOT checkpoint on exit, so without this the live session sits
+// in sessions.db-wal while sessions.db is an empty header page, and shipping only
+// the .db loses every turn. goose has already exited (no connection holds the
+// WAL), so a TRUNCATE checkpoint is safe; it leaves a normal db that goose reopens
+// cleanly on --resume. Best-effort: a missing db or sqlite3 just leaves the file
+// as-is and the resume falls back to a cold build.
+func checkpointSessionDB(logger *slog.Logger) {
+	db := sessionDBPath()
+	if _, err := os.Stat(db); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sqlite3", db, "PRAGMA wal_checkpoint(TRUNCATE);").CombinedOutput()
+	if err != nil {
+		logger.Warn("session: WAL checkpoint failed (shipping db as-is)", "err", err, "out", string(out))
+		return
+	}
 }
 
 // artifactBaseURL is the per-thread artifact path on the monolith, derived from
@@ -691,14 +711,16 @@ func restoreArtifact(logger *slog.Logger) {
 }
 
 // publishSession ships goose's session DB to the monolith after the run so the
-// next reply on this thread can resume it (ADR 026 Phase 2). goose has exited by
-// now, so the SQLite file is checkpointed and consistent. No-op when the artifact
-// env is unset (non-artifact tier) or goose wrote no session.
+// next reply on this thread can resume it (ADR 026 Phase 2). It first checkpoints
+// the WAL into the main db (goose does not on exit), so the single file it ships
+// carries the whole conversation. No-op when the artifact env is unset
+// (non-artifact tier) or goose wrote no session.
 func publishSession(logger *slog.Logger) {
 	base := artifactBaseURL()
 	if base == "" {
 		return
 	}
+	checkpointSessionDB(logger)
 	data, err := os.ReadFile(sessionDBPath())
 	if err != nil {
 		logger.Info("session: nothing to publish", "path", sessionDBPath(), "err", err)
