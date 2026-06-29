@@ -309,3 +309,54 @@ func TestSplitHostPort(t *testing.T) {
 		})
 	}
 }
+
+// blockAfterReader yields its payload on the first Read, then blocks until
+// released, reproducing a real socket where the client has sent its whole
+// request head and is waiting for the response (no EOF). A fixed-size Peek
+// deadlocks on this; the buffered-growth scan must not.
+type blockAfterReader struct {
+	data    []byte
+	served  bool
+	release chan struct{}
+}
+
+func (r *blockAfterReader) Read(p []byte) (int, error) {
+	if !r.served {
+		r.served = true
+		return copy(p, r.data), nil
+	}
+	<-r.release
+	return 0, io.EOF
+}
+
+func TestHostFromHTTPSmallBodylessGetDoesNotHang(t *testing.T) {
+	// A bodyless GET shorter than the old fixed Peek(1024): the whole head is sent,
+	// then the client waits. hostFromHTTP must find the Host and return, not block.
+	req := "GET /internal/artifact/123/session HTTP/1.1\r\n" +
+		"Host: monolith.test.example:8000\r\n" +
+		"User-Agent: Go-http-client/1.1\r\n\r\n"
+	r := &blockAfterReader{data: []byte(req), release: make(chan struct{})}
+	defer close(r.release)
+	br := bufio.NewReaderSize(r, maxHeadPeek)
+
+	type result struct {
+		host string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		h, err := hostFromHTTP(br)
+		ch <- result{h, err}
+	}()
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("hostFromHTTP: %v", got.err)
+		}
+		if got.host != "monolith.test.example" {
+			t.Fatalf("host = %q, want monolith.test.example", got.host)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("hostFromHTTP hung on a small bodyless GET (Peek-blocks-for-fixed-n regression)")
+	}
+}
