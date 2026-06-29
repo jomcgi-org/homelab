@@ -127,7 +127,9 @@ func (p *proxy) permits(dest string) bool {
 // from the stream (SNI or Host header), apply policy, then pipe to the upstream.
 func (p *proxy) handle(client net.Conn) {
 	defer client.Close()
-	br := bufio.NewReader(client)
+	// Size the buffer to maxHeadPeek so the head scan (and the SNI parse) can peek
+	// up to the cap without hitting ErrBufferFull below the cap.
+	br := bufio.NewReaderSize(client, maxHeadPeek)
 
 	portLine, err := br.ReadString('\n')
 	if err != nil {
@@ -199,22 +201,36 @@ func hostFromStream(br *bufio.Reader) (host string, isTLS bool, err error) {
 // maxHeadPeek bounds how far we peek looking for the SNI or Host header.
 const maxHeadPeek = 8192
 
-// hostFromHTTP scans the buffered request head for the Host header, growing the
-// peek until the header is found, the head ends, or the cap is hit.
+// hostFromHTTP scans the buffered request head for the Host header without
+// consuming it (the raw bytes are blind-tunnelled to the upstream afterwards).
+//
+// It peeks only what is already buffered and forces just ONE more byte into the
+// buffer per iteration when the head is not yet complete. A fixed-size Peek(n)
+// would block until n bytes arrive, which deadlocks on a request whose entire
+// head is shorter than n: a bodyless GET (or any small request) sends its full
+// head, then waits for the response, so the missing bytes never come and Peek
+// hangs until the client's own timeout. (Large POSTs and TLS ClientHellos hide
+// this by exceeding n on the first read.) The full head normally lands in the
+// first read, so the per-byte growth loop iterates at most a couple of times.
 func hostFromHTTP(br *bufio.Reader) (string, error) {
-	for n := 1024; ; n += 1024 {
-		if n > maxHeadPeek {
-			n = maxHeadPeek
+	for {
+		if buffered := br.Buffered(); buffered > 0 {
+			buf, _ := br.Peek(buffered) // already in the buffer: never blocks
+			if host, ok := scanHostHeader(buf); ok {
+				return host, nil
+			}
+			if bytes.Contains(buf, []byte("\r\n\r\n")) {
+				return "", errors.New("no Host header in request")
+			}
+			if buffered >= maxHeadPeek {
+				return "", errors.New("HTTP head exceeds cap without a Host header")
+			}
 		}
-		buf, err := br.Peek(n)
-		if host, ok := scanHostHeader(buf); ok {
-			return host, nil
-		}
-		if bytes.Contains(buf, []byte("\r\n\r\n")) {
-			return "", errors.New("no Host header in request")
-		}
-		if err != nil || n >= maxHeadPeek {
-			return "", fmt.Errorf("incomplete HTTP head (peeked %d): %w", len(buf), err)
+		// Force one more byte (and whatever else arrives with it) into the buffer.
+		// Blocks only for genuinely-in-flight head bytes, never for a head that is
+		// already complete.
+		if _, err := br.Peek(br.Buffered() + 1); err != nil {
+			return "", fmt.Errorf("incomplete HTTP head (buffered %d): %w", br.Buffered(), err)
 		}
 	}
 }
