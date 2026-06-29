@@ -50,27 +50,30 @@ End-to-end cold start (submit to goose running) under ~1.5s, validated on a real
 
 Do not start until Phase 1 is shipped (it is the cold fallback for every resume miss).
 
-### Task 2.1, spike: confirm goose session resume semantics
+### Task 2.1, spike: confirm goose session resume semantics — DONE (2026-06-29)
 
-Goal: de-risk the one external dependency before building around it.
+De-risked by a real spike: a throwaway pod from the pinned harness image (goose 1.27.1), driving goose against in-cluster Qwen. Findings:
 
-- Determine headless goose's resume path: whether `goose run --recipe <r> --resume <session>` works, or whether iterations must use `goose run --resume <session> -t "<instruction>"` (no recipe), and where goose writes/reads its session file (observed under `~/.local/state/goose/...`). Confirm that resuming replays the prior conversation (including prior assistant outputs) so the prefix is stable.
-- Output: a short decision note appended to this plan on the exact resume invocation, session file path, and version-compatibility behavior. Everything below depends on it.
+- **Storage is SQLite**, not per-session JSONL: `~/.local/share/goose/sessions/sessions.db` (plus `-wal`/`-shm`). `goose info` reports the path.
+- **Resume CLI:** `goose run --name <id> --resume -t "<instruction>"` (also `--session-id <id>`). Turn 1 with `--name` creates the session; `--resume` replays the full prior conversation to the model (proven: turn 2 recalled a secret set in turn 1). `--no-session` runs one-shot with no file.
+- **Portable across a fresh VM:** copying out `sessions.db`, wiping the entire sessions directory, restoring only that file, and resuming still recalled the prior turn. So persist + restore the DB file = working resume in a fresh VM. No snapshot needed.
+- **Open detail (low risk):** whether to re-pass `--recipe` on resume or rely on the recipe's system prompt already being in the session (turn 1 wrote it). Decide during 2.3; fallback contains it.
+- **`goose session export`** produces a markdown transcript (tool/structured content does not render but is present in the DB); useful for debugging, not the persistence path.
 
 ### Task 2.2, persist the goose session per thread
 
 Goal: a thread's session survives between runs, stored next to its artifact.
 
-- After a run, the guest exports goose's session file and ships it to the monolith (mirror the artifact publish: `POST /internal/goosecracker/session` with `{id, session_bytes}` through the egress funnel, or extend the artifact publish to carry it). Store at `s3://artifacts/<id>/session.json` (or a `chat.goosecracker_sessions.session_ref`). Keep it small; it is the transcript, not a VM image.
-- The artifact file is already persisted in S3; no change there beyond ensuring it is fetchable for restore.
-- Validate: run once, confirm `session.json` lands in S3 keyed by the Discord thread.
+- Run goose under a session named for the Discord thread (`--name <ARTIFACT_ID>`). After the run, the guest ships `~/.local/share/goose/sessions/sessions.db` to the monolith (mirror the artifact publish: `POST /internal/goosecracker/session` with the DB bytes through the egress funnel, or extend the artifact publish to carry it). Store at `s3://artifacts/<id>/sessions.db`. goose has exited by then, so the DB is consistent (WAL checkpointed on close); ship the single `.db`.
+- The artifact file is already persisted in S3; no change beyond ensuring it is fetchable for restore.
+- Validate: run once, confirm `sessions.db` lands in S3 keyed by the Discord thread.
 
 ### Task 2.3, restore and resume on reply
 
 Goal: a thread reply resumes the session instead of cold-rebuilding from the transcript.
 
-- `chat/goosecracker.py` `continue_session`: signal resume mode (a flag on `dispatch.submit`, e.g. `resume=True`) instead of re-sending the full transcript. The new instruction (only the latest reply) becomes the task.
-- `fc-agentd` / `fc-agent-init`: when a thread is in resume mode and a session exists, restore `session.json` and the prior `index.html` into the guest's `~/.local/state/goose/...` and `/tmp/artifact.html` before launching goose, then run the resume invocation from Task 2.1 with the new instruction. goose edits the file in place; the existing publish path re-publishes the same `ARTIFACT_ID` (hot reload).
+- `chat/goosecracker.py` `continue_session`: signal resume mode (a flag on `dispatch.submit`, e.g. `resume=True`) and pass only the latest reply as the task, instead of re-sending the full transcript.
+- `fc-agentd` / `fc-agent-init`: when a thread is in resume mode and a session exists, restore `sessions.db` into `~/.local/share/goose/sessions/` and the prior `index.html` into `/tmp/artifact.html` before launching goose, then run `goose run --name <ARTIFACT_ID> --resume -t "<new instruction>"` (decide whether `--recipe` is re-passed, per the 2.1 open detail). goose edits the file in place; the existing publish path re-publishes the same `ARTIFACT_ID` (hot reload).
 - Validate in-cluster: a two-step thread (build, then "change the color") shows, on the second step, an inference prefix-cache hit (`cached_tokens > 0` in the egress capture) and a markedly shorter build, with the artifact correctly edited (not regenerated from scratch).
 
 ### Task 2.4, fallback to cold plus Model B
@@ -96,7 +99,7 @@ A multi-reply Discord thread shows incremental edits, shorter per-reply latency,
 ## Sequencing and risk
 
 - **Ship Phase 1 first and independently.** It is valuable alone, low-risk (interface already exists, fallback retained), and is the prerequisite fallback for Phase 2.
-- **Phase 2 gates on Task 2.1** (goose resume spike). If headless resume does not preserve the conversation usefully, Phase 2 is reconsidered before building 2.2 to 2.5; Phase 1 still stands.
+- **Phase 2's load-bearing assumption is validated** (Task 2.1 spike, done): goose's SQLite session resume replays full history and is portable across a fresh VM. The remaining Phase 2 work is plumbing (persist/restore the DB, resume invocation, fallback, TTL), not an open research question.
 - **No local test loop**: each task validates in-cluster on a real run (DB insert or `/goosecracker`), reading fc-agentd / egress-proxy logs and the egress `cached_tokens` field. Implement, push, watch CI, validate on the rollout.
 - **Chart bumps**: provisioner and dispatch changes are fc-agentd (chart + harness as needed); session persist/restore touches fc-agent-init (harness rebuild) and the monolith (chart). Keep `Chart.yaml` and `deploy/application.yaml` in sync per repo convention.
 - **Deploy-cadence caveat (ADR 026)**: Phase 2's value assumes sessions are reused more often than harness deploys invalidate them. If goose-version churn makes resume rarely hit, Phase 1 still carries the latency win and Phase 2 degrades gracefully to cold.
