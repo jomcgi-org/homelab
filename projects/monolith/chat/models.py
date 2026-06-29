@@ -116,3 +116,21 @@ class DiscordOutbox(SQLModel, table=True):
     posted_at: datetime | None = Field(default=None)
     attempts: int = Field(default=0)
     last_error: str | None = Field(default=None)
+
+
+class GoosecrackerSession(SQLModel, table=True):
+    """Per-Discord-thread curated transcript for the goosecracker artifact agent
+    (ADR 024 Task 4). One row per thread; transcript accumulates the owner's
+    instructions (never ambient chatter or the bot's replies). Each owner
+    follow-up re-runs goose from scratch with the full transcript (Model B), and
+    the thread id doubles as the stable ARTIFACT_ID so re-runs hot-reload the
+    same artifact.
+    """
+
+    __tablename__ = "goosecracker_sessions"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    discord_thread: str = Field(primary_key=True)
+    transcript: str = Field(default="")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -140,6 +140,11 @@ spec:
               value: {{ .Values.agent.discord.defaultServerId | quote }}
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
               value: {{ .Values.agent.discord.defaultChannelId | quote }}
+            # Owner allowlist for /goosecracker (ADR 024 Task 4). A Discord user
+            # id is not a secret, so it is a plain value. Empty fails closed: the
+            # gate rejects everyone until set.
+            - name: OWNER_DISCORD_USER_ID
+              value: {{ .Values.agent.discord.ownerUserId | default "" | quote }}
             - name: SIGNOZ_URL
               value: {{ .Values.agent.signoz.url | quote }}
             {{- end }}
