@@ -20,9 +20,15 @@
   // Error pages (notably the brutalist 404 in src/routes/+error.svelte) also
   // suppress the nav: a not-found page renders its own "back home" affordance
   // and the cross-tier nav would only clutter the dead-end.
+  //
+  // Artifacts under /artifact/* (ADR 024 goosecracker) are full-bleed sandboxed
+  // pages: the page is a 100vh iframe with body overflow hidden, meant to fill
+  // the viewport. The site nav both looks wrong on a standalone artifact and
+  // pushes the iframe down, so suppress it like the /app/* experiences.
   let hideNav = $derived(
     /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
       $page.error != null,
   );
 
