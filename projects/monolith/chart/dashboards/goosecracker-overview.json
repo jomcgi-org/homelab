@@ -3,7 +3,7 @@
   "description": "Big-number overview for the Discord artifact agent (ADR 024/026): run count, cold-start phases (provision_rootfs = the CoW scoreboard), and goose model-turn latency. Correlate one run in Traces by thread.id.",
   "tags": ["goosecracker", "agent", "fc-agentd", "traces"],
   "variables": {},
-  "version": "v5",
+  "version": "v4",
   "layout": [
     {
       "h": 3,
@@ -82,7 +82,7 @@
     {
       "id": "gc-runs",
       "title": "Runs",
-      "description": "goosecracker runs started in the window (agent.thread.launch).",
+      "description": "goosecracker runs started in the window.",
       "panelTypes": "value",
       "bucketCount": 30,
       "bucketWidth": 0,
@@ -93,32 +93,7 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
@@ -126,7 +101,7 @@
       "timePreferance": "GLOBAL_TIME",
       "yAxisUnit": "short",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -140,7 +115,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT count() AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='fc-agentd' AND name='agent.thread.launch' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -149,35 +124,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "count",
+              "aggregateOperator": "noop",
               "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "agent.thread.launch"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -190,7 +142,7 @@
               "functions": [],
               "aggregations": [],
               "disabled": false,
-              "reduceTo": "sum"
+              "reduceTo": "avg"
             }
           ],
           "queryFormulas": []
@@ -211,32 +163,7 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
@@ -244,7 +171,7 @@
       "timePreferance": "GLOBAL_TIME",
       "yAxisUnit": "short",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -258,7 +185,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT count() AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='fc-agentd' AND name='agent.thread.launch' AND hasError = true AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -267,46 +194,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "count",
+              "aggregateOperator": "noop",
               "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "agent.thread.launch"
-                  },
-                  {
-                    "key": {
-                      "key": "hasError",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "true"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -319,7 +212,7 @@
               "functions": [],
               "aggregations": [],
               "disabled": false,
-              "reduceTo": "sum"
+              "reduceTo": "avg"
             }
           ],
           "queryFormulas": []
@@ -340,40 +233,15 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
       "thresholds": [],
       "timePreferance": "GLOBAL_TIME",
-      "yAxisUnit": "ns",
+      "yAxisUnit": "ms",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -387,7 +255,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT quantile(0.95)(durationNano)/1e6 AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='fc-agentd' AND name='agent.thread.launch' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -396,41 +264,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
+              "aggregateOperator": "noop",
+              "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "agent.thread.launch"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -464,40 +303,15 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
       "thresholds": [],
       "timePreferance": "GLOBAL_TIME",
-      "yAxisUnit": "ns",
+      "yAxisUnit": "ms",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -511,7 +325,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT quantile(0.95)(durationNano)/1e6 AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='fc-agentd' AND name='provision_rootfs' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -520,41 +334,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
+              "aggregateOperator": "noop",
+              "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "provision_rootfs"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -588,40 +373,15 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
       "thresholds": [],
       "timePreferance": "GLOBAL_TIME",
-      "yAxisUnit": "ns",
+      "yAxisUnit": "ms",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -635,7 +395,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT quantile(0.95)(durationNano)/1e6 AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='fc-agentd' AND name='firecracker_boot' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -644,41 +404,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
+              "aggregateOperator": "noop",
+              "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "firecracker_boot"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -712,40 +443,15 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
       "thresholds": [],
       "timePreferance": "GLOBAL_TIME",
-      "yAxisUnit": "ns",
+      "yAxisUnit": "ms",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -759,7 +465,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT quantile(0.5)(durationNano)/1e6 AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='goosecracker-artifact' AND name='reply_stream' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -768,41 +474,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p50",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
+              "aggregateOperator": "noop",
+              "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "goosecracker-artifact"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "reply_stream"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -836,40 +513,15 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
       "thresholds": [],
       "timePreferance": "GLOBAL_TIME",
-      "yAxisUnit": "ns",
+      "yAxisUnit": "ms",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -883,7 +535,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT quantile(0.95)(durationNano)/1e6 AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='goosecracker-artifact' AND name='reply_stream' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -892,41 +544,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
+              "aggregateOperator": "noop",
+              "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "goosecracker-artifact"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "reply_stream"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
@@ -960,40 +583,15 @@
       "nullZeroValues": "zero",
       "opacity": "1",
       "selectedLogFields": [],
-      "selectedTracesFields": [
-        {
-          "dataType": "string",
-          "id": "serviceName--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "serviceName",
-          "type": "tag"
-        },
-        {
-          "dataType": "string",
-          "id": "name--string--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "name",
-          "type": "tag"
-        },
-        {
-          "dataType": "float64",
-          "id": "durationNano--float64--tag--true",
-          "isColumn": true,
-          "isJSON": false,
-          "key": "durationNano",
-          "type": "tag"
-        }
-      ],
+      "selectedTracesFields": [],
       "softMax": 0,
       "softMin": 0,
       "stackedBarChart": false,
       "thresholds": [],
       "timePreferance": "GLOBAL_TIME",
-      "yAxisUnit": "ns",
+      "yAxisUnit": "ms",
       "query": {
-        "queryType": "builder",
+        "queryType": "clickhouse_sql",
         "promql": [
           {
             "disabled": false,
@@ -1007,7 +605,7 @@
             "disabled": false,
             "legend": "",
             "name": "A",
-            "query": ""
+            "query": "SELECT quantile(0.99)(durationNano)/1e6 AS value FROM signoz_traces.distributed_signoz_index_v3 WHERE serviceName='goosecracker-artifact' AND name='reply_stream' AND timestamp >= {{.start_datetime}} AND timestamp <= {{.end_datetime}}"
           }
         ],
         "builder": {
@@ -1016,41 +614,12 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p99",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
+              "aggregateOperator": "noop",
+              "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
               "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "goosecracker-artifact"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "reply_stream"
-                  }
-                ],
+                "items": [],
                 "op": "AND"
               },
               "having": {
