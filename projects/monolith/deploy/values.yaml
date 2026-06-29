@@ -101,6 +101,10 @@ dashboards:
     enabled: true
     name: "Monolith RED Dashboard"
     tags: "monolith,red,performance,traces"
+  goosecracker-overview:
+    enabled: true
+    name: "goosecracker Overview"
+    tags: "goosecracker,agent,fc-agentd,traces"
 
 chat:
   enabled: true
