@@ -10,3 +10,27 @@ spec:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: fc-agentd
       targetRevision: 0.16.2
+      helm:
+        valueFiles:
+          - $values/projects/agent_platform/fc-agentd/deploy/values.yaml
+    # Git repo for environment-specific values.
+    - repoURL: https://github.com/jomcgi/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    # Deploy into the monolith namespace so the CNPG-generated monolith-pg-app
+    # DSN secret is available without cross-namespace cloning.
+    namespace: monolith
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
