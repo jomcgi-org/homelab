@@ -11,7 +11,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -208,10 +207,6 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dest, host s
 			return
 		}
 		swapRequest(req, sec)
-		// TEMPORARY DIAGNOSTIC (revert): for openrouter, log the request body
-		// summary (does goose send `reasoning` + `tools` + tool_choice?). Body
-		// carries no secret (the key is in the Authorization header, not logged).
-		debugLogOpenRouterRequest(p.logger, host, req)
 		// Re-emit as a client request: clear the server-side RequestURI and the
 		// absolute URL parts so req.Write sends origin-form with the Host header.
 		req.RequestURI = ""
@@ -225,9 +220,6 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dest, host s
 			p.logger.Warn("egress swap: read response", "dest", dest, "err", err)
 			return
 		}
-		// TEMPORARY DIAGNOSTIC (revert): capture the openrouter response body
-		// (tool_calls? content? finish_reason?) then restore it for the guest.
-		debugCaptureOpenRouterResponse(p.logger, host, resp)
 		err = resp.Write(guest)
 		_ = resp.Body.Close()
 		if err != nil {
@@ -236,71 +228,6 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dest, host s
 		}
 		p.logger.Info("egress swapped", "dest", dest, "env", sec.Env, "path", req.URL.Path)
 	}
-}
-
-// debugLogOpenRouterRequest logs a summary of an OpenRouter chat/completions
-// request body (TEMPORARY DIAGNOSTIC, revert): whether goose sends `reasoning`,
-// `tools`, and `tool_choice`, plus the model. The body carries no secret. It
-// reads and restores the body so forwarding is unaffected.
-func debugLogOpenRouterRequest(logger *slog.Logger, host string, req *http.Request) {
-	if !strings.Contains(strings.ToLower(host), "openrouter") || req.Body == nil {
-		return
-	}
-	b, err := io.ReadAll(req.Body)
-	_ = req.Body.Close()
-	req.Body = io.NopCloser(bytes.NewReader(b))
-	if err != nil {
-		return
-	}
-	var m map[string]json.RawMessage
-	if jerr := json.Unmarshal(b, &m); jerr != nil {
-		logger.Info("diag-req: openrouter (non-JSON body)", "bytes", len(b))
-		return
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	toolCount := -1
-	if t, ok := m["tools"]; ok {
-		var arr []json.RawMessage
-		if json.Unmarshal(t, &arr) == nil {
-			toolCount = len(arr)
-		}
-	}
-	logger.Info("diag-req: openrouter request",
-		"bytes", len(b),
-		"keys", strings.Join(keys, ","),
-		"model", string(m["model"]),
-		"reasoning", string(m["reasoning"]),
-		"tool_choice", string(m["tool_choice"]),
-		"tools_count", toolCount,
-		"stream", string(m["stream"]),
-	)
-}
-
-// debugCaptureOpenRouterResponse logs a bounded snippet of an OpenRouter response
-// body (TEMPORARY DIAGNOSTIC, revert) to reveal tool_calls / content /
-// finish_reason / reasoning, then restores the body for the guest.
-func debugCaptureOpenRouterResponse(logger *slog.Logger, host string, resp *http.Response) {
-	if !strings.Contains(strings.ToLower(host), "openrouter") || resp.Body == nil {
-		return
-	}
-	b, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(b))
-	// We buffered the whole (possibly chunked/streamed) body, so re-frame it with
-	// a fixed Content-Length to keep resp.Write well-formed for the guest.
-	resp.TransferEncoding = nil
-	resp.ContentLength = int64(len(b))
-	if err != nil {
-		return
-	}
-	snippet := string(b)
-	if len(snippet) > 6000 {
-		snippet = snippet[:3000] + "\n...[trunc]...\n" + snippet[len(snippet)-3000:]
-	}
-	logger.Info("diag-resp: openrouter response", "status", resp.StatusCode, "bytes", len(b), "body", snippet)
 }
 
 // swapRequest replaces the placeholder with the real value in every header value

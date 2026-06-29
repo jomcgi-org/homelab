@@ -88,11 +88,6 @@ egress:
       GOOSE_PROVIDER: openrouter
       OPENROUTER_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
       GOOSE_MODEL: google/gemini-3.5-flash
-      # TEMPORARY DIAGNOSTIC (revert): goose debug logging to capture the outgoing
-      # OpenRouter request (does it carry `reasoning` + `tools`?) and the model's
-      # response, host-side via fc-agentd, to confirm whether the reasoning budget
-      # is actually applied. HTTP-stack crates quieted to keep the log readable.
-      RUST_LOG: "goose=debug,goose_llm=debug,goose_cli=debug,info,h2=warn,hyper=warn,hyper_util=warn,rustls=warn,reqwest=warn,tower=warn,tower_http=warn"
       # Gemini 3.5 Flash is a thinking model and thinks BY DEFAULT (egress capture
       # confirmed: the response streams delta.reasoning). The real Task 3 blocker:
       # goose did not know this model's limits (not in its registry), so its output
