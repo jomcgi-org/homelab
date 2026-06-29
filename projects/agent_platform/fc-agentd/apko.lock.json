@@ -1,8 +1,8 @@
 {
   "version": "v1",
   "config": {
-    "name": "projects/agent_platform/fc-agentd/runtime/apko.yaml",
-    "checksum": "sha256-s3+bRGuR2v8zrETfpPQNjafy6G0NfGYhLmY+KGLq5u8="
+    "name": "projects/agent_platform/fc-agentd/apko.yaml",
+    "checksum": "sha256-mB1RspbyQrp3pu0GdoLtUaQtetZuLoDlFHRrrYvIAY4="
   },
   "contents": {
     "keyring": [

@@ -1,11 +1,46 @@
-load("//bazel/tools/oci:go_image.bzl", "go_image")
+# gazelle:ignore
+load("@aspect_bazel_lib//lib:tar.bzl", "tar")
+load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
-# Firecracker snapshot/restore controller (ADR 022) container image.
-# Uses a custom apko base (runtime/) that bundles dmsetup, dd, blockdev, and
-# ca-certificates so the controller can manage device-mapper thin-pools at
-# runtime without an extra privileged initContainer.
-go_image(
+# Firecracker snapshot/restore controller (ADR 022) container image. Built as an
+# apko image (Wolfi base with dmsetup/lvm2 + util-linux) rather than the default
+# distroless go_image, because the controller manages device-mapper thin-pools at
+# runtime for the ADR 026 copy-on-write rootfs. The Go binary is cross-compiled
+# per arch and layered at /usr/local/bin/fc-agentd (the apko entrypoint).
+
+platform_transition_filegroup(
+    name = "fc_agentd_amd64_bin",
+    srcs = ["//projects/agent_platform/fc-agentd/cmd"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
+tar(
+    name = "fc_agentd_tar_amd64",
+    srcs = [":fc_agentd_amd64_bin"],
+    mtree = [
+        "./usr/local/bin/fc-agentd type=file content=$(execpath :fc_agentd_amd64_bin) mode=0755 uid=0 gid=0",
+    ],
+)
+
+platform_transition_filegroup(
+    name = "fc_agentd_arm64_bin",
+    srcs = ["//projects/agent_platform/fc-agentd/cmd"],
+    target_platform = "@rules_go//go/toolchain:linux_arm64",
+)
+
+tar(
+    name = "fc_agentd_tar_arm64",
+    srcs = [":fc_agentd_arm64_bin"],
+    mtree = [
+        "./usr/local/bin/fc-agentd type=file content=$(execpath :fc_agentd_arm64_bin) mode=0755 uid=0 gid=0",
+    ],
+)
+
+apko_image(
     name = "image",
-    base = "//projects/agent_platform/fc-agentd/runtime:base",
-    binary = "//projects/agent_platform/fc-agentd/cmd",
+    config = "apko.yaml",
+    contents = "@fc_agentd_lock//:contents",
+    multiarch_tars = [":fc_agentd_tar"],
+    repository = "ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd",
 )
