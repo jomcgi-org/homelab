@@ -1,4 +1,4 @@
-h1:PNjX/ZAvJ1MfwTkDijGWfH0kVDQDyWqqpZoDOuaVKHo=
+h1:w8MiOxixZOIuj9aqPlOOalq4Sj9DX/anSoiPppiDa1g=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -71,3 +71,4 @@ h1:PNjX/ZAvJ1MfwTkDijGWfH0kVDQDyWqqpZoDOuaVKHo=
 20260627160000_agent_threads_tier.sql h1:byg8x19pnQxW2k7SzNvwiip61vUTSHUlfCh0hjWq64o=
 20260629120000_goosecracker_sessions.sql h1:idaMKKLa9tmNZRIzplWC8oRDIutaI5qJ13YftLTOAV0=
 20260629130000_agent_threads_notify.sql h1:XYqkFTVRwOtMJrxK3aLYAl0tIns5U45lrOC/bTImq3I=
+20260629140000_agent_threads_claim_attempts.sql h1:12hpsYSD0J/ngSHGJDbECm7BfWYAfkzz5/DIx2+CW7U=

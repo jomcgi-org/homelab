@@ -113,6 +113,11 @@ spec:
             # maxConcurrent * guestMemMib must fit under resources.limits.memory.
             - name: FC_AGENTD_MAX_CONCURRENT
               value: {{ .Values.agent.maxConcurrent | quote }}
+            # Bounded retry for transient launch failures (e.g. a thread submitted
+            # during this daemon's own rollout). Below the cap the thread stays
+            # PENDING and the next reconcile poll re-attempts; at the cap it FAILs.
+            - name: FC_AGENTD_MAX_CLAIM_ATTEMPTS
+              value: {{ .Values.agent.maxClaimAttempts | quote }}
             - name: FC_AGENTD_GUEST_MEM_MIB
               value: {{ .Values.agent.guestMemMib | quote }}
             - name: FC_AGENTD_GUEST_OOM_SCORE_ADJ

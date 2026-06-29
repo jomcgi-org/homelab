@@ -152,6 +152,53 @@ func (s *Store) SetState(ctx context.Context, threadID string, state substrate.S
 	return nil
 }
 
+// RecordClaimFailure accounts for one failed microVM launch on a PENDING thread
+// and decides whether the thread has exhausted its retry budget. It increments
+// claim_attempts; once that reaches maxAttempts it marks the thread FAILED
+// (terminal) and returns true. Below the cap it leaves the thread PENDING and
+// returns false.
+//
+// Crucially, the below-cap path updates ONLY claim_attempts and never the state
+// column, so it does not trip the agent_threads_pending_notify trigger (UPDATE OF
+// state). That keeps the retry from waking the loop off its own write: the thread
+// stays PENDING and the next reconcile poll re-attempts, so the poll interval is
+// the backoff. A maxAttempts <= 1 reproduces the old fail-on-first behaviour
+// (attempt 1 reaches the cap immediately).
+func (s *Store) RecordClaimFailure(ctx context.Context, threadID string, maxAttempts int) (bool, error) {
+	var attempts int
+	err := s.pool.QueryRow(ctx,
+		`UPDATE claude_agent.agent_threads
+		    SET claim_attempts = claim_attempts + 1
+		  WHERE thread_id = $1
+		  RETURNING claim_attempts`, threadID).Scan(&attempts)
+	if err != nil {
+		return false, fmt.Errorf("store: record claim failure: %w", err)
+	}
+	if attempts < maxAttempts {
+		return false, nil
+	}
+	if err := s.SetState(ctx, threadID, substrate.StateFailed); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MarkRunningAfterClaim moves a freshly-launched thread to RUNNING and resets its
+// claim_attempts. The reset matters because a RUNNING thread can later be pushed
+// back to PENDING (an orphaned snapshotless RUNNING re-inits after a daemon
+// restart); without it, retry budget consumed before the successful claim would
+// carry over and could fail the re-init prematurely.
+func (s *Store) MarkRunningAfterClaim(ctx context.Context, threadID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE claude_agent.agent_threads
+		    SET state = 'RUNNING', claim_attempts = 0, last_active_at = now()
+		  WHERE thread_id = $1`, threadID)
+	if err != nil {
+		return fmt.Errorf("store: mark running after claim: %w", err)
+	}
+	return nil
+}
+
 // SetThreadSnapshot records a thread's idle snapshot ref + size and moves it to
 // IDLE, clearing any pending wake.
 func (s *Store) SetThreadSnapshot(ctx context.Context, threadID, ref string, sizeBytes int64) error {

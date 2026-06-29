@@ -61,6 +61,14 @@ type Config struct {
 	// disables the cap (unbounded; tests/dry-run).
 	MaxConcurrent int
 
+	// MaxClaimAttempts bounds how many failed launch attempts a PENDING thread
+	// gets before the reconcile loop marks it FAILED. A launch failure is usually
+	// transient (the daemon was just (re)started during a rollout and KVM/devmapper
+	// is not warm yet), so retrying a few times, paced by the reconcile poll, lets a
+	// thread submitted during a deploy survive instead of being burned terminal on
+	// the first error.
+	MaxClaimAttempts int
+
 	// GuestOOMScoreAdj is written to each Firecracker child's
 	// /proc/<pid>/oom_score_adj so the guest, never the daemon, is the kernel's
 	// first OOM victim under cgroup or node memory pressure (ADR platform/010's
@@ -117,6 +125,7 @@ func Load() (Config, error) {
 		GuestVCPUs:        atoiDefault("FC_AGENTD_GUEST_VCPUS", 1),
 		GuestMemMib:       atoiDefault("FC_AGENTD_GUEST_MEM_MIB", 1024),
 		MaxConcurrent:     atoiDefault("FC_AGENTD_MAX_CONCURRENT", 8),
+		MaxClaimAttempts:  atoiDefault("FC_AGENTD_MAX_CLAIM_ATTEMPTS", 5),
 		GuestOOMScoreAdj:  atoiDefault("FC_AGENTD_GUEST_OOM_SCORE_ADJ", 1000),
 		EgressSidecar:     os.Getenv("FC_AGENTD_EGRESS_SIDECAR"),
 		InjectedEnv:       injectedEnv(),

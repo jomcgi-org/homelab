@@ -15,11 +15,12 @@ import (
 
 // fakeRegistry is an in-memory store keyed by thread ID.
 type fakeRegistry struct {
-	mu      sync.Mutex
-	threads map[string]*store.Thread
-	removed []string
-	listErr error
-	outbox  []outboxRow
+	mu            sync.Mutex
+	threads       map[string]*store.Thread
+	removed       []string
+	listErr       error
+	outbox        []outboxRow
+	claimAttempts map[string]int
 }
 
 // outboxRow records an EnqueueDiscordOutbox call for assertions.
@@ -34,7 +35,7 @@ func newFakeRegistry(ts ...store.Thread) *fakeRegistry {
 		t := ts[i]
 		m[t.ThreadID] = &t
 	}
-	return &fakeRegistry{threads: m}
+	return &fakeRegistry{threads: m, claimAttempts: map[string]int{}}
 }
 
 func (f *fakeRegistry) ListThreadsForNode(_ context.Context, node string) ([]store.Thread, error) {
@@ -78,6 +79,31 @@ func (f *fakeRegistry) SetState(_ context.Context, id string, st substrate.State
 	defer f.mu.Unlock()
 	if t, ok := f.threads[id]; ok {
 		t.State = st
+		t.LastActiveAt = time.Now()
+	}
+	return nil
+}
+
+func (f *fakeRegistry) RecordClaimFailure(_ context.Context, id string, maxAttempts int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimAttempts[id]++
+	if f.claimAttempts[id] < maxAttempts {
+		return false, nil // stays PENDING; mirrors the store leaving state untouched
+	}
+	if t, ok := f.threads[id]; ok {
+		t.State = substrate.StateFailed
+		t.LastActiveAt = time.Now()
+	}
+	return true, nil
+}
+
+func (f *fakeRegistry) MarkRunningAfterClaim(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimAttempts[id] = 0
+	if t, ok := f.threads[id]; ok {
+		t.State = substrate.StateRunning
 		t.LastActiveAt = time.Now()
 	}
 	return nil
@@ -129,20 +155,30 @@ func (f *fakeRegistry) state(id string) substrate.State {
 	return "GONE"
 }
 
+func (f *fakeRegistry) attempts(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claimAttempts[id]
+}
+
 // fakeExec is an in-memory executor + reclaimer.
 type fakeExec struct {
-	mu        sync.Mutex
-	claims    int
-	restores  int
-	releases  int
-	snapshots int
-	removed   []string
-	failNext  error
+	mu         sync.Mutex
+	claims     int
+	restores   int
+	releases   int
+	snapshots  int
+	removed    []string
+	failNext   error
+	failAlways error
 }
 
 func (e *fakeExec) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.failAlways != nil {
+		return substrate.Handle{}, e.failAlways
+	}
 	if e.failNext != nil {
 		err := e.failNext
 		e.failNext = nil
@@ -290,13 +326,71 @@ func TestReconcileSnapshotsOnIdle(t *testing.T) {
 	}
 }
 
+// With MaxClaimAttempts=1 a single launch failure exhausts the budget on the
+// first attempt, so the thread is marked FAILED immediately (the pre-retry
+// behaviour, preserved for genuinely fail-fast configs).
 func TestReconcilePendingClaimFailureMarksFailed(t *testing.T) {
 	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"})
 	ex := &fakeExec{failNext: errors.New("no kvm")}
 	l := newLoop(reg, ex)
+	l.MaxClaimAttempts = 1
 	l.reconcileOnce(context.Background(), testLogger())
 	if reg.state("t1") != substrate.StateFailed {
 		t.Fatalf("state = %q, want FAILED", reg.state("t1"))
+	}
+}
+
+// A transient launch failure (the daemon warming up during a rollout) must not be
+// terminal: below the retry cap the thread stays PENDING, and a later poll once
+// the substrate is ready claims it successfully and resets the attempt counter.
+func TestReconcileClaimRetriesThenSucceeds(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"})
+	ex := &fakeExec{failNext: errors.New("kvm not warm yet")} // fails once, then succeeds
+	l := newLoop(reg, ex)
+	l.MaxClaimAttempts = 3
+
+	// First pass: claim fails, thread stays PENDING for a retry (not FAILED).
+	l.reconcileOnce(context.Background(), testLogger())
+	if reg.state("t1") != substrate.StatePending {
+		t.Fatalf("after transient failure state = %q, want PENDING (retry pending)", reg.state("t1"))
+	}
+	if reg.attempts("t1") != 1 {
+		t.Fatalf("attempts = %d, want 1 after one failure", reg.attempts("t1"))
+	}
+
+	// Second pass: substrate is ready, claim succeeds, thread goes RUNNING and the
+	// attempt counter resets so a later re-init starts fresh.
+	l.reconcileOnce(context.Background(), testLogger())
+	if reg.state("t1") != substrate.StateRunning {
+		t.Fatalf("after recovery state = %q, want RUNNING", reg.state("t1"))
+	}
+	if reg.attempts("t1") != 0 {
+		t.Fatalf("attempts = %d, want 0 after successful claim", reg.attempts("t1"))
+	}
+	if ex.claims != 1 {
+		t.Fatalf("claims = %d, want 1 successful claim", ex.claims)
+	}
+}
+
+// A genuinely unrecoverable launch (the substrate never comes back) must still
+// terminate: the thread stays PENDING up to the cap, then is marked FAILED.
+func TestReconcileClaimExhaustsRetriesMarksFailed(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4"})
+	ex := &fakeExec{failAlways: errors.New("no kvm")}
+	l := newLoop(reg, ex)
+	l.MaxClaimAttempts = 3
+
+	// Passes below the cap leave the thread PENDING.
+	for i := 1; i < 3; i++ {
+		l.reconcileOnce(context.Background(), testLogger())
+		if reg.state("t1") != substrate.StatePending {
+			t.Fatalf("attempt %d: state = %q, want PENDING (still retrying)", i, reg.state("t1"))
+		}
+	}
+	// The pass that reaches the cap fails the thread terminally.
+	l.reconcileOnce(context.Background(), testLogger())
+	if reg.state("t1") != substrate.StateFailed {
+		t.Fatalf("after exhausting retries state = %q, want FAILED", reg.state("t1"))
 	}
 }
 

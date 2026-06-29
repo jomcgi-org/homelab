@@ -73,16 +73,17 @@ func run(logger *slog.Logger) error {
 	}, &driver.ExecLauncher{Bin: cfg.FirecrackerBin, OOMScoreAdj: cfg.GuestOOMScoreAdj}, nil)
 
 	loop := &reconcile.Loop{
-		Executor:      fcDriver,
-		Reclaimer:     fcDriver,
-		Node:          cfg.Node,
-		Interval:      cfg.ReconcileInterval,
-		Logger:        logger,
-		ControlUDS:    fcDriver.VsockUDSPath,
-		GooseEnv:      cfg.InjectedEnv,
-		TierEnv:       cfg.TierEnv,
-		EgressSidecar: cfg.EgressSidecar,
-		MaxConcurrent: cfg.MaxConcurrent,
+		Executor:         fcDriver,
+		Reclaimer:        fcDriver,
+		Node:             cfg.Node,
+		Interval:         cfg.ReconcileInterval,
+		Logger:           logger,
+		ControlUDS:       fcDriver.VsockUDSPath,
+		GooseEnv:         cfg.InjectedEnv,
+		TierEnv:          cfg.TierEnv,
+		EgressSidecar:    cfg.EgressSidecar,
+		MaxConcurrent:    cfg.MaxConcurrent,
+		MaxClaimAttempts: cfg.MaxClaimAttempts,
 	}
 
 	if cfg.DatabaseURL != "" {

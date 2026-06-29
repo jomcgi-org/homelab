@@ -30,6 +30,8 @@ type Registry interface {
 	ListWakeRequestedForNode(ctx context.Context, node string) ([]store.Thread, error)
 	ListIdleExpiredForNode(ctx context.Context, node string) ([]store.Thread, error)
 	SetState(ctx context.Context, threadID string, state substrate.State) error
+	RecordClaimFailure(ctx context.Context, threadID string, maxAttempts int) (bool, error)
+	MarkRunningAfterClaim(ctx context.Context, threadID string) error
 	SetThreadSnapshot(ctx context.Context, threadID, ref string, sizeBytes int64) error
 	ClearWake(ctx context.Context, threadID string) error
 	Delete(ctx context.Context, threadID string) error
@@ -65,6 +67,16 @@ type Loop struct {
 	// daemon's cgroup, so a burst of submissions can never OOM the controller. 0
 	// disables the cap.
 	MaxConcurrent int
+
+	// MaxClaimAttempts bounds how many times a PENDING thread's launch may fail
+	// before the loop marks it FAILED. A launch failure is usually transient (the
+	// daemon was just (re)started during a rollout and its KVM/devmapper substrate
+	// is not warm yet), so failing on the first error burned threads submitted in
+	// that window. Below the cap the thread stays PENDING and the next poll
+	// re-attempts (the poll is the backoff); at the cap it goes FAILED. A value <= 1
+	// fails on the first attempt (the pre-retry behaviour); 0 (unset) is treated the
+	// same by the store's >= comparison.
+	MaxClaimAttempts int
 
 	// ControlUDS resolves a thread's vsock control UDS path so the loop can serve
 	// the per-thread control channel (task delivery + idle/done). nil disables
@@ -239,13 +251,25 @@ func (l *Loop) createPending(ctx context.Context, log *slog.Logger) {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "claim failed")
 			span.End()
-			log.Error("reconcile: claim pending thread", "thread", t.ThreadID, "err", err)
-			_ = l.Registry.SetState(ctx, t.ThreadID, substrate.StateFailed)
+			// A launch failure is usually transient (daemon just (re)started during a
+			// rollout, substrate not warm). Bound the retries: stay PENDING below the
+			// cap so the next poll re-attempts, mark FAILED only once exhausted.
+			failed, rerr := l.Registry.RecordClaimFailure(ctx, t.ThreadID, l.MaxClaimAttempts)
+			switch {
+			case rerr != nil:
+				log.Error("reconcile: record claim failure", "thread", t.ThreadID, "err", rerr)
+			case failed:
+				log.Error("reconcile: claim pending thread exhausted retries; marking FAILED",
+					"thread", t.ThreadID, "max_attempts", l.MaxClaimAttempts, "err", err)
+			default:
+				log.Warn("reconcile: claim pending thread failed; will retry next poll",
+					"thread", t.ThreadID, "err", err)
+			}
 			continue
 		}
 		span.End()
 		l.live[t.ThreadID] = h
-		if err := l.Registry.SetState(ctx, t.ThreadID, substrate.StateRunning); err != nil {
+		if err := l.Registry.MarkRunningAfterClaim(ctx, t.ThreadID); err != nil {
 			log.Error("reconcile: mark running", "thread", t.ThreadID, "err", err)
 		}
 		l.startControl(ctx, log, t)
