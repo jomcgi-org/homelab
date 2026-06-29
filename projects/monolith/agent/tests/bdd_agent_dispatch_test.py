@@ -84,3 +84,35 @@ def test_wake_for_unknown_discord_thread(agent_db):
 
 def test_status_missing_thread(agent_db):
     assert dispatch.status("ghost") is None
+
+
+# ---------------------------------------------------------------------------
+# ADR 026 Phase 2: resume flag stored on the thread row
+# ---------------------------------------------------------------------------
+
+
+def test_submit_resume_true_stores_flag(agent_db):
+    """submit(..., resume=True) inserts a thread row with resume=True."""
+    result = dispatch.submit("make it red", repo="homelab", resume=True)
+    tid = result["thread_id"]
+    assert result["action"] == "create"
+
+    row = agent_db.execute(
+        text("SELECT resume FROM claude_agent.agent_threads WHERE thread_id = :id"),
+        {"id": tid},
+    ).fetchone()
+    assert row is not None
+    assert row.resume is True
+
+
+def test_submit_resume_defaults_to_false(agent_db):
+    """submit() without resume= inserts a thread row with resume=False."""
+    result = dispatch.submit("build a clock", repo="homelab")
+    tid = result["thread_id"]
+
+    row = agent_db.execute(
+        text("SELECT resume FROM claude_agent.agent_threads WHERE thread_id = :id"),
+        {"id": tid},
+    ).fetchone()
+    assert row is not None
+    assert row.resume is False

@@ -129,3 +129,76 @@ def test_is_goosecracker_thread(engine, fake_api):
         goosecracker.start_session("thread-1", "build a clock")
         assert goosecracker.is_goosecracker_thread("thread-1") is True
         assert goosecracker.is_goosecracker_thread("other") is False
+
+
+# ---------------------------------------------------------------------------
+# ADR 026 Phase 2: continue_session resume gate
+# ---------------------------------------------------------------------------
+
+
+def test_continue_session_resume_path_when_session_exists(
+    engine, fake_api, monkeypatch
+):
+    """When head_session returns a truthy etag, submit is called with resume=True
+    and the task is the latest stripped message (not the full transcript)."""
+    from artifact import s3
+
+    monkeypatch.setattr(s3, "head_session", lambda _: "abc123")
+
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_session("thread-1", "build a clock")
+        fake_api.submit.reset_mock()
+        goosecracker.continue_session("thread-1", "  make it red  ")
+
+    fake_api.submit.assert_called_once_with(
+        "make it red",
+        recipe="artifact",
+        tier="artifact",
+        discord_thread="thread-1",
+        resume=True,
+    )
+
+
+def test_continue_session_cold_path_when_no_session(engine, fake_api, monkeypatch):
+    """When head_session returns None, submit is called without resume and the
+    task is the full accumulated transcript."""
+    from artifact import s3
+
+    monkeypatch.setattr(s3, "head_session", lambda _: None)
+
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_session("thread-1", "build a clock")
+        fake_api.submit.reset_mock()
+        goosecracker.continue_session("thread-1", "make it red")
+
+    fake_api.submit.assert_called_once_with(
+        "build a clock\n\nmake it red",
+        recipe="artifact",
+        tier="artifact",
+        discord_thread="thread-1",
+    )
+
+
+def test_continue_session_falls_back_to_cold_on_head_session_error(
+    engine, fake_api, monkeypatch
+):
+    """When head_session raises any exception, the handler logs and falls back
+    to the cold (Model B) rebuild path using the full transcript."""
+    from artifact import s3
+
+    def _raise(_):
+        raise RuntimeError("S3 unavailable")
+
+    monkeypatch.setattr(s3, "head_session", _raise)
+
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_session("thread-1", "build a clock")
+        fake_api.submit.reset_mock()
+        goosecracker.continue_session("thread-1", "make it red")
+
+    fake_api.submit.assert_called_once_with(
+        "build a clock\n\nmake it red",
+        recipe="artifact",
+        tier="artifact",
+        discord_thread="thread-1",
+    )

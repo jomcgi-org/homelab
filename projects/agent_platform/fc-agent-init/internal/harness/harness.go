@@ -15,11 +15,21 @@ type Config struct {
 	Recipe string
 	// Task is the task description fed to the recipe (FC_TASK).
 	Task string
+	// SessionName names goose's SQLite session (--name). On a cold build it is set
+	// so the session is persisted under a stable name; on a resume it selects which
+	// session to replay (ADR 026 Phase 2). Empty means goose auto-manages.
+	SessionName string
+	// Resume runs the named session with --resume instead of the recipe: goose
+	// replays the full prior conversation (which already contains the recipe's
+	// system prompt from turn 1) and continues with Task as the new instruction
+	// (ADR 026 Phase 2, Model A). Requires SessionName; ignored without it.
+	Resume bool
 }
 
 // GooseCommand returns the argv to run, mirroring the established invocation:
 //
-//	with a recipe:  goose run --recipe <recipe> --no-profile --with-builtin developer --params task_description=<task>
+//	resume:         goose run --name <session> --resume --no-profile --with-builtin developer -t <task>
+//	with a recipe:  goose run --recipe <recipe> [--name <session>] --no-profile --with-builtin developer --params task_description=<task>
 //	bare task only: goose run --text <task>
 //
 // --no-profile keeps the run deterministic (it ignores the baked config.yaml), but
@@ -28,17 +38,35 @@ type Config struct {
 // to the model but not run a shell). --with-builtin developer explicitly loads the
 // shell/editor extension so the agent can actually do work.
 //
+// On resume the recipe is NOT re-passed: turn 1 wrote the recipe's system prompt
+// into the session, and --resume replays the whole conversation, so re-passing it
+// would duplicate the instructions. The task is the latest instruction, given via
+// -t (the recipe's task_description param does not apply without --recipe).
+//
 // It returns nil when there is nothing to run (a warm-base boot with no task),
 // in which case fc-agent-init idles without a harness until a task arrives.
 func GooseCommand(c Config) []string {
-	if c.Recipe != "" {
+	if c.Resume && c.SessionName != "" {
 		return []string{
 			"goose", "run",
-			"--recipe", c.Recipe,
+			"--name", c.SessionName,
+			"--resume",
+			"--no-profile",
+			"--with-builtin", "developer",
+			"-t", c.Task,
+		}
+	}
+	if c.Recipe != "" {
+		argv := []string{"goose", "run", "--recipe", c.Recipe}
+		if c.SessionName != "" {
+			// Name the session on the cold build so a later reply can --resume it.
+			argv = append(argv, "--name", c.SessionName)
+		}
+		return append(argv,
 			"--no-profile",
 			"--with-builtin", "developer",
 			"--params", fmt.Sprintf("task_description=%s", c.Task),
-		}
+		)
 	}
 	if c.Task != "" {
 		return []string{"goose", "run", "--text", c.Task}
