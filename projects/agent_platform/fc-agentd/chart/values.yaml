@@ -95,15 +95,21 @@ egress:
       RUST_LOG: "goose=debug,goose_llm=debug,goose_cli=debug,info,h2=warn,hyper=warn,hyper_util=warn,rustls=warn,reqwest=warn,tower=warn,tower_http=warn"
       # Gemini 3.5 Flash is a thinking model and thinks BY DEFAULT (egress capture
       # confirmed: the response streams delta.reasoning). The real Task 3 blocker:
-      # goose did not know this model's limits (not in its registry) and capped
-      # the output at ~1024 tokens, so the model spent the whole completion budget
-      # on reasoning (reasoning_tokens==completion_tokens==1013) and hit MAX_TOKENS
-      # (finish_reason:length) with content:"" and NO tool_call -> nothing
-      # actionable -> no file written. GOOSE_PREDEFINED_MODELS declares the real
-      # 1M context window AND a large output budget so thinking has headroom and
-      # the model can still emit the write tool_call. The name matches GOOSE_MODEL
-      # so goose applies it. Renders to FC_AGENTD_TIER_artifact__GOOSE_PREDEFINED_MODELS.
-      GOOSE_PREDEFINED_MODELS: '[{"name":"google/gemini-3.5-flash","provider":"openrouter","context_limit":1048576,"request_params":{"max_tokens":32000}}]'
+      # goose did not know this model's limits (not in its registry), so its output
+      # budget fell back to the default 4096 (model.rs max_output_tokens()). For
+      # Gemini that cap is maxOutputTokens, which COUNTS thinking tokens, so the
+      # model spent the whole budget on reasoning (reasoning_tokens==completion_tokens)
+      # and hit MAX_TOKENS (finish_reason:length) with content:"" and NO tool_call
+      # -> nothing actionable -> no file written.
+      #
+      # GOOSE_PREDEFINED_MODELS.request_params.max_tokens does NOT fix this: on goose
+      # v1.27.1 the predefined entry is silently dropped (priority inversion,
+      # block/goose#7839, fixed later and only for context_limit, not output budget).
+      # GOOSE_MAX_TOKENS is the working path: parse_max_tokens() reads it straight
+      # into ModelConfig.max_tokens, which max_output_tokens() emits as the request's
+      # max_completion_tokens. 32000 leaves ample room for thinking AND the write
+      # tool_call. Renders to FC_AGENTD_TIER_artifact__GOOSE_MAX_TOKENS.
+      GOOSE_MAX_TOKENS: "32000"
       # Where the artifact recipe publishes (ADR 024 Task 3). In-cluster monolith
       # backend; the guest reaches it through the transparent egress funnel (the
       # sidecar routes by Host, no secret swap for this host). Injected only into
