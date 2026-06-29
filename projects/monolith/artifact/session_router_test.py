@@ -180,20 +180,21 @@ def test_session_exists_invalid_id_is_404(client: TestClient):
 
 
 def test_session_endpoints_absent_from_read_router(read_only_client: TestClient):
-    """Session routes are write_router-only; the public read_router has none."""
+    """Session routes are write_router-only; the public read_router has none, so
+    the paths are entirely absent (404), not merely method-not-allowed (405)."""
     # POST
     resp = read_only_client.post(
         "/internal/artifact/demo/session",
         content=b"x",
         headers={"Content-Type": "application/octet-stream"},
     )
-    assert resp.status_code == 405, "POST /session must not be present on read_router"
+    assert resp.status_code == 404, "POST /session must not be present on read_router"
     # GET
-    assert read_only_client.get("/internal/artifact/demo/session").status_code == 405, (
+    assert read_only_client.get("/internal/artifact/demo/session").status_code == 404, (
         "GET /session must not be present on read_router"
     )
     # exists
     assert (
         read_only_client.get("/internal/artifact/demo/session/exists").status_code
-        == 405
+        == 404
     ), "GET /session/exists must not be present on read_router"
