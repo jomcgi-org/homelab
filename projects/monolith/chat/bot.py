@@ -46,7 +46,7 @@ def _truncate_thinking(thinking: str) -> str:
     return thinking[:THINKING_TRUNCATE_AT] + "... (truncated)"
 
 
-# Live /goosecracker progress streaming (ADR 024). The guest streams goose's
+# Live /artifact progress streaming (ADR 024). The guest streams goose's
 # stdout to the in-process progress buffer; the bot edits the thread message on
 # this cadence so the owner sees activity instead of a multi-minute silent wait.
 GOOSECRACKER_STREAM_INTERVAL = 1.5  # seconds between Discord edits (rate-limit safe)
@@ -253,7 +253,7 @@ class ChatBot(discord.Client):
         self.embed_client = EmbeddingClient()
         self.vision_client = VisionClient()
         self.agent = create_agent()
-        # Slash commands (e.g. /goosecracker, ADR 024 Task 4) live on a
+        # Slash commands (e.g. /artifact, ADR 024 Task 4) live on a
         # CommandTree; on_message handles plain chat. Registered at construction,
         # synced to the guild in on_ready.
         self.tree = discord.app_commands.CommandTree(self)
@@ -263,7 +263,7 @@ class ChatBot(discord.Client):
         """Register application (slash) commands on the tree."""
 
         @self.tree.command(
-            name="goosecracker",
+            name="artifact",
             description="Build a self-contained web artifact (owner only)",
         )
         @discord.app_commands.describe(prompt="What to build")
@@ -274,7 +274,7 @@ class ChatBot(discord.Client):
 
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
-        # Sync slash commands globally so /goosecracker is available in every
+        # Sync slash commands globally so /artifact is available in every
         # server the bot is in (still owner-gated at execution by is_owner, so
         # non-owners just get roasted). A global sync can take up to an hour to
         # propagate on first registration; that is acceptable for a command that
@@ -335,7 +335,7 @@ class ChatBot(discord.Client):
     async def _handle_goosecracker_command(
         self, interaction: discord.Interaction, prompt: str
     ) -> None:
-        """Owner-gated /goosecracker: open a thread and dispatch the first run."""
+        """Owner-gated /artifact: open a thread and dispatch the first run."""
         if not goosecracker.is_owner(interaction.user.id):
             # Defer first: the roast hits the qwen model (with retries), which
             # routinely exceeds Discord's 3s initial-response deadline. Without
@@ -348,7 +348,7 @@ class ChatBot(discord.Client):
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message(
-                "Run /goosecracker from a normal text channel so I can open a thread.",
+                "Run /artifact from a normal text channel so I can open a thread.",
                 ephemeral=True,
             )
             return

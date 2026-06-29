@@ -1,6 +1,6 @@
 """goosecracker: the owner-gated Discord artifact agent (ADR 024 Task 4).
 
-``/goosecracker <prompt>`` opens a Discord thread and runs goose in a
+``/artifact <prompt>`` opens a Discord thread and runs goose in a
 Firecracker microVM (the ``artifact`` recipe + tier), which builds a
 self-contained HTML artifact and publishes it; fc-agentd posts the artifact URL
 back into the thread (Task 5). Each owner follow-up in the thread re-runs goose
@@ -34,7 +34,7 @@ ARTIFACT_TIER = "artifact"
 
 # Shown when the owner gate rejects someone and the qwen roast path is
 # unavailable (model down), so a non-owner always gets a clear refusal.
-_FALLBACK_ROAST = "Nice try. /goosecracker is owner-only."
+_FALLBACK_ROAST = "Nice try. /artifact is owner-only."
 
 
 def owner_id() -> str:
@@ -152,7 +152,7 @@ async def build_roast(attempt_text: str) -> str:
     attempt_text = (attempt_text or "").strip()[:300]
     prompt = (
         "You are a cynical senior engineer. Someone who is NOT the owner just "
-        "tried to run the owner-only /goosecracker artifact bot"
+        "tried to run the owner-only /artifact command"
         + (f' with: "{attempt_text}"' if attempt_text else "")
         + ". Roast them in one or two dry sentences for reaching for a tool that "
         "isn't theirs. Past tense or present, declarative. No preamble, no "

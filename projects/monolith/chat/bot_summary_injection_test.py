@@ -224,7 +224,7 @@ class TestIdentityInjection:
 
         mock_store = _make_store()
 
-        events = [_text_delta("I'm Qwen3.6.")]
+        events = [_text_delta("I'm Bosun.")]
         bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
 
         with (
