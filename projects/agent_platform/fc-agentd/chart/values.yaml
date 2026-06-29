@@ -110,6 +110,11 @@ egress:
       # sidecar routes by Host, no secret swap for this host). Injected only into
       # artifact-tier guests, so only they can publish.
       ARTIFACT_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/artifact
+      # Live build-progress sink (ADR 024): fc-agent-init tees goose's stdout here
+      # as the build runs so the Discord bot can show it live (keyed by ARTIFACT_ID
+      # = the Discord thread). Same in-cluster monolith reached via the egress
+      # funnel; artifact tier only, so only artifact runs stream.
+      PROGRESS_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress
   # 6b CA: cert-manager generates + rotates the self-signed CA the sidecar uses to
   # mint leaf certs when it TLS-terminates a secret-bearing destination. Only
   # created when `secrets` below is non-empty.

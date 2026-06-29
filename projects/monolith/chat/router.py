@@ -2,8 +2,9 @@
 
 import asyncio
 import logging
+import re
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -99,3 +100,35 @@ async def explore(body: ExploreRequest, request: Request):
             yield event
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# Internal router (ADR 024): the goosecracker guest streams goose's stdout here
+# as the build runs, and the in-process Discord bot reads the buffer to edit the
+# thread message live. Prefixed /internal so it is kept off the public HTTPRoute
+# (in-cluster only, reached by the guest through the egress funnel), like
+# artifact's /internal/artifact.
+internal_router = APIRouter(prefix="/internal/goosecracker", tags=["goosecracker"])
+
+# Artifact ids are the Discord thread id (numeric), but accept the same charset
+# as the artifact router so the two validations never disagree.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class ProgressIn(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    chunk: str = ""
+    done: bool = False
+
+
+@internal_router.post("/progress", status_code=204)
+async def post_progress(body: ProgressIn) -> Response:
+    """Append a guest stdout chunk (and/or a done marker) to a run's buffer."""
+    from chat import goosecracker_progress as gp
+
+    if not _ID_RE.match(body.id):
+        raise HTTPException(400, "invalid id")
+    if body.chunk:
+        gp.append(body.id, body.chunk)
+    if body.done:
+        gp.mark_done(body.id)
+    return Response(status_code=204)
