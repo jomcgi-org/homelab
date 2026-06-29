@@ -2,4 +2,4 @@ apiVersion: v2
 name: fc-agentd
 description: Firecracker snapshot/restore controller (ADR 022) - the node-4 Postgres-reconcile daemon that manages agent-thread microVMs
 type: application
-version: 0.17.2
+version: 0.17.3
