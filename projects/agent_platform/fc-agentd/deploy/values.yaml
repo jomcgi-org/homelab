@@ -3,9 +3,11 @@
 #
 # firecracker.enabled is TRUE: the daemon drives real microVMs. It runs
 # privileged (runAsUser 0) with /dev/kvm + the kata binary/kernel + devmapper +
-# the nvme dir host-mounted, and each thread gets its own writable rootfs copied
-# from the base image at baseRootfsPath. With an empty registry it still just
-# idles; it only boots a microVM when a thread is submitted (dispatch.submit).
+# the nvme dir host-mounted. Each thread gets its own writable rootfs as a
+# copy-on-write devmapper thin-snapshot of the base (ADR 026: rootfsProvisioner
+# devmapper, snapshotting node-4's shared `devpool` thin-pool), so per-thread
+# provision is milliseconds instead of a ~2s full copy. With an empty registry it
+# still just idles; it only boots a microVM when a thread is submitted.
 node: node-4
 arch: amd64
 
@@ -13,3 +15,5 @@ firecracker:
   enabled: true
   snapshotRoot: /disks/nvme-02/agent-threads
   baseRootfsPath: /disks/nvme-02/agent-base/rootfs.ext4
+  rootfsProvisioner: devmapper
+  thinPool: devpool

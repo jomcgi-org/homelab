@@ -87,6 +87,13 @@ type Loop struct {
 	// to it. Empty disables egress forwarding.
 	EgressSidecar string
 
+	// Wake, when set, fires a reconcile pass immediately instead of waiting for
+	// the next poll tick (ADR 026 Task 1.2: a Postgres LISTEN/NOTIFY signal on a
+	// PENDING insert feeds it). nil disables event-driven dispatch (poll only). It
+	// is purely an accelerator: the periodic tick is the safety net, so a missed
+	// wake only defers a claim to the next tick.
+	Wake <-chan struct{}
+
 	live    map[string]substrate.Handle   // threadID -> live microVM handle
 	control map[string]context.CancelFunc // threadID -> cancel its control server
 	idle    chan idleEvent                // guest idle boundaries, handled on the loop goroutine
@@ -131,6 +138,13 @@ func (l *Loop) Run(ctx context.Context) error {
 			log.Info("reconcile loop stopping")
 			return nil
 		case <-ticker.C:
+			l.reconcileOnce(ctx, log)
+		case <-l.Wake:
+			// Event-driven dispatch (ADR 026): a PENDING insert NOTIFY arrived; run a
+			// pass now rather than waiting out the tick. Reset the ticker so a steady
+			// stream of submissions does not also stack redundant polls right behind
+			// each wake.
+			ticker.Reset(interval)
 			l.reconcileOnce(ctx, log)
 		case ev := <-l.idle:
 			l.snapshotIdle(ctx, log, ev)

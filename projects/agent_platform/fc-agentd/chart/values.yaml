@@ -250,6 +250,14 @@ firecracker:
   # image). When set, each thread gets its own writable copy.
   baseRootfsPath: ""
   rootfsPath: ""
+  # Per-thread rootfs strategy (ADR 026). "copy" (default) does a full ~3GB file
+  # copy per thread (~2s). "devmapper" gives each thread an instant copy-on-write
+  # thin-snapshot of the base in the node's shared thin-pool (`thinPool`), cutting
+  # per-thread provision from ~2s to milliseconds and per-thread disk to only the
+  # written delta. Left "copy" as the chart default; the prod deploy values flip
+  # it to "devmapper".
+  rootfsProvisioner: copy
+  thinPool: devpool
 
 reconcileInterval: 5s
 

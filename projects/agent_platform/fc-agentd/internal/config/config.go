@@ -41,6 +41,13 @@ type Config struct {
 	BaseRootfsPath string
 	// HarnessInit is the in-guest init the kernel boots into (fc-agent-init).
 	HarnessInit string
+	// RootfsProvisioner selects the per-thread rootfs strategy (ADR 026): "copy"
+	// (default; full file copy) or "devmapper" (copy-on-write thin-snapshot). The
+	// copy default keeps the change dark until the flag is flipped in values.
+	RootfsProvisioner string
+	// ThinPool is the devmapper thin-pool name the devmapper provisioner snapshots
+	// into (node-4 shares containerd's "devpool"); ignored by the copy provisioner.
+	ThinPool string
 	// GuestVCPUs and GuestMemMib size each microVM.
 	GuestVCPUs  int
 	GuestMemMib int
@@ -105,6 +112,8 @@ func Load() (Config, error) {
 		RootfsPath:        os.Getenv("FC_AGENTD_ROOTFS_PATH"),
 		BaseRootfsPath:    os.Getenv("FC_AGENTD_BASE_ROOTFS"),
 		HarnessInit:       getenvDefault("FC_AGENTD_HARNESS_INIT", "/usr/local/bin/fc-agent-init"),
+		RootfsProvisioner: getenvDefault("FC_AGENTD_ROOTFS_PROVISIONER", "copy"),
+		ThinPool:          getenvDefault("FC_AGENTD_THIN_POOL", "devpool"),
 		GuestVCPUs:        atoiDefault("FC_AGENTD_GUEST_VCPUS", 1),
 		GuestMemMib:       atoiDefault("FC_AGENTD_GUEST_MEM_MIB", 1024),
 		MaxConcurrent:     atoiDefault("FC_AGENTD_MAX_CONCURRENT", 8),

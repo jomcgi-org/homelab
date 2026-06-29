@@ -1,7 +1,7 @@
 # ADR 026: Fast MicroVM Cold Starts and Stateful Artifact Iteration
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-06-29
 **Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fc-agentd` substrate, the `RootfsProvisioner` interface, the reconcile loop), [024 - Discord Agent, Hosted-Model Tiers, and Isolated Live Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the goosecracker artifact tier and the `ARTIFACT_ID = Discord thread` identity), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the per-tier credential model the artifact tier rides)
 
@@ -73,6 +73,7 @@ The model-latency and cost win therefore comes from preserving the **conversatio
 **Costs and risks.**
 
 - New persistence surface: per-thread `sessions.db` storage plus an export/restore path, and a TTL/eviction policy so abandoned sessions do not accumulate.
+- The CoW provisioner reuses node-4's existing `devpool` thin-pool (the one containerd's devmapper snapshotter already uses for kata-fc) rather than provisioning a dedicated pool, because the node's rootfs filesystem is ext4 (no reflink/`FICLONE`, so a filesystem CoW is not available) and the pool is already proven there. The one hazard of a shared pool is thin device-id collision with containerd's allocator; fc-agentd avoids it by allocating from a high, disjoint id band (containerd starts at 0 and never reaches the millions) with a persisted free-list, and `dmsetup` is added to the fc-agentd image via a small apko base. A dedicated pool remains the fallback if sharing ever proves problematic.
 - A goose-CLI dependency, now **validated** (spike, goose 1.27.1): `goose run --name <id> --resume -t "<instruction>"` resumes a named SQLite-backed session and replays full history, and the `sessions.db` is portable across a wiped/fresh environment. One small open detail for implementation: whether to re-pass `--recipe` on resume or rely on the recipe's system prompt already being in the session (turn 1 wrote it). Low risk; the cold-plus-Model-B fallback contains it.
 - Session staleness across goose upgrades: a `sessions.db` written by one goose version may not open under another if the SQLite schema changes. The fallback handles correctness; the cost is an occasional iteration that silently cold-rebuilds.
 - Provider implicit-cache TTL is short (minutes), and Discord iterations can be minutes apart, so a prefix-cache hit is not guaranteed even with a perfect prefix. The cache-independent win (incremental output instead of full regeneration) does not depend on this; explicit Gemini context caching is a later knob if iteration cadence proves slow.

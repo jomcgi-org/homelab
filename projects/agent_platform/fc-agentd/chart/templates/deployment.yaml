@@ -125,6 +125,13 @@ spec:
             - name: FC_AGENTD_BASE_ROOTFS
               value: {{ . | quote }}
             {{- end }}
+            # Per-thread rootfs strategy (ADR 026): "copy" (default; full file
+            # copy) or "devmapper" (copy-on-write thin-snapshot of the base in the
+            # node's shared thin-pool). thinPool names the pool to snapshot into.
+            - name: FC_AGENTD_ROOTFS_PROVISIONER
+              value: {{ .Values.firecracker.rootfsProvisioner | quote }}
+            - name: FC_AGENTD_THIN_POOL
+              value: {{ .Values.firecracker.thinPool | quote }}
             {{- end }}
             {{- if and .Values.firecracker.enabled .Values.egress.enabled }}
             # Egress (ADR 023 + 024): forward guest vsock egress to the sidecar,

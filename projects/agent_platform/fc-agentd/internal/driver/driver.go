@@ -33,8 +33,15 @@ type Config struct {
 	// BaseRootfsPath is set (e.g. the kata rootfs for a heartbeat smoke test).
 	RootfsPath string
 	// BaseRootfsPath is the read-only base rootfs image (the flattened harness
-	// image). When set, each thread gets its own writable copy (CopyProvisioner).
+	// image). When set, each thread gets its own writable rootfs derived from it.
 	BaseRootfsPath string
+	// Provisioner selects the per-thread rootfs strategy (ADR 026): "copy" (the
+	// default CopyProvisioner full file copy) or "devmapper" (DevmapperProvisioner
+	// copy-on-write thin-snapshot). An empty value means "copy".
+	Provisioner string
+	// ThinPool is the devmapper thin-pool name the DevmapperProvisioner snapshots
+	// into (e.g. "devpool"); ignored by the copy provisioner.
+	ThinPool string
 	// HarnessInit, when set, is appended to the kernel command line as
 	// init=<path> so the guest boots straight into fc-agent-init (raw FC boot
 	// ignores the OCI entrypoint).
@@ -125,7 +132,15 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 		live:      make(map[string]*instance),
 	}
 	if cfg.BaseRootfsPath != "" {
-		d.provisioner = &CopyProvisioner{Base: cfg.BaseRootfsPath}
+		if cfg.Provisioner == "devmapper" {
+			d.provisioner = &DevmapperProvisioner{
+				Pool:     cfg.ThinPool,
+				Base:     cfg.BaseRootfsPath,
+				StateDir: cfg.SnapshotRoot,
+			}
+		} else {
+			d.provisioner = &CopyProvisioner{Base: cfg.BaseRootfsPath}
+		}
 	}
 	return d
 }
@@ -440,6 +455,17 @@ func (d *Driver) get(id string) *instance {
 func (d *Driver) RemoveBundle(threadID string) error {
 	if threadID == "" {
 		return fmt.Errorf("driver: RemoveBundle requires a threadID")
+	}
+	// Release the provisioner's out-of-dir resources first (a CoW thin device +
+	// its pool allocation); the COW data lives in the pool, not the bundle dir, so
+	// RemoveAll alone would leak the dm device and its thin id. The VM process is
+	// already killed (Release ran before reclaim), so the device is free.
+	if d.provisioner != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
+		defer cancel()
+		if err := d.provisioner.Teardown(ctx, threadID); err != nil {
+			return fmt.Errorf("driver: teardown rootfs for %q: %w", threadID, err)
+		}
 	}
 	dir := d.threadDir(threadID)
 	if err := os.RemoveAll(dir); err != nil {
