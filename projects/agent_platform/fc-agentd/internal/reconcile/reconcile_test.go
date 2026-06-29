@@ -453,3 +453,37 @@ func TestEnvForTier(t *testing.T) {
 		t.Fatal("envForTier mutated the shared GooseEnv map")
 	}
 }
+
+// TestEnvForThread covers the per-thread additions (ADR 026): every thread gets
+// OTEL_RESOURCE_ATTRIBUTES (thread.id + tier, so goose's spans correlate with the
+// dispatcher launch span), and a Discord-backed thread also gets ARTIFACT_ID and
+// discord.thread.
+func TestEnvForThread(t *testing.T) {
+	l := &Loop{
+		GooseEnv: map[string]string{"EGRESS_CA_CERT": "ca"},
+		TierEnv: map[string]map[string]string{
+			"artifact": {"OPENAI_HOST": "https://openrouter.ai/api"},
+		},
+	}
+	log := testLogger()
+
+	// Artifact thread with a Discord thread: full correlation set.
+	art := l.envForThread(log, store.Thread{ThreadID: "t-abc", Tier: "artifact", DiscordThread: "12345"})
+	wantAttrs := "thread.id=t-abc,tier=artifact,discord.thread=12345"
+	if art["OTEL_RESOURCE_ATTRIBUTES"] != wantAttrs {
+		t.Fatalf("artifact thread OTEL_RESOURCE_ATTRIBUTES = %q, want %q", art["OTEL_RESOURCE_ATTRIBUTES"], wantAttrs)
+	}
+	if art["ARTIFACT_ID"] != "12345" {
+		t.Fatalf("artifact thread should carry ARTIFACT_ID=12345: %v", art)
+	}
+
+	// A thread with no Discord thread and empty tier: thread.id + tier=default,
+	// no ARTIFACT_ID / discord.thread.
+	def := l.envForThread(log, store.Thread{ThreadID: "t-xyz", Tier: ""})
+	if def["OTEL_RESOURCE_ATTRIBUTES"] != "thread.id=t-xyz,tier=default" {
+		t.Fatalf("default thread OTEL_RESOURCE_ATTRIBUTES = %q", def["OTEL_RESOURCE_ATTRIBUTES"])
+	}
+	if _, ok := def["ARTIFACT_ID"]; ok {
+		t.Fatalf("non-Discord thread must not carry ARTIFACT_ID: %v", def)
+	}
+}

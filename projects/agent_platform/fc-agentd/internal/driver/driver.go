@@ -21,7 +21,12 @@ import (
 
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/fcclient"
 	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+	"go.opentelemetry.io/otel"
 )
+
+// tracer spans the cold-boot phases (rootfs provision, firecracker boot) so the
+// cold-start cost is visible per phase in SigNoz (ADR 026 measurement).
+var tracer = otel.Tracer("fc-agentd/driver")
 
 // Config holds the node-4 substrate paths and microVM sizing.
 type Config struct {
@@ -274,28 +279,41 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	// shared/static rootfs (e.g. a kata rootfs smoke test).
 	rootfsPath := d.cfg.RootfsPath
 	if d.provisioner != nil {
-		rootfsPath, err = d.provisioner.Provision(ctx, threadID, dir)
+		// provision_rootfs is the cold-start cost ADR 026 targets (the full-copy
+		// CopyProvisioner today; a CoW provisioner later). Its own span makes the
+		// before/after directly visible in SigNoz.
+		pctx, pspan := tracer.Start(ctx, "provision_rootfs")
+		rootfsPath, err = d.provisioner.Provision(pctx, threadID, dir)
+		pspan.End()
 		if err != nil {
 			return d.abort(proc, err)
 		}
 	}
 
-	if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: d.cfg.VCPUs, MemSizeMib: d.cfg.MemMib}); err != nil {
-		return d.abort(proc, err)
-	}
-	if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgs()}); err != nil {
-		return d.abort(proc, err)
-	}
-	if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true}); err != nil {
-		return d.abort(proc, err)
-	}
-	// The vsock device is the guest's only channel to the controller (task
-	// delivery, idle signal, egress proxy). It must be configured before Start.
-	if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.VsockUDSPath(threadID)}); err != nil {
-		return d.abort(proc, err)
-	}
-	if err := client.Start(ctx); err != nil {
-		return d.abort(proc, err)
+	// firecracker_boot: configure the microVM and Start it (the kernel boot + the
+	// guest fc-agent-init handshake complete asynchronously after Start returns,
+	// so they are not in this span).
+	_, bspan := tracer.Start(ctx, "firecracker_boot")
+	bootErr := func() error {
+		if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: d.cfg.VCPUs, MemSizeMib: d.cfg.MemMib}); err != nil {
+			return err
+		}
+		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgs()}); err != nil {
+			return err
+		}
+		if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true}); err != nil {
+			return err
+		}
+		// The vsock device is the guest's only channel to the controller (task
+		// delivery, idle signal, egress proxy). It must be configured before Start.
+		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.VsockUDSPath(threadID)}); err != nil {
+			return err
+		}
+		return client.Start(ctx)
+	}()
+	bspan.End()
+	if bootErr != nil {
+		return d.abort(proc, bootErr)
 	}
 
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
