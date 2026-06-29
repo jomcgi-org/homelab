@@ -159,5 +159,9 @@ agent:
   discord:
     defaultServerId: "1501965852042330302"
     defaultChannelId: "1501965852969402517"
+    # Owner allowlist for /goosecracker (ADR 024 Task 4). Set this to your
+    # Discord user id; until it is set the gate fails closed and rejects
+    # everyone (the command roasts them instead of running).
+    ownerUserId: ""
   signoz:
     url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"

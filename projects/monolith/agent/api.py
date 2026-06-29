@@ -7,6 +7,7 @@ Other domains must import from ``agent.api`` (enforced by
 
 from __future__ import annotations
 
+from agent.dispatch import submit  # re-exported
 from agent.notify import notify  # re-exported
 
-__all__ = ["notify"]
+__all__ = ["notify", "submit"]

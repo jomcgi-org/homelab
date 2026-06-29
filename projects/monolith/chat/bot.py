@@ -21,6 +21,7 @@ from shared.embedding import EmbeddingClient
 from chat.store import MessageStore
 from chat.vision import VisionClient
 from chat.web_search import search_web
+from chat import goosecracker
 from app.db import get_engine
 
 from sqlmodel import Session
@@ -200,9 +201,41 @@ class ChatBot(discord.Client):
         self.embed_client = EmbeddingClient()
         self.vision_client = VisionClient()
         self.agent = create_agent()
+        # Slash commands (e.g. /goosecracker, ADR 024 Task 4) live on a
+        # CommandTree; on_message handles plain chat. Registered at construction,
+        # synced to the guild in on_ready.
+        self.tree = discord.app_commands.CommandTree(self)
+        self._register_commands()
+
+    def _register_commands(self) -> None:
+        """Register application (slash) commands on the tree."""
+
+        @self.tree.command(
+            name="goosecracker",
+            description="Build a self-contained web artifact (owner only)",
+        )
+        @discord.app_commands.describe(prompt="What to build")
+        async def goosecracker_command(
+            interaction: discord.Interaction, prompt: str
+        ) -> None:
+            await self._handle_goosecracker_command(interaction, prompt)
 
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
+        # Sync slash commands. Guild-scoped sync (when the agent's default server
+        # is configured) propagates instantly; a global sync can take up to an
+        # hour to appear, so prefer the guild when we have it.
+        try:
+            guild_id = os.environ.get("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "")
+            if guild_id:
+                guild = discord.Object(id=int(guild_id))
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            else:
+                await self.tree.sync()
+            logger.info("Synced application commands (guild=%s)", guild_id or "global")
+        except Exception:
+            logger.exception("Failed to sync application commands")
         # Re-register ThinkingView for recent bot messages so the "Show thinking"
         # button keeps working after a pod restart.
         try:
@@ -240,7 +273,104 @@ class ChatBot(discord.Client):
             logger.exception("Failed to acquire lock for message %s", msg_id)
             return
 
+        # A reply inside a goosecracker thread iterates the artifact (Model B)
+        # instead of going to the chat agent. Only threads can be goosecracker
+        # sessions, so the DB lookup is skipped for ordinary channels.
+        if isinstance(message.channel, discord.Thread):
+            if await self._maybe_handle_goosecracker_reply(message):
+                return
+
         await self._process_message(message)
+
+    async def _handle_goosecracker_command(
+        self, interaction: discord.Interaction, prompt: str
+    ) -> None:
+        """Owner-gated /goosecracker: open a thread and dispatch the first run."""
+        if not goosecracker.is_owner(interaction.user.id):
+            roast = await goosecracker.build_roast(prompt)
+            await interaction.response.send_message(roast, ephemeral=True)
+            return
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Run /goosecracker from a normal text channel so I can open a thread.",
+                ephemeral=True,
+            )
+            return
+
+        # Dispatch (DB inserts) can take a beat; ack first so the interaction
+        # never times out, then create the thread and kick off the run.
+        await interaction.response.defer(thinking=True)
+        try:
+            name = f"goosecracker: {prompt}"[:90]
+            thread = await channel.create_thread(
+                name=name, type=discord.ChannelType.public_thread
+            )
+            await asyncio.to_thread(goosecracker.start_session, str(thread.id), prompt)
+        except Exception:
+            logger.exception("goosecracker: failed to start session")
+            await interaction.followup.send(
+                "Couldn't start that one. Check the logs.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(f"Building your artifact in {thread.mention}")
+        try:
+            await thread.send(
+                "On it. Building your artifact now; I'll drop the link here when "
+                "it's ready. Reply in this thread to iterate on it."
+            )
+        except Exception:
+            logger.exception("goosecracker: failed to post thread intro")
+
+    async def _maybe_handle_goosecracker_reply(self, message: discord.Message) -> bool:
+        """Handle a reply inside a goosecracker thread (Model B re-run).
+
+        Returns True when the message was a goosecracker thread message (handled,
+        so the caller skips the chat agent), False otherwise.
+        """
+        thread_id = str(message.channel.id)
+        if not await asyncio.to_thread(goosecracker.is_goosecracker_thread, thread_id):
+            return False
+
+        msg_id = str(message.id)
+        # Ignore other bots in the build thread: don't roast them (avoids
+        # bot-to-bot loops) and don't let them reach the chat agent.
+        if message.author.bot:
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
+        if not goosecracker.is_owner(message.author.id):
+            roast = await goosecracker.build_roast(message.content)
+            await message.reply(roast)
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
+
+        try:
+            result = await asyncio.to_thread(
+                goosecracker.continue_session, thread_id, message.content
+            )
+        except Exception:
+            logger.exception("goosecracker: failed to continue session")
+            await message.reply("Couldn't rebuild that one. Check the logs.")
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
+
+        if result is None:
+            # Lost a race with session teardown; let normal handling take it.
+            return False
+
+        await message.reply(
+            "On it. Rebuilding your artifact; the link above will hot-reload."
+        )
+        await asyncio.to_thread(self._complete_lock, msg_id)
+        return True
+
+    def _complete_lock(self, msg_id: str) -> None:
+        """Mark a message lock completed (sync; call via asyncio.to_thread)."""
+        with Session(get_engine()) as session:
+            store = MessageStore(session=session, embed_client=self.embed_client)
+            store.mark_completed(msg_id)
 
     async def _process_message(self, message: discord.Message) -> None:
         """Process a message that this pod has locked."""
