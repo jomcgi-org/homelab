@@ -215,6 +215,12 @@ agent:
   maxConcurrent: 8
   guestMemMib: 1024
   guestOomScoreAdj: 1000
+  # How many times a thread's microVM launch may fail before it is marked FAILED.
+  # A launch failure is usually transient (this daemon was just (re)started by a
+  # rollout and KVM/devmapper is not warm yet), so a thread submitted during a
+  # deploy retries, paced by reconcileInterval, instead of being burned terminal
+  # on the first error. 5 * 5s reconcileInterval ~ 25s of weathering.
+  maxClaimAttempts: 5
 
 # The limit must hold maxConcurrent guests plus the daemon: 8 * 1Gi + ~1Gi
 # overhead = 9Gi. Burstable: request a small warm floor (~2 guests), let the
