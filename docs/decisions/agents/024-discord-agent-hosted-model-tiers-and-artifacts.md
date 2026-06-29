@@ -99,14 +99,30 @@ Baseline `docs/security.md`. Tier-specific posture:
 
 ## Risks
 
-| Risk                                                                        | Likelihood | Impact | Mitigation                                                                                                                             |
-| --------------------------------------------------------------------------- | ---------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Sandboxed artifact still exfiltrates the conversation to an attacker host   | Medium     | Low    | Only the chat/intent is exposed (no secrets); tighten CSP `connect-src` to a small allowlist if a thread handles anything sensitive    |
-| A coding-tier prompt injection abuses the `gh` token within its `egressTo`  | Low        | Medium | Token is `claude/`-branch + PR scoped (021); swap only fires toward GitHub; never held in-guest                                        |
-| OpenRouter outage or price change breaks the paid tier                      | Low        | Low    | Qwen fallback tier; model is a config knob; per-user so blast radius is one user                                                       |
-| Artifact storage grows unbounded in SeaweedFS                               | Medium     | Low    | Monolith-mediated writes enforce a TTL/lifecycle on `s3://artifacts` (COSI/lifecycle per the SeaweedFS notes); ids are server-assigned |
-| iframe sandbox misconfigured with `allow-same-origin` re-exposes the origin | Low        | High   | One reviewed wrapper template, never templated from agent input; test asserts the sandbox attributes                                   |
-| Hosted prompts leak intent that should have stayed private                  | Medium     | Low    | Tier/user routing; Qwen tier for in-cluster-only content                                                                               |
+| Risk                                                                        | Likelihood | Impact | Mitigation                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------- | ---------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sandboxed artifact still exfiltrates the conversation to an attacker host   | Medium     | Low    | Accepted per the 2026-06-29 amendment (CSP `connect-src` opened to https): only the chat/intent is exposed (no secrets), creation is owner-gated, the opaque origin denies our origin regardless. Tighten to a per-thread allowlist if `/artifact` ever opens past the owner |
+| A coding-tier prompt injection abuses the `gh` token within its `egressTo`  | Low        | Medium | Token is `claude/`-branch + PR scoped (021); swap only fires toward GitHub; never held in-guest                                                                                                                                                                              |
+| OpenRouter outage or price change breaks the paid tier                      | Low        | Low    | Qwen fallback tier; model is a config knob; per-user so blast radius is one user                                                                                                                                                                                             |
+| Artifact storage grows unbounded in SeaweedFS                               | Medium     | Low    | Monolith-mediated writes enforce a TTL/lifecycle on `s3://artifacts` (COSI/lifecycle per the SeaweedFS notes); ids are server-assigned                                                                                                                                       |
+| iframe sandbox misconfigured with `allow-same-origin` re-exposes the origin | Low        | High   | One reviewed wrapper template, never templated from agent input; test asserts the sandbox attributes                                                                                                                                                                         |
+| Hosted prompts leak intent that should have stayed private                  | Medium     | Low    | Tier/user routing; Qwen tier for in-cluster-only content                                                                                                                                                                                                                     |
+
+---
+
+## Amendment (2026-06-29): open the artifact CSP to the https web
+
+Decision 4 originally served artifacts under a strict CSP (`default-src 'none'; connect-src 'none'`, inline-only scripts/styles), which made artifacts fully self-contained but also blocked the common reflexes a model reaches for: a CDN framework (`<script src=...>`), web fonts, and live API data. In practice that produced broken artifacts: a model that built a perfectly reasonable Tailwind-CDN page got it CSP-nuked and rendered as unstyled black-on-black text, because only the inline `<style>` survived while every utility class stayed inert.
+
+The CSP is relaxed so an artifact behaves like a normal web page: `script-src`/`style-src`/`img-src`/`font-src`/`connect-src` are all opened to `https:` (any host), `http:` withheld. This lets artifacts load CDN libraries and fonts and, the original motivation, **fetch live data and refresh from public https APIs** so an artifact can be a real app, not just a static snapshot.
+
+Why this is safe to do here:
+
+- **The boundary that protects our origin is unchanged.** It was never the CSP: it is the `<iframe sandbox="allow-scripts">` (no `allow-same-origin`) opaque origin from decision 4. An artifact still cannot read `jomcgi.dev` cookies/storage/DOM. That invariant stays non-negotiable (and is the High-impact risk row above).
+- **Arbitrary JS execution was already granted.** The CSP already allowed `'unsafe-inline'` scripts, so the artifact already ran arbitrary JS. Allowing remote `<script src>` does not open a new capability class; it only changes code provenance (a supply-chain/durability tradeoff, not an origin-security one).
+- **Creation is owner-gated.** `/artifact` is owner-only, so the residual risk, a viewer's browser fetching/beaconing to third-party hosts, is no worse than the owner sending that viewer a link to any untrusted page.
+
+This re-accepts the "exfiltrates to an attacker host" risk row deliberately (mitigation updated above). If `/artifact` creation is ever opened beyond the owner, revisit by narrowing `connect-src`/`script-src` to a per-thread allowlist rather than `https:`. The single source of truth for the CSP string is `_ARTIFACT_CSP` in `projects/monolith/artifact/router.py`; the SSR proxy fallback (`raw/+server.js`) must stay byte-identical.
 
 ---
 

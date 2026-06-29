@@ -42,16 +42,24 @@ _MAX_HTML_BYTES = 2 * 1024 * 1024
 # for a single-run session while bounding runaway storage (ADR 026 Phase 2).
 _MAX_SESSION_BYTES = 32 * 1024 * 1024
 
-# The strict CSP on the raw artifact response. `sandbox allow-scripts` gives the
-# document an opaque origin with scripting but no same-origin/forms/popups/
-# top-navigation; `default-src 'none'` denies everything not explicitly allowed;
-# `connect-src 'none'` blocks beaconing/exfiltration (ADR 024 risk table). Inline
-# script/style are allowed so a self-contained artifact runs; data:/blob: images
-# cover inline assets.
+# The CSP on the raw artifact response. The PRIMARY isolation is the sandboxed
+# iframe in +page.svelte: `sandbox allow-scripts` (no `allow-same-origin`) gives
+# the document an opaque origin, so it can never read jomcgi.dev cookies/storage/
+# DOM. That boundary is non-negotiable (ADR 024 decision 4) and is what protects
+# our origin. The CSP here is deliberately permissive about the open web so an
+# artifact can behave like a normal page: load libraries from CDNs, pull web
+# fonts, fetch live data, and refresh from APIs (https only). `default-src 'none'`
+# stays as the backstop and each capability is opened explicitly; `http:` is
+# withheld to block plaintext/LAN-probe downgrades; `form-action`/`base-uri` stay
+# locked to keep top-window phishing-form posts out. Opening `connect-src`
+# (re)accepts the viewer-side beacon/exfil risk ADR 024 flagged: acceptable
+# because artifact creation is owner-gated and the opaque origin already denies
+# any access to our origin (see the ADR 024 amendment, 2026-06-29).
 _ARTIFACT_CSP = (
-    "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
-    "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; "
-    "connect-src 'none'; form-action 'none'; base-uri 'none'"
+    "sandbox allow-scripts; default-src 'none'; "
+    "script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; "
+    "img-src data: blob: https:; font-src data: https:; "
+    "connect-src https:; form-action 'none'; base-uri 'none'"
 )
 
 
