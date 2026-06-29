@@ -274,18 +274,16 @@ class ChatBot(discord.Client):
 
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
-        # Sync slash commands. Guild-scoped sync (when the agent's default server
-        # is configured) propagates instantly; a global sync can take up to an
-        # hour to appear, so prefer the guild when we have it.
+        # Sync slash commands globally so /goosecracker is available in every
+        # server the bot is in (still owner-gated at execution by is_owner, so
+        # non-owners just get roasted). A global sync can take up to an hour to
+        # propagate on first registration; that is acceptable for a command that
+        # changes rarely. We intentionally do not scope to the default server:
+        # MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID still names the home server
+        # for notify, but it no longer limits where commands appear.
         try:
-            guild_id = os.environ.get("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "")
-            if guild_id:
-                guild = discord.Object(id=int(guild_id))
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-            else:
-                await self.tree.sync()
-            logger.info("Synced application commands (guild=%s)", guild_id or "global")
+            await self.tree.sync()
+            logger.info("Synced application commands (global)")
         except Exception:
             logger.exception("Failed to sync application commands")
         # Re-register ThinkingView for recent bot messages so the "Show thinking"
