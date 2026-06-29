@@ -18,9 +18,9 @@ class TestBuildSystemPrompt:
         assert "Search before you respond" in prompt
 
     def test_states_own_name(self):
-        """System prompt tells the model its name is Qwen3.6."""
+        """System prompt tells the model its name is Bosun."""
         prompt = build_system_prompt()
-        assert "Qwen3.6" in prompt
+        assert "Bosun" in prompt
 
     def test_explains_self_mention_recognition(self):
         """System prompt explains that its own <@id> mention means itself."""
