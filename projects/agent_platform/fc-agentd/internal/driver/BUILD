@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//projects/agent_platform/fc-agentd/internal/fcclient",
         "//projects/agent_platform/substrate",
+        "@io_opentelemetry_go_otel//:otel",
     ],
 )
 

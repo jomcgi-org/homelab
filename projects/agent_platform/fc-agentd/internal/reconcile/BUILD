@@ -11,6 +11,8 @@ go_library(
         "//projects/agent_platform/substrate",
         "//projects/agent_platform/vsockproto",
         "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
     ],
 )
 
