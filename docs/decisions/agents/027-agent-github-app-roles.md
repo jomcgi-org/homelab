@@ -26,18 +26,18 @@ And `@jomcgi` stays the human owner who is always tagged and can always step in.
 
 Five decisions.
 
-**1. Two GitHub Apps, one per role: `homelab-implementer` and `homelab-reviewer`.** Each is installed on `jomcgi/homelab` and acts under its own `[bot]` identity (`homelab-implementer[bot]`, `homelab-reviewer[bot]`), so every commit, PR, review, and merge is attributed to the role that performed it. GitHub Apps (not machine-user PATs) are the identity mechanism: installation tokens are short-lived, scoped per-installation, occupy no seat, and the app private key never has to live in a guest (see decision 4). The trust split becomes a _capability_ split, enforced by GitHub, not a convention we hope the model honors.
+**1. Two account-level GitHub Apps, one per role, reusable across every `jomcgi` repo: `jomcgi-implementer` and `jomcgi-reviewer`.** The apps are deliberately named for the owner, not a repo, because the same two identities install into every repo they should act in; `homelab` is just the first. Each acts under its own `[bot]` identity (`jomcgi-implementer[bot]`, `jomcgi-reviewer[bot]`), so every commit, PR, review, and merge is attributed to the role that performed it, in any repo. The role model (capabilities, the gate, the trigger) is repo-agnostic; what varies per repo is only the branch-protection wiring (decision 3) and, in this homelab, the credential-injection path (decision 4). GitHub Apps (not machine-user PATs) are the identity mechanism: installation tokens are short-lived, scoped per-installation, occupy no seat, and the app private key never has to live in a guest (see decision 4). The trust split becomes a _capability_ split, enforced by GitHub, not a convention we hope the model honors.
 
 **2. Capabilities are scoped so the implementer structurally cannot merge.** The two apps get deliberately asymmetric permissions:
 
-| Capability                    | `homelab-implementer`            | `homelab-reviewer` |
-| ----------------------------- | -------------------------------- | ------------------ |
-| Contents (push `claude/*`)    | write                            | read               |
-| Pull requests (open, comment) | write                            | write              |
-| Submit a review / approve     | no                               | yes                |
-| Merge a PR                    | no                               | yes                |
-| Checks (set the review gate)  | no                               | write              |
-| Branch targets                | `claude/*` only (pattern-scoped) | n/a                |
+| Capability                    | `jomcgi-implementer`             | `jomcgi-reviewer` |
+| ----------------------------- | -------------------------------- | ----------------- |
+| Contents (push `claude/*`)    | write                            | read              |
+| Pull requests (open, comment) | write                            | write             |
+| Submit a review / approve     | no                               | yes               |
+| Merge a PR                    | no                               | yes               |
+| Checks (set the review gate)  | no                               | write             |
+| Branch targets                | `claude/*` only (pattern-scoped) | n/a               |
 
 The implementer's installation token cannot approve, cannot merge, and cannot clear the review gate. Even a fully prompt-injected implementer thread therefore cannot land code on `main`: the worst it can do is push to a `claude/*` branch and open a PR, which is exactly the reviewable surface we want it confined to. This is the same "the tier is the set of secrets the guest receives" principle as 024, extended to GitHub capability: the role _is_ its token's permission set.
 
@@ -47,9 +47,9 @@ The implementer's installation token cannot approve, cannot merge, and cannot cl
 - Branch protection on `main` requires a status check, `agent-review/gate`, to be green before merge.
 - The reviewer app sets `agent-review/gate` to `success` when, and only when, it approves; it leaves it `failure`/`pending` when it requests changes.
 
-The functional set of "who can let code into `main`" is therefore `{ homelab-reviewer (via the gate), @jomcgi (human owner/admin override) }`, which is exactly the intended code-owner set. The reviewer is a code owner in capability even though GitHub will not let a bot be one in `CODEOWNERS` text.
+The functional set of "who can let code into `main`" is therefore `{ jomcgi-reviewer (via the gate), @jomcgi (human owner/admin override) }`, which is exactly the intended code-owner set. The reviewer is a code owner in capability even though GitHub will not let a bot be one in `CODEOWNERS` text.
 
-**4. The role credential is injected per-thread via the 023 egress swap, exactly like 024's tier env.** goosecracker (025) already decides per thread what a guest is granted. The role is one more dimension of that decision: an implementer thread gets the `homelab-implementer` installation token as a placeholder; a reviewer thread gets the `homelab-reviewer` placeholder. The real installation token is minted from the app private key and swapped in at the `api.github.com` egress hop; the guest holds only `kloak:gh:<role>:<...>`, never a usable token, and nothing real enters the microVM or its snapshot. This splits 024's single `gh` token into two role-scoped GitHub App tokens with no new mechanism: it is two `egress.secrets` entries instead of one, keyed by role.
+**4. The role credential is injected per-thread via the 023 egress swap, exactly like 024's tier env.** goosecracker (025) already decides per thread what a guest is granted. The role is one more dimension of that decision: an implementer thread gets the `jomcgi-implementer` installation token as a placeholder; a reviewer thread gets the `jomcgi-reviewer` placeholder. The real installation token is minted from the app private key and swapped in at the `api.github.com` egress hop; the guest holds only `kloak:gh:<role>:<...>`, never a usable token, and nothing real enters the microVM or its snapshot. This splits 024's single `gh` token into two role-scoped GitHub App tokens with no new mechanism: it is two `egress.secrets` entries instead of one, keyed by role.
 
 **5. The reviewer triggers on "ready for review" plus an explicit hand-off from the implementer, and ends in approve-and-merge or comment-and-hold.** The implementer signals completion by marking the PR ready for review and applying the `agent:review-requested` label (a label, not a GitHub "request review from app", which is not a dependable path for App identities). The reviewer app listens for `pull_request.ready_for_review` and `pull_request.labeled` on that label, then runs an adversarial pass:
 
@@ -66,7 +66,7 @@ It then either **approves, sets `agent-review/gate` green, and rebase-merges**, 
 graph TB
     subgraph impl["Implementer thread (lower-trust model)"]
       IA[goose guest] -->|"GH token = kloak:gh:impl:..."| IPX[egress-proxy<br/>swap on api.github.com]
-      IPX -->|"homelab-implementer[bot] token"| GH1[GitHub]
+      IPX -->|"jomcgi-implementer[bot] token"| GH1[GitHub]
     end
 
     GH1 -->|"push claude/*, open PR (draft)"| PR[(Pull Request)]
@@ -75,7 +75,7 @@ graph TB
     Hook --> RV
     subgraph rev["Reviewer thread (Opus or better)"]
       RV[goose guest:<br/>spec-vs-impl + best-practices] -->|"GH token = kloak:gh:rev:..."| RPX[egress-proxy<br/>swap on api.github.com]
-      RPX -->|"homelab-reviewer[bot] token"| GH2[GitHub]
+      RPX -->|"jomcgi-reviewer[bot] token"| GH2[GitHub]
     end
 
     GH2 -->|"approve + set agent-review/gate=success"| Merge[rebase-merge to main]
@@ -109,7 +109,7 @@ Baseline `docs/security.md`. Role-specific posture:
 
 - **Least privilege by role.** The implementer token is `claude/*`-scoped, no-approve, no-merge, no-checks. Compromise (including prompt injection from repo content) is bounded to opening a PR, never landing one. The high-trust capability (merge, gate) lives only with the reviewer.
 - **No token in the guest.** Both role tokens are 023 placeholders swapped at the `api.github.com` egress hop; the app private keys live with the egress proxy, never in a microVM or snapshot. Revocation is per-app (rotate one app's key without touching the other).
-- **Attribution.** Every action is attributed to `homelab-implementer[bot]` or `homelab-reviewer[bot]`, so the audit trail shows which role (and thus which trust tier) did what, including in the merge commit.
+- **Attribution.** Every action is attributed to `jomcgi-implementer[bot]` or `jomcgi-reviewer[bot]`, so the audit trail shows which role (and thus which trust tier) did what, including in the merge commit.
 - **The reviewer cannot approve the implementer's lapse into its own role.** Because the apps are distinct installations with distinct tokens, the implementer literally cannot mint a reviewer token from inside its thread; the role boundary is a credential boundary, not a code path the model could talk its way across.
 - **Self-approval is doubly blocked.** GitHub already forbids an actor approving its own PR; here the implementer additionally lacks the approve and gate capabilities entirely.
 
