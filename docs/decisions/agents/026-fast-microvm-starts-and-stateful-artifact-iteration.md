@@ -49,8 +49,8 @@ Treat a Discord thread as a session and make iterations incremental.
 
 The mechanism is **goose's own file-based session resume**, validated in a spike against goose 1.27.1 (the pinned harness version):
 
-- goose stores conversations in a SQLite database at `~/.local/share/goose/sessions/sessions.db`. `goose run --name <id> --resume -t "<instruction>"` resumes the named session: it replays the full prior conversation to the model and continues. This is file-based, not process-based, so no live VM or snapshot is required.
-- The spike proved cross-VM portability: after a two-turn session, copying out `sessions.db`, wiping the entire sessions directory (simulating a fresh VM), restoring only that file, and resuming still recalled the earlier turn's content. The DB is self-contained and portable.
+- goose stores conversations in a SQLite database at `~/.local/share/goose/sessions/sessions.db`. `goose run --name <id> --resume -t "<instruction>"` resumes the named session: it replays the full prior conversation to the model and continues. This is file-based, not process-based, so no live VM or snapshot is required. Corroborated by goose's docs ([Session Management](https://goose-docs.ai/docs/guides/sessions/session-management/)): SQLite `sessions.db` since goose 1.10.0 (legacy `.jsonl` files are no longer managed), and resuming transfers "the complete conversation history" plus provider/model and extension config.
+- The spike proved cross-VM portability beyond what the docs state (the docs only claim desktop/CLI share the DB on one host): after a two-turn session, copying out `sessions.db`, wiping the entire sessions directory (simulating a fresh VM), restoring only that file, and resuming still recalled the earlier turn's content. The DB is self-contained and portable.
 
 So:
 
