@@ -62,12 +62,20 @@ func run(logger *slog.Logger) error {
 	bringUpLoopback(logger)
 
 	threadID := os.Getenv("FC_THREAD_ID")
-	idleAfter := durationEnv("FC_IDLE_AFTER", 60*time.Second)
+	// 10min default (was 60s): a thinking-model turn can spend minutes on a single
+	// request with no guest-side byte activity, and the detector must never fire
+	// mid-call (a snapshot/restore corrupts the in-flight TCP stream -> broken
+	// pipe). The funnel-connection in-flight wiring below is the precise guard;
+	// this is the backstop for a genuinely wedged guest (the 24h ttl is the last
+	// resort). Tune via FC_IDLE_AFTER.
+	idleAfter := durationEnv("FC_IDLE_AFTER", 10*time.Minute)
 
 	logger.Info("fc-agent-init starting", "thread_id", threadID, "idle_after", idleAfter.String())
 
-	// Idle detector: the harness reports call boundaries via a local control
-	// path (Phase 3 wiring); here we construct it and run the sampler.
+	// Idle detector: an open egress-funnel connection counts as an in-flight RPC
+	// (Begin/End around each funnelToHost below), so the thread is never reported
+	// idle while a model/MCP/publish call is open - including the silent wait while
+	// a thinking model reasons (no bytes flow, but the connection stays open).
 	det := &idle.Detector{IdleAfter: idleAfter}
 
 	// Reconnect manager: in production these re-open the model/MCP/git clients.
@@ -100,7 +108,7 @@ func run(logger *slog.Logger) error {
 	// (the vsock egress hop needs the host).
 	if conn != nil {
 		installGuestCA(logger)
-		setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"))
+		setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"), det)
 	}
 
 	var harnessProc *exec.Cmd
@@ -301,11 +309,11 @@ func installGuestCA(logger *slog.Logger) {
 // 127.0.0.1, then listens on each egress port on loopback and tunnels every
 // accepted connection over vsock to the host sidecar. The guest decides nothing
 // about routing; the sidecar recovers the real destination from the SNI/Host.
-func setupTransparentEgress(ctx context.Context, logger *slog.Logger, portsSpec string) {
+func setupTransparentEgress(ctx context.Context, logger *slog.Logger, portsSpec string, det *idle.Detector) {
 	writeResolvConf(logger)
 	go runWildcardDNS(ctx, logger)
 	for _, port := range parseEgressPorts(portsSpec) {
-		go runFunnel(ctx, logger, port)
+		go runFunnel(ctx, logger, port, det)
 	}
 }
 
@@ -421,7 +429,7 @@ func buildDNSResponse(req []byte) []byte {
 
 // runFunnel listens on loopback:port and tunnels each accepted connection to the
 // host sidecar over vsock. It returns when ctx is done.
-func runFunnel(ctx context.Context, logger *slog.Logger, port int) {
+func runFunnel(ctx context.Context, logger *slog.Logger, port int, det *idle.Detector) {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -441,7 +449,7 @@ func runFunnel(ctx context.Context, logger *slog.Logger, port int) {
 			}
 			return
 		}
-		go funnelToHost(logger, local, port)
+		go funnelToHost(logger, local, port, det)
 	}
 }
 
@@ -449,8 +457,16 @@ func runFunnel(ctx context.Context, logger *slog.Logger, port int) {
 // original destination port (the listener's port), then copies bytes both ways.
 // The sidecar recovers the destination host from the SNI/Host header and combines
 // it with this port to reach the real upstream.
-func funnelToHost(logger *slog.Logger, local net.Conn, port int) {
+func funnelToHost(logger *slog.Logger, local net.Conn, port int, det *idle.Detector) {
 	defer local.Close()
+	// An open funnel connection is an in-flight egress RPC (model/MCP/publish).
+	// Mark it so the idle detector never snapshots mid-call, even during a
+	// thinking model's silent reasoning wait where no bytes flow. det is nil only
+	// in the no-controller fallback (no snapshot path), so guard for it.
+	if det != nil {
+		det.Begin()
+		defer det.End()
+	}
 	up, err := vsockdial.Dial(vsockproto.HostCID, vsockproto.EgressPort)
 	if err != nil {
 		logger.Warn("egress funnel vsock dial", "port", port, "err", err)
