@@ -49,3 +49,18 @@ extensions:
 settings:
   max_turns: 50
   max_tool_repetitions: 5
+# Belt-and-suspenders: if the run ends without a non-empty /tmp/artifact.html (the
+# occasional model whiff where it chats instead of writing), goose re-runs the turn
+# with failure_prompt injected rather than the harness publishing nothing. The
+# token-budget fix (GOOSE_MAX_TOKENS) already makes the empty-output case rare; this
+# makes a stray miss self-heal instead of producing a dead thread.
+retry:
+  max_retries: 2
+  checks:
+    - type: shell
+      command: "test -s /tmp/artifact.html"
+  failure_prompt: |
+    You have not written /tmp/artifact.html yet (it is missing or empty). Your
+    FIRST action right now must be a tool call that writes the complete,
+    self-contained HTML document to /tmp/artifact.html using the editor or shell.
+    Do not reply with prose, a plan, or the HTML in text. Write the file now.

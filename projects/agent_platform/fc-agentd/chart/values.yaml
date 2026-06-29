@@ -43,8 +43,9 @@ egress:
   # EGRESS_PORTS). Must list every upstream port a guest dials, since wildcard DNS
   # points all names at loopback and only these ports have a funnel listener:
   # 443 (OpenRouter + open web), 8080 (in-cluster model), 8000 (monolith artifact
-  # publish, ADR 024). 80 kept for plain-HTTP destinations.
-  funnelPorts: "80,443,8080,8000"
+  # publish, ADR 024), 4318 (SigNoz OTLP/HTTP for goose traces). 80 kept for
+  # plain-HTTP destinations.
+  funnelPorts: "80,443,8080,8000,4318"
   # Egress posture. "allow" (default) routes anywhere in or out of cluster, so the
   # agent can read random docs; secrets still only materialise at their egressTo
   # (6b), so the open path cannot leak a credential. Flip to "allowlist" to
@@ -76,6 +77,18 @@ egress:
       # The proven 6b gh flow: a default-tier guest holds the gh placeholder, which
       # the sidecar swaps for the real token only on api.github.com.
       GITHUB_TOKEN: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
+      # Auto-approve tool calls: the guest is a sandboxed, turn-capped, credential-
+      # isolated microVM, so the default smart_approve PermissionJudge (an extra LLM
+      # round-trip per mutating call, and a hang risk) buys nothing here.
+      GOOSE_MODE: auto
+      # Skip the LLM call goose makes just to name the session; pointless for
+      # ephemeral runs (and it was an observed extra OpenRouter call on the artifact
+      # tier). Sessions stay on (ADR 026 Phase 2 needs them); only the naming is off.
+      GOOSE_DISABLE_SESSION_NAMING: "true"
+      # Per-turn traces to SigNoz (OTLP/HTTP via the egress funnel) so prefill / tool
+      # / model latency sits next to vLLM metrics. goose defaults to OTLP/HTTP.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
+      OTEL_SERVICE_NAME: goose-coding
     artifact:
       # goose's NATIVE openrouter provider, not the generic openai-compatible one:
       # reasoning support is provider-specific in goose, and Gemini 3.5 Flash is a
@@ -115,6 +128,15 @@ egress:
       # = the Discord thread). Same in-cluster monolith reached via the egress
       # funnel; artifact tier only, so only artifact runs stream.
       PROGRESS_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress
+      # Auto-approve tool calls (sandboxed guest: no PermissionJudge round-trip),
+      # and skip the session-naming LLM call (an observed extra OpenRouter call;
+      # sessions stay on for ADR 026 Phase 2, only the naming is off).
+      GOOSE_MODE: auto
+      GOOSE_DISABLE_SESSION_NAMING: "true"
+      # Per-turn traces to SigNoz (OTLP/HTTP via the egress funnel) so we can see
+      # artifact-build TTFT / thinking / tool latency. goose defaults to OTLP/HTTP.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
+      OTEL_SERVICE_NAME: goosecracker-artifact
   # 6b CA: cert-manager generates + rotates the self-signed CA the sidecar uses to
   # mint leaf certs when it TLS-terminates a secret-bearing destination. Only
   # created when `secrets` below is non-empty.
