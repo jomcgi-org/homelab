@@ -344,7 +344,7 @@ func (l *Loop) envForThread(log *slog.Logger, t store.Thread) map[string]string 
 	env := l.envForTier(log, t.Tier)
 	// Copy first: envForTier may return the shared GooseEnv map, which must not be
 	// mutated (it is reused across threads).
-	out := make(map[string]string, len(env)+2)
+	out := make(map[string]string, len(env)+3)
 	for k, v := range env {
 		out[k] = v
 	}
@@ -363,6 +363,12 @@ func (l *Loop) envForThread(log *slog.Logger, t store.Thread) map[string]string 
 		out["ARTIFACT_ID"] = t.DiscordThread
 	}
 	out["OTEL_RESOURCE_ATTRIBUTES"] = attrs
+	// Resume mode (ADR 026 Phase 2): the guest restores the thread's persisted
+	// goose session + prior artifact and runs `goose run --resume` instead of a
+	// cold recipe build. Set per-thread (not per-tier) since only a reply resumes.
+	if t.Resume {
+		out["GOOSE_RESUME"] = "1"
+	}
 	return out
 }
 

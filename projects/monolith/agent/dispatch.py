@@ -59,6 +59,7 @@ def submit(
     branch: str = "main",
     discord_thread: str = "",
     tier: str = "",
+    resume: bool = False,
     arch: str = DEFAULT_ARCH,
     node: str = DEFAULT_NODE,
     ttl_secs: int = 86400,
@@ -75,6 +76,12 @@ def submit(
     (ADR 024): "artifact" reaches Gemini via OpenRouter (key swapped at egress),
     the default/empty tier reaches in-cluster Qwen. The tier also bounds which
     secret placeholders the guest holds, so it is the credential trust boundary.
+
+    ``resume`` (ADR 026 Phase 2) marks a goosecracker reply that should resume the
+    thread's persisted goose SESSION (restore the prior conversation + artifact and
+    run `goose run --resume`, Model A) instead of cold-rebuilding from the full
+    transcript (Model B). This is distinct from the ``thread_id`` argument above,
+    which wakes an IDLE snapshotted VM (ADR 022); resume runs on a fresh cold VM.
     """
     if thread_id:
         result = threads.request_resume(thread_id)
@@ -89,10 +96,10 @@ def submit(
                 INSERT INTO claude_agent.agent_threads
                     (thread_id, state, repo, branch, node, arch,
                      base_snapshot_ref, discord_thread, ttl_secs,
-                     recipe, task, tier)
+                     recipe, task, tier, resume)
                 VALUES (:id, 'PENDING', :repo, :branch, :node, :arch,
                         :base_ref, :discord_thread, :ttl,
-                        :recipe, :task, :tier)
+                        :recipe, :task, :tier, :resume)
                 """
             ),
             {
@@ -107,6 +114,7 @@ def submit(
                 "recipe": recipe,
                 "task": task,
                 "tier": tier,
+                "resume": resume,
             },
         )
         session.commit()

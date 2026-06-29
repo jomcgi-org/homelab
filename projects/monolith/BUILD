@@ -2597,6 +2597,44 @@ py_test(
     ],
 )
 
+# ADR 026 Phase 2: session DB storage + HTTP endpoints (goose resume on Discord
+# thread reply). session_router_test covers the three write_router endpoints and
+# verifies they are absent from read_router (full-monolith-only invariant).
+py_test(
+    name = "artifact_session_router_test",
+    srcs = ["artifact/session_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "artifact_session_s3_test",
+    srcs = ["artifact/session_s3_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//pytest",
+    ],
+)
+
+# ADR 026 Phase 2 Task 2.5: session eviction batch job handler.
+py_test(
+    name = "artifact_jobs_test",
+    srcs = ["artifact/jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//pytest",
+    ],
+)
+
 # Hand-registered (chat_public is gazelle-excluded): opt-in read-only transcript
 # snapshots ("share this chat"): server-side mint from the stored transcript,
 # round-trip via the read route, empty-transcript -> 400, missing -> 404.

@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -96,7 +97,7 @@ func run(logger *slog.Logger) error {
 	// Determine the work. A raw FC boot gives PID 1 no env, so the task arrives
 	// over vsock (Hello -> Assign). Fall back to env/argv when there is no
 	// controller (tests, a warm-base probe with no task yet).
-	harnessArgv := assignedHarness(logger, conn, threadID)
+	recipe, task, harnessArgv := assignedHarness(logger, conn, threadID)
 	if harnessArgv == nil {
 		harnessArgv = harnessCommand()
 	}
@@ -111,6 +112,25 @@ func run(logger *slog.Logger) error {
 	if conn != nil {
 		installGuestCA(logger)
 		setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"), det)
+	}
+
+	// Stateful artifact iteration (ADR 026 Phase 2). The egress funnel is now up,
+	// so the guest can reach the monolith. When the controller marks this run a
+	// resume (GOOSE_RESUME=1 for a Discord-thread reply), fetch the thread's prior
+	// goose session + artifact and re-run goose with --resume so it edits the
+	// existing file off the full conversation instead of rebuilding from scratch.
+	// If the session is missing/unfetchable, fall back to the cold recipe command
+	// assignedHarness already built (Model B safety net).
+	if conn != nil && os.Getenv("GOOSE_RESUME") == "1" {
+		if sessionName := os.Getenv("ARTIFACT_ID"); sessionName != "" {
+			if restoreSession(logger) {
+				restoreArtifact(logger)
+				harnessArgv = harness.GooseCommand(harness.Config{SessionName: sessionName, Resume: true, Task: task})
+				logger.Info("resuming goose session", "session", sessionName)
+			} else {
+				logger.Warn("resume requested but no stored session; cold fallback", "session", sessionName, "recipe", recipe)
+			}
+		}
 	}
 
 	// Live progress stream (ADR 024): tee goose's stdout/stderr to the monolith so
@@ -157,6 +177,10 @@ func run(logger *slog.Logger) error {
 		// guest console which the PID-1-exit kernel panic truncates) and yields the
 		// URL for the Done result. No-op when ARTIFACT_PUBLISH_URL is unset.
 		artifactURL := publishArtifact(logger)
+		// Persist goose's session DB so the next reply on this thread can resume it
+		// (ADR 026 Phase 2). goose has exited, so the SQLite file is checkpointed and
+		// consistent. No-op when the session/ARTIFACT_ID env is unset.
+		publishSession(logger)
 		// Flush any tail output and tell the bot the build is done so it stops the
 		// live edit (the link itself arrives via the Done -> outbox path below).
 		if pw != nil {
@@ -178,27 +202,29 @@ func run(logger *slog.Logger) error {
 }
 
 // assignedHarness performs the control-channel handshake: announce Hello, wait
-// for the controller's Assign, and build the harness command from it. Returns
-// nil if there is no controller or no usable assignment, so the caller falls
-// back to env/argv.
-func assignedHarness(logger *slog.Logger, conn *vsockproto.Conn, threadID string) []string {
+// for the controller's Assign, apply its env, and build the (cold) harness
+// command, also returning the recipe and task so run() can rebuild the command
+// as a session resume once the egress funnel is up (ADR 026 Phase 2 needs the
+// network to fetch the prior session). A nil argv means no controller / no
+// usable assignment, so the caller falls back to env/argv.
+func assignedHarness(logger *slog.Logger, conn *vsockproto.Conn, threadID string) (recipe, task string, argv []string) {
 	if conn == nil {
-		return nil
+		return "", "", nil
 	}
 	if err := conn.Send(vsockproto.Message{Kind: vsockproto.KindHello, ThreadID: threadID}); err != nil {
 		logger.Warn("failed to announce hello", "err", err)
-		return nil
+		return "", "", nil
 	}
 	// Blocking read: the controller replies with Assign immediately after Hello.
 	// This is the only reader until serveControl starts, so there is no race.
 	msg, err := conn.Recv()
 	if err != nil {
 		logger.Warn("failed to receive task assignment", "err", err)
-		return nil
+		return "", "", nil
 	}
 	if msg.Kind != vsockproto.KindAssign {
 		logger.Warn("expected task assignment, got other message", "kind", string(msg.Kind))
-		return nil
+		return "", "", nil
 	}
 	// Apply the controller-injected harness env (goose provider/model + the
 	// in-cluster model base URL): cluster config the guest cannot hardcode.
@@ -206,7 +232,11 @@ func assignedHarness(logger *slog.Logger, conn *vsockproto.Conn, threadID string
 		_ = os.Setenv(k, v)
 	}
 	logger.Info("task assignment received", "recipe", msg.Recipe, "env_keys", len(msg.Env))
-	return harness.GooseCommand(harness.Config{Recipe: msg.Recipe, Task: msg.Task})
+	// Name the session for the Discord thread (= ARTIFACT_ID) on the cold build so
+	// a later reply can --resume it (ADR 026 Phase 2). Resume itself is wired in
+	// run() after the funnel is up.
+	argv = harness.GooseCommand(harness.Config{Recipe: msg.Recipe, Task: msg.Task, SessionName: os.Getenv("ARTIFACT_ID")})
+	return msg.Recipe, msg.Task, argv
 }
 
 // serveControl handles host->guest messages: on a wake, reconnect then ack.
@@ -549,6 +579,135 @@ func publishArtifact(logger *slog.Logger) string {
 	_ = json.Unmarshal(respBody, &out)
 	logger.Info("artifact: published", "url", out.URL, "version", out.Version, "html_bytes", len(html))
 	return out.URL
+}
+
+// sessionDBPath is goose's SQLite session store (ADR 026 Phase 2). goose names it
+// under HOME, which fc-agent-init anchors at /home/goose-agent (the harness image
+// user). Persisting + restoring this single file is what makes a thread's
+// conversation portable across fresh microVMs (validated in the 2.1 spike).
+func sessionDBPath() string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = "/home/goose-agent"
+	}
+	return filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db")
+}
+
+// artifactBaseURL is the per-thread artifact path on the monolith, derived from
+// the publish URL (.../internal/artifact) plus ARTIFACT_ID, so the guest needs no
+// extra env to reach the session (/session) and prior page (/raw) endpoints.
+// Returns "" when either is unset.
+func artifactBaseURL() string {
+	base := strings.TrimRight(os.Getenv("ARTIFACT_PUBLISH_URL"), "/")
+	id := os.Getenv("ARTIFACT_ID")
+	if base == "" || id == "" {
+		return ""
+	}
+	return base + "/" + id
+}
+
+// restoreSession fetches the thread's persisted goose session DB from the monolith
+// and writes it into goose's sessions dir, so the upcoming `goose run --resume`
+// replays the full prior conversation (ADR 026 Phase 2). Returns false when there
+// is no stored session (first reply after a session TTL eviction, or a cold
+// thread), so the caller falls back to a cold build.
+func restoreSession(logger *slog.Logger) bool {
+	base := artifactBaseURL()
+	if base == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(base + "/session")
+	if err != nil {
+		logger.Warn("session: fetch failed; cold fallback", "err", err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		logger.Info("session: none stored for thread; cold fallback")
+		return false
+	}
+	if resp.StatusCode != http.StatusOK {
+		logger.Warn("session: fetch non-OK; cold fallback", "status", resp.StatusCode)
+		return false
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Warn("session: read body failed; cold fallback", "err", err)
+		return false
+	}
+	dst := sessionDBPath()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		logger.Warn("session: mkdir failed; cold fallback", "err", err)
+		return false
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		logger.Warn("session: write failed; cold fallback", "err", err)
+		return false
+	}
+	logger.Info("session: restored", "path", dst, "bytes", len(data))
+	return true
+}
+
+// restoreArtifact fetches the thread's prior published HTML into /tmp/artifact.html
+// so the resumed goose run edits the existing page in place rather than starting
+// from a blank file. Best-effort: a missing prior artifact is not fatal (goose can
+// rewrite it from the conversation), so failures are logged, not propagated.
+func restoreArtifact(logger *slog.Logger) {
+	base := artifactBaseURL()
+	if base == "" {
+		return
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(base + "/raw")
+	if err != nil {
+		logger.Warn("session: prior artifact fetch failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logger.Info("session: no prior artifact to restore", "status", resp.StatusCode)
+		return
+	}
+	html, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		logger.Warn("session: prior artifact read failed", "err", err)
+		return
+	}
+	if err := os.WriteFile(artifactFile, html, 0o644); err != nil {
+		logger.Warn("session: prior artifact write failed", "err", err)
+		return
+	}
+	logger.Info("session: prior artifact restored", "path", artifactFile, "bytes", len(html))
+}
+
+// publishSession ships goose's session DB to the monolith after the run so the
+// next reply on this thread can resume it (ADR 026 Phase 2). goose has exited by
+// now, so the SQLite file is checkpointed and consistent. No-op when the artifact
+// env is unset (non-artifact tier) or goose wrote no session.
+func publishSession(logger *slog.Logger) {
+	base := artifactBaseURL()
+	if base == "" {
+		return
+	}
+	data, err := os.ReadFile(sessionDBPath())
+	if err != nil {
+		logger.Info("session: nothing to publish", "path", sessionDBPath(), "err", err)
+		return
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(base+"/session", "application/octet-stream", bytes.NewReader(data))
+	if err != nil {
+		logger.Error("session: publish request failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		logger.Error("session: publish non-OK", "status", resp.StatusCode, "body", string(body))
+		return
+	}
+	logger.Info("session: published", "bytes", len(data))
 }
 
 // ansiRE matches the ANSI escape sequences goose writes for colour/formatting, so

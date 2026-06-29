@@ -96,7 +96,9 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     via ``asyncio.to_thread``.
     """
     from agent.api import submit
+    from artifact import s3
 
+    message = message.strip()
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
         if row is None:
@@ -106,6 +108,26 @@ def continue_session(thread_id: str, message: str) -> dict | None:
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
         session.commit()
+
+    # ADR 026 Phase 2: if a persisted goose session exists for this thread, resume
+    # it (Model A) - send only the new reply; the guest restores the session + the
+    # prior artifact and `goose run --resume` edits the page in place, hitting the
+    # inference prefix cache. Otherwise cold-rebuild from the FULL transcript
+    # (Model B), which also seeds the session for next time. The S3 check is the
+    # primary fallback gate (Task 2.4): no stored session -> cold, never a failure.
+    has_session = False
+    try:
+        has_session = s3.head_session(thread_id) is not None
+    except Exception:
+        logger.exception("goosecracker: session existence check failed; cold rebuild")
+    if has_session:
+        return submit(
+            message,
+            recipe=ARTIFACT_RECIPE,
+            tier=ARTIFACT_TIER,
+            discord_thread=thread_id,
+            resume=True,
+        )
     return submit(
         transcript,
         recipe=ARTIFACT_RECIPE,
