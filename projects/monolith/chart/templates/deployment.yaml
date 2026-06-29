@@ -140,11 +140,16 @@ spec:
               value: {{ .Values.agent.discord.defaultServerId | quote }}
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
               value: {{ .Values.agent.discord.defaultChannelId | quote }}
-            # Owner allowlist for /goosecracker (ADR 024 Task 4). A Discord user
-            # id is not a secret, so it is a plain value. Empty fails closed: the
-            # gate rejects everyone until set.
+            # Owner allowlist for /goosecracker (ADR 024 Task 4). Synced from the
+            # discord-bot 1Password item into monolith-chat-secrets (alongside the
+            # bot token); the gate fails closed if absent. Sourced from the secret
+            # rather than a plain value so it is managed in one place with the bot
+            # credentials.
             - name: OWNER_DISCORD_USER_ID
-              value: {{ .Values.agent.discord.ownerUserId | default "" | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-chat-secrets
+                  key: OWNER_DISCORD_USER_ID
             - name: SIGNOZ_URL
               value: {{ .Values.agent.signoz.url | quote }}
             {{- end }}
