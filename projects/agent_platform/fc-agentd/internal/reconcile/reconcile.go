@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/control"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
@@ -222,12 +224,26 @@ func (l *Loop) createPending(ctx context.Context, log *slog.Logger) {
 		if t.BaseSnapshotRef != "" {
 			spec.BaseSnapshotRef = substrate.SnapshotRef{ID: t.BaseSnapshotRef, Node: t.Node, Arch: t.Arch, Base: true}
 		}
-		h, err := l.Executor.Claim(ctx, spec)
+		// Span the cold-start launch (rootfs provision + firecracker boot happen
+		// inside Claim, each its own child span). Stamped with thread.id so it
+		// correlates with goose's own spans (which carry thread.id via
+		// OTEL_RESOURCE_ATTRIBUTES; goose ignores inbound traceparent, ADR 026).
+		lctx, span := tracer.Start(ctx, "agent.thread.launch")
+		span.SetAttributes(
+			attribute.String("thread.id", t.ThreadID),
+			attribute.String("tier", t.Tier),
+			attribute.String("recipe", t.Recipe),
+		)
+		h, err := l.Executor.Claim(lctx, spec)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "claim failed")
+			span.End()
 			log.Error("reconcile: claim pending thread", "thread", t.ThreadID, "err", err)
 			_ = l.Registry.SetState(ctx, t.ThreadID, substrate.StateFailed)
 			continue
 		}
+		span.End()
 		l.live[t.ThreadID] = h
 		if err := l.Registry.SetState(ctx, t.ThreadID, substrate.StateRunning); err != nil {
 			log.Error("reconcile: mark running", "thread", t.ThreadID, "err", err)
@@ -302,16 +318,27 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 // ARTIFACT_PUBLISH_URL, so fc-agent-init's publish is a no-op).
 func (l *Loop) envForThread(log *slog.Logger, t store.Thread) map[string]string {
 	env := l.envForTier(log, t.Tier)
-	if t.DiscordThread == "" {
-		return env
-	}
 	// Copy first: envForTier may return the shared GooseEnv map, which must not be
 	// mutated (it is reused across threads).
-	out := make(map[string]string, len(env)+1)
+	out := make(map[string]string, len(env)+2)
 	for k, v := range env {
 		out[k] = v
 	}
-	out["ARTIFACT_ID"] = t.DiscordThread
+	// Correlate goose's spans with the dispatcher's launch trace. goose ignores an
+	// inbound traceparent (ADR 026), so instead we stamp thread.id as an OTEL
+	// resource attribute that goose carries on every span; querying SigNoz by
+	// thread.id then shows the launch/provision/boot spans and the goose turn
+	// together. Composes with the tier's OTEL_SERVICE_NAME / endpoint.
+	tier := t.Tier
+	if tier == "" {
+		tier = "default"
+	}
+	attrs := "thread.id=" + t.ThreadID + ",tier=" + tier
+	if t.DiscordThread != "" {
+		attrs += ",discord.thread=" + t.DiscordThread
+		out["ARTIFACT_ID"] = t.DiscordThread
+	}
+	out["OTEL_RESOURCE_ATTRIBUTES"] = attrs
 	return out
 }
 
