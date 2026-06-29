@@ -194,6 +194,45 @@ func (s *Store) EnqueueDiscordOutbox(ctx context.Context, channelID, content str
 	return nil
 }
 
+// ListenPending subscribes to the agent_threads_pending NOTIFY channel and calls
+// onNotify for each notification, so the reconcile loop can wake immediately on a
+// new PENDING thread instead of waiting for the next poll tick (ADR 026 Task
+// 1.2). It holds one dedicated connection out of the pool for the lifetime of
+// the listen and reconnects with a short backoff on error, returning only when
+// ctx is cancelled. The 5s reconcile poll remains the safety net, so a dropped
+// notification merely delays a claim to the next tick, it never loses one.
+func (s *Store) ListenPending(ctx context.Context, onNotify func()) error {
+	for ctx.Err() == nil {
+		if err := s.listenOnce(ctx, "agent_threads_pending", onNotify); err != nil && ctx.Err() == nil {
+			// Back off before reconnecting so a flapping DB cannot hot-loop.
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+		}
+	}
+	return ctx.Err()
+}
+
+// listenOnce holds one pooled connection, LISTENs, and dispatches notifications
+// until the connection or context fails.
+func (s *Store) listenOnce(ctx context.Context, channel string, onNotify func()) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire listen conn: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "LISTEN "+channel); err != nil {
+		return fmt.Errorf("store: LISTEN %s: %w", channel, err)
+	}
+	for {
+		if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+			return err
+		}
+		onNotify()
+	}
+}
+
 // Delete removes a thread row (GC/reclaim, after its bundle is deleted).
 func (s *Store) Delete(ctx context.Context, threadID string) error {
 	_, err := s.pool.Exec(ctx,

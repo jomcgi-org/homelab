@@ -62,6 +62,8 @@ func run(logger *slog.Logger) error {
 		KernelImagePath: cfg.KernelImagePath,
 		RootfsPath:      cfg.RootfsPath,
 		BaseRootfsPath:  cfg.BaseRootfsPath,
+		Provisioner:     cfg.RootfsProvisioner,
+		ThinPool:        cfg.ThinPool,
 		HarnessInit:     cfg.HarnessInit,
 		VCPUs:           cfg.GuestVCPUs,
 		MemMib:          cfg.GuestMemMib,
@@ -91,6 +93,26 @@ func run(logger *slog.Logger) error {
 		defer st.Close()
 		loop.Registry = st
 		logger.Info("connected to agent_threads registry")
+
+		// Event-driven dispatch (ADR 026 Task 1.2): wake the reconcile loop the
+		// instant a PENDING thread is submitted (Postgres LISTEN/NOTIFY), instead of
+		// waiting out the 5s poll. The poll stays as the safety net, so this only
+		// accelerates claims. Buffered depth 1 + non-blocking send coalesces a burst
+		// of notifications into a single pending wake.
+		wake := make(chan struct{}, 1)
+		loop.Wake = wake
+		go func() {
+			notify := func() {
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
+			}
+			if err := st.ListenPending(ctx, notify); err != nil && ctx.Err() == nil {
+				logger.Warn("pending-thread listener exited; falling back to poll only", "err", err)
+			}
+		}()
+		logger.Info("event-driven dispatch enabled (LISTEN agent_threads_pending)")
 	} else {
 		logger.Warn("DATABASE_URL not set; running reconcile loop in dry-run mode")
 	}

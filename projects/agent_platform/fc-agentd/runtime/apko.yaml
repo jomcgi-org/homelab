@@ -1,0 +1,21 @@
+# Runtime base image for fc-agentd (ADR 022/023/026). Provides dmsetup (lvm2),
+# dd + blockdev (busybox/util-linux), and ca-certificates so the controller can
+# manage device-mapper thin-pools without a separate privileged initContainer.
+# No entrypoint: go_image sets it via OCI append.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+    - lvm2
+    - util-linux
+
+archs:
+  - x86_64
+  - aarch64
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
