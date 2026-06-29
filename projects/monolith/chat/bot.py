@@ -287,8 +287,12 @@ class ChatBot(discord.Client):
     ) -> None:
         """Owner-gated /goosecracker: open a thread and dispatch the first run."""
         if not goosecracker.is_owner(interaction.user.id):
+            # Defer first: the roast hits the qwen model (with retries), which
+            # routinely exceeds Discord's 3s initial-response deadline. Without
+            # the defer the interaction 404s and the roast never lands.
+            await interaction.response.defer(ephemeral=True)
             roast = await goosecracker.build_roast(prompt)
-            await interaction.response.send_message(roast, ephemeral=True)
+            await interaction.followup.send(roast, ephemeral=True)
             return
 
         channel = interaction.channel

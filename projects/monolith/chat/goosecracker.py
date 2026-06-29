@@ -21,7 +21,6 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session
 
-from agent import api as agent_api
 from app.db import get_engine
 from chat.models import GoosecrackerSession
 
@@ -69,15 +68,24 @@ def start_session(thread_id: str, prompt: str) -> dict:
     the dispatch result (``thread_id`` + ``action``).
     """
     prompt = prompt.strip()
-    with Session(get_engine()) as session:
-        session.add(GoosecrackerSession(discord_thread=thread_id, transcript=prompt))
-        session.commit()
-    return agent_api.submit(
+    # Imported lazily (not at module load): chat.bot imports this module, and
+    # agent.api -> agent.notify -> chat.bot, so a module-level import would close
+    # a circular import. agent.api is the boundary-approved surface.
+    from agent.api import submit
+
+    # Dispatch first: if submit raises, no session row is left behind (which
+    # would otherwise make later replies look like a live goosecracker thread
+    # with no backing run).
+    result = submit(
         prompt,
         recipe=ARTIFACT_RECIPE,
         tier=ARTIFACT_TIER,
         discord_thread=thread_id,
     )
+    with Session(get_engine()) as session:
+        session.add(GoosecrackerSession(discord_thread=thread_id, transcript=prompt))
+        session.commit()
+    return result
 
 
 def continue_session(thread_id: str, message: str) -> dict | None:
@@ -87,6 +95,8 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     thread (so the caller can fall through to normal handling). Synchronous; call
     via ``asyncio.to_thread``.
     """
+    from agent.api import submit
+
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
         if row is None:
@@ -96,7 +106,7 @@ def continue_session(thread_id: str, message: str) -> dict | None:
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
         session.commit()
-    return agent_api.submit(
+    return submit(
         transcript,
         recipe=ARTIFACT_RECIPE,
         tier=ARTIFACT_TIER,
