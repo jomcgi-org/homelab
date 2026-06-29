@@ -2,9 +2,12 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -579,5 +582,57 @@ func TestEnvForThread(t *testing.T) {
 	}
 	if _, ok := def["ARTIFACT_ID"]; ok {
 		t.Fatalf("non-Discord thread must not carry ARTIFACT_ID: %v", def)
+	}
+}
+
+func TestPostProgressDoneSendsDoneMarker(t *testing.T) {
+	var got struct {
+		body []byte
+		ct   string
+		hits int
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.hits++
+		got.ct = r.Header.Get("Content-Type")
+		got.body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	postProgressDone(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), srv.URL, "12345")
+
+	if got.hits != 1 {
+		t.Fatalf("want 1 request, got %d", got.hits)
+	}
+	if got.ct != "application/json" {
+		t.Fatalf("content-type = %q", got.ct)
+	}
+	var payload struct {
+		ID   string `json:"id"`
+		Done bool   `json:"done"`
+	}
+	if err := json.Unmarshal(got.body, &payload); err != nil {
+		t.Fatalf("unmarshal body %q: %v", got.body, err)
+	}
+	if payload.ID != "12345" || !payload.Done {
+		t.Fatalf("payload = %+v, want id=12345 done=true", payload)
+	}
+}
+
+func TestPostProgressDoneNoopWhenUnconfigured(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+	}))
+	defer srv.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// No artifact id (non-Discord thread): must not post.
+	postProgressDone(context.Background(), log, srv.URL, "")
+	// No url (tier without PROGRESS_PUBLISH_URL): must not post.
+	postProgressDone(context.Background(), log, "", "12345")
+
+	if hits != 0 {
+		t.Fatalf("want 0 requests when unconfigured, got %d", hits)
 	}
 }

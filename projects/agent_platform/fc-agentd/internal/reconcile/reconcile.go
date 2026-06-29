@@ -7,8 +7,11 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -290,7 +293,12 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	cctx, cancel := context.WithCancel(ctx)
 	l.control[t.ThreadID] = cancel
 	uds := l.ControlUDS(t.ThreadID)
-	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: l.envForThread(log, t)}
+	threadEnv := l.envForThread(log, t)
+	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: threadEnv}
+	// The endpoint that flips the Discord build message to its terminal state
+	// (same one the guest streams to); captured here so OnDone can close the
+	// message even when the guest could not (see postProgressDone).
+	progressURL := threadEnv["PROGRESS_PUBLISH_URL"]
 	// Forward the guest's vsock egress to the secret-free sidecar (ADR 023).
 	if l.EgressSidecar != "" {
 		go func() {
@@ -314,6 +322,13 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 			if err := l.Registry.SetState(ctx, threadID, substrate.StateCompleted); err != nil {
 				log.Error("reconcile: mark completed on done", "thread", threadID, "err", err)
 			}
+			// Close the live build message (ADR 024 Option A). fc-agent-init also
+			// sends this on a clean guest exit, but cannot when the VM is torn down
+			// before goose returns (supersede / failure); OnDone always fires, so
+			// emitting it here stops the bot live-editing instead of spinning to its
+			// safety timeout. Keyed by the Discord thread id (== the progress id);
+			// a no-op for non-Discord threads.
+			postProgressDone(ctx, log, progressURL, t.DiscordThread)
 			// Surface the result back to the Discord thread that triggered the run
 			// (ADR 024 Task 5). Only when there is an artifact URL to share, so a
 			// non-artifact thread that happens to carry a discord_thread is not spammed
@@ -331,6 +346,41 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 			log.Warn("reconcile: control server exited", "thread", t.ThreadID, "err", err)
 		}
 	}()
+}
+
+// progressDoneClient posts the build-done marker. Short timeout: the call is
+// best-effort and must never hold up the reconcile loop.
+var progressDoneClient = &http.Client{Timeout: 10 * time.Second}
+
+// postProgressDone marks a goosecracker run complete on the monolith's progress
+// endpoint (POST {id, done:true}), so the Discord bot stops live-editing the
+// "Building your artifact" message and flips it to its terminal state. This is
+// the same marker fc-agent-init sends on a clean guest exit; the reconciler
+// sends it too because it observes every terminal transition, including the ones
+// where the guest never gets to (the VM is reclaimed before goose returns). Both
+// senders are idempotent (done is a sticky flag), so a double-send is harmless.
+// Best-effort: on any error the message just falls back to the bot's safety
+// timeout, so failures are logged at debug and never propagated.
+func postProgressDone(ctx context.Context, log *slog.Logger, url, artifactID string) {
+	if url == "" || artifactID == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"id": artifactID, "done": true})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		log.Debug("reconcile: build progress-done request", "id", artifactID, "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := progressDoneClient.Do(req)
+	if err != nil {
+		log.Debug("reconcile: post progress-done failed", "id", artifactID, "err", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // envForThread is the per-thread guest env: the tier env (envForTier) plus a
