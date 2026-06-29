@@ -215,6 +215,7 @@ func (l *Loop) reconcileOnce(ctx context.Context, log *slog.Logger) {
 	l.restoreWakeRequested(ctx, log)
 	l.adoptOrphanedRunning(ctx, log)
 	l.reclaimCompleted(ctx, log)
+	l.reclaimFailed(ctx, log)
 	l.gcIdleExpired(ctx, log)
 }
 
@@ -525,6 +526,41 @@ func (l *Loop) reclaimCompleted(ctx context.Context, log *slog.Logger) {
 			}
 			delete(l.live, t.ThreadID)
 		}
+		l.reclaimBundleAndRow(ctx, log, t.ThreadID)
+	}
+}
+
+// failedRetention is how long a FAILED thread is kept before reclaim: a brief
+// window to inspect why it failed (the reason is also in the daemon logs) before
+// its bundle + copy-on-write rootfs device are released. Deliberately far shorter
+// than the IDLE ttl_secs, which preserves a resumable snapshot for up to a day: a
+// FAILED thread is terminal with nothing to resume, so the only thing the wait
+// buys is observability, while the device it may have provisioned keeps stranding.
+const failedRetention = 5 * time.Minute
+
+// reclaimFailed releases the microVM and deletes the bundle + row for FAILED
+// threads past failedRetention. FAILED is otherwise never reclaimed (the loop only
+// handles COMPLETED and idle-expired IDLE), so a thread that fails AFTER
+// provisioning leaks its CoW rootfs device on the node forever, since only
+// RemoveBundle (reclaimBundleAndRow) tears that device down. This closes that leak
+// without touching the long IDLE TTL.
+func (l *Loop) reclaimFailed(ctx context.Context, log *slog.Logger) {
+	threads, err := l.Registry.ListByStateForNode(ctx, l.Node, substrate.StateFailed)
+	if err != nil {
+		log.Error("reconcile: list failed", "err", err)
+		return
+	}
+	for _, t := range threads {
+		if time.Since(t.LastActiveAt) < failedRetention {
+			continue // keep briefly for inspection
+		}
+		if h, ok := l.live[t.ThreadID]; ok {
+			if err := l.Executor.Release(ctx, h); err != nil {
+				log.Error("reconcile: release failed", "thread", t.ThreadID, "err", err)
+			}
+			delete(l.live, t.ThreadID)
+		}
+		log.Info("reconcile: reclaim FAILED thread", "thread", t.ThreadID, "age", time.Since(t.LastActiveAt).String())
 		l.reclaimBundleAndRow(ctx, log, t.ThreadID)
 	}
 }

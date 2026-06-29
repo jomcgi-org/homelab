@@ -432,6 +432,44 @@ func TestReconcileReclaimsCompleted(t *testing.T) {
 	}
 }
 
+func TestReconcileReclaimsFailedPastRetention(t *testing.T) {
+	// A thread that failed after provisioning has a CoW device; once past the
+	// short retention window the loop must release the bundle + delete the row.
+	reg := newFakeRegistry(store.Thread{
+		ThreadID: "t1", State: substrate.StateFailed, Node: "node-4",
+		LastActiveAt: time.Now().Add(-failedRetention - time.Minute),
+	})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.reconcileOnce(context.Background(), testLogger())
+
+	if len(ex.removed) != 1 || ex.removed[0] != "t1" {
+		t.Fatalf("removed = %v, want [t1] (FAILED past retention should be reclaimed)", ex.removed)
+	}
+	if reg.state("t1") != "GONE" {
+		t.Fatalf("reclaimed FAILED thread row should be deleted, got %q", reg.state("t1"))
+	}
+}
+
+func TestReconcileKeepsRecentlyFailed(t *testing.T) {
+	// A just-failed thread is kept for the retention window so the failure stays
+	// inspectable; it must not be reclaimed yet.
+	reg := newFakeRegistry(store.Thread{
+		ThreadID: "t1", State: substrate.StateFailed, Node: "node-4",
+		LastActiveAt: time.Now(),
+	})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.reconcileOnce(context.Background(), testLogger())
+
+	if len(ex.removed) != 0 {
+		t.Fatalf("removed = %v, want [] (recently FAILED should be kept within retention)", ex.removed)
+	}
+	if reg.state("t1") != substrate.StateFailed {
+		t.Fatalf("recently FAILED thread should remain FAILED, got %q", reg.state("t1"))
+	}
+}
+
 func TestReconcileGCsIdleExpired(t *testing.T) {
 	reg := newFakeRegistry(store.Thread{
 		ThreadID: "t1", State: substrate.StateIdle, Node: "node-4",
