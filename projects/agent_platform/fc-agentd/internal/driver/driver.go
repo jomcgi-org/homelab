@@ -186,6 +186,26 @@ func (d *Driver) VsockUDSPath(threadID string) string {
 	return filepath.Join(d.threadDir(threadID), "vsock.sock")
 }
 
+// removeStaleVsockUDS unlinks any leftover vsock unix-domain socket before a
+// (re)launch. Firecracker *binds* the vsock UDS on PUT /vsock, and bind() fails
+// with EADDRINUSE when the path already exists. A thread's bundle dir lives on
+// the persistent snapshot disk, so a vsock.sock from a previous incarnation
+// survives a daemon/pod restart and makes orphan recovery loop on a 400 until it
+// exhausts retries and marks the thread FAILED. The launcher already clears the
+// API socket; the vsock UDS and its per-port children (<uds>_<port>, created once
+// the guest connects) are not, so clear them here.
+func (d *Driver) removeStaleVsockUDS(threadID string) {
+	vsock := d.VsockUDSPath(threadID)
+	_ = os.Remove(vsock)
+	matches, err := filepath.Glob(vsock + "_*")
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
 // bootArgs is the kernel command line. When HarnessInit is set it appends
 // init=<path> so the guest boots straight into fc-agent-init (raw FC boot does
 // not honour the OCI image entrypoint).
@@ -217,6 +237,9 @@ func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sock
 	}
 	sock := filepath.Join(dir, sockName)
 	_ = os.Remove(sock)
+	// A restored snapshot re-binds the vsock UDS from its embedded config; clear
+	// any stale socket first so the resume does not fail on EADDRINUSE.
+	d.removeStaleVsockUDS(threadID)
 	vmID := newID("vm")
 
 	proc, err := d.launcher.Launch(ctx, vmID, sock)
@@ -265,6 +288,9 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
 	}
+	// Clear a stale vsock UDS left by a prior incarnation so PUT /vsock can bind
+	// (see removeStaleVsockUDS): the bundle dir persists across daemon restarts.
+	d.removeStaleVsockUDS(threadID)
 	sock := filepath.Join(dir, "api.sock")
 	vmID := newID("vm")
 
