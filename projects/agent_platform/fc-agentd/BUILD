@@ -1,7 +1,16 @@
 # gazelle:ignore
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
+
+# Wolfi's lvm2 ships only the statically-linked `dmsetup.static` (no plain
+# `dmsetup`), so symlink the conventional name onto PATH; the provisioner execs
+# "dmsetup". Arch-independent (a symlink), so a plain tar layer for both arches.
+pkg_tar(
+    name = "dmsetup_symlink_tar",
+    symlinks = {"/usr/local/bin/dmsetup": "/sbin/dmsetup.static"},
+)
 
 # Firecracker snapshot/restore controller (ADR 022) container image. Built as an
 # apko image (Wolfi base with dmsetup/lvm2 + util-linux) rather than the default
@@ -43,4 +52,5 @@ apko_image(
     contents = "@fc_agentd_lock//:contents",
     multiarch_tars = [":fc_agentd_tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd",
+    tars = [":dmsetup_symlink_tar"],
 )
