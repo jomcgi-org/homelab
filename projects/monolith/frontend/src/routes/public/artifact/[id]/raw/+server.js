@@ -6,12 +6,15 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
 // /artifact/<id>/raw (rerouted from jomcgi.dev/artifact/<id>/raw via the
 // apex->public prefix rule in hooks.js); this handler fetches the HTML
 // server-side from the backend's /internal/artifact/<id>/raw endpoint and
-// forwards it with a strict Content-Security-Policy. The artifact is always
-// rendered inside a sandboxed <iframe sandbox="allow-scripts"> in +page.svelte
-// so the CSP is a defense-in-depth layer, not the primary sandbox boundary.
-// The browser never calls the backend directly.
+// forwards it with a Content-Security-Policy. The artifact is always rendered
+// inside a sandboxed <iframe sandbox="allow-scripts"> in +page.svelte, and that
+// opaque origin (no allow-same-origin) is the boundary that protects our origin;
+// the CSP is deliberately open to the https web (CDN libs, fonts, live API fetch)
+// so artifacts behave like normal pages. Keep this fallback byte-identical to the
+// backend `_ARTIFACT_CSP` (artifact/router.py); it only applies if the backend
+// response carries no CSP header. The browser never calls the backend directly.
 const CSP_FALLBACK =
-  "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+  "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src data: blob: https:; font-src data: https:; connect-src https:; form-action 'none'; base-uri 'none'";
 
 export async function GET({ params, fetch }) {
   const res = await fetch(

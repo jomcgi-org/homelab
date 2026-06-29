@@ -76,19 +76,22 @@ def test_publish_rejects_oversized_html(client: TestClient):
     assert resp.status_code == 413
 
 
-def test_raw_serves_html_with_strict_csp(client: TestClient):
+def test_raw_serves_html_with_sandboxed_csp(client: TestClient):
     client.post("/internal/artifact", json={"id": "demo", "html": "<h1>hello</h1>"})
     resp = client.get("/internal/artifact/demo/raw")
     assert resp.status_code == 200
     assert resp.text == "<h1>hello</h1>"
     assert resp.headers["content-type"].startswith("text/html")
     csp = resp.headers["content-security-policy"]
-    # The artifact tier security invariant (ADR 024 decision 4): sandboxed, no
-    # ambient authority, no beaconing. A regression here re-exposes the origin.
+    # The artifact tier security invariant (ADR 024 decision 4 + 2026-06-29
+    # amendment): the opaque-origin sandbox is the boundary that protects our
+    # origin and must never regress. The CSP is intentionally open to the https
+    # web (CDN libs, fonts, live API fetch) so artifacts behave like normal pages.
     assert "sandbox allow-scripts" in csp
-    assert "allow-same-origin" not in csp
+    assert "allow-same-origin" not in csp  # never re-grant the real origin
     assert "default-src 'none'" in csp
-    assert "connect-src 'none'" in csp
+    assert "connect-src https:" in csp  # live data / API refresh allowed
+    assert "http:" not in csp  # https only: no plaintext / LAN-probe downgrade
     assert resp.headers["cache-control"] == "no-store"
 
 
