@@ -128,7 +128,16 @@ func run(logger *slog.Logger) error {
 				harnessArgv = harness.GooseCommand(harness.Config{SessionName: sessionName, Resume: true, Task: task})
 				logger.Info("resuming goose session", "session", sessionName)
 			} else {
-				logger.Warn("resume requested but no stored session; cold fallback", "session", sessionName, "recipe", recipe)
+				// The session could not be fetched even though the monolith's gate
+				// said one exists (evicted in the seconds-wide window after that
+				// check, or a transient S3 error). Keep the cold recipe command
+				// assignedHarness built; note that its task is the reply only (not the
+				// full transcript), so this rare path produces a context-light
+				// rebuild rather than a true Model-B rebuild. Accepted: the window is
+				// tiny against a 30-day session TTL and the next reply self-heals
+				// once a session is re-shipped. The full-transcript Model-B path is
+				// the monolith-layer fallback (no session -> submit(transcript)).
+				logger.Warn("resume requested but session unfetchable; reply-only cold fallback", "session", sessionName, "recipe", recipe)
 			}
 		}
 	}
