@@ -178,6 +178,22 @@ func (s *Store) ClearWake(ctx context.Context, threadID string) error {
 	return nil
 }
 
+// EnqueueDiscordOutbox appends a Discord post to chat.discord_outbox for the
+// chat leader's drain loop to deliver (ADR 024 Task 5). channelID is the target
+// channel or thread id (a Discord thread is addressed as a channel), so the run
+// result lands back in the thread that triggered it. The table lives in the same
+// monolith Postgres as the agent registry, so the controller's pool can write it
+// directly rather than calling back into the monolith.
+func (s *Store) EnqueueDiscordOutbox(ctx context.Context, channelID, content string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO chat.discord_outbox (channel_id, content) VALUES ($1, $2)`,
+		channelID, content)
+	if err != nil {
+		return fmt.Errorf("store: enqueue discord outbox: %w", err)
+	}
+	return nil
+}
+
 // Delete removes a thread row (GC/reclaim, after its bundle is deleted).
 func (s *Store) Delete(ctx context.Context, threadID string) error {
 	_, err := s.pool.Exec(ctx,

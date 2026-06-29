@@ -32,8 +32,10 @@ type Handlers struct {
 	// OnIdle fires when the guest reports a quiescent idle boundary (safe to
 	// snapshot). May be nil.
 	OnIdle func(threadID string, wake vsockproto.WakeCondition)
-	// OnDone fires when the guest's harness exits. May be nil.
-	OnDone func(threadID, status string)
+	// OnDone fires when the guest's harness exits. result is the optional run
+	// artifact (the published artifact URL for the artifact tier, ADR 024); it is
+	// "" for runs that produce none. May be nil.
+	OnDone func(threadID, status, result string)
 }
 
 // listenPath is the host unix socket Firecracker bridges the guest's
@@ -108,7 +110,7 @@ func Serve(ctx context.Context, logger *slog.Logger, udsPath string, a Assignmen
 			}
 		case vsockproto.KindDone:
 			if h.OnDone != nil {
-				h.OnDone(a.ThreadID, msg.Status)
+				h.OnDone(a.ThreadID, msg.Status, msg.Result)
 			}
 			return nil
 		case vsockproto.KindHeartbeat:

@@ -19,6 +19,13 @@ type fakeRegistry struct {
 	threads map[string]*store.Thread
 	removed []string
 	listErr error
+	outbox  []outboxRow
+}
+
+// outboxRow records an EnqueueDiscordOutbox call for assertions.
+type outboxRow struct {
+	channelID string
+	content   string
 }
 
 func newFakeRegistry(ts ...store.Thread) *fakeRegistry {
@@ -103,6 +110,13 @@ func (f *fakeRegistry) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.threads, id)
+	return nil
+}
+
+func (f *fakeRegistry) EnqueueDiscordOutbox(_ context.Context, channelID, content string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outbox = append(f.outbox, outboxRow{channelID: channelID, content: content})
 	return nil
 }
 

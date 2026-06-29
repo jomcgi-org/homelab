@@ -31,6 +31,7 @@ type Registry interface {
 	SetThreadSnapshot(ctx context.Context, threadID, ref string, sizeBytes int64) error
 	ClearWake(ctx context.Context, threadID string) error
 	Delete(ctx context.Context, threadID string) error
+	EnqueueDiscordOutbox(ctx context.Context, channelID, content string) error
 }
 
 // Executor is the microVM lifecycle surface (the FC driver satisfies it).
@@ -235,7 +236,7 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	cctx, cancel := context.WithCancel(ctx)
 	l.control[t.ThreadID] = cancel
 	uds := l.ControlUDS(t.ThreadID)
-	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: l.envForTier(log, t.Tier)}
+	assign := control.Assignment{ThreadID: t.ThreadID, Recipe: t.Recipe, Task: t.Task, Env: l.envForThread(log, t)}
 	// Forward the guest's vsock egress to the secret-free sidecar (ADR 023).
 	if l.EgressSidecar != "" {
 		go func() {
@@ -253,10 +254,21 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 			case <-cctx.Done():
 			}
 		},
-		OnDone: func(threadID, status string) {
-			log.Info("reconcile: thread harness done", "thread", threadID, "status", status)
-			if err := l.Registry.SetState(context.WithoutCancel(cctx), threadID, substrate.StateCompleted); err != nil {
+		OnDone: func(threadID, status, result string) {
+			log.Info("reconcile: thread harness done", "thread", threadID, "status", status, "result", result)
+			ctx := context.WithoutCancel(cctx)
+			if err := l.Registry.SetState(ctx, threadID, substrate.StateCompleted); err != nil {
 				log.Error("reconcile: mark completed on done", "thread", threadID, "err", err)
+			}
+			// Surface the result back to the Discord thread that triggered the run
+			// (ADR 024 Task 5). Only when there is an artifact URL to share, so a
+			// non-artifact thread that happens to carry a discord_thread is not spammed
+			// with empty completions. The chat leader's outbox drain posts it.
+			if t.DiscordThread != "" && result != "" {
+				content := "Artifact ready: " + result
+				if err := l.Registry.EnqueueDiscordOutbox(ctx, t.DiscordThread, content); err != nil {
+					log.Error("reconcile: enqueue discord outbox on done", "thread", threadID, "err", err)
+				}
 			}
 		},
 	}
@@ -265,6 +277,28 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 			log.Warn("reconcile: control server exited", "thread", t.ThreadID, "err", err)
 		}
 	}()
+}
+
+// envForThread is the per-thread guest env: the tier env (envForTier) plus a
+// per-thread ARTIFACT_ID (ADR 024 Task 5) derived from the thread's Discord
+// thread id. Every iteration on the same Discord thread re-submits as a fresh
+// thread (Model B), so a stable ARTIFACT_ID is what makes the re-runs publish
+// (hot-reload) the same artifact rather than a new one each time. Only set when
+// a Discord thread is present; harmless for non-artifact tiers (they have no
+// ARTIFACT_PUBLISH_URL, so fc-agent-init's publish is a no-op).
+func (l *Loop) envForThread(log *slog.Logger, t store.Thread) map[string]string {
+	env := l.envForTier(log, t.Tier)
+	if t.DiscordThread == "" {
+		return env
+	}
+	// Copy first: envForTier may return the shared GooseEnv map, which must not be
+	// mutated (it is reused across threads).
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["ARTIFACT_ID"] = t.DiscordThread
+	return out
 }
 
 // envForTier resolves the harness env injected into a guest for its tier (ADR
