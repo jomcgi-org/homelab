@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 
 import discord
 from pydantic_ai import (
@@ -22,6 +23,7 @@ from chat.store import MessageStore
 from chat.vision import VisionClient
 from chat.web_search import search_web
 from chat import goosecracker
+from chat import goosecracker_progress
 from app.db import get_engine
 
 from sqlmodel import Session
@@ -41,6 +43,41 @@ def _truncate_thinking(thinking: str) -> str:
     if len(thinking) <= DISCORD_MESSAGE_LIMIT:
         return thinking
     return thinking[:THINKING_TRUNCATE_AT] + "... (truncated)"
+
+
+# Live /goosecracker progress streaming (ADR 024). The guest streams goose's
+# stdout to the in-process progress buffer; the bot edits the thread message on
+# this cadence so the owner sees activity instead of a multi-minute silent wait.
+GOOSECRACKER_STREAM_INTERVAL = 1.5  # seconds between Discord edits (rate-limit safe)
+GOOSECRACKER_STREAM_TIMEOUT = 900  # stop streaming after 15 min (run is wedged)
+GOOSECRACKER_THINKING_AFTER = 4.0  # no new output for this long -> show "Thinking"
+GOOSECRACKER_PROGRESS_TAIL = 1700  # chars of build log shown (room for header/footer)
+
+
+def _render_goosecracker_progress(snap, elapsed: int) -> str:
+    """Render a live build-progress message body from a progress snapshot.
+
+    ``snap`` is a chat.goosecracker_progress.Progress or None (nothing yet).
+    Shows a rolling tail of goose's stdout plus a status line: Thinking when the
+    output has been quiet (the model is reasoning, no bytes flow), Working when
+    output is fresh, Built when the run signalled done.
+    """
+    minutes, seconds = divmod(max(elapsed, 0), 60)
+    el = f"{minutes}:{seconds:02d}"
+    text = snap.text if snap else ""
+    lines = ["🛠 **Building your artifact**"]
+    tail = text[-GOOSECRACKER_PROGRESS_TAIL:].strip()
+    if tail:
+        lines.append(f"```\n{tail}\n```")
+    if snap is not None and snap.done:
+        lines.append(
+            f"✅ Built in {el}. Publishing the link... (reply here to iterate)"
+        )
+    elif text and (time.monotonic() - snap.updated_at) < GOOSECRACKER_THINKING_AFTER:
+        lines.append(f"⚙️ Working... ({el})")
+    else:
+        lines.append(f"🧠 Thinking... ({el})")
+    return "\n".join(lines)[:DISCORD_MESSAGE_LIMIT]
 
 
 class ThinkingView(discord.ui.View):
@@ -321,12 +358,65 @@ class ChatBot(discord.Client):
 
         await interaction.followup.send(f"Building your artifact in {thread.mention}")
         try:
-            await thread.send(
-                "On it. Building your artifact now; I'll drop the link here when "
-                "it's ready. Reply in this thread to iterate on it."
-            )
+            intro = await thread.send("🛠 On it. Building your artifact now...")
+            self._start_goosecracker_stream(str(thread.id), intro)
         except Exception:
             logger.exception("goosecracker: failed to post thread intro")
+
+    def _start_goosecracker_stream(
+        self, artifact_id: str, message: discord.Message
+    ) -> None:
+        """Spawn the background task that live-edits ``message`` with build output.
+
+        Fire-and-forget: the task ends itself on the run's done marker or a
+        safety timeout. Kept on the instance so it is not garbage-collected
+        mid-run, and logs any unhandled error.
+        """
+        task = asyncio.create_task(
+            self._stream_goosecracker_progress(artifact_id, message)
+        )
+        streams = getattr(self, "_goosecracker_streams", None)
+        if streams is None:
+            streams = set()
+            self._goosecracker_streams = streams
+        streams.add(task)
+        task.add_done_callback(streams.discard)
+
+    async def _stream_goosecracker_progress(
+        self, artifact_id: str, message: discord.Message
+    ) -> None:
+        """Edit ``message`` with goose's live build output until done or timeout.
+
+        Polls the in-process progress buffer (fed by the guest's stdout stream)
+        and re-renders on a fixed cadence, so Discord edits stay within rate
+        limits. The final ``Artifact ready: <url>`` link is posted separately by
+        the controller's Done -> outbox path (ADR 024 Task 5).
+        """
+        gp = goosecracker_progress
+        start = time.monotonic()
+        last_body = message.content
+        while True:
+            await asyncio.sleep(GOOSECRACKER_STREAM_INTERVAL)
+            snap = gp.get(artifact_id)
+            elapsed = int(time.monotonic() - start)
+            body = _render_goosecracker_progress(snap, elapsed)
+            if body != last_body:
+                try:
+                    await message.edit(content=body)
+                    last_body = body
+                except discord.HTTPException:
+                    logger.exception(
+                        "goosecracker: progress edit failed for %s", artifact_id
+                    )
+            if snap is not None and snap.done:
+                gp.clear(artifact_id)
+                return
+            if elapsed >= GOOSECRACKER_STREAM_TIMEOUT:
+                logger.warning(
+                    "goosecracker: progress stream timed out for %s", artifact_id
+                )
+                gp.clear(artifact_id)
+                return
 
     async def _maybe_handle_goosecracker_reply(self, message: discord.Message) -> bool:
         """Handle a reply inside a goosecracker thread (Model B re-run).
@@ -364,9 +454,10 @@ class ChatBot(discord.Client):
             # Lost a race with session teardown; let normal handling take it.
             return False
 
-        await message.reply(
-            "On it. Rebuilding your artifact; the link above will hot-reload."
+        progress_msg = await message.reply(
+            "🛠 On it. Rebuilding your artifact; the link above will hot-reload..."
         )
+        self._start_goosecracker_stream(thread_id, progress_msg)
         await asyncio.to_thread(self._complete_lock, msg_id)
         return True
 

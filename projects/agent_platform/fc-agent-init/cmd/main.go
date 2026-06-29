@@ -20,8 +20,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -111,11 +113,22 @@ func run(logger *slog.Logger) error {
 		setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"), det)
 	}
 
+	// Live progress stream (ADR 024): tee goose's stdout/stderr to the monolith so
+	// the Discord bot can show the build as it happens. No-op unless the tier sets
+	// PROGRESS_PUBLISH_URL (artifact tier only). The host log still gets the full
+	// output via os.Stdout.
+	pw := newProgressStreamer(logger)
+
 	var harnessProc *exec.Cmd
 	if len(harnessArgv) > 0 {
 		harnessProc = exec.CommandContext(ctx, harnessArgv[0], harnessArgv[1:]...)
-		harnessProc.Stdout = os.Stdout
-		harnessProc.Stderr = os.Stderr
+		var out io.Writer = os.Stdout
+		if pw != nil {
+			out = io.MultiWriter(os.Stdout, pw)
+			go pw.flushLoop(ctx, logger)
+		}
+		harnessProc.Stdout = out
+		harnessProc.Stderr = out
 		harnessProc.Env = os.Environ()
 		if err := harnessProc.Start(); err != nil {
 			return err
@@ -144,6 +157,11 @@ func run(logger *slog.Logger) error {
 		// guest console which the PID-1-exit kernel panic truncates) and yields the
 		// URL for the Done result. No-op when ARTIFACT_PUBLISH_URL is unset.
 		artifactURL := publishArtifact(logger)
+		// Flush any tail output and tell the bot the build is done so it stops the
+		// live edit (the link itself arrives via the Done -> outbox path below).
+		if pw != nil {
+			pw.finish(logger)
+		}
 		if conn != nil {
 			status := "ok"
 			if err != nil {
@@ -531,6 +549,92 @@ func publishArtifact(logger *slog.Logger) string {
 	_ = json.Unmarshal(respBody, &out)
 	logger.Info("artifact: published", "url", out.URL, "version", out.Version, "html_bytes", len(html))
 	return out.URL
+}
+
+// ansiRE matches the ANSI escape sequences goose writes for colour/formatting, so
+// the streamed build log reads cleanly in Discord (which renders them literally).
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
+func stripANSI(s string) string {
+	return ansiRE.ReplaceAllString(s, "")
+}
+
+// progressStreamer tees the harness's stdout/stderr to the monolith's
+// goosecracker progress endpoint so the Discord bot can show the build live (ADR
+// 024). Writes are buffered and POSTed coarsely on a ticker, so the harness
+// never blocks on the network. nil (all methods no-op) unless both
+// PROGRESS_PUBLISH_URL and ARTIFACT_ID are set, i.e. the artifact tier only.
+type progressStreamer struct {
+	url    string
+	id     string
+	client *http.Client
+	mu     sync.Mutex
+	buf    []byte
+}
+
+func newProgressStreamer(logger *slog.Logger) *progressStreamer {
+	url := os.Getenv("PROGRESS_PUBLISH_URL")
+	id := os.Getenv("ARTIFACT_ID")
+	if url == "" || id == "" {
+		return nil
+	}
+	logger.Info("progress streaming enabled", "url", url, "id", id)
+	return &progressStreamer{url: url, id: id, client: &http.Client{Timeout: 10 * time.Second}}
+}
+
+// Write buffers harness output. It never errors or blocks, so a slow/broken
+// progress endpoint can never stall or fail the build itself.
+func (p *progressStreamer) Write(b []byte) (int, error) {
+	if p == nil {
+		return len(b), nil
+	}
+	p.mu.Lock()
+	p.buf = append(p.buf, b...)
+	p.mu.Unlock()
+	return len(b), nil
+}
+
+// flushLoop POSTs buffered output on a ticker until ctx is cancelled.
+func (p *progressStreamer) flushLoop(ctx context.Context, logger *slog.Logger) {
+	t := time.NewTicker(750 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			p.flush(logger, false)
+		}
+	}
+}
+
+// finish flushes the tail and marks the run done so the bot stops live-editing.
+func (p *progressStreamer) finish(logger *slog.Logger) {
+	p.flush(logger, true)
+}
+
+func (p *progressStreamer) flush(logger *slog.Logger, done bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	b := p.buf
+	p.buf = nil
+	p.mu.Unlock()
+	chunk := stripANSI(string(b))
+	if chunk == "" && !done {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{"id": p.id, "chunk": chunk, "done": done})
+	if err != nil {
+		return
+	}
+	resp, err := p.client.Post(p.url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		logger.Debug("progress: post failed", "err", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // ensureEnv sets key to def only when it is unset, so an injected value (e.g. a
