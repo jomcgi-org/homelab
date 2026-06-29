@@ -305,8 +305,10 @@ func (l *Loop) envForThread(log *slog.Logger, t store.Thread) map[string]string 
 // 024): the per-tier map merged over the common GooseEnv, so a tier only needs
 // to specify what differs (model endpoint, secret placeholders). An empty tier
 // means "default"; an unknown tier falls back to GooseEnv alone (fail safe: the
-// guest gets no model credential rather than another tier's). The returned map
-// is freshly allocated, so the caller may not mutate the shared inputs.
+// guest gets no model credential rather than another tier's). When a tier
+// matches, the returned map is freshly allocated; the fallback path returns the
+// shared GooseEnv directly, so callers must copy before mutating (envForThread
+// does).
 func (l *Loop) envForTier(log *slog.Logger, tier string) map[string]string {
 	if tier == "" {
 		tier = "default"
