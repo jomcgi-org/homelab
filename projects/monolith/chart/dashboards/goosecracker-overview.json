@@ -1,180 +1,130 @@
 {
   "title": "goosecracker Overview",
-  "description": "Cold-start phases (fc-agentd launch/provision/boot) and goose model-turn latency for the Discord artifact agent (ADR 024 / 026). Correlate a single run in Traces by thread.id.",
-  "tags": ["goosecracker", "agent", "fc-agentd", "traces", "red"],
+  "description": "Big-number overview for the Discord artifact agent (ADR 024/026): run count, cold-start phases (provision_rootfs = the CoW scoreboard), and goose model-turn latency. Correlate one run in Traces by thread.id.",
+  "tags": ["goosecracker", "agent", "fc-agentd", "traces"],
   "variables": {},
   "version": "v5",
   "layout": [
     {
       "h": 3,
-      "w": 6,
+      "w": 3,
       "x": 0,
       "y": 0,
-      "i": "gc-run-rate",
+      "i": "gc-runs",
       "moved": false,
       "static": false
     },
     {
       "h": 3,
-      "w": 6,
+      "w": 3,
+      "x": 3,
+      "y": 0,
+      "i": "gc-errors",
+      "moved": false,
+      "static": false
+    },
+    {
+      "h": 3,
+      "w": 3,
       "x": 6,
       "y": 0,
-      "i": "gc-coldstart-phases",
+      "i": "gc-coldstart-p95",
       "moved": false,
       "static": false
     },
     {
       "h": 3,
-      "w": 6,
+      "w": 3,
+      "x": 9,
+      "y": 0,
+      "i": "gc-provision-p95",
+      "moved": false,
+      "static": false
+    },
+    {
+      "h": 3,
+      "w": 3,
       "x": 0,
       "y": 3,
-      "i": "gc-launch-latency",
+      "i": "gc-boot-p95",
       "moved": false,
       "static": false
     },
     {
       "h": 3,
-      "w": 6,
+      "w": 3,
+      "x": 3,
+      "y": 3,
+      "i": "gc-turn-p50",
+      "moved": false,
+      "static": false
+    },
+    {
+      "h": 3,
+      "w": 3,
       "x": 6,
       "y": 3,
-      "i": "gc-model-turn",
+      "i": "gc-turn-p95",
       "moved": false,
       "static": false
     },
     {
       "h": 3,
-      "w": 6,
-      "x": 0,
-      "y": 6,
-      "i": "gc-model-rate",
-      "moved": false,
-      "static": false
-    },
-    {
-      "h": 3,
-      "w": 6,
-      "x": 6,
-      "y": 6,
-      "i": "gc-launch-errors",
+      "w": 3,
+      "x": 9,
+      "y": 3,
+      "i": "gc-turn-p99",
       "moved": false,
       "static": false
     }
   ],
   "widgets": [
     {
-      "id": "gc-run-rate",
-      "panelTypes": "graph",
-      "title": "Run Rate (runs/s)",
-      "description": "goosecracker runs started, by tier (fc-agentd agent.thread.launch).",
+      "id": "gc-runs",
+      "title": "Runs",
+      "description": "goosecracker runs started in the window (agent.thread.launch).",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
       "fillSpans": false,
       "isStacked": false,
+      "mergeAllActiveQueries": false,
       "nullZeroValues": "zero",
       "opacity": "1",
-      "softMax": null,
-      "softMin": null,
       "selectedLogFields": [],
-      "selectedTracesFields": [],
-      "thresholds": [],
-      "contextLinks": {
-        "linksData": []
-      },
-      "query": {
-        "queryType": "builder",
-        "promql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "clickhouse_sql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "builder": {
-          "queryData": [
-            {
-              "queryName": "A",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "rate",
-              "aggregateAttribute": {},
-              "groupBy": [
-                {
-                  "key": "tier",
-                  "dataType": "string",
-                  "type": "tag",
-                  "isColumn": false,
-                  "isJSON": false
-                }
-              ],
-              "expression": "A",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "agent.thread.launch"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "{{tier}}",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            }
-          ],
-          "queryFormulas": []
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
         }
-      }
-    },
-    {
-      "id": "gc-coldstart-phases",
-      "panelTypes": "graph",
-      "title": "Cold-Start Phase Duration (p95)",
-      "description": "p95 of the launch phases. provision_rootfs is the CoW scoreboard (ADR 026).",
-      "fillSpans": false,
-      "isStacked": false,
-      "nullZeroValues": "zero",
-      "opacity": "1",
-      "softMax": null,
-      "softMin": null,
-      "selectedLogFields": [],
-      "selectedTracesFields": [],
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
       "thresholds": [],
-      "contextLinks": {
-        "linksData": []
-      },
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "short",
       "query": {
         "queryType": "builder",
         "promql": [
@@ -199,459 +149,7 @@
               "queryName": "A",
               "stepInterval": 60,
               "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
-              "groupBy": [
-                {
-                  "key": "name",
-                  "dataType": "string",
-                  "type": "tag",
-                  "isColumn": true,
-                  "isJSON": false
-                }
-              ],
-              "expression": "A",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "!=",
-                    "value": "reconcileOnce"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "{{name}}",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            }
-          ],
-          "queryFormulas": []
-        }
-      }
-    },
-    {
-      "id": "gc-launch-latency",
-      "panelTypes": "graph",
-      "title": "Cold Start Duration (p50 / p95)",
-      "description": "agent.thread.launch total: rootfs provision + firecracker boot.",
-      "fillSpans": false,
-      "isStacked": false,
-      "nullZeroValues": "zero",
-      "opacity": "1",
-      "softMax": null,
-      "softMin": null,
-      "selectedLogFields": [],
-      "selectedTracesFields": [],
-      "thresholds": [],
-      "contextLinks": {
-        "linksData": []
-      },
-      "query": {
-        "queryType": "builder",
-        "promql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "clickhouse_sql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "builder": {
-          "queryData": [
-            {
-              "queryName": "A",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "p50",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
-              "groupBy": [],
-              "expression": "A",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "agent.thread.launch"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "p50",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            },
-            {
-              "queryName": "B",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
-              "groupBy": [],
-              "expression": "B",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "fc-agentd"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "agent.thread.launch"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "p95",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            }
-          ],
-          "queryFormulas": []
-        }
-      }
-    },
-    {
-      "id": "gc-model-turn",
-      "panelTypes": "graph",
-      "title": "Model Turn Duration (p50 / p95 / p99)",
-      "description": "goose reply_stream on the artifact tier: the dominant build latency.",
-      "fillSpans": false,
-      "isStacked": false,
-      "nullZeroValues": "zero",
-      "opacity": "1",
-      "softMax": null,
-      "softMin": null,
-      "selectedLogFields": [],
-      "selectedTracesFields": [],
-      "thresholds": [],
-      "contextLinks": {
-        "linksData": []
-      },
-      "query": {
-        "queryType": "builder",
-        "promql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "clickhouse_sql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "builder": {
-          "queryData": [
-            {
-              "queryName": "A",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "p50",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
-              "groupBy": [],
-              "expression": "A",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "goosecracker-artifact"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "reply_stream"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "p50",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            },
-            {
-              "queryName": "B",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "p95",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
-              "groupBy": [],
-              "expression": "B",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "goosecracker-artifact"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "reply_stream"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "p95",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            },
-            {
-              "queryName": "C",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "p99",
-              "aggregateAttribute": {
-                "key": "durationNano",
-                "dataType": "float64",
-                "type": "tag",
-                "isColumn": true,
-                "isJSON": false
-              },
-              "groupBy": [],
-              "expression": "C",
-              "filters": {
-                "items": [
-                  {
-                    "key": {
-                      "key": "serviceName",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "goosecracker-artifact"
-                  },
-                  {
-                    "key": {
-                      "key": "name",
-                      "dataType": "string",
-                      "type": "tag",
-                      "isColumn": true,
-                      "isJSON": false
-                    },
-                    "op": "=",
-                    "value": "reply_stream"
-                  }
-                ],
-                "op": "AND"
-              },
-              "having": {
-                "expression": ""
-              },
-              "legend": "p99",
-              "limit": null,
-              "orderBy": [],
-              "selectColumns": [],
-              "functions": [],
-              "aggregations": [],
-              "disabled": false,
-              "reduceTo": "avg"
-            }
-          ],
-          "queryFormulas": []
-        }
-      }
-    },
-    {
-      "id": "gc-model-rate",
-      "panelTypes": "graph",
-      "title": "Model Turn Rate (turns/s)",
-      "description": "goose model turns per second (build throughput).",
-      "fillSpans": false,
-      "isStacked": false,
-      "nullZeroValues": "zero",
-      "opacity": "1",
-      "softMax": null,
-      "softMin": null,
-      "selectedLogFields": [],
-      "selectedTracesFields": [],
-      "thresholds": [],
-      "contextLinks": {
-        "linksData": []
-      },
-      "query": {
-        "queryType": "builder",
-        "promql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "clickhouse_sql": [
-          {
-            "disabled": false,
-            "legend": "",
-            "name": "A",
-            "query": ""
-          }
-        ],
-        "builder": {
-          "queryData": [
-            {
-              "queryName": "A",
-              "stepInterval": 60,
-              "dataSource": "traces",
-              "aggregateOperator": "rate",
+              "aggregateOperator": "count",
               "aggregateAttribute": {},
               "groupBy": [],
               "expression": "A",
@@ -666,7 +164,7 @@
                       "isJSON": false
                     },
                     "op": "=",
-                    "value": "goosecracker-artifact"
+                    "value": "fc-agentd"
                   },
                   {
                     "key": {
@@ -677,7 +175,7 @@
                       "isJSON": false
                     },
                     "op": "=",
-                    "value": "reply_stream"
+                    "value": "agent.thread.launch"
                   }
                 ],
                 "op": "AND"
@@ -685,14 +183,14 @@
               "having": {
                 "expression": ""
               },
-              "legend": "reply_stream",
+              "legend": "",
               "limit": null,
               "orderBy": [],
               "selectColumns": [],
               "functions": [],
               "aggregations": [],
               "disabled": false,
-              "reduceTo": "avg"
+              "reduceTo": "sum"
             }
           ],
           "queryFormulas": []
@@ -700,22 +198,51 @@
       }
     },
     {
-      "id": "gc-launch-errors",
-      "panelTypes": "graph",
+      "id": "gc-errors",
       "title": "Launch Errors",
-      "description": "Failed cold-starts (agent.thread.launch spans with an error).",
+      "description": "Failed cold-starts (agent.thread.launch with an error).",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
       "fillSpans": false,
       "isStacked": false,
+      "mergeAllActiveQueries": false,
       "nullZeroValues": "zero",
       "opacity": "1",
-      "softMax": null,
-      "softMin": null,
       "selectedLogFields": [],
-      "selectedTracesFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
       "thresholds": [],
-      "contextLinks": {
-        "linksData": []
-      },
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "short",
       "query": {
         "queryType": "builder",
         "promql": [
@@ -785,7 +312,751 @@
               "having": {
                 "expression": ""
               },
-              "legend": "errors",
+              "legend": "",
+              "limit": null,
+              "orderBy": [],
+              "selectColumns": [],
+              "functions": [],
+              "aggregations": [],
+              "disabled": false,
+              "reduceTo": "sum"
+            }
+          ],
+          "queryFormulas": []
+        }
+      }
+    },
+    {
+      "id": "gc-coldstart-p95",
+      "title": "Cold Start p95",
+      "description": "agent.thread.launch total (provision + boot).",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
+      "fillSpans": false,
+      "isStacked": false,
+      "mergeAllActiveQueries": false,
+      "nullZeroValues": "zero",
+      "opacity": "1",
+      "selectedLogFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
+      "thresholds": [],
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "ns",
+      "query": {
+        "queryType": "builder",
+        "promql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "clickhouse_sql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "builder": {
+          "queryData": [
+            {
+              "queryName": "A",
+              "stepInterval": 60,
+              "dataSource": "traces",
+              "aggregateOperator": "p95",
+              "aggregateAttribute": {
+                "key": "durationNano",
+                "dataType": "float64",
+                "type": "tag",
+                "isColumn": true,
+                "isJSON": false
+              },
+              "groupBy": [],
+              "expression": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {
+                      "key": "serviceName",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "fc-agentd"
+                  },
+                  {
+                    "key": {
+                      "key": "name",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "agent.thread.launch"
+                  }
+                ],
+                "op": "AND"
+              },
+              "having": {
+                "expression": ""
+              },
+              "legend": "",
+              "limit": null,
+              "orderBy": [],
+              "selectColumns": [],
+              "functions": [],
+              "aggregations": [],
+              "disabled": false,
+              "reduceTo": "avg"
+            }
+          ],
+          "queryFormulas": []
+        }
+      }
+    },
+    {
+      "id": "gc-provision-p95",
+      "title": "Rootfs Provision p95",
+      "description": "provision_rootfs - the CoW scoreboard (ADR 026): ~2s copy -> ~ms CoW.",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
+      "fillSpans": false,
+      "isStacked": false,
+      "mergeAllActiveQueries": false,
+      "nullZeroValues": "zero",
+      "opacity": "1",
+      "selectedLogFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
+      "thresholds": [],
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "ns",
+      "query": {
+        "queryType": "builder",
+        "promql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "clickhouse_sql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "builder": {
+          "queryData": [
+            {
+              "queryName": "A",
+              "stepInterval": 60,
+              "dataSource": "traces",
+              "aggregateOperator": "p95",
+              "aggregateAttribute": {
+                "key": "durationNano",
+                "dataType": "float64",
+                "type": "tag",
+                "isColumn": true,
+                "isJSON": false
+              },
+              "groupBy": [],
+              "expression": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {
+                      "key": "serviceName",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "fc-agentd"
+                  },
+                  {
+                    "key": {
+                      "key": "name",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "provision_rootfs"
+                  }
+                ],
+                "op": "AND"
+              },
+              "having": {
+                "expression": ""
+              },
+              "legend": "",
+              "limit": null,
+              "orderBy": [],
+              "selectColumns": [],
+              "functions": [],
+              "aggregations": [],
+              "disabled": false,
+              "reduceTo": "avg"
+            }
+          ],
+          "queryFormulas": []
+        }
+      }
+    },
+    {
+      "id": "gc-boot-p95",
+      "title": "Firecracker Boot p95",
+      "description": "firecracker_boot: FC config + Start.",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
+      "fillSpans": false,
+      "isStacked": false,
+      "mergeAllActiveQueries": false,
+      "nullZeroValues": "zero",
+      "opacity": "1",
+      "selectedLogFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
+      "thresholds": [],
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "ns",
+      "query": {
+        "queryType": "builder",
+        "promql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "clickhouse_sql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "builder": {
+          "queryData": [
+            {
+              "queryName": "A",
+              "stepInterval": 60,
+              "dataSource": "traces",
+              "aggregateOperator": "p95",
+              "aggregateAttribute": {
+                "key": "durationNano",
+                "dataType": "float64",
+                "type": "tag",
+                "isColumn": true,
+                "isJSON": false
+              },
+              "groupBy": [],
+              "expression": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {
+                      "key": "serviceName",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "fc-agentd"
+                  },
+                  {
+                    "key": {
+                      "key": "name",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "firecracker_boot"
+                  }
+                ],
+                "op": "AND"
+              },
+              "having": {
+                "expression": ""
+              },
+              "legend": "",
+              "limit": null,
+              "orderBy": [],
+              "selectColumns": [],
+              "functions": [],
+              "aggregations": [],
+              "disabled": false,
+              "reduceTo": "avg"
+            }
+          ],
+          "queryFormulas": []
+        }
+      }
+    },
+    {
+      "id": "gc-turn-p50",
+      "title": "Model Turn p50",
+      "description": "goose reply_stream median (the dominant build latency).",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
+      "fillSpans": false,
+      "isStacked": false,
+      "mergeAllActiveQueries": false,
+      "nullZeroValues": "zero",
+      "opacity": "1",
+      "selectedLogFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
+      "thresholds": [],
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "ns",
+      "query": {
+        "queryType": "builder",
+        "promql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "clickhouse_sql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "builder": {
+          "queryData": [
+            {
+              "queryName": "A",
+              "stepInterval": 60,
+              "dataSource": "traces",
+              "aggregateOperator": "p50",
+              "aggregateAttribute": {
+                "key": "durationNano",
+                "dataType": "float64",
+                "type": "tag",
+                "isColumn": true,
+                "isJSON": false
+              },
+              "groupBy": [],
+              "expression": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {
+                      "key": "serviceName",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "goosecracker-artifact"
+                  },
+                  {
+                    "key": {
+                      "key": "name",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "reply_stream"
+                  }
+                ],
+                "op": "AND"
+              },
+              "having": {
+                "expression": ""
+              },
+              "legend": "",
+              "limit": null,
+              "orderBy": [],
+              "selectColumns": [],
+              "functions": [],
+              "aggregations": [],
+              "disabled": false,
+              "reduceTo": "avg"
+            }
+          ],
+          "queryFormulas": []
+        }
+      }
+    },
+    {
+      "id": "gc-turn-p95",
+      "title": "Model Turn p95",
+      "description": "goose reply_stream p95.",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
+      "fillSpans": false,
+      "isStacked": false,
+      "mergeAllActiveQueries": false,
+      "nullZeroValues": "zero",
+      "opacity": "1",
+      "selectedLogFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
+      "thresholds": [],
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "ns",
+      "query": {
+        "queryType": "builder",
+        "promql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "clickhouse_sql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "builder": {
+          "queryData": [
+            {
+              "queryName": "A",
+              "stepInterval": 60,
+              "dataSource": "traces",
+              "aggregateOperator": "p95",
+              "aggregateAttribute": {
+                "key": "durationNano",
+                "dataType": "float64",
+                "type": "tag",
+                "isColumn": true,
+                "isJSON": false
+              },
+              "groupBy": [],
+              "expression": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {
+                      "key": "serviceName",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "goosecracker-artifact"
+                  },
+                  {
+                    "key": {
+                      "key": "name",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "reply_stream"
+                  }
+                ],
+                "op": "AND"
+              },
+              "having": {
+                "expression": ""
+              },
+              "legend": "",
+              "limit": null,
+              "orderBy": [],
+              "selectColumns": [],
+              "functions": [],
+              "aggregations": [],
+              "disabled": false,
+              "reduceTo": "avg"
+            }
+          ],
+          "queryFormulas": []
+        }
+      }
+    },
+    {
+      "id": "gc-turn-p99",
+      "title": "Model Turn p99",
+      "description": "goose reply_stream p99.",
+      "panelTypes": "value",
+      "bucketCount": 30,
+      "bucketWidth": 0,
+      "columnUnits": {},
+      "fillSpans": false,
+      "isStacked": false,
+      "mergeAllActiveQueries": false,
+      "nullZeroValues": "zero",
+      "opacity": "1",
+      "selectedLogFields": [],
+      "selectedTracesFields": [
+        {
+          "dataType": "string",
+          "id": "serviceName--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "serviceName",
+          "type": "tag"
+        },
+        {
+          "dataType": "string",
+          "id": "name--string--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "name",
+          "type": "tag"
+        },
+        {
+          "dataType": "float64",
+          "id": "durationNano--float64--tag--true",
+          "isColumn": true,
+          "isJSON": false,
+          "key": "durationNano",
+          "type": "tag"
+        }
+      ],
+      "softMax": 0,
+      "softMin": 0,
+      "stackedBarChart": false,
+      "thresholds": [],
+      "timePreferance": "GLOBAL_TIME",
+      "yAxisUnit": "ns",
+      "query": {
+        "queryType": "builder",
+        "promql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "clickhouse_sql": [
+          {
+            "disabled": false,
+            "legend": "",
+            "name": "A",
+            "query": ""
+          }
+        ],
+        "builder": {
+          "queryData": [
+            {
+              "queryName": "A",
+              "stepInterval": 60,
+              "dataSource": "traces",
+              "aggregateOperator": "p99",
+              "aggregateAttribute": {
+                "key": "durationNano",
+                "dataType": "float64",
+                "type": "tag",
+                "isColumn": true,
+                "isJSON": false
+              },
+              "groupBy": [],
+              "expression": "A",
+              "filters": {
+                "items": [
+                  {
+                    "key": {
+                      "key": "serviceName",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "goosecracker-artifact"
+                  },
+                  {
+                    "key": {
+                      "key": "name",
+                      "dataType": "string",
+                      "type": "tag",
+                      "isColumn": true,
+                      "isJSON": false
+                    },
+                    "op": "=",
+                    "value": "reply_stream"
+                  }
+                ],
+                "op": "AND"
+              },
+              "having": {
+                "expression": ""
+              },
+              "legend": "",
               "limit": null,
               "orderBy": [],
               "selectColumns": [],
