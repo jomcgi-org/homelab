@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 
 import discord
@@ -51,32 +52,46 @@ def _truncate_thinking(thinking: str) -> str:
 GOOSECRACKER_STREAM_INTERVAL = 1.5  # seconds between Discord edits (rate-limit safe)
 GOOSECRACKER_STREAM_TIMEOUT = 900  # stop streaming after 15 min (run is wedged)
 GOOSECRACKER_THINKING_AFTER = 4.0  # no new output for this long -> show "Thinking"
-GOOSECRACKER_PROGRESS_TAIL = 1700  # chars of build log shown (room for header/footer)
+
+# Pull the human-meaningful beats out of goose's raw stdout (which otherwise
+# echoes the entire file it writes). "Created <path> (N lines)" and the
+# goose-result "summary:" line are the only bits worth showing the owner.
+_GOOSECRACKER_WROTE_RE = re.compile(r"Created\s+\S+\s+\((\d+)\s+lines?\)")
+_GOOSECRACKER_SUMMARY_RE = re.compile(r"^\s*summary:\s*(.+?)\s*`*\s*$", re.MULTILINE)
 
 
 def _render_goosecracker_progress(snap, elapsed: int) -> str:
-    """Render a live build-progress message body from a progress snapshot.
+    """Render a concise live build-progress message from a progress snapshot.
 
     ``snap`` is a chat.goosecracker_progress.Progress or None (nothing yet).
-    Shows a rolling tail of goose's stdout plus a status line: Thinking when the
-    output has been quiet (the model is reasoning, no bytes flow), Working when
-    output is fresh, Built when the run signalled done.
+    Goose's raw stdout includes the whole file it writes, which is noise, so this
+    shows only a phase line (Thinking while the model reasons quietly, Writing
+    while output flows, Built on done) plus the meaningful beats extracted from
+    the stream: lines written and the goose-result summary.
     """
     minutes, seconds = divmod(max(elapsed, 0), 60)
     el = f"{minutes}:{seconds:02d}"
     text = snap.text if snap else ""
+    done = snap is not None and snap.done
+    flowing = bool(text) and (time.monotonic() - snap.updated_at) < (
+        GOOSECRACKER_THINKING_AFTER
+    )
+
     lines = ["🛠 **Building your artifact**"]
-    tail = text[-GOOSECRACKER_PROGRESS_TAIL:].strip()
-    if tail:
-        lines.append(f"```\n{tail}\n```")
-    if snap is not None and snap.done:
-        lines.append(
-            f"✅ Built in {el}. Publishing the link... (reply here to iterate)"
-        )
-    elif text and (time.monotonic() - snap.updated_at) < GOOSECRACKER_THINKING_AFTER:
-        lines.append(f"⚙️ Working... ({el})")
+    if done:
+        lines.append(f"✅ Built in {el} (reply here to iterate)")
+    elif flowing:
+        lines.append(f"⚙️ Writing the artifact... ({el})")
     else:
         lines.append(f"🧠 Thinking... ({el})")
+
+    wrote = _GOOSECRACKER_WROTE_RE.search(text)
+    if wrote:
+        lines.append(f"📝 Wrote {wrote.group(1)} lines")
+    summary = _GOOSECRACKER_SUMMARY_RE.search(text)
+    if summary:
+        lines.append(f"📦 {summary.group(1).strip()}")
+
     return "\n".join(lines)[:DISCORD_MESSAGE_LIMIT]
 
 
