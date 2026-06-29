@@ -464,10 +464,10 @@ apko.translate_lock(
     lock = "//projects/agent_platform/fc-agentd/rootfs-builder:apko.lock.json",
 )
 apko.translate_lock(
-    name = "fc_agentd_runtime_lock",
-    lock = "//projects/agent_platform/fc-agentd/runtime:apko.lock.json",
+    name = "fc_agentd_lock",
+    lock = "//projects/agent_platform/fc-agentd:apko.lock.json",
 )
-use_repo(apko, "fc_agentd_runtime_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "visual_chromium_lock")
+use_repo(apko, "fc_agentd_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "visual_chromium_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
