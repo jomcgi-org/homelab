@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // pipeTransport wires the Driver to an in-memory fake LSP via two io.Pipes.

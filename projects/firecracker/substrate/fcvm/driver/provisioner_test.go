@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 func TestCopyProvisionerCopiesBase(t *testing.T) {

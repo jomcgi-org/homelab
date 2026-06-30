@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 // Thread is one row of agent.agent_threads. It is the durable record keyed by

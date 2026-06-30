@@ -21,8 +21,8 @@ import (
 
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/control"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 var tracer = otel.Tracer("fc-agentd/reconcile")

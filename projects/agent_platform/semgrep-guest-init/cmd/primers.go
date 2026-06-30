@@ -1,6 +1,6 @@
 package main
 
-import "github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+import "github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 
 // primerFiles is one small but realistic source file per supported extension. They
 // are scanned once at base-build time (warmupPrime) BEFORE the snapshot is taken, so

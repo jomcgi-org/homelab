@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // vsockTransport is the production guestTransport. It speaks to a guest over the

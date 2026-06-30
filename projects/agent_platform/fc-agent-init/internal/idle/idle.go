@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // Detector tracks harness activity and decides when the thread is safely idle.

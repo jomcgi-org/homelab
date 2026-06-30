@@ -6,7 +6,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store",
     visibility = ["//projects/agent_platform/fc-agentd:__subpackages__"],
     deps = [
-        "//projects/agent_platform/substrate",
+        "//projects/firecracker/substrate/substrate",
         "@com_github_jackc_pgx_v5//pgxpool",
     ],
 )

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // fakeDriver records claim/release activity and tracks peak concurrency so the

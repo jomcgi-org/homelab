@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // Scanner runs a scan over a batch of files and returns the findings. The resident

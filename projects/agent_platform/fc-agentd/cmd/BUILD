@@ -10,7 +10,7 @@ go_library(
         "//projects/agent_platform/fc-agentd/internal/reconcile",
         "//projects/agent_platform/fc-agentd/internal/store",
         "//projects/agent_platform/fc-agentd/internal/telemetry",
-        "//projects/agent_platform/fcvm/driver",
+        "//projects/firecracker/substrate/fcvm/driver",
     ],
 )
 

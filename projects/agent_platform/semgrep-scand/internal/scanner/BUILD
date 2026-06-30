@@ -9,8 +9,8 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-scand/internal/scanner",
     visibility = ["//projects/agent_platform/semgrep-scand:__subpackages__"],
     deps = [
-        "//projects/agent_platform/substrate",
-        "//projects/agent_platform/vsockproto",
+        "//projects/firecracker/substrate/substrate",
+        "//projects/firecracker/substrate/vsockproto",
         "@org_golang_x_sync//semaphore",
     ],
 )
@@ -20,7 +20,7 @@ go_test(
     srcs = ["scanner_test.go"],
     embed = [":scanner"],
     deps = [
-        "//projects/agent_platform/substrate",
-        "//projects/agent_platform/vsockproto",
+        "//projects/firecracker/substrate/substrate",
+        "//projects/firecracker/substrate/vsockproto",
     ],
 )
