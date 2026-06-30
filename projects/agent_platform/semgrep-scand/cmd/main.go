@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/agent_platform/semgrep-scand/internal/config"
 	"github.com/jomcgi/homelab/projects/agent_platform/semgrep-scand/internal/scanner"
 	"github.com/jomcgi/homelab/projects/agent_platform/semgrep-scand/internal/server"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/fcvm/driver"
 )
 
 func main() {

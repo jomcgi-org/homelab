@@ -24,7 +24,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/internal/lspdriver"
 	"github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/internal/scanserver"
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 const (

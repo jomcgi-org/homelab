@@ -8,5 +8,5 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/control",
     visibility = ["//projects/agent_platform/fc-agentd:__subpackages__"],
-    deps = ["//projects/agent_platform/vsockproto"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )

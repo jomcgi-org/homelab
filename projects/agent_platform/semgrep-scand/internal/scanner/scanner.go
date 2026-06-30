@@ -21,8 +21,8 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // vmDriver is the subset of the Firecracker driver the scanner needs. The shared

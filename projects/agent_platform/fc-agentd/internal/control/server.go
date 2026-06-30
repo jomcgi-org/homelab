@@ -13,7 +13,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // Assignment is the work handed to a guest in the Assign reply.

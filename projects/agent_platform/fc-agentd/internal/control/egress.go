@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // egressListenPath is the host unix socket Firecracker bridges the guest's

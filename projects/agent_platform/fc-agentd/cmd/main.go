@@ -17,7 +17,7 @@ import (
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/reconcile"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/telemetry"
-	"github.com/jomcgi/homelab/projects/agent_platform/fcvm/driver"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/fcvm/driver"
 )
 
 func main() {

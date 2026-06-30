@@ -59,6 +59,10 @@ const (
 	// reads back one ScanResult. It is separate from the control/egress ports so a
 	// scan never contends with the control handshake or an egress tunnel.
 	ScanPort uint32 = 1026
+	// GuestHTTPPort carries the inbound HTTP request the fc-invoke daemon
+	// reverse-proxies to the guest's shim HTTP server (ADR 029). Separate from
+	// the control/egress/scan ports so an invocation never contends with them.
+	GuestHTTPPort uint32 = 1027
 )
 
 // WakeCondition describes what should cause an idle thread to be restored.

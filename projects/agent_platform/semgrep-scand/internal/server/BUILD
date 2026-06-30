@@ -5,12 +5,12 @@ go_library(
     srcs = ["server.go"],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-scand/internal/server",
     visibility = ["//projects/agent_platform/semgrep-scand:__subpackages__"],
-    deps = ["//projects/agent_platform/vsockproto"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )
 
 go_test(
     name = "server_test",
     srcs = ["server_test.go"],
     embed = [":server"],
-    deps = ["//projects/agent_platform/vsockproto"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )

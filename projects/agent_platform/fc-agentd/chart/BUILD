@@ -10,7 +10,7 @@ helm_chart(
         "image": "//projects/agent_platform/fc-agentd:image.info",
         "harnessImage": "//projects/agent_platform/harness:image.info",
         "rootfsBuilder.image": "//projects/agent_platform/fc-agentd/rootfs-builder:image.info",
-        "egress.image": "//projects/agent_platform/egress-proxy:image.info",
+        "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

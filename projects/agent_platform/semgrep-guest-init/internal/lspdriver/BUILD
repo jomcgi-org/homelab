@@ -5,12 +5,12 @@ go_library(
     srcs = ["lspdriver.go"],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/internal/lspdriver",
     visibility = ["//projects/agent_platform/semgrep-guest-init:__subpackages__"],
-    deps = ["//projects/agent_platform/vsockproto"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )
 
 go_test(
     name = "lspdriver_test",
     srcs = ["lspdriver_test.go"],
     embed = [":lspdriver"],
-    deps = ["//projects/agent_platform/vsockproto"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )

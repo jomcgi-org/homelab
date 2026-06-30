@@ -6,7 +6,7 @@ go_library(
         "main.go",
         "swap.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/egress-proxy/cmd",
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/egress-proxy/cmd",
     visibility = ["//visibility:private"],
 )
 

@@ -8,8 +8,8 @@ go_library(
     deps = [
         "//projects/agent_platform/fc-agentd/internal/control",
         "//projects/agent_platform/fc-agentd/internal/store",
-        "//projects/agent_platform/substrate",
-        "//projects/agent_platform/vsockproto",
+        "//projects/firecracker/substrate/substrate",
+        "//projects/firecracker/substrate/vsockproto",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel//codes",
@@ -22,6 +22,6 @@ go_test(
     embed = [":reconcile"],
     deps = [
         "//projects/agent_platform/fc-agentd/internal/store",
-        "//projects/agent_platform/substrate",
+        "//projects/firecracker/substrate/substrate",
     ],
 )

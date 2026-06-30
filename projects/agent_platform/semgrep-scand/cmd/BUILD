@@ -6,7 +6,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-scand/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/agent_platform/fcvm/driver",
+        "//projects/firecracker/substrate/fcvm/driver",
         "//projects/agent_platform/semgrep-scand/internal/config",
         "//projects/agent_platform/semgrep-scand/internal/scanner",
         "//projects/agent_platform/semgrep-scand/internal/server",

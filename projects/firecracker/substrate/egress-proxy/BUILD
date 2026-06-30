@@ -5,5 +5,5 @@ load("//bazel/tools/oci:go_image.bzl", "go_image")
 # (derived from the package path by go_image).
 go_image(
     name = "image",
-    binary = "//projects/agent_platform/egress-proxy/cmd",
+    binary = "//projects/firecracker/substrate/egress-proxy/cmd",
 )

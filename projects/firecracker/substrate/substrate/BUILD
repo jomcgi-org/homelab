@@ -6,7 +6,7 @@ go_library(
         "fake.go",
         "substrate.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/substrate",
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/substrate",
     visibility = ["//visibility:public"],
 )
 

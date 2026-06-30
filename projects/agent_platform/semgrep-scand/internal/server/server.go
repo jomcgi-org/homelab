@@ -17,7 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // defaultMaxBytes caps the decoded request body. A scan batch is source files,

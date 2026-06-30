@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 // fakeLauncher stands up a fake Firecracker API server on each requested socket,

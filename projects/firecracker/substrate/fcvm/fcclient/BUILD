@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "fcclient",
     srcs = ["client.go"],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/fcvm/fcclient",
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/fcvm/fcclient",
     visibility = ["//visibility:public"],
 )
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 // fakeScanner is an injectable Scanner: it returns canned results/errors so the

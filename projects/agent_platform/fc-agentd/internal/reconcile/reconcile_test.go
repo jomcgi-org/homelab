@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
-	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 // fakeRegistry is an in-memory store keyed by thread ID.

@@ -17,7 +17,7 @@ go_library(
     deps = [
         "//projects/agent_platform/semgrep-guest-init/internal/lspdriver",
         "//projects/agent_platform/semgrep-guest-init/internal/scanserver",
-        "//projects/agent_platform/vsockproto",
+        "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
             "@org_golang_x_sys//unix",
