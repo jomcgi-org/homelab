@@ -20,6 +20,7 @@ export const marqueeItems = [
   "Rust",
   "Python",
   "Kubernetes Operators",
+  "Firecracker microVMs",
   "vLLM on a 4090",
   "Postgres + pgvector",
   "Bazel + BuildBuddy",
@@ -41,38 +42,74 @@ export const projects = [
   {
     id: "agent-platform",
     category: "agents",
-    status: "Deprecated",
     title: "Agent Platform",
     oneLiner:
-      "Retired. Autonomous Claude and Goose agents in sandboxed Kubernetes pods, dispatched over NATS, with every tool call governed by an MCP gateway. Wound down after Claude terms-of-service changes made running unattended Claude agents this way untenable.",
+      "Autonomous agents that do real platform work, each running in its own hardware-isolated Firecracker microVM, snapshotted to near-zero cost when idle and restored from memory in tens of milliseconds on the next turn.",
     motivation:
-      "The bet was agents that do real platform work: triage alerts, fix failing PRs, keep docs fresh, each in its own sandbox pod with every tool call passing through a gateway that knows who is asking. When Claude's terms of service changed around unattended agent use, the dispatch model no longer held, and a local model alone was not capable enough to take its place. So the platform was retired rather than quietly degraded. The durable pieces outlived it: local inference became its own service, the knowledge-graph MCP surface moved into the monolith, and scheduled maintenance now runs as Claude routines and Argo Workflows.",
+      "The first version ran unattended Claude agents in sandboxed Kubernetes pods dispatched over NATS. When Claude's terms of service changed around unattended agent use, that dispatch model no longer held. Rather than retire the idea, I split the execution substrate apart from the model choice and rebuilt the substrate on Firecracker: every agent request gets its own hardware-isolated microVM instead of a shared pod, paused and snapshotted when idle so it costs nothing, and restored in tens of milliseconds when woken. The durable pieces from v1 carried over (on-cluster inference, the MCP gateway, the knowledge-graph surface); the sandbox underneath them got much stronger.",
     facts: [
       {
-        k: "Orchestrator",
-        v: "A Go service dispatches agent jobs over NATS JetStream. Each job becomes an isolated sandbox pod with its own workspace, credentials, and lifecycle.",
+        k: "MicroVM per request",
+        v: "Every agent request runs in a fresh Firecracker microVM (kata-fc on a bare-metal node), not a shared container. For untrusted, agent-written code the isolation boundary is hardware-level, not a userspace kernel.",
       },
       {
-        k: "Context Forge",
-        v: "A self-built MCP gateway in front of every tool. Agents get RBAC-scoped toolsets per team; tool registrations are validated before they are exposed.",
+        k: "Snapshot / restore",
+        v: "An idle agent thread is paused and snapshotted (memory plus rootfs), releasing all compute, then restored on the next turn. Measured restore is 28ms cold, 6ms warm; trigger to first model call is ~140ms. A thin Postgres-reconcile controller owns the lifecycle, porting E2B's open-source snapshot architecture onto the Firecracker primitive.",
       },
       {
-        k: "Cluster agents",
-        v: "Scheduled autonomous loops (patrol, test coverage, README freshness, PR fixer) that investigate the cluster and open PRs against this repo.",
+        k: "Secret-swap egress",
+        v: "The guest is vsock-only and never holds a real credential. A TLS-terminating sidecar routes by SNI/Host and swaps a placeholder token for the real secret (a GitHub or model API key) at the network hop, so sandboxed code uses credentials it can never read or exfiltrate.",
+      },
+      {
+        k: "Postgres control plane",
+        v: "High-churn idle-agent state lives in Postgres, not etcd, keeping thousands of waiting threads off the cluster control plane. The same registry backs the list and resume catalog exposed over MCP.",
       },
       {
         k: "Local inference",
-        v: "vLLM serves a Qwen3.6 MoE (35B-A3B, int4) on a single RTX 4090 for routine tasks. Frontier models are called over API only where the task warrants it.",
-      },
-      {
-        k: "Scheduled routines",
-        v: "Claude routines run recurring maintenance on a cron, leasing jobs from the cluster over MCP and reporting results back to the knowledge graph.",
+        v: "vLLM serves a Qwen3.6 MoE (35B-A3B, int4) on a single RTX 4090 for routine work; frontier models are reached over the swapped egress only where the task warrants it.",
       },
     ],
     links: [
       {
-        label: "projects/inference",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/inference",
+        label: "projects/agent_platform",
+        href: "https://github.com/jomcgi/homelab/tree/main/projects/agent_platform",
+      },
+    ],
+  },
+  {
+    id: "goosecracker",
+    category: "agents",
+    title: "Goosecracker",
+    oneLiner:
+      "A Discord command that boots a fresh Firecracker microVM, runs a coding agent inside it to build a self-contained web artifact, and serves the result sandboxed, with the whole cold start landing in ~144ms.",
+    motivation:
+      "I wanted a make-me-a-thing button: type a prompt in Discord, get back a working hosted mini-app. The hard part is doing it both safely and fast. The agent writes and runs untrusted code, so it has to be strongly isolated, but a fresh microVM per request must not feel slow. Goosecracker is the proof that per-request hardware isolation and sub-second cold start are not a trade-off.",
+    facts: [
+      {
+        k: "Cold start",
+        v: "Dispatch to first model call is ~144ms: 10ms dispatch, an 84ms copy-on-write microVM cold start (35ms rootfs, 28ms Firecracker boot, ~20ms guest init), then 50ms to bring the agent up. A fresh VM per request, not a warm pool.",
+      },
+      {
+        k: "Isolation",
+        v: "Every request runs in its own Firecracker microVM with a hand-rolled init as PID 1. No shared container and no shared kernel between requests.",
+      },
+      {
+        k: "Secrets",
+        v: "The guest is vsock-only. A TLS-terminating proxy MITM-replaces a placeholder API key with the real one at the egress hop, so the sandbox can call an external model without ever holding the key.",
+      },
+      {
+        k: "Artifact",
+        v: "The agent builds a self-contained HTML artifact inside the VM and publishes it to object storage; it is served sandboxed at jomcgi.dev/artifact/<id> behind a strict CSP, with hot reload on iteration.",
+      },
+      {
+        k: "Shared substrate",
+        v: "Built on the same snapshot/restore substrate as the agent platform: the microVM, the egress sidecar, and the in-guest supervisor are reused, not one-offs.",
+      },
+    ],
+    links: [
+      {
+        label: "projects/agent_platform/fc-agentd",
+        href: "https://github.com/jomcgi/homelab/tree/main/projects/agent_platform/fc-agentd",
       },
     ],
   },
