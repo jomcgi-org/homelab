@@ -10,7 +10,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/driver",
     visibility = ["//projects/agent_platform/fc-agentd:__subpackages__"],
     deps = [
-        "//projects/agent_platform/fc-agentd/internal/fcclient",
+        "//projects/agent_platform/fcvm/fcclient",
         "//projects/agent_platform/substrate",
         "@io_opentelemetry_go_otel//:otel",
     ],
