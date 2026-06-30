@@ -720,3 +720,72 @@ func TestPostProgressDoneNoopWhenUnconfigured(t *testing.T) {
 		t.Fatalf("want 0 requests when unconfigured, got %d", hits)
 	}
 }
+
+func TestOnHarnessDoneSuccessCompletes(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StateRunning, Node: "node-4", DiscordThread: "d-1"})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.live["t1"] = substrate.Handle{ThreadID: "t1", ID: "vm-t1", Node: "node-4"}
+
+	l.onHarnessDone(context.Background(), testLogger(), doneInfo{
+		threadID: "t1", discordThread: "d-1", artifactExpected: true, status: "ok", result: "https://art/abc",
+	})
+
+	if reg.state("t1") != substrate.StateCompleted {
+		t.Fatalf("state = %q, want COMPLETED", reg.state("t1"))
+	}
+	if len(reg.outbox) != 1 || reg.outbox[0].content == "" || reg.outbox[0].content[:14] != "Artifact ready" {
+		t.Fatalf("want one 'Artifact ready' outbox row, got %+v", reg.outbox)
+	}
+}
+
+func TestOnHarnessDoneErrorStatusFails(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StateRunning, Node: "node-4", DiscordThread: "d-1"})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.live["t1"] = substrate.Handle{ThreadID: "t1", ID: "vm-t1", Node: "node-4"}
+
+	l.onHarnessDone(context.Background(), testLogger(), doneInfo{
+		threadID: "t1", discordThread: "d-1", artifactExpected: true, status: "exit status 1", result: "",
+	})
+
+	if reg.state("t1") != substrate.StateFailed {
+		t.Fatalf("state = %q, want FAILED", reg.state("t1"))
+	}
+	if len(reg.outbox) != 1 {
+		t.Fatalf("want one failure outbox row, got %+v", reg.outbox)
+	}
+}
+
+func TestOnHarnessDoneNoArtifactFails(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StateRunning, Node: "node-4", DiscordThread: "d-1"})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.live["t1"] = substrate.Handle{ThreadID: "t1", ID: "vm-t1", Node: "node-4"}
+
+	l.onHarnessDone(context.Background(), testLogger(), doneInfo{
+		threadID: "t1", discordThread: "d-1", artifactExpected: true, status: "ok", result: "",
+	})
+
+	if reg.state("t1") != substrate.StateFailed {
+		t.Fatalf("state = %q, want FAILED (no artifact)", reg.state("t1"))
+	}
+}
+
+func TestOnHarnessDoneNonArtifactTierSucceedsWithoutResult(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StateRunning, Node: "node-4"})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.live["t1"] = substrate.Handle{ThreadID: "t1", ID: "vm-t1", Node: "node-4"}
+
+	l.onHarnessDone(context.Background(), testLogger(), doneInfo{
+		threadID: "t1", artifactExpected: false, status: "ok", result: "",
+	})
+
+	if reg.state("t1") != substrate.StateCompleted {
+		t.Fatalf("state = %q, want COMPLETED", reg.state("t1"))
+	}
+	if len(reg.outbox) != 0 {
+		t.Fatalf("non-artifact success should not enqueue Discord output, got %+v", reg.outbox)
+	}
+}

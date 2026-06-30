@@ -138,6 +138,16 @@ type diedEvent struct {
 	progressURL   string
 }
 
+// doneInfo is the harness's terminal report, normalised for classification.
+type doneInfo struct {
+	threadID         string
+	discordThread    string
+	progressURL      string
+	artifactExpected bool // the thread's tier injects ARTIFACT_PUBLISH_URL
+	status           string
+	result           string
+}
+
 // Run ticks until ctx is cancelled. It returns nil on graceful shutdown.
 func (l *Loop) Run(ctx context.Context) error {
 	log := l.Logger
@@ -240,15 +250,8 @@ func (l *Loop) reapDied(ctx context.Context, log *slog.Logger, ev diedEvent) {
 		log.Error("reconcile: mark failed on guest death", "thread", ev.threadID, "err", err)
 	}
 	// Flip the live build message out of its spinning state and tell the thread it
-	// failed, so the user is not left watching a frozen counter. postProgressDone
-	// is a best-effort HTTP call with its own timeout; run it off the loop
-	// goroutine so a slow monolith never stalls reconciliation.
-	go postProgressDone(context.WithoutCancel(ctx), log, ev.progressURL, ev.discordThread)
-	if ev.discordThread != "" {
-		if err := l.Registry.EnqueueDiscordOutbox(ctx, ev.discordThread, "Build failed: the agent stopped before producing an artifact."); err != nil {
-			log.Error("reconcile: enqueue discord outbox on guest death", "thread", ev.threadID, "err", err)
-		}
-	}
+	// failed, so the user is not left watching a frozen counter.
+	l.notifyBuildFailed(ctx, log, ev.discordThread, ev.progressURL, "Build failed: the agent stopped before producing an artifact.")
 	// Release the dead VM handle (reaps the Firecracker child) and stop its control
 	// server; reclaimFailed handles the on-disk teardown after the retention window.
 	if err := l.Executor.Release(ctx, h); err != nil {
@@ -258,6 +261,63 @@ func (l *Loop) reapDied(ctx context.Context, log *slog.Logger, ev diedEvent) {
 	if cancel, ok := l.control[ev.threadID]; ok {
 		cancel()
 		delete(l.control, ev.threadID)
+	}
+}
+
+// onHarnessDone classifies a guest's Done report and records the terminal state.
+// The guest already distinguishes success (status "ok") from failure (the goose
+// error string, or "timeout" from the in-guest watchdog) and reports the
+// published artifact URL in result; the daemon honours that instead of assuming
+// success. A run is successful only when goose exited cleanly AND, for a tier
+// that was meant to publish an artifact, it actually produced one. Everything
+// else is a failure the user should see, not a COMPLETED with nothing to show.
+func (l *Loop) onHarnessDone(ctx context.Context, log *slog.Logger, d doneInfo) {
+	failed, reason := classifyDone(d)
+	if failed {
+		log.Warn("reconcile: harness reported failure", "thread", d.threadID, "status", d.status, "reason", reason)
+		if err := l.Registry.SetState(ctx, d.threadID, substrate.StateFailed); err != nil {
+			log.Error("reconcile: mark failed on done", "thread", d.threadID, "err", err)
+		}
+		l.notifyBuildFailed(ctx, log, d.discordThread, d.progressURL, "Build failed: "+reason)
+		return
+	}
+	if err := l.Registry.SetState(ctx, d.threadID, substrate.StateCompleted); err != nil {
+		log.Error("reconcile: mark completed on done", "thread", d.threadID, "err", err)
+	}
+	go postProgressDone(context.WithoutCancel(ctx), log, d.progressURL, d.discordThread)
+	if d.discordThread != "" && d.result != "" {
+		if err := l.Registry.EnqueueDiscordOutbox(ctx, d.discordThread, "Artifact ready: "+d.result); err != nil {
+			log.Error("reconcile: enqueue discord outbox on done", "thread", d.threadID, "err", err)
+		}
+	}
+}
+
+// classifyDone returns whether the run failed and a human reason for Discord.
+func classifyDone(d doneInfo) (failed bool, reason string) {
+	switch {
+	case d.status == "timeout":
+		return true, "the agent stopped making progress and was timed out."
+	case d.status != "ok":
+		return true, "the agent exited with an error."
+	case d.artifactExpected && d.result == "":
+		return true, "the agent finished without producing an artifact."
+	default:
+		return false, ""
+	}
+}
+
+// notifyBuildFailed flips the live build message out of its spinning state and
+// posts a failure note to the Discord thread, so a stuck or empty run shows a
+// terminal result instead of a frozen counter. Shared by onHarnessDone and
+// reapDied. postProgressDone is best-effort with its own timeout; run it off the
+// loop goroutine so a slow monolith never stalls reconciliation.
+func (l *Loop) notifyBuildFailed(ctx context.Context, log *slog.Logger, discordThread, progressURL, message string) {
+	go postProgressDone(context.WithoutCancel(ctx), log, progressURL, discordThread)
+	if discordThread == "" {
+		return
+	}
+	if err := l.Registry.EnqueueDiscordOutbox(ctx, discordThread, message); err != nil {
+		log.Error("reconcile: enqueue discord outbox on failure", "thread", discordThread, "err", err)
 	}
 }
 
@@ -381,27 +441,14 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 		OnDone: func(threadID, status, result string) {
 			doneFired.Store(true)
 			log.Info("reconcile: thread harness done", "thread", threadID, "status", status, "result", result)
-			ctx := context.WithoutCancel(cctx)
-			if err := l.Registry.SetState(ctx, threadID, substrate.StateCompleted); err != nil {
-				log.Error("reconcile: mark completed on done", "thread", threadID, "err", err)
-			}
-			// Close the live build message (ADR 024 Option A). fc-agent-init also
-			// sends this on a clean guest exit, but cannot when the VM is torn down
-			// before goose returns (supersede / failure); OnDone always fires, so
-			// emitting it here stops the bot live-editing instead of spinning to its
-			// safety timeout. Keyed by the Discord thread id (== the progress id);
-			// a no-op for non-Discord threads.
-			postProgressDone(ctx, log, progressURL, t.DiscordThread)
-			// Surface the result back to the Discord thread that triggered the run
-			// (ADR 024 Task 5). Only when there is an artifact URL to share, so a
-			// non-artifact thread that happens to carry a discord_thread is not spammed
-			// with empty completions. The chat leader's outbox drain posts it.
-			if t.DiscordThread != "" && result != "" {
-				content := "Artifact ready: " + result
-				if err := l.Registry.EnqueueDiscordOutbox(ctx, t.DiscordThread, content); err != nil {
-					log.Error("reconcile: enqueue discord outbox on done", "thread", threadID, "err", err)
-				}
-			}
+			l.onHarnessDone(context.WithoutCancel(cctx), log, doneInfo{
+				threadID:         threadID,
+				discordThread:    t.DiscordThread,
+				progressURL:      progressURL,
+				artifactExpected: threadEnv["ARTIFACT_PUBLISH_URL"] != "",
+				status:           status,
+				result:           result,
+			})
 		},
 	}
 	go func() {
