@@ -48,8 +48,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.CanonicalVsockDir != "/disks/nvme-02/semgrep-scand-vsock" {
 		t.Errorf("CanonicalVsockDir = %q, want /disks/nvme-02/semgrep-scand-vsock", c.CanonicalVsockDir)
 	}
-	if c.RestorePrime != 300*time.Millisecond {
-		t.Errorf("RestorePrime = %s, want 300ms", c.RestorePrime)
+	if c.RestorePrime != 200*time.Millisecond {
+		t.Errorf("RestorePrime = %s, want 200ms", c.RestorePrime)
 	}
 	if c.ScanTimeout != 60*time.Second {
 		t.Errorf("ScanTimeout = %s, want 60s", c.ScanTimeout)

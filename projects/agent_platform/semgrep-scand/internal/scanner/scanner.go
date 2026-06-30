@@ -113,7 +113,7 @@ func New(driver vmDriver, transport guestTransport, cfg Config, logger *slog.Log
 		logger = slog.Default()
 	}
 	if cfg.RestorePrime <= 0 {
-		cfg.RestorePrime = 300 * time.Millisecond
+		cfg.RestorePrime = 200 * time.Millisecond
 	}
 	var sem *semaphore.Weighted
 	if cfg.MaxConcurrent > 0 {
@@ -257,23 +257,28 @@ func (s *Scanner) Scan(ctx context.Context, files []vsockproto.ScanFile) (vsockp
 // RX-queue race, and runs the scan WITHOUT a readiness wait (a restored guest
 // resumes past its readiness announce, so it never re-sends a Hello).
 func (s *Scanner) scanWarm(ctx context.Context, base substrate.SnapshotRef, files []vsockproto.ScanFile) (vsockproto.ScanResult, error) {
+	tRestore := time.Now()
 	h, err := s.driver.Claim(ctx, substrate.ClaimSpec{Arch: s.cfg.Arch, BaseSnapshotRef: base})
 	if err != nil {
 		return vsockproto.ScanResult{}, &GuestUnavailableError{Err: fmt.Errorf("restore guest: %w", err)}
 	}
-	defer s.discard(h)
+	restoreMs := time.Since(tRestore).Milliseconds()
+	defer func() { s.discard(h) }()
 
 	uds := s.driver.VsockUDSPath(h.ThreadID)
 
 	// Prime: the first post-restore vsock connection hits Firecracker's RX-queue
 	// race and is reset or hung. Send a throwaway empty scan with a short deadline to
 	// absorb it; whether it EOFs fast or times out, the next connection is clean.
+	tPrime := time.Now()
 	primeCtx, primeCancel := context.WithTimeout(ctx, s.cfg.RestorePrime)
 	_, _ = s.transport.Scan(primeCtx, uds, vsockproto.ScanRequest{})
 	primeCancel()
+	primeMs := time.Since(tPrime).Milliseconds()
 
 	scanCtx, cancelScan := context.WithTimeout(ctx, s.cfg.ScanTimeout)
 	defer cancelScan()
+	tScan := time.Now()
 	res, err := s.transport.Scan(scanCtx, uds, vsockproto.ScanRequest{Files: files})
 	if err != nil {
 		// Unlike the cold path, a restored guest never proved it warmed (there is no
@@ -282,6 +287,8 @@ func (s *Scanner) scanWarm(ctx context.Context, base substrate.SnapshotRef, file
 		// invalidates the base and retries on a cold boot rather than wedging.
 		return vsockproto.ScanResult{}, &GuestUnavailableError{Err: fmt.Errorf("warm scan: %w", err)}
 	}
+	s.logger.Info("warm scan timing", "restore_ms", restoreMs, "prime_ms", primeMs,
+		"scan_ms", time.Since(tScan).Milliseconds(), "files", len(files), "findings", len(res.Findings))
 	return res, nil
 }
 

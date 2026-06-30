@@ -97,7 +97,7 @@ func Load() (Config, error) {
 		Arch:              os.Getenv("SEMGREP_SCAND_ARCH"),
 		WarmBase:          boolDefault("SEMGREP_SCAND_WARM_BASE", true),
 		BaseKey:           getenvDefault("SEMGREP_SCAND_BASE_KEY", "semgrep-guest"),
-		RestorePrime:      300 * time.Millisecond,
+		RestorePrime:      200 * time.Millisecond,
 		CanonicalVsockDir: getenvDefault("SEMGREP_SCAND_CANONICAL_VSOCK_DIR", "/disks/nvme-02/semgrep-scand-vsock"),
 		ScanTimeout:       60 * time.Second,
 		BootReadyTimeout:  30 * time.Second,
