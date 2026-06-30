@@ -13,7 +13,8 @@
 ## Repo realities that shape every task
 
 - **No local test loop.** Mac runners are not in the BuildBuddy `workflows` pool and the linux fallback is too slow. Each task writes the test and the implementation, commits, and **defers test execution to end-of-plan CI on the pushed branch** (`gh pr checks <n> --watch`, read failures via `mcp__buildbuddy__*`). The "Expected: PASS" notes describe what CI must show, not a local run. You may run the vendored `format` locally (it is fast and standalone) and eyeball `go` compile via your editor, nothing more.
-- **Build new code next to its dependencies, under `projects/agent_platform/`.** The shared packages (`fcvm`, `vsockproto`, `egress-proxy`, `substrate`) live there today. This plan builds `fc-invoke` and the `shim` there too. The `projects/firecracker/{substrate,goosecracker,semgrep}` rename (ADR 029 decision 6) is a later mechanical PR (migration step 5), deliberately last so it is one atomic move, not churn interleaved with logic. **Do not move directories in this plan.**
+- **Everything new lives under `projects/firecracker/` from the start.** Task 0 moves the shared packages (`fcvm`, `vsockproto`, `egress-proxy`, `substrate`) from `projects/agent_platform/` to `projects/firecracker/substrate/` and rewrites the two existing consumers' imports, so all new code has a clean home and clean import paths. **Path mapping used by every task below:** `projects/agent_platform/<pkg>` is now `projects/firecracker/substrate/<pkg>`; the daemon is `projects/firecracker/substrate/invoke/`; the shim is `projects/firecracker/substrate/shim/`; the semgrep guest is `projects/firecracker/semgrep/`. Where a task's `Files:` list still shows an `agent_platform/` path, read it through this mapping (the move lands them under `firecracker/` first).
+- **Parallel execution waves (the dependency DAG).** Task 0 is serial and first (it rebases imports). Then: **wave 1 (parallel)** = shim server+hooks (Task 1-2), shim capabilities (Task 3), fc-invoke config (Task 4), which share no symbols; **wave 2 (parallel)** = vsockhttp transport (Task 5, needs the shim from wave 1), invoker (Task 6, needs substrate + config + the transport interface); **wave 3** = HTTP ingress (Task 7); **wave 4** = main wiring + apko (Task 8). Dispatch wave-1 implementers with worktree isolation so their parallel `format`/gazelle regens do not collide, then land them in sequence.
 - **Conventional Commits enforced** by a `commit-msg` hook. **Never commit to main**; this plan runs in the `feat/fc-invoke` worktree.
 - **`format` regenerates BUILD files** (gazelle) and the home-cluster kustomization. Run it before every commit that adds Go files or deploy manifests.
 - **No em-dashes** in any file you write.
@@ -23,6 +24,34 @@
 ## PR 1: the fc-invoke daemon and the shared shim
 
 The daemon and shim are built and unit-tested with fakes; no consumer is cut over yet. PR 1 is independently mergeable: it adds code, wires an apko image, and ships nothing into the request path.
+
+### Task 0: establish the `projects/firecracker/` home (serial, first)
+
+Move the shared packages so all new code has a clean home and imports. Pure relocation plus import rewrite; no logic change.
+
+**Files:**
+
+- Move: `projects/agent_platform/{fcvm,vsockproto,egress-proxy,substrate}` -> `projects/firecracker/substrate/{fcvm,vsockproto,egress-proxy,substrate}`
+- Modify: every import of those packages in `projects/agent_platform/fc-agentd/**` and `projects/agent_platform/semgrep-scand/**` (and any other referencer found by grep)
+- Add: `GuestHTTPPort uint32 = 1027` to `projects/firecracker/substrate/vsockproto/proto.go` (the inbound HTTP port the shim binds; alongside `ControlPort`/`ScanPort`)
+
+**Step 1.** `git mv` the four package dirs. `grep -rl "agent_platform/\(fcvm\|vsockproto\|egress-proxy\|substrate\)"` to find every importer; rewrite the import paths to `firecracker/substrate/...`.
+
+**Step 2.** Run `format` (gazelle regenerates all affected BUILD files and the home-cluster root). Eyeball that `fc-agentd` and `semgrep-scand` BUILD `deps` now point at the new paths.
+
+**Step 3.** Add the `GuestHTTPPort` constant.
+
+**Step 4.** Commit. CI verifies the whole module still builds with the moved packages (this is the gate; do not assert a local build).
+
+```bash
+git mv projects/agent_platform/fcvm projects/firecracker/substrate/fcvm   # repeat per pkg
+# rewrite imports, then:
+format
+git add -A projects/agent_platform projects/firecracker projects/home-cluster
+git commit -m "refactor(firecracker): move shared substrate packages to projects/firecracker/substrate"
+```
+
+**This task must merge (or at least be committed and CI-green) before wave 1 starts**, because every subsequent import path assumes the new home.
 
 ### Task 1: shim HTTP-over-vsock server + handler interface (guest side)
 
