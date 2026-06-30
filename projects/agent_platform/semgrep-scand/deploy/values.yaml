@@ -12,14 +12,11 @@
 node: node-4
 arch: amd64
 
-# Give each guest 8 vCPUs (node-4 is a 16-core node sitting near-idle, and the pod
-# has no CPU limit, so the guest's vCPU threads burst onto the idle cores). semgrep
-# runs jobs=NumCPU, so more vCPUs = more rule parallelism per scan. maxConcurrent is
-# halved to 2 so the worst case (8 * 2 = 16 vCPU-threads) does not oversubscribe the
-# node's 16 cores under concurrent scans.
-agent:
-  maxConcurrent: 2
-  guestVcpus: 8
+# Guest sizing uses the chart defaults (4 vCPUs, maxConcurrent 4). An 8-vCPU
+# experiment (PR #2955) showed NO speedup for a single small-file scan: the ~1.5s
+# scan leg is fixed per-scan cost (parse + applying ~1609 rules to one small AST),
+# not parallelisable work, so the extra cores sat idle. More vCPUs would only help
+# large files or parallel multi-file batches, which is not the common case here.
 
 firecracker:
   enabled: true
