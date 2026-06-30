@@ -12,7 +12,9 @@ import (
 )
 
 type Monitor struct {
-	// StallAfter is the silence window after which a run is considered wedged.
+	// StallAfter is the silence window after which a run is considered wedged. A
+	// value <= 0 disables the watchdog (never stalls), the safe failure mode for a
+	// misconfigured FC_STALL_AFTER.
 	StallAfter time.Duration
 
 	now  func() time.Time // injectable clock; nil => time.Now
@@ -52,7 +54,7 @@ func (m *Monitor) IdleFor() time.Duration {
 func (m *Monitor) Stalled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return !m.last.IsZero() && m.clock().Sub(m.last) >= m.StallAfter
+	return m.StallAfter > 0 && !m.last.IsZero() && m.clock().Sub(m.last) >= m.StallAfter
 }
 
 // Run polls every interval and calls onStall exactly once per stall (re-armed by
@@ -67,7 +69,7 @@ func (m *Monitor) Run(ctx context.Context, interval time.Duration, onStall func(
 			return
 		case <-t.C:
 			m.mu.Lock()
-			fire := !m.last.IsZero() && !m.done && m.clock().Sub(m.last) >= m.StallAfter
+			fire := m.StallAfter > 0 && !m.last.IsZero() && !m.done && m.clock().Sub(m.last) >= m.StallAfter
 			if fire {
 				m.done = true
 			}
