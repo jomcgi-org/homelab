@@ -515,7 +515,13 @@ func (d *Driver) writeWorkspaceFile(rel, content string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, []byte(content), 0o644)
+	if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
+		return err
+	}
+	// semgrep lsp selects scan targets from git; an untracked file is not a target
+	// and never gets scanned. git add the file so it is a tracked target.
+	_ = exec.Command("git", "-C", d.workspace, "add", "--", rel).Run()
+	return nil
 }
 
 // translate maps one LSP diagnostic to a vsockproto.Finding, carrying the caller's
