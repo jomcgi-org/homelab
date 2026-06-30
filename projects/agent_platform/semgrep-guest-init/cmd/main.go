@@ -107,6 +107,13 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("semgrep lsp warm; rules compiled")
 
+	// Warm the LSP with one realistic scan per supported language BEFORE announcing
+	// readiness, so the base snapshot (taken once the host sees our Hello) captures
+	// the per-process warmup the first real scan otherwise pays. Restored guests then
+	// scan their first file already warmed (~3-4x faster first scan). Best-effort: a
+	// prime failure is logged, not fatal (the guest still serves, just cold-first).
+	warmupPrime(ctx, driver, logger)
+
 	ln, err := scanserver.Listen(vsockproto.ScanPort)
 	if err != nil {
 		return err
@@ -154,6 +161,21 @@ func setupOfflineEnv(logger *slog.Logger) error {
 	}
 	logger.Info("offline semgrep env set", "home", guestHome)
 	return nil
+}
+
+// warmupPrime scans the per-language primer set (primers.go) once so the one-time
+// per-process warm-up is captured in the base snapshot. Bounded by
+// SEMGREP_PRIME_TIMEOUT; best-effort, a failure is logged not fatal.
+func warmupPrime(ctx context.Context, driver *lspdriver.Driver, logger *slog.Logger) {
+	start := time.Now()
+	pctx, cancel := context.WithTimeout(ctx, durationEnv("SEMGREP_PRIME_TIMEOUT", 45*time.Second))
+	defer cancel()
+	findings, err := driver.Scan(pctx, primerFiles)
+	if err != nil {
+		logger.Warn("warmup prime failed", "err", err, "took", time.Since(start))
+		return
+	}
+	logger.Info("warmup prime done", "languages", len(primerFiles), "primer_findings", len(findings), "took", time.Since(start))
 }
 
 // announceReady dials the host ControlPort and sends a Hello so the controller
