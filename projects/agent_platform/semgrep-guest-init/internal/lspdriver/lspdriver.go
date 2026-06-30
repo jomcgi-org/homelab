@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
 )
@@ -53,8 +54,24 @@ type Driver struct {
 
 	scanMu sync.Mutex // serialises Scan calls (one warm process, deterministic versions)
 
-	diagMu      sync.Mutex
-	diagWaiters map[string][]chan []lspDiagnostic
+	diagMu sync.Mutex
+	// latestDiag holds the most recent publishDiagnostics per URI (latest wins).
+	// semgrep lsp publishes an EMPTY set on didOpen (clearing prior state) and the
+	// real findings only after its async scan completes, so Scan must read the
+	// latest publish for the URI, not the first one.
+	latestDiag map[string][]lspDiagnostic
+	// diagWaiters holds first-publish waiters keyed by URI: each registered channel
+	// is closed on the next publishDiagnostics for that URI. WaitReady uses this to
+	// detect that scanning works (any publish proves rules are compiled).
+	diagWaiters map[string][]chan struct{}
+
+	progMu sync.Mutex
+	// progGen increments once per completed scan, detected via the semgrep lsp
+	// work-done-progress cycle ($/progress notification with value.kind == "end").
+	progGen uint64
+	// progCh is closed when progGen advances and is then replaced; a waiter reads
+	// (gen, progCh) atomically under progMu so it never misses a completion signal.
+	progCh chan struct{}
 }
 
 // New builds a Driver over an arbitrary Transport and a workspace directory (the
@@ -67,7 +84,9 @@ func New(t Transport, workspace string) *Driver {
 		w:           t.Send(),
 		pending:     make(map[int]chan rpcResponse),
 		opened:      make(map[string]int),
-		diagWaiters: make(map[string][]chan []lspDiagnostic),
+		latestDiag:  make(map[string][]lspDiagnostic),
+		diagWaiters: make(map[string][]chan struct{}),
+		progCh:      make(chan struct{}),
 	}
 	go d.readLoop(bufio.NewReader(t.Recv()))
 	return d
@@ -134,9 +153,9 @@ type rpcMessage struct {
 }
 
 // readLoop reads framed messages and dispatches them: responses go to the waiting
-// caller; publishDiagnostics notifications go to the diagnostics hub; any other
-// server->client request (one with an id) gets a null reply so the server never
-// blocks waiting on us.
+// caller; publishDiagnostics notifications update the diagnostics hub; $/progress
+// notifications drive scan-completion detection; any other server->client request
+// (one with an id) gets a null reply so the server never blocks waiting on us.
 func (d *Driver) readLoop(r *bufio.Reader) {
 	for {
 		payload, err := readFrame(r)
@@ -149,8 +168,11 @@ func (d *Driver) readLoop(r *bufio.Reader) {
 			continue // skip an unparseable frame rather than killing the loop
 		}
 		if msg.Method != "" {
-			if msg.Method == "textDocument/publishDiagnostics" {
+			switch msg.Method {
+			case "textDocument/publishDiagnostics":
 				d.handleDiagnostics(msg.Params)
+			case "$/progress":
+				d.handleProgress(msg.Params)
 			}
 			if msg.ID != nil {
 				// Server->client request: acknowledge with null so it proceeds.
@@ -258,29 +280,94 @@ type publishDiagnosticsParams struct {
 	Diagnostics []lspDiagnostic `json:"diagnostics"`
 }
 
+// handleDiagnostics records the latest diagnostics for a URI (latest wins, so a
+// later real-findings publish overwrites the premature empty publish semgrep emits
+// on didOpen) and wakes any first-publish waiters registered for that URI.
 func (d *Driver) handleDiagnostics(raw json.RawMessage) {
 	var p publishDiagnosticsParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
 	d.diagMu.Lock()
+	d.latestDiag[p.URI] = p.Diagnostics
 	waiters := d.diagWaiters[p.URI]
 	delete(d.diagWaiters, p.URI)
 	d.diagMu.Unlock()
 	for _, ch := range waiters {
-		ch <- p.Diagnostics
+		close(ch)
 	}
 }
 
-// subscribeDiag registers interest in the next publishDiagnostics for uri. Callers
-// subscribe BEFORE sending didOpen/didChange so a fast server reply is never
-// missed. The returned channel receives exactly one delivery.
-func (d *Driver) subscribeDiag(uri string) <-chan []lspDiagnostic {
-	ch := make(chan []lspDiagnostic, 1)
+// subscribeDiag registers a first-publish waiter for uri: the returned channel is
+// closed by handleDiagnostics on the next publishDiagnostics for uri. WaitReady
+// subscribes BEFORE opening the probe document so a fast server reply is never
+// missed. This only signals THAT a publish happened, not its contents.
+func (d *Driver) subscribeDiag(uri string) <-chan struct{} {
+	ch := make(chan struct{})
 	d.diagMu.Lock()
 	d.diagWaiters[uri] = append(d.diagWaiters[uri], ch)
 	d.diagMu.Unlock()
 	return ch
+}
+
+// lspProgressParams is the partial wire shape of a $/progress notification. semgrep
+// lsp wraps each scan in a work-done-progress cycle whose value.kind goes
+// "begin" -> ("report" ...) -> "end"; only the "end" marks a completed scan.
+type lspProgressParams struct {
+	Value struct {
+		Kind string `json:"kind"`
+	} `json:"value"`
+}
+
+// handleProgress advances the scan-completion generation on each $/progress "end".
+// It captures the moment an async scan finishes; because readLoop processes frames
+// in order, any publishDiagnostics for that scan have already updated latestDiag by
+// the time the matching "end" arrives.
+func (d *Driver) handleProgress(raw json.RawMessage) {
+	var p lspProgressParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return
+	}
+	if p.Value.Kind != "end" {
+		return
+	}
+	d.progMu.Lock()
+	d.progGen++
+	close(d.progCh)
+	d.progCh = make(chan struct{})
+	d.progMu.Unlock()
+}
+
+// scanProgressGrace bounds how long Scan waits for a $/progress "end" before
+// falling back to best-effort collection of whatever diagnostics have arrived. It
+// is deliberately well under any sane ctx scan timeout so a semgrep build that does
+// not emit progress degrades to best-effort rather than hanging the request.
+const scanProgressGrace = 3 * time.Second
+
+// waitScanComplete blocks until progGen advances past startGen (a scan finished
+// after our document opens), ctx is cancelled, or the grace window elapses. It
+// returns ctx.Err() only on real cancellation; a grace-window timeout returns nil
+// so the caller proceeds with whatever was collected (best-effort fallback).
+func (d *Driver) waitScanComplete(ctx context.Context, startGen uint64) error {
+	grace := time.NewTimer(scanProgressGrace)
+	defer grace.Stop()
+	for {
+		d.progMu.Lock()
+		gen := d.progGen
+		ch := d.progCh
+		d.progMu.Unlock()
+		if gen > startGen {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-grace.C:
+			return nil // best-effort fallback: no progress emitted in time
+		case <-ch:
+			// progGen advanced; loop to re-read and confirm it passed startGen.
+		}
+	}
 }
 
 // --- public LSP operations ---
@@ -339,37 +426,51 @@ func (d *Driver) Scan(ctx context.Context, files []vsockproto.ScanFile) ([]vsock
 	d.scanMu.Lock()
 	defer d.scanMu.Unlock()
 
-	type sub struct {
+	// Snapshot the scan-completion generation before opening any documents, so we
+	// can detect a $/progress "end" that lands strictly after our opens.
+	d.progMu.Lock()
+	startGen := d.progGen
+	d.progMu.Unlock()
+
+	type target struct {
 		path string
 		uri  string
-		ch   <-chan []lspDiagnostic
 	}
-	subs := make([]sub, 0, len(files))
-	// Subscribe to every uri first, then drive the document opens/changes, so the
-	// server can never publish diagnostics into a gap before we are listening.
+	targets := make([]target, 0, len(files))
 	for _, f := range files {
 		rel := cleanRel(f.Path)
 		uri := pathToURI(filepath.Join(d.workspace, rel))
 		if err := d.writeWorkspaceFile(rel, f.Content); err != nil {
 			return nil, fmt.Errorf("lspdriver: write %s: %w", f.Path, err)
 		}
-		subs = append(subs, sub{path: f.Path, uri: uri, ch: d.subscribeDiag(uri)})
+		// Drop any stale diagnostics for this uri (e.g. a prior scan, or the empty
+		// publish semgrep emits on didOpen) so we only read this scan's output.
+		d.diagMu.Lock()
+		delete(d.latestDiag, uri)
+		d.diagMu.Unlock()
+		targets = append(targets, target{path: f.Path, uri: uri})
 		if err := d.openOrChange(uri, rel, f.Content); err != nil {
 			return nil, err
 		}
 	}
 
+	// Wait for semgrep's async scan to complete (its $/progress "end") rather than
+	// grabbing the premature empty publish. waitScanComplete returns an error only
+	// on real ctx cancellation; a grace-window timeout falls through to whatever
+	// latest diagnostics were collected (best-effort), so a build that emits no
+	// progress degrades rather than hangs.
+	if err := d.waitScanComplete(ctx, startGen); err != nil {
+		return nil, err
+	}
+
 	var findings []vsockproto.Finding
-	for _, s := range subs {
-		select {
-		case <-ctx.Done():
-			return findings, ctx.Err()
-		case diags := <-s.ch:
-			for _, diag := range diags {
-				findings = append(findings, translate(s.path, diag))
-			}
+	d.diagMu.Lock()
+	for _, tgt := range targets {
+		for _, diag := range d.latestDiag[tgt.uri] {
+			findings = append(findings, translate(tgt.path, diag))
 		}
 	}
+	d.diagMu.Unlock()
 	return findings, nil
 }
 
