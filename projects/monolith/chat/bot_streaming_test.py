@@ -12,7 +12,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import ToolCallPart
 
-from chat.bot import ChatBot, ThinkingView, STREAM_EDIT_INTERVAL
+from chat.bot import ChatBot, BotMessageView, STREAM_EDIT_INTERVAL
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ class TestThinkingCollected:
         sent = message.reply.return_value
         final_edit = sent.edit.call_args_list[-1]
         view = final_edit.kwargs.get("view")
-        assert isinstance(view, ThinkingView)
+        assert isinstance(view, BotMessageView)
         assert view.thinking_text == "Let me think about this."
 
 
