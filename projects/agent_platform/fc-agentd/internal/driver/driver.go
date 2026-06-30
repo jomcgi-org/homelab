@@ -19,7 +19,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/fcclient"
+	"github.com/jomcgi/homelab/projects/agent_platform/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/agent_platform/substrate"
 	"go.opentelemetry.io/otel"
 )
