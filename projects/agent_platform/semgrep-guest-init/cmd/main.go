@@ -50,6 +50,18 @@ func run(logger *slog.Logger) error {
 	// Raw FC boot leaves loopback DOWN; bring it up before anything binds 127.0.0.1.
 	bringUpLoopback(logger)
 
+	// A raw Firecracker boot gives PID 1 no environment, so PATH is empty and every
+	// execvp fails with ENOENT. semgrep-core shells out to `uname` to build its TLS
+	// authenticator at startup, so an unset PATH crashes it even though uname is
+	// installed. Set a standard PATH plus a UTF-8 locale for pysemgrep.
+	for k, v := range map[string]string{
+		"PATH":   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"LANG":   "C.UTF-8",
+		"LC_ALL": "C.UTF-8",
+	} {
+		_ = os.Setenv(k, v)
+	}
+
 	if err := setupOfflineEnv(logger); err != nil {
 		return err
 	}
