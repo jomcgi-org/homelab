@@ -14,7 +14,12 @@ firecracker:
   enabled: true
   baseRootfsPath: /disks/nvme-02/semgrep-base/rootfs.ext4
   scanRoot: /disks/nvme-02/semgrep-scand
-  rootfsProvisioner: devmapper
+  # copy (not devmapper): semgrep-scand shares node-4's devpool thin-pool with
+  # fc-agentd, and the fcvm provisioner hardcodes the same thin-device ID range, so
+  # devmapper collides (create_thin 3000000: File exists). Copy avoids the pool. The
+  # low-latency path (snapshot/restore) will reinstate devmapper with a per-daemon
+  # ID range.
+  rootfsProvisioner: copy
   thinPool: devpool
 
 # The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
