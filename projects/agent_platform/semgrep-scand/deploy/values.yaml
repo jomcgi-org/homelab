@@ -12,6 +12,15 @@
 node: node-4
 arch: amd64
 
+# Give each guest 8 vCPUs (node-4 is a 16-core node sitting near-idle, and the pod
+# has no CPU limit, so the guest's vCPU threads burst onto the idle cores). semgrep
+# runs jobs=NumCPU, so more vCPUs = more rule parallelism per scan. maxConcurrent is
+# halved to 2 so the worst case (8 * 2 = 16 vCPU-threads) does not oversubscribe the
+# node's 16 cores under concurrent scans.
+agent:
+  maxConcurrent: 2
+  guestVcpus: 8
+
 firecracker:
   enabled: true
   baseRootfsPath: /disks/nvme-02/semgrep-base/rootfs.ext4
