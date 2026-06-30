@@ -243,14 +243,15 @@ class BotMessageView(discord.ui.View):
 
         await interaction.response.defer()
 
-        # Disable the button so it can't be spammed. The edited (disabled)
-        # component is stored on the message itself, so it survives a bot
-        # restart even though the re-registered persistent view starts enabled.
-        button.disabled = True
+        # Remove the button so it can't be clicked again. The edited (button-
+        # removed) component is stored on the message itself, so it survives a
+        # bot restart even though the re-registered persistent view starts with
+        # the button present.
+        self.remove_item(button)
         try:
             await interaction.message.edit(view=self)
         except discord.HTTPException:
-            logger.exception("Fact-check: failed to disable button")
+            logger.exception("Fact-check: failed to remove button")
 
         try:
             channel_id = str(interaction.channel.id)
@@ -267,6 +268,10 @@ class BotMessageView(discord.ui.View):
                 await interaction.followup.send(
                     f"Fact-checking in {thread.mention}", ephemeral=True
                 )
+                # Attribute the check publicly so the channel knows who asked.
+                # Its own message, not the placeholder, which the stream
+                # overwrites with the verdict.
+                await thread.send(f"Fact-check requested by {interaction.user.mention}")
                 placeholder = await thread.send(FACT_CHECK_PLACEHOLDER)
             except discord.HTTPException:
                 placeholder = await interaction.followup.send(FACT_CHECK_PLACEHOLDER)

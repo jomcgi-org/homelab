@@ -46,6 +46,7 @@ def _make_interaction() -> AsyncMock:
     thread.mention = "<#555>"
     thread.send = AsyncMock(return_value=placeholder)
 
+    interaction.user.mention = "<@42>"
     interaction.message = AsyncMock()
     interaction.message.thread = None
     interaction.message.edit = AsyncMock()
@@ -181,13 +182,19 @@ class TestFactCheckCallback:
 
         interaction.response.defer.assert_called_once()
         interaction.message.create_thread.assert_called_once()
+        # The clicker is named publicly in the thread so the channel knows who
+        # to blame, in its own message (the placeholder is overwritten by the
+        # streamed verdict).
+        interaction.message.create_thread.return_value.send.assert_any_call(
+            "Fact-check requested by <@42>"
+        )
         final = _streamed_message(interaction).edit.call_args.kwargs["content"]
         assert "Fact check:" in final
         assert "accurate" in final
 
     @pytest.mark.asyncio
-    async def test_button_disabled_after_use(self):
-        """The fact-check button is disabled and the view re-edited onto the message."""
+    async def test_button_removed_after_use(self):
+        """The fact-check button is removed and the view re-edited onto the message."""
         view = BotMessageView("some claim")
         interaction = _make_interaction()
         button = _get_button_by_label(view, "Get your facts STR8!")
@@ -196,7 +203,7 @@ class TestFactCheckCallback:
         with p1, p2:
             await button.callback(interaction)
 
-        assert button.disabled is True
+        assert button not in view.children
         interaction.message.edit.assert_called_once()
         assert interaction.message.edit.call_args.kwargs.get("view") is view
 
