@@ -93,6 +93,18 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("semgrep lsp warm; rules compiled")
 
+	// DEBUG: exercise Scan against real semgrep on boot and log what it returns, so
+	// the smoke harness console shows the publishDiagnostics/progress sequence.
+	{
+		scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
+		sres, serr := driver.Scan(scanCtx, []vsockproto.ScanFile{{Path: "selftest.py", Content: "import subprocess\n\ndef r(c):\n    subprocess.Popen(c, shell=True)\n"}})
+		scanCancel()
+		logger.Info("DEBUG self-scan done", "findings", len(sres), "err", serr)
+		for i, f := range sres {
+			logger.Info("DEBUG self-scan finding", "i", i, "rule", f.RuleID, "msg", f.Message)
+		}
+	}
+
 	ln, err := scanserver.Listen(vsockproto.ScanPort)
 	if err != nil {
 		return err

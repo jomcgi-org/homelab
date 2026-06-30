@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,6 +169,7 @@ func (d *Driver) readLoop(r *bufio.Reader) {
 			continue // skip an unparseable frame rather than killing the loop
 		}
 		if msg.Method != "" {
+			slog.Info("DEBUG lsp recv", "method", msg.Method, "isReq", msg.ID != nil)
 			switch msg.Method {
 			case "textDocument/publishDiagnostics":
 				d.handleDiagnostics(msg.Params)
@@ -288,6 +290,7 @@ func (d *Driver) handleDiagnostics(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
+	slog.Info("DEBUG lsp publishDiag", "uri", p.URI, "count", len(p.Diagnostics))
 	d.diagMu.Lock()
 	d.latestDiag[p.URI] = p.Diagnostics
 	waiters := d.diagWaiters[p.URI]
@@ -328,6 +331,7 @@ func (d *Driver) handleProgress(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
+	slog.Info("DEBUG lsp progress", "kind", p.Value.Kind)
 	if p.Value.Kind != "end" {
 		return
 	}
