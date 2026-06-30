@@ -97,7 +97,7 @@ func New(t Transport, workspace string) *Driver {
 // process inherits the current environment (main sets the OFFLINE semgrep env
 // before calling Spawn), so the rule engine never reaches the Semgrep cloud.
 func Spawn(ctx context.Context, bin, workspace string) (*Driver, error) {
-	cmd := exec.CommandContext(ctx, bin, "lsp")
+	cmd := exec.CommandContext(ctx, bin, "lsp", "--debug")
 	cmd.Env = os.Environ()
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
