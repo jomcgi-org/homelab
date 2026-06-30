@@ -9,7 +9,9 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/internal/scanserver",
     visibility = ["//projects/agent_platform/semgrep-guest-init:__subpackages__"],
-    deps = ["//projects/agent_platform/vsockproto"] + select({
+    deps = [
+        "//projects/agent_platform/vsockproto",
+    ] + select({
         "@rules_go//go/platform:android": [
             "@org_golang_x_sys//unix",
         ],
