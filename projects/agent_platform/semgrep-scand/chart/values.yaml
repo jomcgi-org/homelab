@@ -1,0 +1,129 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/semgrep-scand
+  tag: latest
+  pullPolicy: Always
+
+# The semgrep-guest image (projects/agent_platform/semgrep-guest) the base rootfs
+# is built from. The base-rootfs initContainer exports this image and bakes it
+# into firecracker.baseRootfsPath, so the base always matches the deployed guest
+# (the vsock-serving semgrep-guest-init). Bazel pins repository + tag at build time.
+guestImage:
+  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/semgrep-guest
+  tag: latest
+
+# Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build the
+# ext4 base rootfs in-cluster, removing the manual node-4 sudo step. Reused from
+# fc-agentd's rootfs-builder (a generic crane+mkfs.ext4 image). Bazel-pinned.
+rootfsBuilder:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd/rootfs-builder
+    tag: latest
+  # Size of the ext4 base rootfs image built from the semgrep-guest filesystem
+  # (the guest carries semgrep, the Pro engine and the merged rules). 4G covers a
+  # ~3G guest with headroom.
+  rootfsSize: 4G
+
+replicas: 1
+
+podAnnotations: {}
+
+# node + arch the daemon runs on. Firecracker guests are node/arch-affine, so the
+# daemon is pinned to its node.
+node: node-4
+arch: amd64
+
+nodeSelector:
+  kubernetes.io/hostname: node-4
+
+# Disposable scanner tier (ADR platform/010): scanners must die before inference
+# or the database under memory pressure, so the pod takes the lowest priority.
+priorityClassName: homelab-disposable
+
+tolerations: []
+affinity: {}
+
+# HTTP listener the monolith calls (POST /scan, GET /healthz). The Service exposes
+# this port in-cluster; the daemon binds :{{ port }} via SEMGREP_SCAND_LISTEN_ADDR.
+service:
+  port: 8080
+
+# Concurrency + per-guest sizing + OOM safety for the microVM tier. semgrep-scand
+# runs each Firecracker guest as a child process, so guest RAM counts against THIS
+# container's cgroup. Two mechanisms keep that from taking the daemon down:
+#   1. maxConcurrent caps live microVMs; extra /scan requests queue. Since
+#      Firecracker hard-caps each guest's RAM, maxConcurrent * guestMemMib is a
+#      true upper bound on microVM memory in the cgroup.
+#   2. guestOomScoreAdj biases the kernel to kill a guest, never the daemon, if
+#      memory pressure does hit (the disposable-victim intent of ADR platform/010,
+#      applied to processes because the guests are not pods).
+agent:
+  maxConcurrent: 4
+  guestMemMib: 2048
+  guestVcpus: 4
+  guestOomScoreAdj: 1000
+
+# The limit must hold maxConcurrent guests plus the daemon: 4 * 2Gi + ~1Gi
+# overhead = 9Gi. Bursty: request a small warm floor (~1 guest), let the limit
+# cover the capped peak. The admission cap guarantees the cgroup never exceeds it,
+# and oom_score_adj guarantees a guest dies first if it ever nears.
+resources:
+  requests:
+    cpu: 50m
+    memory: 2Gi
+  limits:
+    memory: 9Gi
+
+# Firecracker substrate paths on node-4. Driving real microVMs (privileged + these
+# host mounts) is gated behind `firecracker.enabled`; until then the daemon serves
+# /healthz and rejects /scan (no substrate).
+firecracker:
+  enabled: false
+  binPath: /opt/kata/bin/firecracker
+  kernelImagePath: /opt/kata/share/kata-containers/vmlinux.container
+  kernelBootArgs: ""
+  # The in-guest init the kernel boots into (semgrep-guest-init, the guest image's
+  # entrypoint). A raw FC boot ignores the OCI entrypoint, so the driver appends
+  # init=<path>.
+  harnessInit: /usr/local/bin/semgrep-guest-init
+  # The whole nvme dir is mounted so both the per-scan FC bundles (scanRoot) and
+  # the shared base rootfs (baseRootfsPath) are reachable.
+  nvmeRoot: /disks/nvme-02
+  # Directory holding per-scan FC bundles (SEMGREP_SCAND_NVME_ROOT). A subdir of
+  # the mounted nvme disk.
+  scanRoot: /disks/nvme-02/semgrep-scand
+  # baseRootfsPath is the read-only semgrep-guest base rootfs image (built by the
+  # initContainer). When set, each scan gets its own writable copy/snapshot.
+  baseRootfsPath: ""
+  # Per-scan rootfs strategy: "copy" (default; full file copy) or "devmapper"
+  # (copy-on-write thin-snapshot of the base in the node's shared thin-pool).
+  rootfsProvisioner: copy
+  thinPool: devpool
+
+tracing:
+  endpoint: ""
+  serviceName: semgrep-scand
+  serviceVersion: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Non-privileged by default (uid 65532). When firecracker.enabled is true the pod
+# runs privileged with /dev/kvm + the kata/devmapper/nvme host mounts so it can
+# exec firecracker and read/write per-scan rootfs bundles.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
