@@ -103,6 +103,19 @@ class TestShowThinkingCallback:
         interaction.response.send_message.assert_called_once()
 
 
+def _patch_fact_check(mock_output: str, context: str = ""):
+    """Patch both the fact-check agent and context lookup for button callback tests."""
+    mock_result = MagicMock()
+    mock_result.output = mock_output
+    mock_agent = AsyncMock()
+    mock_agent.run = AsyncMock(return_value=mock_result)
+    return (
+        patch("chat.bot._get_fact_check_agent", return_value=mock_agent),
+        patch("chat.bot._get_recent_context", return_value=context),
+        mock_agent,
+    )
+
+
 class TestFactCheckCallback:
     """Unit tests for BotMessageView.fact_check() button callback."""
 
@@ -112,12 +125,10 @@ class TestFactCheckCallback:
         view = BotMessageView("The R-27ER has active radar homing.")
         interaction = _make_interaction()
 
-        mock_result = MagicMock()
-        mock_result.output = "Verdict: accurate. The R-27ER does use ARH at endgame."
-        mock_agent = AsyncMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch("chat.bot._get_fact_check_agent", return_value=mock_agent):
+        p1, p2, _ = _patch_fact_check(
+            "Verdict: accurate. The R-27ER does use ARH at endgame."
+        )
+        with p1, p2:
             await _get_button_by_label(view, "Get your facts STR8!").callback(
                 interaction
             )
@@ -129,24 +140,53 @@ class TestFactCheckCallback:
         assert "accurate" in call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_fact_check_passes_response_text_to_agent(self):
-        """The agent receives the bot's response text as the prompt."""
+    async def test_response_text_included_in_prompt(self):
+        """The agent receives the bot's response text in the prompt."""
         response = "The AIM-7P is a 1970s semi-active round."
         view = BotMessageView(response)
         interaction = _make_interaction()
 
-        mock_result = MagicMock()
-        mock_result.output = "Actually the AIM-7P is a modernized variant."
-        mock_agent = AsyncMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch("chat.bot._get_fact_check_agent", return_value=mock_agent):
+        p1, p2, mock_agent = _patch_fact_check(
+            "Actually the AIM-7P is a modernized variant."
+        )
+        with p1, p2:
             await _get_button_by_label(view, "Get your facts STR8!").callback(
                 interaction
             )
 
-        call_args = mock_agent.run.call_args
-        assert response in call_args[0][0]
+        assert response in mock_agent.run.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_conversation_context_prepended_when_available(self):
+        """When recent channel context exists it is prepended to the prompt."""
+        view = BotMessageView("The Sparrow needs continuous radar lock.")
+        interaction = _make_interaction()
+        context = "User: are sparrows good in BVR?\nBot: They have limitations."
+
+        p1, p2, mock_agent = _patch_fact_check("Mixed verdict.", context=context)
+        with p1, p2:
+            await _get_button_by_label(view, "Get your facts STR8!").callback(
+                interaction
+            )
+
+        prompt = mock_agent.run.call_args[0][0]
+        assert "Recent conversation:" in prompt
+        assert context in prompt
+        assert "The Sparrow needs continuous radar lock." in prompt
+
+    @pytest.mark.asyncio
+    async def test_no_context_header_when_context_empty(self):
+        """When context lookup returns empty string, no 'Recent conversation:' header is added."""
+        view = BotMessageView("Some claim.")
+        interaction = _make_interaction()
+
+        p1, p2, mock_agent = _patch_fact_check("Looks right.", context="")
+        with p1, p2:
+            await _get_button_by_label(view, "Get your facts STR8!").callback(
+                interaction
+            )
+
+        assert "Recent conversation:" not in mock_agent.run.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_agent_failure_sends_ephemeral_error(self):
@@ -156,15 +196,16 @@ class TestFactCheckCallback:
 
         mock_agent = AsyncMock()
         mock_agent.run = AsyncMock(side_effect=Exception("LLM timeout"))
-
-        with patch("chat.bot._get_fact_check_agent", return_value=mock_agent):
+        with (
+            patch("chat.bot._get_fact_check_agent", return_value=mock_agent),
+            patch("chat.bot._get_recent_context", return_value=""),
+        ):
             await _get_button_by_label(view, "Get your facts STR8!").callback(
                 interaction
             )
 
         interaction.response.defer.assert_called_once()
-        call_args = interaction.followup.send.call_args
-        assert call_args.kwargs.get("ephemeral") is True
+        assert interaction.followup.send.call_args.kwargs.get("ephemeral") is True
 
     @pytest.mark.asyncio
     async def test_long_fact_check_result_is_truncated(self):
@@ -172,12 +213,8 @@ class TestFactCheckCallback:
         view = BotMessageView("some response")
         interaction = _make_interaction()
 
-        mock_result = MagicMock()
-        mock_result.output = "x" * 3000
-        mock_agent = AsyncMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch("chat.bot._get_fact_check_agent", return_value=mock_agent):
+        p1, p2, _ = _patch_fact_check("x" * 3000)
+        with p1, p2:
             await _get_button_by_label(view, "Get your facts STR8!").callback(
                 interaction
             )
