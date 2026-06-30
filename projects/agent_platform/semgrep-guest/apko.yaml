@@ -1,0 +1,35 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    - git
+    # pysemgrep CLI: provides `semgrep lsp` and bundles its own OSS semgrep-core.
+    # The Pro engine is layered separately and selected via SEMGREP_CORE_BIN.
+    # This pulls python3 transitively, so no separate python3/py3-pip is needed.
+    - semgrep
+
+archs:
+  - x86_64
+  - aarch64
+
+# Run as root: this image is the PID 1 of a raw Firecracker microVM. Boot leaves
+# loopback DOWN and semgrep-guest-init brings `lo` UP via a SIOCSIFFLAGS ioctl
+# (CAP_NET_ADMIN) before anything binds 127.0.0.1. No accounts/run-as block, so
+# the default uid 0 applies.
+
+entrypoint:
+  command: /usr/local/bin/semgrep-guest-init
+
+environment:
+  # The Wolfi `semgrep` package installs the CLI at /usr/bin/semgrep; the guest
+  # init defaults to /opt/semgrep-venv/bin/semgrep, so point it at the package.
+  SEMGREP_BIN: /usr/bin/semgrep
+  # Pro engine baked by engine_tar; guest-init also defaults this, set explicitly
+  # for self-documentation.
+  SEMGREP_CORE_BIN: /opt/semgrep/semgrep-core-proprietary
+  # Merged rules dir baked by rules_tar; matches the guest-init default.
+  SEMGREP_RULES_DIR: /etc/semgrep/rules

@@ -47,6 +47,7 @@ multirun(
         "//projects/agent_platform/fc-agentd/rootfs-builder:image.push",
         "//projects/agent_platform/fc-agentd:image.push",
         "//projects/agent_platform/harness:image.push",
+        "//projects/agent_platform/semgrep-guest:image.push",
         "//projects/grimoire/api:image.push",
         "//projects/grimoire/frontend:image.push",
         "//projects/grimoire/ws-gateway:image.push",
