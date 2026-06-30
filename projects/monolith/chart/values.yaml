@@ -507,6 +507,13 @@ chat:
   onepassword:
     itemPath: ""
 
+# semgrep_scan MCP tool: URL of the in-cluster semgrep-scand HTTP daemon the
+# tool POSTs changed files to. Empty disables the env injection (the tool then
+# returns a structured "not configured" error). The real address is set in
+# deploy/values.yaml; never hardcode it in a template.
+semgrep:
+  scandUrl: ""
+
 # goosecracker artifact agent (ADR 024): syncs the OpenRouter API key from
 # 1Password into the `goosecracker` Secret, consumed by the fc-agentd egress
 # proxy to swap the artifact tier's kloak:or: placeholder on openrouter.ai.
