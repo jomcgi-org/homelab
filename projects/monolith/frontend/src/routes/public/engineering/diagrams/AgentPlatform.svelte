@@ -11,19 +11,18 @@
     <DBox role="source">Discord</DBox>
     <DBox role="source">Alerts</DBox>
   </DGroup>
-  <DArrow label="jobs" />
-  <DBox role="process" sub="Go + JetStream">Orchestrator</DBox>
   <DArrow label="dispatch" />
-  <DGroup label="Sandbox pod" stack>
-    <DBox role="process" sub="Claude / Goose">Agent</DBox>
-    <DBox role="output" sub="isolated">Workspace</DBox>
+  <DBox role="process" sub="Postgres reconcile">Controller</DBox>
+  <DArrow label="restore 28ms" />
+  <DGroup label="Firecracker microVM" stack>
+    <DBox role="process" sub="vsock-only guest">Agent</DBox>
+    <DBox role="output" sub="snapshot / restore">Clean VM per task</DBox>
   </DGroup>
-  <DArrow label="tool calls" />
-  <DBox role="store" sub="MCP gateway, RBAC">Context Forge</DBox>
+  <DArrow label="egress" />
+  <DBox role="store" sub="placeholder to real key">TLS egress proxy</DBox>
   <DArrow />
-  <DGroup label="Tools" stack>
-    <DBox role="output">Cluster</DBox>
-    <DBox role="output">Knowledge graph</DBox>
-    <DBox role="output" sub="vLLM on 4090">Inference</DBox>
+  <DGroup label="Models" stack>
+    <DBox role="output" sub="vLLM on 4090">Qwen3.6 MoE</DBox>
+    <DBox role="external" sub="over swapped egress">Frontier API</DBox>
   </DGroup>
 </Diagram>

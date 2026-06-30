@@ -2,6 +2,7 @@
 // from vitest (node env) where .svelte files can't be parsed.
 export const diagramIds = [
   "agent-platform",
+  "goosecracker",
   "knowledge-graph",
   "loom",
   "oci-model-cache",
