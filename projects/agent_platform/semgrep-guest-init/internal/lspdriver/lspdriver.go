@@ -56,22 +56,19 @@ type Driver struct {
 
 	diagMu sync.Mutex
 	// latestDiag holds the most recent publishDiagnostics per URI (latest wins).
-	// semgrep lsp publishes an EMPTY set on didOpen (clearing prior state) and the
-	// real findings only after its async scan completes, so Scan must read the
-	// latest publish for the URI, not the first one.
+	// semgrep lsp may publish an EMPTY set (clearing prior state) and the real
+	// findings a few tens of ms later, so Scan reads the latest publish for the URI,
+	// not the first. A URI key is present once at least one publish has arrived
+	// (absent == not yet scanned; a 0-finding file still gets an explicit empty
+	// publish, so it lands present-but-empty).
 	latestDiag map[string][]lspDiagnostic
-	// diagWaiters holds first-publish waiters keyed by URI: each registered channel
-	// is closed on the next publishDiagnostics for that URI. WaitReady uses this to
-	// detect that scanning works (any publish proves rules are compiled).
+	// diagCh broadcasts per-URI publishes: the channel for a URI is closed and
+	// dropped on every publishDiagnostics for it, so a waiter can settle on "no new
+	// publish for a quiet window".
+	diagCh map[string]chan struct{}
+	// diagWaiters holds one-shot first-publish waiters keyed by URI, used only by
+	// WaitReady to detect that scanning works (any publish proves rules compiled).
 	diagWaiters map[string][]chan struct{}
-
-	progMu sync.Mutex
-	// progGen increments once per completed scan, detected via the semgrep lsp
-	// work-done-progress cycle ($/progress notification with value.kind == "end").
-	progGen uint64
-	// progCh is closed when progGen advances and is then replaced; a waiter reads
-	// (gen, progCh) atomically under progMu so it never misses a completion signal.
-	progCh chan struct{}
 }
 
 // New builds a Driver over an arbitrary Transport and a workspace directory (the
@@ -85,8 +82,8 @@ func New(t Transport, workspace string) *Driver {
 		pending:     make(map[int]chan rpcResponse),
 		opened:      make(map[string]int),
 		latestDiag:  make(map[string][]lspDiagnostic),
+		diagCh:      make(map[string]chan struct{}),
 		diagWaiters: make(map[string][]chan struct{}),
-		progCh:      make(chan struct{}),
 	}
 	go d.readLoop(bufio.NewReader(t.Recv()))
 	return d
@@ -290,12 +287,34 @@ func (d *Driver) handleDiagnostics(raw json.RawMessage) {
 	}
 	d.diagMu.Lock()
 	d.latestDiag[p.URI] = p.Diagnostics
+	if ch, ok := d.diagCh[p.URI]; ok {
+		close(ch)
+		delete(d.diagCh, p.URI)
+	}
 	waiters := d.diagWaiters[p.URI]
 	delete(d.diagWaiters, p.URI)
 	d.diagMu.Unlock()
 	for _, ch := range waiters {
 		close(ch)
 	}
+}
+
+// diagSignalLocked returns a channel that handleDiagnostics closes on the next
+// publishDiagnostics for uri. Caller must hold diagMu.
+func (d *Driver) diagSignalLocked(uri string) <-chan struct{} {
+	ch, ok := d.diagCh[uri]
+	if !ok {
+		ch = make(chan struct{})
+		d.diagCh[uri] = ch
+	}
+	return ch
+}
+
+// snapshotDiag returns the latest diagnostics recorded for uri.
+func (d *Driver) snapshotDiag(uri string) []lspDiagnostic {
+	d.diagMu.Lock()
+	defer d.diagMu.Unlock()
+	return d.latestDiag[uri]
 }
 
 // subscribeDiag registers a first-publish waiter for uri: the returned channel is
@@ -319,53 +338,61 @@ type lspProgressParams struct {
 	} `json:"value"`
 }
 
-// handleProgress advances the scan-completion generation on each $/progress "end".
-// It captures the moment an async scan finishes; because readLoop processes frames
-// in order, any publishDiagnostics for that scan have already updated latestDiag by
-// the time the matching "end" arrives.
+// handleProgress only logs intent: the work-done-progress cycle is NOT a reliable
+// scan-completion signal. A single-file scan_file (what a didOpen triggers) emits
+// no progress at all, and when progress IS emitted (workspace scans) the findings
+// publishDiagnostics lands AFTER the "end". Scan settles on publishes instead.
 func (d *Driver) handleProgress(raw json.RawMessage) {
 	var p lspProgressParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return
-	}
-	if p.Value.Kind != "end" {
-		return
-	}
-	d.progMu.Lock()
-	d.progGen++
-	close(d.progCh)
-	d.progCh = make(chan struct{})
-	d.progMu.Unlock()
+	_ = json.Unmarshal(raw, &p)
 }
 
-// scanProgressGrace bounds how long Scan waits for a $/progress "end" before
-// falling back to best-effort collection of whatever diagnostics have arrived. It
-// is deliberately well under any sane ctx scan timeout so a semgrep build that does
-// not emit progress degrades to best-effort rather than hanging the request.
-const scanProgressGrace = 3 * time.Second
+// scanSettleQuiet is how long waitDiag waits with no further publishDiagnostics for
+// a URI before treating its diagnostics as final. semgrep lsp may publish an empty
+// set (clearing) and then the real findings a few tens of ms later, so the quiet
+// window lets the real publish overwrite the empty one. Tunable: the observed
+// empty->real gap is ~50ms warm; this keeps a comfortable margin under load.
+const scanSettleQuiet = 350 * time.Millisecond
 
-// waitScanComplete blocks until progGen advances past startGen (a scan finished
-// after our document opens), ctx is cancelled, or the grace window elapses. It
-// returns ctx.Err() only on real cancellation; a grace-window timeout returns nil
-// so the caller proceeds with whatever was collected (best-effort fallback).
-func (d *Driver) waitScanComplete(ctx context.Context, startGen uint64) error {
-	grace := time.NewTimer(scanProgressGrace)
-	defer grace.Stop()
+// waitDiag waits for uri's scan to publish and settle, then returns its latest
+// diagnostics. It first blocks until at least one publishDiagnostics for uri has
+// arrived (the scan computed; warm scans take ~1s), then settles until no further
+// publish lands for scanSettleQuiet so a real-findings publish overwrites an
+// earlier empty clear. Bounded by ctx (the per-scan timeout); on cancellation it
+// returns whatever was collected so a slow file degrades rather than errors.
+func (d *Driver) waitDiag(ctx context.Context, uri string) []lspDiagnostic {
+	// Phase 1: block until the first publish for uri arrives.
 	for {
-		d.progMu.Lock()
-		gen := d.progGen
-		ch := d.progCh
-		d.progMu.Unlock()
-		if gen > startGen {
-			return nil
+		d.diagMu.Lock()
+		_, seen := d.latestDiag[uri]
+		ch := d.diagSignalLocked(uri)
+		d.diagMu.Unlock()
+		if seen {
+			break
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-grace.C:
-			return nil // best-effort fallback: no progress emitted in time
+			return d.snapshotDiag(uri)
 		case <-ch:
-			// progGen advanced; loop to re-read and confirm it passed startGen.
+		}
+	}
+	// Phase 2: settle until no new publish for scanSettleQuiet.
+	timer := time.NewTimer(scanSettleQuiet)
+	defer timer.Stop()
+	for {
+		d.diagMu.Lock()
+		ch := d.diagSignalLocked(uri)
+		d.diagMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return d.snapshotDiag(uri)
+		case <-ch:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timer.Reset(scanSettleQuiet)
+		case <-timer.C:
+			return d.snapshotDiag(uri)
 		}
 	}
 }
@@ -426,12 +453,6 @@ func (d *Driver) Scan(ctx context.Context, files []vsockproto.ScanFile) ([]vsock
 	d.scanMu.Lock()
 	defer d.scanMu.Unlock()
 
-	// Snapshot the scan-completion generation before opening any documents, so we
-	// can detect a $/progress "end" that lands strictly after our opens.
-	d.progMu.Lock()
-	startGen := d.progGen
-	d.progMu.Unlock()
-
 	type target struct {
 		path string
 		uri  string
@@ -443,34 +464,36 @@ func (d *Driver) Scan(ctx context.Context, files []vsockproto.ScanFile) ([]vsock
 		if err := d.writeWorkspaceFile(rel, f.Content); err != nil {
 			return nil, fmt.Errorf("lspdriver: write %s: %w", f.Path, err)
 		}
-		// Drop any stale diagnostics for this uri (e.g. a prior scan, or the empty
-		// publish semgrep emits on didOpen) so we only read this scan's output.
+		// Drop any stale diagnostics for this uri (a prior scan, or an empty clear)
+		// so waitDiag's first-publish gate observes only this scan's output.
 		d.diagMu.Lock()
 		delete(d.latestDiag, uri)
 		d.diagMu.Unlock()
+		// semgrep lsp (osemgrep) computes its scan-target set from the workspace
+		// folder ONCE and caches it; a file written after that cache is built is "not
+		// in the session targets" and gets scanned as []. workspace/didCreateFiles is
+		// the one notification the LSP handles by recomputing that cache
+		// (cache_workspace_targets); workspace/didChangeWatchedFiles is silently
+		// dropped. It must fire AFTER the file is on disk and BEFORE didOpen, whose
+		// scan_file path reads the cached target set.
+		_ = d.notify("workspace/didCreateFiles", map[string]any{
+			"files": []map[string]any{{"uri": uri}},
+		})
 		targets = append(targets, target{path: f.Path, uri: uri})
 		if err := d.openOrChange(uri, rel, f.Content); err != nil {
 			return nil, err
 		}
 	}
 
-	// Wait for semgrep's async scan to complete (its $/progress "end") rather than
-	// grabbing the premature empty publish. waitScanComplete returns an error only
-	// on real ctx cancellation; a grace-window timeout falls through to whatever
-	// latest diagnostics were collected (best-effort), so a build that emits no
-	// progress degrades rather than hangs.
-	if err := d.waitScanComplete(ctx, startGen); err != nil {
-		return nil, err
-	}
-
+	// Collect each target's findings once its publishes settle. The findings publish
+	// lands after any work-done-progress "end", and single-file scans emit no
+	// progress, so a publish quiet-window is the reliable completion signal.
 	var findings []vsockproto.Finding
-	d.diagMu.Lock()
 	for _, tgt := range targets {
-		for _, diag := range d.latestDiag[tgt.uri] {
+		for _, diag := range d.waitDiag(ctx, tgt.uri) {
 			findings = append(findings, translate(tgt.path, diag))
 		}
 	}
-	d.diagMu.Unlock()
 	return findings, nil
 }
 
@@ -511,7 +534,15 @@ func (d *Driver) writeWorkspaceFile(rel, content string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, []byte(content), 0o644)
+	if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
+		return err
+	}
+	// semgrep lsp discovers scan targets through git; an untracked file is not a
+	// target and is never scanned. Staging it (the workspace is a local git repo,
+	// see main.initWorkspaceGit) makes it a tracked target. Best-effort: a git
+	// failure just yields no findings for this file, which the caller tolerates.
+	_ = exec.Command("git", "-C", d.workspace, "add", "--", rel).Run()
+	return nil
 }
 
 // translate maps one LSP diagnostic to a vsockproto.Finding, carrying the caller's

@@ -15,6 +15,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -69,6 +70,13 @@ func run(logger *slog.Logger) error {
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		return err
 	}
+
+	// Make the workspace its own git repo. semgrep lsp computes scan targets through
+	// git: when the workspace is a git project, a scan file that is `git add`-ed (see
+	// lspdriver.writeWorkspaceFile) becomes a tracked target and is scanned; without
+	// a git project the LSP finds no targets and returns no findings. The repo is
+	// empty and local (no remote, no commits), purely to root semgrep's target walk.
+	initWorkspaceGit(logger)
 
 	bin := envOr("SEMGREP_BIN", defaultSemgrepBin)
 	rulesDir := envOr("SEMGREP_RULES_DIR", defaultRulesDir)
@@ -157,6 +165,22 @@ func announceReady(logger *slog.Logger) {
 		return
 	}
 	logger.Info("readiness announced to controller")
+}
+
+// initWorkspaceGit makes workspaceDir an empty local git repo so semgrep lsp's
+// git-based target discovery roots at the workspace. Best-effort: a failure only
+// degrades scanning, so each step logs and continues rather than aborting boot.
+func initWorkspaceGit(logger *slog.Logger) {
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "scan@local"},
+		{"config", "user.name", "scan"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", workspaceDir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			logger.Warn("workspace git setup step failed", "args", args, "err", err, "out", string(out))
+		}
+	}
 }
 
 func jobsFromEnv() int {
