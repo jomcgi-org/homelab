@@ -5,6 +5,13 @@ contents:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
   packages:
     - busybox
+    # coreutils provides /usr/bin/uname: the Pro engine's bundled OpenTelemetry
+    # client probes the OS via `uname -s` to build its X509 authenticator at
+    # startup and crashes fatally if uname is absent (busybox does not expose it
+    # where the engine's execvp looks). bash covers shell-outs. Both mirror the
+    # sibling goose harness image's userland.
+    - bash
+    - coreutils
     - ca-certificates-bundle
     - git
     # Runtime libs the Pro engine (semgrep-core-proprietary, a native binary baked
