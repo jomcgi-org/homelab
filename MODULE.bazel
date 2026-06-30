@@ -420,6 +420,7 @@ use_repo(
     "semgrep_pro_rules_javascript",
     "semgrep_pro_rules_kubernetes",
     "semgrep_pro_rules_python",
+    "semgrep_pro_rules_rust",
     "semgrep_sca_rules_golang",
     "semgrep_sca_rules_javascript",
     "semgrep_sca_rules_python",

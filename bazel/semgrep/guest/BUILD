@@ -3,7 +3,7 @@
 # Tar layers for the semgrep-guest microVM image (Task 1.1):
 #   - engine_tar:  the per-arch Semgrep Pro engine at
 #                  /opt/semgrep/semgrep-core-proprietary (SEMGREP_CORE_BIN).
-#   - rules_tar:   the merged rule set (local rules + the 4 Pro packs) flattened
+#   - rules_tar:   the merged rule set (local rules + the 5 Pro packs) flattened
 #                  under /etc/semgrep/rules/, structure-preserved to avoid the
 #                  basename collisions that exist across the local rule subdirs.
 #
@@ -89,6 +89,14 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg(""),
 )
 
+pkg_files(
+    name = "pro_rust_files",
+    srcs = ["@semgrep_pro_rules_rust//:rules"],
+    attributes = pkg_attributes(mode = "0644"),
+    prefix = "etc/semgrep/rules/pro-rust",
+    strip_prefix = strip_prefix.from_pkg(""),
+)
+
 pkg_tar(
     name = "rules_tar",
     srcs = [
@@ -97,5 +105,6 @@ pkg_tar(
         ":pro_javascript_files",
         ":pro_kubernetes_files",
         ":pro_python_files",
+        ":pro_rust_files",
     ],
 )

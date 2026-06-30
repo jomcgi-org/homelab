@@ -66,6 +66,17 @@ filegroup(
     ) + ["@semgrep_pro_rules_golang//:rules"],
 )
 
+# No local Rust rules yet — the repo has no Rust sources. This filegroup exists
+# for parity with the other languages and carries only the Pro p/rust pack, which
+# the semgrep-scand MCP scanner uses against agent-generated Rust code.
+filegroup(
+    name = "rust_rules",
+    srcs = glob(
+        ["rust/*.yaml"],
+        allow_empty = True,
+    ) + ["@semgrep_pro_rules_rust//:rules"],
+)
+
 filegroup(
     name = "typescript_rules",
     srcs = glob(
@@ -129,6 +140,7 @@ filegroup(
         "@semgrep_pro_rules_javascript//:rules",
         "@semgrep_pro_rules_kubernetes//:rules",
         "@semgrep_pro_rules_python//:rules",
+        "@semgrep_pro_rules_rust//:rules",
     ],
 )
 
