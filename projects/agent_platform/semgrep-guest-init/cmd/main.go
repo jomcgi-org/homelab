@@ -15,6 +15,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -68,6 +69,15 @@ func run(logger *slog.Logger) error {
 
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		return err
+	}
+
+	// DEBUG: make the workspace a git repo so semgrep lsp (which filters
+	// diagnostics to git-dirty files) surfaces findings on the untracked scan files.
+	for _, args := range [][]string{{"init"}, {"config", "user.email", "scan@local"}, {"config", "user.name", "scan"}} {
+		c := exec.Command("git", append([]string{"-C", workspaceDir}, args...)...)
+		if out, err := c.CombinedOutput(); err != nil {
+			logger.Warn("DEBUG git setup failed", "args", args, "err", err, "out", string(out))
+		}
 	}
 
 	bin := envOr("SEMGREP_BIN", defaultSemgrepBin)
