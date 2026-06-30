@@ -40,6 +40,19 @@ type Config struct {
 	// BaseRootfsPath is the read-only base rootfs image (the flattened harness
 	// image). When set, each thread gets its own writable rootfs derived from it.
 	BaseRootfsPath string
+	// RootfsReadOnly attaches the rootfs drive read-only on cold boot. Used by the
+	// warm-base scanner pattern: when every mutable path in the guest is a tmpfs
+	// (RAM, captured in the snapshot memfile), the rootfs is never written, so one
+	// shared read-only rootfs file can back every microVM restored from a single
+	// warm base without per-thread provisioning or corruption.
+	RootfsReadOnly bool
+	// CanonicalVsockDir, when set, is the fixed directory whose vsock.sock the base
+	// snapshot embeds. Cold boot binds the guest's vsock there (so the snapshot
+	// captures that path), and the launcher bind-mounts each VM's bundle dir over it
+	// per instance, so concurrent restores from one base each get their own
+	// host-reachable vsock socket. Pairs with ExecLauncher.VsockBindTarget. Empty
+	// keeps the per-thread vsock path (fc-agentd's behaviour).
+	CanonicalVsockDir string
 	// Provisioner selects the per-thread rootfs strategy (ADR 026): "copy" (the
 	// default CopyProvisioner full file copy) or "devmapper" (DevmapperProvisioner
 	// copy-on-write thin-snapshot). An empty value means "copy".
@@ -176,6 +189,18 @@ func (d *Driver) memfilePath(threadID string) string {
 // reserved (2 is the host), so guests start at 3. The controller reaches a guest
 // by listening on the per-thread UDS, not by CID, so a fixed value is fine.
 const guestCID = 3
+
+// bootVsockPath is the vsock UDS path firecracker binds at cold boot. With a
+// CanonicalVsockDir it is that fixed dir's vsock.sock (so the base snapshot embeds
+// a stable path the launcher can bind-mount per instance); otherwise it is the
+// per-thread host path. The launcher's per-instance bind-mount makes the canonical
+// path resolve to VsockUDSPath(threadID) on the host either way.
+func (d *Driver) bootVsockPath(threadID string) string {
+	if d.cfg.CanonicalVsockDir != "" {
+		return filepath.Join(d.cfg.CanonicalVsockDir, "vsock.sock")
+	}
+	return d.VsockUDSPath(threadID)
+}
 
 // VsockUDSPath is the host unix-domain socket backing a thread's vsock device.
 // Firecracker multiplexes guest connections onto "<uds>_<port>", so the control
@@ -327,12 +352,12 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgs()}); err != nil {
 			return err
 		}
-		if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true}); err != nil {
+		if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "rootfs", PathOnHost: rootfsPath, IsRootDevice: true, IsReadOnly: d.cfg.RootfsReadOnly}); err != nil {
 			return err
 		}
 		// The vsock device is the guest's only channel to the controller (task
 		// delivery, idle signal, egress proxy). It must be configured before Start.
-		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.VsockUDSPath(threadID)}); err != nil {
+		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.bootVsockPath(threadID)}); err != nil {
 			return err
 		}
 		return client.Start(ctx)
@@ -417,17 +442,32 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 	}
 	snapPath := d.baseSnapfile(baseKey)
 	memPath := d.baseMemfile(baseKey)
+	// Write to temp paths and rename into place. A rebuild must NOT overwrite the
+	// live snapfile/memfile in place: another thread may be restoring from them
+	// (the File mem-backend mmaps the memfile), and overwriting a mapped file is a
+	// SIGBUS foot-gun. rename(2) swaps the directory entry to a new inode while any
+	// in-flight restore keeps the old (now-unlinked) one.
+	snapTmp := snapPath + ".tmp"
+	memTmp := memPath + ".tmp"
 
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath}); err != nil {
+	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
 		_ = inst.client.Resume(ctx)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create base snapshot: %w", err)
 	}
 	if err := inst.client.Resume(ctx); err != nil {
 		_ = d.Release(ctx, h)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after base snapshot: %w", err)
+	}
+	// Publish memfile before snapfile: a restore reads the snapfile to locate the
+	// memfile, so the memfile must already be in place when the snapfile appears.
+	if err := os.Rename(memTmp, memPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base memfile: %w", err)
+	}
+	if err := os.Rename(snapTmp, snapPath); err != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base snapfile: %w", err)
 	}
 	return substrate.SnapshotRef{
 		ID:        baseKey,

@@ -51,6 +51,12 @@ func run(logger *slog.Logger) error {
 	// Raw FC boot leaves loopback DOWN; bring it up before anything binds 127.0.0.1.
 	bringUpLoopback(logger)
 
+	// Mount a tmpfs over /tmp so all mutable guest state (the semgrep workspace, its
+	// HOME, the git repo) lives in RAM, not the rootfs. This lets the rootfs stay
+	// read-only and be shared by every microVM restored from one warm-base snapshot.
+	// Must precede the workspace/HOME MkdirAll calls so they land on the tmpfs.
+	mountTmpfsTmp(logger)
+
 	// A raw Firecracker boot gives PID 1 no environment, so PATH is empty and every
 	// execvp fails with ENOENT. semgrep-core shells out to `uname` to build its TLS
 	// authenticator at startup, so an unset PATH crashes it even though uname is

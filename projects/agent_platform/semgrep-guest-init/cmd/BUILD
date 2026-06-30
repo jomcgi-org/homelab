@@ -8,6 +8,8 @@ go_library(
         "loopback_linux.go",
         "loopback_other.go",
         "main.go",
+        "mount_linux.go",
+        "mount_other.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/cmd",
     visibility = ["//visibility:private"],

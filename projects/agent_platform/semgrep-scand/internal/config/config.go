@@ -31,8 +31,9 @@ type Config struct {
 	// pressure. 0 leaves the inherited score; 1000 strictly prefers guests.
 	GuestOomScoreAdj int
 
-	// BaseRootfsPath is the read-only semgrep-guest base rootfs image. Each scan
-	// gets its own writable rootfs derived from it.
+	// BaseRootfsPath is the semgrep-guest base rootfs image. It is booted read-only
+	// and shared by every microVM (all mutable guest state is tmpfs), so no per-scan
+	// rootfs copy is made.
 	BaseRootfsPath string
 	// NvmeRoot is the directory holding per-scan FC bundles (the NVMe scratch
 	// disk on node-4). It maps to the driver's SnapshotRoot.
@@ -53,12 +54,22 @@ type Config struct {
 	Node string
 	Arch string
 
-	// Provisioner selects the per-scan rootfs strategy: "copy" (default; full
-	// file copy) or "devmapper" (copy-on-write thin-snapshot).
-	Provisioner string
-	// ThinPool is the devmapper thin-pool the devmapper provisioner snapshots
-	// into; ignored by the copy provisioner.
-	ThinPool string
+	// WarmBase enables the snapshot-restore hot path: build one warm base at
+	// startup and restore a fresh microVM from it per scan (~tens of ms), falling
+	// back to a cold boot when the base is unavailable. When false, every scan is a
+	// full cold boot + warm.
+	WarmBase bool
+	// BaseKey names the warm base bundle (one per guest-image version). The daemon
+	// rebuilds it at startup, so a constant key plus a pod restart on image change
+	// keeps the base in sync with the deployed guest.
+	BaseKey string
+	// RestorePrime bounds the throwaway "prime" connection sent after a restore to
+	// absorb Firecracker's vsock RX-queue race.
+	RestorePrime time.Duration
+	// CanonicalVsockDir is the fixed directory whose vsock.sock the base snapshot
+	// embeds; the launcher bind-mounts each microVM's bundle dir over it per
+	// instance so concurrent restores each get their own host-reachable socket.
+	CanonicalVsockDir string
 
 	// ScanTimeout bounds the guest scan request/response leg.
 	ScanTimeout time.Duration
@@ -71,23 +82,25 @@ type Config struct {
 // returns an error only for values that are present but malformed.
 func Load() (Config, error) {
 	c := Config{
-		ListenAddr:       getenvDefault("SEMGREP_SCAND_LISTEN_ADDR", ":8080"),
-		MaxConcurrent:    atoiDefault("SEMGREP_SCAND_MAX_CONCURRENT", 4),
-		GuestMemMib:      atoiDefault("SEMGREP_SCAND_GUEST_MEM_MIB", 2048),
-		GuestVCPUs:       atoiDefault("SEMGREP_SCAND_GUEST_VCPUS", 4),
-		GuestOomScoreAdj: atoiDefault("SEMGREP_SCAND_GUEST_OOM_SCORE_ADJ", 1000),
-		BaseRootfsPath:   os.Getenv("SEMGREP_SCAND_BASE_ROOTFS"),
-		NvmeRoot:         getenvDefault("SEMGREP_SCAND_NVME_ROOT", "/disks/nvme-02/semgrep-scand"),
-		BinPath:          getenvDefault("SEMGREP_SCAND_FIRECRACKER_BIN", "/opt/kata/bin/firecracker"),
-		KernelImagePath:  getenvDefault("SEMGREP_SCAND_KERNEL_IMAGE", "/opt/kata/share/kata-containers/vmlinux.container"),
-		KernelBootArgs:   os.Getenv("SEMGREP_SCAND_KERNEL_BOOT_ARGS"),
-		HarnessInit:      getenvDefault("SEMGREP_SCAND_HARNESS_INIT", "/usr/local/bin/semgrep-guest-init"),
-		Node:             os.Getenv("SEMGREP_SCAND_NODE"),
-		Arch:             os.Getenv("SEMGREP_SCAND_ARCH"),
-		Provisioner:      getenvDefault("SEMGREP_SCAND_PROVISIONER", "copy"),
-		ThinPool:         getenvDefault("SEMGREP_SCAND_THIN_POOL", "devpool"),
-		ScanTimeout:      60 * time.Second,
-		BootReadyTimeout: 30 * time.Second,
+		ListenAddr:        getenvDefault("SEMGREP_SCAND_LISTEN_ADDR", ":8080"),
+		MaxConcurrent:     atoiDefault("SEMGREP_SCAND_MAX_CONCURRENT", 4),
+		GuestMemMib:       atoiDefault("SEMGREP_SCAND_GUEST_MEM_MIB", 2048),
+		GuestVCPUs:        atoiDefault("SEMGREP_SCAND_GUEST_VCPUS", 4),
+		GuestOomScoreAdj:  atoiDefault("SEMGREP_SCAND_GUEST_OOM_SCORE_ADJ", 1000),
+		BaseRootfsPath:    os.Getenv("SEMGREP_SCAND_BASE_ROOTFS"),
+		NvmeRoot:          getenvDefault("SEMGREP_SCAND_NVME_ROOT", "/disks/nvme-02/semgrep-scand"),
+		BinPath:           getenvDefault("SEMGREP_SCAND_FIRECRACKER_BIN", "/opt/kata/bin/firecracker"),
+		KernelImagePath:   getenvDefault("SEMGREP_SCAND_KERNEL_IMAGE", "/opt/kata/share/kata-containers/vmlinux.container"),
+		KernelBootArgs:    os.Getenv("SEMGREP_SCAND_KERNEL_BOOT_ARGS"),
+		HarnessInit:       getenvDefault("SEMGREP_SCAND_HARNESS_INIT", "/usr/local/bin/semgrep-guest-init"),
+		Node:              os.Getenv("SEMGREP_SCAND_NODE"),
+		Arch:              os.Getenv("SEMGREP_SCAND_ARCH"),
+		WarmBase:          boolDefault("SEMGREP_SCAND_WARM_BASE", true),
+		BaseKey:           getenvDefault("SEMGREP_SCAND_BASE_KEY", "semgrep-guest"),
+		RestorePrime:      300 * time.Millisecond,
+		CanonicalVsockDir: getenvDefault("SEMGREP_SCAND_CANONICAL_VSOCK_DIR", "/disks/nvme-02/semgrep-scand-vsock"),
+		ScanTimeout:       60 * time.Second,
+		BootReadyTimeout:  30 * time.Second,
 	}
 
 	if c.Node == "" {
@@ -103,8 +116,23 @@ func Load() (Config, error) {
 	if err := parseDuration("SEMGREP_SCAND_BOOT_READY_TIMEOUT", &c.BootReadyTimeout); err != nil {
 		return Config{}, err
 	}
+	if err := parseDuration("SEMGREP_SCAND_RESTORE_PRIME", &c.RestorePrime); err != nil {
+		return Config{}, err
+	}
 
 	return c, nil
+}
+
+func boolDefault(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
 }
 
 func parseDuration(key string, dst *time.Duration) error {

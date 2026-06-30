@@ -3,10 +3,12 @@
 # monolith in-cluster.
 #
 # firecracker.enabled is TRUE: the daemon drives real microVMs. It runs privileged
-# (runAsUser 0) with /dev/kvm + the kata binary/kernel + devmapper + the nvme dir
-# host-mounted. Each scan gets its own writable rootfs as a copy-on-write devmapper
-# thin-snapshot of the base (snapshotting node-4's shared `devpool` thin-pool), so
-# per-scan provision is milliseconds instead of a ~2s full copy.
+# (runAsUser 0) with /dev/kvm + the kata binary/kernel + the nvme dir host-mounted.
+# At startup it builds one warm semgrep snapshot, then restores a fresh microVM from
+# it per scan (~tens of ms) and discards it; the shared base rootfs is booted
+# read-only so no per-scan rootfs copy is needed (no devmapper thin-pool, sidestepping
+# the devpool ID collision with fc-agentd). Privileged is required for the per-instance
+# vsock mount namespaces (CAP_SYS_ADMIN). Cold boot is the fallback if the base fails.
 node: node-4
 arch: amd64
 
@@ -14,13 +16,6 @@ firecracker:
   enabled: true
   baseRootfsPath: /disks/nvme-02/semgrep-base/rootfs.ext4
   scanRoot: /disks/nvme-02/semgrep-scand
-  # copy (not devmapper): semgrep-scand shares node-4's devpool thin-pool with
-  # fc-agentd, and the fcvm provisioner hardcodes the same thin-device ID range, so
-  # devmapper collides (create_thin 3000000: File exists). Copy avoids the pool. The
-  # low-latency path (snapshot/restore) will reinstate devmapper with a per-daemon
-  # ID range.
-  rootfsProvisioner: copy
-  thinPool: devpool
 
 # The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
 # by the rootfs-builder) need GHCR creds in-cluster; charts stay private too via

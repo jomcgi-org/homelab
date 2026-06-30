@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "driver.go",
         "launcher.go",
+        "mountns_linux.go",
+        "mountns_other.go",
         "provisioner.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/fcvm/driver",
