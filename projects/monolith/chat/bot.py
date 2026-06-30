@@ -18,7 +18,12 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from chat.agent import create_agent, create_fact_check_agent, format_context_messages
+from chat.agent import (
+    create_agent,
+    create_fact_check_agent,
+    format_context_messages,
+    today_str,
+)
 from shared.embedding import EmbeddingClient
 from chat.store import MessageStore
 from chat.vision import VisionClient
@@ -43,6 +48,9 @@ STREAM_EDIT_INTERVAL = 1.0
 FACT_CHECK_PREFIX = "**Fact check:**\n"
 FACT_CHECK_THREAD_NAME = "Fact check"
 FACT_CHECK_PLACEHOLDER = "\U0001f50d Fact-checking..."
+# How much of the response seeds the mandatory pre-search query (claims usually
+# lead, and SearXNG handles a long query fine; this just bounds it).
+FACT_CHECK_SEARCH_SEED_CHARS = 500
 
 
 def _truncate_thinking(thinking: str) -> str:
@@ -130,6 +138,33 @@ def _clip_fact_check(text: str) -> str:
     if len(text) <= DISCORD_MESSAGE_LIMIT:
         return text
     return text[:THINKING_TRUNCATE_AT] + "... (truncated)"
+
+
+async def _build_fact_check_prompt(response_text: str, context: str) -> str:
+    """Build the fact-check prompt with fresh, searched grounding.
+
+    Prepends today's date and a mandatory live web search seeded from the
+    response, so the model judges against current reality instead of its stale
+    training memory (it was confidently calling true, post-cutoff facts
+    "fabrication"). The search is best-effort: on failure the agent still has
+    its own ``web_search`` tool, so we degrade to a no-results prompt rather
+    than aborting the fact-check.
+    """
+    parts = [f"Today is {today_str()}."]
+    try:
+        live = await search_web(response_text[:FACT_CHECK_SEARCH_SEED_CHARS])
+    except Exception:
+        logger.exception("Fact-check pre-search failed")
+        live = ""
+    if live:
+        parts.append(
+            "Live web search results for the claims (current ground truth, "
+            f"trust these over your memory):\n{live}"
+        )
+    if context:
+        parts.append(f"Recent conversation:\n{context}")
+    parts.append(f"Fact-check this response:\n\n{response_text}")
+    return "\n\n".join(parts)
 
 
 async def _stream_fact_check(message: discord.Message, agent, prompt: str) -> str:
@@ -220,13 +255,7 @@ class BotMessageView(discord.ui.View):
         try:
             channel_id = str(interaction.channel.id)
             context = await asyncio.to_thread(_get_recent_context, channel_id)
-            if context:
-                prompt = (
-                    f"Recent conversation:\n{context}\n\n"
-                    f"Fact-check your last response:\n\n{self.response_text}"
-                )
-            else:
-                prompt = f"Fact-check this response:\n\n{self.response_text}"
+            prompt = await _build_fact_check_prompt(self.response_text, context)
 
             # Keep the fact-check out of the main channel: stream it inside a
             # thread anchored to the response. Discord forbids nested threads,

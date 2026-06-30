@@ -155,6 +155,16 @@ def _streamed_message(interaction) -> AsyncMock:
 class TestFactCheckCallback:
     """Unit tests for BotMessageView.fact_check() button callback."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_search(self):
+        """Stub the mandatory pre-search so tests never hit SearXNG."""
+        with patch(
+            "chat.bot.search_web",
+            new=AsyncMock(return_value="LIVE_SEARCH_RESULTS"),
+        ) as m:
+            self.search = m
+            yield
+
     @pytest.mark.asyncio
     async def test_opens_thread_and_streams_result(self):
         """fact_check defers, opens a thread, and streams the result into it."""
@@ -315,3 +325,43 @@ class TestFactCheckCallback:
         final = _streamed_message(interaction).edit.call_args.kwargs["content"]
         assert len(final) <= 2000
         assert "truncated" in final
+
+    @pytest.mark.asyncio
+    async def test_pre_search_runs_and_results_injected(self):
+        """A live web search runs and its results plus today's date ground the prompt."""
+        from chat.agent import today_str
+
+        response = "Anthropic just dropped Sonnet 5, beats Opus on coding."
+        view = BotMessageView(response)
+        interaction = _make_interaction()
+
+        p1, p2, mock_agent = _patch_fact_check("Verdict: real, it shipped today.")
+        with p1, p2:
+            await _get_button_by_label(view, "Get your facts STR8!").callback(
+                interaction
+            )
+
+        # The search is seeded from the response and its results land in the prompt.
+        assert self.search.call_count == 1
+        assert response[:50] in self.search.call_args[0][0]
+        prompt = mock_agent.run_stream_events.call_args[0][0]
+        assert "LIVE_SEARCH_RESULTS" in prompt
+        assert today_str() in prompt
+
+    @pytest.mark.asyncio
+    async def test_pre_search_failure_degrades_gracefully(self):
+        """If the pre-search raises, the fact-check still runs without injected results."""
+        view = BotMessageView("some claim")
+        interaction = _make_interaction()
+        self.search.side_effect = Exception("SearXNG down")
+
+        p1, p2, mock_agent = _patch_fact_check("Verdict from the model's own tool.")
+        with p1, p2:
+            await _get_button_by_label(view, "Get your facts STR8!").callback(
+                interaction
+            )
+
+        mock_agent.run_stream_events.assert_called_once()
+        prompt = mock_agent.run_stream_events.call_args[0][0]
+        assert "LIVE_SEARCH_RESULTS" not in prompt
+        assert "some claim" in prompt

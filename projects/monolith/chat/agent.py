@@ -3,6 +3,7 @@
 import logging
 import os
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic_ai import Agent, ModelSettings, RunContext, ToolDefinition
@@ -16,7 +17,49 @@ from chat.web_search import search_web
 
 LLAMA_CPP_URL = os.environ.get("LLAMA_CPP_URL", "")
 
+# The served inference model's knowledge cutoff. Qwen did not publish a cutoff
+# for Qwen3.6-35B-A3B (released 2026-04-16), so we anchor to the release month
+# as a conservative bound: the true cutoff is at or before it, so telling the
+# model its knowledge ends here never overstates what it knows, and correctly
+# frames anything more recent as beyond its training. Update when the served
+# model changes.
+MODEL_KNOWLEDGE_CUTOFF = "April 2026"
+
 logger = logging.getLogger(__name__)
+
+
+def today_str() -> str:
+    """Today's date at day granularity (e.g. "30 June 2026").
+
+    Day granularity is deliberate: this string goes into a dynamic system
+    prompt, which is part of the KV-cache prefix. A finer (per-request)
+    timestamp would evict the shared prefix on every call; at day granularity
+    the prefix is byte-stable within a day, so vLLM keeps the cache hot and
+    pays at most one eviction per day.
+    """
+    now = datetime.now(timezone.utc)
+    return f"{now.day} {now:%B %Y}"
+
+
+def temporal_grounding_prompt() -> str:
+    """Dynamic system-prompt fragment anchoring the model in real time.
+
+    Registered as a per-run system prompt on both agents so the model knows
+    today's date and that its training is stale past the cutoff -- the gap
+    where it would otherwise confidently assert outdated "facts" about recent
+    releases and events. Re-evaluated each run (the agents are process-lifetime
+    singletons, so a value baked in at creation would freeze at pod-start day).
+    """
+    return (
+        f"Today's date is {today_str()}. Your training knowledge cutoff is "
+        f"{MODEL_KNOWLEDGE_CUTOFF}; you cannot know anything after it. New model "
+        "releases, product launches, announcements, and current events after "
+        "your cutoff are exactly where your memory is blind and wrong. For any "
+        "claim about recent or current facts, do not answer from memory -- "
+        "search the web. Treat search results as more authoritative than your "
+        "training data when they conflict, and never call something false, fake, "
+        "or fabricated just because you do not recognise it; search first."
+    )
 
 
 def signposted(text: str):
@@ -160,6 +203,10 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         prepare_tools=inject_signposts,
     )
 
+    @agent.system_prompt
+    def _temporal_grounding() -> str:
+        return temporal_grounding_prompt()
+
     @agent.tool_plain
     @signposted(
         "Default to searching. The only time you should skip search is for "
@@ -277,8 +324,12 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
         model,
         system_prompt=(
             "You're Bosun, and someone just hit the fact-check button on your last response. "
-            "Search the web to verify the key factual claims you made. Be direct and honest: "
-            "call out anything wrong, anything you oversimplified, and confirm what you got right. "
+            "Live web search results for the claims are provided in the prompt, and you can "
+            "search again with the web_search tool. Base your verdict on those results, not "
+            "on your training memory -- you have a knowledge cutoff and are blind to anything "
+            "after it, so a claim about a recent release or event is NOT false just because "
+            "you don't recognise it; check the results first. Be direct and honest: call out "
+            "what's actually wrong, flag what you oversimplified, and confirm what's right. "
             "Keep the same confident, no-BS tone -- no hedging, no filler. "
             "Be brief: one short verdict line, then at most three terse bullets on the "
             "specifics that actually matter. Hard ceiling of about 120 words -- skip the "
@@ -293,6 +344,10 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
             },
         ),
     )
+
+    @fact_agent.system_prompt
+    def _temporal_grounding() -> str:
+        return temporal_grounding_prompt()
 
     @fact_agent.tool_plain
     async def web_search(query: str) -> str:
