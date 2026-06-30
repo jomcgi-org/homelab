@@ -1,0 +1,18 @@
+# Cluster overrides for semgrep-scand. The daemon runs on node-4 and boots a fresh
+# semgrep-guest microVM per scan, serving HTTP POST /scan + GET /healthz to the
+# monolith in-cluster.
+#
+# firecracker.enabled is TRUE: the daemon drives real microVMs. It runs privileged
+# (runAsUser 0) with /dev/kvm + the kata binary/kernel + devmapper + the nvme dir
+# host-mounted. Each scan gets its own writable rootfs as a copy-on-write devmapper
+# thin-snapshot of the base (snapshotting node-4's shared `devpool` thin-pool), so
+# per-scan provision is milliseconds instead of a ~2s full copy.
+node: node-4
+arch: amd64
+
+firecracker:
+  enabled: true
+  baseRootfsPath: /disks/nvme-02/semgrep-base/rootfs.ext4
+  scanRoot: /disks/nvme-02/semgrep-scand
+  rootfsProvisioner: devmapper
+  thinPool: devpool
