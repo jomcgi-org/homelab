@@ -1,0 +1,26 @@
+# Runtime image base for semgrep-scand. Wolfi base providing dmsetup (lvm2), dd +
+# blockdev (busybox/util-linux) and ca-certificates so the daemon can manage
+# device-mapper thin-pools at runtime for the devmapper provisioner (the copy
+# provisioner needs none of this, but the image carries it so a single image
+# supports both SEMGREP_SCAND_PROVISIONER modes). The semgrep-scand Go binary is
+# layered on top per-arch (see BUILD) and is the entrypoint.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+    - lvm2
+    - util-linux
+
+archs:
+  - x86_64
+  - aarch64
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+entrypoint:
+  command: /usr/local/bin/semgrep-scand
