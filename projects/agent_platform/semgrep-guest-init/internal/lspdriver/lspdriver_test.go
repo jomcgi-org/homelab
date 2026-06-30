@@ -23,11 +23,32 @@ func (p *pipeTransport) Send() io.Writer { return p.send }
 func (p *pipeTransport) Close() error    { return p.send.Close() }
 
 // fakeLSP speaks the LSP framing over the pipes: it answers initialize, and on any
-// didOpen/didChange it publishes the diagnostics returned by diagFor(uri). No real
-// semgrep is involved.
+// didOpen/didChange it reproduces semgrep lsp's real async-scan sequence: first an
+// EMPTY publishDiagnostics (clearing prior state), then a $/progress "begin", then
+// the REAL publishDiagnostics from diagFor(uri), then a $/progress "end" marking
+// the scan complete. The driver must return the LATER real findings, not the
+// premature empty publish. No real semgrep is involved.
 func fakeLSP(t *testing.T, clientToServer io.Reader, serverToClient io.Writer, diagFor func(uri string) []lspDiagnostic) {
 	t.Helper()
 	r := bufio.NewReader(clientToServer)
+	send := func(m rpcMessage) {
+		out, _ := json.Marshal(m)
+		_ = writeFrame(serverToClient, out)
+	}
+	publish := func(uri string, diags []lspDiagnostic) {
+		send(rpcMessage{
+			JSONRPC: "2.0",
+			Method:  "textDocument/publishDiagnostics",
+			Params:  mustRaw(publishDiagnosticsParams{URI: uri, Diagnostics: diags}),
+		})
+	}
+	progress := func(kind string) {
+		send(rpcMessage{
+			JSONRPC: "2.0",
+			Method:  "$/progress",
+			Params:  mustRaw(map[string]any{"token": "scan", "value": map[string]any{"kind": kind}}),
+		})
+	}
 	go func() {
 		for {
 			payload, err := readFrame(r)
@@ -40,9 +61,7 @@ func fakeLSP(t *testing.T, clientToServer io.Reader, serverToClient io.Writer, d
 			}
 			switch msg.Method {
 			case "initialize":
-				resp := rpcMessage{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage(`{"capabilities":{}}`)}
-				out, _ := json.Marshal(resp)
-				_ = writeFrame(serverToClient, out)
+				send(rpcMessage{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage(`{"capabilities":{}}`)})
 			case "textDocument/didOpen", "textDocument/didChange":
 				var p struct {
 					TextDocument struct {
@@ -50,13 +69,13 @@ func fakeLSP(t *testing.T, clientToServer io.Reader, serverToClient io.Writer, d
 					} `json:"textDocument"`
 				}
 				_ = json.Unmarshal(msg.Params, &p)
-				note := rpcMessage{
-					JSONRPC: "2.0",
-					Method:  "textDocument/publishDiagnostics",
-					Params:  mustRaw(publishDiagnosticsParams{URI: p.TextDocument.URI, Diagnostics: diagFor(p.TextDocument.URI)}),
-				}
-				out, _ := json.Marshal(note)
-				_ = writeFrame(serverToClient, out)
+				uri := p.TextDocument.URI
+				// Premature empty publish on open (the bug-trigger), then a real
+				// scan whose findings arrive only after the progress cycle.
+				publish(uri, nil)
+				progress("begin")
+				publish(uri, diagFor(uri))
+				progress("end")
 			}
 		}
 	}()
