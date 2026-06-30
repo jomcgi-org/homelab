@@ -132,6 +132,17 @@ filegroup(
     ],
 )
 
+# Local rule files only (no Pro packs). Used by the semgrep-guest image to lay the
+# repo's own rules under /etc/semgrep/rules/<subdir>/ preserving the per-language
+# subdir structure (basenames collide across subdirs, so the tree must be kept).
+filegroup(
+    name = "local_rules",
+    srcs = glob([
+        "**/*.yaml",
+        "**/*.json",
+    ]),
+)
+
 semgrep_test(
     name = "kubernetes_rules_test",
     srcs = ["//bazel/semgrep/tests:kubernetes_yaml_fixtures"],
