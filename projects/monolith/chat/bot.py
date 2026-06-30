@@ -105,6 +105,20 @@ def _get_fact_check_agent():
     return _fact_check_agent
 
 
+def _get_recent_context(channel_id: str) -> str:
+    """Fetch recent channel messages as a formatted context string (sync).
+
+    Called via asyncio.to_thread from the fact_check button callback.
+    Returns empty string if the bot is not initialised or the lookup fails.
+    """
+    if bot is None:
+        return ""
+    with Session(get_engine()) as session:
+        store = MessageStore(session=session, embed_client=bot.embed_client)
+        recent = store.get_recent(channel_id, limit=10)
+        return format_context_messages(recent, {})
+
+
 class BotMessageView(discord.ui.View):
     """Discord View with action buttons on bot responses.
 
@@ -139,9 +153,16 @@ class BotMessageView(discord.ui.View):
     ):
         await interaction.response.defer()
         try:
-            result = await _get_fact_check_agent().run(
-                f"Fact-check this response:\n\n{self.response_text}"
-            )
+            channel_id = str(interaction.channel.id)
+            context = await asyncio.to_thread(_get_recent_context, channel_id)
+            if context:
+                prompt = (
+                    f"Recent conversation:\n{context}\n\n"
+                    f"Fact-check your last response:\n\n{self.response_text}"
+                )
+            else:
+                prompt = f"Fact-check this response:\n\n{self.response_text}"
+            result = await _get_fact_check_agent().run(prompt)
             fact_text = result.output
             if len(fact_text) > DISCORD_MESSAGE_LIMIT:
                 fact_text = fact_text[:THINKING_TRUNCATE_AT] + "... (truncated)"
