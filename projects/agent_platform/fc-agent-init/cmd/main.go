@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/idle"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/reconnect"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/vsockdial"
+	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/watchdog"
 	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
 )
 
@@ -72,6 +74,11 @@ func run(logger *slog.Logger) error {
 	// this is the backstop for a genuinely wedged guest (the 24h ttl is the last
 	// resort). Tune via FC_IDLE_AFTER.
 	idleAfter := durationEnv("FC_IDLE_AFTER", 10*time.Minute)
+	// FC_STALL_AFTER bounds how long goose may produce no output before the run is
+	// treated as wedged and killed. It must be larger than the longest legitimate
+	// quiet stretch (a slow model/MCP call) but small enough that a hung run fails
+	// in minutes, not at the 24h TTL. Default 10m, matching the idle window.
+	stallAfter := durationEnv("FC_STALL_AFTER", 10*time.Minute)
 
 	logger.Info("fc-agent-init starting", "thread_id", threadID, "idle_after", idleAfter.String())
 
@@ -148,20 +155,31 @@ func run(logger *slog.Logger) error {
 	// output via os.Stdout.
 	pw := newProgressStreamer(logger)
 
+	mon := &watchdog.Monitor{StallAfter: stallAfter}
+	gooseCtx, killGoose := context.WithCancel(ctx)
+	defer killGoose()
+	var timedOut atomic.Bool
+
 	var harnessProc *exec.Cmd
 	if len(harnessArgv) > 0 {
-		harnessProc = exec.CommandContext(ctx, harnessArgv[0], harnessArgv[1:]...)
-		var out io.Writer = os.Stdout
+		harnessProc = exec.CommandContext(gooseCtx, harnessArgv[0], harnessArgv[1:]...)
+		writers := []io.Writer{os.Stdout, mon}
 		if pw != nil {
-			out = io.MultiWriter(os.Stdout, pw)
+			writers = append(writers, pw)
 			go pw.flushLoop(ctx, logger)
 		}
+		out := io.MultiWriter(writers...)
 		harnessProc.Stdout = out
 		harnessProc.Stderr = out
 		harnessProc.Env = os.Environ()
 		if err := harnessProc.Start(); err != nil {
 			return err
 		}
+		go mon.Run(gooseCtx, 15*time.Second, func() {
+			timedOut.Store(true)
+			logger.Warn("watchdog: goose produced no output within stall window; killing", "stall_after", stallAfter.String())
+			killGoose()
+		})
 		logger.Info("harness started", "argv", harnessArgv)
 	}
 
@@ -197,7 +215,10 @@ func run(logger *slog.Logger) error {
 		}
 		if conn != nil {
 			status := "ok"
-			if err != nil {
+			switch {
+			case timedOut.Load():
+				status = "timeout"
+			case err != nil:
 				status = err.Error()
 			}
 			if serr := conn.Send(vsockproto.Message{Kind: vsockproto.KindDone, ThreadID: threadID, Status: status, Result: artifactURL}); serr != nil {
