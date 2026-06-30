@@ -35,7 +35,7 @@ rootfsBuilder:
 egress:
   enabled: true
   image:
-    repository: ghcr.io/jomcgi/homelab/projects/agent_platform/egress-proxy
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/egress-proxy
     tag: latest
   # Where fc-agentd forwards guest egress (the sidecar's listen address, pod-local).
   sidecarAddr: 127.0.0.1:8888
