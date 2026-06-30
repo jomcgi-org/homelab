@@ -163,10 +163,10 @@ class BotMessageView(discord.ui.View):
             else:
                 prompt = f"Fact-check this response:\n\n{self.response_text}"
             result = await _get_fact_check_agent().run(prompt)
-            fact_text = result.output
-            if len(fact_text) > DISCORD_MESSAGE_LIMIT:
-                fact_text = fact_text[:THINKING_TRUNCATE_AT] + "... (truncated)"
-            await interaction.followup.send(f"**Fact check:**\n{fact_text}")
+            out = f"**Fact check:**\n{result.output}"
+            if len(out) > DISCORD_MESSAGE_LIMIT:
+                out = out[:THINKING_TRUNCATE_AT] + "... (truncated)"
+            await interaction.followup.send(out)
         except Exception:
             logger.exception("Fact-check failed")
             await interaction.followup.send(
