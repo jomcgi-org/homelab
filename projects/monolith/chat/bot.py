@@ -38,6 +38,12 @@ LLM_MAX_RETRIES = 3
 LLM_RETRY_BASE_DELAY = 1.0  # seconds
 STREAM_EDIT_INTERVAL = 1.0
 
+# Fact-check (the "Get your facts STR8!" button). The result streams into a
+# thread anchored to the response so it stays out of the main channel.
+FACT_CHECK_PREFIX = "**Fact check:**\n"
+FACT_CHECK_THREAD_NAME = "Fact check"
+FACT_CHECK_PLACEHOLDER = "\U0001f50d Fact-checking..."
+
 
 def _truncate_thinking(thinking: str) -> str:
     """Truncate thinking text if it exceeds Discord's message limit."""
@@ -119,6 +125,45 @@ def _get_recent_context(channel_id: str) -> str:
         return format_context_messages(recent, {})
 
 
+def _clip_fact_check(text: str) -> str:
+    """Clip a fact-check body to Discord's single-message limit."""
+    if len(text) <= DISCORD_MESSAGE_LIMIT:
+        return text
+    return text[:THINKING_TRUNCATE_AT] + "... (truncated)"
+
+
+async def _stream_fact_check(message: discord.Message, agent, prompt: str) -> str:
+    """Stream the fact-check agent's output into an already-posted ``message``.
+
+    Edits ``message`` on the ``STREAM_EDIT_INTERVAL`` cadence as text deltas
+    arrive (so Discord rate limits are respected, mirroring ``_stream_response``
+    and the goosecracker progress stream), then a final edit with the
+    authoritative output. Returns the final fact-check text.
+    """
+    streamed = ""
+    final = ""
+    last_edit = 0.0
+    async for event in agent.run_stream_events(prompt):
+        if isinstance(event, AgentRunResultEvent):
+            out = event.result.output
+            if out and isinstance(out, str):
+                final = out
+        elif isinstance(event, PartDeltaEvent) and isinstance(
+            event.delta, TextPartDelta
+        ):
+            streamed += event.delta.content_delta
+            now = asyncio.get_event_loop().time()
+            if (now - last_edit) >= STREAM_EDIT_INTERVAL:
+                await message.edit(
+                    content=_clip_fact_check(FACT_CHECK_PREFIX + streamed)
+                )
+                last_edit = now
+
+    body = final or streamed
+    await message.edit(content=_clip_fact_check(FACT_CHECK_PREFIX + body))
+    return body
+
+
 class BotMessageView(discord.ui.View):
     """Discord View with action buttons on bot responses.
 
@@ -151,7 +196,27 @@ class BotMessageView(discord.ui.View):
     async def fact_check(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        # Durable one-per-message limit. A fact-check opens a thread anchored to
+        # this message; Discord keeps ``message.thread`` populated across bot
+        # restarts, so its presence means the message was already checked.
+        existing = getattr(interaction.message, "thread", None)
+        if existing is not None:
+            await interaction.response.send_message(
+                f"Already fact-checked in {existing.mention}.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer()
+
+        # Disable the button so it can't be spammed. The edited (disabled)
+        # component is stored on the message itself, so it survives a bot
+        # restart even though the re-registered persistent view starts enabled.
+        button.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            logger.exception("Fact-check: failed to disable button")
+
         try:
             channel_id = str(interaction.channel.id)
             context = await asyncio.to_thread(_get_recent_context, channel_id)
@@ -162,11 +227,22 @@ class BotMessageView(discord.ui.View):
                 )
             else:
                 prompt = f"Fact-check this response:\n\n{self.response_text}"
-            result = await _get_fact_check_agent().run(prompt)
-            out = f"**Fact check:**\n{result.output}"
-            if len(out) > DISCORD_MESSAGE_LIMIT:
-                out = out[:THINKING_TRUNCATE_AT] + "... (truncated)"
-            await interaction.followup.send(out)
+
+            # Keep the fact-check out of the main channel: stream it inside a
+            # thread anchored to the response. Discord forbids nested threads,
+            # so if we're already inside one, fall back to an inline followup.
+            try:
+                thread = await interaction.message.create_thread(
+                    name=FACT_CHECK_THREAD_NAME
+                )
+                await interaction.followup.send(
+                    f"Fact-checking in {thread.mention}", ephemeral=True
+                )
+                placeholder = await thread.send(FACT_CHECK_PLACEHOLDER)
+            except discord.HTTPException:
+                placeholder = await interaction.followup.send(FACT_CHECK_PLACEHOLDER)
+
+            await _stream_fact_check(placeholder, _get_fact_check_agent(), prompt)
         except Exception:
             logger.exception("Fact-check failed")
             await interaction.followup.send(
