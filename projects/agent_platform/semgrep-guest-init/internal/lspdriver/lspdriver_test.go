@@ -81,6 +81,43 @@ func fakeLSP(t *testing.T, clientToServer io.Reader, serverToClient io.Writer, d
 	}()
 }
 
+// TestScanReturnsFindingsWithoutFullSettle verifies the hot-path optimisation: when
+// a scan publishes findings, waitDiag returns on that publish instead of waiting out
+// the settle window. The fake emits the empty clear then the findings back to back,
+// so a correct implementation returns in well under scanSettleQuiet.
+func TestScanReturnsFindingsWithoutFullSettle(t *testing.T) {
+	var ws string
+	diagFor := func(uri string) []lspDiagnostic {
+		if uri != pathToURI(filepath.Join(ws, "a.py")) {
+			return nil
+		}
+		return []lspDiagnostic{{Severity: 1, Code: json.RawMessage(`"r1"`), Message: "bad"}}
+	}
+	var d *Driver
+	d, ws = newTestDriver(t, diagFor)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := d.Initialize(ctx, "/etc/semgrep/rules", 1); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := d.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	start := time.Now()
+	findings, err := d.Scan(ctx, []vsockproto.ScanFile{{Path: "a.py", Content: "bad()\n"}})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if elapsed >= scanSettleQuiet {
+		t.Errorf("scan took %s; findings should return without the %s settle", elapsed, scanSettleQuiet)
+	}
+}
+
 func newTestDriver(t *testing.T, diagFor func(uri string) []lspDiagnostic) (*Driver, string) {
 	t.Helper()
 	c2sR, c2sW := io.Pipe()

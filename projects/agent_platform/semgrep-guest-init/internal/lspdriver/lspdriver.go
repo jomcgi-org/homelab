@@ -347,52 +347,50 @@ func (d *Driver) handleProgress(raw json.RawMessage) {
 	_ = json.Unmarshal(raw, &p)
 }
 
-// scanSettleQuiet is how long waitDiag waits with no further publishDiagnostics for
-// a URI before treating its diagnostics as final. semgrep lsp may publish an empty
-// set (clearing) and then the real findings a few tens of ms later, so the quiet
-// window lets the real publish overwrite the empty one. Tunable: the observed
-// empty->real gap is ~50ms warm; this keeps a comfortable margin under load.
+// scanSettleQuiet is how long waitDiag waits for a findings publish after seeing an
+// empty one before concluding a scan genuinely found nothing. It only gates the
+// zero-finding case (see waitDiag); a findings publish returns immediately. The
+// observed empty->real gap is ~50ms warm; this keeps a comfortable margin under load.
 const scanSettleQuiet = 350 * time.Millisecond
 
-// waitDiag waits for uri's scan to publish and settle, then returns its latest
-// diagnostics. It first blocks until at least one publishDiagnostics for uri has
-// arrived (the scan computed; warm scans take ~1s), then settles until no further
-// publish lands for scanSettleQuiet so a real-findings publish overwrites an
-// earlier empty clear. Bounded by ctx (the per-scan timeout); on cancellation it
+// waitDiag waits for uri's scan result. A semgrep LSP publishes an empty set on
+// didOpen (clearing) and then, once compute finishes, the real findings, in that
+// order and exactly once per scan. So a NON-EMPTY publish is always the final
+// result: waitDiag returns on it immediately, which is the common
+// security-relevant case and removes the settle window from the hot path. Only when
+// the latest publish is EMPTY does it settle a quiet window, since an empty clear
+// and a genuine zero-finding result are indistinguishable by content and only time
+// tells them apart. Bounded by ctx (the per-scan timeout); on cancellation it
 // returns whatever was collected so a slow file degrades rather than errors.
 func (d *Driver) waitDiag(ctx context.Context, uri string) []lspDiagnostic {
-	// Phase 1: block until the first publish for uri arrives.
 	for {
 		d.diagMu.Lock()
-		_, seen := d.latestDiag[uri]
+		diags, seen := d.latestDiag[uri]
 		ch := d.diagSignalLocked(uri)
 		d.diagMu.Unlock()
-		if seen {
-			break
+
+		if seen && len(diags) > 0 {
+			return diags // findings published; final, return at once
 		}
-		select {
-		case <-ctx.Done():
-			return d.snapshotDiag(uri)
-		case <-ch:
-		}
-	}
-	// Phase 2: settle until no new publish for scanSettleQuiet.
-	timer := time.NewTimer(scanSettleQuiet)
-	defer timer.Stop()
-	for {
-		d.diagMu.Lock()
-		ch := d.diagSignalLocked(uri)
-		d.diagMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return d.snapshotDiag(uri)
-		case <-ch:
-			if !timer.Stop() {
-				<-timer.C
+		if !seen {
+			// No publish yet: wait for the first one, then re-evaluate.
+			select {
+			case <-ctx.Done():
+				return d.snapshotDiag(uri)
+			case <-ch:
 			}
-			timer.Reset(scanSettleQuiet)
-		case <-timer.C:
+			continue
+		}
+		// Seen, but empty: settle for a findings publish that may still be coming.
+		timer := time.NewTimer(scanSettleQuiet)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
 			return d.snapshotDiag(uri)
+		case <-ch:
+			timer.Stop() // a new publish arrived; loop to check if it has findings
+		case <-timer.C:
+			return d.snapshotDiag(uri) // quiet window elapsed: a genuine empty result
 		}
 	}
 }
