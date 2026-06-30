@@ -329,6 +329,52 @@ func TestReconcileSnapshotsOnIdle(t *testing.T) {
 	}
 }
 
+// TestReconcileReapsDiedGuest covers the host-side death reaper: when a guest's
+// control channel drops without a clean Done (a panic / OOM / ungraceful exit),
+// the loop marks the thread FAILED, releases the dead VM, and posts a failure to
+// the Discord thread instead of leaving the build counter frozen forever.
+func TestReconcileReapsDiedGuest(t *testing.T) {
+	reg := newFakeRegistry(store.Thread{ThreadID: "t1", State: substrate.StatePending, Node: "node-4", DiscordThread: "d-123"})
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	ctx := context.Background()
+	// Claim it so it is live + RUNNING.
+	l.reconcileOnce(ctx, testLogger())
+	if l.LiveThreads() != 1 || reg.state("t1") != substrate.StateRunning {
+		t.Fatalf("precondition: want 1 live RUNNING thread, got live=%d state=%q", l.LiveThreads(), reg.state("t1"))
+	}
+
+	// Its guest drops the control channel without completing.
+	l.reapDied(ctx, testLogger(), diedEvent{threadID: "t1", discordThread: "d-123"})
+
+	if reg.state("t1") != substrate.StateFailed {
+		t.Fatalf("state = %q, want FAILED", reg.state("t1"))
+	}
+	if l.LiveThreads() != 0 {
+		t.Fatalf("live = %d, want 0 (dead VM released)", l.LiveThreads())
+	}
+	if ex.releases != 1 {
+		t.Fatalf("releases = %d, want 1", ex.releases)
+	}
+	if len(reg.outbox) != 1 || reg.outbox[0].channelID != "d-123" {
+		t.Fatalf("outbox = %+v, want one failure message to d-123", reg.outbox)
+	}
+}
+
+// TestReconcileReapDiedIgnoresStaleSignal proves the live-handle gate: a death
+// signal for a thread with no live handle (already idled, completed, or
+// reclaimed) is a no-op, so a late signal never double-fails a thread or spams
+// Discord.
+func TestReconcileReapDiedIgnoresStaleSignal(t *testing.T) {
+	reg := newFakeRegistry()
+	ex := &fakeExec{}
+	l := newLoop(reg, ex)
+	l.reapDied(context.Background(), testLogger(), diedEvent{threadID: "ghost", discordThread: "d-x"})
+	if ex.releases != 0 || len(reg.outbox) != 0 {
+		t.Fatalf("reap of unknown thread should be a no-op: releases=%d outbox=%d", ex.releases, len(reg.outbox))
+	}
+}
+
 // With MaxClaimAttempts=1 a single launch failure exhausts the budget on the
 // first attempt, so the thread is marked FAILED immediately (the pre-retry
 // behaviour, preserved for genuinely fail-fast configs).
