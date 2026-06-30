@@ -196,6 +196,11 @@ func run(logger *slog.Logger) error {
 	// Block until shutdown or the harness exits.
 	if harnessProc != nil {
 		err := harnessProc.Wait()
+		// goose has exited: stop the stall watchdog before the publish phase so a
+		// slow publish or a quiet output tail cannot trip it and flip a finished
+		// run to a false timeout. killGoose only cancels gooseCtx (goose is already
+		// gone), which ends mon.Run.
+		killGoose()
 		logger.Info("harness exited", "err", err)
 		// Publish the artifact the harness produced (ADR 024). The monolith
 		// mediates the S3 write, so the guest just POSTs the file it built; doing

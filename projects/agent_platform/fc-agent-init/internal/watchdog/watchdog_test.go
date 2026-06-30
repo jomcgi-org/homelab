@@ -59,3 +59,13 @@ func TestRunFiresOnceOnStall(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+func TestZeroStallAfterNeverStalls(t *testing.T) {
+	now := time.Unix(1000, 0)
+	w := &Monitor{StallAfter: 0, now: func() time.Time { return now }}
+	_, _ = w.Write([]byte("x"))
+	now = now.Add(time.Hour)
+	if w.Stalled() {
+		t.Fatal("StallAfter <= 0 should disable the watchdog (never stalls)")
+	}
+}
