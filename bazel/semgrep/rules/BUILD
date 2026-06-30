@@ -137,10 +137,13 @@ filegroup(
 # subdir structure (basenames collide across subdirs, so the tree must be kept).
 filegroup(
     name = "local_rules",
-    srcs = glob([
-        "**/*.yaml",
-        "**/*.json",
-    ]),
+    srcs = glob(
+        [
+            "**/*.yaml",
+            "**/*.json",
+        ],
+        allow_empty = True,
+    ),
 )
 
 semgrep_test(
