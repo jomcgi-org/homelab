@@ -485,15 +485,27 @@ func (d *Driver) Scan(ctx context.Context, files []vsockproto.ScanFile) ([]vsock
 
 	// Collect each target's findings once its publishes settle. The findings publish
 	// lands after any work-done-progress "end", and single-file scans emit no
-	// progress, so a publish quiet-window is the reliable completion signal.
+	// progress, so a publish quiet-window is the reliable completion signal. Each
+	// target gets its own first-publish deadline so ONE file that never publishes (a
+	// semgrep target-discovery race, or a future rule crash that drops the publish)
+	// degrades to zero findings instead of stalling the whole batch until ctx.
 	var findings []vsockproto.Finding
 	for _, tgt := range targets {
-		for _, diag := range d.waitDiag(ctx, tgt.uri) {
+		tctx, cancel := context.WithTimeout(ctx, perFileScanTimeout)
+		diags := d.waitDiag(tctx, tgt.uri)
+		cancel()
+		for _, diag := range diags {
 			findings = append(findings, translate(tgt.path, diag))
 		}
 	}
 	return findings, nil
 }
+
+// perFileScanTimeout bounds how long a single file waits for its first
+// publishDiagnostics. Generous enough for a large file's warm scan (a few seconds),
+// short enough that a file which never publishes does not pin the request. Applied
+// per target so one bad file cannot consume the whole batch budget.
+const perFileScanTimeout = 12 * time.Second
 
 // openOrChange opens a document the first time it is seen, and sends a didChange
 // with a bumped version on subsequent scans (forcing a re-scan).

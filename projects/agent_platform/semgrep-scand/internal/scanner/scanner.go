@@ -224,11 +224,60 @@ func (s *Scanner) invalidateBase(gen uint64) {
 	}()
 }
 
-// Scan runs one scan. It restores from the warm base when available (fast path) and
-// otherwise cold-boots a guest (fallback). A boot/restore/readiness failure returns
-// a *GuestUnavailableError (the HTTP layer's 503); a scan-leg failure is folded into
-// ScanResult.Errors with a nil error (the HTTP layer's 200).
+// Scan scans a batch of files. Each file is scanned on its OWN microVM,
+// concurrently — a freshly restored guest scans one target, so semgrep's per-file
+// cost is paid in parallel across the batch instead of sequentially within one
+// guest (which the warm LSP serializes). Concurrency is bounded by the per-file
+// semaphore (MaxConcurrent guests), so K*GuestMemMib still bounds microVM memory.
+// Findings and per-file errors are merged. A whole-batch *GuestUnavailableError
+// (the HTTP layer's 503) is returned only if EVERY file failed to get a guest;
+// otherwise partial results return 200 with the failures folded into Errors.
 func (s *Scanner) Scan(ctx context.Context, files []vsockproto.ScanFile) (vsockproto.ScanResult, error) {
+	if len(files) == 1 {
+		return s.scanOne(ctx, files[0])
+	}
+
+	type fileResult struct {
+		res     vsockproto.ScanResult
+		unavail error
+	}
+	results := make([]fileResult, len(files))
+	var wg sync.WaitGroup
+	for i := range files {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res, err := s.scanOne(ctx, files[i])
+			results[i] = fileResult{res: res, unavail: err}
+		}(i)
+	}
+	wg.Wait()
+
+	var merged vsockproto.ScanResult
+	unavailable := 0
+	var lastUnavail error
+	for _, r := range results {
+		if r.unavail != nil {
+			unavailable++
+			lastUnavail = r.unavail
+			merged.Errors = append(merged.Errors, r.unavail.Error())
+			continue
+		}
+		merged.Findings = append(merged.Findings, r.res.Findings...)
+		merged.Errors = append(merged.Errors, r.res.Errors...)
+	}
+	// Only a total failure to get any guest is a 503; partial success is 200.
+	if unavailable == len(files) {
+		return vsockproto.ScanResult{}, lastUnavail
+	}
+	return merged, nil
+}
+
+// scanOne scans a single file on one guest: it restores from the warm base when
+// available (fast path) and otherwise cold-boots (fallback). A boot/restore/readiness
+// failure returns a *GuestUnavailableError; a scan-leg failure is folded into
+// ScanResult.Errors with a nil error.
+func (s *Scanner) scanOne(ctx context.Context, file vsockproto.ScanFile) (vsockproto.ScanResult, error) {
 	// Cap concurrency before spending a boot/restore, so at most K guests are ever
 	// live and K*GuestMemMib bounds the microVM memory in our cgroup.
 	if s.sem != nil {
@@ -238,6 +287,7 @@ func (s *Scanner) Scan(ctx context.Context, files []vsockproto.ScanFile) (vsockp
 		defer s.sem.Release(1)
 	}
 
+	files := []vsockproto.ScanFile{file}
 	if base, gen, ok := s.currentBase(); ok {
 		res, err := s.scanWarm(ctx, base, files)
 		if err == nil {

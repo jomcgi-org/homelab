@@ -229,6 +229,52 @@ func TestWarmBaseRestoreScans(t *testing.T) {
 	}
 }
 
+func TestScanFansOutAcrossFiles(t *testing.T) {
+	d := &fakeDriver{}
+	tr := &fakeTransport{res: vsockproto.ScanResult{
+		Findings: []vsockproto.Finding{{Path: "f", RuleID: "r1"}},
+	}}
+	cfg := testCfg()
+	cfg.WarmBase = true
+	cfg.BaseKey = "k"
+	cfg.RestorePrime = time.Millisecond
+	s := New(d, tr, cfg, nil)
+	if err := s.BuildBase(context.Background()); err != nil {
+		t.Fatalf("BuildBase() error = %v", err)
+	}
+
+	files := []vsockproto.ScanFile{{Path: "a.py"}, {Path: "b.py"}, {Path: "c.py"}}
+	res, err := s.Scan(context.Background(), files)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	// Each of the 3 files scans on its own restored guest; their findings merge.
+	if len(res.Findings) != 3 {
+		t.Errorf("findings = %d, want 3 (one per file, merged across guests)", len(res.Findings))
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.baseClaims != 3 {
+		t.Errorf("baseClaims = %d, want 3 (each file restored its own guest)", d.baseClaims)
+	}
+	if d.removed != 4 {
+		t.Errorf("removed = %d, want 4 (base-build guest + 3 per-file guests cleaned up)", d.removed)
+	}
+}
+
+func TestScanFanOutAllUnavailableIs503(t *testing.T) {
+	// Every Claim fails: every per-file scan is guest-unavailable, so the whole
+	// batch must surface a *GuestUnavailableError (the HTTP 503), not a 200.
+	d := &fakeDriver{claimErr: errors.New("no kvm")}
+	s := New(d, &fakeTransport{}, testCfg(), nil)
+
+	_, err := s.Scan(context.Background(), []vsockproto.ScanFile{{Path: "a.py"}, {Path: "b.py"}})
+	var gu *GuestUnavailableError
+	if !errors.As(err, &gu) {
+		t.Fatalf("error = %v, want *GuestUnavailableError when every file fails to get a guest", err)
+	}
+}
+
 func TestWarmBaseRestoreFailsOverToColdBoot(t *testing.T) {
 	d := &fakeDriver{}
 	tr := &fakeTransport{res: vsockproto.ScanResult{
