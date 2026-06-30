@@ -1,8 +1,8 @@
 {
   "version": "v1",
   "config": {
-    "name": "projects/agent_platform/semgrep-guest/apko.yaml",
-    "checksum": "sha256-4KThtbhNElSgTKd/w//6zj4HcqJxt95NnX4Ypzwv8oE="
+    "name": "apko.yaml",
+    "checksum": "sha256-ZvyLyeQ7pDzr5Ieody2rZDi4KOW9rT9A1lTh7DDqSww="
   },
   "contents": {
     "keyring": [
@@ -728,6 +728,25 @@
           "checksum": "sha256-eE3lgEgGuIJAVXmfhnppfrWVGrasLPlxJa4r3WzRg+I="
         },
         "checksum": "Q1Z4Ze49KwF4kJhkMfHcFFn4xgDsU="
+      },
+      {
+        "name": "libgomp",
+        "url": "https://packages.wolfi.dev/os/x86_64/libgomp-16.1.0-r4.apk",
+        "version": "16.1.0-r4",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-9950",
+          "checksum": "sha1-DNNAGr+SuPFV8GopHFKqj8GEpik="
+        },
+        "data": {
+          "range": "bytes=9951-208397",
+          "checksum": "sha256-FQ2+sGAbiflvVkKKQy+r6K0/WaG/I7tUxZjhJ5GqRak="
+        },
+        "checksum": "Q1DNNAGr+SuPFV8GopHFKqj8GEpik="
       },
       {
         "name": "libstdc++",
@@ -1697,6 +1716,25 @@
           "checksum": "sha256-nO7JEsphYmEX9MmOoXfbcitMtykAwnH5FY3sZmsLwWo="
         },
         "checksum": "Q1Y/sN+lMxWwB6Xwdjimb4UpHNWNk="
+      },
+      {
+        "name": "libgomp",
+        "url": "https://packages.wolfi.dev/os/aarch64/libgomp-16.1.0-r4.apk",
+        "version": "16.1.0-r4",
+        "architecture": "aarch64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-9990",
+          "checksum": "sha1-uP05uqv3R9xWQxnHLYXugL/DkOo="
+        },
+        "data": {
+          "range": "bytes=9991-198850",
+          "checksum": "sha256-i7aWJl0adaaH4xzFyie35BWu4UuAIu0AC970+KcCilk="
+        },
+        "checksum": "Q1uP05uqv3R9xWQxnHLYXugL/DkOo="
       },
       {
         "name": "libstdc++",

@@ -7,6 +7,12 @@ contents:
     - busybox
     - ca-certificates-bundle
     - git
+    # Runtime libs the Pro engine (semgrep-core-proprietary, a native binary baked
+    # by engine_tar) dynamically links (libstdc++.so.6, libgcc_s.so.1,
+    # libgomp.so.1); without them the engine exits 127 at load.
+    - libgcc
+    - libgomp
+    - libstdc++
     # pysemgrep CLI: provides `semgrep lsp` and bundles its own OSS semgrep-core.
     # The Pro engine is layered separately and selected via SEMGREP_CORE_BIN.
     # This pulls python3 transitively, so no separate python3/py3-pip is needed.
