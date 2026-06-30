@@ -14,6 +14,7 @@ go_library(
         "//projects/agent_platform/fc-agent-init/internal/idle",
         "//projects/agent_platform/fc-agent-init/internal/reconnect",
         "//projects/agent_platform/fc-agent-init/internal/vsockdial",
+        "//projects/agent_platform/fc-agent-init/internal/watchdog",
         "//projects/agent_platform/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
