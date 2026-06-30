@@ -36,11 +36,12 @@ func (p *execProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
 	}
-	if err := p.cmd.Process.Kill(); err != nil {
-		return err
-	}
+	killErr := p.cmd.Process.Kill()
+	// Always reap the child, even when Kill reports it already exited (a crashed
+	// or panicked VM): without a Wait the dead process lingers as a zombie. Wait
+	// is the sole reaper, so it is safe to call once here.
 	_ = p.cmd.Wait()
-	return nil
+	return killErr
 }
 
 func (p *execProcess) Wait() error { return p.cmd.Wait() }

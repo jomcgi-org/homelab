@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -114,6 +115,7 @@ type Loop struct {
 	live    map[string]substrate.Handle   // threadID -> live microVM handle
 	control map[string]context.CancelFunc // threadID -> cancel its control server
 	idle    chan idleEvent                // guest idle boundaries, handled on the loop goroutine
+	died    chan diedEvent                // guests whose control channel dropped without completing
 }
 
 // idleEvent is a guest's quiescent idle-boundary signal, delivered from a
@@ -122,6 +124,18 @@ type Loop struct {
 type idleEvent struct {
 	threadID string
 	wake     vsockproto.WakeCondition
+}
+
+// diedEvent signals that a guest's control channel closed before the run
+// completed: a panic, OOM, or any ungraceful guest exit drops the vsock
+// connection, which ends control.Serve. It is delivered from the control-server
+// goroutine to the loop goroutine so the thread is reaped without racing the
+// loop's live/control maps. A clean Done or an intentional teardown (idle
+// snapshot, reclaim, shutdown) never produces one.
+type diedEvent struct {
+	threadID      string
+	discordThread string
+	progressURL   string
 }
 
 // Run ticks until ctx is cancelled. It returns nil on graceful shutdown.
@@ -138,6 +152,9 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 	if l.idle == nil {
 		l.idle = make(chan idleEvent, 32)
+	}
+	if l.died == nil {
+		l.died = make(chan diedEvent, 32)
 	}
 	interval := l.Interval
 	if interval <= 0 {
@@ -165,6 +182,8 @@ func (l *Loop) Run(ctx context.Context) error {
 			l.reconcileOnce(ctx, log)
 		case ev := <-l.idle:
 			l.snapshotIdle(ctx, log, ev)
+		case ev := <-l.died:
+			l.reapDied(ctx, log, ev)
 		}
 	}
 }
@@ -201,6 +220,45 @@ func (l *Loop) snapshotIdle(ctx context.Context, log *slog.Logger, ev idleEvent)
 		delete(l.control, ev.threadID)
 	}
 	log.Info("reconcile: thread idled and snapshotted", "thread", ev.threadID, "snapshot", ref.ID, "size", ref.SizeBytes)
+}
+
+// reapDied fails and tears down a thread whose guest dropped its control channel
+// without completing (panic / OOM / ungraceful exit). It runs on the loop
+// goroutine, so live and control are safe to touch. SetState(FAILED) hands the
+// thread to reclaimFailed, which deletes the bundle + row (and releases the CoW
+// device) after the retention window. It is gated on a live handle: a thread
+// that already idled, completed, or was reclaimed has none, so a stale death
+// signal is a no-op. The Discord notifications turn a silent stuck thread (the
+// build counter frozen forever) into a visible failure the user can retry.
+func (l *Loop) reapDied(ctx context.Context, log *slog.Logger, ev diedEvent) {
+	h, ok := l.live[ev.threadID]
+	if !ok {
+		return
+	}
+	log.Warn("reconcile: guest control channel closed before completion; marking FAILED", "thread", ev.threadID)
+	if err := l.Registry.SetState(ctx, ev.threadID, substrate.StateFailed); err != nil {
+		log.Error("reconcile: mark failed on guest death", "thread", ev.threadID, "err", err)
+	}
+	// Flip the live build message out of its spinning state and tell the thread it
+	// failed, so the user is not left watching a frozen counter. postProgressDone
+	// is a best-effort HTTP call with its own timeout; run it off the loop
+	// goroutine so a slow monolith never stalls reconciliation.
+	go postProgressDone(context.WithoutCancel(ctx), log, ev.progressURL, ev.discordThread)
+	if ev.discordThread != "" {
+		if err := l.Registry.EnqueueDiscordOutbox(ctx, ev.discordThread, "Build failed: the agent stopped before producing an artifact."); err != nil {
+			log.Error("reconcile: enqueue discord outbox on guest death", "thread", ev.threadID, "err", err)
+		}
+	}
+	// Release the dead VM handle (reaps the Firecracker child) and stop its control
+	// server; reclaimFailed handles the on-disk teardown after the retention window.
+	if err := l.Executor.Release(ctx, h); err != nil {
+		log.Debug("reconcile: release dead vm", "thread", ev.threadID, "err", err)
+	}
+	delete(l.live, ev.threadID)
+	if cancel, ok := l.control[ev.threadID]; ok {
+		cancel()
+		delete(l.control, ev.threadID)
+	}
 }
 
 func (l *Loop) reconcileOnce(ctx context.Context, log *slog.Logger) {
@@ -300,6 +358,9 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	// (same one the guest streams to); captured here so OnDone can close the
 	// message even when the guest could not (see postProgressDone).
 	progressURL := threadEnv["PROGRESS_PUBLISH_URL"]
+	// doneFired distinguishes a clean completion from an ungraceful guest death:
+	// both end control.Serve, but only a death should reap the thread as FAILED.
+	var doneFired atomic.Bool
 	// Forward the guest's vsock egress to the secret-free sidecar (ADR 023).
 	if l.EgressSidecar != "" {
 		go func() {
@@ -318,6 +379,7 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 			}
 		},
 		OnDone: func(threadID, status, result string) {
+			doneFired.Store(true)
 			log.Info("reconcile: thread harness done", "thread", threadID, "status", status, "result", result)
 			ctx := context.WithoutCancel(cctx)
 			if err := l.Registry.SetState(ctx, threadID, substrate.StateCompleted); err != nil {
@@ -345,6 +407,21 @@ func (l *Loop) startControl(ctx context.Context, log *slog.Logger, t store.Threa
 	go func() {
 		if err := control.Serve(cctx, log, uds, assign, handlers); err != nil && cctx.Err() == nil {
 			log.Warn("reconcile: control server exited", "thread", t.ThreadID, "err", err)
+		}
+		// control.Serve returned. If the thread was neither intentionally torn down
+		// (cctx cancelled by idle-snapshot / reclaim / shutdown) nor cleanly done,
+		// the guest died mid-run: a panic / OOM / ungraceful exit dropped the vsock
+		// connection. Nothing else reaps a RUNNING thread whose VM is gone (gc only
+		// touches IDLE; reclaim only touches terminal states), so it would strand
+		// until the next daemon restart. Hand off to the loop goroutine to fail and
+		// reclaim it. A late signal after an intentional teardown is filtered by
+		// reapDied's live-handle check.
+		if cctx.Err() != nil || doneFired.Load() {
+			return
+		}
+		select {
+		case l.died <- diedEvent{threadID: t.ThreadID, discordThread: t.DiscordThread, progressURL: progressURL}:
+		case <-ctx.Done():
 		}
 	}()
 }
