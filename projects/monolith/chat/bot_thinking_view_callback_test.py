@@ -2,27 +2,54 @@
 
 Covers the show_thinking and fact_check button handlers:
 - show_thinking sends the AI reasoning text as an ephemeral private message.
-- fact_check defers the interaction, calls the fact-check agent, and sends a
-  public followup with the result.
+- fact_check defers, disables its button (one-per-message limit), opens a
+  thread anchored to the response, and streams the fact-check into it, falling
+  back to an inline followup when a thread can't be created.
 """
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
+from pydantic_ai import PartDeltaEvent, TextPartDelta
 
 from chat.bot import BotMessageView
 
 
+def _text_delta(content: str) -> PartDeltaEvent:
+    return PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=content))
+
+
+async def _async_iter(events):
+    for e in events:
+        yield e
+
+
 def _make_interaction() -> AsyncMock:
-    """Return a fully mocked Discord Interaction."""
+    """Return a fully mocked Discord Interaction.
+
+    The ``message`` is wired for the fact-check path: no existing thread,
+    an editable view, and a ``create_thread`` that yields a sendable thread
+    whose ``send`` returns an editable placeholder message.
+    """
     interaction = AsyncMock()
     interaction.response = AsyncMock()
     interaction.response.send_message = AsyncMock()
     interaction.response.defer = AsyncMock()
     interaction.response.edit_message = AsyncMock()
     interaction.followup = AsyncMock()
-    interaction.followup.send = AsyncMock()
+    interaction.followup.send = AsyncMock(return_value=AsyncMock())
+
+    placeholder = AsyncMock()
+    placeholder.edit = AsyncMock()
+    thread = AsyncMock()
+    thread.mention = "<#555>"
+    thread.send = AsyncMock(return_value=placeholder)
+
+    interaction.message = AsyncMock()
+    interaction.message.thread = None
+    interaction.message.edit = AsyncMock()
+    interaction.message.create_thread = AsyncMock(return_value=thread)
     return interaction
 
 
@@ -104,11 +131,15 @@ class TestShowThinkingCallback:
 
 
 def _patch_fact_check(mock_output: str, context: str = ""):
-    """Patch both the fact-check agent and context lookup for button callback tests."""
-    mock_result = MagicMock()
-    mock_result.output = mock_output
-    mock_agent = AsyncMock()
-    mock_agent.run = AsyncMock(return_value=mock_result)
+    """Patch the streaming fact-check agent and the context lookup.
+
+    The agent yields ``mock_output`` as a single ``run_stream_events`` text
+    delta; the streamed body is the accumulated delta text.
+    """
+    mock_agent = MagicMock()
+    mock_agent.run_stream_events = MagicMock(
+        return_value=_async_iter([_text_delta(mock_output)])
+    )
     return (
         patch("chat.bot._get_fact_check_agent", return_value=mock_agent),
         patch("chat.bot._get_recent_context", return_value=context),
@@ -116,12 +147,17 @@ def _patch_fact_check(mock_output: str, context: str = ""):
     )
 
 
+def _streamed_message(interaction) -> AsyncMock:
+    """The placeholder message the fact-check streamed into (thread path)."""
+    return interaction.message.create_thread.return_value.send.return_value
+
+
 class TestFactCheckCallback:
     """Unit tests for BotMessageView.fact_check() button callback."""
 
     @pytest.mark.asyncio
-    async def test_defers_then_sends_followup(self):
-        """fact_check defers the interaction and sends a public followup."""
+    async def test_opens_thread_and_streams_result(self):
+        """fact_check defers, opens a thread, and streams the result into it."""
         view = BotMessageView("The R-27ER has active radar homing.")
         interaction = _make_interaction()
 
@@ -134,10 +170,65 @@ class TestFactCheckCallback:
             )
 
         interaction.response.defer.assert_called_once()
-        interaction.followup.send.assert_called_once()
-        call_args = interaction.followup.send.call_args
-        assert "Fact check:" in call_args[0][0]
-        assert "accurate" in call_args[0][0]
+        interaction.message.create_thread.assert_called_once()
+        final = _streamed_message(interaction).edit.call_args.kwargs["content"]
+        assert "Fact check:" in final
+        assert "accurate" in final
+
+    @pytest.mark.asyncio
+    async def test_button_disabled_after_use(self):
+        """The fact-check button is disabled and the view re-edited onto the message."""
+        view = BotMessageView("some claim")
+        interaction = _make_interaction()
+        button = _get_button_by_label(view, "Get your facts STR8!")
+
+        p1, p2, _ = _patch_fact_check("Looks right.")
+        with p1, p2:
+            await button.callback(interaction)
+
+        assert button.disabled is True
+        interaction.message.edit.assert_called_once()
+        assert interaction.message.edit.call_args.kwargs.get("view") is view
+
+    @pytest.mark.asyncio
+    async def test_existing_thread_blocks_repeat(self):
+        """A message that already has a thread is not fact-checked again."""
+        view = BotMessageView("some claim")
+        interaction = _make_interaction()
+        interaction.message.thread = MagicMock(mention="<#999>")
+
+        p1, p2, mock_agent = _patch_fact_check("should not run")
+        with p1, p2:
+            await _get_button_by_label(view, "Get your facts STR8!").callback(
+                interaction
+            )
+
+        interaction.response.defer.assert_not_called()
+        mock_agent.run_stream_events.assert_not_called()
+        assert (
+            interaction.response.send_message.call_args.kwargs.get("ephemeral") is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_inline_fallback_when_thread_creation_fails(self):
+        """If a thread can't be opened, the fact-check streams inline instead."""
+        view = BotMessageView("some claim")
+        interaction = _make_interaction()
+        interaction.message.create_thread = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(), "no nested threads")
+        )
+
+        p1, p2, _ = _patch_fact_check("Inline verdict.")
+        with p1, p2:
+            await _get_button_by_label(view, "Get your facts STR8!").callback(
+                interaction
+            )
+
+        # The placeholder posted inline is the followup.send return value; it is
+        # the message the stream edits with the final body.
+        interaction.followup.send.assert_any_call("\U0001f50d Fact-checking...")
+        final = interaction.followup.send.return_value.edit.call_args.kwargs["content"]
+        assert "Inline verdict." in final
 
     @pytest.mark.asyncio
     async def test_response_text_included_in_prompt(self):
@@ -154,7 +245,7 @@ class TestFactCheckCallback:
                 interaction
             )
 
-        assert response in mock_agent.run.call_args[0][0]
+        assert response in mock_agent.run_stream_events.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_conversation_context_prepended_when_available(self):
@@ -169,7 +260,7 @@ class TestFactCheckCallback:
                 interaction
             )
 
-        prompt = mock_agent.run.call_args[0][0]
+        prompt = mock_agent.run_stream_events.call_args[0][0]
         assert "Recent conversation:" in prompt
         assert context in prompt
         assert "The Sparrow needs continuous radar lock." in prompt
@@ -186,7 +277,9 @@ class TestFactCheckCallback:
                 interaction
             )
 
-        assert "Recent conversation:" not in mock_agent.run.call_args[0][0]
+        assert (
+            "Recent conversation:" not in mock_agent.run_stream_events.call_args[0][0]
+        )
 
     @pytest.mark.asyncio
     async def test_agent_failure_sends_ephemeral_error(self):
@@ -194,8 +287,8 @@ class TestFactCheckCallback:
         view = BotMessageView("some bot response")
         interaction = _make_interaction()
 
-        mock_agent = AsyncMock()
-        mock_agent.run = AsyncMock(side_effect=Exception("LLM timeout"))
+        mock_agent = MagicMock()
+        mock_agent.run_stream_events = MagicMock(side_effect=Exception("LLM timeout"))
         with (
             patch("chat.bot._get_fact_check_agent", return_value=mock_agent),
             patch("chat.bot._get_recent_context", return_value=""),
@@ -219,6 +312,6 @@ class TestFactCheckCallback:
                 interaction
             )
 
-        sent_content = interaction.followup.send.call_args[0][0]
-        assert len(sent_content) <= 2000
-        assert "truncated" in sent_content
+        final = _streamed_message(interaction).edit.call_args.kwargs["content"]
+        assert len(final) <= 2000
+        assert "truncated" in final

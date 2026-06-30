@@ -280,7 +280,9 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
             "Search the web to verify the key factual claims you made. Be direct and honest: "
             "call out anything wrong, anything you oversimplified, and confirm what you got right. "
             "Keep the same confident, no-BS tone -- no hedging, no filler. "
-            "Lead with the verdict, then bullet the specifics."
+            "Be brief: one short verdict line, then at most three terse bullets on the "
+            "specifics that actually matter. Hard ceiling of about 120 words -- skip the "
+            "throat-clearing, the recap of your own response, and the section headers."
         ),
         model_settings=ModelSettings(
             temperature=1.0,
