@@ -45,7 +45,7 @@ def _semgrep_pro_impl(module_ctx):
         )
 
     # Rule packs — one repo per language
-    for lang in ["golang", "python", "javascript", "kubernetes"]:
+    for lang in ["golang", "python", "javascript", "kubernetes", "rust"]:
         oci_archive(
             name = "semgrep_pro_rules_" + lang,
             image = _GHCR_PREFIX + "/rules-" + lang,
