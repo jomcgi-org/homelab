@@ -10,6 +10,7 @@
 # gazelle:exclude scripts
 # gazelle:exclude home
 # gazelle:exclude scheduler
+# gazelle:exclude semgrep
 # gazelle:exclude shared
 # gazelle:exclude ships
 # gazelle:exclude hikes
@@ -62,6 +63,7 @@ _BACKEND_SRCS = glob(
         "knowledge/**/*.py",
         "home/**/*.py",
         "scheduler/**/*.py",
+        "semgrep/**/*.py",
         "shared/**/*.py",
         "ships/**/*.py",
         "hikes/**/*.py",
@@ -193,6 +195,7 @@ py_library(
             "knowledge/**/*.py",
             "home/**/*.py",
             "scheduler/**/*.py",
+            "semgrep/**/*.py",
             "shared/**/*.py",
             "ships/**/*.py",
             "hikes/**/*.py",
@@ -653,6 +656,18 @@ py_test(
 py_test(
     name = "cluster_mcp_test",
     srcs = ["cluster/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "semgrep_mcp_test",
+    srcs = ["semgrep/mcp_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",

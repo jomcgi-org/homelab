@@ -141,6 +141,10 @@ chat:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/discord-bot"
 
+# semgrep_scan MCP tool: the in-cluster semgrep-scand daemon endpoint.
+semgrep:
+  scandUrl: "http://semgrep-scand.monolith.svc.cluster.local:8080"
+
 # goosecracker artifact tier (ADR 024): sync the OpenRouter API key into the
 # `goosecracker` Secret for the fc-agentd egress proxy to swap on openrouter.ai.
 goosecracker:
