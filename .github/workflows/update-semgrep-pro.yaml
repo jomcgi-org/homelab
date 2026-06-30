@@ -177,7 +177,7 @@ jobs:
           # --- Pro rule packs ---
           download_rules() {
             local pids=()
-            for lang in golang python javascript kubernetes; do
+            for lang in golang python javascript kubernetes rust; do
               (
                 dir="artifacts/rules-${lang}"
                 mkdir -p "${dir}"
@@ -335,7 +335,7 @@ jobs:
 
           # Pro artifacts
           GHCR_PRO="ghcr.io/jomcgi/homelab/tools/semgrep-pro"
-          for artifact in engine-amd64 engine-arm64 engine-osx-arm64 engine-osx-x86_64 rules-golang rules-python rules-javascript rules-kubernetes rules-sca-golang rules-sca-python rules-sca-javascript; do
+          for artifact in engine-amd64 engine-arm64 engine-osx-arm64 engine-osx-x86_64 rules-golang rules-python rules-javascript rules-kubernetes rules-rust rules-sca-golang rules-sca-python rules-sca-javascript; do
             key="pro_${artifact//-/_}"
             push_artifact "artifacts/${artifact}" "${GHCR_PRO}/${artifact}:${DATE_TAG}" "${key}" &
             pids+=($!)
@@ -377,6 +377,7 @@ jobs:
           DIGEST_PRO_RULES_PYTHON: ${{ steps.digests.outputs.pro_rules_python }}
           DIGEST_PRO_RULES_JAVASCRIPT: ${{ steps.digests.outputs.pro_rules_javascript }}
           DIGEST_PRO_RULES_KUBERNETES: ${{ steps.digests.outputs.pro_rules_kubernetes }}
+          DIGEST_PRO_RULES_RUST: ${{ steps.digests.outputs.pro_rules_rust }}
           DIGEST_PRO_RULES_SCA_GOLANG: ${{ steps.digests.outputs.pro_rules_sca_golang }}
           DIGEST_PRO_RULES_SCA_PYTHON: ${{ steps.digests.outputs.pro_rules_sca_python }}
           DIGEST_PRO_RULES_SCA_JAVASCRIPT: ${{ steps.digests.outputs.pro_rules_sca_javascript }}
@@ -406,6 +407,7 @@ jobs:
               "rules_python": "${DIGEST_PRO_RULES_PYTHON}",
               "rules_javascript": "${DIGEST_PRO_RULES_JAVASCRIPT}",
               "rules_kubernetes": "${DIGEST_PRO_RULES_KUBERNETES}",
+              "rules_rust": "${DIGEST_PRO_RULES_RUST}",
               "rules_sca_golang": "${DIGEST_PRO_RULES_SCA_GOLANG}",
               "rules_sca_python": "${DIGEST_PRO_RULES_SCA_PYTHON}",
               "rules_sca_javascript": "${DIGEST_PRO_RULES_SCA_JAVASCRIPT}",
@@ -471,7 +473,7 @@ jobs:
 
           - Updates Semgrep OCI artifact digests (semgrep v${SEMGREP_VERSION})
           - Pro engine binaries: amd64, arm64, osx-arm64, osx-x86_64
-          - Pro rule packs: golang, python, javascript, kubernetes
+          - Pro rule packs: golang, python, javascript, kubernetes, rust
           - SCA advisory rules: golang, python, javascript (split by ecosystem)
           - OSS engine binaries: amd64, arm64, osx-arm64, osx-x86_64 (extracted from PyPI wheels)
           - Date tag: ${DATE_TAG}
