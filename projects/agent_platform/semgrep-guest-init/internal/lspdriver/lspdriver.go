@@ -447,6 +447,12 @@ func (d *Driver) Scan(ctx context.Context, files []vsockproto.ScanFile) ([]vsock
 		if err := d.writeWorkspaceFile(rel, f.Content); err != nil {
 			return nil, fmt.Errorf("lspdriver: write %s: %w", f.Path, err)
 		}
+		// Tell semgrep its watched files changed so it recomputes the cached scan
+		// targets to include this file; otherwise semgrep reports it is "not in the
+		// session targets" and scans nothing.
+		_ = d.notify("workspace/didChangeWatchedFiles", map[string]any{
+			"changes": []map[string]any{{"uri": uri, "type": 1}},
+		})
 		// Drop any stale diagnostics for this uri (e.g. a prior scan, or the empty
 		// publish semgrep emits on didOpen) so we only read this scan's output.
 		d.diagMu.Lock()
