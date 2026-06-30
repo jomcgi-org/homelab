@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultSemgrepBin = "/opt/semgrep-venv/bin/semgrep"
+	defaultSemgrepBin = "/usr/bin/semgrep"
 	defaultRulesDir   = "/etc/semgrep/rules"
 	defaultCoreBin    = "/opt/semgrep/semgrep-core-proprietary"
 	guestHome         = "/tmp/sghome"
@@ -81,16 +81,22 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("semgrep lsp warm; rules compiled")
 
-	// Announce readiness to the host controller over the control channel. Best-effort:
-	// off-cluster there is no controller, and the scan server still serves locally.
-	announceReady(logger)
-
 	ln, err := scanserver.Listen(vsockproto.ScanPort)
 	if err != nil {
 		return err
 	}
 	logger.Info("scan server listening", "port", vsockproto.ScanPort)
-	srv := &scanserver.Server{Scanner: driver, Logger: logger}
+
+	// Announce readiness only after the scan port is bound, so the host can never
+	// dial the scan port before the guest is listening. Best-effort: off-cluster
+	// there is no controller, and the scan server still serves locally.
+	announceReady(logger)
+
+	srv := &scanserver.Server{
+		Scanner:     driver,
+		Logger:      logger,
+		ScanTimeout: durationEnv("SEMGREP_SCAN_TIMEOUT", 55*time.Second),
+	}
 	return srv.Serve(ctx, ln)
 }
 

@@ -13,6 +13,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/agent_platform/vsockproto"
 )
@@ -36,6 +37,9 @@ type Listener interface {
 type Server struct {
 	Scanner Scanner
 	Logger  *slog.Logger
+	// ScanTimeout bounds a single scan request so a file that never yields
+	// diagnostics cannot pin the connection. Zero disables the per-request bound.
+	ScanTimeout time.Duration
 }
 
 // Serve accepts connections until ctx is cancelled or the listener fails. Each
@@ -62,6 +66,11 @@ func (s *Server) Serve(ctx context.Context, ln Listener) error {
 // connection, so a transient rule failure is observable host-side.
 func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) {
 	defer conn.Close()
+	if s.ScanTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.ScanTimeout)
+		defer cancel()
+	}
 	req, err := vsockproto.ReadScanRequest(conn)
 	if err != nil {
 		s.logWarn("scanserver: read request failed", "err", err)

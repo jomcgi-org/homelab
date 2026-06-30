@@ -27,7 +27,7 @@ SEMGREP_READ_TIMEOUT = 90.0
 
 
 @mcp.tool
-async def semgrep_scan(files: list[dict], format: str = "json") -> dict:
+async def semgrep_scan(files: list[dict]) -> dict:
     """Scan changed source files for security and correctness issues with Semgrep.
 
     Send the whole content of each changed file to the in-cluster semgrep-scand
@@ -39,11 +39,10 @@ async def semgrep_scan(files: list[dict], format: str = "json") -> dict:
             relative file path, used to pick rules and report locations) and a
             ``content`` (the entire current text of that file). Pass the whole
             file, not just the changed lines, so Semgrep has full context.
-        format: Output format requested from the daemon. Defaults to ``json``.
 
     Returns:
         On success, the daemon response: a ``findings`` list (each finding has
-        ``path``, ``line``, ``col``, ``ruleId``, ``severity``, ``message``) plus
+        ``path``, ``line``, ``col``, ``rule_id``, ``severity``, ``message``) plus
         an ``errors`` list for any per-file scan problems. On failure, a dict
         with a single ``error`` key describing what went wrong.
     """
@@ -53,7 +52,7 @@ async def semgrep_scan(files: list[dict], format: str = "json") -> dict:
         return {"error": "no files provided to scan"}
 
     timeout = httpx.Timeout(SEMGREP_READ_TIMEOUT, connect=SEMGREP_CONNECT_TIMEOUT)
-    payload = {"files": files, "format": format}
+    payload = {"files": files}
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -71,6 +70,6 @@ async def semgrep_scan(files: list[dict], format: str = "json") -> dict:
                 f"{exc.response.text[:500]}"
             )
         }
-    except Exception as exc:  # noqa: BLE001 — surface any failure as structured error
+    except Exception as exc:  # noqa: BLE001: surface any failure as structured error
         logger.exception("semgrep-scand scan failed")
         return {"error": f"semgrep scan failed: {exc}"}
