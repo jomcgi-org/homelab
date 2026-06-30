@@ -54,6 +54,11 @@ const (
 	GuestCID    uint32 = 3
 	ControlPort uint32 = 1024
 	EgressPort  uint32 = 1025
+	// ScanPort carries the semgrep scan request/response channel: the host dials
+	// the guest (semgrep-guest-init) on this port, sends one ScanRequest, and
+	// reads back one ScanResult. It is separate from the control/egress ports so a
+	// scan never contends with the control handshake or an egress tunnel.
+	ScanPort uint32 = 1026
 )
 
 // WakeCondition describes what should cause an idle thread to be restored.
@@ -131,3 +136,72 @@ func (c *Conn) Recv() (Message, error) {
 
 // Close closes the underlying connection.
 func (c *Conn) Close() error { return c.rw.Close() }
+
+// ScanFile is one in-memory source file the host wants scanned. Content is the
+// full file body (the guest's resident semgrep lsp does whole-file scanning), so
+// the host never has to share a filesystem with the guest.
+type ScanFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// ScanRequest is one scan job: a batch of files to run the warm rule set over.
+type ScanRequest struct {
+	Files []ScanFile `json:"files"`
+}
+
+// Finding is one semgrep result, normalised from an LSP diagnostic. Line and Col
+// are 1-based (LSP ranges are 0-based; the driver adds one) so they read like an
+// editor's gutter. RuleID is the diagnostic code, Severity is the LSP severity
+// mapped to a name (1=ERROR, 2=WARNING, 3=INFO, 4=HINT).
+type Finding struct {
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	Col      int    `json:"col"`
+	RuleID   string `json:"rule_id"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+}
+
+// ScanResult is the reply to a ScanRequest: every finding across the batch plus
+// any per-file or driver errors (so a partial failure still returns what it can).
+type ScanResult struct {
+	Findings []Finding `json:"findings"`
+	Errors   []string  `json:"errors,omitempty"`
+}
+
+// WriteScanRequest writes one newline-delimited JSON ScanRequest, matching the
+// Conn framing (json.Encoder appends the newline). The scan channel is one
+// request and one response per connection, so plain stream encoding is enough.
+func WriteScanRequest(w io.Writer, req ScanRequest) error {
+	if err := json.NewEncoder(w).Encode(req); err != nil {
+		return fmt.Errorf("vsockproto: write scan request: %w", err)
+	}
+	return nil
+}
+
+// ReadScanRequest reads one JSON ScanRequest from r.
+func ReadScanRequest(r io.Reader) (ScanRequest, error) {
+	var req ScanRequest
+	if err := json.NewDecoder(r).Decode(&req); err != nil {
+		return ScanRequest{}, fmt.Errorf("vsockproto: read scan request: %w", err)
+	}
+	return req, nil
+}
+
+// WriteScanResult writes one newline-delimited JSON ScanResult.
+func WriteScanResult(w io.Writer, res ScanResult) error {
+	if err := json.NewEncoder(w).Encode(res); err != nil {
+		return fmt.Errorf("vsockproto: write scan result: %w", err)
+	}
+	return nil
+}
+
+// ReadScanResult reads one JSON ScanResult from r.
+func ReadScanResult(r io.Reader) (ScanResult, error) {
+	var res ScanResult
+	if err := json.NewDecoder(r).Decode(&res); err != nil {
+		return ScanResult{}, fmt.Errorf("vsockproto: read scan result: %w", err)
+	}
+	return res, nil
+}
