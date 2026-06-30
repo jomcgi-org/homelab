@@ -1,0 +1,21 @@
+{{- /*
+Authenticate ArgoCD's repo-server to pull private OCI Helm charts under
+ghcr.io/jomcgi/homelab. Without this, ArgoCD pulls charts anonymously, so every
+new (private-by-default) chart package needs a manual public-visibility flip
+(the recurring toil that blocked monolith-public and semgrep-scand).
+
+The 1Password item argocd-ghcr-repo-creds carries url/type/enableOCI/username/
+password as fields. The 1Password operator syncs them into a Secret and
+propagates this OnePasswordItem's labels onto it, so the synced Secret carries
+the argocd.argoproj.io/secret-type=repo-creds label that ArgoCD auto-discovers
+as a credential template matching the url prefix. Charts can now stay private.
+*/}}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: argocd-ghcr-repo-creds
+  namespace: {{ .Release.Namespace }}
+  labels:
+    argocd.argoproj.io/secret-type: repo-creds
+spec:
+  itemPath: "vaults/k8s-homelab/items/argocd-ghcr-repo-creds"

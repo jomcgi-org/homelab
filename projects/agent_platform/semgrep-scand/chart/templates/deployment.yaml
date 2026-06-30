@@ -27,6 +27,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "semgrep-scand.serviceAccountName" . }}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
       priorityClassName: {{ .Values.priorityClassName }}
       nodeSelector:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
@@ -63,6 +67,12 @@ spec:
               value: {{ .Values.firecracker.baseRootfsPath | quote }}
             - name: ROOTFS_SIZE
               value: {{ .Values.rootfsBuilder.rootfsSize | quote }}
+            {{- if .Values.imagePullSecret.enabled }}
+            # crane reads $DOCKER_CONFIG/config.json to pull the private
+            # semgrep-guest image (proprietary engine + Pro rules).
+            - name: DOCKER_CONFIG
+              value: /ghcr
+            {{- end }}
           volumeMounts:
             - name: nvme
               mountPath: {{ .Values.firecracker.nvmeRoot }}
@@ -71,6 +81,11 @@ spec:
               readOnly: true
             - name: rootfs-builder-work
               mountPath: /work
+            {{- if .Values.imagePullSecret.enabled }}
+            - name: ghcr-creds
+              mountPath: /ghcr
+              readOnly: true
+            {{- end }}
           resources:
             requests:
               cpu: 500m
@@ -196,5 +211,13 @@ spec:
             name: {{ include "semgrep-scand.fullname" . }}-rootfs-builder
         - name: rootfs-builder-work
           emptyDir: {}
+        {{- if .Values.imagePullSecret.enabled }}
+        - name: ghcr-creds
+          secret:
+            secretName: {{ .Values.imagePullSecret.name }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
         {{- end }}
       {{- end }}

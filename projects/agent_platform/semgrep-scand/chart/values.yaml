@@ -26,6 +26,17 @@ rootfsBuilder:
   # ~3G guest with headroom.
   rootfsSize: 4G
 
+# Private GHCR pull credentials. The semgrep-scand daemon image and (via the
+# rootfs-builder's crane export) the proprietary semgrep-guest image are private
+# GHCR packages, so both the kubelet and crane authenticate with a dockerconfigjson
+# synced from the cluster's ghcr-read-permissions 1Password item.
+imagePullSecret:
+  enabled: false
+  create: true
+  name: ghcr-imagepull-secret
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/ghcr-read-permissions"
+
 replicas: 1
 
 podAnnotations: {}
