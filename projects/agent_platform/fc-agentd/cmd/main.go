@@ -14,10 +14,10 @@ import (
 	"syscall"
 
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/config"
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/driver"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/reconcile"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/store"
 	"github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/telemetry"
+	"github.com/jomcgi/homelab/projects/agent_platform/fcvm/driver"
 )
 
 func main() {

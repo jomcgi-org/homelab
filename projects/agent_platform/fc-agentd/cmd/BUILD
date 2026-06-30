@@ -7,10 +7,10 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//projects/agent_platform/fc-agentd/internal/config",
-        "//projects/agent_platform/fc-agentd/internal/driver",
         "//projects/agent_platform/fc-agentd/internal/reconcile",
         "//projects/agent_platform/fc-agentd/internal/store",
         "//projects/agent_platform/fc-agentd/internal/telemetry",
+        "//projects/agent_platform/fcvm/driver",
     ],
 )
 
