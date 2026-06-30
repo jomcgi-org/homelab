@@ -18,7 +18,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from chat.agent import create_agent, format_context_messages
+from chat.agent import create_agent, create_fact_check_agent, format_context_messages
 from shared.embedding import EmbeddingClient
 from chat.store import MessageStore
 from chat.vision import VisionClient
@@ -95,12 +95,29 @@ def _render_goosecracker_progress(snap, elapsed: int) -> str:
     return "\n".join(lines)[:DISCORD_MESSAGE_LIMIT]
 
 
-class ThinkingView(discord.ui.View):
-    """Discord View with a 'Show thinking' button that reveals model reasoning."""
+_fact_check_agent = None
 
-    def __init__(self, thinking_text: str):
+
+def _get_fact_check_agent():
+    global _fact_check_agent
+    if _fact_check_agent is None:
+        _fact_check_agent = create_fact_check_agent()
+    return _fact_check_agent
+
+
+class BotMessageView(discord.ui.View):
+    """Discord View with action buttons on bot responses.
+
+    Always shows 'Get your facts STR8!' (fact-check via SearXNG).
+    Shows 'Show thinking' only when the model produced reasoning text.
+    """
+
+    def __init__(self, response_text: str, thinking_text: str | None = None):
         super().__init__(timeout=None)
+        self.response_text = response_text
         self.thinking_text = thinking_text
+        if thinking_text is None:
+            self.remove_item(self.show_thinking)
 
     @discord.ui.button(
         label="Show thinking",
@@ -111,6 +128,29 @@ class ThinkingView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         await interaction.response.send_message(self.thinking_text, ephemeral=True)
+
+    @discord.ui.button(
+        label="Get your facts STR8!",
+        style=discord.ButtonStyle.danger,
+        custom_id="fact_check",
+    )
+    async def fact_check(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.defer()
+        try:
+            result = await _get_fact_check_agent().run(
+                f"Fact-check this response:\n\n{self.response_text}"
+            )
+            fact_text = result.output
+            if len(fact_text) > DISCORD_MESSAGE_LIMIT:
+                fact_text = fact_text[:THINKING_TRUNCATE_AT] + "... (truncated)"
+            await interaction.followup.send(f"**Fact check:**\n{fact_text}")
+        except Exception:
+            logger.exception("Fact-check failed")
+            await interaction.followup.send(
+                "Couldn't run the fact-check right now.", ephemeral=True
+            )
 
 
 def should_respond(message: discord.Message, bot_user: discord.User) -> bool:
@@ -286,23 +326,23 @@ class ChatBot(discord.Client):
             logger.info("Synced application commands (global)")
         except Exception:
             logger.exception("Failed to sync application commands")
-        # Re-register ThinkingView for recent bot messages so the "Show thinking"
-        # button keeps working after a pod restart.
+        # Re-register BotMessageView for recent bot messages so buttons keep
+        # working after a pod restart.
         try:
             with Session(get_engine()) as session:
                 store = MessageStore(session=session, embed_client=self.embed_client)
-                messages_with_thinking = store.get_messages_with_thinking()
-            for msg in messages_with_thinking:
+                recent_bot_messages = store.get_recent_bot_messages()
+            for msg in recent_bot_messages:
                 self.add_view(
-                    ThinkingView(msg.thinking),
+                    BotMessageView(msg.content, msg.thinking),
                     message_id=int(msg.discord_message_id),
                 )
             logger.info(
-                "Re-registered ThinkingView for %d bot messages",
-                len(messages_with_thinking),
+                "Re-registered BotMessageView for %d bot messages",
+                len(recent_bot_messages),
             )
         except Exception:
-            logger.exception("Failed to re-register ThinkingViews on ready")
+            logger.exception("Failed to re-register BotMessageViews on ready")
 
     async def on_message(self, message: discord.Message):
         # Skip own messages — bot responses are stored explicitly after sending
@@ -757,10 +797,9 @@ class ChatBot(discord.Client):
                 if raw:
                     thinking_text = _truncate_thinking(raw)
 
-            if thinking_text:
-                await sent.edit(content=response_text, view=ThinkingView(thinking_text))
-            else:
-                await _edit_if_due(response_text, force=True)
+            await sent.edit(
+                content=response_text, view=BotMessageView(response_text, thinking_text)
+            )
 
             return sent, response_text, thinking_text
 

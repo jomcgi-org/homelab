@@ -402,6 +402,16 @@ class MessageStore:
         )
         return list(self.session.exec(stmt).all())
 
+    def get_recent_bot_messages(self, limit: int = 200) -> list[Message]:
+        """Return recent bot messages for button view re-registration on startup."""
+        stmt = (
+            select(Message)
+            .where(Message.is_bot == True)  # noqa: E712
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.exec(stmt).all())
+
     # -- Message lock operations ------------------------------------------------
 
     def acquire_lock(self, discord_message_id: str, channel_id: str) -> bool:
