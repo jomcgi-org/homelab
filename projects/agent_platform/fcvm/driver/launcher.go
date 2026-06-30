@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -26,6 +27,16 @@ type ExecLauncher struct {
 	// cgroup because they are child processes, not pods). Best-effort: a write
 	// failure is logged, not fatal.
 	OOMScoreAdj int
+	// VsockBindTarget, when set, launches firecracker in its own mount namespace
+	// with the VM's bundle dir bind-mounted over this canonical vsock dir (the path
+	// the base snapshot embeds). This gives every microVM restored from one warm
+	// base its own host-reachable vsock socket. Empty preserves the plain launch
+	// (fc-agentd's cold-boot path). Requires Self to be set.
+	VsockBindTarget string
+	// Self is the path to the current executable, which must handle the "__fcmount"
+	// trampoline subcommand (via ExecMountTrampoline). Required iff VsockBindTarget
+	// is set.
+	Self string
 }
 
 type execProcess struct {
@@ -54,7 +65,21 @@ func (l *ExecLauncher) Launch(ctx context.Context, vmID, socketPath string) (Pro
 	}
 	_ = os.Remove(socketPath)
 
-	cmd := exec.Command(l.Bin, "--api-sock", socketPath, "--id", vmID)
+	var cmd *exec.Cmd
+	if l.VsockBindTarget != "" {
+		// Per-instance vsock isolation: re-exec our own __fcmount trampoline in a
+		// fresh mount namespace, bind-mounting this VM's bundle dir (the api socket's
+		// dir) over the canonical vsock dir embedded in the base snapshot, then exec
+		// firecracker. See ExecMountTrampoline.
+		if l.Self == "" {
+			return nil, fmt.Errorf("driver: ExecLauncher.Self required when VsockBindTarget is set")
+		}
+		bindSrc := filepath.Dir(socketPath)
+		cmd = exec.Command(l.Self, "__fcmount", bindSrc, l.VsockBindTarget, l.Bin, "--api-sock", socketPath, "--id", vmID)
+		setUnshareMountNS(cmd)
+	} else {
+		cmd = exec.Command(l.Bin, "--api-sock", socketPath, "--id", vmID)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

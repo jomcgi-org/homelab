@@ -44,7 +44,8 @@ spec:
       {{- end }}
       {{- if .Values.firecracker.enabled }}
       # Driving Firecracker needs the host KVM device, the kata binary + kernel,
-      # the devmapper pool, and the scratch dir.
+      # and the nvme scratch dir. Privileged (CAP_SYS_ADMIN) is also required for the
+      # per-instance vsock mount namespaces.
       securityContext:
         runAsUser: 0
         runAsGroup: 0
@@ -143,13 +144,19 @@ spec:
             - name: SEMGREP_SCAND_BASE_ROOTFS
               value: {{ . | quote }}
             {{- end }}
-            # Per-scan rootfs strategy: "copy" (full file copy) or "devmapper"
-            # (copy-on-write thin-snapshot of the base in the node's shared
-            # thin-pool). thinPool names the pool to snapshot into.
-            - name: SEMGREP_SCAND_PROVISIONER
-              value: {{ .Values.firecracker.rootfsProvisioner | quote }}
-            - name: SEMGREP_SCAND_THIN_POOL
-              value: {{ .Values.firecracker.thinPool | quote }}
+            # Warm-base snapshot hot path: build one warm semgrep snapshot at startup
+            # and restore a fresh microVM from it per scan (~tens of ms), falling back
+            # to a cold boot when the base is unavailable. The shared base rootfs is
+            # booted READ-ONLY (all mutable guest state is tmpfs/RAM), so no per-scan
+            # rootfs copy is needed. canonicalVsockDir is the fixed vsock dir the
+            # snapshot embeds; the launcher bind-mounts each microVM's bundle dir over
+            # it per instance so concurrent restores each get their own host socket.
+            - name: SEMGREP_SCAND_WARM_BASE
+              value: {{ .Values.firecracker.warmBase | quote }}
+            - name: SEMGREP_SCAND_BASE_KEY
+              value: {{ .Values.firecracker.baseKey | quote }}
+            - name: SEMGREP_SCAND_CANONICAL_VSOCK_DIR
+              value: {{ .Values.firecracker.canonicalVsockDir | quote }}
             {{- end }}
             {{- with .Values.tracing.endpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -182,8 +189,6 @@ spec:
             - name: kata
               mountPath: /opt/kata
               readOnly: true
-            - name: dev-mapper
-              mountPath: /dev/mapper
             - name: nvme
               mountPath: {{ .Values.firecracker.nvmeRoot }}
           {{- end }}
@@ -196,10 +201,6 @@ spec:
         - name: kata
           hostPath:
             path: /opt/kata
-            type: Directory
-        - name: dev-mapper
-          hostPath:
-            path: /dev/mapper
             type: Directory
         - name: nvme
           hostPath:

@@ -94,7 +94,9 @@ firecracker:
   enabled: false
   binPath: /opt/kata/bin/firecracker
   kernelImagePath: /opt/kata/share/kata-containers/vmlinux.container
-  kernelBootArgs: ""
+  # The shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
+  # guest path is a tmpfs, so one read-only rootfs file safely backs every microVM.
+  kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
   # The in-guest init the kernel boots into (semgrep-guest-init, the guest image's
   # entrypoint). A raw FC boot ignores the OCI entrypoint, so the driver appends
   # init=<path>.
@@ -106,12 +108,18 @@ firecracker:
   # the mounted nvme disk.
   scanRoot: /disks/nvme-02/semgrep-scand
   # baseRootfsPath is the read-only semgrep-guest base rootfs image (built by the
-  # initContainer). When set, each scan gets its own writable copy/snapshot.
+  # initContainer); booted read-only and shared by every microVM (no per-scan copy).
   baseRootfsPath: ""
-  # Per-scan rootfs strategy: "copy" (default; full file copy) or "devmapper"
-  # (copy-on-write thin-snapshot of the base in the node's shared thin-pool).
-  rootfsProvisioner: copy
-  thinPool: devpool
+  # Warm-base snapshot hot path: build one warm snapshot at startup and restore from
+  # it per scan, cold-booting only as a fallback.
+  warmBase: true
+  # Names the warm base bundle (one per guest-image version). A constant key plus a
+  # pod restart on image change keeps the base in sync with the deployed guest.
+  baseKey: semgrep-guest
+  # Fixed directory whose vsock.sock the base snapshot embeds; the launcher
+  # bind-mounts each microVM's bundle dir over it per instance (a sibling of
+  # scanRoot so it is never globbed as a bundle).
+  canonicalVsockDir: /disks/nvme-02/semgrep-scand-vsock
 
 tracing:
   endpoint: ""

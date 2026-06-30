@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,12 @@ import (
 )
 
 func main() {
+	// Handle the "__fcmount" re-exec FIRST: when launching a microVM with per-instance
+	// vsock isolation the daemon re-execs itself in a fresh mount namespace, and this
+	// call bind-mounts the bundle dir then execs firecracker (never returning). It is
+	// a no-op for a normal daemon start.
+	driver.ExecMountTrampoline()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -47,32 +54,61 @@ func run(logger *slog.Logger) error {
 		"node", cfg.Node,
 		"arch", cfg.Arch,
 		"max_concurrent", cfg.MaxConcurrent,
+		"warm_base", cfg.WarmBase,
 		"base_rootfs", cfg.BaseRootfsPath != "",
 	)
 
-	// The Firecracker driver: cold-boot the semgrep-guest base rootfs per scan.
-	// OOMScoreAdj on the launcher makes the guest, never this daemon, the kernel's
-	// first OOM victim under memory pressure.
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+
+	// The Firecracker driver boots the shared semgrep-guest base rootfs READ-ONLY:
+	// every mutable path in the guest is a tmpfs (RAM, captured in the snapshot
+	// memfile), so one read-only rootfs file backs every microVM with no per-thread
+	// copy. CanonicalVsockDir + the launcher's VsockBindTarget give each microVM its
+	// own vsock socket at the snapshot's single embedded path (per-instance mount
+	// namespace). OOMScoreAdj makes a guest, never the daemon, the first OOM victim.
 	fcDriver := driver.New(driver.Config{
-		KernelImagePath: cfg.KernelImagePath,
-		KernelBootArgs:  cfg.KernelBootArgs,
-		BaseRootfsPath:  cfg.BaseRootfsPath,
-		Provisioner:     cfg.Provisioner,
-		ThinPool:        cfg.ThinPool,
-		HarnessInit:     cfg.HarnessInit,
-		VCPUs:           cfg.GuestVCPUs,
-		MemMib:          cfg.GuestMemMib,
-		SnapshotRoot:    cfg.NvmeRoot,
-		Node:            cfg.Node,
-		Arch:            cfg.Arch,
-	}, &driver.ExecLauncher{Bin: cfg.BinPath, OOMScoreAdj: cfg.GuestOomScoreAdj}, nil)
+		KernelImagePath:   cfg.KernelImagePath,
+		KernelBootArgs:    cfg.KernelBootArgs,
+		RootfsPath:        cfg.BaseRootfsPath,
+		RootfsReadOnly:    true,
+		CanonicalVsockDir: cfg.CanonicalVsockDir,
+		HarnessInit:       cfg.HarnessInit,
+		VCPUs:             cfg.GuestVCPUs,
+		MemMib:            cfg.GuestMemMib,
+		SnapshotRoot:      cfg.NvmeRoot,
+		Node:              cfg.Node,
+		Arch:              cfg.Arch,
+	}, &driver.ExecLauncher{
+		Bin:             cfg.BinPath,
+		OOMScoreAdj:     cfg.GuestOomScoreAdj,
+		VsockBindTarget: cfg.CanonicalVsockDir,
+		Self:            self,
+	}, nil)
 
 	scn := scanner.New(fcDriver, scanner.NewVsockTransport(), scanner.Config{
 		MaxConcurrent:    cfg.MaxConcurrent,
 		Arch:             cfg.Arch,
 		BootReadyTimeout: cfg.BootReadyTimeout,
 		ScanTimeout:      cfg.ScanTimeout,
+		WarmBase:         cfg.WarmBase,
+		BaseKey:          cfg.BaseKey,
+		RestorePrime:     cfg.RestorePrime,
 	}, logger)
+
+	// Build the warm base in the background so the daemon serves immediately; scans
+	// cold-boot (the fallback) until the base is ready (~one warm-up), then restore.
+	if cfg.WarmBase {
+		go func() {
+			bctx, cancel := context.WithTimeout(ctx, cfg.BootReadyTimeout+cfg.ScanTimeout)
+			defer cancel()
+			if err := scn.BuildBase(bctx); err != nil {
+				logger.Warn("initial warm base build failed; scans will cold-boot until it succeeds", "err", err)
+			}
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

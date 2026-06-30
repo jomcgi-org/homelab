@@ -12,7 +12,9 @@ func TestLoadDefaults(t *testing.T) {
 	for _, k := range []string{
 		"SEMGREP_SCAND_LISTEN_ADDR", "SEMGREP_SCAND_MAX_CONCURRENT",
 		"SEMGREP_SCAND_GUEST_MEM_MIB", "SEMGREP_SCAND_GUEST_VCPUS",
-		"SEMGREP_SCAND_GUEST_OOM_SCORE_ADJ", "SEMGREP_SCAND_PROVISIONER",
+		"SEMGREP_SCAND_GUEST_OOM_SCORE_ADJ", "SEMGREP_SCAND_WARM_BASE",
+		"SEMGREP_SCAND_BASE_KEY", "SEMGREP_SCAND_CANONICAL_VSOCK_DIR",
+		"SEMGREP_SCAND_RESTORE_PRIME",
 		"SEMGREP_SCAND_SCAN_TIMEOUT", "SEMGREP_SCAND_BOOT_READY_TIMEOUT",
 	} {
 		t.Setenv(k, "")
@@ -37,8 +39,17 @@ func TestLoadDefaults(t *testing.T) {
 	if c.GuestOomScoreAdj != 1000 {
 		t.Errorf("GuestOomScoreAdj = %d, want 1000", c.GuestOomScoreAdj)
 	}
-	if c.Provisioner != "copy" {
-		t.Errorf("Provisioner = %q, want copy", c.Provisioner)
+	if !c.WarmBase {
+		t.Error("WarmBase = false, want true (snapshot hot path on by default)")
+	}
+	if c.BaseKey != "semgrep-guest" {
+		t.Errorf("BaseKey = %q, want semgrep-guest", c.BaseKey)
+	}
+	if c.CanonicalVsockDir != "/disks/nvme-02/semgrep-scand-vsock" {
+		t.Errorf("CanonicalVsockDir = %q, want /disks/nvme-02/semgrep-scand-vsock", c.CanonicalVsockDir)
+	}
+	if c.RestorePrime != 300*time.Millisecond {
+		t.Errorf("RestorePrime = %s, want 300ms", c.RestorePrime)
 	}
 	if c.ScanTimeout != 60*time.Second {
 		t.Errorf("ScanTimeout = %s, want 60s", c.ScanTimeout)
