@@ -7,8 +7,8 @@ go_library(
         "launcher.go",
         "provisioner.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agentd/internal/driver",
-    visibility = ["//projects/agent_platform/fc-agentd:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/agent_platform/fcvm/driver",
+    visibility = ["//visibility:public"],
     deps = [
         "//projects/agent_platform/fcvm/fcclient",
         "//projects/agent_platform/substrate",
