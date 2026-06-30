@@ -10,6 +10,7 @@ go_library(
         "main.go",
         "mount_linux.go",
         "mount_other.go",
+        "primers.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/cmd",
     visibility = ["//visibility:private"],

@@ -54,8 +54,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.ScanTimeout != 60*time.Second {
 		t.Errorf("ScanTimeout = %s, want 60s", c.ScanTimeout)
 	}
-	if c.BootReadyTimeout != 30*time.Second {
-		t.Errorf("BootReadyTimeout = %s, want 30s", c.BootReadyTimeout)
+	if c.BootReadyTimeout != 60*time.Second {
+		t.Errorf("BootReadyTimeout = %s, want 60s", c.BootReadyTimeout)
 	}
 	if c.Arch == "" {
 		t.Error("Arch should fall back to runtime.GOARCH, got empty")

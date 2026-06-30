@@ -100,7 +100,7 @@ func Load() (Config, error) {
 		RestorePrime:      200 * time.Millisecond,
 		CanonicalVsockDir: getenvDefault("SEMGREP_SCAND_CANONICAL_VSOCK_DIR", "/disks/nvme-02/semgrep-scand-vsock"),
 		ScanTimeout:       60 * time.Second,
-		BootReadyTimeout:  30 * time.Second,
+		BootReadyTimeout:  60 * time.Second,
 	}
 
 	if c.Node == "" {
