@@ -10,7 +10,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from chat.bot import _truncate_thinking, ThinkingView, ChatBot
+from chat.bot import _truncate_thinking, BotMessageView, ChatBot
 
 
 class TestTruncateThinking:
@@ -31,31 +31,75 @@ class TestTruncateThinking:
         assert _truncate_thinking(text) == text
 
 
-class TestThinkingView:
-    def test_view_has_button(self):
-        """ThinkingView contains a 'Show thinking' button."""
-        view = ThinkingView("some thinking")
+class TestBotMessageView:
+    def test_view_with_thinking_has_two_buttons(self):
+        """BotMessageView with thinking_text shows both buttons."""
+        view = BotMessageView("response text", thinking_text="some thinking")
+        buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
+        labels = {b.label for b in buttons}
+        assert labels == {"Show thinking", "Get your facts STR8!"}
+
+    def test_view_without_thinking_has_one_button(self):
+        """BotMessageView without thinking_text shows only the fact-check button."""
+        view = BotMessageView("response text")
         buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
         assert len(buttons) == 1
-        assert buttons[0].label == "Show thinking"
-        assert buttons[0].style == discord.ButtonStyle.secondary
+        assert buttons[0].label == "Get your facts STR8!"
+
+    def test_show_thinking_button_is_secondary(self):
+        """Show thinking button uses secondary (gray) style."""
+        view = BotMessageView("response", thinking_text="reasoning")
+        button = next(
+            b
+            for b in view.children
+            if isinstance(b, discord.ui.Button) and b.label == "Show thinking"
+        )
+        assert button.style == discord.ButtonStyle.secondary
+
+    def test_fact_check_button_is_danger(self):
+        """Fact-check button uses danger (red) style."""
+        view = BotMessageView("response", thinking_text="reasoning")
+        button = next(
+            b
+            for b in view.children
+            if isinstance(b, discord.ui.Button) and b.label == "Get your facts STR8!"
+        )
+        assert button.style == discord.ButtonStyle.danger
 
     def test_view_no_timeout(self):
-        """ThinkingView has no timeout."""
-        view = ThinkingView("some thinking")
+        """BotMessageView has no timeout."""
+        view = BotMessageView("response", thinking_text="some thinking")
         assert view.timeout is None
 
-    def test_button_has_custom_id_for_persistence(self):
-        """ThinkingView button has a fixed custom_id so add_view() works after restarts."""
-        view = ThinkingView("some thinking")
-        buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
-        assert buttons[0].custom_id == "show_thinking"
+    def test_show_thinking_button_has_custom_id(self):
+        """show_thinking button has fixed custom_id for add_view() persistence."""
+        view = BotMessageView("response", thinking_text="some thinking")
+        button = next(
+            b
+            for b in view.children
+            if isinstance(b, discord.ui.Button) and b.label == "Show thinking"
+        )
+        assert button.custom_id == "show_thinking"
+
+    def test_fact_check_button_has_custom_id(self):
+        """fact_check button has fixed custom_id for add_view() persistence."""
+        view = BotMessageView("response", thinking_text="some thinking")
+        button = next(
+            b
+            for b in view.children
+            if isinstance(b, discord.ui.Button) and b.label == "Get your facts STR8!"
+        )
+        assert button.custom_id == "fact_check"
 
     @pytest.mark.asyncio
-    async def test_button_sends_ephemeral(self):
-        """Clicking the button sends thinking as an ephemeral message."""
-        view = ThinkingView("my reasoning")
-        button = [c for c in view.children if isinstance(c, discord.ui.Button)][0]
+    async def test_show_thinking_sends_ephemeral(self):
+        """Clicking Show thinking sends thinking text as an ephemeral message."""
+        view = BotMessageView("response text", thinking_text="my reasoning")
+        button = next(
+            b
+            for b in view.children
+            if isinstance(b, discord.ui.Button) and b.label == "Show thinking"
+        )
 
         interaction = AsyncMock()
         interaction.response = AsyncMock()
@@ -145,8 +189,8 @@ async def _async_iter(events):
 
 class TestThinkingIntegration:
     @pytest.mark.asyncio
-    async def test_response_with_thinking_adds_view(self):
-        """When model returns thinking, final edit includes ThinkingView."""
+    async def test_response_with_thinking_adds_view_with_thinking(self):
+        """When model returns thinking, final edit includes BotMessageView with thinking."""
         bot = _make_bot()
         bot_user = bot.user
 
@@ -172,14 +216,15 @@ class TestThinkingIntegration:
         sent = message.reply.return_value
         final_edit = sent.edit.call_args_list[-1]
         view = final_edit.kwargs.get("view")
-        assert isinstance(view, ThinkingView)
+        assert isinstance(view, BotMessageView)
+        assert view.thinking_text == "reasoning here"
         # Verify thinking was passed to save_message for the bot response
         bot_save_call = mock_store.save_message.call_args_list[-1]
         assert bot_save_call.kwargs.get("thinking") == "reasoning here"
 
     @pytest.mark.asyncio
-    async def test_response_without_thinking_no_view(self):
-        """When model returns plain text, final edit has no ThinkingView."""
+    async def test_response_without_thinking_still_has_view(self):
+        """When model returns plain text, final edit still has a BotMessageView (fact-check button)."""
         bot = _make_bot()
         bot_user = bot.user
 
@@ -200,9 +245,10 @@ class TestThinkingIntegration:
             await bot.on_message(message)
 
         sent = message.reply.return_value
-        # No edit should have a ThinkingView
-        for call in sent.edit.call_args_list:
-            assert call.kwargs.get("view") is None
+        final_edit = sent.edit.call_args_list[-1]
+        view = final_edit.kwargs.get("view")
+        assert isinstance(view, BotMessageView)
+        assert view.thinking_text is None
 
     @pytest.mark.asyncio
     async def test_empty_stream_sends_fallback(self):
@@ -288,21 +334,23 @@ class TestThinkingIntegration:
         assert last_edit.kwargs.get("content") == literal_output
 
 
-class TestOnReadyThinkingRegistration:
+class TestOnReadyViewRegistration:
     @pytest.mark.asyncio
-    async def test_on_ready_registers_views_for_messages_with_thinking(self):
-        """on_ready calls add_view for each stored bot message that has thinking."""
+    async def test_on_ready_registers_views_for_recent_bot_messages(self):
+        """on_ready calls add_view for each recent bot message."""
         bot = _make_bot()
 
         msg1 = MagicMock()
         msg1.discord_message_id = "111"
+        msg1.content = "response A"
         msg1.thinking = "thought A"
         msg2 = MagicMock()
         msg2.discord_message_id = "222"
-        msg2.thinking = "thought B"
+        msg2.content = "response B"
+        msg2.thinking = None
 
         mock_store = MagicMock()
-        mock_store.get_messages_with_thinking.return_value = [msg1, msg2]
+        mock_store.get_recent_bot_messages.return_value = [msg1, msg2]
 
         bot.add_view = MagicMock()
 
@@ -320,16 +368,18 @@ class TestOnReadyThinkingRegistration:
         calls = bot.add_view.call_args_list
         assert calls[0].kwargs["message_id"] == 111
         assert calls[1].kwargs["message_id"] == 222
-        assert isinstance(calls[0].args[0], ThinkingView)
-        assert isinstance(calls[1].args[0], ThinkingView)
+        assert isinstance(calls[0].args[0], BotMessageView)
+        assert isinstance(calls[1].args[0], BotMessageView)
+        assert calls[0].args[0].thinking_text == "thought A"
+        assert calls[1].args[0].thinking_text is None
 
     @pytest.mark.asyncio
-    async def test_on_ready_no_views_when_no_thinking_messages(self):
-        """on_ready does not call add_view when there are no stored thinking messages."""
+    async def test_on_ready_no_views_when_no_bot_messages(self):
+        """on_ready does not call add_view when there are no stored bot messages."""
         bot = _make_bot()
 
         mock_store = MagicMock()
-        mock_store.get_messages_with_thinking.return_value = []
+        mock_store.get_recent_bot_messages.return_value = []
 
         bot.add_view = MagicMock()
 

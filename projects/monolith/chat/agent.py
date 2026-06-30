@@ -255,3 +255,46 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         )
 
     return agent
+
+
+def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
+    """Create a lightweight agent for fact-checking a bot response via web search.
+
+    Uses the same Qwen model and Bosun persona but no chat deps -- just a
+    web_search tool so it can verify claims against SearXNG.
+    """
+    url = base_url or LLAMA_CPP_URL
+
+    model = OpenAIChatModel(
+        "qwen3.6-27b",
+        provider=OpenAIProvider(
+            base_url=f"{url}/v1",
+            api_key="not-needed",
+        ),
+    )
+
+    fact_agent: "Agent[None]" = Agent(
+        model,
+        system_prompt=(
+            "You're Bosun, and someone just hit the fact-check button on your last response. "
+            "Search the web to verify the key factual claims you made. Be direct and honest: "
+            "call out anything wrong, anything you oversimplified, and confirm what you got right. "
+            "Keep the same confident, no-BS tone -- no hedging, no filler. "
+            "Lead with the verdict, then bullet the specifics."
+        ),
+        model_settings=ModelSettings(
+            temperature=1.0,
+            top_p=0.95,
+            extra_body={
+                "top_k": 20,
+                "presence_penalty": 1.5,
+            },
+        ),
+    )
+
+    @fact_agent.tool_plain
+    async def web_search(query: str) -> str:
+        """Search the web to verify a factual claim."""
+        return await search_web(query)
+
+    return fact_agent
