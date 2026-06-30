@@ -9,7 +9,7 @@ spec:
     # Chart from OCI (pushed by CI via Bazel helm_push); image tags pinned at build.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: semgrep-scand
-      targetRevision: 0.2.0
+      targetRevision: 0.3.0
       helm:
         valueFiles:
           - $values/projects/agent_platform/semgrep-scand/deploy/values.yaml

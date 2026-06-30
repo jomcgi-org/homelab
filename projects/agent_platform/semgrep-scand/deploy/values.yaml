@@ -16,3 +16,9 @@ firecracker:
   scanRoot: /disks/nvme-02/semgrep-scand
   rootfsProvisioner: devmapper
   thinPool: devpool
+
+# The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
+# by the rootfs-builder) need GHCR creds in-cluster; charts stay private too via
+# the ArgoCD repo-cred added in projects/platform/argocd.
+imagePullSecret:
+  enabled: true
