@@ -391,6 +391,54 @@ func TestInvokeColdFallbackWhenNoBase(t *testing.T) {
 	}
 }
 
+// TestInvokeWarmRoundTripFailureFallsBackToCold verifies that a transport-level
+// round-trip failure on the WARM path (a flaky restore whose connection breaks
+// after readiness passed) is treated as guest-unavailable: the base is
+// invalidated and Invoke retries on a cold boot rather than returning a hard
+// 502. The cold retry succeeds, so the caller gets a 200.
+func TestInvokeWarmRoundTripFailureFallsBackToCold(t *testing.T) {
+	drv := &fakeDriver{}
+	// The first round-trip (warm attempt) fails at the transport level; the
+	// second (cold fallback) succeeds. WaitReady succeeds throughout (default).
+	rtCalls := 0
+	tr := &funcTransport{
+		roundTripFn: func(_ context.Context, _ string, _ *http.Request) (*http.Response, error) {
+			rtCalls++
+			if rtCalls == 1 {
+				return nil, errors.New("warm vsock connection broke")
+			}
+			return okResponse("ok"), nil
+		},
+	}
+	inv := New(drv, tr, defaultConfig(), nil) // WarmBase enabled
+	if err := inv.BuildBase(context.Background()); err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+
+	resp, err := inv.Invoke(context.Background(), "sess-warm-flaky", strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Invoke should have fallen back to cold and succeeded, got: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// BuildBase claimed one VM; the warm attempt claimed another (failed); the
+	// cold fallback claimed a third (succeeded). The failed warm attempt's VM
+	// must have been released eagerly.
+	if c := drv.claimCount(); c != 3 {
+		t.Errorf("Claim called %d time(s), want 3 (BuildBase + warm + cold)", c)
+	}
+	if rtCalls != 2 {
+		t.Errorf("RoundTrip called %d time(s), want 2 (warm fail + cold success)", rtCalls)
+	}
+	// The last claim (cold fallback) must carry an empty base ref.
+	if spec := drv.lastClaimSpec(); spec.BaseSnapshotRef.ID != "" {
+		t.Errorf("cold-fallback BaseSnapshotRef.ID = %q, want empty", spec.BaseSnapshotRef.ID)
+	}
+}
+
 // TestBuildBaseStoresRef verifies that BuildBase boots a VM, snapshots it, and
 // stores the resulting ref so that a subsequent Invoke restores from it
 // (BaseSnapshotRef on the Claim spec is the stored base ID).

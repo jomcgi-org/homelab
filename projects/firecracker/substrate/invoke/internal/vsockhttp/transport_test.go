@@ -102,6 +102,71 @@ func TestWaitReadyTimeout(t *testing.T) {
 	}
 }
 
+// hangFirstListener makes the FIRST accepted connection wedge (never serviced),
+// simulating the Firecracker post-restore vsock RX-queue race; every subsequent
+// connection is passed through to the real server.
+type hangFirstListener struct {
+	net.Listener
+	tripped atomic.Bool
+	stop    chan struct{}
+}
+
+func (l *hangFirstListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err // nosemgrep: no-bare-error-return
+	}
+	if l.tripped.CompareAndSwap(false, true) {
+		return &hangConn{Conn: c, stop: l.stop}, nil
+	}
+	return c, nil
+}
+
+// hangConn blocks on Read until stop is closed, so the server never reads the
+// request on the wedged first connection and the client's per-attempt deadline
+// must fire for it to make progress.
+type hangConn struct {
+	net.Conn
+	stop chan struct{}
+}
+
+func (c *hangConn) Read(_ []byte) (int, error) {
+	<-c.stop
+	return 0, io.EOF
+}
+
+// TestWaitReadyRetriesPastWedgedFirstConnection is the regression test for the
+// warm-restore latency bug: the first post-restore connection wedges, and
+// WaitReady must abandon it at the per-attempt deadline and reconnect, returning
+// well under the (generous) outer context rather than blocking on it.
+func TestWaitReadyRetriesPastWedgedFirstConnection(t *testing.T) {
+	udsPath := t.TempDir() + "/shim.sock"
+	base, err := net.Listen("unix", udsPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	ln := &hangFirstListener{Listener: base, stop: stop}
+	srv := shim.NewServer(echoHandler, shim.WithReady(func() bool { return true }))
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { _ = srv.Close() })
+
+	tr := NewTransport(WithDirectDial())
+	// Outer budget is deliberately generous: without the per-attempt cap the
+	// wedged first connection would block WaitReady for the full 5s.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if err := tr.WaitReady(ctx, udsPath, "/shim/ready"); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("WaitReady took %v; the per-attempt cap should abandon the wedged connection and retry well under the 5s outer ctx", elapsed)
+	}
+}
+
 // TestRoundTripContextCancel verifies that a context cancelled before the call
 // causes RoundTrip to return promptly with an error.
 func TestRoundTripContextCancel(t *testing.T) {

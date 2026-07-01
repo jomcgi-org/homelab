@@ -87,8 +87,17 @@ type Config struct {
 	// Arch pins the guest CPU architecture; FC snapshots are arch-affine and
 	// a mismatched restore fails closed.
 	Arch string
-	// BootReadyTimeout bounds the readiness poll after a cold boot or restore.
+	// BootReadyTimeout bounds the readiness poll after a COLD boot (a real boot
+	// plus in-guest warm-up can take seconds).
 	BootReadyTimeout time.Duration
+	// RestoreReadyTimeout bounds the readiness poll after a WARM restore. A
+	// restored guest is already warm, so it answers /shim/ready almost
+	// immediately; this short budget only needs to cover WaitReady retrying
+	// past the Firecracker post-restore vsock RX-queue race (the first
+	// connection can wedge; WaitReady abandons it per-attempt and reconnects).
+	// If a restore is not ready within this budget it is treated as unavailable
+	// and Invoke falls back to a cold boot. Defaults to 2s.
+	RestoreReadyTimeout time.Duration
 }
 
 // Invoker orchestrates invocations for one workload. The daemon creates one
@@ -115,6 +124,9 @@ func New(d vmDriver, t transport, cfg Config, logger *slog.Logger) *Invoker {
 	var sem *semaphore.Weighted
 	if cfg.Workload.Concurrency > 0 {
 		sem = semaphore.NewWeighted(int64(cfg.Workload.Concurrency))
+	}
+	if cfg.RestoreReadyTimeout <= 0 {
+		cfg.RestoreReadyTimeout = 2 * time.Second
 	}
 	return &Invoker{driver: d, transport: t, sem: sem, cfg: cfg, logger: logger}
 }
@@ -215,7 +227,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 			ThreadID:        session,
 			BaseSnapshotRef: base,
 		}
-		resp, cleanup, err := inv.claimInvoke(ctx, warmSpec, session, body)
+		resp, cleanup, err := inv.claimInvoke(ctx, warmSpec, session, body, true)
 		if err == nil {
 			return ownResponse(resp, cleanup, releaseSlot), nil
 		}
@@ -238,7 +250,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 		Arch:     inv.cfg.Arch,
 		ThreadID: session,
 	}
-	resp, cleanup, err := inv.claimInvoke(ctx, coldSpec, session, body)
+	resp, cleanup, err := inv.claimInvoke(ctx, coldSpec, session, body, false)
 	if err != nil {
 		releaseSlot()
 		return nil, err
@@ -258,7 +270,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 //
 // A Claim or WaitReady failure returns *GuestUnavailableError. A RoundTrip
 // failure is returned as-is (the caller decides the 502/503 mapping).
-func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader) (*http.Response, func(), error) {
+func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader, warm bool) (*http.Response, func(), error) {
 	h, err := inv.driver.Claim(ctx, spec)
 	if err != nil {
 		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
@@ -266,9 +278,19 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 
 	uds := inv.driver.VsockUDSPath(h.ThreadID)
 
-	// The readiness wait uses its own short-lived context, always cancelled here
-	// (it never bounds the response body, only the boot handshake).
-	readyCtx, cancelReady := context.WithTimeout(ctx, inv.cfg.BootReadyTimeout)
+	// A warm restore is already warmed in the snapshot, so it answers /shim/ready
+	// almost immediately; use the short RestoreReadyTimeout so a wedged or dead
+	// restore fails fast and falls back to a cold boot. A cold boot needs the
+	// full BootReadyTimeout to cover the real boot plus in-guest warm-up.
+	// WaitReady itself retries past the post-restore vsock RX-queue race
+	// (per-attempt deadline), so no separate "prime" is needed. The readiness
+	// wait uses its own short-lived context, always cancelled here (it never
+	// bounds the response body).
+	readyTimeout := inv.cfg.BootReadyTimeout
+	if warm {
+		readyTimeout = inv.cfg.RestoreReadyTimeout
+	}
+	readyCtx, cancelReady := context.WithTimeout(ctx, readyTimeout)
 	readyErr := inv.transport.WaitReady(readyCtx, uds, inv.cfg.Workload.ReadyPath)
 	cancelReady()
 	if readyErr != nil {
@@ -291,11 +313,19 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	}
 	resp, err := inv.transport.RoundTrip(rtCtx, uds, req)
 	if err != nil {
-		// RoundTrip errors are NOT wrapped as GuestUnavailableError: the guest
-		// ran and the round-trip itself failed (HTTP 502 territory). No body to
-		// own, so clean up eagerly.
 		cancelRT()
 		inv.discard(h)
+		if warm {
+			// On the warm path a transport-level round-trip failure (the
+			// connection broke mid-request) after readiness passed suggests the
+			// restored guest is flaky. Surface it as unavailable so Invoke
+			// invalidates the base and retries on a cold boot rather than
+			// returning a hard 502.
+			return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("warm round-trip: %w", err)}
+		}
+		// Cold path: the guest booted and proved ready, so a round-trip failure
+		// is an HTTP-leg error (502 territory), not a guest-unavailable case.
+		// No body to own, so clean up eagerly.
 		return nil, nil, err
 	}
 	// Success: the response body is a lazy stream over the still-live guest.

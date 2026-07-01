@@ -101,31 +101,58 @@ func (t *Transport) RoundTrip(ctx context.Context, udsPath string, req *http.Req
 // empty. On timeout it returns a descriptive error wrapping ctx.Err().
 //
 // Any error from RoundTrip (such as a connection-refused while the guest is
-// still starting) is treated as "not ready yet" and causes a retry. The poll
-// interval is 50 ms.
+// still starting) is treated as "not ready yet" and causes a retry.
+//
+// Each attempt is bounded by its own short deadline (waitReadyAttempt), NOT the
+// outer ctx. This is load-bearing for warm restores: the first post-restore
+// vsock connection can wedge on Firecracker's RX-queue race, and its
+// CONNECT-reply read would otherwise block for the full outer deadline before
+// the retry loop ever runs. Capping per attempt abandons a wedged connection
+// quickly and reconnects, so WaitReady returns the instant the guest answers
+// (usually the first or second attempt) instead of hanging.
 func (t *Transport) WaitReady(ctx context.Context, udsPath, readyPath string) error {
 	if readyPath == "" {
 		readyPath = "/shim/ready"
 	}
 	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://vsock"+readyPath, nil)
-		if err != nil {
-			return fmt.Errorf("vsockhttp: build ready request: %w", err)
+		if err := t.readyAttempt(ctx, udsPath, readyPath); err == nil {
+			return nil
 		}
-		resp, err := t.RoundTrip(ctx, udsPath, req)
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-		}
-		// Any error or non-200 response is retriable; stop only when ctx fires.
+		// Retriable: back off briefly, stop only when the outer ctx fires.
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("vsockhttp: timed out waiting for guest ready at %s: %w", readyPath, ctx.Err())
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(waitReadyBackoff):
 		}
 	}
+}
+
+// waitReadyAttempt bounds a single readiness probe; a wedged post-restore
+// connection is abandoned after this and retried. waitReadyBackoff is the pause
+// between attempts once one has returned (fast failures should not spin).
+const (
+	waitReadyAttempt = 150 * time.Millisecond
+	waitReadyBackoff = 20 * time.Millisecond
+)
+
+// readyAttempt performs one readiness probe bounded by waitReadyAttempt (capped
+// by the outer ctx). It returns nil only on a 200 response.
+func (t *Transport) readyAttempt(ctx context.Context, udsPath, readyPath string) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, waitReadyAttempt)
+	defer cancel()
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, "http://vsock"+readyPath, nil)
+	if err != nil {
+		return fmt.Errorf("vsockhttp: build ready request: %w", err)
+	}
+	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
+	if err != nil {
+		return err // nosemgrep: no-bare-error-return
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("vsockhttp: guest not ready, status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // dialConn opens a raw connection to the guest shim at udsPath. In production
