@@ -99,6 +99,13 @@ type Config struct {
 	// restored guest to announce readiness over its shim.
 	BootReadyTimeout time.Duration
 
+	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address
+	// (ADR 023 phase 6a). Egress-enabled workloads tunnel each guest's vsock
+	// egress connections here; the daemon holds no secrets and never parses the
+	// bytes. Daemon-global (one sidecar per pod serves every egress-enabled
+	// workload). Default "127.0.0.1:8888".
+	EgressSidecarAddr string
+
 	// Workloads is the set of named workloads the daemon can dispatch, keyed
 	// by workload name. Empty when no workload table is configured.
 	Workloads map[string]Workload
@@ -120,6 +127,7 @@ func Load() (Config, error) {
 		CanonicalVsockDir: getenvDefault("FC_INVOKE_CANONICAL_VSOCK_DIR", "/disks/nvme-02/fc-invoke-vsock"),
 		GuestOomScoreAdj:  atoiDefault("FC_INVOKE_GUEST_OOM_SCORE_ADJ", 1000),
 		BootReadyTimeout:  60 * time.Second,
+		EgressSidecarAddr: getenvDefault("FC_INVOKE_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
 	}
 
 	if c.Node == "" {

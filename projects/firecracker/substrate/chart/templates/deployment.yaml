@@ -179,6 +179,41 @@ spec:
             - name: nvme
               mountPath: {{ .Values.firecracker.nvmeRoot }}
           {{- end }}
+        {{- if .Values.egress.enabled }}
+        # Egress-proxy sidecar (ADR 023 phase 6a, plain allowlist-forward): the
+        # only process that reaches the network on a guest's behalf. The daemon
+        # forwards each egress-enabled guest's vsock egress here over localhost;
+        # the sidecar never sees the guest's control frames. Pod-level: one sidecar
+        # serves every egress-enabled workload on the node. Runs non-root (uid
+        # 65532). Plain mode: NO secret catalog / CA / secret-swap (a later PR).
+        - name: egress-proxy
+          image: "{{ .Values.egress.image.repository }}:{{ .Values.egress.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            # The daemon tunnels to 127.0.0.1:8888 by default
+            # (FC_INVOKE_EGRESS_SIDECAR_ADDR); the sidecar listens on the same port.
+            - name: EGRESS_LISTEN
+              value: ":8888"
+            - name: EGRESS_POLICY
+              value: {{ .Values.egress.policy | default "allowlist" | quote }}
+            {{- if eq (.Values.egress.policy | default "allowlist") "allowlist" }}
+            # Under policy=allowlist the sidecar denies any destination not in this
+            # list (fail closed). Empty until the agent PR populates it.
+            - name: EGRESS_ALLOWLIST
+              value: {{ .Values.egress.allowlist | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.egress.resources | nindent 12 }}
+        {{- end }}
       {{- if .Values.firecracker.enabled }}
       volumes:
         - name: dev-kvm

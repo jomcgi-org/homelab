@@ -11,6 +11,7 @@ helm_chart(
         "image": "//projects/firecracker/substrate/invoke:image.info",
         "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
         "rootfsBuilder.image": "//projects/agent_platform/fc-agentd/rootfs-builder:image.info",
+        "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

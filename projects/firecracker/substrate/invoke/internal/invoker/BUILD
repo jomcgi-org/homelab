@@ -7,6 +7,7 @@ go_library(
     visibility = ["//projects/firecracker/substrate/invoke:__subpackages__"],
     deps = [
         "//projects/firecracker/substrate/invoke/internal/config",
+        "//projects/firecracker/substrate/invoke/internal/egress",
         "//projects/firecracker/substrate/substrate",
         "@org_golang_x_sync//semaphore",
     ],

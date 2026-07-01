@@ -20,3 +20,10 @@ firecracker:
 # the ArgoCD repo-cred added in projects/platform/argocd.
 imagePullSecret:
   enabled: true
+
+# Egress-proxy sidecar (ADR 023 phase 6a). Off for now: the only live workload
+# is semgrep, which runs with egress disabled. The agent workload PR flips this
+# on and populates egress.allowlist (in-cluster Qwen, the git mirror, the
+# monolith progress endpoint).
+egress:
+  enabled: false
