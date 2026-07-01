@@ -178,7 +178,16 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 
 // Invoke round-trips one HTTP POST to the guest shim on behalf of the caller.
 // It restores from the warm base when available (fast path) and falls back to
-// a cold boot otherwise. The VM is always released when Invoke returns.
+// a cold boot otherwise.
+//
+// Cleanup ownership: on success the returned response body is a lazy stream the
+// caller reads AFTER Invoke returns (the HTTP handler does io.Copy then
+// resp.Body.Close). Tearing the VM down, cancelling the request context, or
+// releasing the concurrency slot when Invoke returns would truncate that body.
+// So on the success path Invoke transfers all three cleanups (VM discard,
+// request-context cancel, semaphore release) to the response body's Close,
+// which runs them exactly once. The caller MUST close the body. On every
+// error/early-return path there is no body to own, so cleanup runs eagerly.
 //
 // Error classification for the HTTP layer:
 //   - *GuestUnavailableError: Claim, WaitReady, or semaphore failure; map to
@@ -190,7 +199,14 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 		if err := inv.sem.Acquire(ctx, 1); err != nil {
 			return nil, &GuestUnavailableError{Err: fmt.Errorf("acquire invoke slot: %w", err)}
 		}
-		defer inv.sem.Release(1)
+	}
+	// releaseSlot frees the concurrency slot (nil-safe). On success it is folded
+	// into the body's Close so the slot is held until the guest is torn down; on
+	// any failure below it runs eagerly.
+	releaseSlot := func() {
+		if inv.sem != nil {
+			inv.sem.Release(1)
+		}
 	}
 
 	if base, gen, ok := inv.currentBase(); ok {
@@ -199,16 +215,19 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 			ThreadID:        session,
 			BaseSnapshotRef: base,
 		}
-		resp, err := inv.claimInvoke(ctx, warmSpec, session, body)
+		resp, cleanup, err := inv.claimInvoke(ctx, warmSpec, session, body)
 		if err == nil {
-			return resp, nil
+			return ownResponse(resp, cleanup, releaseSlot), nil
 		}
 		// Only a *GuestUnavailableError (Claim or WaitReady failure) on the warm
 		// path triggers base invalidation and a cold-boot fallback. A raw error
 		// means the guest ran and only the HTTP leg failed; return it without
-		// invalidating the base (it is still good) and without cold retry.
+		// invalidating the base (it is still good) and without cold retry. The
+		// failed attempt already discarded its own VM inside claimInvoke, so we
+		// only release the concurrency slot here.
 		var gue *GuestUnavailableError
 		if !errors.As(err, &gue) {
+			releaseSlot()
 			return nil, err
 		}
 		inv.logger.Warn("invoker: warm path failed; falling back to cold boot", "err", err)
@@ -219,32 +238,42 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 		Arch:     inv.cfg.Arch,
 		ThreadID: session,
 	}
-	return inv.claimInvoke(ctx, coldSpec, session, body)
+	resp, cleanup, err := inv.claimInvoke(ctx, coldSpec, session, body)
+	if err != nil {
+		releaseSlot()
+		return nil, err
+	}
+	return ownResponse(resp, cleanup, releaseSlot), nil
 }
 
 // claimInvoke is the shared implementation for both the warm and cold
 // invocation paths. It claims a VM from the driver using spec, waits for the
-// shim to be ready, and performs the HTTP round-trip. The VM is always
-// discarded via a defer, so callers never leak a live guest.
+// shim to be ready, and performs the HTTP round-trip.
+//
+// On success it returns the response and a cleanup func that discards the VM
+// and cancels the request context; the caller transfers that cleanup to the
+// response body's Close so the guest stays live while the body streams. On any
+// failure it discards the VM and cancels its context eagerly (there is no body
+// to own) and returns a nil response and nil cleanup.
 //
 // A Claim or WaitReady failure returns *GuestUnavailableError. A RoundTrip
 // failure is returned as-is (the caller decides the 502/503 mapping).
-func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader) (*http.Response, error) {
+func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader) (*http.Response, func(), error) {
 	h, err := inv.driver.Claim(ctx, spec)
 	if err != nil {
-		return nil, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
+		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
 	}
-	// Critical: always release and remove the bundle, even on transport error.
-	// context.Background() so cleanup runs even when the request ctx was
-	// cancelled. This is the single defer that makes every error path safe.
-	defer func() { inv.discard(h) }()
 
 	uds := inv.driver.VsockUDSPath(h.ThreadID)
 
+	// The readiness wait uses its own short-lived context, always cancelled here
+	// (it never bounds the response body, only the boot handshake).
 	readyCtx, cancelReady := context.WithTimeout(ctx, inv.cfg.BootReadyTimeout)
-	defer cancelReady()
-	if err := inv.transport.WaitReady(readyCtx, uds, inv.cfg.Workload.ReadyPath); err != nil {
-		return nil, &GuestUnavailableError{Err: fmt.Errorf("guest readiness: %w", err)}
+	readyErr := inv.transport.WaitReady(readyCtx, uds, inv.cfg.Workload.ReadyPath)
+	cancelReady()
+	if readyErr != nil {
+		inv.discard(h)
+		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("guest readiness: %w", readyErr)}
 	}
 
 	path := "/invoke"
@@ -252,23 +281,80 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		path = "/invoke/" + session
 	}
 	rtCtx, cancelRT := context.WithTimeout(ctx, inv.cfg.Workload.RequestTimeout)
-	defer cancelRT()
 	req, err := http.NewRequestWithContext(rtCtx, http.MethodPost, "http://vsock"+path, body)
 	if err != nil {
 		// This only fails for malformed method strings; treat as infrastructure
-		// error, not a VM issue.
-		return nil, fmt.Errorf("invoker: build request: %w", err)
+		// error, not a VM issue. No body to own, so clean up eagerly.
+		cancelRT()
+		inv.discard(h)
+		return nil, nil, fmt.Errorf("invoker: build request: %w", err)
 	}
-	// RoundTrip errors are NOT wrapped as GuestUnavailableError: the guest ran
-	// and the round-trip itself failed (HTTP 502 territory).
-	return inv.transport.RoundTrip(rtCtx, uds, req)
+	resp, err := inv.transport.RoundTrip(rtCtx, uds, req)
+	if err != nil {
+		// RoundTrip errors are NOT wrapped as GuestUnavailableError: the guest
+		// ran and the round-trip itself failed (HTTP 502 territory). No body to
+		// own, so clean up eagerly.
+		cancelRT()
+		inv.discard(h)
+		return nil, nil, err
+	}
+	// Success: the response body is a lazy stream over the still-live guest.
+	// Hand the caller a cleanup that cancels the request context and discards
+	// the VM; it will run only when the body is closed, after streaming. Cancel
+	// the context AFTER discarding so an in-flight read is never aborted early.
+	cleanup := func() {
+		inv.discard(h)
+		cancelRT()
+	}
+	return resp, cleanup, nil
 }
 
-// discard releases a microVM and removes its on-disk bundle. Called via defer
-// from claimInvoke on every guest the invoker claims. Best-effort: individual
-// failures are logged, not returned, so a Release hiccup does not mask the
-// original result. context.Background() ensures cleanup runs even when the
-// request context was cancelled.
+// ownedBody wraps a response body so closing it runs a cleanup function exactly
+// once. This transfers ownership of the microVM, its request context, and the
+// concurrency slot to the response lifetime: the guest stays live until the
+// caller finishes streaming the body and closes it. Double Close (e.g. a
+// server defer plus a manual close) cleans up once.
+type ownedBody struct {
+	io.ReadCloser
+	once    sync.Once
+	cleanup func()
+}
+
+// Close closes the underlying body and runs the transferred cleanup exactly
+// once. Subsequent calls are no-ops.
+func (b *ownedBody) Close() error {
+	var err error
+	b.once.Do(func() {
+		err = b.ReadCloser.Close()
+		b.cleanup()
+	})
+	return err // nosemgrep: no-bare-error-return
+}
+
+// ownResponse replaces resp.Body with an ownedBody whose Close runs the VM/ctx
+// cleanup followed by the concurrency-slot release, so the guest is torn down
+// and the slot freed only after the caller has streamed and closed the body.
+func ownResponse(resp *http.Response, cleanup, releaseSlot func()) *http.Response {
+	inner := resp.Body
+	if inner == nil {
+		inner = http.NoBody
+	}
+	resp.Body = &ownedBody{
+		ReadCloser: inner,
+		cleanup: func() {
+			cleanup()
+			releaseSlot()
+		},
+	}
+	return resp
+}
+
+// discard releases a microVM and removes its on-disk bundle. It runs for every
+// guest the invoker claims: eagerly on failure paths, and from the response
+// body's Close on the success path. Best-effort: individual failures are
+// logged, not returned, so a Release hiccup does not mask the original result.
+// context.Background() ensures cleanup runs even when the request context was
+// cancelled.
 func (inv *Invoker) discard(h substrate.Handle) {
 	if err := inv.driver.Release(context.Background(), h); err != nil {
 		inv.logger.Warn("invoker: release guest", "thread", h.ThreadID, "err", err)

@@ -105,6 +105,14 @@ func (f *fakeDriver) removeBundleCount() int {
 	return len(f.removedBundles)
 }
 
+// isReleased reports whether any VM has been Released. Tests that claim a
+// single VM use it to prove the guest is still alive while the body streams.
+func (f *fakeDriver) isReleased() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.releaseHandles) > 0
+}
+
 // lastClaimSpec returns the most recently recorded ClaimSpec, or zero if none.
 func (f *fakeDriver) lastClaimSpec() substrate.ClaimSpec {
 	f.mu.Lock()
@@ -178,7 +186,6 @@ func TestInvokeHappyPathRestoresAndReleases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -192,13 +199,22 @@ func TestInvokeHappyPathRestoresAndReleases(t *testing.T) {
 		t.Errorf("BaseSnapshotRef.ID = %q, want %q", last.BaseSnapshotRef.ID, "test-base")
 	}
 
-	// BuildBase claimed one VM; Invoke claimed one more. Release and RemoveBundle
-	// must each be called exactly twice (once per claimed VM).
+	// The Invoke VM's cleanup is transferred to the response body's Close, so
+	// only the BuildBase VM has been released so far (1), not the Invoke VM.
+	if got := drv.releaseCount(); got != 1 {
+		t.Errorf("Release called %d time(s) before body close, want 1 (BuildBase VM only)", got)
+	}
+
+	// Closing the body tears down the Invoke VM: now both VMs are released and
+	// their bundles removed (BuildBase VM + Invoke VM).
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("resp.Body.Close: %v", err)
+	}
 	if got := drv.releaseCount(); got != 2 {
-		t.Errorf("Release called %d time(s), want 2 (BuildBase VM + Invoke VM)", got)
+		t.Errorf("Release called %d time(s) after body close, want 2 (BuildBase VM + Invoke VM)", got)
 	}
 	if got := drv.removeBundleCount(); got != 2 {
-		t.Errorf("RemoveBundle called %d time(s), want 2", got)
+		t.Errorf("RemoveBundle called %d time(s) after body close, want 2", got)
 	}
 }
 
@@ -410,5 +426,123 @@ func TestBuildBaseStoresRef(t *testing.T) {
 
 	if invokeSpec.BaseSnapshotRef.ID != ref.ID {
 		t.Errorf("Invoke ClaimSpec.BaseSnapshotRef.ID = %q, want %q", invokeSpec.BaseSnapshotRef.ID, ref.ID)
+	}
+}
+
+// lifeCheckedBody is a response body whose Read fails once the fake driver has
+// Released the VM. It proves the invoker keeps the guest alive while the body
+// streams: if cleanup ran eagerly (the pre-fix bug), the first Read after
+// Invoke returns would error instead of yielding the payload.
+type lifeCheckedBody struct {
+	drv    *fakeDriver
+	data   []byte
+	off    int
+	closed bool
+}
+
+func (b *lifeCheckedBody) Read(p []byte) (int, error) {
+	if b.drv.isReleased() {
+		return 0, errors.New("read after guest release: body streamed over a dead VM")
+	}
+	if b.off >= len(b.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[b.off:])
+	b.off += n
+	return n, nil
+}
+
+func (b *lifeCheckedBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+// TestInvokeSuccessDefersCleanupToBodyClose proves the success-path fix: the VM,
+// its request context, and the concurrency slot are torn down by the response
+// body's Close, not eagerly when Invoke returns. The body is readable only
+// because the guest is still alive, closing it runs cleanup exactly once, and a
+// second Close is a no-op (sync.Once). This test fails before the fix (the body
+// read errors because the VM was released as Invoke returned).
+func TestInvokeSuccessDefersCleanupToBodyClose(t *testing.T) {
+	drv := &fakeDriver{}
+	payload := "streamed-guest-output"
+	body := &lifeCheckedBody{drv: drv, data: []byte(payload)}
+	tr := &funcTransport{
+		roundTripFn: func(_ context.Context, _ string, _ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+		},
+	}
+	cfg := defaultConfig()
+	cfg.Workload.WarmBase = false
+	cfg.Workload.Concurrency = 1
+	inv := New(drv, tr, cfg, nil)
+
+	resp, err := inv.Invoke(context.Background(), "sess", strings.NewReader("in"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	// Cleanup must NOT have run yet: the VM is still alive for the body stream.
+	if c := drv.releaseCount(); c != 0 {
+		t.Fatalf("Release called %d time(s) before body close, want 0", c)
+	}
+	if c := drv.removeBundleCount(); c != 0 {
+		t.Fatalf("RemoveBundle called %d time(s) before body close, want 0", c)
+	}
+
+	// The body must be fully readable because the guest is still alive. Before
+	// the fix this errors: cleanup released the VM as Invoke returned.
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(resp.Body): %v", err)
+	}
+	if string(got) != payload {
+		t.Errorf("body = %q, want %q", string(got), payload)
+	}
+
+	// Still no cleanup until Close.
+	if c := drv.releaseCount(); c != 0 {
+		t.Fatalf("Release called %d time(s) after read but before close, want 0", c)
+	}
+
+	// Closing the body runs cleanup exactly once: one Release, one RemoveBundle,
+	// and the underlying body is closed.
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if c := drv.releaseCount(); c != 1 {
+		t.Errorf("Release called %d time(s) after close, want 1", c)
+	}
+	if c := drv.removeBundleCount(); c != 1 {
+		t.Errorf("RemoveBundle called %d time(s) after close, want 1", c)
+	}
+	if !body.closed {
+		t.Error("underlying body Close was not called")
+	}
+
+	// The concurrency slot must have been freed by the close: with Concurrency=1
+	// a fresh Invoke can acquire it immediately (a bounded ctx would time out if
+	// the slot were still held).
+	tr.roundTripFn = func(_ context.Context, _ string, _ *http.Request) (*http.Response, error) {
+		return okResponse("second"), nil
+	}
+	ctx2, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	resp2, err := inv.Invoke(ctx2, "sess2", strings.NewReader("in2"))
+	if err != nil {
+		t.Fatalf("second Invoke (slot should be free after first body close): %v", err)
+	}
+	if err := resp2.Body.Close(); err != nil {
+		t.Errorf("resp2.Body.Close: %v", err)
+	}
+
+	// A second Close of the first body is a no-op (sync.Once): it must not run
+	// cleanup again.
+	before := drv.releaseCount()
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("second Close of first body: %v", err)
+	}
+	if after := drv.releaseCount(); after != before {
+		t.Errorf("double Close ran cleanup again: Release count %d -> %d", before, after)
 	}
 }
