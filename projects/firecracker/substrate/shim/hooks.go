@@ -1,4 +1,4 @@
-// Package shim is the guest-side HTTP shim for the fc-invoke substrate (ADR 029).
+// Package shim is the guest-side HTTP shim for the fc-invoke substrate (ADR 030).
 // It dispatches /invoke requests to a workload Handler, exposes a /shim/*
 // control surface, and runs an optional pre/post hook Chain around each
 // invocation. The server accepts any net.Listener (vsock in production,

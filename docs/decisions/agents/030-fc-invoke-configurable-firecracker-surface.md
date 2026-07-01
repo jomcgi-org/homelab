@@ -1,4 +1,4 @@
-# ADR 029: fc-invoke, a Single Configurable Surface for Running Workloads in Firecracker
+# ADR 030: fc-invoke, a Single Configurable Surface for Running Workloads in Firecracker
 
 **Author:** jomcgi
 **Status:** Draft

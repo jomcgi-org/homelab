@@ -60,7 +60,7 @@ const (
 	// scan never contends with the control handshake or an egress tunnel.
 	ScanPort uint32 = 1026
 	// GuestHTTPPort carries the inbound HTTP request the fc-invoke daemon
-	// reverse-proxies to the guest's shim HTTP server (ADR 029). Separate from
+	// reverse-proxies to the guest's shim HTTP server (ADR 030). Separate from
 	// the control/egress/scan ports so an invocation never contends with them.
 	GuestHTTPPort uint32 = 1027
 )

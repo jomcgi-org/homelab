@@ -1,5 +1,5 @@
 // Package capabilities provides workload-agnostic building blocks that guest
-// shim handlers compose into hook implementations (ADR 029, decision 5).
+// shim handlers compose into hook implementations (ADR 030, decision 5).
 // Nothing in this package names a specific workload (goose, sessions.db, etc.);
 // that composition lives in the workload-specific handler layer.
 package capabilities
