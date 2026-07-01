@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 ARTIFACT_RECIPE = "artifact"
 ARTIFACT_TIER = "artifact"
 
+# The agent recipe + tier: default (empty) tier runs on the in-cluster Qwen model.
+# The agent recipe is the general coding agent (goosecracker general mode).
+AGENT_RECIPE = "agent"
+AGENT_TIER = ""
+
 # Shown when the owner gate rejects someone and the qwen roast path is
 # unavailable (model down), so a non-owner always gets a clear refusal.
 _FALLBACK_ROAST = "Nice try. /artifact is owner-only."
@@ -130,6 +135,29 @@ def continue_session(thread_id: str, message: str) -> dict | None:
         session=thread_id,
         recipe=ARTIFACT_RECIPE,
         tier=ARTIFACT_TIER,
+        discord_thread=thread_id,
+    )
+
+
+def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
+    """Dispatch a one-shot agent run for the given Discord thread.
+
+    Unlike ``start_session`` (artifact), this does not write a
+    GoosecrackerSession DB row, so thread replies fall through to normal chat
+    handling. Iterative /agent threads (continuation) are a future follow-up.
+    Synchronous; call via ``asyncio.to_thread``.
+    """
+    prompt = prompt.strip()
+    # Imported lazily for the same reason as start_session (circular import
+    # guard: chat.bot -> chat.goosecracker -> goosecracker.runner -> chat.api).
+    from goosecracker.api import submit
+
+    return submit(
+        prompt,
+        session=thread_id,
+        recipe=AGENT_RECIPE,
+        tier=AGENT_TIER,
+        repo=repo,
         discord_thread=thread_id,
     )
 
