@@ -41,8 +41,8 @@ implementation decisions (§9).
 ## 2. Target architecture: Iceberg source-of-truth + disposable hot-tier projection
 
 ```
-GAME START   Iceberg / Loom ──checkout (load working set)──▶ hot tier (Postgres v1 / Spanner Omni spike)
- (checkout)  governed, durable SoR                          fast reads, live mutations, pgvector, WS fan-out
+GAME START   Iceberg / Loom ──checkout (load working set)──▶ hot tier (monolith Postgres + pgvector)
+ (checkout)  governed, durable SoR                          fast reads, live mutations, pgvector, realtime fan-out
 
 DURING GAME  players / DM ──▶ hot tier   (HP, dice, feed, homebrew entities, grant flips, transcripts)
              buffer the session delta on top of the loaded base; nobody touches Iceberg
@@ -79,33 +79,33 @@ side.
 - **Per-campaign mutable state** (PCs, HP, lore, grants, transcripts, homebrew).
   Small, changes every session. This is the checkout / check-in working set.
 
-### 2.3 The hot tier is swappable: Postgres (v1) vs Spanner Omni (spike)
+### 2.3 The hot tier: the monolith's Postgres + pgvector (decided)
 
 Because the projection is disposable and re-derivable, the hot-tier engine is not
-a one-way door, the SoR and check-in logic are unchanged by the choice.
+a one-way door, the SoR and check-in logic are unchanged by the choice. The
+**decision is to land Grimoire in the monolith on its existing Postgres**, the same
+fold-in pattern every recent app followed (ships, trips, campsites, dr-jobs). The
+monolith already runs Postgres + pgvector for the personal KG, so Grimoire's hot
+tier is a set of schemas in that database plus the monolith's app tier, not a new
+service.
 
-- **Postgres + pgvector (v1, recommended floor).** Proven, one pod, seconds to
-  hydrate, no preview/licensing risk. pgvector + recursive-CTE graph + tsvector
-  cover every game need. For 6 users at human pace it runs at ~0.01% capacity;
-  point ops are sub-millisecond and the `<200ms` budgets are network + WS fan-out,
-  not DB time. Fan-out is the WS gateway (in-process / Redis pub-sub) with Postgres
-  as durable persistence beside it, not the notification bus. Single-primary ACID
-  is exactly the one-consistent-view-for-6-players model you want.
-- **Spanner Omni (tracked spike).** Self-hostable, multi-model (relational +
-  Spanner Graph/GQL + vector + KV + full-text) with cross-model ACID. Loom's
-  multi-model ontology projects onto it almost 1:1 (objects→tables, links→graph,
-  embeddings→vector, text→FTS) with no extensions to tune, a genuinely cleaner
-  projection target. Caveats that keep it a spike, not v1: it is **Preview /
-  developer edition** (no TLS, no backups, breaking changes, writes stop 90 days
-  after deploy), explicitly non-production, and the only path off that is "contact
-  Google." The 90-day write stop is dodgeable for an ephemeral cache (recreate
-  inside 90 days; truth is in Iceberg), but the maturity / dependency posture is
-  the real reason to prove it before betting on it.
-
-Spike criteria: stand up single-node Omni, generate the Loom-ontology→Spanner
-schema, confirm graph + vector + FTS work in the _preview_ build, measure checkout
-latency / live throughput / check-in. If it holds, swap the projection target; the
-architecture is unchanged.
+- **Why the monolith's Postgres.** Proven, already provisioned, already meshed and
+  backed up; pgvector + recursive-CTE graph + tsvector cover every game need with no
+  new datastore. For 6 users at human pace it runs at a rounding error of capacity;
+  point ops are sub-millisecond and the `<200ms` budgets are network + realtime
+  fan-out, not DB time. Single-primary ACID is exactly the one-consistent-view-for-
+  6-players model the game wants. Realtime fan-out rides the monolith's app tier
+  (the existing WS/pub-sub path) with Postgres as durable persistence beside it, not
+  the notification bus.
+- **Spanner Omni (considered, not pursued).** Self-hostable, multi-model
+  (relational + Spanner Graph/GQL + vector + KV + full-text) with cross-model ACID,
+  and Loom's ontology projects onto it almost 1:1, a genuinely cleaner projection
+  target on paper. Declined because it is **Preview / developer edition** (no TLS,
+  no backups, breaking changes, writes stop 90 days after deploy), explicitly
+  non-production, and would add a datastore the cluster does not otherwise run. The
+  monolith's Postgres already clears the bar, so the extra dependency is not worth
+  it. Recorded as a considered alternative, not a live spike; the architecture stays
+  swap-friendly if that ever changes.
 
 ### 2.4 Check-in rules (external orchestration over shipped primitives)
 
@@ -234,9 +234,8 @@ Three separable concerns, different homes:
    application code (A3b, external). Every vector records its model version and
    source snapshot, governed, reproducible embeddings.
 3. **Serve** ANN from the hot tier: a per-game **pgvector** index built at
-   checkout (or Spanner-native vector if that tier). At a campaign's scale this
-   build is trivial. New embeddings created in-game flow back via the Transform on
-   check-in.
+   checkout in the monolith's Postgres (§2.3). At a campaign's scale this build is
+   trivial. New embeddings created in-game flow back via the Transform on check-in.
 
 So Loom owns storage + generation + lineage. Loom has _also_ since grown an
 engine-side ANN path (Puffin exact + IVF-Flat + HNSW + a `/search` kNN endpoint),
@@ -330,8 +329,9 @@ engine (recursive joins suffice). The one _optional_ loom nicety on the register
 ### 7.1 Grimoire implementation plan (composing shipped primitives)
 
 With the substrate ready, the build is entirely Grimoire-side: the
-checkout / play / check-in loop plus the ingest enrichment DAG. Ordered so each
-step is exercisable on its own.
+checkout / play / check-in loop plus the ingest enrichment DAG, landed **in the
+monolith on its Postgres** (§2.3), the same fold-in pattern ships / trips /
+campsites followed. Ordered so each step is exercisable on its own.
 
 1. **Ontology + ingest into Loom.** Define the `ObjectType`s (§3.1), `LinkDef`s
    (§3.2), the `KnowledgeChunk` type with its vector column (§3.3, §5), and the
@@ -341,9 +341,9 @@ step is exercisable on its own.
    Iceberg tables with embeddings populated.
 2. **Checkout (hydrate the hot tier).** At game start, governed bulk-read the
    campaign working set (per-campaign mutable datasets + the subject's readable
-   partitions) over Arrow Flight (`road-governed-flight-export`) into Postgres +
-   pgvector; build the per-game ANN index (§5). Verify: checkout latency and a
-   correct `global ∪ facts_<player>` view per subject.
+   partitions) over Arrow Flight (`road-governed-flight-export`) into the monolith's
+   Postgres + pgvector (a per-campaign schema); build the per-game ANN index (§5).
+   Verify: checkout latency and a correct `global ∪ facts_<player>` view per subject.
 3. **Play (hot tier owns everything).** All live reads/writes/vector/graph/fan-out
    run in the hot tier (§2.1, §3.5): HP, dice, feed, transcripts, homebrew entities,
    grant flips. Loom is untouched. Grant flips during play write to the in-tier
@@ -355,15 +355,19 @@ step is exercisable on its own.
    Idempotent, retry-until-complete, keyed by session id; keep the hot tier until
    all datasets acknowledge, then drop + GC. Verify: kill the orchestrator
    mid-flush and confirm retry heals without corruption.
-5. **Hot-tier decision.** Ship on Postgres + pgvector (§2.3). Run the Spanner Omni
-   spike in parallel; it swaps only step 2/3's engine, not the SoR or check-in.
+5. **Monolith integration.** Land the app tier as a monolith feature (routes +
+   schemas), not a standalone service: campaign/session/character/feed CRUD and the
+   session state machine as monolith endpoints, per-campaign schemas in monolith-pg,
+   realtime over the monolith's existing app tier. Public-facing routes go through
+   the usual allowlist plumbing; batch enrichment (§4) runs as offloaded jobs. The
+   hot tier is decided (§2.3): the monolith's Postgres, no Spanner Omni spike.
 
 The remaining decisions inside these steps are §9.
 
 ## 8. What stays out of Loom (owned by the hot tier / external)
 
-Live OLTP and sub-second fan-out (hot tier + WS gateway), ANN serving (pgvector /
-Spanner-native by choice; loom-native available), the graph traversal engine
+Live OLTP and sub-second fan-out (the monolith's Postgres + app tier), ANN serving
+(pgvector; loom-native available if ever wanted), the graph traversal engine
 (recursive SQL in either tier), and per-subject grant enforcement _during play_
 (the hot-tier grant table decides which `facts_<player>` dataset each reveal lands
 in on check-in). Between games, dataset-level `Read` (§3.4) covers gating with no
@@ -384,7 +388,12 @@ Loom:
   dataset snapshots now, vs adopting the optional `fut-ingest-overwrite-endpoint`
   full-state replace when it lands. Decide whether the whole working set replaces or
   only the diff commits.
-- **Hot-tier choice** (§2.3): outcome of the Spanner Omni spike vs Postgres v1.
+- **Realtime + voice in the monolith** (§7.1): the live session needs sub-second
+  fan-out and (per the wider Grimoire design) a voice/transcription path. Decide how
+  those ride the monolith's app tier (existing WS / pub-sub, and where the voice
+  proxy lives) versus anything Grimoire-specific it must add. This is the main
+  monolith-integration unknown now that the datastore is decided.
 - **Embedding model + dim** in the Transform (A3/A3b): which model, what dimension,
   and whether the vector's recorded lineage (model version + source snapshot) is
-  enough to reproduce it.
+  enough to reproduce it. The monolith's KG already runs a pgvector embedding model,
+  so a natural default is to reuse it.
