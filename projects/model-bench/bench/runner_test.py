@@ -3,8 +3,27 @@ from pathlib import Path
 
 import pytest  # noqa: F401
 
-from bench.runner import extract_files, run_cell
+from bench.runner import _augment_prompt_with_files, extract_files, run_cell
 from bench.verifiers import VerifyResult
+
+
+def test_extract_takes_first_fenced_block_not_last():
+    # A file block followed by a trailing example block: only the file is taken.
+    text = "FILE values.yaml\n```yaml\nfoo: 1\n```\nExample:\n```bash\nyq -i x\n```"
+    assert extract_files(text, ["values.yaml"]) == {"values.yaml": "foo: 1"}
+
+
+def test_augment_prompt_injects_file_contents(tmp_path):
+    (tmp_path / "values.yaml").write_text('image:\n  tag: ""\n')
+    out = _augment_prompt_with_files("set the tag", tmp_path, ["values.yaml"])
+    assert "set the tag" in out
+    assert "FILE values.yaml" in out and "image:" in out
+
+
+def test_augment_prompt_noop_for_free_text(tmp_path):
+    assert (
+        _augment_prompt_with_files("write a commit", tmp_path, []) == "write a commit"
+    )
 
 
 def test_extract_strips_fence_after_file_header():

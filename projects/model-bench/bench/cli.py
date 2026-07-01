@@ -43,7 +43,7 @@ from bench.registry import (
     prune_retired,
 )
 from bench.report import render_leaderboard
-from bench.runner import run_cell
+from bench.runner import _strip_code_fence, run_cell
 from bench.schema import Attempt, ResultCell, TaskSpec
 from bench.verifiers import get_verifier, verifier_source_hash
 
@@ -234,7 +234,7 @@ async def _run(args) -> None:
         try:
             result = await asyncio.to_thread(
                 judge_free_text,
-                candidate=c1.text,
+                candidate=_strip_code_fence(c1.text),
                 task_prompt=task.prompt,
                 cfg=cfg,
                 caller=sync_caller,
