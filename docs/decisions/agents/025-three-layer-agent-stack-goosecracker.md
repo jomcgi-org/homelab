@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-06-28
-**Superseded in part:** [029 - fc-invoke](029-fc-invoke-configurable-firecracker-surface.md) keeps this ADR's goose-agnostic-substrate principle but folds the reusable orchestration into a new `fc-invoke` daemon, renames the home to `projects/firecracker/`, makes `semgrep` a peer workload, and drops the `discord` directory (decision 4).
+**Superseded in part:** [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md) keeps this ADR's goose-agnostic-substrate principle but folds the reusable orchestration into a new `fc-invoke` daemon, renames the home to `projects/firecracker/`, makes `semgrep` a peer workload, and drops the `discord` directory (decision 4).
 **Builds on:** [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md) (the `Substrate` seam and its "harness is a separate seam, `Exec` runs an opaque process" principle), [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fc-agentd` controller this ADR re-bins), [024 - Discord Agent, Hosted-Model Tiers, and Live Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the consumer this ADR renames off the `goosecracker` label)
 
 ---

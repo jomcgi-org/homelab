@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Build `fc-invoke`, a single configurable host daemon that runs HTTP workloads in Firecracker microVMs (ADR 029), and cut the existing semgrep scanner over to it as the first, lowest-risk consumer, proving the HTTP-over-vsock contract in prod before the agent migration.
+**Goal:** Build `fc-invoke`, a single configurable host daemon that runs HTTP workloads in Firecracker microVMs (ADR 030), and cut the existing semgrep scanner over to it as the first, lowest-risk consumer, proving the HTTP-over-vsock contract in prod before the agent migration.
 
 **Architecture:** One host daemon exposes `POST /invoke/{workload}` over HTTP, restores a warm-base microVM via the existing `fcvm/driver`, and reverse-proxies the request to an HTTP server inside the guest over vsock (reusing the Firecracker `CONNECT <port>` handshake the current scan transport already uses). A shared guest-side Go "shim" library provides the HTTP-over-vsock server, a pre/post hook chain, and workload-agnostic capabilities (git, object-store). Workloads are named Helm-values entries; the daemon holds no durable state.
 
@@ -120,7 +120,7 @@ func TestServerReadyAndHealthz(t *testing.T) {
 // Package shim is the guest-side half of the fc-invoke substrate: an
 // HTTP-over-vsock server that dispatches /invoke to a workload Handler, with a
 // common /shim/* control surface. It is baked into guest images by Bazel; the
-// fc-invoke daemon never imports it (ADR 029 decision 5).
+// fc-invoke daemon never imports it (ADR 030 decision 5).
 package shim
 
 import (
@@ -281,7 +281,7 @@ The daemon reads its workload table from configuration. Mirror semgrep-scand's e
 - Create: `projects/agent_platform/fc-invoke/internal/config/config.go`
 - Create: `projects/agent_platform/fc-invoke/internal/config/config_test.go`
 
-**Step 1: Write the failing test.** `Load` parses a `Workload` table (the seven knobs from ADR 029) plus daemon-level settings (listen addr, node, arch, snapshot root, kernel/rootfs paths per workload image). Assert defaults and overrides, exactly like `semgrep-scand/internal/config` does.
+**Step 1: Write the failing test.** `Load` parses a `Workload` table (the seven knobs from ADR 030) plus daemon-level settings (listen addr, node, arch, snapshot root, kernel/rootfs paths per workload image). Assert defaults and overrides, exactly like `semgrep-scand/internal/config` does.
 
 ```go
 type Workload struct {
@@ -372,7 +372,7 @@ type transport interface {
 
 ### Task 7: HTTP ingress (`/invoke/{workload}`, `/healthz`)
 
-The daemon's public surface. Routes `/invoke/{workload}[/{session}]` to the invoker for the named workload, maps errors per ADR 029's table (503 `GuestUnavailable` vs proxied handler error), and serves `/healthz`. Mirror `semgrep-scand/internal/server` (it already encodes the 503-vs-200 status policy).
+The daemon's public surface. Routes `/invoke/{workload}[/{session}]` to the invoker for the named workload, maps errors per ADR 030's table (503 `GuestUnavailable` vs proxied handler error), and serves `/healthz`. Mirror `semgrep-scand/internal/server` (it already encodes the 503-vs-200 status policy).
 
 **Files:**
 
@@ -520,7 +520,7 @@ Remove the now-dead daemon; the `semgrep-guest` image lives on as the workload.
 
 ## Key references
 
-- Design: `docs/plans/2026-06-30-fc-invoke-design.md`; ADR: `docs/decisions/agents/029-fc-invoke-configurable-firecracker-surface.md`
+- Design: `docs/plans/2026-06-30-fc-invoke-design.md`; ADR: `docs/decisions/agents/030-fc-invoke-configurable-firecracker-surface.md`
 - Port-from: `projects/agent_platform/semgrep-scand/{cmd,internal/{scanner,server,config}}` (the orchestration shape this generalizes), `internal/scanner/transport.go` (the CONNECT handshake to lift)
 - Driver: `projects/agent_platform/fcvm/driver/driver.go` (Claim/Restore/Release/SnapshotBase), `substrate/substrate.go` (the interface + fake)
 - Wire types: `projects/agent_platform/vsockproto/proto.go`
