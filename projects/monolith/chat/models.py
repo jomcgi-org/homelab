@@ -119,12 +119,14 @@ class DiscordOutbox(SQLModel, table=True):
 
 
 class GoosecrackerSession(SQLModel, table=True):
-    """Per-Discord-thread curated transcript for the goosecracker artifact agent
-    (ADR 024 Task 4). One row per thread; transcript accumulates the owner's
-    instructions (never ambient chatter or the bot's replies). Each owner
-    follow-up re-runs goose from scratch with the full transcript (Model B), and
-    the thread id doubles as the stable ARTIFACT_ID so re-runs hot-reload the
-    same artifact.
+    """Per-Discord-thread curated transcript for the goosecracker agent (ADR 024).
+
+    One row per thread; transcript accumulates the owner's instructions (never
+    ambient chatter or the bot's replies). ``recipe`` distinguishes artifact
+    sessions (iterative HTML builder) from agent sessions (conversational coding
+    agent). Agent sessions are conversational: ``running`` is True while a turn is
+    in flight; replies that arrive during a run are appended to ``pending`` and
+    dispatched as the next turn when the current one finishes.
     """
 
     __tablename__ = "goosecracker_sessions"
@@ -132,5 +134,15 @@ class GoosecrackerSession(SQLModel, table=True):
 
     discord_thread: str = Field(primary_key=True)
     transcript: str = Field(default="")
+    # recipe/tier/repo mirror the dispatch.submit params so continue_session can
+    # re-dispatch without the caller re-supplying them.
+    recipe: str = Field(default="artifact")
+    tier: str = Field(default="")
+    repo: str = Field(default="")
+    # Conversational queue state (agent sessions only).
+    # running: a turn is currently in flight.
+    # pending: newline-joined replies queued while running=True; consumed on drain.
+    running: bool = Field(default=False)
+    pending: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

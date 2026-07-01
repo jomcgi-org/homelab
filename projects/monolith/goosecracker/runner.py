@@ -132,6 +132,41 @@ def _split_message(content: str) -> list[str]:
     return chunks
 
 
+def _drain_agent_queue(discord_thread: str) -> str | None:
+    """Drain the pending queue for an agent Discord thread after a turn finishes.
+
+    If replies were queued while the previous turn was running (``pending``
+    non-empty), take them as the next task, clear ``pending``, and keep
+    ``running=True`` so the caller can dispatch the next turn immediately.
+    If the queue is empty, set ``running=False`` so the thread accepts new
+    replies again.
+
+    Returns the next task string, or None when the queue was empty.
+
+    Opens its own Session; always call via asyncio.to_thread. Imports
+    ``chat.models.GoosecrackerSession`` lazily to avoid a module-level import
+    of the chat package from within the goosecracker package.
+    """
+    from chat.models import GoosecrackerSession
+
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, discord_thread)
+        if row is None:
+            return None
+        if row.pending:
+            task = row.pending
+            row.pending = ""
+            # Keep running=True; the caller dispatches the next run.
+            session.add(row)
+            session.commit()
+            return task
+        # Queue empty: allow new replies.
+        row.running = False
+        session.add(row)
+        session.commit()
+        return None
+
+
 def _enqueue_sync(channel_id: str, content: str) -> None:
     """Open a session, enqueue a Discord outbox row, commit. Sync so the async
     runner hands it to a worker thread (a sync Session must not run on the event
@@ -404,3 +439,38 @@ async def run_and_deliver(
         await _deliver(discord_thread, f"Run failed: {exc}")
     finally:
         _mark_progress_done(session)
+
+    # For agent runs fronting a Discord thread: drain any replies that arrived
+    # while this turn was running, then dispatch them as the next turn.
+    # This also clears running=False on the failed path so a crashed turn does
+    # not wedge the thread. Runs after finally: so the progress stream is already
+    # marked done before the next turn potentially starts.
+    if recipe == "agent" and discord_thread:
+        # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+        next_task = await asyncio.to_thread(_drain_agent_queue, discord_thread)
+        if next_task is not None:
+            # Update the run ledger for the next task (mirrors dispatch.submit).
+            # nosemgrep: no-session-in-to-thread  # threads.upsert_run opens its own Session
+            await asyncio.to_thread(
+                threads.upsert_run,
+                session,
+                recipe=recipe,
+                tier=tier,
+                task=next_task,
+                discord_thread=discord_thread,
+            )
+            # Schedule the next turn as a detached task on the current event loop.
+            # No import of dispatch (circular: dispatch imports runner); use
+            # create_task directly since we are already inside an async context.
+            asyncio.create_task(
+                run_and_deliver(
+                    session,
+                    task=next_task,
+                    recipe=recipe,
+                    tier=tier,
+                    repo=repo,
+                    git_mirror=git_mirror,
+                    git_ref=git_ref,
+                    discord_thread=discord_thread,
+                )
+            )

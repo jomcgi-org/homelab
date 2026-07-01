@@ -185,9 +185,10 @@ def test_continue_session_cold_path_when_no_session(engine, fake_api, monkeypatc
     )
 
 
-def test_start_agent_session_dispatches_with_agent_recipe(fake_api):
+def test_start_agent_session_dispatches_with_agent_recipe(engine, fake_api):
     """start_agent_session submits with recipe='agent', tier='', and passes repo."""
-    goosecracker.start_agent_session("thread-2", "loom", "  add a login page  ")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_agent_session("thread-2", "loom", "  add a login page  ")
 
     fake_api.submit.assert_called_once_with(
         "add a login page",
@@ -197,6 +198,120 @@ def test_start_agent_session_dispatches_with_agent_recipe(fake_api):
         repo="loom",
         discord_thread="thread-2",
     )
+
+
+def test_start_agent_session_writes_session_row(engine, fake_api):
+    """start_agent_session writes a GoosecrackerSession row with recipe='agent'
+    and running=True so that follow-up replies route through the agent path."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_agent_session("thread-3", "homelab", "  fix the bug  ")
+
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "thread-3")
+    assert row is not None
+    assert row.recipe == "agent"
+    assert row.tier == ""
+    assert row.repo == "homelab"
+    assert row.transcript == "fix the bug"
+    assert row.running is True
+    assert row.pending == ""
+
+
+# ---------------------------------------------------------------------------
+# Agent conversational path: continue_session queuing + dispatching
+# ---------------------------------------------------------------------------
+
+
+def _make_agent_session(
+    engine,
+    thread_id: str,
+    repo: str = "homelab",
+    running: bool = False,
+    pending: str = "",
+) -> None:
+    """Insert a GoosecrackerSession row for an agent thread directly."""
+    with Session(engine) as session:
+        session.add(
+            GoosecrackerSession(
+                discord_thread=thread_id,
+                recipe="agent",
+                tier="",
+                repo=repo,
+                transcript="initial task",
+                running=running,
+                pending=pending,
+            )
+        )
+        session.commit()
+
+
+def test_continue_agent_session_dispatches_when_idle(engine, fake_api):
+    """When recipe=agent and running=False, continue_session dispatches and returns
+    action='dispatched'."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        _make_agent_session(engine, "agent-t1", running=False)
+        result = goosecracker.continue_session("agent-t1", "now do this")
+
+    assert result is not None
+    assert result.get("action") == "dispatched"
+    fake_api.submit.assert_called_once()
+    call = fake_api.submit.call_args
+    assert call.args[0] == "now do this"  # task = message (no pending backlog)
+    assert call.kwargs["recipe"] == "agent"
+    assert call.kwargs["repo"] == "homelab"
+    assert call.kwargs["discord_thread"] == "agent-t1"
+
+    # running should be True (set before dispatch)
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "agent-t1")
+    assert row.running is True
+    assert row.pending == ""
+
+
+def test_continue_agent_session_queues_when_running(engine, fake_api):
+    """When recipe=agent and running=True, continue_session appends to pending and
+    returns action='queued' without dispatching."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        _make_agent_session(engine, "agent-t2", running=True)
+        result = goosecracker.continue_session("agent-t2", "extra instruction")
+
+    assert result == {"action": "queued"}
+    fake_api.submit.assert_not_called()
+
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "agent-t2")
+    assert row.running is True
+    assert row.pending == "extra instruction"
+
+
+def test_continue_agent_session_queues_multiple_appends_to_pending(engine, fake_api):
+    """Multiple queued replies are newline-joined in pending."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        _make_agent_session(engine, "agent-t3", running=True, pending="first reply")
+        result = goosecracker.continue_session("agent-t3", "second reply")
+
+    assert result == {"action": "queued"}
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "agent-t3")
+    assert row.pending == "first reply\nsecond reply"
+
+
+def test_continue_agent_session_consumes_pending_on_dispatch(engine, fake_api):
+    """When idle with a non-empty pending backlog, the full backlog + new message
+    becomes the task, and pending is cleared after dispatch."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        _make_agent_session(engine, "agent-t4", running=False, pending="queued msg")
+        result = goosecracker.continue_session("agent-t4", "new msg")
+
+    assert result is not None
+    assert result.get("action") == "dispatched"
+    call = fake_api.submit.call_args
+    assert call.args[0] == "queued msg\nnew msg"  # backlog + new joined by \n
+
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "agent-t4")
+    assert row.pending == ""
+    assert row.running is True
 
 
 def test_continue_session_falls_back_to_cold_on_head_session_error(
