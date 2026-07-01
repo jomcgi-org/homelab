@@ -5,6 +5,8 @@
   const models = $derived(lb.models ?? []);
   const tasks = $derived(lb.tasks ?? []);
   const realTestCount = $derived(tasks.filter((t) => t.real_test).length);
+  // Join per-model task cells back to task metadata (real-test flag, blurb) by id.
+  const taskById = $derived(Object.fromEntries(tasks.map((t) => [t.id, t])));
 
   const pct = (x) => `${Math.round((x ?? 0) * 100)}%`;
   const num = (x) => (x ?? 0).toLocaleString("en-US");
@@ -13,6 +15,23 @@
   // Drop the provider prefix for the headline name, keep the full slug beneath.
   const shortName = (id) => (id.includes("/") ? id.split("/").slice(1).join("/") : id);
   const isAnchor = (m) => m.role === "anchor";
+
+  // Deep-dive: a row expands into its per-task breakdown. Guard on the data so the
+  // page still renders if a leaderboard.json predates the per-task field (the rows
+  // just stay non-expandable until it is regenerated).
+  const hasBreakdown = (m) => Array.isArray(m.tasks) && m.tasks.length > 0;
+  const solvedCount = (m) => (m.tasks ?? []).filter((t) => t.passed).length;
+  let openId = $state(null); // accordion: at most one model open at a time
+  const toggle = (m) => {
+    if (!hasBreakdown(m)) return;
+    openId = openId === m.id ? null : m.id;
+  };
+  const onRowKey = (e, m) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle(m);
+    }
+  };
 
   // Colour a pass-rate cell: full green, partial coral-ish, zero muted.
   const rateClass = (r) => (r >= 0.999 ? "full" : r > 0 ? "partial" : "zero");
@@ -52,7 +71,10 @@
   </header>
 
   <section class="panel">
-    <div class="panel-head">Agentic ranking</div>
+    <div class="panel-head">
+      Agentic ranking
+      <span class="panel-hint">click a row for its per-task breakdown</span>
+    </div>
     <div class="scroll">
       <table>
         <thead>
@@ -70,8 +92,22 @@
         </thead>
         <tbody>
           {#each models as m, i}
-            <tr class:winner={i === 0} class:anchor-row={isAnchor(m)}>
-              <td class="rk">{i + 1}</td>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <tr
+              class:winner={i === 0}
+              class:anchor-row={isAnchor(m)}
+              class:expandable={hasBreakdown(m)}
+              class:open={openId === m.id}
+              role={hasBreakdown(m) ? "button" : undefined}
+              tabindex={hasBreakdown(m) ? 0 : undefined}
+              aria-expanded={hasBreakdown(m) ? openId === m.id : undefined}
+              aria-controls={hasBreakdown(m) ? `bd-detail-${i}` : undefined}
+              onclick={() => toggle(m)}
+              onkeydown={(e) => onRowKey(e, m)}
+            >
+              <td class="rk">
+                {#if hasBreakdown(m)}<span class="chev" aria-hidden="true">{openId === m.id ? "▾" : "▸"}</span>{/if}{i + 1}
+              </td>
               <td class="mdl">
                 <span class="name">{shortName(m.id)}</span>
                 <span class="slug">{m.id}</span>
@@ -90,6 +126,39 @@
                 <span class="pill {toolLabel(m.tool_use_ok)}">{toolLabel(m.tool_use_ok)}</span>
               </td>
             </tr>
+            {#if openId === m.id && hasBreakdown(m)}
+              <tr class="detail-row" id={`bd-detail-${i}`}>
+                <td colspan="9">
+                  <div class="detail">
+                    <div class="detail-head">
+                      Per-task breakdown
+                      <span class="detail-sub">solved {solvedCount(m)}/{m.tasks.length}</span>
+                    </div>
+                    <ul class="bd">
+                      {#each m.tasks as bt (bt.id)}
+                        {@const meta = taskById[bt.id]}
+                        <li>
+                          <span class="bd-status {bt.passed ? 'pass' : 'fail'}">{bt.passed ? "PASS" : "FAIL"}</span>
+                          <span class="bd-main">
+                            <span class="bd-id">{bt.id}</span>
+                            {#if meta?.real_test}
+                              <span class="tag real">repo test</span>
+                            {:else if meta}
+                              <span class="tag synth">behavioural</span>
+                            {/if}
+                          </span>
+                          <span class="bd-nums mono">
+                            <span>{num(bt.tokens)} tok</span>
+                            <span>{bt.turns} turns</span>
+                            <span>{secs(bt.latency_ms)}</span>
+                          </span>
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
@@ -150,7 +219,6 @@
   .hero {
     border: 2px solid var(--ink);
     background: var(--paper);
-    box-shadow: var(--shadow-hard-lg);
     padding: 24px 22px;
     margin-bottom: 26px;
   }
@@ -196,7 +264,6 @@
   .panel {
     border: 2px solid var(--ink);
     background: var(--paper);
-    box-shadow: var(--shadow-hard);
     margin-bottom: 26px;
   }
   .panel-head {
@@ -208,6 +275,15 @@
     padding: 12px 16px;
     border-bottom: 2px solid var(--ink);
     background: var(--bg-elev);
+  }
+  .panel-hint {
+    float: right;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: var(--ink-3);
   }
 
   /* ── Table ────────────────────────────── */
@@ -255,9 +331,82 @@
 
   tr.winner td { background: var(--accent); }
   tr.winner td.rk { color: var(--ink); }
-  tr:not(.winner):hover td { background: var(--bg-elev); }
   /* Claude anchors: the paid baseline you are deciding whether to replace. */
   tr.anchor-row:not(.winner) td.rk { box-shadow: inset 3px 0 0 var(--blue); }
+
+  /* Expandable rows: the hover/highlight is now a real affordance (click or Enter
+     opens the per-task deep-dive) rather than a dead visual. */
+  tr.expandable { cursor: pointer; }
+  tr.expandable:not(.winner):hover td,
+  tr.expandable.open:not(.winner) td { background: var(--bg-elev); }
+  tr.expandable:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: -2px;
+  }
+  .chev {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    margin-right: 4px;
+  }
+  tr.open .chev { color: var(--ink); }
+
+  /* Deep-dive detail row */
+  .detail-row td {
+    padding: 0;
+    text-align: left;
+    background: var(--cream);
+    border-bottom: 1px solid var(--rule);
+  }
+  .detail { padding: 14px 16px 16px; }
+  .detail-head {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-3);
+    margin-bottom: 10px;
+  }
+  .detail-sub { margin-left: 8px; color: var(--ink-2); }
+  .bd { display: flex; flex-direction: column; gap: 6px; }
+  .bd li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    background: var(--paper);
+    border: 1px solid var(--rule-2);
+  }
+  .bd-status {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    border: 1.5px solid var(--ink);
+    padding: 1px 6px;
+    flex-shrink: 0;
+    width: 46px;
+    text-align: center;
+  }
+  .bd-status.pass { background: var(--green); }
+  .bd-status.fail { background: var(--coral); color: var(--paper); }
+  .bd-main { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+  .bd-id {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bd-nums {
+    display: flex;
+    gap: 12px;
+    margin-left: auto;
+    font-size: 11.5px;
+    color: var(--ink-3);
+    flex-shrink: 0;
+  }
 
   /* pass-rate cell */
   .rate { font-family: var(--mono); font-weight: 700; font-size: 15px; }
@@ -347,5 +496,7 @@
   @media (max-width: 560px) {
     .slug { display: none; }
     .hero { padding: 20px 16px; }
+    .bd li { flex-wrap: wrap; }
+    .bd-nums { margin-left: 0; width: 100%; }
   }
 </style>

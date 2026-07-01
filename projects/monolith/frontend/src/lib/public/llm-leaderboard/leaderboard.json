@@ -84,7 +84,58 @@
       "median_latency_ms": 33822,
       "cost_usd": 0.002148,
       "cost_per_solve_usd": 0.002148,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 39071,
+          "turns": 15,
+          "latency_ms": 29289
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 15803,
+          "turns": 3,
+          "latency_ms": 33822
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 17844,
+          "turns": 5,
+          "latency_ms": 37828
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 7779,
+          "turns": 4,
+          "latency_ms": 17705
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 29530,
+          "turns": 7,
+          "latency_ms": 48707
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 14436,
+          "turns": 5,
+          "latency_ms": 29278
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 26786,
+          "turns": 6,
+          "latency_ms": 42765
+        }
+      ]
     },
     {
       "id": "google/gemma-4-26b-a4b-it",
@@ -96,7 +147,58 @@
       "median_latency_ms": 52615,
       "cost_usd": 0.002154,
       "cost_per_solve_usd": 0.002154,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 17500,
+          "turns": 11,
+          "latency_ms": 14290
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 32524,
+          "turns": 7,
+          "latency_ms": 252840
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 27755,
+          "turns": 7,
+          "latency_ms": 75376
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 6560,
+          "turns": 4,
+          "latency_ms": 30872
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 29403,
+          "turns": 6,
+          "latency_ms": 52615
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 14339,
+          "turns": 5,
+          "latency_ms": 47880
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 19802,
+          "turns": 5,
+          "latency_ms": 54135
+        }
+      ]
     },
     {
       "id": "deepseek/deepseek-v4-flash",
@@ -108,7 +210,58 @@
       "median_latency_ms": 40046,
       "cost_usd": 0.002971,
       "cost_per_solve_usd": 0.002971,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 23567,
+          "turns": 8,
+          "latency_ms": 40046
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 17573,
+          "turns": 3,
+          "latency_ms": 32452
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 33377,
+          "turns": 5,
+          "latency_ms": 53163
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 14694,
+          "turns": 4,
+          "latency_ms": 44671
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 73419,
+          "turns": 6,
+          "latency_ms": 101850
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 14002,
+          "turns": 3,
+          "latency_ms": 30226
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 18903,
+          "turns": 3,
+          "latency_ms": 35170
+        }
+      ]
     },
     {
       "id": "qwen/qwen3-coder-next",
@@ -120,7 +273,58 @@
       "median_latency_ms": 15977,
       "cost_usd": 0.005987,
       "cost_per_solve_usd": 0.005987,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 149571,
+          "turns": 40,
+          "latency_ms": 44699
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 15574,
+          "turns": 3,
+          "latency_ms": 15059
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 15030,
+          "turns": 3,
+          "latency_ms": 14663
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 6300,
+          "turns": 3,
+          "latency_ms": 6090
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 26582,
+          "turns": 4,
+          "latency_ms": 21486
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 12456,
+          "turns": 3,
+          "latency_ms": 15977
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 17110,
+          "turns": 3,
+          "latency_ms": 17437
+        }
+      ]
     },
     {
       "id": "qwen/qwen3.6-35b-a3b",
@@ -132,7 +336,58 @@
       "median_latency_ms": 43131,
       "cost_usd": 0.010698,
       "cost_per_solve_usd": 0.010698,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 39603,
+          "turns": 10,
+          "latency_ms": 29745
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 60698,
+          "turns": 7,
+          "latency_ms": 73170
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 71327,
+          "turns": 6,
+          "latency_ms": 98877
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 16762,
+          "turns": 5,
+          "latency_ms": 26690
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 46289,
+          "turns": 7,
+          "latency_ms": 53698
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 24710,
+          "turns": 6,
+          "latency_ms": 27991
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 45127,
+          "turns": 7,
+          "latency_ms": 43131
+        }
+      ]
     },
     {
       "id": "z-ai/glm-4.7",
@@ -144,7 +399,58 @@
       "median_latency_ms": 96613,
       "cost_usd": 0.015035,
       "cost_per_solve_usd": 0.015035,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 41975,
+          "turns": 17,
+          "latency_ms": 45147
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 19132,
+          "turns": 5,
+          "latency_ms": 114119
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 30722,
+          "turns": 6,
+          "latency_ms": 112209
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 7842,
+          "turns": 3,
+          "latency_ms": 39981
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 27388,
+          "turns": 6,
+          "latency_ms": 96613
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 24840,
+          "turns": 6,
+          "latency_ms": 168936
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 18644,
+          "turns": 5,
+          "latency_ms": 69472
+        }
+      ]
     },
     {
       "id": "deepseek/deepseek-v4-pro",
@@ -156,7 +462,58 @@
       "median_latency_ms": 55998,
       "cost_usd": 0.015769,
       "cost_per_solve_usd": 0.015769,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 20335,
+          "turns": 7,
+          "latency_ms": 55998
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 17137,
+          "turns": 3,
+          "latency_ms": 43898
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 39883,
+          "turns": 6,
+          "latency_ms": 110596
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 9506,
+          "turns": 4,
+          "latency_ms": 33509
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 93884,
+          "turns": 9,
+          "latency_ms": 125005
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 13053,
+          "turns": 3,
+          "latency_ms": 30428
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 23507,
+          "turns": 4,
+          "latency_ms": 72842
+        }
+      ]
     },
     {
       "id": "qwen/qwen3.6-27b",
@@ -168,7 +525,58 @@
       "median_latency_ms": 66471,
       "cost_usd": 0.029225,
       "cost_per_solve_usd": 0.029225,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 112283,
+          "turns": 19,
+          "latency_ms": 74141
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 31738,
+          "turns": 6,
+          "latency_ms": 66471
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 175349,
+          "turns": 10,
+          "latency_ms": 158619
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 13904,
+          "turns": 5,
+          "latency_ms": 32990
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 45059,
+          "turns": 7,
+          "latency_ms": 66394
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 15102,
+          "turns": 5,
+          "latency_ms": 51616
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 42886,
+          "turns": 7,
+          "latency_ms": 83108
+        }
+      ]
     },
     {
       "id": "z-ai/glm-5.2",
@@ -180,7 +588,58 @@
       "median_latency_ms": 129345,
       "cost_usd": 0.030749,
       "cost_per_solve_usd": 0.030749,
-      "tool_use_ok": 0.7143
+      "tool_use_ok": 0.7143,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 12813,
+          "turns": 6,
+          "latency_ms": 80120
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 18815,
+          "turns": 4,
+          "latency_ms": 169824
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 18291,
+          "turns": 3,
+          "latency_ms": 132012
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 5950,
+          "turns": 3,
+          "latency_ms": 77460
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 81408,
+          "turns": 9,
+          "latency_ms": 129345
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 19545,
+          "turns": 4,
+          "latency_ms": 63512
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 20746,
+          "turns": 4,
+          "latency_ms": 181376
+        }
+      ]
     },
     {
       "id": "anthropic/claude-sonnet-4.6",
@@ -192,7 +651,58 @@
       "median_latency_ms": 77305,
       "cost_usd": 0.140811,
       "cost_per_solve_usd": 0.140811,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 28849,
+          "turns": 8,
+          "latency_ms": 42842
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 22214,
+          "turns": 4,
+          "latency_ms": 77305
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 49666,
+          "turns": 7,
+          "latency_ms": 99806
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 8950,
+          "turns": 3,
+          "latency_ms": 31316
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 44844,
+          "turns": 5,
+          "latency_ms": 96757
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 15898,
+          "turns": 3,
+          "latency_ms": 52099
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 42757,
+          "turns": 5,
+          "latency_ms": 88674
+        }
+      ]
     },
     {
       "id": "anthropic/claude-opus-4.8",
@@ -204,7 +714,58 @@
       "median_latency_ms": 52773,
       "cost_usd": 0.195475,
       "cost_per_solve_usd": 0.195475,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 10242,
+          "turns": 3,
+          "latency_ms": 19536
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 23921,
+          "turns": 3,
+          "latency_ms": 52773
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 23501,
+          "turns": 3,
+          "latency_ms": 56019
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 8934,
+          "turns": 3,
+          "latency_ms": 19405
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 39973,
+          "turns": 4,
+          "latency_ms": 68372
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 18587,
+          "turns": 3,
+          "latency_ms": 40354
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 25103,
+          "turns": 3,
+          "latency_ms": 57894
+        }
+      ]
     },
     {
       "id": "google/gemma-4-31b-it",
@@ -216,7 +777,58 @@
       "median_latency_ms": 83288,
       "cost_usd": 0.00287,
       "cost_per_solve_usd": 0.003348,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 18925,
+          "turns": 12,
+          "latency_ms": 36581
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 17171,
+          "turns": 4,
+          "latency_ms": 432302
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 28139,
+          "turns": 7,
+          "latency_ms": 295152
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 6604,
+          "turns": 4,
+          "latency_ms": 32620
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 29381,
+          "turns": 6,
+          "latency_ms": 95474
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 14382,
+          "turns": 5,
+          "latency_ms": 67094
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": false,
+          "tokens": 10803,
+          "turns": 4,
+          "latency_ms": 83288
+        }
+      ]
     },
     {
       "id": "mistralai/devstral-2512",
@@ -228,7 +840,58 @@
       "median_latency_ms": 77963,
       "cost_usd": 0.0076,
       "cost_per_solve_usd": 0.017732,
-      "tool_use_ok": 0.8571
+      "tool_use_ok": 0.8571,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 19916,
+          "turns": 12,
+          "latency_ms": 77963
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": false,
+          "tokens": 8825,
+          "turns": 1,
+          "latency_ms": 67882
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 27866,
+          "turns": 5,
+          "latency_ms": 56929
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 6798,
+          "turns": 4,
+          "latency_ms": 51457
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": false,
+          "tokens": 6879,
+          "turns": 5,
+          "latency_ms": 146616
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": false,
+          "tokens": 1746,
+          "turns": 4,
+          "latency_ms": 148096
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": false,
+          "tokens": 1243,
+          "turns": 3,
+          "latency_ms": 140740
+        }
+      ]
     },
     {
       "id": "google/gemini-3.5-flash",
@@ -240,7 +903,58 @@
       "median_latency_ms": 53668,
       "cost_usd": 0.227067,
       "cost_per_solve_usd": 0.529822,
-      "tool_use_ok": 1.0
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 39944,
+          "turns": 13,
+          "latency_ms": 41989
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": false,
+          "tokens": 23043,
+          "turns": 6,
+          "latency_ms": 37640
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": false,
+          "tokens": 65447,
+          "turns": 9,
+          "latency_ms": 60901
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 17174,
+          "turns": 5,
+          "latency_ms": 25760
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": false,
+          "tokens": 173447,
+          "turns": 14,
+          "latency_ms": 105992
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": false,
+          "tokens": 192040,
+          "turns": 16,
+          "latency_ms": 107773
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 68004,
+          "turns": 9,
+          "latency_ms": 53668
+        }
+      ]
     },
     {
       "id": "qwen/qwen-2.5-coder-32b-instruct",
@@ -252,7 +966,58 @@
       "median_latency_ms": 0,
       "cost_usd": 0.0,
       "cost_per_solve_usd": null,
-      "tool_use_ok": 0.0
+      "tool_use_ok": 0.0,
+      "tasks": [
+        {
+          "id": "flights-module-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": false,
+          "tokens": 0,
+          "turns": 1,
+          "latency_ms": 0
+        }
+      ]
     }
   ]
 }

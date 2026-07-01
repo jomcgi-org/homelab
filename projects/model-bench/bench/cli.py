@@ -576,9 +576,16 @@ def _report(args) -> None:
     # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model.
     from statistics import median
 
+    # Only count cells for tasks that are still in the current task set. Cells for a
+    # task that was later removed or renamed linger in the durable results cache; the
+    # harness-version filter above does not catch them (same version, dropped task),
+    # so without this scope a stale task would silently inflate every model's n and
+    # skew the medians away from the published task set. This mirrors the per-task and
+    # per-model breakdowns below, which are already scoped to current tasks.
+    current_agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
     agentic_groups: dict[str, list[ResultCell]] = {}
     for cell in cells:
-        if cell.turns is not None:
+        if cell.turns is not None and cell.task_id in current_agentic_ids:
             agentic_groups.setdefault(cell.model_id, []).append(cell)
     agentic: dict[str, dict] = {}
     for model_id, group in agentic_groups.items():
@@ -648,12 +655,26 @@ def _write_leaderboard_json(
 
     # Per-task pass counts over agentic cells.
     per_task: dict[str, dict] = {}
+    # Per-(model, task) breakdown so the page can render a deep-dive on each model
+    # row: which of the tasks it passed, and the tokens/turns/wall-time it spent on
+    # each. This is the same agentic cells, just kept disaggregated instead of only
+    # rolled up into the model's medians.
+    per_model_tasks: dict[str, dict[str, dict]] = {}
     for cell in cells:
         if cell.turns is None or cell.task_id not in agentic_ids:
             continue
         d = per_task.setdefault(cell.task_id, {"passed": 0, "n": 0})
         d["n"] += 1
         d["passed"] += int(cell.first_attempt_passed)
+        # Last cell wins if a (model, task) somehow has duplicates on disk; within one
+        # harness version there is exactly one cached cell per pair.
+        per_model_tasks.setdefault(cell.model_id, {})[cell.task_id] = {
+            "id": cell.task_id,
+            "passed": cell.first_attempt_passed,
+            "tokens": cell.total_tokens,
+            "turns": cell.turns,
+            "latency_ms": cell.total_latency_ms,
+        }
 
     def _blurb(tid: str) -> str:
         if tid not in task_meta:
@@ -701,6 +722,11 @@ def _write_leaderboard_json(
                 else None
             ),
             "tool_use_ok": round(s["tool_ok_rate"], 4),
+            # Per-task breakdown, ordered by task id so it lines up with tasks_json.
+            "tasks": [
+                per_model_tasks[mid][tid]
+                for tid in sorted(per_model_tasks.get(mid, {}))
+            ],
         }
         for mid, s in agentic.items()
     ]
