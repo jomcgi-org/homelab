@@ -266,26 +266,55 @@ func mergeEnv(env map[string]string) []string {
 	return out
 }
 
-// capturePort is the loopback port the netfilter REDIRECT sends all captured
-// guest TCP egress to. The capture listener recovers each connection's original
-// destination via SO_ORIGINAL_DST, so one listener replaces the old per-port
-// funnel and any destination port is captured (ADR 023 generic egress).
-const capturePort = 15001
+// defaultEgressPorts are the destination ports the funnel captures when
+// EGRESS_PORTS is unset. Every DNS name resolves to a unique synthetic
+// 127.0.0.0/8 address, and a per-port listener bound to all local addresses
+// accepts connections to any of those addresses, so any HOST is reachable on
+// these ports. Covered: 80 (MCP gateway / HTTP), 443 (HTTPS / open web), 8000
+// (monolith progress + artifact sink), 8080 (in-cluster model), 4318 (SigNoz
+// OTLP), 9418 (git:// mirror). Arbitrary non-standard ports are not captured;
+// agents reach the world on these standard ports.
+var defaultEgressPorts = []int{80, 443, 8000, 8080, 4318, 9418}
 
 // setupTransparentEgress makes the guest a dumb egress funnel (ADR 023). goose's
 // client ignores HTTP_PROXY and the guest is vsock-only, so instead of proxy
-// config we (1) answer every DNS name with a unique synthetic 127.0.0.0/8 address
-// and remember the name<->address mapping, (2) REDIRECT all outbound TCP to a
-// single loopback capture listener via netfilter, and (3) recover each
-// connection's original destination with SO_ORIGINAL_DST, reverse-map the
-// synthetic address back to the name (or forward a literal IP as-is), and tunnel
-// it over vsock to the host sidecar with a "host:port" preamble. The sidecar
-// classifies and routes it (external allow, internal deny-by-default).
+// config we (1) answer every DNS name with a unique synthetic 127.0.0.0/8
+// address and remember the name<->address mapping, and (2) run a per-port
+// listener bound to all local addresses. A connection to a synthetic address is
+// accepted by the matching port listener, and the accepted socket's LocalAddr IS
+// that synthetic address, which we reverse-map back to the name (no netfilter or
+// SO_ORIGINAL_DST needed). Each connection is tunneled over vsock to the host
+// sidecar with a "host:port" preamble; the sidecar classifies and routes it
+// (external allow, internal deny-by-default). This is what lets a plaintext
+// protocol with no host in the stream, like git://, be routed.
 func setupTransparentEgress(ctx context.Context, logger *slog.Logger) {
 	writeResolvConf(logger)
 	res := newSynthResolver()
 	go runWildcardDNS(ctx, logger, res)
-	setupCapture(ctx, logger, res)
+	for _, port := range parseEgressPorts(os.Getenv("EGRESS_PORTS")) {
+		go runFunnel(ctx, logger, res, port)
+	}
+}
+
+// parseEgressPorts parses a comma-separated port list, falling back to
+// defaultEgressPorts when empty or fully invalid.
+func parseEgressPorts(spec string) []int {
+	var ports []int
+	for _, p := range strings.Split(spec, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 || n > 65535 {
+			continue
+		}
+		ports = append(ports, n)
+	}
+	if len(ports) == 0 {
+		return defaultEgressPorts
+	}
+	return ports
 }
 
 // writeResolvConf points the guest's stub resolver at the in-guest wildcard DNS.
@@ -454,18 +483,18 @@ func parseQName(req []byte, off int) (string, int) {
 	return "", -1
 }
 
-// runCaptureListener accepts the netfilter-redirected connections on the loopback
-// capture port, recovers each one's original destination via SO_ORIGINAL_DST,
-// maps a synthetic address back to its DNS name (a literal IP passes through),
-// and tunnels the connection to the host sidecar. It returns when ctx is done.
-func runCaptureListener(ctx context.Context, logger *slog.Logger, res *synthResolver) {
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(capturePort))
+// runFunnel listens on all local addresses on port and tunnels each accepted
+// connection to the host sidecar. Binding to 0.0.0.0 (not 127.0.0.1) is what
+// makes a connection to any synthetic 127.0.0.0/8 address land here; the accepted
+// socket's LocalAddr is that synthetic address. It returns when ctx is done.
+func runFunnel(ctx context.Context, logger *slog.Logger, res *synthResolver, port int) {
+	addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		logger.Warn("egress capture listen failed", "addr", addr, "err", err)
+		logger.Warn("egress funnel listen failed", "addr", addr, "err", err)
 		return
 	}
-	logger.Info("egress capture listening", "addr", addr)
+	logger.Info("egress funnel listening", "addr", addr)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -474,42 +503,41 @@ func runCaptureListener(ctx context.Context, logger *slog.Logger, res *synthReso
 		local, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() == nil {
-				logger.Warn("egress capture accept", "err", err)
+				logger.Warn("egress funnel accept", "port", port, "err", err)
 			}
 			return
 		}
-		go handleCaptured(logger, local, res)
+		go funnelCaptured(logger, local, res, port)
 	}
 }
 
-// handleCaptured recovers the original destination of one captured connection and
-// tunnels it to the host sidecar. A synthetic 127.0.0.0/8 destination is
-// reverse-mapped to its DNS name; a literal IP is forwarded as-is. It closes
-// local on the error paths; funnelToHost owns it once handed over.
-func handleCaptured(logger *slog.Logger, local net.Conn, res *synthResolver) {
-	tcp, ok := local.(*net.TCPConn)
+// funnelCaptured recovers the destination name of one captured connection from
+// its local address (the synthetic 127.0.0.0/8 address the client connected to,
+// reverse-mapped to the DNS name) and tunnels it to the host sidecar. It closes
+// local on the error path; funnelToHost owns it once handed over.
+func funnelCaptured(logger *slog.Logger, local net.Conn, res *synthResolver, port int) {
+	la, ok := local.LocalAddr().(*net.TCPAddr)
 	if !ok {
-		logger.Warn("egress capture: non-TCP conn")
+		logger.Warn("egress funnel: non-TCP local addr", "port", port)
 		_ = local.Close()
 		return
 	}
-	dst, err := originalDst(tcp)
-	if err != nil {
-		logger.Warn("egress capture: SO_ORIGINAL_DST failed", "err", err)
+	addr, ok := netip.AddrFromSlice(la.IP)
+	if ok {
+		addr = addr.Unmap()
+	}
+	if !ok || !addr.Is4() || addr.As4()[0] != 127 {
+		logger.Warn("egress funnel: local addr not a synthetic address", "addr", la.IP.String(), "port", port)
 		_ = local.Close()
 		return
 	}
-	host := dst.Addr().String()
-	if dst.Addr().Is4() && dst.Addr().As4()[0] == 127 {
-		name, ok := res.name(dst.Addr())
-		if !ok {
-			logger.Warn("egress capture: unknown synthetic address", "addr", dst.Addr().String())
-			_ = local.Close()
-			return
-		}
-		host = name
+	name, found := res.name(addr)
+	if !found {
+		logger.Warn("egress funnel: unknown synthetic address", "addr", addr.String(), "port", port)
+		_ = local.Close()
+		return
 	}
-	funnelToHost(logger, local, host, int(dst.Port()))
+	funnelToHost(logger, local, name, port)
 }
 
 // funnelToHost dials the host sidecar over vsock, writes a one-line "host:port"

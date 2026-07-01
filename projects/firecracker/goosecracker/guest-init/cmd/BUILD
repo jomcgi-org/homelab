@@ -3,8 +3,6 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "cmd_lib",
     srcs = [
-        "capture_linux.go",
-        "capture_other.go",
         "loopback_linux.go",
         "loopback_other.go",
         "main.go",
