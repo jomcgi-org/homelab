@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 import yaml
 
+from bench.agent import run_agent_cell
 from bench.cache import (
     HARNESS_VERSION,
     cell_key,
@@ -108,6 +109,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--concurrency", type=int, default=6, help="Maximum concurrent API calls"
     )
+    p_run.add_argument(
+        "--task",
+        default=None,
+        help="Only run tasks whose id is in this comma-separated list (default: all)",
+    )
+    p_run.add_argument(
+        "--model",
+        dest="model_filter",
+        default=None,
+        help="Only run models whose id contains this substring (default: all)",
+    )
 
     # report
     p_report = sub.add_parser("report", help="Generate leaderboard report")
@@ -174,6 +186,16 @@ async def _run(args) -> None:
     reg = load_registry(Path(args.models))
     models = active_models(reg, include_experimental=args.include_experimental)
 
+    # Optional filters for cheap, targeted calibration runs.
+    if getattr(args, "task", None):
+        wanted = {t.strip() for t in args.task.split(",") if t.strip()}
+        tasks = [t for t in tasks if t.id in wanted]
+    if getattr(args, "model_filter", None):
+        models = [m for m in models if args.model_filter in m.id]
+    if not tasks or not models:
+        print("Nothing to run after filtering (check --task / --model).")
+        return
+
     client = OpenRouterClient(api_key=api_key)
     await client.load_prices()
 
@@ -212,6 +234,57 @@ async def _run(args) -> None:
         finally:
             if cleanup:
                 shutil.rmtree(fdir, ignore_errors=True)
+
+    async def _agent_cell(task: TaskSpec, model, key: str) -> ResultCell | None:
+        """Run an agentic (tool-calling) cell: the model edits the fixture, then grade.
+
+        The fixture must be materialized (via `bench snapshot`) because the model
+        explores and edits real repo state through file tools rather than emitting a
+        whole file in one shot.
+        """
+        fixture_dir = Path(args.tasks) / task.id / "fixture"
+        if not fixture_dir.exists():
+            return ResultCell(
+                task_id=task.id,
+                task_version=task.version,
+                model_id=model.id,
+                content_hash=key,
+                outcome="fail",
+                attempts=[
+                    Attempt(
+                        passed=False,
+                        feedback=(
+                            f"[verifier setup] no fixture at {fixture_dir}; "
+                            "run `python3 -m bench snapshot` first"
+                        ),
+                        latency_ms=0,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                    )
+                ],
+                cost_usd=0.0,
+                harness_version=HARNESS_VERSION,
+                prompt_template_hash="agent",
+            )
+
+        async def chat(**kw):
+            return await client.chat(**kw)
+
+        verify = get_verifier(task.verifier.kind)
+        return await run_agent_cell(
+            task_id=task.id,
+            task_version=task.version,
+            model_id=model.id,
+            content_hash=key,
+            fixture_dir=fixture_dir,
+            task_prompt=task.prompt,
+            chat=chat,
+            verify=verify,
+            verifier_args=task.verifier.args,
+            cost_fn=lambda p, c: client.cost_usd(model.id, p, c),
+            max_turns=task.agent.max_turns,
+            max_tokens=task.agent.max_tokens or model.params.max_tokens,
+        )
 
     async def _judge_cell(task: TaskSpec, model, key: str) -> ResultCell | None:
         """Run a single-shot judge cell: candidate from the model, verdict from judge."""
@@ -285,7 +358,15 @@ async def _run(args) -> None:
         """Compute and store one (task, model) cell, skipping if cached."""
         task_fixture_dir = Path(args.tasks) / task.id / "fixture"
         fx = fixture_hash(task_fixture_dir) if task_fixture_dir.exists() else ""
-        params_repr = f"{model.params.temperature}:{model.params.max_tokens}"
+        if task.mode == "agentic":
+            # Fold mode + agent budget into the key so bumping turns/tokens re-runs.
+            agent_max_tokens = task.agent.max_tokens or model.params.max_tokens
+            params_repr = (
+                f"agentic:{model.params.temperature}:{agent_max_tokens}"
+                f":turns={task.agent.max_turns}"
+            )
+        else:
+            params_repr = f"{model.params.temperature}:{model.params.max_tokens}"
         src_hash = (
             verifier_source_hash(task.verifier.kind)
             if task.verifier.kind != "judge"
@@ -310,7 +391,9 @@ async def _run(args) -> None:
 
         async with sem:
             try:
-                if task.verifier.kind == "judge":
+                if task.mode == "agentic":
+                    cell = await _agent_cell(task, model, key)
+                elif task.verifier.kind == "judge":
                     cell = await _judge_cell(task, model, key)
                 else:
                     cell = await _deterministic_cell(task, model, key)
@@ -457,11 +540,31 @@ def _report(args) -> None:
             }
         )
 
+    # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model.
+    from statistics import median
+
+    agentic_groups: dict[str, list[ResultCell]] = {}
+    for cell in cells:
+        if cell.turns is not None:
+            agentic_groups.setdefault(cell.model_id, []).append(cell)
+    agentic: dict[str, dict] = {}
+    for model_id, group in agentic_groups.items():
+        n = len(group)
+        agentic[model_id] = {
+            "n": n,
+            "pass_rate": sum(1 for c in group if c.first_attempt_passed) / n,
+            "med_tokens": float(median([c.total_tokens for c in group])),
+            "med_turns": float(median([c.turns or 0 for c in group])),
+            "cost": sum(c.cost_usd for c in group) / n,
+            "tool_ok_rate": sum(1 for c in group if c.tool_use_ok) / n,
+        }
+
     md = render_leaderboard(
         per_class=per_class,
         anchors=anchors_dict,
         frontier=frontier,
         retired=retired,
+        agentic=agentic,
     )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -548,6 +651,18 @@ def _snapshot(args) -> None:
         if strip:
             tar_cmd.append(f"--strip-components={strip}")
         subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
+        # Prune excluded globs (default: the parent's own *_test.py). The model never
+        # needs them (the gold test is injected by the verifier), they bloat the
+        # fixture, and committing real test files trips the repo's pre-commit semgrep
+        # hook (generic-test-filename / hardcoded-timestamp rules).
+        import fnmatch
+
+        excludes = snap.get("exclude", ["*_test.py"])
+        for path in sorted(fixture.rglob("*"), reverse=True):
+            if path.is_file() and any(fnmatch.fnmatch(path.name, g) for g in excludes):
+                path.unlink()
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
         n = sum(1 for _ in fixture.rglob("*") if _.is_file())
         print(
             f"{mapping.get('id')}: snapshotted {n} file(s) from {commit[:12]} into {fixture}"

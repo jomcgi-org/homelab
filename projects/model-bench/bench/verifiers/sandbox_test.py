@@ -24,3 +24,25 @@ def test_returns_rc_and_streams(tmp_path):
 def test_timeout_is_nonzero_rc(tmp_path):
     res = run_sandboxed(["sh", "-c", "sleep 5"], cwd=tmp_path, timeout_s=1)
     assert res.rc != 0 and res.timed_out is True
+
+
+def test_extra_env_is_merged_into_child(tmp_path):
+    res = run_sandboxed(
+        ["sh", "-c", "echo $PYTHONPATH"],
+        cwd=tmp_path,
+        timeout_s=10,
+        extra_env={"PYTHONPATH": "."},
+    )
+    assert res.stdout.strip() == "."
+
+
+def test_extra_env_cannot_smuggle_a_denied_key(tmp_path):
+    # A task-authored overlay is still filtered through the deny-prefix guard, so it
+    # cannot reintroduce a credential-shaped variable the scrub removed.
+    res = run_sandboxed(
+        ["sh", "-c", "echo ${OPENROUTER_API_KEY:-absent}"],
+        cwd=tmp_path,
+        timeout_s=10,
+        extra_env={"OPENROUTER_API_KEY": "sk-leak"},
+    )
+    assert res.stdout.strip() == "absent"

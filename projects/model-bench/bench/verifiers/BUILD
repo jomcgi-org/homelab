@@ -49,6 +49,12 @@ semgrep_test(
 )
 
 semgrep_test(
+    name = "pytest_semgrep_test",
+    srcs = ["pytest.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
     name = "rbac_semgrep_test",
     srcs = ["rbac.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
@@ -69,6 +75,7 @@ py_library(
         "helm.py",
         "jsonmatch.py",
         "lint.py",
+        "pytest.py",
         "rbac.py",
         "sandbox.py",
     ],

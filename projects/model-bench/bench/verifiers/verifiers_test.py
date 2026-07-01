@@ -38,3 +38,27 @@ def test_command_write_files_drops_hidden_test(tmp_path):
         },
     )
     assert r.passed and (tmp_path / "marker").exists()
+
+
+def test_pytest_verifier_registers():
+    assert get_verifier("pytest").__module__ == "bench.verifiers.pytest"
+
+
+def test_pytest_verifier_resolves_venv_precedence(tmp_path, monkeypatch):
+    from bench.verifiers.pytest import _venv_python
+
+    # Explicit args["python"] wins over the env var.
+    assert _venv_python({"python": "/x/py"}) == __import__("pathlib").Path("/x/py")
+    # Else $MODEL_BENCH_VENV/bin/python.
+    monkeypatch.setenv("MODEL_BENCH_VENV", str(tmp_path))
+    assert _venv_python({}) == tmp_path / "bin" / "python"
+
+
+def test_pytest_verifier_reports_setup_error_when_venv_missing(tmp_path, monkeypatch):
+    # No real venv on CI: the verifier must fail cleanly with a setup message rather
+    # than crash, and it must not run any gold test. (The full drop-test-and-run path
+    # is validated locally against the monolith venv, which CI does not provision.)
+    monkeypatch.setenv("MODEL_BENCH_VENV", str(tmp_path / "nonexistent"))
+    v = get_verifier("pytest")
+    r = v(tmp_path, {"tests": {"t_test.py": "def test_x():\n    assert True\n"}})
+    assert not r.passed and "venv python not found" in r.feedback

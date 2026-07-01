@@ -7,6 +7,7 @@ def render_leaderboard(
     anchors: dict,
     frontier: dict,
     retired: list,
+    agentic: dict | None = None,
 ) -> str:
     """Render a markdown leaderboard report.
 
@@ -15,13 +16,45 @@ def render_leaderboard(
         anchors: model_id -> task_class -> dict with keys pass1, cost.
         frontier: task_class -> list of non-dominated model ids.
         retired: list of dicts with keys id, reason, date, pass1, cost.
+        agentic: model_id -> dict with keys n, pass_rate, med_tokens, med_turns,
+                 cost, tool_ok_rate. The agentic tool-calling leaderboard: the
+                 primary contract of this benchmark. Optional/back-compatible.
 
     Returns:
-        Markdown string with sections: Budget tier, Anchors, Pareto frontier, Retired.
-        Section headers are fixed and always emitted even when inputs are empty.
+        Markdown string with sections: Agentic, Budget tier, Anchors, Pareto frontier,
+        Retired. Section headers are fixed and always emitted even when inputs are empty.
     """
     lines: list[str] = []
     lines.append("# model-bench leaderboard")
+    lines.append("")
+
+    # Agentic leaderboard: pass-rate + efficiency (tokens/turns) + $ over real-repo
+    # tool-calling tasks. This is the headline contract; single-shot tables follow.
+    lines.append("## Agentic (tool-calling) leaderboard")
+    lines.append("")
+    if agentic:
+        rows = [{"model": mid, **stats} for mid, stats in agentic.items()]
+        # Best first: highest pass-rate, then cheapest, then fewest tokens.
+        rows.sort(
+            key=lambda r: (
+                -r.get("pass_rate", 0.0),
+                r.get("cost", 0.0),
+                r.get("med_tokens", 0.0),
+            )
+        )
+        lines.append(
+            "| Model | n | pass-rate | median tokens | median turns "
+            "| cost ($) | tool-use ok |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for r in rows:
+            lines.append(
+                f"| {r['model']} | {r.get('n', 0)} | {r.get('pass_rate', 0.0):.2f} "
+                f"| {r.get('med_tokens', 0):.0f} | {r.get('med_turns', 0):.1f} "
+                f"| {r.get('cost', 0.0):.4f} | {r.get('tool_ok_rate', 0.0):.2f} |"
+            )
+    else:
+        lines.append("No agentic results yet.")
     lines.append("")
 
     # Budget tier: qualifying candidates sorted by cost ascending
