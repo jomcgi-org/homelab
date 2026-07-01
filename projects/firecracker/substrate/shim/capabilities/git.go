@@ -86,13 +86,16 @@ func (g *ExecGit) runOutput(ctx context.Context, args ...string) ([]byte, error)
 	return out, nil
 }
 
-// Clone clones the repository at mirror into dest using a shallow partial
-// clone (--single-branch --depth=1 --filter=blob:none), then checks out ref.
-// The shallow flags keep the clone sub-second against the in-cluster mirror
-// (ADR 026). Both branch names and full SHAs work: clone fetches only the tip
-// commit for the default branch, then checkout selects the requested ref.
+// Clone clones the repository at mirror into dest using a single-branch partial
+// clone (--single-branch --filter=blob:none), then checks out ref. It keeps the
+// FULL commit history of the branch (so `git log`, blame, and "recent commits"
+// tasks work) while deferring file contents: --filter=blob:none fetches commits
+// and trees up front and lazily pulls a blob only when a file is opened, which
+// keeps the clone fast against the in-cluster mirror without the --depth=1
+// shallow cut that left the workspace with only the tip commit (ADR 026). Both
+// branch names and full SHAs work.
 func (g *ExecGit) Clone(ctx context.Context, mirror, ref, dest string) error {
-	if err := g.run(ctx, "clone", "--single-branch", "--depth=1", "--filter=blob:none", mirror, dest); err != nil {
+	if err := g.run(ctx, "clone", "--single-branch", "--filter=blob:none", mirror, dest); err != nil {
 		return fmt.Errorf("git Clone (clone): %w", err)
 	}
 	if err := g.run(ctx, "-C", dest, "checkout", ref); err != nil {
