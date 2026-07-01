@@ -105,6 +105,7 @@
   "models": [
     {
       "id": "qwen/qwen3-coder-30b-a3b-instruct",
+      "name": "qwen3-coder-30b",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -197,6 +198,7 @@
     },
     {
       "id": "google/gemma-4-26b-a4b-it",
+      "name": "gemma-4-26b",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -289,6 +291,7 @@
     },
     {
       "id": "deepseek/deepseek-v4-flash",
+      "name": "deepseek-v4-flash",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -381,6 +384,7 @@
     },
     {
       "id": "qwen/qwen3-coder-next",
+      "name": "qwen3-coder-next",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -473,6 +477,7 @@
     },
     {
       "id": "qwen/qwen3.6-35b-a3b",
+      "name": "qwen3.6-35b-a3b",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -565,6 +570,7 @@
     },
     {
       "id": "z-ai/glm-4.7",
+      "name": "glm-4.7",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -657,6 +663,7 @@
     },
     {
       "id": "deepseek/deepseek-v4-pro",
+      "name": "deepseek-v4-pro",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -749,6 +756,7 @@
     },
     {
       "id": "qwen/qwen3.6-27b",
+      "name": "qwen3.6-27b",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -841,6 +849,7 @@
     },
     {
       "id": "z-ai/glm-5.2",
+      "name": "glm-5.2",
       "role": "candidate",
       "n": 9,
       "pass_rate": 1.0,
@@ -933,6 +942,7 @@
     },
     {
       "id": "anthropic/claude-sonnet-4.6",
+      "name": "claude-sonnet-4.6",
       "role": "anchor",
       "n": 9,
       "pass_rate": 1.0,
@@ -1025,6 +1035,7 @@
     },
     {
       "id": "anthropic/claude-opus-4.8",
+      "name": "claude-opus-4.8",
       "role": "anchor",
       "n": 9,
       "pass_rate": 1.0,
@@ -1117,6 +1128,7 @@
     },
     {
       "id": "google/gemma-4-31b-it",
+      "name": "gemma-4-31b",
       "role": "candidate",
       "n": 9,
       "pass_rate": 0.7778,
@@ -1209,6 +1221,7 @@
     },
     {
       "id": "google/gemini-3.5-flash",
+      "name": "gemini-3.5-flash",
       "role": "candidate",
       "n": 9,
       "pass_rate": 0.5556,
@@ -1305,6 +1318,7 @@
     },
     {
       "id": "mistralai/devstral-2512",
+      "name": "devstral-2512",
       "role": "candidate",
       "n": 9,
       "pass_rate": 0.5556,

@@ -10,18 +10,22 @@ models:
   - id: qwen/qwen3.6-35b-a3b
     status: active
   - id: qwen/qwen3-coder-30b-a3b-instruct
+    display_name: qwen3-coder-30b
     status: active
   - id: mistralai/devstral-2512
     status: active
   - id: qwen/qwen-2.5-coder-32b-instruct
+    display_name: qwen-2.5-coder-32b
     status: retired
     retired_reason:
       "0/15 agentic: OpenRouter provider 4xxes on tool-calling requests,
       cannot participate"
     retired_date: "2026-07-01"
   - id: google/gemma-4-31b-it
+    display_name: gemma-4-31b
     status: active
   - id: google/gemma-4-26b-a4b-it
+    display_name: gemma-4-26b
     status: active
   - id: deepseek/deepseek-v4-flash
     status: active
