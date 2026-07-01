@@ -211,15 +211,28 @@ spec:
             # (FC_INVOKE_EGRESS_SIDECAR_ADDR); the sidecar listens on the same port.
             - name: EGRESS_LISTEN
               value: ":8888"
-            - name: EGRESS_POLICY
-              value: {{ .Values.egress.policy | default "allowlist" | quote }}
-            {{- if eq (.Values.egress.policy | default "allowlist") "allowlist" }}
-            # Under policy=allowlist the sidecar denies any destination not in this
-            # list (fail closed). It must include each secrets[].egressTo host so
-            # the swap path is reachable. Values carry a YAML list for readability;
-            # join it into the comma-separated form the sidecar parses.
-            - name: EGRESS_ALLOWLIST
-              value: {{ join "," .Values.egress.allowlist | quote }}
+            # Split-horizon egress guardrail (ADR 023). external: public egress
+            # posture ("allow" default lets the agent read the open internet).
+            # internal: the cluster is deny-by-default, confined to
+            # internal.allowlist; classification is on the resolved IP in the
+            # sidecar. Secret egressTo hosts are external, so they are reached via
+            # external:allow and are NOT listed in the internal allowlist.
+            - name: EGRESS_EXTERNAL
+              value: {{ .Values.egress.external | default "allow" | quote }}
+            - name: EGRESS_INTERNAL_DEFAULT
+              value: {{ .Values.egress.internal.default | default "deny" | quote }}
+            {{- with .Values.egress.internal.allowlist }}
+            # Internal destinations permitted under deny-by-default. YAML list for
+            # readability; joined into the comma-separated form the sidecar parses.
+            - name: EGRESS_INTERNAL_ALLOWLIST
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.egress.internal.cidrs }}
+            # Extra CIDRs classified as internal, on top of the baked
+            # private/loopback/link-local ranges. This cluster's pod/service/node
+            # nets already fall inside RFC1918, so these are usually redundant.
+            - name: EGRESS_INTERNAL_CIDRS
+              value: {{ join "," . | quote }}
             {{- end }}
             {{- if .Values.egress.secrets }}
             # Secret swap (ADR 023 6b). EGRESS_SECRETS is the non-secret catalog

@@ -11,6 +11,10 @@ contents:
     - git
     - gh
     - go
+    # iptables: the guest-init PID1 installs a nat OUTPUT REDIRECT rule so all
+    # outbound TCP is captured to the loopback egress listener (ADR 023 generic
+    # egress). The kata guest kernel has nf_nat/REDIRECT/conntrack built in.
+    - iptables
     # Runtime libs the goose binary dynamically links (libgomp.so.1,
     # libstdc++.so.6, libgcc_s.so.1); without them goose exits 127 at load.
     - libgcc

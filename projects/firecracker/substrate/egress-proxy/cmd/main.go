@@ -1,49 +1,43 @@
 // Command egress-proxy is a tiny, dependency-free transparent egress proxy that
 // mediates every Firecracker guest's outbound traffic (ADR 023). The guest is
-// vsock-only: the guest init answers every DNS query with 127.0.0.1 and funnels
-// each loopback connection over vsock to the fc-invoke daemon, which forwards it
-// here. This sidecar is the only process that reaches the network on the guest's
-// behalf.
+// vsock-only: the guest init gives every DNS name a synthetic 127.0.0.0/8
+// address, REDIRECTs all outbound TCP to a loopback capture listener, recovers
+// each connection's original destination via SO_ORIGINAL_DST, and tunnels it here
+// (through the fc-invoke daemon) with a one-line "host:port" preamble. This
+// sidecar is the only process that reaches the network on the guest's behalf.
 //
-// Each connection arrives as: a one-line preamble carrying the original
-// destination port (the guest funnel knows it from the listening port), then the
-// raw client stream. The proxy recovers the destination HOST by peeking the
-// stream, the TLS SNI for an HTTPS ClientHello, or the HTTP Host header for
-// plaintext, without consuming the bytes, so the exact stream still forwards to
-// the upstream. It then applies policy and pipes to the real destination (the pod
-// resolves cluster and public DNS).
+// Split-horizon egress guardrail (see classify.go): the sidecar resolves the
+// preamble host, pins one IP, and classifies it. External (public) destinations
+// are allowed by default so the agent can read the open internet; internal
+// (cluster / private / loopback / link-local) destinations are denied unless
+// explicitly allowlisted, which closes the cluster-pivot vector. Classification is
+// on the RESOLVED IP the sidecar will actually dial (not the guest-claimed name),
+// and the pinned IP is dialed without re-resolving, so a hostile guest cannot name
+// its way to an internal host nor race DNS.
 //
-// Egress posture is set by EGRESS_POLICY:
-//   - "allow" (default): every destination is permitted. Secrets still only
-//     materialise at their bound destination (Task 6b), so the open path cannot
-//     leak a credential; it can only browse. This lets the agent read arbitrary
-//     docs.
-//   - "allowlist": only EGRESS_ALLOWLIST destinations are permitted; everything
-//     else is denied (fail closed). The dormant lockdown knob.
+// Secret placeholder-swap (ADR 023 6b, see swap.go) is orthogonal to the zone
+// policy: for a TLS destination whose host is in a secret's egressTo, the sidecar
+// terminates TLS with a leaf minted from the egress CA, swaps the placeholder for
+// the real value, and re-originates. The swap fires only at that host, so the real
+// value is unreachable for any other destination.
 //
-// This binary does plain transparent routing only: TLS termination and secret /
-// placeholder substitution for destinations that carry a credential land in Task
-// 6b (the proxy already sees the destination, so that is an additive branch).
+// Configuration (env):
+//   - EGRESS_LISTEN: where the fc-invoke daemon forwards guest egress (":8888").
+//   - EGRESS_EXTERNAL: "allow" (default) or "deny" for public destinations.
+//   - EGRESS_INTERNAL_DEFAULT: "deny" (default) or "allow" for internal ones.
+//   - EGRESS_INTERNAL_ALLOWLIST: comma-separated host[:port] permitted internally.
+//   - EGRESS_INTERNAL_CIDRS: comma-separated extra CIDRs classified as internal.
+//   - EGRESS_SECRETS / EGRESS_CA_CERT_FILE / EGRESS_CA_KEY_FILE: secret swap.
 package main
 
 import (
 	"bufio"
-	"bytes"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"time"
-)
-
-// Egress policies (EGRESS_POLICY).
-const (
-	policyAllow     = "allow"
-	policyAllowlist = "allowlist"
 )
 
 // dialTimeout bounds the upstream connect; it does not cap a tunnel's lifetime.
@@ -56,22 +50,27 @@ func main() {
 	// EGRESS_LISTEN is where the fc-invoke daemon forwards guest egress (pod-local).
 	listen := envOr("EGRESS_LISTEN", ":8888")
 
-	// EGRESS_POLICY: "allow" (default) permits every destination; "allowlist"
-	// permits only EGRESS_ALLOWLIST and denies the rest.
-	policy := envOr("EGRESS_POLICY", policyAllow)
+	// Split-horizon posture: the public internet is open by default; the cluster is
+	// deny-by-default and confined to the internal allowlist.
+	externalAllow := envOr("EGRESS_EXTERNAL", "allow") != "deny"
+	internalDefaultAllow := envOr("EGRESS_INTERNAL_DEFAULT", "deny") == "allow"
+	internalAllowlist := parseAllowlist(os.Getenv("EGRESS_INTERNAL_ALLOWLIST"))
+	extraInternalNets := parseCIDRs(logger, os.Getenv("EGRESS_INTERNAL_CIDRS"))
 
-	// EGRESS_ALLOWLIST is consulted only under policy=allowlist (comma-separated
-	// host[:port]). Empty there denies everything.
-	allowlist := parseAllowlist(os.Getenv("EGRESS_ALLOWLIST"))
-
-	logger.Info("egress-proxy starting", "listen", listen, "policy", policy, "allowlist", allowlist)
-	if policy == policyAllowlist && len(allowlist) == 0 {
-		logger.Warn("policy=allowlist with empty EGRESS_ALLOWLIST; all egress will be denied (fail closed)")
+	logger.Info("egress-proxy starting",
+		"listen", listen,
+		"externalAllow", externalAllow,
+		"internalDefaultAllow", internalDefaultAllow,
+		"internalAllowlist", internalAllowlist,
+		"extraInternalCIDRs", len(extraInternalNets),
+	)
+	if !internalDefaultAllow && len(internalAllowlist) == 0 {
+		logger.Warn("internal egress deny-by-default with an empty allowlist; all internal destinations will be denied")
 	}
 
 	// Secret placeholder-swap (ADR 023 6b): load the catalog and the CA the sidecar
 	// uses to TLS-terminate secret-bearing destinations. Absent CA paths or an empty
-	// catalog leave the proxy a plain transparent router (6a).
+	// catalog leave the proxy a plain transparent router.
 	secrets := loadSecrets(logger)
 	var minter *caMinter
 	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
@@ -84,7 +83,16 @@ func main() {
 		}
 	}
 
-	p := &proxy{policy: policy, allowlist: allowlist, secrets: secrets, minter: minter, logger: logger}
+	p := &proxy{
+		externalAllow:        externalAllow,
+		internalDefaultAllow: internalDefaultAllow,
+		internalAllowlist:    internalAllowlist,
+		extraInternalNets:    extraInternalNets,
+		lookupIP:             net.LookupIP,
+		secrets:              secrets,
+		minter:               minter,
+		logger:               logger,
+	}
 
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -101,13 +109,22 @@ func main() {
 	}
 }
 
-// proxy holds the egress posture, the secret catalog, and the CA minter.
+// proxy holds the split-horizon posture, the secret catalog, and the CA minter.
 type proxy struct {
-	// policy is the egress posture: policyAllow (default) permits every
-	// destination, policyAllowlist permits only allowlist entries.
-	policy string
-	// allowlist is consulted only under policyAllowlist.
-	allowlist []string
+	// externalAllow permits public (non-internal) destinations.
+	externalAllow bool
+	// internalDefaultAllow permits every internal destination; when false, only
+	// internalAllowlist entries are reachable inside the cluster.
+	internalDefaultAllow bool
+	// internalAllowlist is the set of internal host[:port] destinations permitted
+	// under deny-by-default.
+	internalAllowlist []string
+	// extraInternalNets are operator-configured CIDRs classified as internal on top
+	// of the baked private/loopback/link-local ranges.
+	extraInternalNets []*net.IPNet
+	// lookupIP resolves a host to IPs (net.LookupIP in production, injectable in
+	// tests).
+	lookupIP func(host string) ([]net.IP, error)
 	// secrets is the placeholder-swap catalog (ADR 023 6b); empty disables swap.
 	secrets []secretEntry
 	// minter mints leaf certs from the egress CA for TLS termination; nil disables
@@ -116,60 +133,50 @@ type proxy struct {
 	logger *slog.Logger
 }
 
-// permits reports whether dest may be reached under the current policy.
-func (p *proxy) permits(dest string) bool {
-	if p.policy != policyAllowlist {
-		return true
-	}
-	return allowed(dest, p.allowlist)
-}
-
-// handle services one guest connection: read the port preamble, recover the host
-// from the stream (SNI or Host header), apply policy, then pipe to the upstream.
+// handle services one guest connection: read the "host:port" preamble, apply the
+// split-horizon guardrail (resolve + classify + pin), then either terminate-swap a
+// secret-bearing TLS destination or blind-tunnel to the pinned upstream.
 func (p *proxy) handle(client net.Conn) {
 	defer client.Close()
-	// Size the buffer to maxHeadPeek so the head scan (and the SNI parse) can peek
-	// up to the cap without hitting ErrBufferFull below the cap.
-	br := bufio.NewReaderSize(client, maxHeadPeek)
+	br := bufio.NewReader(client)
 
-	portLine, err := br.ReadString('\n')
+	line, err := br.ReadString('\n')
 	if err != nil {
 		p.logger.Warn("egress preamble read failed", "err", err)
 		return
 	}
-	port := strings.TrimSpace(portLine)
-	if _, err := strconv.Atoi(port); err != nil {
-		p.logger.Warn("egress preamble invalid port", "preamble", port)
-		return
-	}
-
-	host, isTLS, err := hostFromStream(br)
-	if err != nil {
-		p.logger.Warn("egress host detection failed", "port", port, "err", err)
+	host, port := splitHostPort(strings.TrimSpace(line))
+	if host == "" || port == "" {
+		p.logger.Warn("egress preamble invalid", "preamble", strings.TrimSpace(line))
 		return
 	}
 	dest := net.JoinHostPort(host, port)
 
-	if !p.permits(dest) {
+	// Resolve + classify + pin. dialAddr is the exact ip:port we will connect to,
+	// so the policy decision and the connect cannot diverge (no DNS-rebind race).
+	dialAddr, ok := p.route(host, port)
+	if !ok {
 		p.logger.Warn("egress denied", "dest", dest)
 		return
 	}
 
 	// Secret-bearing TLS destination: terminate, swap the placeholder, re-originate
-	// (ADR 023 6b). Everything else is blind-tunnelled (6a). The swap fires only for
-	// a host in the secret's egressTo, so the real value is unreachable elsewhere.
-	if p.minter != nil && isTLS {
-		if sec := p.secretFor(host); sec != nil {
-			p.logger.Info("egress allowed (swap)", "dest", dest)
-			p.terminateAndSwap(br, client, dest, host, sec)
-			return
+	// (ADR 023 6b). We only need the first byte to tell TLS from plaintext; the host
+	// already came from the preamble, so no SNI/Host sniffing is required.
+	if p.minter != nil {
+		if first, err := br.Peek(1); err == nil && first[0] == 0x16 {
+			if sec := p.secretFor(host); sec != nil {
+				p.logger.Info("egress allowed (swap)", "dest", dest, "dial", dialAddr)
+				p.terminateAndSwap(br, client, dialAddr, host, sec)
+				return
+			}
 		}
 	}
-	p.logger.Info("egress allowed", "dest", dest)
+	p.logger.Info("egress allowed", "dest", dest, "dial", dialAddr)
 
-	up, err := net.DialTimeout("tcp", dest, dialTimeout)
+	up, err := net.DialTimeout("tcp", dialAddr, dialTimeout)
 	if err != nil {
-		p.logger.Error("egress upstream dial failed", "dest", dest, "err", err)
+		p.logger.Error("egress upstream dial failed", "dest", dest, "dial", dialAddr, "err", err)
 		return
 	}
 	defer up.Close()
@@ -182,179 +189,13 @@ func (p *proxy) handle(client net.Conn) {
 	<-done
 }
 
-// hostFromStream peeks the buffered client stream and returns the destination
-// host and whether the stream is TLS: the TLS SNI for a handshake record,
-// otherwise the HTTP Host header. It never consumes bytes, so the stream forwards
-// to the upstream verbatim.
-func hostFromStream(br *bufio.Reader) (host string, isTLS bool, err error) {
-	first, err := br.Peek(1)
-	if err != nil {
-		return "", false, err
-	}
-	if first[0] == 0x16 { // TLS handshake record
-		host, err = sniFromClientHello(br)
-		return host, true, err
-	}
-	host, err = hostFromHTTP(br)
-	return host, false, err
-}
-
-// maxHeadPeek bounds how far we peek looking for the SNI or Host header.
-const maxHeadPeek = 8192
-
-// hostFromHTTP scans the buffered request head for the Host header without
-// consuming it (the raw bytes are blind-tunnelled to the upstream afterwards).
-//
-// It peeks only what is already buffered and forces just ONE more byte into the
-// buffer per iteration when the head is not yet complete. A fixed-size Peek(n)
-// would block until n bytes arrive, which deadlocks on a request whose entire
-// head is shorter than n: a bodyless GET (or any small request) sends its full
-// head, then waits for the response, so the missing bytes never come and Peek
-// hangs until the client's own timeout. (Large POSTs and TLS ClientHellos hide
-// this by exceeding n on the first read.) The full head normally lands in the
-// first read, so the per-byte growth loop iterates at most a couple of times.
-func hostFromHTTP(br *bufio.Reader) (string, error) {
-	for {
-		if buffered := br.Buffered(); buffered > 0 {
-			buf, _ := br.Peek(buffered) // already in the buffer: never blocks
-			if host, ok := scanHostHeader(buf); ok {
-				return host, nil
-			}
-			if bytes.Contains(buf, []byte("\r\n\r\n")) {
-				return "", errors.New("no Host header in request")
-			}
-			if buffered >= maxHeadPeek {
-				return "", errors.New("HTTP head exceeds cap without a Host header")
-			}
-		}
-		// Force one more byte (and whatever else arrives with it) into the buffer.
-		// Blocks only for genuinely-in-flight head bytes, never for a head that is
-		// already complete.
-		if _, err := br.Peek(br.Buffered() + 1); err != nil {
-			return "", fmt.Errorf("incomplete HTTP head (buffered %d): %w", br.Buffered(), err)
-		}
-	}
-}
-
-// scanHostHeader returns the value of the Host header (port stripped) if present
-// in buf. It returns false if the header is absent in the bytes scanned or the
-// blank-line header terminator is reached without one.
-func scanHostHeader(buf []byte) (string, bool) {
-	for len(buf) > 0 {
-		var line []byte
-		if nl := bytes.IndexByte(buf, '\n'); nl >= 0 {
-			line, buf = buf[:nl], buf[nl+1:]
-		} else {
-			line, buf = buf, nil
-		}
-		line = bytes.TrimRight(line, "\r")
-		if len(line) == 0 {
-			return "", false // end of headers, no Host
-		}
-		const key = "host:"
-		if len(line) >= len(key) && bytes.EqualFold(line[:len(key)], []byte(key)) {
-			v := strings.TrimSpace(string(line[len(key):]))
-			if h, _, err := net.SplitHostPort(v); err == nil {
-				return h, true
-			}
-			return v, true
-		}
-	}
-	return "", false
-}
-
-// sniFromClientHello peeks a TLS ClientHello and returns its SNI host_name.
-func sniFromClientHello(br *bufio.Reader) (string, error) {
-	hdr, err := br.Peek(5)
-	if err != nil {
-		return "", err
-	}
-	total := 5 + (int(hdr[3])<<8 | int(hdr[4]))
-	if total > maxHeadPeek {
-		total = maxHeadPeek
-	}
-	buf, _ := br.Peek(total) // best effort: parse whatever is buffered
-	return parseSNI(buf)
-}
-
-var errClientHelloShort = errors.New("clienthello truncated")
-
-// parseSNI extracts the server_name (host_name) from a TLS ClientHello record.
-func parseSNI(b []byte) (string, error) {
-	// record header (5) + handshake header (4) + client_version (2) + random (32).
-	pos := 5 + 4 + 2 + 32
-	if len(b) < 6 || b[5] != 0x01 {
-		return "", errors.New("not a ClientHello")
-	}
-	if pos+1 > len(b) {
-		return "", errClientHelloShort
-	}
-	pos += 1 + int(b[pos]) // session_id
-	if pos+2 > len(b) {
-		return "", errClientHelloShort
-	}
-	pos += 2 + (int(b[pos])<<8 | int(b[pos+1])) // cipher_suites
-	if pos+1 > len(b) {
-		return "", errClientHelloShort
-	}
-	pos += 1 + int(b[pos]) // compression_methods
-	if pos+2 > len(b) {
-		return "", errClientHelloShort
-	}
-	end := pos + 2 + (int(b[pos])<<8 | int(b[pos+1])) // extensions block
-	pos += 2
-	if end > len(b) {
-		end = len(b)
-	}
-	for pos+4 <= end {
-		extType := int(b[pos])<<8 | int(b[pos+1])
-		extLen := int(b[pos+2])<<8 | int(b[pos+3])
-		pos += 4
-		if pos+extLen > len(b) {
-			break
-		}
-		if extType == 0x0000 { // server_name
-			if host, ok := parseServerName(b[pos : pos+extLen]); ok {
-				return host, nil
-			}
-		}
-		pos += extLen
-	}
-	return "", errors.New("no SNI in ClientHello")
-}
-
-// parseServerName extracts the first host_name from a server_name extension body.
-func parseServerName(sn []byte) (string, bool) {
-	if len(sn) < 2 {
-		return "", false
-	}
-	listEnd := 2 + (int(sn[0])<<8 | int(sn[1]))
-	if listEnd > len(sn) {
-		listEnd = len(sn)
-	}
-	for p := 2; p+3 <= listEnd; {
-		nameType := sn[p]
-		nameLen := int(sn[p+1])<<8 | int(sn[p+2])
-		p += 3
-		if p+nameLen > len(sn) {
-			break
-		}
-		if nameType == 0 { // host_name
-			return string(sn[p : p+nameLen]), true
-		}
-		p += nameLen
-	}
-	return "", false
-}
-
-// allowed reports whether dest is permitted by allowlist (consulted only under
-// policyAllowlist).
+// allowed reports whether dest is permitted by allowlist (used for the internal
+// allowlist under deny-by-default).
 //
 // dest is "host" or "host:port". Each allowlist entry is "host" (any port) or
 // "host:port" (that exact port). Host comparison is exact and case-insensitive:
 // there is deliberately NO suffix or wildcard matching, so "api.example.com" does
-// not match "evil-api.example.com". An empty allowlist (or no match) denies, so
-// the locked-down posture is fail closed.
+// not match "evil-api.example.com". An empty allowlist (or no match) denies.
 func allowed(dest string, allowlist []string) bool {
 	destHost, destPort := splitHostPort(dest)
 	for _, entry := range allowlist {

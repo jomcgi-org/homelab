@@ -178,15 +178,25 @@ firecracker:
 # chart/BUILD `images`).
 egress:
   enabled: false
-  # Egress posture. "allowlist" denies any destination not in `allowlist` (fail
-  # closed). "allow" routes anywhere. Plain-mode default is allowlist.
-  policy: allowlist
-  # Destinations permitted under policy=allowlist, as a YAML list of host[:port]
-  # (the chart joins it into the comma-separated EGRESS_ALLOWLIST the sidecar
-  # parses). Empty until the agent PR populates it. Ignored under policy=allow.
-  # Under allowlist you must also list each secrets[].egressTo host so the swap
-  # path is reachable (permits() consults only this list, not the catalog).
-  allowlist: []
+  # Split-horizon egress posture (ADR 023). external: "allow" (default) routes to
+  # any public destination so the agent can read the open internet; "deny" closes
+  # it. internal: the cluster is deny-by-default and confined to internal.allowlist;
+  # classification is on the resolved IP in the sidecar, so a public name resolving
+  # to an internal address is still denied.
+  external: allow
+  internal:
+    # "deny" (default) confines internal egress to `allowlist`; "allow" opens the
+    # whole cluster (not recommended).
+    default: deny
+    # Internal (cluster/private) destinations permitted under deny-by-default, as a
+    # YAML list of host[:port] (joined into EGRESS_INTERNAL_ALLOWLIST). Empty until
+    # a consuming deploy populates it. Secret egressTo hosts are external and do
+    # NOT belong here (external:allow reaches them; the swap is per-host).
+    allowlist: []
+    # Extra CIDRs classified as internal beyond the baked private/loopback/
+    # link-local ranges. This cluster's pod/service/node nets are already RFC1918,
+    # so this is usually empty.
+    cidrs: []
   # Bazel-pinned at chart-build from the egress-proxy image .info provider.
   image: {}
   # 6b CA (ADR 023): cert-manager generates + rotates a self-signed CA the sidecar

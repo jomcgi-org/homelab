@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "cmd_lib",
     srcs = [
+        "classify.go",
         "main.go",
         "swap.go",
     ],
@@ -19,6 +20,7 @@ go_binary(
 go_test(
     name = "cmd_test",
     srcs = [
+        "classify_test.go",
         "main_test.go",
         "swap_test.go",
     ],

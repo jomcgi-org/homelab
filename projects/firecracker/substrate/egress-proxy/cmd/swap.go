@@ -179,19 +179,21 @@ func (c prefixConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 // terminates the guest's TLS with a minted leaf, then for each request swaps the
 // placeholder for the real value (header values + URL query only, never the body,
 // so there is no Content-Length to recompute) and re-originates over a freshly
-// validated TLS connection to dest. It returns when either side closes.
-func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dest, host string, sec *secretEntry) {
+// validated TLS connection to the pinned dialAddr. The cert is validated against
+// host (ServerName), so dialing the guardrail-pinned IP does not weaken TLS
+// verification. It returns when either side closes.
+func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, host string, sec *secretEntry) {
 	serverCfg := &tls.Config{GetCertificate: p.minter.getCertificate, MinVersion: tls.VersionTLS12}
 	guest := tls.Server(prefixConn{r: br, Conn: client}, serverCfg)
 	defer guest.Close()
 	if err := guest.Handshake(); err != nil {
-		p.logger.Warn("egress swap: guest TLS handshake failed", "dest", dest, "err", err)
+		p.logger.Warn("egress swap: guest TLS handshake failed", "host", host, "err", err)
 		return
 	}
 
-	up, err := tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", dest, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	up, err := tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", dialAddr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 	if err != nil {
-		p.logger.Error("egress swap: upstream TLS dial failed", "dest", dest, "err", err)
+		p.logger.Error("egress swap: upstream TLS dial failed", "host", host, "dial", dialAddr, "err", err)
 		return
 	}
 	defer up.Close()
@@ -202,7 +204,7 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dest, host s
 		req, err := http.ReadRequest(guestR)
 		if err != nil {
 			if err != io.EOF {
-				p.logger.Debug("egress swap: read request", "dest", dest, "err", err)
+				p.logger.Debug("egress swap: read request", "dest", host, "err", err)
 			}
 			return
 		}
@@ -212,21 +214,21 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dest, host s
 		req.RequestURI = ""
 		req.URL.Scheme, req.URL.Host = "", ""
 		if err := req.Write(up); err != nil {
-			p.logger.Warn("egress swap: forward request", "dest", dest, "err", err)
+			p.logger.Warn("egress swap: forward request", "dest", host, "err", err)
 			return
 		}
 		resp, err := http.ReadResponse(upR, req)
 		if err != nil {
-			p.logger.Warn("egress swap: read response", "dest", dest, "err", err)
+			p.logger.Warn("egress swap: read response", "dest", host, "err", err)
 			return
 		}
 		err = resp.Write(guest)
 		_ = resp.Body.Close()
 		if err != nil {
-			p.logger.Warn("egress swap: return response", "dest", dest, "err", err)
+			p.logger.Warn("egress swap: return response", "dest", host, "err", err)
 			return
 		}
-		p.logger.Info("egress swapped", "dest", dest, "env", sec.Env, "path", req.URL.Path)
+		p.logger.Info("egress swapped", "dest", host, "env", sec.Env, "path", req.URL.Path)
 	}
 }
 
