@@ -132,3 +132,29 @@ async def post_progress(body: ProgressIn) -> Response:
     if body.done:
         gp.mark_done(body.id)
     return Response(status_code=204)
+
+
+class ProgressChunkIn(BaseModel):
+    chunk: str = ""
+    done: bool = False
+
+
+@internal_router.post("/progress/{run_id}", status_code=204)
+async def post_progress_by_id(run_id: str, body: ProgressChunkIn) -> Response:
+    """Append a guest stdout chunk to a run's buffer, keyed by the URL path.
+
+    The fc-invoke agent guest posts an id-less ``{"chunk": ...}`` body to the
+    per-session progress URL the runner hands it (``.../progress/{session}``), so
+    the run id rides in the path here rather than the body. Same in-memory buffer,
+    keyed by ``run_id`` (== the Discord thread the bot polls), so the live stream
+    just works.
+    """
+    from chat import goosecracker_progress as gp
+
+    if not _ID_RE.match(run_id):
+        raise HTTPException(400, "invalid id")
+    if body.chunk:
+        gp.append(run_id, body.chunk)
+    if body.done:
+        gp.mark_done(run_id)
+    return Response(status_code=204)

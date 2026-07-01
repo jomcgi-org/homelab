@@ -26,6 +26,7 @@ DOMAINS = {
     "home",
     "scheduler",
     "agent",
+    "goosecracker",
     "worldcup",
 }
 

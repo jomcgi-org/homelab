@@ -90,6 +90,14 @@ spec:
             - name: FC_INVOKE_URL
               value: {{ .Values.semgrep.fcInvokeUrl | quote }}
             {{- end }}
+            {{- if .Values.goosecracker.tiers }}
+            - name: GOOSECRACKER_TIERS
+              value: {{ .Values.goosecracker.tiers | toJson | quote }}
+            {{- end }}
+            {{- if .Values.goosecracker.progressUrl }}
+            - name: GOOSECRACKER_PROGRESS_URL
+              value: {{ .Values.goosecracker.progressUrl | quote }}
+            {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN
               valueFrom:

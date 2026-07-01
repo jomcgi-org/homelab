@@ -1,8 +1,7 @@
 """Tests for chat.goosecracker: the owner gate, transcript accumulation, and
 session dispatch (ADR 024 Task 4). DB-backed tests run against in-memory SQLite
-with the chat schema stripped. agent.api is injected as a fake module so the
-test does not pull the real agent.api -> agent.notify -> chat.bot import chain
-(and so no agent thread is created)."""
+with the chat schema stripped. goosecracker.api is injected as a fake module so
+the test does not pull the real executor (and so no run is dispatched)."""
 
 import sys
 from unittest.mock import MagicMock, patch
@@ -76,11 +75,15 @@ def engine_fixture():
 
 @pytest.fixture(name="fake_api")
 def fake_api_fixture():
-    """Inject a fake agent.api so goosecracker's lazy `from agent.api import
-    submit` binds to a mock, avoiding the real agent.api import chain."""
+    """Inject a fake goosecracker.api so goosecracker's lazy `from goosecracker.api
+    import submit` binds to a mock, avoiding the real executor import chain."""
     fake = MagicMock()
-    fake.submit.return_value = {"thread_id": "t", "action": "create"}
-    with patch.dict(sys.modules, {"agent.api": fake}):
+    fake.submit.return_value = {
+        "session": "thread-1",
+        "thread_id": "t",
+        "action": "create",
+    }
+    with patch.dict(sys.modules, {"goosecracker.api": fake}):
         yield fake
 
 
@@ -90,6 +93,7 @@ def test_start_session_records_transcript_and_dispatches(engine, fake_api):
 
     fake_api.submit.assert_called_once_with(
         "build a clock",
+        session="thread-1",
         recipe="artifact",
         tier="artifact",
         discord_thread="thread-1",
@@ -108,6 +112,7 @@ def test_continue_session_appends_and_resubmits_full_transcript(engine, fake_api
 
     fake_api.submit.assert_called_once_with(
         "build a clock\n\nmake it red",
+        session="thread-1",
         recipe="artifact",
         tier="artifact",
         discord_thread="thread-1",
@@ -139,8 +144,8 @@ def test_is_goosecracker_thread(engine, fake_api):
 def test_continue_session_resume_path_when_session_exists(
     engine, fake_api, monkeypatch
 ):
-    """When head_session returns a truthy etag, submit is called with resume=True
-    and the task is the latest stripped message (not the full transcript)."""
+    """When head_session returns a truthy etag (Model A), the task is the latest
+    stripped message (not the full transcript)."""
     from artifact import s3
 
     monkeypatch.setattr(s3, "head_session", lambda _: "abc123")
@@ -152,16 +157,16 @@ def test_continue_session_resume_path_when_session_exists(
 
     fake_api.submit.assert_called_once_with(
         "make it red",
+        session="thread-1",
         recipe="artifact",
         tier="artifact",
         discord_thread="thread-1",
-        resume=True,
     )
 
 
 def test_continue_session_cold_path_when_no_session(engine, fake_api, monkeypatch):
-    """When head_session returns None, submit is called without resume and the
-    task is the full accumulated transcript."""
+    """When head_session returns None (Model B), the task is the full accumulated
+    transcript."""
     from artifact import s3
 
     monkeypatch.setattr(s3, "head_session", lambda _: None)
@@ -173,6 +178,7 @@ def test_continue_session_cold_path_when_no_session(engine, fake_api, monkeypatc
 
     fake_api.submit.assert_called_once_with(
         "build a clock\n\nmake it red",
+        session="thread-1",
         recipe="artifact",
         tier="artifact",
         discord_thread="thread-1",
@@ -198,6 +204,7 @@ def test_continue_session_falls_back_to_cold_on_head_session_error(
 
     fake_api.submit.assert_called_once_with(
         "build a clock\n\nmake it red",
+        session="thread-1",
         recipe="artifact",
         tier="artifact",
         discord_thread="thread-1",

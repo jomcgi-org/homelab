@@ -68,16 +68,18 @@ def start_session(thread_id: str, prompt: str) -> dict:
     the dispatch result (``thread_id`` + ``action``).
     """
     prompt = prompt.strip()
-    # Imported lazily (not at module load): chat.bot imports this module, and
-    # agent.api -> agent.notify -> chat.bot, so a module-level import would close
-    # a circular import. agent.api is the boundary-approved surface.
-    from agent.api import submit
+    # Imported lazily (not at module load): chat.bot imports this module and
+    # goosecracker.runner imports chat.api, so a module-level import would risk a
+    # circular import. goosecracker.api is the boundary-approved surface.
+    from goosecracker.api import submit
 
     # Dispatch first: if submit raises, no session row is left behind (which
     # would otherwise make later replies look like a live goosecracker thread
-    # with no backing run).
+    # with no backing run). The Discord thread id doubles as the run session so
+    # the guest's progress stream and the bot's poll key line up.
     result = submit(
         prompt,
+        session=thread_id,
         recipe=ARTIFACT_RECIPE,
         tier=ARTIFACT_TIER,
         discord_thread=thread_id,
@@ -95,8 +97,8 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     thread (so the caller can fall through to normal handling). Synchronous; call
     via ``asyncio.to_thread``.
     """
-    from agent.api import submit
     from artifact import s3
+    from goosecracker.api import submit
 
     message = message.strip()
     with Session(get_engine()) as session:
@@ -109,27 +111,23 @@ def continue_session(thread_id: str, message: str) -> dict | None:
         session.add(row)
         session.commit()
 
-    # ADR 026 Phase 2: if a persisted goose session exists for this thread, resume
-    # it (Model A) - send only the new reply; the guest restores the session + the
-    # prior artifact and `goose run --resume` edits the page in place, hitting the
-    # inference prefix cache. Otherwise cold-rebuild from the FULL transcript
-    # (Model B), which also seeds the session for next time. The S3 check is the
-    # primary fallback gate (Task 2.4): no stored session -> cold, never a failure.
+    # ADR 026 Phase 2 (Model A vs B): if a persisted goose session exists for this
+    # thread, send only the new reply (Model A) so the guest can restore the
+    # session + prior artifact and edit in place; otherwise cold-rebuild from the
+    # FULL transcript (Model B). Guest-side session resume is still deferred (the
+    # fc-invoke agent handler names the session but does not restore it yet), so
+    # today both paths run cold and the choice only sets how much context is sent.
+    # The S3 check is the fallback gate (Task 2.4): no stored session -> full
+    # transcript, never a failure. Both paths run under the same session id.
     has_session = False
     try:
         has_session = s3.head_session(thread_id) is not None
     except Exception:
         logger.exception("goosecracker: session existence check failed; cold rebuild")
-    if has_session:
-        return submit(
-            message,
-            recipe=ARTIFACT_RECIPE,
-            tier=ARTIFACT_TIER,
-            discord_thread=thread_id,
-            resume=True,
-        )
+    task = message if has_session else transcript
     return submit(
-        transcript,
+        task,
+        session=thread_id,
         recipe=ARTIFACT_RECIPE,
         tier=ARTIFACT_TIER,
         discord_thread=thread_id,
