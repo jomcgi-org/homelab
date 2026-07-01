@@ -149,14 +149,20 @@ py_test(
     name = "cache_test",
     srcs = ["cache_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
     name = "cli_test",
     srcs = ["cli_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
@@ -176,6 +182,7 @@ py_test(
     deps = [
         ":bench",
         "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 
@@ -183,21 +190,30 @@ py_test(
     name = "pareto_test",
     srcs = ["pareto_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
     name = "registry_test",
     srcs = ["registry_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
     name = "report_test",
     srcs = ["report_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
@@ -207,6 +223,7 @@ py_test(
     deps = [
         ":bench",
         "//projects/model-bench/bench/verifiers",
+        "@pip//pytest",
     ],
 )
 
@@ -214,5 +231,8 @@ py_test(
     name = "schema_test",
     srcs = ["schema_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
