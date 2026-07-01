@@ -182,10 +182,11 @@ goosecracker:
       # defaults to OTLP/HTTP.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
       OTEL_SERVICE_NAME: goose-coding
-    # The artifact tier reaches Gemini via OpenRouter. NOTE: the OpenRouter key is
-    # a placeholder the fc-invoke egress proxy must swap on openrouter.ai; until
-    # that egress secret-swap lands this tier will not reach the model. Kept here
-    # so the code path is complete; correctness is focused on the default tier.
+    # The artifact tier reaches Gemini via OpenRouter. The OPENROUTER_API_KEY is a
+    # placeholder the fc-invoke egress proxy swaps for the real key on
+    # openrouter.ai (ADR 023 6b, catalog in the substrate deploy values); the guest
+    # never holds the real key. Requires the egress CA (fc-invoke-egress-ca),
+    # injected into the guest env by the goosecracker runner.
     artifact:
       GOOSE_PROVIDER: openrouter
       OPENROUTER_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"

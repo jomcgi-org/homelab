@@ -168,24 +168,45 @@ firecracker:
   # announce readiness over its shim.
   bootReadyTimeout: 60s
 
-# Egress-proxy sidecar (ADR 023 phase 6a, plain allowlist-forward). When enabled
-# a pod-local egress-proxy sidecar is added; the daemon forwards each egress-
-# enabled workload's guest vsock egress to it over localhost (the sidecar is the
-# only process that reaches the network on a guest's behalf). Plain mode only:
-# NO secret catalog / CA / secret-swap (a later PR). Default off; there is no
-# egress-enabled workload yet (the agent PR flips this on and populates the
-# allowlist). The image repository + tag are Bazel-pinned from the egress-proxy
-# image's .info provider at chart-build (see chart/BUILD `images`).
+# Egress-proxy sidecar (ADR 023). When enabled a pod-local egress-proxy sidecar
+# is added; the daemon forwards each egress-enabled workload's guest vsock egress
+# to it over localhost (the sidecar is the only process that reaches the network
+# on a guest's behalf). Phase 6a is plain allowlist-forward; phase 6b adds the
+# TLS-terminate + placeholder-swap path, enabled by a non-empty `secrets` catalog
+# (see deploy/values.yaml). Default off. The image repository + tag are
+# Bazel-pinned from the egress-proxy image's .info provider at chart-build (see
+# chart/BUILD `images`).
 egress:
   enabled: false
   # Egress posture. "allowlist" denies any destination not in `allowlist` (fail
   # closed). "allow" routes anywhere. Plain-mode default is allowlist.
   policy: allowlist
-  # Destinations permitted under policy=allowlist (host[:port], comma-separated).
-  # Empty until the agent PR populates it. Ignored under policy=allow.
-  allowlist: ""
+  # Destinations permitted under policy=allowlist, as a YAML list of host[:port]
+  # (the chart joins it into the comma-separated EGRESS_ALLOWLIST the sidecar
+  # parses). Empty until the agent PR populates it. Ignored under policy=allow.
+  # Under allowlist you must also list each secrets[].egressTo host so the swap
+  # path is reachable (permits() consults only this list, not the catalog).
+  allowlist: []
   # Bazel-pinned at chart-build from the egress-proxy image .info provider.
   image: {}
+  # 6b CA (ADR 023): cert-manager generates + rotates a self-signed CA the sidecar
+  # uses to mint leaf certs when it TLS-terminates a secret-bearing destination.
+  # The CA private key lives only in the sidecar; the public cert is injected into
+  # each guest's trust store (by the orchestrator, via the tier env) so the guest
+  # trusts the minted leaves without an image rebuild. Only created when `secrets`
+  # below is non-empty.
+  ca:
+    duration: 87600h # 10y; rotation churns guest trust, keep it rare
+    renewBefore: 2160h # 90d
+  # 6b secret catalog (ADR 023, shaped like the future SecretProxy CRD
+  # spec.secrets). Each entry: a high-entropy `placeholder` the guest holds as env
+  # `env`; the sidecar swaps it for the real value (`secretRef` {name,key}, or a
+  # literal `value` for tests) only on a connection whose host is in `egressTo`.
+  # egressTo is the exfiltration control: everywhere else the inert placeholder
+  # leaves. Literal swap only (a base64'd git-Basic token is ADR-deferred). Empty
+  # here; the real catalog lives in deploy/values.yaml. A non-empty list enables
+  # the CA + TLS-terminate path.
+  secrets: []
   # Repo convention: memory requests == limits (no memory bursting); CPU is a
   # request only (no CPU limit, to avoid throttling).
   resources:
