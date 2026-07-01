@@ -4042,12 +4042,13 @@ bdd_test(
     ],
 )
 
-bdd_test(
+py_test(
     name = "goosecracker_sessions_test",
-    srcs = [
-        "goosecracker/tests/__init__.py",
-        "goosecracker/tests/conftest.py",
-        "goosecracker/tests/sessions_test.py",
+    srcs = ["goosecracker/tests/sessions_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 
