@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "apko.yaml",
-    "checksum": "sha256-E3OJwHAmjLvwmEs6ChyQja9FdXq3xBmkO4V7DapZxxc="
+    "checksum": "sha256-j3z/c9jnEYSNk1UPW/GcSNozcati9yxQ1HeQ4CVkzJA="
   },
   "contents": {
     "keyring": [
@@ -825,6 +825,25 @@
         "checksum": "Q1x0tXm4opKLxiL1GUndeg1y4Lw8s="
       },
       {
+        "name": "git-daemon",
+        "url": "https://packages.wolfi.dev/os/x86_64/git-daemon-2.55.0-r1.apk",
+        "version": "2.55.0-r1",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-12434",
+          "checksum": "sha1-vlPKh3W55Y7NrigFut+L7VyEPeo="
+        },
+        "data": {
+          "range": "bytes=12435-4260752",
+          "checksum": "sha256-KCKxqFvz/gpKq9AddZv/dRyYsw9U+bMNFZgVI0xq5fw="
+        },
+        "checksum": "Q1vlPKh3W55Y7NrigFut+L7VyEPeo="
+      },
+      {
         "name": "tzdata",
         "url": "https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk",
         "version": "2026b-r0",
@@ -1640,6 +1659,25 @@
           "checksum": "sha256-QKrYFCdD1PYmeM7r9CGDS+yzTrmD97GcVH0Vj6N7d2c="
         },
         "checksum": "Q1D14XjV6rnsZm3wVTLBDbY7PL7bM="
+      },
+      {
+        "name": "git-daemon",
+        "url": "https://packages.wolfi.dev/os/aarch64/git-daemon-2.55.0-r1.apk",
+        "version": "2.55.0-r1",
+        "architecture": "aarch64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-12459",
+          "checksum": "sha1-q4aHGiGKLK2gW2HLc5kxHIlaSpo="
+        },
+        "data": {
+          "range": "bytes=12460-4038598",
+          "checksum": "sha256-xwP91rAy6kVfOPqRd/WKVDIGxQIElzxItmzDh2OL0fU="
+        },
+        "checksum": "Q1q4aHGiGKLK2gW2HLc5kxHIlaSpo="
       },
       {
         "name": "tzdata",

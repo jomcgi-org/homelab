@@ -8,6 +8,10 @@ contents:
     - ca-certificates-bundle
     - coreutils
     - git
+    # git-daemon: the `git daemon` subcommand is a separate wolfi package, not
+    # part of `git`; without it the supervisor fails with "'daemon' is not a git
+    # command" and the mirror serves nothing.
+    - git-daemon
     - tzdata
 
 archs:
