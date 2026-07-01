@@ -150,6 +150,8 @@ async def run_agent_cell(
     ]
     prompt_tokens = completion_tokens = latency_ms = 0
     turns = 0
+    saw_tool_call = False  # did the model ever drive the loop with a tool call?
+    saw_bad_args = False  # did any tool call carry unparseable arguments?
     try:
         for turns in range(1, max_turns + 1):
             res = await chat(
@@ -168,6 +170,7 @@ async def run_agent_cell(
             if not tool_calls:
                 # No tool call: the model is done or is just talking. Stop.
                 break
+            saw_tool_call = True
             finished = False
             for tc in tool_calls:
                 fn = tc.get("function", {})
@@ -176,6 +179,7 @@ async def run_agent_cell(
                     call_args = json.loads(fn.get("arguments") or "{}")
                 except (json.JSONDecodeError, TypeError):
                     call_args = {}
+                    saw_bad_args = True
                 result = _execute_tool(name, call_args, workdir)
                 messages.append(
                     {
@@ -196,6 +200,17 @@ async def run_agent_cell(
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
+    # Tool-use reliability signal: a model that never emitted a valid tool call could
+    # not drive the loop at all; malformed arguments (the qwen3-coder failure mode) are
+    # also a reliability miss. Recorded so the leaderboard can flag flaky tool callers
+    # rather than have them silently register as plain task failures.
+    tool_use_ok = saw_tool_call and not saw_bad_args
+    if not passed:
+        if not saw_tool_call:
+            feedback = f"[no tool calls emitted] {feedback}"
+        elif saw_bad_args:
+            feedback = f"[malformed tool-call arguments] {feedback}"
+
     attempt = Attempt(
         passed=passed,
         feedback=feedback if not passed else "",
@@ -212,5 +227,7 @@ async def run_agent_cell(
         attempts=[attempt],
         cost_usd=cost_fn(prompt_tokens, completion_tokens),
         harness_version=HARNESS_VERSION,
-        prompt_template_hash=f"agent:{turns}",
+        prompt_template_hash="agent",
+        turns=turns,
+        tool_use_ok=tool_use_ok,
     )

@@ -18,6 +18,18 @@ class VerifierSpec(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentConfig(BaseModel):
+    """Per-cell budget for an agentic (tool-calling) task.
+
+    max_turns caps the tool-use loop; max_tokens caps a single completion. A null
+    max_tokens falls back to the model's own params.max_tokens so a task need not
+    restate it. These values feed the cache key so bumping a budget re-runs the cell.
+    """
+
+    max_turns: int = 20
+    max_tokens: int | None = None
+
+
 class ModelParams(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 8192
@@ -38,9 +50,11 @@ class TaskSpec(BaseModel):
     id: str
     version: str
     task_class: TaskClass = Field(alias="class")
+    mode: Literal["single-shot", "agentic"] = "single-shot"
     prompt: str
-    target_files: list[str]
+    target_files: list[str] = Field(default_factory=list)
     verifier: VerifierSpec
+    agent: AgentConfig = Field(default_factory=AgentConfig)
     source_commit: str | None = None
 
 
@@ -62,6 +76,9 @@ class ResultCell(BaseModel):
     cost_usd: float
     harness_version: str
     prompt_template_hash: str
+    # Agentic-only signals (None for single-shot cells).
+    turns: int | None = None
+    tool_use_ok: bool | None = None
 
     @property
     def total_latency_ms(self) -> int:
