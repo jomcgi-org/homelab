@@ -17,11 +17,11 @@ allowlist, never the RAG ingest (which indexes internal docs). Excluded:
 personal / non-homelab docs. Be conservative: if unsure whether a doc is public,
 it stays off the allowlist.
 
-When the published docs change, regenerate and commit the manifest:
-``bazel run //projects/monolith:gen_docs_manifest`` (or run this script with any
-python3). CI enforces freshness: bazel/images/validate-generate-scripts.sh
-(run in the Format check action) regenerates the manifest and fails the build if
-it differs from what is committed, with the regen command in the error.
+Regeneration is automatic: the "Format check" CI action (buildbuddy.yaml) runs
+this generator on every push and auto-commits any change to the manifest on PR
+branches (as ci-format-bot), like any other formatting fix, so a doc edit never
+needs a manual regen. To regenerate locally: run this script with any python3
+(or ``bazel run //projects/monolith:gen_docs_manifest``).
 """
 
 from __future__ import annotations

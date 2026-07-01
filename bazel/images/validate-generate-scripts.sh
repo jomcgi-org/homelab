@@ -145,79 +145,14 @@ else
 	fi
 fi
 
-# --- Validation 4: repo-docs knowledge-graph manifest ---
-#
-# projects/monolith/knowledge/repo_docs_manifest.ndjson is a committed snapshot of
-# the repo's markdown (docs/, project READMEs, CLAUDE.md files), baked into the
-# monolith image and ingested into the knowledge graph for public-chat grounding.
-# It is produced by a py_venv_binary (hermetic python, no system python3 needed),
-# not the format multirun, so regenerate it here and fail if it drifts from what is
-# committed. This stops a doc change from silently going unindexed.
-
-echo "Validating repo-docs manifest ..."
-
-REPO_DOCS_MANIFEST=projects/monolith/knowledge/repo_docs_manifest.ndjson
-# Run the generator directly with python3 (it is pure stdlib + git ls-files), not
-# `bazel run`: the py_venv_binary launcher does not resolve its main module in the
-# CI runner. git-driven discovery keeps the output identical to a local run.
-if python3 projects/monolith/knowledge/tools/gen_repo_docs_manifest.py >/dev/null 2>"$TMPDIR_VALIDATE/gen_repo_docs.err"; then
-	if git diff --quiet -- "$REPO_DOCS_MANIFEST"; then
-		echo "  repo-docs-manifest: PASS"
-	else
-		echo "  repo-docs-manifest: FAIL"
-		echo "    $REPO_DOCS_MANIFEST is out of date with the repo's markdown."
-		# Diagnostic: which doc PATHS the regen added/removed vs what is committed.
-		# Each manifest line is one sort_keys JSON object: {"content":..,"path":..,..}
-		_extract_paths() { sed 's/.*, "path": "\([^"]*\)", "sha256":.*/\1/'; }
-		git show "HEAD:$REPO_DOCS_MANIFEST" | _extract_paths | LC_ALL=C sort >"$TMPDIR_VALIDATE/rd_committed.txt"
-		_extract_paths <"$REPO_DOCS_MANIFEST" | LC_ALL=C sort >"$TMPDIR_VALIDATE/rd_regen.txt"
-		echo "    committed_lines=$(wc -l <"$TMPDIR_VALIDATE/rd_committed.txt") regen_lines=$(wc -l <"$TMPDIR_VALIDATE/rd_regen.txt")"
-		echo "    paths only in regen (+) / only in committed (-):"
-		comm -3 "$TMPDIR_VALIDATE/rd_committed.txt" "$TMPDIR_VALIDATE/rd_regen.txt" | sed 's/^\t/      +/; s/^\([^ +]\)/      -\1/' | head -40
-		echo "    Regenerate it and commit the result:"
-		echo "      bazel run //projects/monolith:gen_repo_docs_manifest"
-		echo "      git add $REPO_DOCS_MANIFEST && git commit"
-		FAILED=1
-		# Restore the committed version so later format steps see a clean tree.
-		git checkout -- "$REPO_DOCS_MANIFEST" 2>/dev/null || true
-	fi
-else
-	echo "  repo-docs-manifest: FAIL (generator did not run)"
-	sed 's/^/    /' "$TMPDIR_VALIDATE/gen_repo_docs.err"
-	FAILED=1
-fi
-
-# --- Validation 5: public docs-site manifest ---
-#
-# projects/monolith/frontend/src/lib/public/docs/docs-manifest.json is a committed
-# snapshot of the public-allowlisted repo docs (top-level docs/*.md + the
-# docs/decisions/** ADR tree), baked into the monolith-public frontend image and
-# rendered server-side by the SvelteKit /docs route. Regenerate it here and fail
-# if it drifts from what is committed, so a doc change does not silently go
-# unpublished. Same git-driven, stdlib-only generator pattern as the repo-docs
-# manifest above.
-
-echo "Validating docs-site manifest ..."
-
-DOCS_MANIFEST=projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
-if python3 projects/monolith/knowledge/tools/gen_docs_manifest.py >/dev/null 2>"$TMPDIR_VALIDATE/gen_docs.err"; then
-	if git diff --quiet -- "$DOCS_MANIFEST"; then
-		echo "  docs-site-manifest: PASS"
-	else
-		echo "  docs-site-manifest: FAIL"
-		echo "    $DOCS_MANIFEST is out of date with the public docs allowlist."
-		echo "    Regenerate it and commit the result:"
-		echo "      bazel run //projects/monolith:gen_docs_manifest"
-		echo "      git add $DOCS_MANIFEST && git commit"
-		FAILED=1
-		# Restore the committed version so later format steps see a clean tree.
-		git checkout -- "$DOCS_MANIFEST" 2>/dev/null || true
-	fi
-else
-	echo "  docs-site-manifest: FAIL (generator did not run)"
-	sed 's/^/    /' "$TMPDIR_VALIDATE/gen_docs.err"
-	FAILED=1
-fi
+# NOTE: the two doc-index manifests (repo_docs_manifest.ndjson and the public
+# docs-site docs-manifest.json) used to be validated here and hard-fail on drift.
+# They now regenerate in the "Format check" action (buildbuddy.yaml) BEFORE its
+# auto-commit, so a doc edit auto-commits the refreshed manifest like any other
+# formatting fix instead of failing CI and forcing a manual regen. Keeping them
+# out of this validator avoids a redundant second check. This validator stays for
+# the BUILD-graph generate scripts above, whose drift needs human attention (a
+# changed build graph), not a mechanical regen.
 
 # --- Summary ---
 
