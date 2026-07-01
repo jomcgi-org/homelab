@@ -91,6 +91,7 @@ workloads:
   semgrep:
     image: semgrep-guest
     rootfsPath: /disks/nvme-02/fc-invoke/semgrep/rootfs.ext4
+    harnessInit: /usr/local/bin/semgrep-guest-init
     vcpus: 4
     memMib: 2048
     concurrency: 4
@@ -109,6 +110,7 @@ workloads:
   agent:
     image: agent-guest
     rootfsPath: /disks/nvme-02/fc-invoke/agent/rootfs.ext4
+    harnessInit: /usr/local/bin/fc-agent-init
     vcpus: 4
     memMib: 4096
     concurrency: 2

@@ -26,6 +26,11 @@ type Workload struct {
 	// (all mutable guest state is tmpfs), so one file backs every microVM for
 	// the workload with no per-request copy.
 	RootfsPath string `json:"rootfsPath"`
+	// HarnessInit is the in-guest PID-1 path the kernel boots into (the guest
+	// shim server) for this workload. Different guest images install their init
+	// at different paths (semgrep-guest-init vs the agent's), so this is
+	// per-workload; empty falls back to the daemon-global HarnessInit.
+	HarnessInit string `json:"harnessInit"`
 	// VCPUs is the number of virtual CPUs to allocate per microVM. Default 2.
 	VCPUs int `json:"vcpus"`
 	// MemMib is the guest memory in MiB. Default 2048.
