@@ -1,0 +1,17 @@
+id: rbac-endpoint-verbs-01
+version: v1
+class: config-plumbing
+prompt: |
+  handler.py calls both list and get on argoproj.io/applications, but
+  clusterrole.yaml only grants get, so list calls will fail with Forbidden in
+  production. Return the complete corrected contents of clusterrole.yaml granting
+  every verb the handler needs. Prefix your answer with a line "FILE clusterrole.yaml".
+target_files:
+  - clusterrole.yaml
+verifier:
+  kind: rbac-cover
+  args:
+    clusterrole: clusterrole.yaml
+    required:
+      - { group: "argoproj.io", resource: "applications", verb: "get" }
+      - { group: "argoproj.io", resource: "applications", verb: "list" }
