@@ -101,13 +101,11 @@ if $STAGED; then
 		PIDS+=($!)
 	fi
 
-	# Script generators only if BUILD files changed
-	if [ ${#BUILD_FILES[@]} -gt 0 ]; then
-		./bazel/images/generate-push-all.sh 2>/dev/null &
-		PIDS+=($!)
-		./bazel/images/generate-push-all-pages.sh 2>/dev/null &
-		PIDS+=($!)
-	fi
+	# Doc/config generators — ONE shared list (also run by the CI format multirun
+	# via :run_generators), so local and CI cannot drift. Runs unconditionally;
+	# each generator is idempotent and fast. || true: never block a commit.
+	(./bazel/tools/format/run-generators.sh 2>/dev/null || true) &
+	PIDS+=($!)
 
 	# Atlas migration checksums — only if migration SQL files are staged
 	for f in "${STAGED_FILES[@]}"; do
@@ -122,15 +120,8 @@ if $STAGED; then
 		esac
 	done
 
-	# Home-cluster generator (always run — it scans kustomization.yaml files, not BUILD)
-	./bazel/images/generate-home-cluster.sh 2>/dev/null &
-	PIDS+=($!)
-
-	# Docs sidebar generator (always run — it scans ADR markdown files, not BUILD)
-	./bazel/images/generate-docs-sidebar.sh 2>/dev/null &
-	PIDS+=($!)
-
-	# Sync homelab-library dependency versions (always run — fast no-op when versions match)
+	# Sync homelab-library dependency versions (local-only: needs the helm CLI,
+	# which is not in the CI format runner; charts have their own version gates)
 	./bazel/tools/format/sync-helm-deps.sh 2>/dev/null &
 	PIDS+=($!)
 
@@ -181,17 +172,14 @@ PIDS+=($!)
 prettier --write . 2>/dev/null &
 PIDS+=($!)
 
-# Script generators (run in parallel with formatters)
-./bazel/images/generate-push-all.sh 2>/dev/null &
-PIDS+=($!)
-./bazel/images/generate-push-all-pages.sh 2>/dev/null &
-PIDS+=($!)
-./bazel/images/generate-home-cluster.sh 2>/dev/null &
-PIDS+=($!)
-./bazel/images/generate-docs-sidebar.sh 2>/dev/null &
+# Doc/config generators — ONE shared list (also run by the CI format multirun via
+# :run_generators), so local and CI cannot drift. || true: a local generator
+# hiccup must never block a commit; CI is authoritative.
+(./bazel/tools/format/run-generators.sh 2>/dev/null || true) &
 PIDS+=($!)
 
-# Sync homelab-library dependency versions
+# Sync homelab-library dependency versions (local-only: needs the helm CLI, which
+# is not in the CI format runner; charts have their own version gates)
 ./bazel/tools/format/sync-helm-deps.sh 2>/dev/null &
 PIDS+=($!)
 
