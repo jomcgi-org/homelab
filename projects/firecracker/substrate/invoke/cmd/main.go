@@ -115,16 +115,16 @@ func run(logger *slog.Logger) error {
 		// restore. A build failure is non-fatal: the invoker simply keeps
 		// cold-booting until a later request-driven rebuild succeeds.
 		if wl.WarmBase {
-			// name, wl, and inv are per-iteration under Go 1.22+, so capturing
-			// them directly in the goroutine is safe.
-			go func() {
-				bctx, cancel := context.WithTimeout(ctx, cfg.BootReadyTimeout+wl.RequestTimeout)
+			// Pass name/inv/timeout as args so the goroutine does not capture the
+			// range variables (nogo loopclosure).
+			go func(name string, inv *invoker.Invoker, budget time.Duration) {
+				bctx, cancel := context.WithTimeout(ctx, budget)
 				defer cancel()
 				if err := inv.BuildBase(bctx); err != nil {
 					logger.Warn("initial warm base build failed; invocations will cold-boot until it succeeds",
 						"workload", name, "err", err)
 				}
-			}()
+			}(name, inv, cfg.BootReadyTimeout+wl.RequestTimeout)
 		}
 	}
 
