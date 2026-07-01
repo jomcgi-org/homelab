@@ -26,8 +26,6 @@
   let resizeObs = null;
   let layerReady = $state(false); // $state so effects re-evaluate after load
 
-  let heatOn = $state(true); // weather heatmap visible by default
-
   // Data-viz ramp colors: outside the design-token system (intentionally, same
   // pattern as ShipsMap VESSEL_COLORS / HEAT_COLORS). They live in plain JS
   // constants so the hexes never appear as a `:` + `#hex` pair inside a style
@@ -61,12 +59,15 @@
   // through pale yellow and amber into lime and green as more open-and-clear parks
   // cluster together. Kept as named constants (not inline literals) for the same
   // semgrep-safety reason as the pin colors.
+  // Warm "sunshine" field: transparent at low density (so a single park does
+  // not glow), warming through gold to a hot orange for clusters of open+clear
+  // parks. Warm contrasts with the green terrain and makes the green pins pop.
   const HEAT_C0 = "rgba(0, 0, 0, 0)";
-  const HEAT_C1 = "#fde68a"; // pale yellow
-  const HEAT_C2 = "#fbbf24"; // yellow
-  const HEAT_C3 = "#f59e0b"; // amber
-  const HEAT_C4 = "#84cc16"; // lime
-  const HEAT_C5 = "#22c55e"; // green
+  const HEAT_C1 = "rgba(254, 243, 199, 0.35)"; // amber-100, very soft
+  const HEAT_C2 = "rgba(253, 224, 71, 0.6)"; // yellow-300
+  const HEAT_C3 = "rgba(251, 146, 60, 0.8)"; // orange-400
+  const HEAT_C4 = "#f97316"; // orange-500
+  const HEAT_C5 = "#ea580c"; // orange-600, hot
 
   const HEAT_COLOR = [
     "interpolate",
@@ -74,13 +75,13 @@
     ["heatmap-density"],
     0,
     HEAT_C0,
-    0.2,
+    0.3,
     HEAT_C1,
-    0.4,
+    0.55,
     HEAT_C2,
-    0.6,
+    0.75,
     HEAT_C3,
-    0.8,
+    0.9,
     HEAT_C4,
     1,
     HEAT_C5,
@@ -135,17 +136,6 @@
 
   function daysText(n) {
     return n === 1 ? "1 clear day" : `${n} clear days`;
-  }
-
-  function toggleHeat() {
-    heatOn = !heatOn;
-    if (map && layerReady) {
-      map.setLayoutProperty(
-        HEAT_LAYER,
-        "visibility",
-        heatOn ? "visible" : "none",
-      );
-    }
   }
 
   // Re-sync the source whenever parks or selection changes. Runs once map and
@@ -230,7 +220,7 @@
           id: HEAT_LAYER,
           type: "heatmap",
           source: SOURCE_ID,
-          layout: { visibility: heatOn ? "visible" : "none" },
+          layout: { visibility: "visible" },
           paint: {
             "heatmap-weight": [
               "interpolate",
@@ -238,8 +228,10 @@
               ["get", "good_days"],
               0,
               0,
-              1,
-              0.35,
+              2,
+              0.12,
+              4,
+              0.45,
               7,
               1,
             ],
@@ -248,26 +240,30 @@
               ["linear"],
               ["zoom"],
               4,
-              1,
+              0.85,
               8,
-              2,
+              1.5,
             ],
             "heatmap-radius": [
               "interpolate",
               ["linear"],
               ["zoom"],
               4,
-              28,
-              8,
-              48,
+              45,
+              6,
+              62,
+              9,
+              34,
             ],
             "heatmap-opacity": [
               "interpolate",
               ["linear"],
               ["zoom"],
-              7,
-              0.55,
-              9,
+              4,
+              0.5,
+              8,
+              0.45,
+              10,
               0,
             ],
             "heatmap-color": HEAT_COLOR,
@@ -361,17 +357,6 @@
 <div class="map-wrap">
   <div class="map" bind:this={mapContainer}></div>
 
-  <div class="heat-toggle" role="group" aria-label="Weather heatmap">
-    <button
-      type="button"
-      class:active={heatOn}
-      aria-pressed={heatOn}
-      onclick={toggleHeat}
-    >
-      Heat {heatOn ? "on" : "off"}
-    </button>
-  </div>
-
   <div class="legend">
     <p class="legend-title">Open sites + clear sky</p>
     <ul class="legend-list">
@@ -439,7 +424,6 @@
   .map :global(.maplibregl-ctrl-group button:hover),
   .map :global(.maplibregl-ctrl-group button:focus-visible) {
     transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
     background: var(--paper);
     position: relative;
     z-index: 1;
@@ -477,7 +461,6 @@
     background: var(--paper);
     border: 2px solid var(--ink);
     border-radius: 0;
-    box-shadow: 3px 3px 0 var(--ink);
     padding: 8px 10px;
     font-family: var(--mono);
     font-size: 12px;
@@ -486,39 +469,6 @@
 
   .map :global(.maplibregl-popup-tip) {
     display: none;
-  }
-
-  /* Heat on/off switch, top-right (same idiom as the ShipsMap mode toggle). */
-  .heat-toggle {
-    position: absolute;
-    top: 16px;
-    right: 16px;
-    display: inline-flex;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .heat-toggle button {
-    padding: 8px 14px;
-    background: var(--paper);
-    border: none;
-    color: var(--ink);
-    cursor: pointer;
-    transition: background 120ms ease;
-  }
-
-  .heat-toggle button:hover {
-    background: var(--cream);
-  }
-
-  .heat-toggle button.active {
-    background: var(--ink);
-    color: var(--paper);
   }
 
   /* Legend: bottom-left, same hard-edge style as the ShipsMap legend. */
@@ -607,16 +557,6 @@
   }
 
   @media (max-width: 640px) {
-    .heat-toggle {
-      top: 12px;
-      right: 12px;
-      font-size: 13px;
-    }
-
-    .heat-toggle button {
-      padding: 11px 18px;
-    }
-
     .legend {
       bottom: 12px;
       left: 12px;
@@ -626,8 +566,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .map :global(.maplibregl-ctrl-group button),
-    .heat-toggle button {
+    .map :global(.maplibregl-ctrl-group button) {
       transition: none;
     }
   }
