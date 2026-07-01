@@ -1,188 +1,114 @@
 """Unit tests for campsites.client pure functions (no network, no DB).
 
-Covers parse_catalog (catalog joining, name resolution, GPS extraction,
-drop conditions) and merge_availability (OR logic, ragged arrays, empty
-payload). Async network functions are not tested here; they would require
-httpx.MockTransport and are validated by integration / CI runs.
+Covers load_catalog (reading the static catalog.json, coordinate skip) and
+merge_availability (OR logic, ragged arrays, empty payload). Async network
+functions are not tested here; they would require a curl_cffi mock and are
+validated by integration / CI runs.
 """
 
 import datetime
+import json
 
-from campsites.client import DayAvail, merge_availability, parse_catalog
+import campsites.client as client
+from campsites.client import merge_availability
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-# Two resource location entries; the second has no matching mapLink and must
-# be dropped by parse_catalog.
-_RESOURCE_JSON = [
-    {
-        "resourceLocationId": -2147483590,
-        "gpsCoordinates": {"latitude": 49.5, "longitude": -120.0},
-        "ianaTimeZone": "America/Vancouver",
-        "region": "Thompson Okanagan",
-        "localizedValues": [
-            {
-                "cultureName": "en-CA",
-                "shortName": "Bromley Rock",
-                "fullName": "Bromley Rock Provincial Park",
-                "description": "A beautiful riverside park.",
-            }
-        ],
-    },
-    # No mapLink entry for this ID: must be silently dropped.
-    {
-        "resourceLocationId": -9999,
-        "gpsCoordinates": {"latitude": 50.0, "longitude": -121.0},
-        "ianaTimeZone": "America/Vancouver",
-        "region": "North",
-        "localizedValues": [
-            {"cultureName": "en-CA", "shortName": "Orphan Park", "fullName": "Orphan"}
-        ],
-    },
-]
-
-_MAPS_JSON = [
-    {
-        "mapLinks": [
-            {
-                "resourceLocationId": -2147483590,
-                "childMapId": 101,
-                "localizations": [
-                    {"cultureName": "en-CA", "title": "Bromley Rock Map"}
-                ],
-            },
-            # No resourceLocationId: must be ignored.
-            {
-                "childMapId": 200,
-                "localizations": [{"cultureName": "en-CA", "title": "Generic Map"}],
-            },
-        ]
-    }
-]
-
 _START = datetime.date(2026, 7, 1)
 
+# A tiny catalog.json shape: one complete row, one with a website (booking_url
+# derived), and one with a null latitude that load_catalog must skip.
+_CATALOG = [
+    {
+        "resource_location_id": -2147483590,
+        "park_map_id": 101,
+        "name": "Bromley Rock",
+        "region": "Thompson Okanagan",
+        "latitude": 49.5,
+        "longitude": -120.0,
+        "iana_tz": "America/Vancouver",
+        "website": "https://bcparks.ca/bromley-rock-park/",
+        "coord_source": "geocode",
+    },
+    {
+        "resource_location_id": -2147483580,
+        "park_map_id": 202,
+        "name": "No Website Park",
+        "region": "",
+        "latitude": 50.1,
+        "longitude": -119.5,
+        "iana_tz": "America/Vancouver",
+        "website": "",
+        "coord_source": "geocode",
+    },
+    {
+        "resource_location_id": -9999,
+        "park_map_id": 303,
+        "name": "No Coords Park",
+        "region": "North",
+        "latitude": None,
+        "longitude": None,
+        "iana_tz": "America/Vancouver",
+        "website": "https://bcparks.ca/no-coords-park/",
+        "coord_source": "geocode",
+    },
+]
+
+
 # ---------------------------------------------------------------------------
-# parse_catalog tests
+# load_catalog tests
 # ---------------------------------------------------------------------------
 
 
-def test_parse_catalog_returns_matched_row():
-    rows = parse_catalog(_RESOURCE_JSON, _MAPS_JSON)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.resource_location_id == -2147483590
+def test_load_catalog_parses_rows(monkeypatch):
+    monkeypatch.setattr(client, "_read_catalog_json", lambda: _CATALOG)
+    rows = client.load_catalog()
+
+    # The null-coordinate row is skipped; two valid rows remain.
+    assert len(rows) == 2
+    by_id = {r.resource_location_id: r for r in rows}
+
+    row = by_id[-2147483590]
     assert row.park_map_id == 101
-    assert row.name == "Bromley Rock"  # shortName preferred
+    assert row.name == "Bromley Rock"
     assert row.region == "Thompson Okanagan"
     assert row.latitude == 49.5
     assert row.longitude == -120.0
     assert row.iana_tz == "America/Vancouver"
-    assert row.description == "A beautiful riverside park."
+    assert row.description == ""  # catalog.json carries no description
+    assert row.booking_url == "https://bcparks.ca/bromley-rock-park/"
+
+
+def test_load_catalog_booking_url_falls_back_to_root(monkeypatch):
+    monkeypatch.setattr(client, "_read_catalog_json", lambda: _CATALOG)
+    rows = client.load_catalog()
+    row = next(r for r in rows if r.resource_location_id == -2147483580)
     assert row.booking_url == "https://camping.bcparks.ca/"
 
 
-def test_parse_catalog_drops_entry_with_no_map_link():
-    rows = parse_catalog(_RESOURCE_JSON, _MAPS_JSON)
-    ids = [r.resource_location_id for r in rows]
+def test_load_catalog_skips_null_coords(monkeypatch):
+    monkeypatch.setattr(client, "_read_catalog_json", lambda: _CATALOG)
+    ids = [r.resource_location_id for r in client.load_catalog()]
     assert -9999 not in ids
 
 
-def test_parse_catalog_name_fallback_to_fullname():
-    resource = [
-        {
-            "resourceLocationId": -2147483590,
-            "gpsCoordinates": {"latitude": 49.5, "longitude": -120.0},
-            "ianaTimeZone": "America/Vancouver",
-            "region": "Thompson Okanagan",
-            "localizedValues": [
-                {
-                    "cultureName": "en-CA",
-                    "shortName": "",
-                    "fullName": "Bromley Rock Provincial Park",
-                    "description": "",
-                }
-            ],
-        }
-    ]
-    rows = parse_catalog(resource, _MAPS_JSON)
-    assert rows[0].name == "Bromley Rock Provincial Park"
+def test_load_catalog_reads_packaged_json():
+    """The committed catalog.json parses and every returned row has coordinates."""
+    rows = client.load_catalog()
+    assert rows, "catalog.json should yield at least one campground"
+    assert all(r.latitude is not None and r.longitude is not None for r in rows)
+    assert all(r.park_map_id for r in rows)
 
 
-def test_parse_catalog_name_fallback_to_map_title():
-    resource = [
-        {
-            "resourceLocationId": -2147483590,
-            "gpsCoordinates": {"latitude": 49.5, "longitude": -120.0},
-            "ianaTimeZone": "America/Vancouver",
-            "region": "Thompson Okanagan",
-            "localizedValues": [
-                {
-                    "cultureName": "en-CA",
-                    "shortName": "",
-                    "fullName": "",
-                    "description": "",
-                }
-            ],
-        }
-    ]
-    rows = parse_catalog(resource, _MAPS_JSON)
-    assert rows[0].name == "Bromley Rock Map"
-
-
-def test_parse_catalog_drops_entry_with_no_gps():
-    resource = [
-        {
-            "resourceLocationId": -2147483590,
-            "gpsCoordinates": None,
-            "ianaTimeZone": "America/Vancouver",
-            "region": "Thompson Okanagan",
-            "localizedValues": [{"cultureName": "en-CA", "shortName": "No GPS"}],
-        }
-    ]
-    rows = parse_catalog(resource, _MAPS_JSON)
-    assert rows == []
-
-
-def test_parse_catalog_nested_gps_shape():
-    """gpsCoordinates with a nested dict value (e.g. {"point": {lat, lon}})."""
-    resource = [
-        {
-            "resourceLocationId": -2147483590,
-            "gpsCoordinates": {"point": {"latitude": 50.1, "longitude": -119.5}},
-            "ianaTimeZone": "America/Vancouver",
-            "region": "Okanagan",
-            "localizedValues": [{"cultureName": "en-CA", "shortName": "Nested Park"}],
-        }
-    ]
-    rows = parse_catalog(resource, _MAPS_JSON)
-    assert len(rows) == 1
-    assert rows[0].latitude == 50.1
-    assert rows[0].longitude == -119.5
-
-
-def test_parse_catalog_keeps_first_map_link_per_location():
-    """When a resourceLocationId appears in two mapLinks, only the first is kept."""
-    maps = [
-        {
-            "mapLinks": [
-                {
-                    "resourceLocationId": -2147483590,
-                    "childMapId": 101,
-                    "localizations": [{"cultureName": "en-CA", "title": "First Map"}],
-                },
-                {
-                    "resourceLocationId": -2147483590,
-                    "childMapId": 999,
-                    "localizations": [{"cultureName": "en-CA", "title": "Second Map"}],
-                },
-            ]
-        }
-    ]
-    rows = parse_catalog(_RESOURCE_JSON[:1], maps)
-    assert rows[0].park_map_id == 101
+def test_read_catalog_json_shape():
+    """The committed catalog.json is a non-empty list of dicts with the keys we read."""
+    raw = client._read_catalog_json()
+    assert isinstance(raw, list) and raw
+    first = raw[0]
+    for key in ("resource_location_id", "park_map_id", "name", "latitude", "longitude"):
+        assert key in first
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +178,10 @@ def test_merge_availability_dates_are_sequential():
     result = merge_availability({}, _START, ndays=5)
     for i, day in enumerate(result):
         assert day.date == _START + datetime.timedelta(days=i)
+
+
+def test_catalog_json_is_valid_json():
+    """The committed catalog file is itself valid JSON (guards a bad regen)."""
+    raw = client._read_catalog_json()
+    # Round-trips cleanly.
+    assert json.loads(json.dumps(raw)) == raw

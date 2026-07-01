@@ -209,6 +209,12 @@ def dr_jobs_scrape_nhs() -> None:
     _run_job("dr-jobs-scrape-nhs", "dr_jobs.jobs", "scrape_nhs_handler")
 
 
+@app.command("campsites-refresh")
+def campsites_refresh() -> None:
+    """Refresh BC Parks availability and Open-Meteo forecast for /app/campsites."""
+    _run_job("campsites-refresh", "campsites.jobs", "refresh_handler")
+
+
 @app.command("stars-load-grid")
 def stars_load_grid() -> None:
     """Reload the stars site grid from S3 (one-shot of stars.load_grid)."""
