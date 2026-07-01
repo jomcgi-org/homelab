@@ -41,59 +41,58 @@ def _strip_code_fence(content: str) -> str:
     return content.strip("\n")
 
 
+def _is_file_header(line: str) -> bool:
+    """True if a line is a standalone ``FILE <path>`` header.
+
+    Two whitespace-separated tokens where the first is exactly ``FILE``. A real
+    source line like ``FILE: x`` (a YAML key) has ``FILE:`` as token 0 and is not
+    matched, so we never strip genuine content.
+    """
+    parts = line.strip().split()
+    return len(parts) == 2 and parts[0] == "FILE"
+
+
 def extract_files(text: str, target_files: list[str]) -> dict[str, str]:
     """Parse model output into {path: content}.
 
-    Rules (in order):
-    1. Recognize FILE <path> header lines. A line that is exactly ``FILE <path>``
-       starts a block; everything until the next FILE header or EOF is that
-       file's content. Strip one leading newline after the header and one
-       trailing newline.
-    2. If NO FILE headers are found and there is exactly ONE target file, treat
-       the whole response as that file's content, first stripping a surrounding
-       fenced code block if the whole response is fenced.
-    3. Return only keys present in target_files.
-    """
-    lines = text.split("\n")
+    Single-target tasks (all current ones): the whole response is the file. Drop any
+    standalone ``FILE <path>`` header lines and a surrounding code fence, and map the
+    result to the one target regardless of the header path -- a model that writes
+    ``FILE values.yaml`` instead of the full ``FILE chart/values.yaml`` still lands in
+    the right place. This measures capability, not exact envelope format; requiring an
+    exact path match silently drops the answer and grades the untouched fixture.
 
+    Multi-target tasks: parse ``FILE <path>`` headers and match each block against
+    target_files by exact path, else by basename.
+    """
+    if len(target_files) == 1:
+        body = "\n".join(ln for ln in text.split("\n") if not _is_file_header(ln))
+        return {target_files[0]: _strip_code_fence(body)}
+
+    # Multi-target: split on FILE headers.
     file_blocks: dict[str, list[str]] = {}
     current_file: str | None = None
     current_lines: list[str] = []
-    found_headers = False
-
-    for line in lines:
-        if line.startswith("FILE ") and len(line) > 5:
-            found_headers = True
+    for line in text.split("\n"):
+        if _is_file_header(line):
             if current_file is not None:
                 file_blocks[current_file] = current_lines
-            current_file = line[len("FILE ") :].strip()
+            current_file = line.strip().split()[1]
             current_lines = []
-        else:
-            if current_file is not None:
-                current_lines.append(line)
-
+        elif current_file is not None:
+            current_lines.append(line)
     if current_file is not None:
         file_blocks[current_file] = current_lines
 
-    if found_headers:
-        result: dict[str, str] = {}
-        for path, block_lines in file_blocks.items():
-            if path not in target_files:
-                continue
-            # Strip one leading newline: with line-based parsing, an empty
-            # first element represents the newline immediately after the header.
-            if block_lines and block_lines[0] == "":
-                block_lines = block_lines[1:]
-            content = "\n".join(block_lines)
-            # Models often wrap the block in a code fence after the FILE header.
-            result[path] = _strip_code_fence(content)
-        return result
-
-    # No FILE headers found.
-    if len(target_files) == 1:
-        return {target_files[0]: _strip_code_fence(text)}
-
-    return {}
+    result: dict[str, str] = {}
+    basenames = {t.split("/")[-1]: t for t in target_files}
+    for path, block_lines in file_blocks.items():
+        content = _strip_code_fence("\n".join(block_lines))
+        if path in target_files:
+            result[path] = content
+        elif path.split("/")[-1] in basenames:
+            result[basenames[path.split("/")[-1]]] = content
+    return result
 
 
 def _make_workdir(fixture_dir: Path) -> Path:

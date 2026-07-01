@@ -10,6 +10,20 @@ rules:
 """
 
 
+def test_rbac_bad_yaml_is_graded_failure_not_crash(tmp_path):
+    # Malformed YAML must return a graded failure (so the model can repair on shot 2),
+    # not raise an exception that the harness records as a dead [harness error] cell.
+    (tmp_path / "role.yaml").write_text("rules: [oops: bad: flow")
+    r = get_verifier("rbac-cover")(
+        tmp_path,
+        {
+            "clusterrole": "role.yaml",
+            "required": [{"group": "g", "resource": "r", "verb": "list"}],
+        },
+    )
+    assert r.passed is False and "not valid YAML" in r.feedback
+
+
 def test_rbac_cover_passes_when_all_calls_covered(tmp_path):
     (tmp_path / "role.yaml").write_text(RBAC_YAML)
     v = get_verifier("rbac-cover")

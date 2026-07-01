@@ -32,10 +32,24 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
         required: list of {group, resource, verb} dicts that must all be covered
     """
     role_path = workdir / args["clusterrole"]
-    with open(role_path) as f:
-        doc = yaml.safe_load(f)
+    try:
+        with open(role_path) as f:
+            doc = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        # A malformed ClusterRole is a graded failure, not a harness crash, so the
+        # model gets the parse error as feedback and can fix it on the retry.
+        return VerifyResult(False, f"clusterrole.yaml is not valid YAML: {exc}")
+
+    if not isinstance(doc, dict):
+        return VerifyResult(
+            False,
+            "clusterrole.yaml must be a YAML mapping with a 'rules' list, "
+            f"got {type(doc).__name__}",
+        )
 
     rules = doc.get("rules", [])
+    if not isinstance(rules, list):
+        return VerifyResult(False, "clusterrole.yaml 'rules' must be a list")
 
     missing = []
     for req in args["required"]:

@@ -34,3 +34,28 @@ def test_report_has_per_class_qualification_and_tombstone():
     assert "## Budget tier" in md
     assert "cheap/x" in md and "config-plumbing" in md
     assert "## Retired" in md and "old/y" in md and "flunked config" in md
+
+
+def test_all_results_shows_non_qualifiers():
+    # A model that does not qualify (too pricey / below bar) is absent from the
+    # Budget tier table but must still appear under All results.
+    md = render_leaderboard(
+        per_class={
+            "pricey/z": {
+                "config-plumbing": {
+                    "pass1": 0.5,
+                    "cost": 9.0,
+                    "tier": "needs-repair",
+                    "qualifies": False,
+                }
+            }
+        },
+        anchors={},
+        frontier={},
+        retired=[],
+    )
+    assert "## All results" in md
+    assert "pricey/z" in md
+    assert (
+        "No qualifying budget candidates yet." in md
+    )  # correctly excluded from budget tier
