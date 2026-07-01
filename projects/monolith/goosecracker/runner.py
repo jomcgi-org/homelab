@@ -93,10 +93,43 @@ def _effective_mirror_ref(
     return effective_mirror, effective_ref
 
 
-def _truncate(text_body: str) -> str:
-    if len(text_body) <= _MAX_DISCORD:
-        return text_body
-    return text_body[: _MAX_DISCORD - 1] + "…"
+# Long output is split into at most this many Discord messages; beyond it the
+# final page is truncated, so a runaway dump cannot flood the thread.
+_MAX_CHUNKS = 6
+
+
+def _split_message(content: str) -> list[str]:
+    """Split content into Discord-sized (<=_MAX_DISCORD) chunks so a long result
+    posts as several messages instead of being cut off.
+
+    Splits on line boundaries where possible; a single line longer than the limit
+    is hard-split. Caps the number of pages at _MAX_CHUNKS, marking the last page
+    truncated if the content still overflows.
+    """
+    content = content.rstrip()
+    if not content:
+        return ["(no output)"]
+    chunks: list[str] = []
+    cur = ""
+    for line in content.split("\n"):
+        while len(line) > _MAX_DISCORD:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(line[:_MAX_DISCORD])
+            line = line[_MAX_DISCORD:]
+        candidate = line if not cur else cur + "\n" + line
+        if len(candidate) > _MAX_DISCORD:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = candidate
+    if cur:
+        chunks.append(cur)
+    if len(chunks) > _MAX_CHUNKS:
+        chunks = chunks[:_MAX_CHUNKS]
+        chunks[-1] = chunks[-1][: _MAX_DISCORD - 20].rstrip() + "\n… (truncated)"
+    return chunks
 
 
 def _enqueue_sync(channel_id: str, content: str) -> None:
@@ -111,15 +144,20 @@ def _enqueue_sync(channel_id: str, content: str) -> None:
 
 
 async def _deliver(discord_thread: str, content: str) -> None:
-    """Post a result/error into the run's Discord thread, if it fronts one."""
+    """Post a result/error into the run's Discord thread, if it fronts one.
+
+    Long content is paged into several messages (Discord caps a message at 2000
+    chars) rather than truncated, so the full answer reaches the thread.
+    """
     if not discord_thread:
         return
-    try:
-        await asyncio.to_thread(_enqueue_sync, discord_thread, content)
-    except Exception:
-        logger.exception(
-            "goosecracker: failed to enqueue result for %s", discord_thread
-        )
+    for page in _split_message(content):
+        try:
+            await asyncio.to_thread(_enqueue_sync, discord_thread, page)
+        except Exception:
+            logger.exception(
+                "goosecracker: failed to enqueue result for %s", discord_thread
+            )
 
 
 def _mark_progress_done(session: str) -> None:
@@ -192,18 +230,13 @@ def _agent_narrative(result: str) -> str:
     ``goose-result`` block (e.g. a question rather than a coding action).
 
     Goose's answer is what it writes at the END, after the recipe banner and any
-    tool calls, so strip the ``...goose is ready`` preamble and keep the TAIL when
-    it overflows Discord's limit, rather than the head (which is banner + tools and
-    would cut off the answer).
+    tool calls, so strip the ``...goose is ready`` preamble and return the full
+    body; _deliver pages it into multiple messages rather than truncating.
     """
     marker = "goose is ready"
     idx = result.rfind(marker)
     body = (result[idx + len(marker) :] if idx != -1 else result).strip()
-    if not body:
-        return "(no output)"
-    if len(body) <= _MAX_DISCORD:
-        return body
-    return "…" + body[-(_MAX_DISCORD - 1) :]
+    return body or "(no output)"
 
 
 async def _delivery_message(session: str, recipe: str, data: dict) -> str:
@@ -247,7 +280,6 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
             url = str(structured.get("url", "") or "").strip()
             if url.startswith("http"):
                 msg += f"\n{url}"
-            msg = _truncate(msg)
         else:
             summary = _extract_summary(result)
             if summary:
@@ -361,7 +393,7 @@ async def run_and_deliver(
             err = data.get("error", "") or "goose run failed with no detail"
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
             await asyncio.to_thread(threads.mark_failed, session, err)
-            await _deliver(discord_thread, _truncate(f"Run failed: {err}"))
+            await _deliver(discord_thread, f"Run failed: {err}")
     except Exception as exc:  # noqa: BLE001 - any failure must mark + deliver
         logger.exception("goosecracker: run_and_deliver failed for %s", session)
         try:
@@ -369,6 +401,6 @@ async def run_and_deliver(
             await asyncio.to_thread(threads.mark_failed, session, str(exc))
         except Exception:
             logger.exception("goosecracker: failed to mark run failed for %s", session)
-        await _deliver(discord_thread, _truncate(f"Run failed: {exc}"))
+        await _deliver(discord_thread, f"Run failed: {exc}")
     finally:
         _mark_progress_done(session)

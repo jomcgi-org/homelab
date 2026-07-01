@@ -253,3 +253,23 @@ async def test_delivery_message_no_recorded_ref_unchanged():
     msg = await runner._delivery_message("sess", "agent", {"result": "result text"})
     assert msg == "result text"
     assert "recorded:" not in msg
+
+
+def test_split_message_short_content_single_page():
+    assert runner._split_message("short answer") == ["short answer"]
+
+
+def test_split_message_pages_long_content_on_lines():
+    line = "x" * 400
+    content = "\n".join([line] * 12)  # ~4900 chars over several lines
+    pages = runner._split_message(content)
+    assert len(pages) >= 2
+    assert all(len(p) <= runner._MAX_DISCORD for p in pages)
+    # every original line survives across the pages (nothing dropped)
+    assert "\n".join(pages).count("x" * 400) == 12
+
+
+def test_split_message_hard_splits_an_overlong_line():
+    pages = runner._split_message("y" * 4000)
+    assert len(pages) >= 2
+    assert all(len(p) <= runner._MAX_DISCORD for p in pages)
