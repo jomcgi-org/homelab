@@ -163,6 +163,25 @@ def _extract_result_field(result: str, key: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _agent_narrative(result: str) -> str:
+    """Extract goose's final narrative answer from a transcript that has no
+    ``goose-result`` block (e.g. a question rather than a coding action).
+
+    Goose's answer is what it writes at the END, after the recipe banner and any
+    tool calls, so strip the ``...goose is ready`` preamble and keep the TAIL when
+    it overflows Discord's limit, rather than the head (which is banner + tools and
+    would cut off the answer).
+    """
+    marker = "goose is ready"
+    idx = result.rfind(marker)
+    body = (result[idx + len(marker) :] if idx != -1 else result).strip()
+    if not body:
+        return "(no output)"
+    if len(body) <= _MAX_DISCORD:
+        return body
+    return "…" + body[-(_MAX_DISCORD - 1) :]
+
+
 async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     """Build the Discord message for a successful run.
 
@@ -199,9 +218,11 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
             if url.startswith("http"):
                 msg += f"\n{url}"
         else:
-            # No structured block: fall back to the truncated transcript so the
-            # thread never gets an empty message.
-            msg = _truncate(result or "(no output)")
+            # No structured block (e.g. a question rather than a coding action):
+            # goose's answer is its trailing narrative, so post that, not the head
+            # of the transcript (which is the recipe banner + tool calls, and would
+            # truncate away the actual answer at the end).
+            msg = _agent_narrative(result)
 
     recorded_ref = data.get("recordedRef")
     if recorded_ref:

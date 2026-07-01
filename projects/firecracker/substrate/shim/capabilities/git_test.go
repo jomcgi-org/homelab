@@ -73,10 +73,11 @@ func (f *fakeRunnerSpy) run(ctx context.Context, name string, args ...string) ([
 	return f.output, f.err
 }
 
-// TestExecGitClonePassesShallowFlags verifies that Clone issues a shallow
-// partial clone (--single-branch --depth=1 --filter=blob:none) followed by
-// "git -C <dest> checkout <ref>", without spawning a real process.
-func TestExecGitClonePassesShallowFlags(t *testing.T) {
+// TestExecGitClonePassesPartialFlags verifies that Clone issues a single-branch
+// partial clone (--single-branch --filter=blob:none, NOT --depth=1 so full commit
+// history is present) followed by "git -C <dest> checkout <ref>", without
+// spawning a real process.
+func TestExecGitClonePassesPartialFlags(t *testing.T) {
 	spy := &fakeRunnerSpy{}
 	g := &ExecGit{runner: spy.run}
 
@@ -89,17 +90,21 @@ func TestExecGitClonePassesShallowFlags(t *testing.T) {
 		t.Fatalf("expected 2 git invocations, got %d: %v", len(spy.calls), spy.calls)
 	}
 
-	// First call: git clone --single-branch --depth=1 --filter=blob:none <mirror> <dest>
+	// First call: git clone --single-branch --filter=blob:none <mirror> <dest>
 	cloneArgs := spy.calls[0]
-	// Verify key positions: command is "clone", shallow flags are present, mirror and dest are last.
+	// Verify key positions: command is "clone", partial flags are present, mirror and dest are last.
 	if len(cloneArgs) < 2 || cloneArgs[1] != "clone" {
 		t.Fatalf("first call must be git clone, got %v", cloneArgs)
 	}
 	joined := strings.Join(cloneArgs, " ")
-	for _, want := range []string{"--single-branch", "--depth=1", "--filter=blob:none", "git://mirror:9418/homelab", "/tmp/dst"} {
+	for _, want := range []string{"--single-branch", "--filter=blob:none", "git://mirror:9418/homelab", "/tmp/dst"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("clone call %q missing %q", joined, want)
 		}
+	}
+	// --depth=1 must NOT be present (it would drop commit history).
+	if strings.Contains(joined, "--depth") {
+		t.Errorf("clone call %q must not be shallow (--depth), it drops commit history", joined)
 	}
 
 	// Second call: git -C <dest> checkout <ref>

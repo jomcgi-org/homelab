@@ -74,14 +74,15 @@ _GOOSECRACKER_WROTE_RE = re.compile(r"Created\s+\S+\s+\((\d+)\s+lines?\)")
 _GOOSECRACKER_SUMMARY_RE = re.compile(r"^\s*summary:\s*(.+?)\s*`*\s*$", re.MULTILINE)
 
 
-def _render_goosecracker_progress(snap, elapsed: int) -> str:
-    """Render a concise live build-progress message from a progress snapshot.
+def _render_goosecracker_progress(snap, elapsed: int, kind: str = "artifact") -> str:
+    """Render a concise live progress message from a progress snapshot.
 
     ``snap`` is a chat.goosecracker_progress.Progress or None (nothing yet).
     Goose's raw stdout includes the whole file it writes, which is noise, so this
-    shows only a phase line (Thinking while the model reasons quietly, Writing
-    while output flows, Built on done) plus the meaningful beats extracted from
-    the stream: lines written and the goose-result summary.
+    shows only a phase line (Thinking while the model reasons quietly, Working
+    while output flows, Done on done) plus the meaningful beats extracted from the
+    stream: lines written and the goose-result summary. ``kind`` selects the copy:
+    "artifact" (the iterable HTML builder) or "agent" (the one-shot coding agent).
     """
     minutes, seconds = divmod(max(elapsed, 0), 60)
     el = f"{minutes}:{seconds:02d}"
@@ -91,11 +92,24 @@ def _render_goosecracker_progress(snap, elapsed: int) -> str:
         GOOSECRACKER_THINKING_AFTER
     )
 
-    lines = ["🛠 **Building your artifact**"]
+    if kind == "agent":
+        header, done_line, flowing_line = (
+            "🤖 **Running agent**",
+            f"✅ Done in {el}",
+            f"⚙️ Working... ({el})",
+        )
+    else:
+        header, done_line, flowing_line = (
+            "🛠 **Building your artifact**",
+            f"✅ Built in {el} (reply here to iterate)",
+            f"⚙️ Writing the artifact... ({el})",
+        )
+
+    lines = [header]
     if done:
-        lines.append(f"✅ Built in {el} (reply here to iterate)")
+        lines.append(done_line)
     elif flowing:
-        lines.append(f"⚙️ Writing the artifact... ({el})")
+        lines.append(flowing_line)
     else:
         lines.append(f"🧠 Thinking... ({el})")
 
@@ -604,22 +618,23 @@ class ChatBot(discord.Client):
 
         await interaction.followup.send(f"Running agent in {thread.mention}")
         try:
-            intro = await thread.send("🛠 On it. Running the agent now...")
-            self._start_goosecracker_stream(str(thread.id), intro)
+            intro = await thread.send("🤖 On it. Running the agent now...")
+            self._start_goosecracker_stream(str(thread.id), intro, kind="agent")
         except Exception:
             logger.exception("goosecracker: failed to post agent thread intro")
 
     def _start_goosecracker_stream(
-        self, artifact_id: str, message: discord.Message
+        self, artifact_id: str, message: discord.Message, kind: str = "artifact"
     ) -> None:
-        """Spawn the background task that live-edits ``message`` with build output.
+        """Spawn the background task that live-edits ``message`` with run output.
 
         Fire-and-forget: the task ends itself on the run's done marker or a
         safety timeout. Kept on the instance so it is not garbage-collected
-        mid-run, and logs any unhandled error.
+        mid-run, and logs any unhandled error. ``kind`` selects the progress copy
+        ("artifact" or "agent").
         """
         task = asyncio.create_task(
-            self._stream_goosecracker_progress(artifact_id, message)
+            self._stream_goosecracker_progress(artifact_id, message, kind)
         )
         streams = getattr(self, "_goosecracker_streams", None)
         if streams is None:
@@ -629,7 +644,7 @@ class ChatBot(discord.Client):
         task.add_done_callback(streams.discard)
 
     async def _stream_goosecracker_progress(
-        self, artifact_id: str, message: discord.Message
+        self, artifact_id: str, message: discord.Message, kind: str = "artifact"
     ) -> None:
         """Edit ``message`` with goose's live build output until done or timeout.
 
@@ -645,7 +660,7 @@ class ChatBot(discord.Client):
             await asyncio.sleep(GOOSECRACKER_STREAM_INTERVAL)
             snap = gp.get(artifact_id)
             elapsed = int(time.monotonic() - start)
-            body = _render_goosecracker_progress(snap, elapsed)
+            body = _render_goosecracker_progress(snap, elapsed, kind)
             if body != last_body:
                 try:
                     await message.edit(content=body)

@@ -74,6 +74,21 @@ async def test_delivery_message_agent_falls_back_to_transcript_without_block():
     assert "just some raw output" in msg
 
 
+async def test_delivery_message_agent_posts_trailing_narrative():
+    # A question (no goose-result block): the answer is goose's trailing
+    # narrative, so post that (banner stripped), not the head of the transcript.
+    result = (
+        "Loading recipe: Agent\n"
+        "  __( O)>  goose is ready\n"
+        "  ▸ shell git log --oneline\n"
+        "abc123 some commit\n"
+        "Joe has been working on the git mirror and the /agent command this week."
+    )
+    msg = await runner._delivery_message("s-9", "agent", {"result": result})
+    assert "Joe has been working on the git mirror" in msg
+    assert "Loading recipe" not in msg  # recipe banner stripped
+
+
 async def test_delivery_message_publishes_and_links(monkeypatch):
     monkeypatch.setattr(
         runner, "_publish_artifact", lambda s, h: "https://jomcgi.dev/artifact/abc123"
