@@ -76,6 +76,13 @@ func run(logger *slog.Logger) error {
 	// isolation directory.
 	invokers := make(map[string]server.Invoker, len(cfg.Workloads))
 	for name, wl := range cfg.Workloads {
+		// Per-workload PID-1 path: guest images install their init at different
+		// paths (e.g. semgrep-guest-init vs the agent's fc-agent-init), so the
+		// kernel init= boot arg must be per-workload; fall back to the global.
+		harnessInit := wl.HarnessInit
+		if harnessInit == "" {
+			harnessInit = cfg.HarnessInit
+		}
 		// The driver boots the workload's base rootfs READ-ONLY: every mutable
 		// guest path is a tmpfs (RAM, captured in the snapshot memfile), so one
 		// read-only rootfs file backs every microVM with no per-request copy.
@@ -89,7 +96,7 @@ func run(logger *slog.Logger) error {
 			RootfsPath:        wl.RootfsPath,
 			RootfsReadOnly:    true,
 			CanonicalVsockDir: cfg.CanonicalVsockDir,
-			HarnessInit:       cfg.HarnessInit,
+			HarnessInit:       harnessInit,
 			VCPUs:             wl.VCPUs,
 			MemMib:            wl.MemMib,
 			SnapshotRoot:      cfg.SnapshotRoot,
