@@ -28,6 +28,52 @@ def test_extract_summary_empty_when_absent():
     assert runner._extract_summary("no result block here") == ""
 
 
+_AGENT_RESULT = (
+    "Loading recipe: Agent\n"
+    "  ▸ shell git status\n"
+    "```goose-result\n"
+    "type: note\n"
+    "url: <artifact URL, if any>\n"
+    "summary: Added a null check in parse().\n"
+    "```\n"
+)
+
+_AGENT_RESULT_WITH_PR = (
+    "```goose-result\n"
+    "type: pr\n"
+    "url: https://github.com/jomcgi/homelab/pull/42\n"
+    "summary: Opened a PR fixing the parser.\n"
+    "```\n"
+)
+
+
+async def test_delivery_message_agent_posts_summary_not_transcript():
+    data = {"result": _AGENT_RESULT, "recordedRef": "refs/agents/s-1"}
+    msg = await runner._delivery_message("s-1", "agent", data)
+    assert "Added a null check in parse()." in msg
+    # the raw transcript (recipe banner + tool lines) must NOT be dumped
+    assert "▸ shell" not in msg
+    assert "Loading recipe" not in msg
+    assert "recorded: refs/agents/s-1" in msg
+    # the recipe's placeholder url is not a real link, so it is not appended
+    assert "<artifact URL" not in msg
+
+
+async def test_delivery_message_agent_appends_real_pr_url():
+    msg = await runner._delivery_message(
+        "s-2", "agent", {"result": _AGENT_RESULT_WITH_PR}
+    )
+    assert "Opened a PR fixing the parser." in msg
+    assert "https://github.com/jomcgi/homelab/pull/42" in msg
+
+
+async def test_delivery_message_agent_falls_back_to_transcript_without_block():
+    msg = await runner._delivery_message(
+        "s-3", "agent", {"result": "just some raw output, no result block"}
+    )
+    assert "just some raw output" in msg
+
+
 async def test_delivery_message_publishes_and_links(monkeypatch):
     monkeypatch.setattr(
         runner, "_publish_artifact", lambda s, h: "https://jomcgi.dev/artifact/abc123"
@@ -99,6 +145,34 @@ def test_effective_mirror_ref_defaults_to_main_when_only_mirror_set(monkeypatch)
     monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
     m, r = runner._effective_mirror_ref("", "")
     assert r == "main"
+
+
+# ---------------------------------------------------------------------------
+# repo param: _effective_mirror_ref selects the right repo under the base
+# ---------------------------------------------------------------------------
+
+
+def test_effective_mirror_custom_repo_appended(monkeypatch):
+    """repo='loom' -> gitMirror <base>/loom, not <base>/homelab."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
+    m, r = runner._effective_mirror_ref("", "", "loom")
+    assert m == "git://mirror:9418/loom"
+    assert r == "main"
+
+
+def test_effective_mirror_empty_repo_falls_back_to_homelab(monkeypatch):
+    """repo='' -> gitMirror <base>/homelab (same as 2-arg default behavior)."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
+    m, r = runner._effective_mirror_ref("", "", "")
+    assert m == "git://mirror:9418/homelab"
+    assert r == "main"
+
+
+def test_effective_mirror_explicit_git_mirror_overrides_repo(monkeypatch):
+    """Explicit git_mirror always wins; repo is ignored when mirror is set."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
+    m, r = runner._effective_mirror_ref("git://other:9418/explicit", "", "loom")
+    assert m == "git://other:9418/explicit"
 
 
 # ---------------------------------------------------------------------------

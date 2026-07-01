@@ -185,6 +185,20 @@ def test_continue_session_cold_path_when_no_session(engine, fake_api, monkeypatc
     )
 
 
+def test_start_agent_session_dispatches_with_agent_recipe(fake_api):
+    """start_agent_session submits with recipe='agent', tier='', and passes repo."""
+    goosecracker.start_agent_session("thread-2", "loom", "  add a login page  ")
+
+    fake_api.submit.assert_called_once_with(
+        "add a login page",
+        session="thread-2",
+        recipe="agent",
+        tier="",
+        repo="loom",
+        discord_thread="thread-2",
+    )
+
+
 def test_continue_session_falls_back_to_cold_on_head_session_error(
     engine, fake_api, monkeypatch
 ):

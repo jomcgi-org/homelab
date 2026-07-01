@@ -83,6 +83,7 @@ def submit(
             task=task,
             recipe=recipe,
             tier=tier,
+            repo=repo,
             git_mirror=git_mirror,
             git_ref=git_ref,
             discord_thread=discord_thread,

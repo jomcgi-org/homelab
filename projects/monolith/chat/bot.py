@@ -443,6 +443,27 @@ class ChatBot(discord.Client):
         ) -> None:
             await self._handle_goosecracker_command(interaction, prompt)
 
+        @self.tree.command(
+            name="agent",
+            description="Run the coding agent on a repo (owner only)",
+        )
+        @discord.app_commands.describe(
+            prompt="The task for the agent",
+            repo="Repo to hydrate from",
+        )
+        @discord.app_commands.choices(
+            repo=[
+                discord.app_commands.Choice(name="homelab", value="homelab"),
+                discord.app_commands.Choice(name="loom", value="loom"),
+            ]
+        )
+        async def agent_command(
+            interaction: discord.Interaction,
+            prompt: str,
+            repo: discord.app_commands.Choice[str],
+        ) -> None:
+            await self._handle_agent_command(interaction, prompt, repo.value)
+
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
         # Sync slash commands globally so /artifact is available in every
@@ -546,6 +567,47 @@ class ChatBot(discord.Client):
             self._start_goosecracker_stream(str(thread.id), intro)
         except Exception:
             logger.exception("goosecracker: failed to post thread intro")
+
+    async def _handle_agent_command(
+        self, interaction: discord.Interaction, prompt: str, repo: str
+    ) -> None:
+        """Owner-gated /agent: open a thread and dispatch a one-shot agent run."""
+        if not goosecracker.is_owner(interaction.user.id):
+            await interaction.response.defer(ephemeral=True)
+            roast = await goosecracker.build_roast(prompt)
+            await interaction.followup.send(roast, ephemeral=True)
+            return
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Run /agent from a normal text channel so I can open a thread.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+        try:
+            name = f"agent: {prompt}"[:90]
+            thread = await channel.create_thread(
+                name=name, type=discord.ChannelType.public_thread
+            )
+            await asyncio.to_thread(
+                goosecracker.start_agent_session, str(thread.id), repo, prompt
+            )
+        except Exception:
+            logger.exception("goosecracker: failed to start agent session")
+            await interaction.followup.send(
+                "Couldn't start that one. Check the logs.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(f"Running agent in {thread.mention}")
+        try:
+            intro = await thread.send("🛠 On it. Running the agent now...")
+            self._start_goosecracker_stream(str(thread.id), intro)
+        except Exception:
+            logger.exception("goosecracker: failed to post agent thread intro")
 
     def _start_goosecracker_stream(
         self, artifact_id: str, message: discord.Message

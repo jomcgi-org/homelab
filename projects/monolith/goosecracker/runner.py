@@ -65,21 +65,29 @@ def _progress_url(session: str) -> str:
     return f"{PROGRESS_URL_BASE.rstrip('/')}/{session}"
 
 
-def _effective_mirror_ref(git_mirror: str, git_ref: str) -> tuple[str, str]:
+def _effective_mirror_ref(
+    git_mirror: str, git_ref: str, repo: str = ""
+) -> tuple[str, str]:
     """Return the (mirror URL, ref) pair for a goose run, applying defaults.
 
     When the caller does not specify a mirror, defaults to
-    ``<GOOSECRACKER_GIT_MIRROR>/homelab`` (the in-cluster mirror). When no ref
-    is specified, defaults to ``main``. Both values are passed through
-    unchanged when explicitly supplied by the caller, so an override always
-    wins.
+    ``<GOOSECRACKER_GIT_MIRROR>/<repo or "homelab">`` (the in-cluster mirror).
+    When no ref is specified, defaults to ``main``. Both values are passed
+    through unchanged when explicitly supplied by the caller, so an override
+    always wins.
+
+    The ``repo`` param selects which repository under the mirror base to clone;
+    it defaults to ``"homelab"`` when empty. Explicit ``git_mirror`` takes
+    precedence and ``repo`` is ignored in that case.
 
     Returns ("", "main") when GOOSECRACKER_GIT_MIRROR is also unset, which
     makes the handler skip the clone step entirely (no mirror configured).
     """
     effective_mirror = git_mirror
     if not effective_mirror and GOOSECRACKER_GIT_MIRROR:
-        effective_mirror = GOOSECRACKER_GIT_MIRROR.rstrip("/") + "/homelab"
+        effective_mirror = (
+            GOOSECRACKER_GIT_MIRROR.rstrip("/") + "/" + (repo or "homelab")
+        )
     effective_ref = git_ref or "main"
     return effective_mirror, effective_ref
 
@@ -144,15 +152,28 @@ def _extract_summary(result: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _extract_result_field(result: str, key: str) -> str:
+    """Pull a ``<key>: <value>`` line out of the recipe's ``goose-result`` block.
+
+    Used to surface the ``url`` (a PR/issue the agent opened) alongside the
+    summary. Empty when the key is absent. The recipe's placeholder text (e.g.
+    ``<artifact URL, if any>``) is left for the caller to filter (it is not a URL).
+    """
+    m = re.search(rf"^\s*{re.escape(key)}:\s*(.+)$", result, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
 async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     """Build the Discord message for a successful run.
 
     Artifact runs publish the built HTML and post a clean ``Artifact ready: <url>``
     (plus the recipe's one-line summary) instead of the raw goose transcript. A run
     that was meant to build an artifact but produced none gets a clear miss message.
-    Any other run posts its (truncated) result text. When the guest recorded a
-    scratch ref (WS3), a ``recorded: refs/agents/<session>`` line is appended for
-    all run types.
+    Any other run (e.g. the coding ``agent``) posts the recipe's ``goose-result``
+    summary (plus a PR/issue url if it opened one), falling back to the truncated
+    transcript only when goose emitted no structured result block. When the guest
+    recorded a scratch ref (WS3), a ``recorded: refs/agents/<session>`` line is
+    appended for all run types.
     """
     html = data.get("artifactHtml")
     if html:
@@ -167,7 +188,20 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     elif recipe == "artifact":
         msg = "Build finished but produced no artifact. Try rephrasing the request."
     else:
-        msg = _truncate(data.get("result", "") or "(no output)")
+        # Coding agent (and any non-artifact recipe): post the recipe's
+        # goose-result summary, not the raw transcript. Append the url only when
+        # it is a real link (goose leaves a placeholder when it opened nothing).
+        result = data.get("result", "") or ""
+        summary = _extract_summary(result)
+        if summary:
+            msg = summary
+            url = _extract_result_field(result, "url")
+            if url.startswith("http"):
+                msg += f"\n{url}"
+        else:
+            # No structured block: fall back to the truncated transcript so the
+            # thread never gets an empty message.
+            msg = _truncate(result or "(no output)")
 
     recorded_ref = data.get("recordedRef")
     if recorded_ref:
@@ -198,6 +232,7 @@ async def run_and_deliver(
     task: str,
     recipe: str,
     tier: str,
+    repo: str = "",
     git_mirror: str,
     git_ref: str,
     discord_thread: str,
@@ -223,7 +258,9 @@ async def run_and_deliver(
         # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
         # via Helm values. An empty effective_mirror means no clone (no mirror
         # configured in this environment).
-        effective_mirror, effective_ref = _effective_mirror_ref(git_mirror, git_ref)
+        effective_mirror, effective_ref = _effective_mirror_ref(
+            git_mirror, git_ref, repo
+        )
         payload = {
             "recipe": recipe,
             "task": task,
