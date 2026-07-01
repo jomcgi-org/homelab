@@ -104,3 +104,10 @@ export const STARS_HISTORY_CACHE_CONTROL =
 // Mirrors _CACHE in projects/monolith/trips/read_router.py, keep in sync.
 export const TRIPS_CACHE_CONTROL =
   "public, max-age=60, s-maxage=300, stale-while-revalidate=3600";
+
+// /app/campsites snapshot: availability + 14-day weather, refreshed every 6
+// hours. 30 min CDN freshness with 1 h SWR keeps the edge warm between fetches.
+// Mirrors _SNAPSHOT_CACHE_CONTROL in
+// projects/monolith/campsites/router.py, keep in sync.
+export const CAMPSITES_SNAPSHOT_CACHE_CONTROL =
+  "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
