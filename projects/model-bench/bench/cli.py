@@ -668,10 +668,12 @@ def _write_leaderboard_json(
             "id": tid,
             "class": task_meta[tid].task_class.value if tid in task_meta else "",
             "verifier": task_meta[tid].verifier.kind if tid in task_meta else "",
-            # A "pytest" verifier grades with the repo's own gold test; "command" is a
-            # synthetic behavioral check. Surfaced so the page can flag real-test tasks.
+            # A task with a source_commit snapshots the parent of a real fix commit and
+            # grades with that commit's own gold test (SWE-bench style). Tasks without one
+            # (slo, flights) are synthetic / hand-authored. Surfaced so the page can flag
+            # which rows are graded by the repo's real tests.
             "real_test": (
-                tid in task_meta and task_meta[tid].verifier.kind == "pytest"
+                tid in task_meta and task_meta[tid].source_commit is not None
             ),
             "blurb": _blurb(tid),
             "source_commit": (
