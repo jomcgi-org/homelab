@@ -12,7 +12,7 @@ lxml==6.0.2
 # Override pillow upper bound from open-gopro[gui] (requires <12).
 # Pillow 12.1.1 is needed to fix CVE. The <12 bound in open-gopro
 # is a cautious constraint, not a known incompatibility.
-pillow>=12.1.1
+pillow>=12.2.0
 
 # Override semgrep's tight compatible-release (~=) pins that conflict
 # with runtime dependency versions. semgrep pins click~=8.1.8, rich~=13.5.2,
