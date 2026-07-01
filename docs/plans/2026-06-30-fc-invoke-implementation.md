@@ -456,7 +456,7 @@ Register the `semgrep` workload and ship the daemon to the cluster.
 **Files:**
 
 - Create: `projects/agent_platform/fc-invoke/chart/` (Chart.yaml, templates: Deployment with node-4 affinity + `/dev/kvm`, RBAC if any, the rendered workloads ConfigMap/env)
-- Create: `projects/agent_platform/fc-invoke/deploy/{application.yaml,values.yaml,kustomization.yaml}` (copy `semgrep-scand/deploy/` as the template; same node-4 placement, devmapper, OnePasswordItems for any egress secrets — semgrep has none)
+- Create: `projects/agent_platform/fc-invoke/deploy/{application.yaml,values.yaml,kustomization.yaml}` (copy `semgrep-scand/deploy/` as the template; same node-4 placement, devmapper, OnePasswordItems for any egress secrets, semgrep has none)
 - Modify: home-cluster root via `format`
 
 **Step 1.** Copy `semgrep-scand/chart` and `semgrep-scand/deploy` as the starting point (same Firecracker host requirements). Replace the daemon image with `fc-invoke`, and put the `workloads:` map (the `semgrep` entry: `image: semgrep-guest`, `egress.enabled: false`, `warmBase.build: true`, `concurrency: 4`, `requestTimeout: 90s`, `sessioned: false`) into `values.yaml`. Use `helm_images_values` to pin BOTH the `fc-invoke` daemon image and the `semgrep-guest` image digests at chart-build.
@@ -491,7 +491,7 @@ Remove the now-dead daemon; the `semgrep-guest` image lives on as the workload.
 - Delete: `projects/agent_platform/semgrep-scand/` (the daemon: cmd, internal/{scanner,server,config}, chart, deploy, image)
 - Keep: `projects/agent_platform/semgrep-guest`, `semgrep-guest-init` (now serving the shim)
 - Modify: remove `semgrep-scand` from the home-cluster root and any ArgoCD app list via `format`
-- Modify: `projects/agent_platform/vsockproto` — leave `ScanRequest/ScanResult` (now the HTTP body schema) but the `ScanPort` constant can be removed if nothing references it (grep first)
+- Modify: `projects/agent_platform/vsockproto`: leave `ScanRequest/ScanResult` (now the HTTP body schema) but the `ScanPort` constant can be removed if nothing references it (grep first)
 
 **Step 1.** Grep for every reference to `semgrep-scand` and `ScanPort` across the repo; confirm only the deleted daemon used them. **Do this only after Task 12 is merged and verified live**, so there is no window where the MCP tool points at a deleted service.
 

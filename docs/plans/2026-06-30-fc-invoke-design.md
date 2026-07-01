@@ -104,7 +104,7 @@ Orchestrators "pass stuff in" through the **opaque request body** on `/invoke/`:
 
 ```
 projects/firecracker/
-├── substrate/                  # the platform everything runs on — one project, one chart
+├── substrate/                  # the platform everything runs on, one project, one chart
 │   ├── fcvm/                   #   VM driver: Claim/Snapshot/Restore/Release (internal engine)
 │   ├── vsockproto/             #   vsock transport
 │   ├── egress-proxy/           #   egress secret-swap (ADR 023)
@@ -113,7 +113,7 @@ projects/firecracker/
 │   ├── chart/                  #   the one Helm chart: fc-invoke Deployment, RBAC, OnePasswordItems
 │   └── deploy/                 #   ArgoCD Application (pinned targetRevision) + values.yaml + kustomization
 ├── goosecracker/               # thin stateful agent layer: session<->thread map, Discord wake, business state
-│   └── recipes/                #   artifact.yaml, code-review.yaml — each agent is a recipe + values entry
+│   └── recipes/                #   artifact.yaml, code-review.yaml, each agent is a recipe + values entry
 └── semgrep/                    # semgrep guest image + handler + warm-base prime; an fc-invoke workload
 ```
 
