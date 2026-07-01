@@ -81,7 +81,10 @@ py_test(
     name = "effect_verifiers_test",
     srcs = ["effect_verifiers_test.py"],
     imports = ["../.."],
-    deps = [":verifiers"],
+    deps = [
+        ":verifiers",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
@@ -110,5 +113,8 @@ py_test(
     name = "sandbox_test",
     srcs = ["sandbox_test.py"],
     imports = ["../.."],
-    deps = [":verifiers"],
+    deps = [
+        ":verifiers",
+        "@pip//pytest",
+    ],
 )
