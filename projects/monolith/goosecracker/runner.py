@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
@@ -163,6 +164,29 @@ def _extract_result_field(result: str, key: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _parse_structured_result(result: str) -> dict | None:
+    """Parse the response-schema JSON goose emits as its final output.
+
+    A recipe with a ``response.json_schema`` (the agent recipe) makes goose print
+    a JSON object as the LAST line of stdout. Scan from the end for that trailing
+    brace-delimited line and parse it. Returns the dict, or None when there is no
+    valid trailing JSON object (e.g. a model that did not honor the schema), so
+    the caller can fall back to the markdown summary or the narrative.
+    """
+    for line in reversed(result.strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                return None
+            return obj if isinstance(obj, dict) else None
+        return None  # the last non-empty line is not a JSON object
+    return None
+
+
 def _agent_narrative(result: str) -> str:
     """Extract goose's final narrative answer from a transcript that has no
     ``goose-result`` block (e.g. a question rather than a coding action).
@@ -188,9 +212,10 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     Artifact runs publish the built HTML and post a clean ``Artifact ready: <url>``
     (plus the recipe's one-line summary) instead of the raw goose transcript. A run
     that was meant to build an artifact but produced none gets a clear miss message.
-    Any other run (e.g. the coding ``agent``) posts the recipe's ``goose-result``
-    summary (plus a PR/issue url if it opened one), falling back to the truncated
-    transcript only when goose emitted no structured result block. When the guest
+    Any other run (e.g. the coding ``agent``) prefers the recipe's typed response
+    (a JSON object from response.json_schema): summary, optional details, and a
+    PR/issue url. It falls back to the legacy markdown summary, then goose's
+    trailing narrative, so there is always a meaningful response. When the guest
     recorded a scratch ref (WS3), a ``recorded: refs/agents/<session>`` line is
     appended for all run types.
     """
@@ -207,22 +232,33 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     elif recipe == "artifact":
         msg = "Build finished but produced no artifact. Try rephrasing the request."
     else:
-        # Coding agent (and any non-artifact recipe): post the recipe's
-        # goose-result summary, not the raw transcript. Append the url only when
-        # it is a real link (goose leaves a placeholder when it opened nothing).
+        # Coding agent (and any non-artifact recipe). Prefer the typed response
+        # (the agent recipe's response.json_schema makes goose emit a JSON object
+        # as its final line): post its summary, plus optional details and a real
+        # url. Fall back to the legacy markdown goose-result summary, then to
+        # goose's trailing narrative, so there is ALWAYS a meaningful response.
         result = data.get("result", "") or ""
-        summary = _extract_summary(result)
-        if summary:
-            msg = summary
-            url = _extract_result_field(result, "url")
+        structured = _parse_structured_result(result)
+        if structured and str(structured.get("summary", "")).strip():
+            msg = str(structured["summary"]).strip()
+            details = str(structured.get("details", "") or "").strip()
+            if details:
+                msg += f"\n\n{details}"
+            url = str(structured.get("url", "") or "").strip()
             if url.startswith("http"):
                 msg += f"\n{url}"
+            msg = _truncate(msg)
         else:
-            # No structured block (e.g. a question rather than a coding action):
-            # goose's answer is its trailing narrative, so post that, not the head
-            # of the transcript (which is the recipe banner + tool calls, and would
-            # truncate away the actual answer at the end).
-            msg = _agent_narrative(result)
+            summary = _extract_summary(result)
+            if summary:
+                msg = summary
+                url = _extract_result_field(result, "url")
+                if url.startswith("http"):
+                    msg += f"\n{url}"
+            else:
+                # goose's answer is its trailing narrative (post that, not the head
+                # of the transcript, which is the recipe banner + tool calls).
+                msg = _agent_narrative(result)
 
     recorded_ref = data.get("recordedRef")
     if recorded_ref:
