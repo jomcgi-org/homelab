@@ -19,10 +19,16 @@ spec:
     metadata:
       labels:
         {{- include "git-mirror.labels" . | nindent 8 }}
-      {{- with .Values.podAnnotations }}
       annotations:
+        # Roll the pod whenever the supervisor ConfigMap changes (repos list, auth
+        # setup, refresh loop). The supervisor reads the ConfigMap once at startup,
+        # so without this a ConfigMap-only change (no image change) updates the
+        # ConfigMap object but never restarts the pod, and the old script keeps
+        # running (this is why the loom URL fix did not take effect).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "git-mirror.serviceAccountName" . }}
       {{- if .Values.imagePullSecret.enabled }}
