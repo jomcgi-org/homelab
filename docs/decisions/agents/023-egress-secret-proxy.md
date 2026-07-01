@@ -157,3 +157,28 @@ An operator reconciles the CRD into independently-scaled proxy Deployments + Ser
 | [ADR 004 - Autonomous Agents](004-autonomous-agents.md)                                             | The 1Password injection pattern reused for provisioning values                        |
 | `projects/agent_platform/vsockproto/proto.go`                                                       | The vsock contract (`EgressPort = 1025`, `KindAssign`) this builds on                 |
 | `docs/security.md`                                                                                  | Security baseline                                                                     |
+
+## Update (2026-07-01): generic egress shipped + split-horizon guardrail
+
+The deferred generic any-port capture (Architecture) shipped, but via a
+netfilter-free mechanism rather than the `iptables` REDIRECT + `SO_ORIGINAL_DST`
+originally sketched. The guest gives every DNS name a unique synthetic
+127.0.0.0/8 address and binds each per-port funnel listener to 0.0.0.0, so a
+connection to a synthetic address lands on the listener whose LocalAddr is that
+address, reverse-mapped to the name. No privileged netfilter, pure Go. The
+trade-off is a fixed port set (80/443/8000/8080/4318/9418, EGRESS_PORTS override)
+with any host, not truly arbitrary ports; iptables any-port remains a future
+option. The guest sends "host:port" in the vsock preamble, so the sidecar no
+longer sniffs SNI/Host for routing (only a one-byte TLS check for the swap path).
+
+The egress posture is now split-horizon, superseding the flat `allow`/`allowlist`
+knob: external (public) destinations are allowed by default so an agent can read
+the open internet, while internal (cluster, private, loopback, link-local)
+destinations are deny-by-default and confined to an explicit `internal.allowlist`.
+Classification is on the resolved IP the sidecar will dial (not the guest-claimed
+name), with resolve-once-and-pin, defeating SSRF-by-name and DNS rebinding. This
+is a strict hardening: it closes the cluster-pivot vector the old `allow` default
+left open. Decision 3 (per-secret egressTo as the exfiltration control) is
+unchanged and now orthogonal to the zone policy. Shipped in PR #3010, deployed at
+fc-invoke chart 0.4.2, verified live (a default-tier agent reached inference:8080
+under internal-deny). Plan: docs/plans/2026-07-01-git-mirror-recording-generic-egress.md.
