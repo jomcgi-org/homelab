@@ -45,7 +45,7 @@ from bench.registry import (
 from bench.report import render_leaderboard
 from bench.runner import run_cell
 from bench.schema import Attempt, ResultCell, TaskSpec
-from bench.verifiers import get_verifier
+from bench.verifiers import get_verifier, verifier_source_hash
 
 
 def _load_yaml_mapping(p: Path) -> dict:
@@ -128,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_prune.add_argument(
         "--retired", action="store_true", help="(reserved, currently unused)"
     )
+    p_prune.add_argument(
+        "--results", default="results", help="Directory to read result JSON files from"
+    )
 
     # list
     p_list = sub.add_parser("list", help="List models and their status")
@@ -180,6 +183,7 @@ async def _run(args) -> None:
                 verify=verify,
                 verifier_args=task.verifier.args,
                 cost_fn=lambda p, c: client.cost_usd(model.id, p, c),
+                max_tokens=model.params.max_tokens,
             )
         finally:
             if cleanup:
@@ -219,7 +223,8 @@ async def _run(args) -> None:
                 return data["choices"][0]["message"]["content"]
 
         try:
-            result = judge_free_text(
+            result = await asyncio.to_thread(
+                judge_free_text,
                 candidate=c1.text,
                 task_prompt=task.prompt,
                 cfg=cfg,
@@ -257,8 +262,14 @@ async def _run(args) -> None:
         task_fixture_dir = Path(args.tasks) / task.id / "fixture"
         fx = fixture_hash(task_fixture_dir) if task_fixture_dir.exists() else ""
         params_repr = f"{model.params.temperature}:{model.params.max_tokens}"
+        src_hash = (
+            verifier_source_hash(task.verifier.kind)
+            if task.verifier.kind != "judge"
+            else "judge"
+        )
         verifier_repr = json.dumps(
-            {"kind": task.verifier.kind, "args": task.verifier.args}, sort_keys=True
+            {"kind": task.verifier.kind, "args": task.verifier.args, "src": src_hash},
+            sort_keys=True,
         )
         key = cell_key(
             prompt=task.prompt,
@@ -274,18 +285,48 @@ async def _run(args) -> None:
             return
 
         async with sem:
-            if task.verifier.kind == "judge":
-                cell = await _judge_cell(task, model, key)
-            else:
-                cell = await _deterministic_cell(task, model, key)
+            try:
+                if task.verifier.kind == "judge":
+                    cell = await _judge_cell(task, model, key)
+                else:
+                    cell = await _deterministic_cell(task, model, key)
 
-            if cell is not None:
+                if cell is not None:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(cell.model_dump_json(indent=2))
+                    print(f"[{cell.outcome}] {model.id} / {task.id}")
+            except Exception as e:
+                prompt_template_hash = hashlib.sha256(task.prompt.encode()).hexdigest()[
+                    :8
+                ]
+                fail_cell = ResultCell(
+                    task_id=task.id,
+                    task_version=task.version,
+                    model_id=model.id,
+                    content_hash=key,
+                    outcome="fail",
+                    attempts=[
+                        Attempt(
+                            passed=False,
+                            feedback=f"[harness error] {type(e).__name__}: {e}",
+                            latency_ms=0,
+                            prompt_tokens=0,
+                            completion_tokens=0,
+                        )
+                    ],
+                    cost_usd=0.0,
+                    harness_version=HARNESS_VERSION,
+                    prompt_template_hash=prompt_template_hash,
+                )
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(cell.model_dump_json(indent=2))
-                print(f"[{cell.outcome}] {model.id} / {task.id}")
+                path.write_text(fail_cell.model_dump_json(indent=2))
+                logger.warning("harness error for %s / %s: %s", model.id, task.id, e)
 
     coroutines = [_cell(task, model) for task in tasks for model in models]
-    await asyncio.gather(*coroutines)
+    results = await asyncio.gather(*coroutines, return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("unhandled gather exception: %s", r)
     await client.aclose()
 
 
@@ -311,22 +352,26 @@ def _report(args) -> None:
     anchor_agg = {mid: cls_map for mid, cls_map in agg.items() if mid in anchor_ids}
     cand_agg = {mid: cls_map for mid, cls_map in agg.items() if mid not in anchor_ids}
 
+    # Deterministic single anchor: prefer id containing "sonnet", else smallest id.
+    if anchor_ids:
+        sonnet_anchors = sorted(a for a in anchor_ids if "sonnet" in a.lower())
+        anchor_id = sonnet_anchors[0] if sonnet_anchors else sorted(anchor_ids)[0]
+    else:
+        anchor_id = None
+
     # Build per_class for candidates: model_id -> class -> {pass1, cost, tier, qualifies}
     per_class: dict[str, dict[str, dict]] = {}
     for model_id, cls_map in cand_agg.items():
         per_class[model_id] = {}
         for cls, score in cls_map.items():
-            # Find the first anchor that has results for this class.
-            anchor_score = None
-            for aid in anchor_ids:
-                if aid in anchor_agg and cls in anchor_agg[aid]:
-                    anchor_score = anchor_agg[aid][cls]
-                    break
+            anchor_score = anchor_agg.get(anchor_id, {}).get(cls) if anchor_id else None
             per_class[model_id][cls] = {
                 "pass1": score.pass1,
                 "cost": score.cost,
                 "tier": coarse_tier(score.pass1, score.pass2),
-                "qualifies": qualifies(score, anchor_score) if anchor_score else False,
+                "qualifies": qualifies(score, anchor_score)
+                if anchor_score is not None
+                else False,
             }
 
     # Build anchors_dict: model_id -> class -> {pass1, cost}
@@ -396,7 +441,7 @@ def _drop(args) -> None:
 def _prune(args) -> None:
     """Delete result directories for all retired models."""
     reg = load_registry(Path(args.models))
-    pruned = prune_retired(Path("results"), reg)
+    pruned = prune_retired(Path(args.results), reg)
     print(pruned)
 
 

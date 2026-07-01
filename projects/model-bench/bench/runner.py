@@ -47,7 +47,7 @@ def extract_files(text: str, target_files: list[str]) -> dict[str, str]:
             found_headers = True
             if current_file is not None:
                 file_blocks[current_file] = current_lines
-            current_file = line[5:]
+            current_file = line[len("FILE ") :].strip()
             current_lines = []
         else:
             if current_file is not None:
@@ -105,6 +105,7 @@ async def run_cell(
     verify,
     verifier_args: dict,
     cost_fn,
+    max_tokens: int = 8192,
 ) -> ResultCell:
     """Run a 2-shot (task, model) cell and return a graded ResultCell.
 
@@ -125,6 +126,7 @@ async def run_cell(
             model=model_id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
+            max_tokens=max_tokens,
         )
         workdir1 = _make_workdir(fixture_dir)
         workdirs.append(workdir1)
@@ -159,7 +161,12 @@ async def run_cell(
                     ),
                 },
             ]
-            c2 = await complete(model=model_id, messages=messages, temperature=0.0)
+            c2 = await complete(
+                model=model_id,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
             # Fresh clean copy: shot-1 writes must not leak into shot 2.
             workdir2 = _make_workdir(fixture_dir)
             workdirs.append(workdir2)

@@ -75,7 +75,8 @@ class OpenRouterClient:
 
         assert resp is not None
         data = resp.json()
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        message = data.get("choices", [{}])[0].get("message", {}) or {}
+        text = message.get("content") or ""
         usage = data.get("usage", {})
         prompt_tokens = int(usage.get("prompt_tokens", 0))
         completion_tokens = int(usage.get("completion_tokens", 0))
