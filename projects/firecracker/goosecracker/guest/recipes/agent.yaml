@@ -9,6 +9,12 @@ instructions: |
   and test. Commit with Conventional Commits and push a claude/-prefixed branch
   if the task calls for code changes.
 
+  Before you make changes, read ./CLAUDE.md at the repo root and the CLAUDE.md in
+  any project directory you touch (e.g. projects/<service>/CLAUDE.md). They hold
+  the repo's conventions, patterns, and anti-patterns (container images, GitOps,
+  chart bumps, writing style, and more). Follow them: matching the repo's existing
+  rules and style matters more than your own defaults.
+
   When you finish, return a structured result (enforced by the response schema
   below): a short `summary` of the action and outcome, or the answer itself if
   the task was a question; optional `details` for the fuller answer or notable
@@ -43,6 +49,6 @@ response:
         description: "The kind of result."
       url:
         type: string
-        description: "A PR or issue URL if one was opened; otherwise an empty string."
+        description: "A PR or issue URL ONLY if you actually opened one in this run (you have its real URL); otherwise an empty string. Never invent, guess, or reconstruct a URL."
     required:
       - summary
