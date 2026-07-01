@@ -2940,6 +2940,19 @@ py_test(
 )
 
 py_test(
+    name = "campsites_router_test",
+    srcs = ["campsites/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "stars_init_test",
     srcs = ["stars/__init___test.py"],
     imports = ["."],

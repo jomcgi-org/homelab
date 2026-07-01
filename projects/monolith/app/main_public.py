@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 import artifact
+import campsites
 import chat_public
 import dr_jobs
 import hikes
@@ -43,6 +44,7 @@ stars.register_public(app)
 trips.register_public(app)
 hikes.register_public(app)
 dr_jobs.register_public(app)
+campsites.register_public(app)
 worldcup.register_public(app)
 knowledge.register_public(app)
 home.register_public(app)
