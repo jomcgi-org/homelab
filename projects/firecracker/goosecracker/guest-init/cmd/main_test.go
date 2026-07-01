@@ -1,7 +1,7 @@
 package main
 
 import (
-	"reflect"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -25,7 +25,8 @@ func dnsQuery(name string, qtype uint16) []byte {
 }
 
 func TestBuildDNSResponseA(t *testing.T) {
-	r := buildDNSResponse(dnsQuery("model.example.com", 1))
+	res := newSynthResolver()
+	r := buildDNSResponse(dnsQuery("model.example.com", 1), res)
 	if r == nil {
 		t.Fatal("nil response for A query")
 	}
@@ -38,13 +39,20 @@ func TestBuildDNSResponseA(t *testing.T) {
 	if an := int(r[6])<<8 | int(r[7]); an != 1 {
 		t.Fatalf("ANCOUNT = %d, want 1", an)
 	}
-	if rd := r[len(r)-4:]; rd[0] != 127 || rd[1] != 0 || rd[2] != 0 || rd[3] != 1 {
-		t.Errorf("A RDATA = %v, want 127.0.0.1", rd)
+	// The A RDATA is the name's synthetic 127.0.0.0/8 address, not a fixed
+	// 127.0.0.1, and it must equal the address the resolver hands out for the name.
+	rd := r[len(r)-4:]
+	if rd[0] != 127 {
+		t.Errorf("A RDATA = %v, want a 127.0.0.0/8 address", rd)
+	}
+	want := res.forName("model.example.com").As4()
+	if [4]byte{rd[0], rd[1], rd[2], rd[3]} != want {
+		t.Errorf("A RDATA = %v, want synthetic %v", rd, want)
 	}
 }
 
 func TestBuildDNSResponseAAAAIsNoData(t *testing.T) {
-	r := buildDNSResponse(dnsQuery("example.com", 28)) // AAAA
+	r := buildDNSResponse(dnsQuery("example.com", 28), newSynthResolver()) // AAAA
 	if r == nil {
 		t.Fatal("nil response for AAAA query")
 	}
@@ -54,27 +62,34 @@ func TestBuildDNSResponseAAAAIsNoData(t *testing.T) {
 }
 
 func TestBuildDNSResponseMalformed(t *testing.T) {
-	if got := buildDNSResponse([]byte{0x00, 0x01}); got != nil {
+	if got := buildDNSResponse([]byte{0x00, 0x01}, newSynthResolver()); got != nil {
 		t.Errorf("want nil for a too-short packet, got %v", got)
 	}
 }
 
-func TestParseEgressPorts(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want []int
-	}{
-		{name: "empty falls back to default", in: "", want: defaultEgressPorts},
-		{name: "all invalid falls back to default", in: "bad,-1,70000", want: defaultEgressPorts},
-		{name: "parsed and trimmed", in: "80, 443 ,9090", want: []int{80, 443, 9090}},
-		{name: "invalid entries dropped", in: "80,oops,443", want: []int{80, 443}},
+func TestSynthResolverStableAndReversible(t *testing.T) {
+	res := newSynthResolver()
+	a := res.forName("api.github.com")
+	// Same name is stable; case/trailing-dot normalise to the same entry.
+	if b := res.forName("API.github.com."); a != b {
+		t.Errorf("forName not stable/normalised: %v vs %v", a, b)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := parseEgressPorts(tt.in); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parseEgressPorts(%q) = %v, want %v", tt.in, got, tt.want)
-			}
-		})
+	// Different names get different addresses.
+	c := res.forName("openrouter.ai")
+	if a == c {
+		t.Errorf("distinct names share an address: %v", a)
+	}
+	if a.As4()[0] != 127 || c.As4()[0] != 127 {
+		t.Errorf("synthetic addresses not in 127/8: %v %v", a, c)
+	}
+	if a == netip.MustParseAddr("127.0.0.1") {
+		t.Error("allocated 127.0.0.1, which is reserved for DNS + capture listener")
+	}
+	// Reverse map recovers the original name.
+	if n, ok := res.name(a); !ok || n != "api.github.com" {
+		t.Errorf("reverse map = (%q, %v), want api.github.com", n, ok)
+	}
+	if _, ok := res.name(netip.MustParseAddr("127.9.9.9")); ok {
+		t.Error("reverse map returned a name for an unallocated address")
 	}
 }

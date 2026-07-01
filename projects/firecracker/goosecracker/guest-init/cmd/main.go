@@ -7,12 +7,12 @@
 // and returns the result. Readiness is signalled via GET /shim/ready so the
 // fc-invoke daemon can poll before routing an invocation.
 //
-// This is the disposable-VM (cold-run) model: there is no snapshot/idle detector,
-// no host control channel, and no session/artifact persistence. The task arrives
-// in the HTTP request body, not over a vsock control handshake. The egress
-// secret-swap CA is installed per invoke from the request env (ADR 023 6b, see
-// installGuestCA). Session resume and artifact publish are still deferred; the
-// handler and AgentRequest leave hooks for them.
+// This is the disposable-VM (cold-run) model: there is no snapshot/idle detector
+// and no host control channel. The task arrives in the HTTP request body, not
+// over a vsock control handshake. Durable state is orchestrator-owned and rides
+// the request/response: session resume (ADR 026 Phase 2) via the SessionStore
+// seam, artifact publish via AgentResult, and the egress secret-swap CA installed
+// per invoke from the request env (ADR 023 6b, see installGuestCA).
 package main
 
 import (
@@ -23,12 +23,14 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/handler"
@@ -100,11 +102,13 @@ func run(logger *slog.Logger) error {
 
 	// Bring the transparent egress funnel up BEFORE serving (ADR 023). The guest is
 	// vsock-only and goose's client ignores HTTP_PROXY, so instead of any proxy
-	// config we (1) answer every DNS query with 127.0.0.1 and (2) listen on the
-	// egress ports on loopback, tunnelling each accepted connection over vsock to
-	// the host sidecar, which routes it by SNI/Host. This must be live before an
-	// /invoke run starts goose, or the model is unreachable.
-	setupTransparentEgress(ctx, logger, os.Getenv("EGRESS_PORTS"))
+	// config we give every DNS name a synthetic 127.0.0.0/8 address, REDIRECT all
+	// outbound TCP to one loopback capture listener, recover each connection's
+	// original destination via SO_ORIGINAL_DST (reverse-mapping the synthetic
+	// address to its name), and tunnel it over vsock to the host sidecar with a
+	// "host:port" preamble. This must be live before an /invoke run starts goose,
+	// or the model is unreachable.
+	setupTransparentEgress(ctx, logger)
 
 	ln, err := vsockdial.Listen(vsockproto.GuestHTTPPort)
 	if err != nil {
@@ -262,27 +266,26 @@ func mergeEnv(env map[string]string) []string {
 	return out
 }
 
-// defaultEgressPorts are the loopback ports the funnel captures when EGRESS_PORTS
-// is unset (nothing injects EGRESS_PORTS into a raw-FC guest today, so these
-// defaults are what actually apply). They must cover every port the workload's
-// egress allowlist declares, since wildcard DNS points every name at loopback and
-// only these ports have a funnel listener; any other port fails closed. Covered:
-// 80 (MCP gateway), 443 (HTTPS/open web), 8000 (monolith progress + artifact
-// sink), 8080 (in-cluster model), 4318 (SigNoz OTLP, when tracing is wired).
-// Generic any-port capture (iptables REDIRECT) is future work (ADR 023).
-var defaultEgressPorts = []int{80, 443, 8000, 8080, 4318}
+// capturePort is the loopback port the netfilter REDIRECT sends all captured
+// guest TCP egress to. The capture listener recovers each connection's original
+// destination via SO_ORIGINAL_DST, so one listener replaces the old per-port
+// funnel and any destination port is captured (ADR 023 generic egress).
+const capturePort = 15001
 
-// setupTransparentEgress makes the guest a dumb egress funnel (ADR 023). It
-// points the resolver at a wildcard responder that answers every name with
-// 127.0.0.1, then listens on each egress port on loopback and tunnels every
-// accepted connection over vsock to the host sidecar. The guest decides nothing
-// about routing; the sidecar recovers the real destination from the SNI/Host.
-func setupTransparentEgress(ctx context.Context, logger *slog.Logger, portsSpec string) {
+// setupTransparentEgress makes the guest a dumb egress funnel (ADR 023). goose's
+// client ignores HTTP_PROXY and the guest is vsock-only, so instead of proxy
+// config we (1) answer every DNS name with a unique synthetic 127.0.0.0/8 address
+// and remember the name<->address mapping, (2) REDIRECT all outbound TCP to a
+// single loopback capture listener via netfilter, and (3) recover each
+// connection's original destination with SO_ORIGINAL_DST, reverse-map the
+// synthetic address back to the name (or forward a literal IP as-is), and tunnel
+// it over vsock to the host sidecar with a "host:port" preamble. The sidecar
+// classifies and routes it (external allow, internal deny-by-default).
+func setupTransparentEgress(ctx context.Context, logger *slog.Logger) {
 	writeResolvConf(logger)
-	go runWildcardDNS(ctx, logger)
-	for _, port := range parseEgressPorts(portsSpec) {
-		go runFunnel(ctx, logger, port)
-	}
+	res := newSynthResolver()
+	go runWildcardDNS(ctx, logger, res)
+	setupCapture(ctx, logger, res)
 }
 
 // writeResolvConf points the guest's stub resolver at the in-guest wildcard DNS.
@@ -292,31 +295,71 @@ func writeResolvConf(logger *slog.Logger) {
 	}
 }
 
-// parseEgressPorts parses a comma-separated port list, falling back to
-// defaultEgressPorts when empty or fully invalid.
-func parseEgressPorts(spec string) []int {
-	var ports []int
-	for _, p := range strings.Split(spec, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		n, err := strconv.Atoi(p)
-		if err != nil || n <= 0 || n > 65535 {
-			continue
-		}
-		ports = append(ports, n)
-	}
-	if len(ports) == 0 {
-		return defaultEgressPorts
-	}
-	return ports
+// synthResolver hands every DNS name a unique synthetic address in 127.0.0.0/8
+// and remembers the mapping both ways. The wildcard DNS responder answers A
+// queries with the synthetic address (so every name routes to the loopback
+// capture listener), and the capture listener reverse-maps the SO_ORIGINAL_DST
+// address back to the real name for the sidecar preamble. Recovering the name
+// (not an SNI/Host sniff) is what lets plaintext protocols with no host in the
+// stream, like git://, be routed.
+type synthResolver struct {
+	mu     sync.Mutex
+	byName map[string]netip.Addr
+	byIP   map[netip.Addr]string
+	next   uint32
 }
 
-// runWildcardDNS answers every DNS query on 127.0.0.1:53 with an A record of
-// 127.0.0.1 (and NODATA for non-A types), so every hostname goose resolves points
-// at the loopback funnel. It returns when ctx is done.
-func runWildcardDNS(ctx context.Context, logger *slog.Logger) {
+func newSynthResolver() *synthResolver {
+	return &synthResolver{
+		byName: map[string]netip.Addr{},
+		byIP:   map[netip.Addr]string{},
+		next:   0x7f000002, // 127.0.0.2 (skip 127.0.0.1: DNS + capture listener live there)
+	}
+}
+
+// forName returns the synthetic address for name, allocating one on first use.
+func (s *synthResolver) forName(name string) netip.Addr {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ip, ok := s.byName[name]; ok {
+		return ip
+	}
+	ip := s.allocLocked()
+	s.byName[name] = ip
+	s.byIP[ip] = name
+	return ip
+}
+
+// allocLocked returns the next free 127.0.0.0/8 address, skipping 127.0.0.1 and
+// wrapping if the (enormous) space is somehow exhausted.
+func (s *synthResolver) allocLocked() netip.Addr {
+	for {
+		v := s.next
+		s.next++
+		if v>>24 != 127 { // ran off the end of 127/8; wrap
+			s.next = 0x7f000002
+			continue
+		}
+		if v == 0x7f000001 { // 127.0.0.1
+			continue
+		}
+		return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
+	}
+}
+
+// name reverse-maps a synthetic address to its DNS name.
+func (s *synthResolver) name(ip netip.Addr) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.byIP[ip]
+	return n, ok
+}
+
+// runWildcardDNS answers every DNS query on 127.0.0.1:53: an A query gets the
+// name's synthetic 127.0.0.0/8 address (allocated on demand), any other type gets
+// NODATA so the resolver falls back to the A record. It returns when ctx is done.
+func runWildcardDNS(ctx context.Context, logger *slog.Logger, res *synthResolver) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:53")
 	if err != nil {
 		logger.Warn("wildcard DNS listen failed; goose name resolution will fail", "err", err)
@@ -335,7 +378,7 @@ func runWildcardDNS(ctx context.Context, logger *slog.Logger) {
 			}
 			return
 		}
-		if resp := buildDNSResponse(buf[:n]); resp != nil {
+		if resp := buildDNSResponse(buf[:n], res); resp != nil {
 			if _, err := pc.WriteTo(resp, addr); err != nil {
 				logger.Warn("wildcard DNS write", "err", err)
 			}
@@ -344,27 +387,15 @@ func runWildcardDNS(ctx context.Context, logger *slog.Logger) {
 }
 
 // buildDNSResponse builds a minimal reply to a single-question DNS query: an A
-// query is answered with 127.0.0.1; any other type gets NODATA (NOERROR, no
-// answer) so the resolver falls back to the A record. Returns nil on a malformed
-// query.
-func buildDNSResponse(req []byte) []byte {
+// query is answered with the name's synthetic address from res; any other type
+// gets NODATA (NOERROR, no answer) so the resolver falls back to the A record.
+// Returns nil on a malformed query.
+func buildDNSResponse(req []byte, res *synthResolver) []byte {
 	if len(req) < 12 {
 		return nil
 	}
-	// Walk the question's QNAME to find QTYPE/QCLASS (4 bytes after the root label).
-	off := 12
-	for off < len(req) {
-		l := int(req[off])
-		if l == 0 {
-			off++
-			break
-		}
-		if l&0xc0 != 0 { // a compression pointer has no place in a query QNAME
-			return nil
-		}
-		off += l + 1
-	}
-	if off+4 > len(req) {
+	name, off := parseQName(req, 12)
+	if off < 0 || off+4 > len(req) {
 		return nil
 	}
 	qtype := uint16(req[off])<<8 | uint16(req[off+1])
@@ -383,28 +414,58 @@ func buildDNSResponse(req []byte) []byte {
 	resp = append(resp, 0x00, 0x00, 0x00, 0x00) // NSCOUNT=0, ARCOUNT=0
 	resp = append(resp, req[12:qend]...)        // echo the question
 	if isA {
+		a4 := res.forName(name).As4()
 		resp = append(resp,
 			0xc0, 0x0c, // NAME: pointer to the question name at offset 12
 			0x00, 0x01, // TYPE A
 			0x00, 0x01, // CLASS IN
 			0x00, 0x00, 0x00, 0x3c, // TTL 60s
 			0x00, 0x04, // RDLENGTH 4
-			0x7f, 0x00, 0x00, 0x01, // 127.0.0.1
+			a4[0], a4[1], a4[2], a4[3],
 		)
 	}
 	return resp
 }
 
-// runFunnel listens on loopback:port and tunnels each accepted connection to the
-// host sidecar over vsock. It returns when ctx is done.
-func runFunnel(ctx context.Context, logger *slog.Logger, port int) {
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+// parseQName reads a DNS QNAME starting at off and returns the dotted name plus
+// the offset just past the root label. It returns off=-1 on a malformed name
+// (bad length, a compression pointer, or truncation); a query QNAME never uses
+// compression.
+func parseQName(req []byte, off int) (string, int) {
+	var sb strings.Builder
+	for off < len(req) {
+		l := int(req[off])
+		if l == 0 {
+			return sb.String(), off + 1
+		}
+		if l&0xc0 != 0 { // a compression pointer has no place in a query QNAME
+			return "", -1
+		}
+		off++
+		if off+l > len(req) {
+			return "", -1
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte('.')
+		}
+		sb.Write(req[off : off+l])
+		off += l
+	}
+	return "", -1
+}
+
+// runCaptureListener accepts the netfilter-redirected connections on the loopback
+// capture port, recovers each one's original destination via SO_ORIGINAL_DST,
+// maps a synthetic address back to its DNS name (a literal IP passes through),
+// and tunnels the connection to the host sidecar. It returns when ctx is done.
+func runCaptureListener(ctx context.Context, logger *slog.Logger, res *synthResolver) {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(capturePort))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		logger.Warn("egress funnel listen failed", "addr", addr, "err", err)
+		logger.Warn("egress capture listen failed", "addr", addr, "err", err)
 		return
 	}
-	logger.Info("egress funnel listening", "addr", addr)
+	logger.Info("egress capture listening", "addr", addr)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -413,28 +474,58 @@ func runFunnel(ctx context.Context, logger *slog.Logger, port int) {
 		local, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() == nil {
-				logger.Warn("egress funnel accept", "addr", addr, "err", err)
+				logger.Warn("egress capture accept", "err", err)
 			}
 			return
 		}
-		go funnelToHost(logger, local, port)
+		go handleCaptured(logger, local, res)
 	}
 }
 
-// funnelToHost dials the host over vsock, writes a one-line preamble carrying the
-// original destination port (the listener's port), then copies bytes both ways.
-// The sidecar recovers the destination host from the SNI/Host header and combines
-// it with this port to reach the real upstream.
-func funnelToHost(logger *slog.Logger, local net.Conn, port int) {
+// handleCaptured recovers the original destination of one captured connection and
+// tunnels it to the host sidecar. A synthetic 127.0.0.0/8 destination is
+// reverse-mapped to its DNS name; a literal IP is forwarded as-is. It closes
+// local on the error paths; funnelToHost owns it once handed over.
+func handleCaptured(logger *slog.Logger, local net.Conn, res *synthResolver) {
+	tcp, ok := local.(*net.TCPConn)
+	if !ok {
+		logger.Warn("egress capture: non-TCP conn")
+		_ = local.Close()
+		return
+	}
+	dst, err := originalDst(tcp)
+	if err != nil {
+		logger.Warn("egress capture: SO_ORIGINAL_DST failed", "err", err)
+		_ = local.Close()
+		return
+	}
+	host := dst.Addr().String()
+	if dst.Addr().Is4() && dst.Addr().As4()[0] == 127 {
+		name, ok := res.name(dst.Addr())
+		if !ok {
+			logger.Warn("egress capture: unknown synthetic address", "addr", dst.Addr().String())
+			_ = local.Close()
+			return
+		}
+		host = name
+	}
+	funnelToHost(logger, local, host, int(dst.Port()))
+}
+
+// funnelToHost dials the host sidecar over vsock, writes a one-line "host:port"
+// preamble carrying the recovered destination, then copies bytes both ways. The
+// sidecar classifies and routes by that destination. It owns local.
+func funnelToHost(logger *slog.Logger, local net.Conn, host string, port int) {
 	defer local.Close()
 	up, err := vsockdial.Dial(vsockproto.HostCID, vsockproto.EgressPort)
 	if err != nil {
-		logger.Warn("egress funnel vsock dial", "port", port, "err", err)
+		logger.Warn("egress funnel vsock dial", "host", host, "port", port, "err", err)
 		return
 	}
 	defer up.Close()
-	if _, err := io.WriteString(up, strconv.Itoa(port)+"\n"); err != nil {
-		logger.Warn("egress funnel preamble write", "port", port, "err", err)
+	preamble := net.JoinHostPort(host, strconv.Itoa(port)) + "\n"
+	if _, err := io.WriteString(up, preamble); err != nil {
+		logger.Warn("egress funnel preamble write", "host", host, "port", port, "err", err)
 		return
 	}
 	done := make(chan struct{}, 2)

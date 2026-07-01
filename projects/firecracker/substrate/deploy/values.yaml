@@ -40,17 +40,22 @@ imagePullSecret:
 # the sidecar's permits() consults only this allowlist, not the catalog.
 egress:
   enabled: true
-  policy: allowlist
-  # A real list for readability; the chart joins it into the comma-separated
-  # EGRESS_ALLOWLIST the sidecar parses. A bare host allows any port; host:port
-  # pins the port.
-  allowlist:
-    - inference.inference.svc.cluster.local:8080 # in-cluster model (Qwen; OPENAI_HOST)
-    - monolith.monolith.svc.cluster.local:8000 # monolith progress / artifact sink
-    - context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80 # MCP tools
-    - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318 # goose OTLP traces
-    - api.github.com:443 # gh/API (6b swap host)
-    - openrouter.ai:443 # artifact tier model (6b swap host)
+  # Split-horizon guardrail (ADR 023): the public internet is open so the agent can
+  # read arbitrary docs/APIs; the cluster is deny-by-default and confined to the
+  # internal allowlist below, which closes the cluster-pivot vector.
+  external: allow
+  internal:
+    default: deny
+    # Internal (cluster) destinations the agent legitimately needs. A bare host
+    # allows any port; host:port pins the port. The external secret-swap hosts
+    # (api.github.com, openrouter.ai) are NOT here: external:allow reaches them and
+    # the per-secret egressTo scopes where the real value materialises.
+    allowlist:
+      - inference.inference.svc.cluster.local:8080 # in-cluster model (Qwen; OPENAI_HOST)
+      - monolith.monolith.svc.cluster.local:8000 # monolith progress / artifact sink
+      - context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80 # MCP tools
+      - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318 # goose OTLP traces
+      - git-mirror.monolith.svc.cluster.local:9418 # hot git mirror (ADR 026 hydrate + record)
   # ADR 023 phase 6b secret catalog. Each guest holds only the high-entropy
   # placeholder as env; the sidecar TLS-terminates the egressTo host with a leaf
   # minted from the cert-manager egress CA and swaps the placeholder for the real
