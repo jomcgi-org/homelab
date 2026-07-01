@@ -137,6 +137,31 @@ firecracker:
   # announce readiness over its shim.
   bootReadyTimeout: 60s
 
+# Egress-proxy sidecar (ADR 023 phase 6a, plain allowlist-forward). When enabled
+# a pod-local egress-proxy sidecar is added; the daemon forwards each egress-
+# enabled workload's guest vsock egress to it over localhost (the sidecar is the
+# only process that reaches the network on a guest's behalf). Plain mode only:
+# NO secret catalog / CA / secret-swap (a later PR). Default off; there is no
+# egress-enabled workload yet (the agent PR flips this on and populates the
+# allowlist). The image repository + tag are Bazel-pinned from the egress-proxy
+# image's .info provider at chart-build (see chart/BUILD `images`).
+egress:
+  enabled: false
+  # Egress posture. "allowlist" denies any destination not in `allowlist` (fail
+  # closed). "allow" routes anywhere. Plain-mode default is allowlist.
+  policy: allowlist
+  # Destinations permitted under policy=allowlist (host[:port], comma-separated).
+  # Empty until the agent PR populates it. Ignored under policy=allow.
+  allowlist: ""
+  # Bazel-pinned at chart-build from the egress-proxy image .info provider.
+  image: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
 tracing:
   endpoint: ""
   serviceName: fc-invoke

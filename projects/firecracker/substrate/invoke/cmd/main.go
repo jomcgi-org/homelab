@@ -107,6 +107,7 @@ func run(logger *slog.Logger) error {
 			BaseKey:          name,
 			Arch:             cfg.Arch,
 			BootReadyTimeout: cfg.BootReadyTimeout,
+			SidecarAddr:      cfg.EgressSidecarAddr,
 		}, logger)
 		invokers[name] = inv
 

@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/config"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/egress"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
@@ -98,6 +99,11 @@ type Config struct {
 	// If a restore is not ready within this budget it is treated as unavailable
 	// and Invoke falls back to a cold boot. Defaults to 2s.
 	RestoreReadyTimeout time.Duration
+	// SidecarAddr is the pod-local egress-proxy sidecar TCP address (ADR 023
+	// phase 6a). When Workload.EgressEnabled is true, each guest's vsock egress
+	// connections are tunnelled here; the daemon holds no secrets and never
+	// parses the bytes. Ignored when egress is disabled (e.g. semgrep).
+	SidecarAddr string
 }
 
 // Invoker orchestrates invocations for one workload. The daemon creates one
@@ -278,6 +284,32 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 
 	uds := inv.driver.VsockUDSPath(h.ThreadID)
 
+	// Egress (ADR 023 phase 6a): when this workload has egress enabled, forward
+	// the guest's vsock egress connections to the pod-local egress-proxy sidecar.
+	// The forwarder runs for the life of the guest, bound to its own background
+	// context (independent of the request context, so it survives while the
+	// response body streams). egressCancel stops it and is folded into every path
+	// that discards the guest below, so the forwarder goroutine never outlives the
+	// VM. It is a no-op when egress is disabled (e.g. semgrep), leaving that path
+	// completely unaffected.
+	egressCancel := func() {}
+	if inv.cfg.Workload.EgressEnabled {
+		ectx, cancel := context.WithCancel(context.Background())
+		egressCancel = cancel
+		go func() {
+			if err := egress.ServeEgress(ectx, inv.logger, uds, inv.cfg.SidecarAddr); err != nil {
+				inv.logger.Warn("invoker: egress forwarder stopped", "thread", h.ThreadID, "err", err)
+			}
+		}()
+	}
+	// discardGuest tears the VM down and stops its egress forwarder together, so
+	// the forwarder's context is cancelled exactly when the guest is discarded on
+	// every path (each eager error return below, and the success body Close).
+	discardGuest := func() {
+		egressCancel()
+		inv.discard(h)
+	}
+
 	// A warm restore is already warmed in the snapshot, so it answers /shim/ready
 	// almost immediately; use the short RestoreReadyTimeout so a wedged or dead
 	// restore fails fast and falls back to a cold boot. A cold boot needs the
@@ -294,7 +326,7 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	readyErr := inv.transport.WaitReady(readyCtx, uds, inv.cfg.Workload.ReadyPath)
 	cancelReady()
 	if readyErr != nil {
-		inv.discard(h)
+		discardGuest()
 		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("guest readiness: %w", readyErr)}
 	}
 
@@ -308,13 +340,13 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		// This only fails for malformed method strings; treat as infrastructure
 		// error, not a VM issue. No body to own, so clean up eagerly.
 		cancelRT()
-		inv.discard(h)
+		discardGuest()
 		return nil, nil, fmt.Errorf("invoker: build request: %w", err)
 	}
 	resp, err := inv.transport.RoundTrip(rtCtx, uds, req)
 	if err != nil {
 		cancelRT()
-		inv.discard(h)
+		discardGuest()
 		if warm {
 			// On the warm path a transport-level round-trip failure (the
 			// connection broke mid-request) after readiness passed suggests the
@@ -333,7 +365,7 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	// the VM; it will run only when the body is closed, after streaming. Cancel
 	// the context AFTER discarding so an in-flight read is never aborted early.
 	cleanup := func() {
-		inv.discard(h)
+		discardGuest()
 		cancelRT()
 	}
 	return resp, cleanup, nil
