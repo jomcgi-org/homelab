@@ -206,6 +206,7 @@ py_library(
             "chat/**/*.py",
             "chat_public/**/*.py",
             "cluster/**/*.py",
+            "goosecracker/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
             "scheduler/**/*.py",
@@ -354,6 +355,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "agent/**",
     "chat/**",
     "cluster/**",
+    "goosecracker/**",
     "scheduler/**",
     # Trips: the read path (models.py + read_router.py + __init__.py) ships in
     # the public image; the write/heavy path stays out (pillow/boto3/defusedxml).
