@@ -1,0 +1,23 @@
+# Model ids must match OpenRouter /models slugs; verify before a real run.
+# Anchors define the qualification bar: a budget candidate must reach anchor
+# pass@1 on a class at materially lower cost to qualify for that class.
+models:
+  - id: anthropic/claude-opus-4.8
+    role: anchor
+    status: active
+
+  - id: anthropic/claude-sonnet-4.6
+    role: anchor
+    status: active
+
+  - id: qwen/qwen-2.5-coder-32b-instruct
+    status: active
+
+  - id: deepseek/deepseek-chat
+    status: active
+
+  - id: google/gemini-flash-1.5
+    status: active
+
+  - id: mistralai/mistral-small
+    status: active
