@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+spec:
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:  # nosemgrep: require-readiness-probe,require-resource-limits
+        - name: demo
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}

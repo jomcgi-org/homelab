@@ -1,0 +1,17 @@
+id: commit-message-01
+version: v1
+class: free-text
+prompt: |
+  Write a Conventional Commits message for this change: a Discord bot fact-check
+  button was updated so that clicking it names the requester in the thread and the
+  button is removed after one use. Include a concise subject line and a body that
+  explains the why. Do not use em-dashes.
+target_files: []
+verifier:
+  kind: judge
+  args:
+    judge_model: anthropic/claude-sonnet-4.6
+    criteria:
+      - "valid Conventional Commits subject (type(scope): description)"
+      - "body explains the motivation, not just the what"
+      - "contains no em-dash characters"
