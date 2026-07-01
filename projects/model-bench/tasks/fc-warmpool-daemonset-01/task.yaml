@@ -1,0 +1,118 @@
+id: fc-warmpool-daemonset-01
+version: v1
+class: code-fix
+tier: hard
+mode: agentic
+prompt: |
+  This is the firecracker invoke daemon ("fc-invoke"), which keeps a pool of warm
+  microVM slots and hands them to concurrent invocations. It ships as a node DaemonSet.
+  Three things are wrong and all must be fixed.
+
+  The Go code is a module with no go.mod yet. Its import paths use the prefix
+  `example.com/fcpool` (see pool/pool.go importing example.com/fcpool/vsock), and it
+  depends on the external package github.com/google/uuid. Initialise the module
+  (go mod init example.com/fcpool) and pull dependencies (go mod tidy) so it builds.
+
+  1. Concurrency bug. pool.Pool.Acquire and Release read and mutate the pool's `free`
+     slice and `conns` map with no synchronisation. Under concurrent use this both races
+     on that shared state and can hand the same slot to two callers at once. Make the pool
+     safe for concurrent use so that `go test -race ./...` passes.
+
+  2. DaemonSet cannot reach KVM. chart/templates/daemonset.yaml runs the daemon
+     privileged but gives it no access to the host's /dev/kvm device, so firecracker
+     cannot launch microVMs. Expose /dev/kvm to the container (a hostPath volume mounted
+     at /dev/kvm is the usual approach) so it appears in the rendered manifest.
+
+  You have a `run` tool: use it to set up the module, run `go test -race ./...`, and
+  render the chart with `helm template` to check your work. When everything passes, call
+  done.
+agent:
+  max_turns: 45
+  exec: true
+verifier:
+  kind: command
+  args:
+    write_files:
+      _check.sh: |
+        #!/bin/sh
+        # The task is graded on all three axes at once.
+        # 1) The Go concurrency fix, under the race detector (also catches double-acquire).
+        if ! go test -race ./... 1>&2; then
+          echo "go test -race failed: the pool concurrency bug is not fixed" 1>&2
+          exit 1
+        fi
+        # 2) The DaemonSet must expose the host KVM device to the container.
+        if ! helm template rel ./chart 2>&1 | grep -q '/dev/kvm'; then
+          echo "the rendered DaemonSet does not expose /dev/kvm" 1>&2
+          exit 1
+        fi
+        echo ok
+
+      pool/pool_test.go: |
+        package pool
+
+        import (
+        	"sync"
+        	"testing"
+        )
+
+        // TestConcurrentAcquireReleaseNoDouble hammers the pool from many goroutines. A
+        // correct pool never hands the same slot to two callers at once; an unsynchronised
+        // one both races on its internal state (caught by `go test -race`) and can pop the
+        // same slot twice (caught by the held-set check below).
+        func TestConcurrentAcquireReleaseNoDouble(t *testing.T) {
+        	p := New(8)
+
+        	var mu sync.Mutex
+        	held := make(map[int]bool)
+        	var wg sync.WaitGroup
+        	for i := 0; i < 64; i++ {
+        		wg.Add(1)
+        		go func() {
+        			defer wg.Done()
+        			for j := 0; j < 300; j++ {
+        				c, err := p.Acquire()
+        				if err != nil {
+        					continue // exhaustion under contention is expected and fine
+        				}
+        				mu.Lock()
+        				if held[c.Slot] {
+        					mu.Unlock()
+        					t.Errorf("slot %d handed out to two callers at once", c.Slot)
+        					return
+        				}
+        				held[c.Slot] = true
+        				mu.Unlock()
+
+        				mu.Lock()
+        				delete(held, c.Slot)
+        				mu.Unlock()
+        				p.Release(c)
+        			}
+        		}()
+        	}
+        	wg.Wait()
+        }
+
+        // TestAcquireExhaustsAndRecovers checks the basic single-threaded contract still
+        // holds: New(n) yields exactly n slots, then ErrExhausted, and a Release frees one.
+        func TestAcquireExhaustsAndRecovers(t *testing.T) {
+        	p := New(2)
+        	a, err := p.Acquire()
+        	if err != nil {
+        		t.Fatalf("first acquire: %v", err)
+        	}
+        	if _, err := p.Acquire(); err != nil {
+        		t.Fatalf("second acquire: %v", err)
+        	}
+        	if _, err := p.Acquire(); err != ErrExhausted {
+        		t.Fatalf("third acquire: want ErrExhausted, got %v", err)
+        	}
+        	p.Release(a)
+        	if _, err := p.Acquire(); err != nil {
+        		t.Fatalf("acquire after release: %v", err)
+        	}
+        }
+
+    cmd: ["sh", "_check.sh"]
+    timeout_s: 300
