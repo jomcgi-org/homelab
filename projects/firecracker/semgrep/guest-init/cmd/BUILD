@@ -12,11 +12,11 @@ go_library(
         "mount_other.go",
         "primers.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/cmd",
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/semgrep/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/agent_platform/semgrep-guest-init/internal/lspdriver",
-        "//projects/agent_platform/semgrep-guest-init/internal/scanserver",
+        "//projects/firecracker/semgrep/guest-init/internal/lspdriver",
+        "//projects/firecracker/semgrep/guest-init/internal/scanserver",
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
