@@ -18,6 +18,7 @@
 # gazelle:exclude trips
 # gazelle:exclude dr_jobs
 # gazelle:exclude worldcup
+# gazelle:exclude campsites
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
@@ -71,6 +72,7 @@ _BACKEND_SRCS = glob(
         "trips/**/*.py",
         "dr_jobs/**/*.py",
         "worldcup/**/*.py",
+        "campsites/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -203,6 +205,7 @@ py_library(
             "trips/**/*.py",
             "dr_jobs/**/*.py",
             "worldcup/**/*.py",
+            "campsites/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -359,6 +362,12 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # The "*.py" include glob never captures the JSON; listed for defence in
     # depth (the public binary also omits it from `data`).
     "worldcup/ratings/elo_2026.json",
+    # Campsites: only the read path (models.py + router.py + __init__.py) ships in
+    # the public image. The scraper and weather-fetch modules (jobs/client/weather)
+    # pull httpx/scheduler and stay out of the public binary.
+    "campsites/jobs.py",
+    "campsites/client.py",
+    "campsites/weather.py",
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
@@ -398,6 +407,7 @@ py_library(
             "chat_public/**/*.py",
             "trips/**/*.py",
             "worldcup/**/*.py",
+            "campsites/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -454,6 +464,7 @@ py_venv_binary(
             "chat_public/**/*.py",
             "trips/**/*.py",
             "worldcup/**/*.py",
+            "campsites/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -511,6 +522,7 @@ py_test(
             "scheduler/**/*.py",
             "agent/**/*.py",
             "worldcup/**/*.py",
+            "campsites/**/*.py",
         ],
         exclude = [
             "**/*_test.py",
