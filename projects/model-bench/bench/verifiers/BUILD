@@ -70,13 +70,11 @@ py_library(
         "jsonmatch.py",
         "lint.py",
         "rbac.py",
+        "sandbox.py",
     ],
     imports = ["../.."],
     visibility = ["//projects/model-bench:__subpackages__"],
-    deps = [
-        "//projects/model-bench/bench",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
@@ -94,4 +92,23 @@ py_test(
         ":verifiers",
         "@pip//pytest",
     ],
+)
+
+semgrep_test(
+    name = "sandbox_semgrep_test",
+    srcs = ["sandbox.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "sandbox_test_semgrep_test",
+    srcs = ["sandbox_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+py_test(
+    name = "sandbox_test",
+    srcs = ["sandbox_test.py"],
+    imports = ["../.."],
+    deps = [":verifiers"],
 )
