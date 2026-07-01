@@ -55,13 +55,11 @@
     COL_GOOD,
   ];
 
-  // "Sunshine" ramp for the weather heatmap: transparent at zero density, warming
-  // through pale yellow and amber into lime and green as more open-and-clear parks
-  // cluster together. Kept as named constants (not inline literals) for the same
-  // semgrep-safety reason as the pin colors.
-  // Warm "sunshine" field: transparent at low density (so a single park does
-  // not glow), warming through gold to a hot orange for clusters of open+clear
-  // parks. Warm contrasts with the green terrain and makes the green pins pop.
+  // Warm "sunshine" field for the weather heatmap: transparent at low density
+  // (so a single park does not glow), warming through gold to a hot orange for
+  // clusters of open-and-clear parks. Warm contrasts with the green terrain and
+  // makes the green pins pop. Kept as named constants (not inline literals) for
+  // the same semgrep-safety reason as the pin colors.
   const HEAT_C0 = "rgba(0, 0, 0, 0)";
   const HEAT_C1 = "rgba(254, 243, 199, 0.35)"; // amber-100, very soft
   const HEAT_C2 = "rgba(253, 224, 71, 0.6)"; // yellow-300
