@@ -1,0 +1,188 @@
+{
+  "generated_at": "2026-07-01",
+  "harness_version": "0.1.4",
+  "tasks": [
+    {
+      "id": "hikes-walkhighlands-duration-01",
+      "class": "code-fix",
+      "verifier": "pytest",
+      "real_test": true,
+      "blurb": "hikes/walkhighlands.py scrapes walk metadata from WalkHighlands",
+      "source_commit": "00d549e9e6f31847dc1e103f2eef7408529c578c",
+      "passed": 11,
+      "n": 15
+    },
+    {
+      "id": "slo-budget-breach-01",
+      "class": "code-fix",
+      "verifier": "command",
+      "real_test": false,
+      "blurb": "slo.py computes SLO status and error-budget figures for the observability",
+      "source_commit": null,
+      "passed": 13,
+      "n": 15
+    },
+    {
+      "id": "worldcup-fixtures-guard-01",
+      "class": "code-fix",
+      "verifier": "pytest",
+      "real_test": true,
+      "blurb": "worldcup/client.py fetches and parses World Cup fixtures from an upstream feed.",
+      "source_commit": "10cb9aea1d0aec3245387667927fe6af744a8316",
+      "passed": 13,
+      "n": 15
+    }
+  ],
+  "models": [
+    {
+      "id": "qwen/qwen3-coder-30b-a3b-instruct",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 13246,
+      "median_turns": 4.0,
+      "cost_usd": 0.001434,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "google/gemma-4-26b-a4b-it",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 14339,
+      "median_turns": 5.0,
+      "cost_usd": 0.002106,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "google/gemma-4-31b-it",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 14382,
+      "median_turns": 5.0,
+      "cost_usd": 0.002615,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "qwen/qwen3-coder-next",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 12422,
+      "median_turns": 3.0,
+      "cost_usd": 0.002874,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 12853,
+      "median_turns": 3.0,
+      "cost_usd": 0.007748,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "z-ai/glm-4.7",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 13646,
+      "median_turns": 3.0,
+      "cost_usd": 0.010176,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "qwen/qwen3.6-27b",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 14475,
+      "median_turns": 4.0,
+      "cost_usd": 0.014302,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "z-ai/glm-5.2",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 11643,
+      "median_turns": 3.0,
+      "cost_usd": 0.035266,
+      "tool_use_ok": 0.6667
+    },
+    {
+      "id": "anthropic/claude-sonnet-4.6",
+      "role": "anchor",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 15893,
+      "median_turns": 4.0,
+      "cost_usd": 0.119629,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "anthropic/claude-opus-4.8",
+      "role": "anchor",
+      "n": 3,
+      "pass_rate": 1.0,
+      "median_tokens": 18560,
+      "median_turns": 3.0,
+      "cost_usd": 0.157905,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 0.6667,
+      "median_tokens": 30348,
+      "median_turns": 4.0,
+      "cost_usd": 0.002924,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "qwen/qwen3.6-35b-a3b",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 0.6667,
+      "median_tokens": 21519,
+      "median_turns": 5.0,
+      "cost_usd": 0.007213,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "mistralai/devstral-2512",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 0.6667,
+      "median_tokens": 14126,
+      "median_turns": 5.0,
+      "cost_usd": 0.009586,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "google/gemini-3.5-flash",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 0.3333,
+      "median_tokens": 23514,
+      "median_turns": 5.0,
+      "cost_usd": 0.095708,
+      "tool_use_ok": 1.0
+    },
+    {
+      "id": "qwen/qwen-2.5-coder-32b-instruct",
+      "role": "candidate",
+      "n": 3,
+      "pass_rate": 0.0,
+      "median_tokens": 0,
+      "median_turns": 1.0,
+      "cost_usd": 0.0,
+      "tool_use_ok": 0.0
+    }
+  ]
+}

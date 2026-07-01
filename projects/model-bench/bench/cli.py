@@ -127,6 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--models", default="models.yaml")
     p_report.add_argument("--tasks", default="tasks")
     p_report.add_argument("--out", default="reports/leaderboard.md")
+    p_report.add_argument(
+        "--json-out",
+        default=None,
+        help="Also write a structured leaderboard JSON here (for the public page)",
+    )
+    p_report.add_argument(
+        "--generated-at",
+        default=None,
+        help="Date stamp to embed in the JSON (default: today)",
+    )
 
     # drop
     p_drop = sub.add_parser("drop", help="Retire a model in the registry")
@@ -577,6 +587,100 @@ def _report(args) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md)
     print(f"Report written to {out_path}")
+
+    json_out = getattr(args, "json_out", None)
+    if json_out:
+        _write_leaderboard_json(
+            Path(json_out),
+            agentic=agentic,
+            cells=cells,
+            tasks=tasks,
+            anchor_ids=anchor_ids,
+            generated_at=getattr(args, "generated_at", None)
+            or datetime.date.today().isoformat(),
+        )
+        print(f"Leaderboard JSON written to {json_out}")
+
+
+def _write_leaderboard_json(
+    path: Path,
+    *,
+    agentic: dict,
+    cells: list,
+    tasks: list,
+    anchor_ids: set,
+    generated_at: str,
+) -> None:
+    """Write the structured agentic leaderboard consumed by the public page.
+
+    Self-contained snapshot: models ranked by pass-rate then cost, plus per-task
+    pass counts and light provenance, so the SvelteKit page renders from a single
+    committed file with no backend.
+    """
+    agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
+    task_meta = {t.id: t for t in tasks}
+
+    # Per-task pass counts over agentic cells.
+    per_task: dict[str, dict] = {}
+    for cell in cells:
+        if cell.turns is None or cell.task_id not in agentic_ids:
+            continue
+        d = per_task.setdefault(cell.task_id, {"passed": 0, "n": 0})
+        d["n"] += 1
+        d["passed"] += int(cell.first_attempt_passed)
+
+    def _blurb(tid: str) -> str:
+        if tid not in task_meta:
+            return ""
+        # First sentence of the prompt, trimmed, as a one-line task description.
+        first = task_meta[tid].prompt.strip().split("\n")[0]
+        sentence = first.split(". ")[0].strip()
+        return (sentence[:157] + "...") if len(sentence) > 160 else sentence
+
+    tasks_json = [
+        {
+            "id": tid,
+            "class": task_meta[tid].task_class.value if tid in task_meta else "",
+            "verifier": task_meta[tid].verifier.kind if tid in task_meta else "",
+            # A "pytest" verifier grades with the repo's own gold test; "command" is a
+            # synthetic behavioral check. Surfaced so the page can flag real-test tasks.
+            "real_test": (
+                tid in task_meta and task_meta[tid].verifier.kind == "pytest"
+            ),
+            "blurb": _blurb(tid),
+            "source_commit": (
+                task_meta[tid].source_commit if tid in task_meta else None
+            ),
+            "passed": v["passed"],
+            "n": v["n"],
+        }
+        for tid, v in sorted(per_task.items())
+    ]
+
+    models_json = [
+        {
+            "id": mid,
+            "role": "anchor" if mid in anchor_ids else "candidate",
+            "n": s["n"],
+            "pass_rate": round(s["pass_rate"], 4),
+            "median_tokens": int(s["med_tokens"]),
+            "median_turns": s["med_turns"],
+            "cost_usd": round(s["cost"], 6),
+            "tool_use_ok": round(s["tool_ok_rate"], 4),
+        }
+        for mid, s in agentic.items()
+    ]
+    # Best first: pass-rate desc, then cost asc, then tokens asc.
+    models_json.sort(key=lambda r: (-r["pass_rate"], r["cost_usd"], r["median_tokens"]))
+
+    payload = {
+        "generated_at": generated_at,
+        "harness_version": HARNESS_VERSION,
+        "tasks": tasks_json,
+        "models": models_json,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def _drop(args) -> None:
