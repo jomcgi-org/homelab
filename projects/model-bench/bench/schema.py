@@ -46,6 +46,10 @@ class ModelSpec(BaseModel):
     role: Literal["candidate", "anchor"] = "candidate"
     retired_reason: str | None = None
     retired_date: str | None = None
+    # Short display name for the leaderboard UI. Falls back to the id (minus the
+    # provider prefix) when unset, so the plot labels stay controllable from here
+    # rather than being string-munged in the frontend.
+    display_name: str | None = None
 
 
 class TaskSpec(BaseModel):

@@ -662,10 +662,16 @@ def _report(args) -> None:
             cells=cells,
             tasks=tasks,
             anchor_ids=anchor_ids,
+            display_names={m.id: m.display_name for m in reg if m.display_name},
             generated_at=getattr(args, "generated_at", None)
             or datetime.date.today().isoformat(),
         )
         print(f"Leaderboard JSON written to {json_out}")
+
+
+def _short_name(model_id: str) -> str:
+    """Display name minus the provider prefix (e.g. qwen/foo -> foo)."""
+    return model_id.split("/", 1)[1] if "/" in model_id else model_id
 
 
 def _write_leaderboard_json(
@@ -676,6 +682,7 @@ def _write_leaderboard_json(
     tasks: list,
     anchor_ids: set,
     generated_at: str,
+    display_names: dict | None = None,
 ) -> None:
     """Write the structured agentic leaderboard consumed by the public page.
 
@@ -743,9 +750,11 @@ def _write_leaderboard_json(
         for tid, v in sorted(per_task.items())
     ]
 
+    names = display_names or {}
     models_json = [
         {
             "id": mid,
+            "name": names.get(mid) or _short_name(mid),
             "role": "anchor" if mid in anchor_ids else "candidate",
             "n": s["n"],
             "pass_rate": round(s["pass_rate"], 4),

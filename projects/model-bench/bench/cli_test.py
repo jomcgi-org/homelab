@@ -128,6 +128,8 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     # Cheapest of two equal-pass models ranks first; anchor role is tagged.
     assert data["models"][0]["id"] == "cheap/win"
     assert data["models"][1]["role"] == "anchor"
+    # Display name falls back to the id minus the provider prefix when unset.
+    assert data["models"][0]["name"] == "win"
     # Value fields surfaced: wall-time and cost-per-solve.
     assert data["models"][0]["mean_latency_ms"] == 8000
     assert data["models"][0]["cost_per_solve_usd"] == 0.001

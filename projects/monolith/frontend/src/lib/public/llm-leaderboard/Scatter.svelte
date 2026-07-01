@@ -24,10 +24,10 @@
   // Each tab: the X metric. `get` reads the model-level mean; `cell` reads one task's
   // raw value; `log` picks a log axis for the wide-range metrics.
   const METRICS = {
-    cost: { label: "Cost", axis: "avg cost per task", lens: "cloud", log: true, get: (m) => m.cost_usd, cell: (c) => c.cost_usd, fmt: money },
-    wall: { label: "Wall-time", axis: "avg wall-time per task", lens: "cloud", log: false, get: (m) => (m.mean_latency_ms ?? 0) / 1000, cell: (c) => c.latency_ms / 1000, fmt: secs },
-    tokens: { label: "Output tokens", axis: "avg tokens per task", lens: "self-host", log: true, get: (m) => m.mean_tokens, cell: (c) => c.tokens, fmt: kfmt },
-    turns: { label: "Agent steps", axis: "avg steps per task", lens: "self-host", log: false, get: (m) => m.mean_turns, cell: (c) => c.turns, fmt: round },
+    cost: { label: "Cost", axis: "avg cost per task", lens: "cloud", beat: "cheaper than Claude", log: true, get: (m) => m.cost_usd, cell: (c) => c.cost_usd, fmt: money },
+    wall: { label: "Wall-time", axis: "avg wall-time per task", lens: "cloud", beat: "faster than Claude", log: false, get: (m) => (m.mean_latency_ms ?? 0) / 1000, cell: (c) => c.latency_ms / 1000, fmt: secs },
+    tokens: { label: "Output tokens", axis: "avg tokens per task", lens: "self-host", beat: "leaner than Claude", log: true, get: (m) => m.mean_tokens, cell: (c) => c.tokens, fmt: kfmt },
+    turns: { label: "Agent steps", axis: "avg steps per task", lens: "self-host", beat: "fewer steps than Claude", log: false, get: (m) => m.mean_turns, cell: (c) => c.turns, fmt: round },
   };
   const MK = ["cost", "wall", "tokens", "turns"];
   const cfg = $derived(METRICS[metric]);
@@ -58,9 +58,17 @@
         x = cfg.cell(c);
       }
       if (!(x > 0)) continue; // metric must be positive (log axis + a real run)
-      pts.push({ id: m.id, name: shortName(m.id), anchor: m.role === "anchor", x, y });
+      pts.push({ id: m.id, name: m.name ?? shortName(m.id), anchor: m.role === "anchor", x, y });
     }
     return pts;
+  });
+
+  // Budget-zone boundary: the most efficient Claude anchor on the current metric.
+  // Everything more efficient than it (to the right, since X is reversed) is a
+  // candidate to replace Claude, which is the whole point of the benchmark.
+  const anchorBound = $derived.by(() => {
+    const a = points.filter((p) => p.anchor).map((p) => p.x);
+    return a.length ? Math.min(...a) : null;
   });
   const providersShown = $derived([...new Set(points.map((p) => provider(p.id)))]);
 
@@ -174,6 +182,13 @@
         <text class="tick" x={xScale(tv)} y={M.t + ih + 16} text-anchor="middle">{cfg.fmt(tv)}</text>
       {/each}
       <text class="axis-title" x={M.l + iw / 2} y={H - 8} text-anchor="middle">{cfg.axis}{cfg.log ? " (log)" : ""}</text>
+
+      <!-- budget zone: right of the most efficient Claude anchor -->
+      {#if anchorBound != null && xScale(anchorBound) < M.l + iw - 4}
+        <rect class="zone" x={xScale(anchorBound)} y={M.t} width={M.l + iw - xScale(anchorBound)} height={ih} />
+        <line class="zone-edge" x1={xScale(anchorBound)} y1={M.t} x2={xScale(anchorBound)} y2={M.t + ih} />
+        <text class="zone-lab" x={xScale(anchorBound) + 6} y={M.t + ih - 8}>{cfg.beat}</text>
+      {/if}
 
       {#if frontier.length > 1}
         <polyline class="frontier" points={frontier.map((p) => `${xScale(p.x)},${yScale(p.y)}`).join(" ")} />
@@ -293,6 +308,21 @@
     font-family: var(--mono);
     font-size: 11px;
     fill: var(--ink-2);
+  }
+  .zone {
+    fill: var(--teal);
+    opacity: 0.07;
+  }
+  .zone-edge {
+    stroke: var(--teal);
+    stroke-width: 1.5;
+    stroke-dasharray: 3 3;
+  }
+  .zone-lab {
+    font-family: var(--mono);
+    font-size: 10px;
+    fill: var(--teal);
+    font-weight: 700;
   }
   .frontier {
     fill: none;

@@ -120,7 +120,7 @@
                 {#if hasBreakdown(m)}<span class="chev" aria-hidden="true">{openId === m.id ? "▾" : "▸"}</span>{/if}{i + 1}
               </td>
               <td class="mdl">
-                <span class="name">{shortName(m.id)}</span>
+                <span class="name">{m.name ?? shortName(m.id)}</span>
                 <span class="slug">{m.id}</span>
                 {#if m.role === "anchor"}<span class="tag anchor">anchor</span>{/if}
               </td>
@@ -201,7 +201,7 @@
             {#each disqualified as m}
               <tr class="dq">
                 <td class="mdl">
-                  <span class="name">{shortName(m.id)}</span>
+                  <span class="name">{m.name ?? shortName(m.id)}</span>
                   <span class="slug">{m.id}</span>
                 </td>
                 <td class="n"><span class="rate zero">{m.floor_pass}/{m.floor_n}</span></td>
