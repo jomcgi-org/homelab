@@ -1,14 +1,16 @@
-// Command semgrep-guest-init is the PID 1 of the semgrep scanner microVM. It keeps
-// a `semgrep lsp` process warm (rules loaded and compiled once), announces
-// readiness to the host controller over vsock, and then serves whole-file scan
-// requests on vsockproto.ScanPort: each request is a batch of in-memory files, each
-// response is the semgrep findings.
+// Command semgrep-guest-init is the PID 1 of the semgrep scanner microVM. It
+// keeps a `semgrep lsp` process warm (rules loaded and compiled once) and
+// serves scan requests over the fc-invoke shim protocol: an HTTP server over
+// AF_VSOCK on vsockproto.GuestHTTPPort. Readiness is signalled via
+// GET /shim/ready (returns 200 once the LSP is warm, 503 before that) so
+// fc-invoke can poll instead of relying on the legacy KindHello control-port
+// announcement.
 //
 // The semgrep environment is set OFFLINE before the process starts. This is
-// load-bearing: a non-empty SEMGREP_APP_TOKEN (even the literal string "offline")
-// is treated as a real login token and makes startup hang 10-60s on a Semgrep cloud
-// fetch. An empty token plus an isolated throwaway HOME/settings keeps it fully
-// local.
+// load-bearing: a non-empty SEMGREP_APP_TOKEN (even the literal string
+// "offline") is treated as a real login token and makes startup hang 10-60s
+// on a Semgrep cloud fetch. An empty token plus an isolated throwaway
+// HOME/settings keeps it fully local.
 package main
 
 import (
@@ -19,11 +21,14 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/firecracker/semgrep/guest-init/internal/handler"
 	"github.com/jomcgi/homelab/projects/firecracker/semgrep/guest-init/internal/lspdriver"
 	"github.com/jomcgi/homelab/projects/firecracker/semgrep/guest-init/internal/scanserver"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/shim"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
@@ -51,16 +56,17 @@ func run(logger *slog.Logger) error {
 	// Raw FC boot leaves loopback DOWN; bring it up before anything binds 127.0.0.1.
 	bringUpLoopback(logger)
 
-	// Mount a tmpfs over /tmp so all mutable guest state (the semgrep workspace, its
-	// HOME, the git repo) lives in RAM, not the rootfs. This lets the rootfs stay
-	// read-only and be shared by every microVM restored from one warm-base snapshot.
-	// Must precede the workspace/HOME MkdirAll calls so they land on the tmpfs.
+	// Mount a tmpfs over /tmp so all mutable guest state (the semgrep workspace,
+	// its HOME, the git repo) lives in RAM, not the rootfs. This lets the rootfs
+	// stay read-only and be shared by every microVM restored from one warm-base
+	// snapshot. Must precede the workspace/HOME MkdirAll calls so they land on
+	// the tmpfs.
 	mountTmpfsTmp(logger)
 
-	// A raw Firecracker boot gives PID 1 no environment, so PATH is empty and every
-	// execvp fails with ENOENT. semgrep-core shells out to `uname` to build its TLS
-	// authenticator at startup, so an unset PATH crashes it even though uname is
-	// installed. Set a standard PATH plus a UTF-8 locale for pysemgrep.
+	// A raw Firecracker boot gives PID 1 no environment, so PATH is empty and
+	// every execvp fails with ENOENT. semgrep-core shells out to `uname` to build
+	// its TLS authenticator at startup, so an unset PATH crashes it even though
+	// uname is installed. Set a standard PATH plus a UTF-8 locale for pysemgrep.
 	for k, v := range map[string]string{
 		"PATH":   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"LANG":   "C.UTF-8",
@@ -77,11 +83,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Make the workspace its own git repo. semgrep lsp computes scan targets through
-	// git: when the workspace is a git project, a scan file that is `git add`-ed (see
-	// lspdriver.writeWorkspaceFile) becomes a tracked target and is scanned; without
-	// a git project the LSP finds no targets and returns no findings. The repo is
-	// empty and local (no remote, no commits), purely to root semgrep's target walk.
+	// Make the workspace its own git repo. semgrep lsp computes scan targets
+	// through git: when the workspace is a git project, a scan file that is
+	// `git add`-ed (see lspdriver.writeWorkspaceFile) becomes a tracked target
+	// and is scanned; without a git project the LSP finds no targets and returns
+	// no findings. The repo is empty and local (no remote, no commits), purely
+	// to root semgrep's target walk.
 	initWorkspaceGit(logger)
 
 	bin := envOr("SEMGREP_BIN", defaultSemgrepBin)
@@ -95,8 +102,8 @@ func run(logger *slog.Logger) error {
 	}
 	defer driver.Close()
 
-	// Initialize + warm-up. The warm-up (rules compile) is the slow part, so give it
-	// a generous deadline distinct from per-scan timeouts.
+	// Initialize + warm-up. The warm-up (rules compile) is the slow part, so
+	// give it a generous deadline distinct from per-scan timeouts.
 	readyCtx, cancel := context.WithTimeout(ctx, durationEnv("SEMGREP_READY_TIMEOUT", 90*time.Second))
 	defer cancel()
 	if err := driver.Initialize(readyCtx, rulesDir, jobs); err != nil {
@@ -107,41 +114,54 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("semgrep lsp warm; rules compiled")
 
-	// Warm the LSP with one realistic scan per supported language BEFORE announcing
-	// readiness, so the base snapshot (taken once the host sees our Hello) captures
-	// the per-process warmup the first real scan otherwise pays. Restored guests then
-	// scan their first file already warmed (~3-4x faster first scan). Best-effort: a
-	// prime failure is logged, not fatal (the guest still serves, just cold-first).
+	// Warm the LSP with one realistic scan per supported language BEFORE
+	// announcing readiness, so the base snapshot (taken once the host sees the
+	// shim's /shim/ready=200) captures the per-process warmup the first real
+	// scan otherwise pays. Restored guests then scan their first file already
+	// warmed (~3-4x faster first scan). Best-effort: a prime failure is logged,
+	// not fatal (the guest still serves, just cold-first).
 	warmupPrime(ctx, driver, logger)
 
-	ln, err := scanserver.Listen(vsockproto.ScanPort)
+	// Flip the readiness flag only after Initialize + WaitReady + warmupPrime.
+	// This is the critical correctness point: /shim/ready returns 503 until this
+	// Store, then 200 after, so fc-invoke will not route scan requests before the
+	// LSP is warm. The flag starts false (atomic.Bool zero value).
+	var ready atomic.Bool
+	ready.Store(true)
+
+	ln, err := scanserver.ListenVsock(vsockproto.GuestHTTPPort)
 	if err != nil {
 		return err
 	}
-	logger.Info("scan server listening", "port", vsockproto.ScanPort)
+	logger.Info("shim HTTP server listening", "port", vsockproto.GuestHTTPPort)
 
-	// Announce readiness only after the scan port is bound, so the host can never
-	// dial the scan port before the guest is listening. Best-effort: off-cluster
-	// there is no controller, and the scan server still serves locally.
-	announceReady(logger)
+	h := handler.New(driver)
+	srv := shim.NewServer(h, shim.WithReady(ready.Load))
 
-	srv := &scanserver.Server{
-		Scanner:     driver,
-		Logger:      logger,
-		ScanTimeout: durationEnv("SEMGREP_SCAN_TIMEOUT", 55*time.Second),
+	// Serve in a goroutine so ctx cancellation (SIGTERM) can close the server
+	// gracefully rather than blocking indefinitely on Accept.
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	select {
+	case <-ctx.Done():
+		_ = srv.Close()
+		<-serveErr
+		return nil
+	case err := <-serveErr:
+		return err
 	}
-	return srv.Serve(ctx, ln)
 }
 
 // setupOfflineEnv sets the OFFLINE semgrep environment. These values are
-// load-bearing (see package doc): the empty token and isolated HOME/settings keep
-// semgrep from reaching the Semgrep cloud at startup.
+// load-bearing (see package doc): the empty token and isolated HOME/settings
+// keep semgrep from reaching the Semgrep cloud at startup.
 func setupOfflineEnv(logger *slog.Logger) error {
 	if err := os.MkdirAll(guestHome, 0o755); err != nil {
 		return err
 	}
-	// Force-set (not ensure): an empty SEMGREP_APP_TOKEN is the correct value and
-	// must win even over an inherited token.
+	// Force-set (not ensure): an empty SEMGREP_APP_TOKEN is the correct value
+	// and must win even over an inherited token.
 	for k, v := range map[string]string{
 		"SEMGREP_APP_TOKEN":            "",
 		"HOME":                         guestHome,
@@ -163,8 +183,8 @@ func setupOfflineEnv(logger *slog.Logger) error {
 	return nil
 }
 
-// warmupPrime scans the per-language primer set (primers.go) once so the one-time
-// per-process warm-up is captured in the base snapshot. Bounded by
+// warmupPrime scans the per-language primer set (primers.go) once so the
+// one-time per-process warm-up is captured in the base snapshot. Bounded by
 // SEMGREP_PRIME_TIMEOUT; best-effort, a failure is logged not fatal.
 func warmupPrime(ctx context.Context, driver *lspdriver.Driver, logger *slog.Logger) {
 	start := time.Now()
@@ -178,26 +198,10 @@ func warmupPrime(ctx context.Context, driver *lspdriver.Driver, logger *slog.Log
 	logger.Info("warmup prime done", "languages", len(primerFiles), "primer_findings", len(findings), "took", time.Since(start))
 }
 
-// announceReady dials the host ControlPort and sends a Hello so the controller
-// knows the scanner is warm and accepting scans.
-func announceReady(logger *slog.Logger) {
-	rwc, err := dialVsock(vsockproto.HostCID, vsockproto.ControlPort)
-	if err != nil {
-		logger.Info("no controller on vsock; serving scans locally", "err", err)
-		return
-	}
-	conn := vsockproto.NewConn(rwc)
-	defer conn.Close()
-	if err := conn.Send(vsockproto.Message{Kind: vsockproto.KindHello, ThreadID: os.Getenv("FC_THREAD_ID")}); err != nil {
-		logger.Warn("failed to announce readiness", "err", err)
-		return
-	}
-	logger.Info("readiness announced to controller")
-}
-
 // initWorkspaceGit makes workspaceDir an empty local git repo so semgrep lsp's
-// git-based target discovery roots at the workspace. Best-effort: a failure only
-// degrades scanning, so each step logs and continues rather than aborting boot.
+// git-based target discovery roots at the workspace. Best-effort: a failure
+// only degrades scanning, so each step logs and continues rather than aborting
+// boot.
 func initWorkspaceGit(logger *slog.Logger) {
 	for _, args := range [][]string{
 		{"init"},
