@@ -63,12 +63,6 @@
       desc: "Ask my knowledge graph",
       href: "/app/notes",
     },
-    {
-      slug: "llm-leaderboard",
-      label: "LLM Leaderboard",
-      desc: "Budget models, agentic-benchmarked",
-      href: "/app/llm-leaderboard",
-    },
   ];
 
   const appsActive = $derived(apps.some((a) => a.slug === route));

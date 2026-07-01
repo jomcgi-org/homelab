@@ -567,12 +567,22 @@ def _report(args) -> None:
     agentic: dict[str, dict] = {}
     for model_id, group in agentic_groups.items():
         n = len(group)
+        pass_rate = sum(1 for c in group if c.first_attempt_passed) / n
+        cost = sum(c.cost_usd for c in group) / n
         agentic[model_id] = {
             "n": n,
-            "pass_rate": sum(1 for c in group if c.first_attempt_passed) / n,
+            "pass_rate": pass_rate,
             "med_tokens": float(median([c.total_tokens for c in group])),
             "med_turns": float(median([c.turns or 0 for c in group])),
-            "cost": sum(c.cost_usd for c in group) / n,
+            # Median end-to-end wall-time per task (ms). This is the CLOUD lens: what a
+            # request to this model actually costs in time via OpenRouter. It does NOT
+            # transfer to self-hosted 4090 throughput (different HW/quant/batching), but
+            # with cost it is the real value signal for offloading work off a paid tier.
+            "med_latency_ms": float(median([c.total_latency_ms for c in group])),
+            "cost": cost,
+            # Cost per SOLVED task, so a cheap-but-flaky model does not look like a
+            # bargain. Infinite when nothing passes (rendered as a sentinel).
+            "cost_per_solve": (cost / pass_rate) if pass_rate > 0 else None,
             "tool_ok_rate": sum(1 for c in group if c.tool_use_ok) / n,
         }
 
@@ -665,7 +675,13 @@ def _write_leaderboard_json(
             "pass_rate": round(s["pass_rate"], 4),
             "median_tokens": int(s["med_tokens"]),
             "median_turns": s["med_turns"],
+            "median_latency_ms": int(s["med_latency_ms"]),
             "cost_usd": round(s["cost"], 6),
+            "cost_per_solve_usd": (
+                round(s["cost_per_solve"], 6)
+                if s.get("cost_per_solve") is not None
+                else None
+            ),
             "tool_use_ok": round(s["tool_ok_rate"], 4),
         }
         for mid, s in agentic.items()
