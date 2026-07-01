@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from bench.sandbox import run_sandboxed
+from bench.verifiers.sandbox import run_sandboxed
 from bench.verifiers import register, VerifyResult
 
 
