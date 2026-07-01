@@ -11,6 +11,7 @@
 # gazelle:exclude home
 # gazelle:exclude scheduler
 # gazelle:exclude semgrep
+# gazelle:exclude goosecracker
 # gazelle:exclude shared
 # gazelle:exclude ships
 # gazelle:exclude hikes
@@ -61,6 +62,7 @@ _BACKEND_SRCS = glob(
         "chat/**/*.py",
         "chat_public/**/*.py",
         "cluster/**/*.py",
+        "goosecracker/**/*.py",
         "knowledge/**/*.py",
         "home/**/*.py",
         "scheduler/**/*.py",
@@ -534,6 +536,7 @@ py_test(
             "home/**/*.py",
             "scheduler/**/*.py",
             "agent/**/*.py",
+            "goosecracker/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
         ],
@@ -4029,29 +4032,11 @@ bdd_test(
 )
 
 bdd_test(
-    name = "agent_bdd_agent_threads_test",
+    name = "goosecracker_bdd_ledger_test",
     srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_agent_threads_test.py",
-        "agent/tests/conftest.py",
-    ],
-)
-
-bdd_test(
-    name = "agent_bdd_agent_backstop_test",
-    srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_agent_backstop_test.py",
-        "agent/tests/conftest.py",
-    ],
-)
-
-bdd_test(
-    name = "agent_bdd_agent_dispatch_test",
-    srcs = [
-        "agent/tests/__init__.py",
-        "agent/tests/bdd_agent_dispatch_test.py",
-        "agent/tests/conftest.py",
+        "goosecracker/tests/__init__.py",
+        "goosecracker/tests/bdd_ledger_test.py",
+        "goosecracker/tests/conftest.py",
     ],
 )
 

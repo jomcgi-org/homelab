@@ -146,11 +146,63 @@ semgrep:
   fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
 
 # goosecracker artifact tier (ADR 024): sync the OpenRouter API key into the
-# `goosecracker` Secret for the fc-agentd egress proxy to swap on openrouter.ai.
+# `goosecracker` Secret for the fc-invoke egress proxy to swap on openrouter.ai.
 goosecracker:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/goosecracker"
+  # The monolith's own in-cluster progress endpoint base (goose cutover PR C).
+  # The runner hands the guest "<this>/<session>"; the guest streams goose stdout
+  # there through the fc-invoke egress funnel, and the Discord bot polls the
+  # in-memory buffer keyed by the session (== the Discord thread id).
+  progressUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress"
+  # Per-tier guest env (relocated from the fc-agentd chart). The runner merges the
+  # selected tier into the AgentRequest.env it POSTs to fc-invoke. A tier is the
+  # model endpoint plus the secret PLACEHOLDERS the guest may hold: the kloak:
+  # values stay inert until the fc-invoke egress proxy swaps them at the egress
+  # hop. Real URLs are used directly (the guest's wildcard DNS + funnel route
+  # them and the sidecar resolves the real name). An empty/legacy tier falls back
+  # to "default" (in-cluster Qwen).
+  tiers:
+    default:
+      OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
+      OPENAI_API_KEY: sk-noauth
+      GOOSE_PROVIDER: openai
+      GOOSE_MODEL: qwen3.6-27b
+      # A default-tier guest holds the gh placeholder; the fc-invoke egress proxy
+      # swaps it for the real token only on api.github.com.
+      GITHUB_TOKEN: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
+      # Auto-approve tool calls: the guest is a sandboxed, credential-isolated
+      # microVM, so the default smart_approve PermissionJudge buys nothing here.
+      GOOSE_MODE: auto
+      # Skip the LLM call goose makes just to name the session (pointless for
+      # ephemeral runs). Sessions stay on; only the naming is off.
+      GOOSE_DISABLE_SESSION_NAMING: "true"
+      # Per-turn traces to SigNoz (OTLP/HTTP via the egress funnel). goose
+      # defaults to OTLP/HTTP.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
+      OTEL_SERVICE_NAME: goose-coding
+    # The artifact tier reaches Gemini via OpenRouter. NOTE: the OpenRouter key is
+    # a placeholder the fc-invoke egress proxy must swap on openrouter.ai; until
+    # that egress secret-swap lands this tier will not reach the model. Kept here
+    # so the code path is complete; correctness is focused on the default tier.
+    artifact:
+      GOOSE_PROVIDER: openrouter
+      OPENROUTER_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
+      GOOSE_MODEL: google/gemini-3.5-flash
+      # Gemini 3.5 Flash is a thinking model whose max_tokens budget counts
+      # thinking tokens, so give it ample room for reasoning AND the write
+      # tool_call (GOOSE_MAX_TOKENS is the working path, not predefined models).
+      GOOSE_MAX_TOKENS: "32000"
+      # Where the artifact recipe publishes (in-cluster monolith backend, reached
+      # through the egress funnel; no secret swap for this host).
+      ARTIFACT_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/artifact
+      # Live build-progress sink for the artifact recipe (same monolith endpoint).
+      PROGRESS_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress
+      GOOSE_MODE: auto
+      GOOSE_DISABLE_SESSION_NAMING: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
+      OTEL_SERVICE_NAME: goosecracker-artifact
 
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
 # gardener paused, the raw export / file moves can be done as a controlled

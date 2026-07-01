@@ -1,10 +1,10 @@
 """MCP tools for the claude-routine-agent surface.
 
-Twenty-four tools across eight families — each is a thin async wrapper that
-calls into the corresponding ``agent.*`` operation module and serializes
-datetimes / UUIDs as strings for JSON transport. The Python function
-names use underscores; FastMCP's wire identifiers use the dashed form
-(``monolith-agent-acquire-lock`` etc.).
+Twenty tools across six families, each a thin async wrapper that calls into
+the corresponding operation module (``agent.*`` for locks/checks/routines, or the
+``goosecracker`` domain for agent runs) and serializes datetimes / UUIDs as
+strings for JSON transport. The Python function names use underscores; FastMCP's
+wire identifiers use the dashed form (``monolith-agent-acquire-lock`` etc.).
 
   Locks    : acquire_lock, extend_lock, release_lock, list_locks
   Notify   : notify
@@ -14,11 +14,8 @@ names use underscores; FastMCP's wire identifiers use the dashed form
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
              trigger_routine_job  (claude_agent.routine_jobs)
-  Threads  : list_agent_threads, get_agent_thread, resume_agent_thread
-             (claude_agent.agent_threads, ADR 022)
-  Bases    : list_agent_bases, request_base_rebuild, run_agent_backstop
-             (claude_agent.agent_base_snapshots + the backstop sweep, ADR 022)
-  Dispatch : submit_agent_task, wake_agent_thread_for_discord (ADR 022)
+  Runs     : submit_agent_task, list_agent_threads, get_agent_thread,
+             resume_agent_thread (the goosecracker fc-invoke run ledger)
 """
 
 from __future__ import annotations
@@ -26,14 +23,15 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
 
-from agent import backstop, base_snapshots, checks, dispatch, locks
+from agent import checks, locks
 from agent import notify as notify_mod
-from agent import routine_jobs, threads
+from agent import routine_jobs
 from app.mcp_app import mcp
+import goosecracker.api as goosecracker
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -257,112 +255,73 @@ async def monolith_agent_trigger_routine_job(name: str) -> dict:
     return {"ok": routine_jobs.trigger_job(name)}
 
 
-# --- Agent threads (Firecracker snapshot/restore catalog, ADR 022) -------
-
-
-@mcp.tool
-async def monolith_agent_list_agent_threads(
-    state: str | None = None,
-    node: str | None = None,
-) -> dict:
-    """List Firecracker agent threads, newest-active first.
-
-    Optionally filter by lifecycle ``state`` (PENDING, RUNNING, IDLE,
-    COMPLETED, FAILED) and/or ``node``.
-    """
-    rows = threads.list_threads(state=state, node=node)
-    return {"threads": [threads.serialize(r) for r in rows]}
-
-
-@mcp.tool
-async def monolith_agent_get_agent_thread(thread_id: str) -> dict:
-    """Get one Firecracker agent thread by its stable thread id."""
-    row = threads.get_thread(thread_id)
-    return {"thread": threads.serialize(row) if row else None}
-
-
-@mcp.tool
-async def monolith_agent_resume_agent_thread(thread_id: str) -> dict:
-    """Request the controller restore an IDLE agent thread.
-
-    Stamps a wake request the reconcile loop picks up. Only IDLE threads are
-    resumable. For any other state this returns ok=False with the current state.
-    """
-    return threads.request_resume(thread_id)
-
-
-# --- Warm bases + backstop (ADR 022, Phase 4) ----------------------------
-
-
-@mcp.tool
-async def monolith_agent_list_agent_bases() -> dict:
-    """List the per-repo warm-base snapshots and their build status."""
-    rows = base_snapshots.list_bases()
-    return {"bases": [base_snapshots.serialize(r) for r in rows]}
-
-
-@mcp.tool
-async def monolith_agent_request_base_rebuild(
-    repo: str, arch: str, main_sha: str
-) -> dict:
-    """Request the controller rebuild a repo's warm base at ``main_sha``.
-
-    Call when a repo's main advances. Idempotent: a repeat at the same sha is a
-    no-op for the controller.
-    """
-    return base_snapshots.request_rebuild(repo, arch, main_sha)
-
-
-@mcp.tool
-async def monolith_agent_run_agent_backstop(stuck_threshold_mins: int = 60) -> dict:
-    """Sweep for stuck RUNNING threads and alert if any are found.
-
-    A thread RUNNING with no activity for longer than the threshold likely missed
-    its idle signal or hung. Posts a single Discord alert when any are found.
-    Intended to be run every 15-30 minutes by a scheduled routine.
-    """
-    summary = await asyncio.to_thread(backstop.sweep, stuck_threshold_mins * 60)
-    if summary["stuck_count"]:
-        ids = ", ".join(s["thread_id"] for s in summary["stuck_threads"])
-        await notify_mod.notify(
-            f"agent-thread backstop: {summary['stuck_count']} stuck thread(s): {ids}",
-            level="warn",
-        )
-    return summary
-
-
-# --- AgentWorkflow dispatch (ADR 022, Phase 5) ---------------------------
+# --- Agent runs (the goosecracker fc-invoke run ledger) ------------------
 
 
 @mcp.tool
 async def monolith_agent_submit_agent_task(
     task: str,
-    thread_id: str | None = None,
+    session: str | None = None,
+    recipe: str = "agent",
+    tier: str = "",
     repo: str = "",
     branch: str = "main",
+    git_mirror: str = "",
+    git_ref: str = "",
     discord_thread: str = "",
-    arch: str = "amd64",
 ) -> dict:
-    """Submit a task to the snapshot-managed agent substrate.
+    """Submit a goose run to the fc-invoke agent substrate.
 
-    Without ``thread_id`` this creates a new agent thread the controller boots
-    (from the repo's warm base when one is built) and runs. With ``thread_id``
-    it resumes that IDLE thread. Returns the thread_id and the action taken.
+    The run executes a goose ``recipe`` against ``task`` in an isolated microVM.
+    ``session`` is the stable run id and a fresh one is generated when omitted.
+    ``tier`` picks the model env (empty or "default" reaches in-cluster Qwen,
+    "artifact" reaches OpenRouter). ``git_mirror`` plus ``git_ref`` optionally
+    seed the guest workspace from a repo. Returns the session, thread_id, and the
+    action taken (create or resume). Poll get-agent-thread with the thread_id for
+    the result once the run finishes.
     """
-    return dispatch.submit(
-        task,
-        thread_id=thread_id,
-        repo=repo,
-        branch=branch,
-        discord_thread=discord_thread,
-        arch=arch,
+    run_session = session or f"s-{uuid4().hex[:12]}"
+    return await asyncio.to_thread(
+        lambda: goosecracker.submit(
+            task,
+            session=run_session,
+            recipe=recipe,
+            tier=tier,
+            repo=repo,
+            branch=branch,
+            git_mirror=git_mirror,
+            git_ref=git_ref,
+            discord_thread=discord_thread,
+        )
     )
 
 
 @mcp.tool
-async def monolith_agent_wake_agent_thread_for_discord(discord_thread: str) -> dict:
-    """Wake the IDLE agent thread fronting a Discord thread (a reply arrived).
+async def monolith_agent_list_agent_threads(state: str | None = None) -> dict:
+    """List agent runs from the ledger, newest-active first.
 
-    Returns ok=False when no IDLE thread fronts that Discord thread.
+    Optionally filter by lifecycle ``state`` such as RUNNING, COMPLETED, FAILED.
     """
-    return dispatch.wake_for_discord_thread(discord_thread)
+    rows = await asyncio.to_thread(goosecracker.list_runs, state)
+    return {"threads": [goosecracker.serialize(r) for r in rows]}
+
+
+@mcp.tool
+async def monolith_agent_get_agent_thread(thread_id: str) -> dict:
+    """Get one agent run by its thread id, including its state and result.
+
+    Use this to poll a submitted run. A COMPLETED run carries its ``result`` and
+    a FAILED run carries its ``result_error``.
+    """
+    row = await asyncio.to_thread(goosecracker.get_run, thread_id)
+    return {"thread": goosecracker.serialize(row) if row else None}
+
+
+@mcp.tool
+async def monolith_agent_resume_agent_thread(thread_id: str) -> dict:
+    """Re-dispatch an agent run stored task under its existing session.
+
+    A thin re-submit that reruns the same task, recipe, and tier for that thread
+    session. Returns ok=False when the thread id is unknown.
+    """
+    return await asyncio.to_thread(goosecracker.resume, thread_id)
