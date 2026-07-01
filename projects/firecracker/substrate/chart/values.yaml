@@ -28,11 +28,11 @@ agent:
     tag: latest
 
 # Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build
-# the ext4 base rootfs in-cluster, removing any manual node-4 sudo step. Reused
-# from fc-agentd's rootfs-builder (a generic crane + mkfs.ext4 image). Bazel-pinned.
+# the ext4 base rootfs in-cluster, removing any manual node-4 sudo step. A generic
+# crane + mkfs.ext4 image (projects/firecracker/substrate/rootfs-builder). Bazel-pinned.
 rootfsBuilder:
   image:
-    repository: ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd/rootfs-builder
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder
     tag: latest
   # Size of the ext4 base rootfs image built from a guest filesystem (the
   # semgrep guest carries semgrep, the Pro engine and merged rules). 4G covers
