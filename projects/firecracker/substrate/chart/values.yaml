@@ -1,0 +1,164 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/firecracker/substrate/invoke
+  tag: latest
+  pullPolicy: Always
+
+# Per-workload guest images the base rootfs is built from. Bazel pins
+# repository + tag from each guest image's .info provider at chart-build (see
+# chart/BUILD `images`), so the rootfs the builder bakes always matches the
+# deployed guest and the workload auto-rolls when its guest rebuilds. For PR2
+# there is ONE workload (semgrep); add a sibling block + a rootfs-builder +
+# an images-map pin per new workload.
+semgrep:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
+    tag: latest
+
+# Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build
+# the ext4 base rootfs in-cluster, removing any manual node-4 sudo step. Reused
+# from fc-agentd's rootfs-builder (a generic crane + mkfs.ext4 image). Bazel-pinned.
+rootfsBuilder:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/agent_platform/fc-agentd/rootfs-builder
+    tag: latest
+  # Size of the ext4 base rootfs image built from a guest filesystem (the
+  # semgrep guest carries semgrep, the Pro engine and merged rules). 4G covers
+  # a ~3G guest with headroom.
+  rootfsSize: 4G
+
+# Private GHCR pull credentials. The fc-invoke daemon image and (via the
+# rootfs-builder's crane export) the proprietary guest images are private GHCR
+# packages, so both the kubelet and crane authenticate with a dockerconfigjson
+# synced from the cluster's ghcr-read-permissions 1Password item.
+imagePullSecret:
+  enabled: false
+  create: true
+  name: ghcr-imagepull-secret
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/ghcr-read-permissions"
+
+replicas: 1
+
+podAnnotations: {}
+
+# node + arch the daemon runs on. Firecracker guests are node/arch-affine, so
+# the daemon is pinned to its node.
+node: node-4
+arch: amd64
+
+nodeSelector:
+  kubernetes.io/hostname: node-4
+
+# Disposable scanner tier (ADR platform/010): microVM workloads must die before
+# inference or the database under memory pressure, so the pod takes the lowest
+# priority.
+priorityClassName: homelab-disposable
+
+tolerations: []
+affinity: {}
+
+# HTTP listener callers reach (POST /invoke/{workload}, GET /healthz). The
+# Service exposes this port in-cluster; the daemon binds :{{ port }} via
+# FC_INVOKE_LISTEN_ADDR.
+service:
+  port: 8080
+
+# The named workload table fc-invoke reads. Rendered verbatim to
+# FC_INVOKE_WORKLOADS as JSON via toJson, so field names MUST match the JSON
+# tags in invoke/internal/config Workload (image, rootfsPath, vcpus, memMib,
+# concurrency, egressEnabled, egressSecrets, warmBase, readyPath, sessioned,
+# requestTimeout). rootfsPath is where the per-workload rootfs-builder writes
+# the base ext4 image and MUST equal the builder's target path.
+#
+# The daemon caps live microVMs per workload at `concurrency`; extra invokes
+# queue. Firecracker hard-caps each guest's RAM, so concurrency * memMib is a
+# true upper bound on microVM memory in this container's cgroup. `resources`
+# below must hold that peak plus the daemon.
+workloads:
+  semgrep:
+    image: semgrep-guest
+    rootfsPath: /disks/nvme-02/fc-invoke/semgrep/rootfs.ext4
+    vcpus: 4
+    memMib: 2048
+    concurrency: 4
+    egressEnabled: false
+    warmBase: true
+    readyPath: /shim/ready
+    sessioned: false
+    requestTimeout: 90s
+
+# The limit must hold the capped peak of every workload's guests plus the
+# daemon. The one workload (semgrep) caps at concurrency 4 * 2Gi = 8Gi + ~1Gi
+# daemon overhead = 9Gi. Bursty: request a small floor, let the limit cover the
+# admission-capped peak. The per-workload concurrency cap guarantees the cgroup
+# never exceeds it, and oom_score_adj guarantees a guest dies first if it nears.
+resources:
+  requests:
+    cpu: 50m
+    memory: 2Gi
+  limits:
+    memory: 9Gi
+
+# Firecracker substrate paths on node-4. Driving real microVMs (privileged +
+# these host mounts) is gated behind `firecracker.enabled`; until then the
+# daemon serves /healthz and rejects /invoke (no substrate).
+firecracker:
+  enabled: false
+  binPath: /opt/kata/bin/firecracker
+  kernelImagePath: /opt/kata/share/kata-containers/vmlinux.container
+  # The shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
+  # guest path is a tmpfs, so one read-only rootfs file safely backs every microVM.
+  kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
+  # The in-guest init the kernel boots into. A raw FC boot ignores the OCI
+  # entrypoint, so the driver appends init=<path>. Shared by every workload; for
+  # PR2's single semgrep workload this is the semgrep guest's shim init. (A
+  # per-workload init is a future enhancement when a second guest image lands.)
+  harnessInit: /usr/local/bin/semgrep-guest-init
+  # The whole nvme dir is host-mounted so per-workload rootfs images
+  # (workloads.*.rootfsPath), FC bundle snapshots (snapshotRoot) and vsock
+  # sockets (canonicalVsockDir) are all reachable.
+  nvmeRoot: /disks/nvme-02
+  # Directory holding per-invoke FC bundle snapshots (FC_INVOKE_SNAPSHOT_ROOT).
+  # A subdir of the mounted nvme disk.
+  snapshotRoot: /disks/nvme-02/fc-invoke/snapshots
+  # Fixed directory whose vsock.sock the base snapshot embeds; the launcher
+  # bind-mounts each microVM's bundle dir over it per instance so concurrent
+  # restores each get their own host socket (a sibling of snapshotRoot so it is
+  # never globbed as a bundle).
+  canonicalVsockDir: /disks/nvme-02/fc-invoke-vsock
+  # Bias the kernel to kill a guest child, never the daemon, under memory
+  # pressure (the disposable-victim intent of ADR platform/010 applied to
+  # processes, since guests are not pods). 1000 strictly prefers guests.
+  guestOomScoreAdj: 1000
+  # Bounds how long an invoke waits for a freshly booted or restored guest to
+  # announce readiness over its shim.
+  bootReadyTimeout: 60s
+
+tracing:
+  endpoint: ""
+  serviceName: fc-invoke
+  serviceVersion: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Non-privileged by default (uid 65532). When firecracker.enabled is true the
+# pod runs privileged with /dev/kvm + the kata/nvme host mounts so it can exec
+# firecracker and read/write per-workload rootfs images + snapshots.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

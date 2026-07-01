@@ -1,0 +1,22 @@
+# Cluster overrides for fc-invoke. The daemon runs on node-4 and dispatches HTTP
+# invocations to a pool of warm-base Firecracker microVMs across named workloads,
+# serving POST /invoke/{workload} + GET /healthz in-cluster.
+#
+# firecracker.enabled is TRUE: the daemon drives real microVMs. It runs
+# privileged (runAsUser 0) with /dev/kvm + the kata binary/kernel + the nvme dir
+# host-mounted. Per workload it builds one warm snapshot at startup, then
+# restores a fresh microVM from it per invoke (~tens of ms) and discards it; the
+# shared base rootfs is booted read-only so no per-invoke rootfs copy is needed.
+# Privileged is required for the per-instance vsock mount namespaces
+# (CAP_SYS_ADMIN). Cold boot is the fallback if the base fails.
+node: node-4
+arch: amd64
+
+firecracker:
+  enabled: true
+
+# The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
+# by the rootfs-builder) need GHCR creds in-cluster; charts stay private too via
+# the ArgoCD repo-cred added in projects/platform/argocd.
+imagePullSecret:
+  enabled: true

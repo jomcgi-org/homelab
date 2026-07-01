@@ -4,6 +4,7 @@ kind: Kustomization
 
 resources:
   - ../../projects/agent_platform
+  - ../../projects/firecracker/substrate/deploy
   - ../../projects/inference/deploy
   - ../../projects/mcp/context-forge-gateway/deploy
   - ../../projects/monolith-public/deploy

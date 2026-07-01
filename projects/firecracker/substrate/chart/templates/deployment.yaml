@@ -1,0 +1,211 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fc-invoke.fullname" . }}
+  labels:
+    {{- include "fc-invoke.labels" . | nindent 4 }}
+spec:
+  # Single replica: the daemon is node-affine (FC guests are node-bound) and owns
+  # its node's scratch disk. Recreate, never run two against the same node.
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    # Single-Deployment chart: the shared-selector collision this rule guards
+    # against cannot occur, and adding a component label would break ArgoCD sync
+    # on the immutable selector rather than fix anything.
+    matchLabels:
+      # nosemgrep: bazel.semgrep.rules.kubernetes.require-component-label-in-selector
+      {{- include "fc-invoke.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fc-invoke.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "fc-invoke.serviceAccountName" . }}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.firecracker.enabled }}
+      # Driving Firecracker needs the host KVM device, the kata binary + kernel,
+      # and the nvme scratch dir. Privileged (CAP_SYS_ADMIN) is also required for
+      # the per-instance vsock mount namespaces.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      {{- else }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- if and .Values.firecracker.enabled .Values.workloads.semgrep }}
+      # Build the semgrep workload's base rootfs in-cluster from its pinned guest
+      # image, so the node never needs a manual sudo rootfs placement. Idempotent:
+      # rebuilds only when the guest image ref changes. PR2 builds the single
+      # semgrep workload; a per-workload loop is a future enhancement.
+      initContainers:
+        - name: build-semgrep-rootfs
+          image: "{{ .Values.rootfsBuilder.image.repository }}:{{ .Values.rootfsBuilder.image.tag }}"
+          command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
+          env:
+            - name: GUEST_IMAGE
+              value: "{{ .Values.semgrep.guestImage.repository }}:{{ .Values.semgrep.guestImage.tag }}"
+            - name: BASE_ROOTFS_PATH
+              value: {{ .Values.workloads.semgrep.rootfsPath | quote }}
+            - name: ROOTFS_SIZE
+              value: {{ .Values.rootfsBuilder.rootfsSize | quote }}
+            {{- if .Values.imagePullSecret.enabled }}
+            # crane reads $DOCKER_CONFIG/config.json to pull the private
+            # semgrep-guest image (proprietary engine + Pro rules).
+            - name: DOCKER_CONFIG
+              value: /ghcr
+            {{- end }}
+          volumeMounts:
+            - name: nvme
+              mountPath: {{ .Values.firecracker.nvmeRoot }}
+            - name: rootfs-builder-script
+              mountPath: /scripts
+              readOnly: true
+            - name: rootfs-builder-work
+              mountPath: /work
+            {{- if .Values.imagePullSecret.enabled }}
+            - name: ghcr-creds
+              mountPath: /ghcr
+              readOnly: true
+            {{- end }}
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 512Mi
+      {{- end }}
+      containers:
+        - name: fc-invoke
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.firecracker.enabled }}
+          securityContext:
+            privileged: true
+          {{- else }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: FC_INVOKE_LISTEN_ADDR
+              value: ":{{ .Values.service.port }}"
+            - name: FC_INVOKE_NODE
+              value: {{ .Values.node | quote }}
+            - name: FC_INVOKE_ARCH
+              value: {{ .Values.arch | quote }}
+            # The named workload table, rendered as JSON. The daemon builds one
+            # Invoker (its own FC driver: base rootfs + sizing) per entry. Field
+            # names must match invoke/internal/config Workload JSON tags.
+            - name: FC_INVOKE_WORKLOADS
+              value: {{ .Values.workloads | toJson | quote }}
+            {{- if .Values.firecracker.enabled }}
+            - name: FC_INVOKE_FIRECRACKER_BIN
+              value: {{ .Values.firecracker.binPath | quote }}
+            - name: FC_INVOKE_KERNEL_IMAGE
+              value: {{ .Values.firecracker.kernelImagePath | quote }}
+            {{- with .Values.firecracker.kernelBootArgs }}
+            - name: FC_INVOKE_KERNEL_BOOT_ARGS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: FC_INVOKE_HARNESS_INIT
+              value: {{ .Values.firecracker.harnessInit | quote }}
+            # Per-invoke FC bundle snapshots and the fixed vsock dir the snapshot
+            # embeds (the launcher bind-mounts each microVM's bundle over it per
+            # instance so concurrent restores each get their own host socket).
+            - name: FC_INVOKE_SNAPSHOT_ROOT
+              value: {{ .Values.firecracker.snapshotRoot | quote }}
+            - name: FC_INVOKE_CANONICAL_VSOCK_DIR
+              value: {{ .Values.firecracker.canonicalVsockDir | quote }}
+            - name: FC_INVOKE_GUEST_OOM_SCORE_ADJ
+              value: {{ .Values.firecracker.guestOomScoreAdj | quote }}
+            - name: FC_INVOKE_BOOT_READY_TIMEOUT
+              value: {{ .Values.firecracker.bootReadyTimeout | quote }}
+            {{- end }}
+            {{- with .Values.tracing.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.tracing.serviceName | quote }}
+            {{- with .Values.tracing.serviceVersion }}
+            - name: OTEL_SERVICE_VERSION
+              value: {{ . | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.firecracker.enabled }}
+          volumeMounts:
+            - name: dev-kvm
+              mountPath: /dev/kvm
+            - name: kata
+              mountPath: /opt/kata
+              readOnly: true
+            - name: nvme
+              mountPath: {{ .Values.firecracker.nvmeRoot }}
+          {{- end }}
+      {{- if .Values.firecracker.enabled }}
+      volumes:
+        - name: dev-kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        - name: kata
+          hostPath:
+            path: /opt/kata
+            type: Directory
+        - name: nvme
+          hostPath:
+            path: {{ .Values.firecracker.nvmeRoot }}
+            type: Directory
+        {{- if .Values.workloads.semgrep }}
+        - name: rootfs-builder-script
+          configMap:
+            name: {{ include "fc-invoke.fullname" . }}-rootfs-builder
+        - name: rootfs-builder-work
+          emptyDir: {}
+        {{- if .Values.imagePullSecret.enabled }}
+        - name: ghcr-creds
+          secret:
+            secretName: {{ .Values.imagePullSecret.name }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
+        {{- end }}
+      {{- end }}
