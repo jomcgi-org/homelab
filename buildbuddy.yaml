@@ -25,19 +25,11 @@ actions:
           fi
 
           # Run all formatters, generators, and gazelle in a single Bazel invocation.
-          # This replaces the previous 3-call approach (bazel build + fast-format.sh + bazel run gazelle)
-          # with one gRPC session, reducing transient connection failures.
+          # The :run_generators command runs every doc/config generator (incl. the
+          # KG-ingest + public-docs manifests), so any drift is picked up by the
+          # auto-commit below instead of hard-failing. Same list local pre-commit
+          # runs via fast-format.sh (single source of truth: run-generators.sh).
           bazel run //bazel/tools/format:format --config=ci
-
-          # Regenerate the doc-index manifests (KG ingest + public docs site).
-          # Both embed each doc's content + hash, so ANY doc edit makes them
-          # stale. Run them HERE, before the auto-commit below, so drift is
-          # committed like any other formatting fix instead of hard-failing and
-          # forcing a manual regen (the old validate-generate-scripts.sh path).
-          # python3-direct (pure stdlib + git ls-files): the py_venv_binary
-          # launcher does not resolve its main module in the CI runner.
-          python3 projects/monolith/knowledge/tools/gen_repo_docs_manifest.py
-          python3 projects/monolith/knowledge/tools/gen_docs_manifest.py
 
           # Validate grep-based generate scripts against bazel query
           ./bazel/images/validate-generate-scripts.sh

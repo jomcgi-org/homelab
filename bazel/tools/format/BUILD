@@ -45,13 +45,17 @@ format_multirun(
     starlark = "@buildifier_prebuilt//:buildifier",
 )
 
+# All committed-artifact generators live in ONE list (run-generators.sh), shared
+# with fast-format.sh, so the local and CI format paths cannot drift.
+sh_binary(
+    name = "run_generators",
+    srcs = ["run-generators.sh"],
+)
+
 multirun(
     name = "format",
     commands = [
-        "//bazel/images:generate-home-cluster",
-        "//bazel/images:generate-push-all",
-        "//bazel/images:generate-push-all-pages",
-        "//projects/monolith:generate-routes",
+        ":run_generators",
         ":format_code",
         "//:gazelle",
     ],
