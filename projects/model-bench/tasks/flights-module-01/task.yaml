@@ -1,0 +1,67 @@
+id: flights-module-01
+version: v1
+class: code-fix
+mode: agentic
+prompt: |
+  This app serves feature domains. Each domain is a top-level package that exposes a
+  register(app) function mounting its APIRouter, and app/main.py's create_app() wires the
+  domains together. Study the worked `health` example (health/__init__.py +
+  health/router.py) and how create_app() registers it. Build a new `flights` domain the
+  same way and wire it in.
+
+  A mock flight feed is provided at flights/mock_data.py as FLIGHTS: a list of dicts, each
+  with flight_no, origin and dest (IATA codes), scheduled_dep and actual_dep (ISO 8601
+  datetime strings; actual_dep is None for a cancelled flight), and status ("scheduled" or
+  "cancelled").
+
+  Add an endpoint GET /api/flights/delays that returns per-ORIGIN-airport delay statistics
+  as a JSON list. Define a flight's delay in minutes as (actual_dep - scheduled_dep)
+  rounded to whole minutes. For each origin airport compute:
+    - airport: the IATA code.
+    - flights: total number of flights from that origin.
+    - cancelled: number with no actual departure (actual_dep is None).
+    - delayed: number of non-cancelled flights whose delay is MORE THAN 15 minutes.
+    - on_time_pct: of the non-cancelled flights, the percentage that are NOT delayed
+      (delay <= 15 minutes), as a float rounded to 1 decimal place; 0.0 if there are no
+      non-cancelled flights.
+    - avg_delay_min: the mean delay in minutes over the non-cancelled flights, rounded to
+      1 decimal place; 0.0 if there are none.
+  Return the airports sorted by flights descending, then airport code ascending.
+
+  Mount the endpoint on an APIRouter at prefix /api/flights, expose register(app) from the
+  flights package following the health example, and register the flights domain in
+  app/main.py's create_app() so the running app serves /api/flights/delays. Do not change
+  the health domain or break its existing route.
+agent:
+  max_turns: 40
+verifier:
+  kind: pytest
+  args:
+    tests:
+      flights_test.py: |
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        client = TestClient(app)
+
+        EXPECTED = [
+            {"airport": "LHR", "flights": 3, "delayed": 1, "cancelled": 1, "on_time_pct": 50.0, "avg_delay_min": 17.5},
+            {"airport": "EDI", "flights": 2, "delayed": 1, "cancelled": 0, "on_time_pct": 50.0, "avg_delay_min": 10.0},
+            {"airport": "GLA", "flights": 1, "delayed": 0, "cancelled": 0, "on_time_pct": 100.0, "avg_delay_min": 10.0},
+        ]
+
+
+        def test_delays_route_is_wired():
+            assert client.get("/api/flights/delays").status_code == 200
+
+
+        def test_delays_aggregate_matches_mock():
+            assert client.get("/api/flights/delays").json() == EXPECTED
+
+
+        def test_existing_health_domain_still_works():
+            assert client.get("/api/health").json() == {"status": "ok"}
+
+    targets: ["flights_test.py"]
+    timeout_s: 180
