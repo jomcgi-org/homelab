@@ -4,17 +4,18 @@ package scanserver
 
 import (
 	"fmt"
-	"io"
+	"net"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
 
-// Listen binds an AF_VSOCK stream socket to (VMADDR_CID_ANY, port) and returns a
-// Listener. The guest accepts on its own CID, so the bind CID is ANY; the host
-// dials the guest on this port (vsockproto.ScanPort). This mirrors the dial-side
-// AF_VSOCK code in fc-agent-init/internal/vsockdial, for LISTEN/accept.
-func Listen(port uint32) (Listener, error) {
+// ListenVsock binds an AF_VSOCK stream socket to (VMADDR_CID_ANY, port) and
+// returns a net.Listener. The guest accepts on its own CID so the bind CID is
+// ANY; the host connects on this port. The returned listener is passed directly
+// to shim.Server.Serve. This is the only vsock-listen entry point after the
+// legacy scan-port RPC server was retired.
+func ListenVsock(port uint32) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return nil, fmt.Errorf("scanserver: socket: %w", err)
@@ -27,24 +28,43 @@ func Listen(port uint32) (Listener, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("scanserver: listen port=%d: %w", port, err)
 	}
-	return &vsockListener{fd: fd, port: port}, nil
+	return &vsockNetListener{fd: fd, port: port}, nil
 }
 
-type vsockListener struct {
+// vsockNetListener wraps a raw AF_VSOCK listening fd as a net.Listener so the
+// shim HTTP server can accept connections without knowing about vsock.
+type vsockNetListener struct {
 	fd   int
 	port uint32
 }
 
-// Accept blocks for the next connection and returns it as an os.File-backed
-// io.ReadWriteCloser (Go's net package does not recognise AF_VSOCK, so the
-// connected fd is driven by the runtime poller via os.NewFile, as on the dial
-// side).
-func (l *vsockListener) Accept() (io.ReadWriteCloser, error) {
+func (l *vsockNetListener) Accept() (net.Conn, error) {
 	nfd, _, err := unix.Accept(l.fd)
 	if err != nil {
 		return nil, fmt.Errorf("scanserver: accept: %w", err)
 	}
-	return os.NewFile(uintptr(nfd), fmt.Sprintf("vsock-scan:%d", l.port)), nil
+	f := os.NewFile(uintptr(nfd), fmt.Sprintf("vsock-http:%d", l.port))
+	return &vsockNetConn{File: f}, nil
 }
 
-func (l *vsockListener) Close() error { return unix.Close(l.fd) }
+func (l *vsockNetListener) Close() error { return unix.Close(l.fd) } // nosemgrep: no-bare-error-return
+
+func (l *vsockNetListener) Addr() net.Addr { return vsockAddr{port: l.port} }
+
+// vsockNetConn wraps an *os.File-backed vsock connection as a net.Conn.
+// net/http requires net.Conn, not just io.ReadWriteCloser. os.File provides
+// Read/Write/Close and the three SetDeadline methods via promotion; we add
+// LocalAddr/RemoteAddr which os.File lacks.
+type vsockNetConn struct {
+	*os.File
+}
+
+func (c *vsockNetConn) LocalAddr() net.Addr  { return vsockAddr{} }
+func (c *vsockNetConn) RemoteAddr() net.Addr { return vsockAddr{} }
+
+// vsockAddr is a minimal net.Addr for AF_VSOCK endpoints. The HTTP server
+// uses it only for logging; actual addressing is handled by the vsock port.
+type vsockAddr struct{ port uint32 }
+
+func (a vsockAddr) Network() string { return "vsock" }
+func (a vsockAddr) String() string  { return fmt.Sprintf("vsock:%d", a.port) }
