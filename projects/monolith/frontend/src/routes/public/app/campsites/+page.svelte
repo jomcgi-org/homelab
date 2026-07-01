@@ -129,7 +129,7 @@
   />
 </svelte:head>
 
-<div class="campsites-page" class:has-selection={!!selectedPark}>
+<div class="campsites-page" class:has-selection={!!selectedPark} class:list-open={listOpen}>
   <!-- The visible heading is the breadcrumb chip; keep a real (hidden) h1 for
        SEO + a11y. -->
   <h1 class="sr-only">BC Parks campsites, open sites and clear-sky weather</h1>
@@ -325,6 +325,11 @@
     top: 16px;
     left: 16px;
     max-width: calc(100% - 32px);
+    min-height: 52px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     padding: 8px 12px;
     background: var(--paper);
     border: 2px solid var(--ink);
@@ -394,7 +399,7 @@
      open panel covers the zoom/attribution buttons cleanly. */
   .list-panel {
     position: absolute;
-    top: 64px;
+    top: 16px;
     right: 16px;
     bottom: 16px;
     width: 340px;
@@ -409,6 +414,8 @@
 
   .list-panel.collapsed {
     bottom: auto;
+    min-height: 52px;
+    box-sizing: border-box;
   }
 
   .list-head {
@@ -417,6 +424,10 @@
 
   .list-panel.collapsed .list-head {
     border-bottom: none;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
 
   .list-head-top {
@@ -658,18 +669,25 @@
     color: var(--ink-3);
   }
 
-  /* Detail panel: bottom card anchored center-bottom, clear of the legend
-     (bottom-left, inside the map) and the list panel (bottom-right) on desktop. */
+  /* Detail panel: bottom strip anchored bottom, between the legend (left) and
+     the zoom controls (right, collapsed) or the list panel (right, expanded). */
   .detail {
     position: absolute;
     bottom: 16px;
-    left: 280px;
-    right: 372px;
-    max-height: 44vh;
+    left: 232px;
+    right: 64px;
+    height: 168px;
+    box-sizing: border-box;
     overflow-y: auto;
     padding: 12px 14px;
     background: var(--paper);
     border: 2px solid var(--ink);
+  }
+
+  /* When the list panel is open it occupies right:16px width:340px, so the
+     detail must clear it (340 + 16 + 16 gap = 372px). */
+  .campsites-page.list-open .detail {
+    right: 372px;
   }
 
   .detail-close {
@@ -835,10 +853,15 @@
       bottom: 0;
       left: 0;
       right: 0;
+      height: auto;
       max-height: 60vh;
       border-width: 2px 0 0;
       box-shadow: none;
       padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+
+    .campsites-page.list-open .detail {
+      right: 0;
     }
   }
 

@@ -469,12 +469,17 @@
     display: none;
   }
 
-  /* Legend: bottom-left, same hard-edge style as the ShipsMap legend. */
+  /* Legend: bottom-left, same hard-edge style as the ShipsMap legend. Fixed
+     width + height so the bottom row (legend left, detail right) share the
+     same bottom edge AND top edge. */
   .legend {
     position: absolute;
     bottom: 16px;
     left: 16px;
-    max-width: 240px;
+    width: 200px;
+    height: 168px;
+    box-sizing: border-box;
+    overflow-y: auto;
     padding: 10px 12px;
     background: var(--paper);
     border: 2px solid var(--ink);
@@ -558,6 +563,8 @@
     .legend {
       bottom: 12px;
       left: 12px;
+      width: auto;
+      height: auto;
       max-width: 200px;
       padding: 9px 11px;
     }
