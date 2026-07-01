@@ -121,6 +121,11 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     # Value fields surfaced: wall-time and cost-per-solve.
     assert data["models"][0]["median_latency_ms"] == 8000
     assert data["models"][0]["cost_per_solve_usd"] == 0.001
+    # Per-task breakdown is embedded for the deep-dive: one entry per graded task,
+    # carrying pass/fail plus the per-task tokens and turns.
+    (mt,) = data["models"][0]["tasks"]
+    assert mt["id"] == "worldcup-fixtures-guard-01"
+    assert mt["passed"] is True and mt["tokens"] == 1000 and mt["turns"] == 4
     # The one agentic task appears with its real-test flag, blurb, and pass count.
     (t,) = data["tasks"]
     assert t["id"] == "worldcup-fixtures-guard-01"
