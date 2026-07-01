@@ -53,19 +53,42 @@ func run(logger *slog.Logger) error {
 	// (goose reaching the model) fails with "could not connect".
 	bringUpLoopback(logger)
 
-	// tmpfs over /tmp keeps the guest's mutable scratch in RAM so the rootfs can
-	// stay read-only and shareable across disposable microVMs.
-	mountTmpfsTmp(logger)
+	// tmpfs over /tmp AND /workspace keeps every guest path goose WRITES to in RAM,
+	// so the rootfs stays read-only and shareable across disposable microVMs. The
+	// baked rootfs mounts /workspace read-only; goose (via the developer extension)
+	// edits files there, and git clones a mirror into it, so it must be writable.
+	// /tmp additionally backs the writable HOME set below.
+	mountTmpfs(logger, "/tmp", "256m")
+	mountTmpfs(logger, handler.Workspace, "256m")
 
 	// A raw Firecracker boot hands PID 1 no environment (the kernel ignores the OCI
-	// image config), so establish the baseline goose needs to find its tools. goose
-	// lives in /usr/local/bin; gh/git/node in /usr/bin. HOME anchors goose's config
-	// under /home/goose-agent (matching the image); GOOSE_RECIPE_PATH points goose
-	// at the baked recipe library. ensureEnv only sets an unset key, so an injected
-	// value still wins.
+	// image config), so establish the baseline goose needs. goose lives in
+	// /usr/local/bin; gh/git/node in /usr/bin. HOME must be WRITABLE: goose creates
+	// its session database and logs under HOME (~/.local/state/goose), so anchoring
+	// HOME on the read-only rootfs (/home/goose-agent) panics goose with a
+	// ReadOnlyFilesystem error. Point HOME at the /tmp tmpfs instead. The XDG_*
+	// dirs are set EXPLICITLY (not left to derive from HOME) because goose resolves
+	// its state/data/config/cache via the XDG base dirs, and an unset XDG var can
+	// resolve to a bare "/.local/..." path (off HOME) that is also unwritable.
+	// GOOSE_RECIPE_PATH still points at the baked recipe library on the read-only
+	// rootfs, which is fine: recipes are only read. ensureEnv only sets an unset
+	// key, so an injected value still wins; HOME/XDG are force-set (a read-only
+	// value must never win).
 	ensureEnv("PATH", "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/local/sbin")
-	ensureEnv("HOME", "/home/goose-agent")
 	ensureEnv("GOOSE_RECIPE_PATH", "/home/goose-agent/recipes")
+	const gooseHome = "/tmp/goose-home"
+	for k, v := range map[string]string{
+		"HOME":            gooseHome,
+		"XDG_STATE_HOME":  gooseHome + "/.local/state",
+		"XDG_DATA_HOME":   gooseHome + "/.local/share",
+		"XDG_CONFIG_HOME": gooseHome + "/.config",
+		"XDG_CACHE_HOME":  gooseHome + "/.cache",
+	} {
+		_ = os.Setenv(k, v)
+		if err := os.MkdirAll(v, 0o755); err != nil {
+			return err // nosemgrep: no-bare-error-return
+		}
+	}
 
 	if err := os.MkdirAll(handler.Workspace, 0o755); err != nil {
 		return err // nosemgrep: no-bare-error-return
