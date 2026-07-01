@@ -27,4 +27,4 @@ def get_verifier(kind: str) -> Callable[[Path, dict], VerifyResult]:
 
 
 # import submodules so their @register runs
-from . import command, helm, compile  # noqa: E402,F401
+from . import command, helm, compile, lint, rbac, jsonmatch  # noqa: E402,F401
