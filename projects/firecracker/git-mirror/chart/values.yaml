@@ -82,3 +82,11 @@ resources:
 serviceAccount:
   create: false
   name: ""
+
+# Reference the shared GHCR pull secret so the kubelet can pull the private
+# git-mirror image. The secret (a dockerconfigjson OnePasswordItem) is created by
+# the fc-invoke chart in this namespace; git-mirror only references it, it does
+# not create it.
+imagePullSecret:
+  enabled: true
+  name: ghcr-imagepull-secret
