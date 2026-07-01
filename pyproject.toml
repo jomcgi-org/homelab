@@ -19,6 +19,10 @@ dependencies = [
     "pydantic-extra-types~=2.0",
     "pydantic-sqlite~=0.3.0",
     "httpx~=0.28.1",
+    # curl_cffi impersonates a browser TLS/JA3 fingerprint. The BC Parks
+    # (camping.bcparks.ca) reservation API sits behind an Azure WAF that 403s
+    # httpx/urllib on fingerprint; curl_cffi is how the campsites job reads it.
+    "curl-cffi~=0.15.0",
     "requests>=2.31",
     "requests-cache~=1.1",
     "beautifulsoup4~=4.12",

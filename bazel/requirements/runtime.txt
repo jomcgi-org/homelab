@@ -433,6 +433,7 @@ certifi==2026.2.25 \
     --hash=sha256:e887ab5cee78ea814d3472169153c2d12cd43b14bd03329a39a9c6e2e80bfba7
     # via
     #   homelab (pyproject.toml)
+    #   curl-cffi
     #   httpcore
     #   httpx
     #   kubernetes-asyncio
@@ -441,7 +442,7 @@ certifi==2026.2.25 \
     #   rasterio
     #   requests
     #   trafilatura
-cffi==2.0.0 ; platform_python_implementation != 'PyPy' \
+cffi==2.0.0 \
     --hash=sha256:00bdf7acc5f795150faa6957054fbbca2439db2f775ce831222b66f192f03beb \
     --hash=sha256:07b271772c100085dd28b74fa0cd81c8fb1a3ba18b21e03d7c27f3436a10606b \
     --hash=sha256:087067fa8953339c723661eda6b54bc98c5625757ea62e95eb4898ad5e776e9f \
@@ -526,7 +527,9 @@ cffi==2.0.0 ; platform_python_implementation != 'PyPy' \
     --hash=sha256:fc33c5141b55ed366cfaad382df24fe7dcbc686de5be719b207bb248e3053dc5 \
     --hash=sha256:fc7de24befaeae77ba923797c7c87834c73648a05a4bde34b3b7e5588973a453 \
     --hash=sha256:fe562eb1a64e67dd297ccc4f5addea2501664954f2692b69a76449ec7913ecbf
-    # via cryptography
+    # via
+    #   cryptography
+    #   curl-cffi
 charset-normalizer==3.4.4 \
     --hash=sha256:027f6de494925c0ab2a55eab46ae5129951638a49a34d87f4c3eda90f696b4ad \
     --hash=sha256:077fbb858e903c73f6c9db43374fd213b0b6a778106bc7032446a8e8b5b38b93 \
@@ -743,6 +746,29 @@ cryptography==46.0.6 \
     #   google-auth
     #   pyjwt
     #   secretstorage
+curl-cffi==0.15.0 \
+    --hash=sha256:08c799b89740b9bc49c09fbc3d5907f13ac1f845ca52620507ef9466d4639dd5 \
+    --hash=sha256:0b6c0543b993996670e9e4b78e305a2d60809d5681903ffb5568e21a387434d3 \
+    --hash=sha256:1977e1e12cfb5c11352cbb74acef1bed24eb7d226dab61ca57c168c21acd4d61 \
+    --hash=sha256:2b6c847d86283b07ae69bb72c82eb8a59242277142aa35b89850f89e792a02fc \
+    --hash=sha256:408d6f14e346841cd889c2e0962832bb235ba3b6749ebf609f347f747da5e60f \
+    --hash=sha256:41f80170ba844009273b2660da1964ec31e99e5719d16b3422ada87177e32e13 \
+    --hash=sha256:4682dc38d4336e0eb0b185374db90a760efde63cbea994b4e63f3521d44c4c92 \
+    --hash=sha256:582e570aa2586b96ed47cf4a17586b9a3c462cbe43f780487c3dc245c6ef1527 \
+    --hash=sha256:5a0c1896a0d5a5ac1eb89cd24b008d2b718dd1df6fd2f75451b59ca66e49e572 \
+    --hash=sha256:7b7a92767a888ee90147e18964b396d8435ff42737030d6fb00824ffd6094805 \
+    --hash=sha256:7e63539d0d839d0a8c5eacf86229bc68c57803547f35e0db7ee0986328b478c3 \
+    --hash=sha256:829cc357061ecb99cc2d406301f609a039e05665322f5c025ec67c38b0dc49ce \
+    --hash=sha256:838e48212447d9c81364b04707a5c861daf08f8320f9ecb3406a8919d1d5c3b3 \
+    --hash=sha256:967ad7355bd8e9586f8c2d02eaa99953747549e7ea4a9b25cd53353e6b67fe6d \
+    --hash=sha256:9e5e69eee735f659287e2c84444319d68a1fa68dd37abf228943a4074864283a \
+    --hash=sha256:a25620d9bf989c9c029a7d1642999c4c265abb0bad811deb2f77b0b5b2b12e5b \
+    --hash=sha256:a6d57f8389273a3a1f94370473c74897467bcc36af0a17336989780c507fa43d \
+    --hash=sha256:aa1323950224db24f4c510d010b3affa02196ca853fb424191fa917a513d3f4b \
+    --hash=sha256:b624c7ce087bfda967a013ed0a64702a525444e5b6e97d23534d567ccc6525aa \
+    --hash=sha256:bda66404010e9ed743b1b83c20c86f24fe21a9a6873e17479d6e67e29d8ded28 \
+    --hash=sha256:ea0c67652bf6893d34ee0f82c944f37e488f6147e9421bef1771cc6545b02ded
+    # via homelab (pyproject.toml)
 cyclopts==4.7.0 \
     --hash=sha256:1d0fd440b8d21a55d14f830033eb1ac156933424df3e90afeea34cfb3ed73822 \
     --hash=sha256:c659d930797a8470f2914a8f8f8be263b339cb6ffb6593b4a59fa9d84b8e0e38
@@ -2953,7 +2979,7 @@ pyasn1-modules==0.4.2 \
     --hash=sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a \
     --hash=sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6
     # via google-auth
-pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' \
+pycparser==3.0 ; implementation_name != 'PyPy' \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
     # via cffi
@@ -3752,6 +3778,7 @@ rich==14.3.3 \
     --hash=sha256:b8daa0b9e4eef54dd8cf7c86c03713f53241884e814f4e2f5fb342fe520f639b
     # via
     #   --override bazel/requirements/overrides.txt
+    #   curl-cffi
     #   cyclopts
     #   fastmcp
     #   open-gopro
