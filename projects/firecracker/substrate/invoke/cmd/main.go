@@ -19,11 +19,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/fcvm/driver"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/config"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/invoker"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/server"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/vsockhttp"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/catalog"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/ingress"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/fcvm/driver"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/invoker"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/vsockhttp"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 func main() {
@@ -48,7 +49,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load()
+	cfg, err := catalog.Load()
 	if err != nil {
 		return err
 	}
@@ -74,7 +75,7 @@ func run(logger *slog.Logger) error {
 	// because workloads differ in base rootfs, vCPUs, and memory; the drivers
 	// share the daemon's kernel, firecracker binary, snapshot root, and vsock
 	// isolation directory.
-	invokers := make(map[string]server.Invoker, len(cfg.Workloads))
+	invokers := make(map[string]substrate.NodeExecutor, len(cfg.Workloads))
 	for name, wl := range cfg.Workloads {
 		// Per-workload PID-1 path: guest images install their init at different
 		// paths (e.g. semgrep-guest-init vs the agent's fc-agent-init), so the
@@ -138,7 +139,7 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: server.New(invokers, logger),
+		Handler: ingress.New(invokers, logger),
 		// Bound so a slow client sending headers cannot pin the ingress.
 		ReadHeaderTimeout: 10 * time.Second,
 	}

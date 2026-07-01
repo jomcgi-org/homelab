@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/config"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
@@ -157,7 +156,7 @@ func okResponse(body string) *http.Response {
 // short timeouts, concurrency of 4.
 func defaultConfig() Config {
 	return Config{
-		Workload: config.Workload{
+		Workload: substrate.Workload{
 			WarmBase:       true,
 			Concurrency:    4,
 			ReadyPath:      "/shim/ready",

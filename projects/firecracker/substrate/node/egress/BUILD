@@ -3,8 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "egress",
     srcs = ["forwarder.go"],
-    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/egress",
-    visibility = ["//projects/firecracker/substrate/invoke:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/node/egress",
+    visibility = ["//projects/firecracker/substrate:__subpackages__"],
     deps = ["//projects/firecracker/substrate/vsockproto"],
 )
 

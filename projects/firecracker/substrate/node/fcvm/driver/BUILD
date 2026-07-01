@@ -9,10 +9,10 @@ go_library(
         "mountns_other.go",
         "provisioner.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/fcvm/driver",
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/node/fcvm/driver",
     visibility = ["//visibility:public"],
     deps = [
-        "//projects/firecracker/substrate/fcvm/fcclient",
+        "//projects/firecracker/substrate/node/fcvm/fcclient",
         "//projects/firecracker/substrate/substrate",
         "@io_opentelemetry_go_otel//:otel",
     ],

@@ -23,8 +23,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/config"
-	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/egress"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/egress"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
@@ -83,7 +82,7 @@ func (e *GuestUnavailableError) GuestUnavailable() bool { return true }
 // Config carries the per-workload knobs for an Invoker.
 type Config struct {
 	// Workload is the 7-knob workload definition from the fc-invoke config.
-	Workload config.Workload
+	Workload substrate.Workload
 	// BaseKey names the warm base bundle (typically the workload name or
 	// image identifier; one bundle per image version).
 	BaseKey string
