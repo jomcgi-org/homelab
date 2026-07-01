@@ -25,6 +25,13 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "git-mirror.serviceAccountName" . }}
+      {{- if .Values.imagePullSecret.enabled }}
+      # The git-mirror image is private (GHCR); reference the shared pull secret
+      # (a dockerconfigjson OnePasswordItem created by the fc-invoke chart in this
+      # namespace). Without it the kubelet gets a 401 and ImagePullBackOff.
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
       nodeSelector:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
       {{- with .Values.tolerations }}
