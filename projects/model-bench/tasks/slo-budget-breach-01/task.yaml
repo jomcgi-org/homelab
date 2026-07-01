@@ -1,0 +1,52 @@
+id: slo-budget-breach-01
+version: v1
+class: code-fix
+snapshot:
+  commit: ba5b4d39afcb67e2581d87836a6c9d98221499d6
+  paths:
+    - projects/monolith/home/observability/slo.py
+  strip_components: 4
+prompt: |
+  slo.py computes SLO status and error-budget figures for the observability
+  dashboard. aggregate_group() rolls a group's children up into a single status,
+  currently taking the worst child status. But it ignores the group's own error
+  budget: a group can show "healthy" even when its aggregated availability has
+  fully consumed the error budget for the window. Fix aggregate_group so that when
+  the group has an SLO (current is not None) and its error budget is fully consumed
+  (the "consumed" value from compute_budget is >= 100), the group's status is at
+  least "degraded" (never "healthy" or "warning"), while still respecting a worse
+  child status if one exists. Do not change the other functions' behavior or any
+  signature. Return the complete updated slo.py.
+target_files:
+  - slo.py
+verifier:
+  kind: command
+  args:
+    cmd: ["python3", "_check.py"]
+    write_files:
+      _check.py: |
+        import sys
+        sys.path.insert(0, ".")
+        import slo
+
+        # A single child, healthy child-status, but availability far below target
+        # over a full window -> budget fully consumed -> group must be >= degraded.
+        children = [{"status": "healthy", "slo": {"current": 90.0}, "metrics": []}]
+        g = slo.aggregate_group(children, target=99.9, window_days=30)
+        assert g["budget"]["consumed"] >= 100, f"test setup: expected full budget burn, got {g['budget']}"
+        if g["status"] != "degraded":
+            sys.stderr.write(f"group with a fully-consumed error budget must be 'degraded', got {g['status']!r}\n")
+            sys.exit(1)
+
+        # Healthy group (current meets target) stays healthy.
+        ok = slo.aggregate_group([{"status": "healthy", "slo": {"current": 99.95}, "metrics": []}], 99.9, 30)
+        if ok["status"] != "healthy":
+            sys.stderr.write(f"a group meeting its target must stay 'healthy', got {ok['status']!r}\n")
+            sys.exit(1)
+
+        # A worse child status must still win over a non-breached budget.
+        worse = slo.aggregate_group([{"status": "degraded", "slo": {"current": 99.95}, "metrics": []}], 99.9, 30)
+        if worse["status"] != "degraded":
+            sys.stderr.write(f"a worse child status must be respected, got {worse['status']!r}\n")
+            sys.exit(1)
+        print("ok")

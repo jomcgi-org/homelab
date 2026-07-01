@@ -9,7 +9,7 @@ from bench.cli import _prune_stale, build_parser, load_tasks
 def test_parser_has_subcommands():
     p = build_parser()
     choices = p._subparsers._group_actions[0].choices
-    for sub in ("run", "report", "drop", "prune", "prune-stale", "list"):
+    for sub in ("run", "report", "drop", "prune", "prune-stale", "list", "snapshot"):
         assert sub in choices
 
 
