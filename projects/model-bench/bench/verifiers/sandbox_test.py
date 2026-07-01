@@ -1,4 +1,7 @@
 import os
+
+import pytest  # noqa: F401
+
 from bench.verifiers.sandbox import run_sandboxed, SandboxResult
 
 

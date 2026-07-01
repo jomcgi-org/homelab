@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.pareto import pareto_frontier, qualifies, ClassScore
 
 

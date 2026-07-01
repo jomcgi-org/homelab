@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest  # noqa: F401
+
 from bench.runner import run_cell
 from bench.verifiers import VerifyResult
 

@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.cli import build_parser, load_tasks
 
 

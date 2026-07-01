@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.schema import (
     TaskSpec,
     VerifierSpec,

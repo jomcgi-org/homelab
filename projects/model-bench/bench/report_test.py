@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.report import render_leaderboard
 
 

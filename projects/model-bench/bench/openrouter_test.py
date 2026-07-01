@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+import pytest  # noqa: F401
 
 from bench.openrouter import OpenRouterClient
 
