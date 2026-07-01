@@ -49,6 +49,16 @@ from bench.schema import Attempt, ResultCell, TaskSpec
 from bench.verifiers import get_verifier, verifier_source_hash
 
 
+# Raw result cells (one JSON per (task, model) run) are the expensive, billed output
+# of a calibration run. They MUST NOT live inside the git worktree: they are gitignored,
+# so a `git worktree remove` deletes them and forces a full paid re-run. Default them to
+# a stable per-user cache dir that survives worktree churn; override with
+# MODEL_BENCH_RESULTS or --results. This machine is the only place the bench runs.
+_DEFAULT_RESULTS = os.environ.get("MODEL_BENCH_RESULTS") or str(
+    Path.home() / ".cache" / "model-bench" / "results"
+)
+
+
 def _load_yaml_mapping(p: Path) -> dict:
     """Load YAML from path and verify it is a top-level mapping.
 
@@ -93,7 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--tasks", default="tasks", help="Path to tasks directory")
     p_run.add_argument("--models", default="models.yaml", help="Path to models.yaml")
     p_run.add_argument(
-        "--results", default="results", help="Directory to store result JSON files"
+        "--results",
+        default=_DEFAULT_RESULTS,
+        help="Directory to store result JSON files",
     )
     p_run.add_argument(
         "--reports", default="reports", help="Directory for report output"
@@ -123,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # report
     p_report = sub.add_parser("report", help="Generate leaderboard report")
-    p_report.add_argument("--results", default="results")
+    p_report.add_argument("--results", default=_DEFAULT_RESULTS)
     p_report.add_argument("--models", default="models.yaml")
     p_report.add_argument("--tasks", default="tasks")
     p_report.add_argument("--out", default="reports/leaderboard.md")
@@ -151,7 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--retired", action="store_true", help="(reserved, currently unused)"
     )
     p_prune.add_argument(
-        "--results", default="results", help="Directory to read result JSON files from"
+        "--results",
+        default=_DEFAULT_RESULTS,
+        help="Directory to read result JSON files from",
     )
 
     # prune-stale
@@ -160,7 +174,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete result cells left over from a different harness version",
     )
     p_prune_stale.add_argument(
-        "--results", default="results", help="Directory to read result JSON files from"
+        "--results",
+        default=_DEFAULT_RESULTS,
+        help="Directory to read result JSON files from",
     )
 
     # list

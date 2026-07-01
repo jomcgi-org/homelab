@@ -45,14 +45,27 @@ Two interpreters are involved:
 
 `OPENROUTER_API_KEY` must be set; model calls are billed (cents per task).
 
+## Result cells (billed output — kept out of the worktree)
+
+Each run writes one JSON cell per (task, model) under a **durable per-user cache dir**,
+`~/.cache/model-bench/results` by default (override with `MODEL_BENCH_RESULTS` or
+`--results`). They are deliberately NOT inside the git worktree: `results/` is gitignored,
+so a `git worktree remove` would delete them and force a full paid re-run. The cache is
+keyed on prompt + fixture + verifier + model + budget, so re-running skips unchanged
+cells; only the committed `reports/leaderboard.md` and the page's `leaderboard.json` are
+version-controlled.
+
 ## Commands
 
 ```bash
 python3 -m bench snapshot                    # materialize all task fixtures
 python3 -m bench run                          # run every active (task, model) cell
-python3 -m bench run --task hikes-doability-01 --model qwen3-coder-30b  # one cell, cheap
+python3 -m bench run --task worldcup-swing-settled-01 --model qwen3-coder-30b  # one cell, cheap
 python3 -m bench report                       # regenerate reports/leaderboard.md
 ```
 
-The leaderboard's headline is the agentic table: pass-rate, median tokens, median turns,
-cost, and tool-use reliability per model.
+The leaderboard's headline is the agentic table. It reads on two lenses: the **self-host**
+lens (pass-rate, median tokens/turns, tool-use reliability — model-intrinsic, they carry
+over to local hardware) and the **cloud** lens (median wall-time, cost, cost-per-solve —
+the real time and money to rent the model via OpenRouter, measured against the Claude
+anchor rows). Remote wall-time reflects a typical cloud request, not local GPU throughput.
