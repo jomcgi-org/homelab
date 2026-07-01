@@ -132,41 +132,6 @@ def _split_message(content: str) -> list[str]:
     return chunks
 
 
-def _drain_agent_queue(discord_thread: str) -> str | None:
-    """Drain the pending queue for an agent Discord thread after a turn finishes.
-
-    If replies were queued while the previous turn was running (``pending``
-    non-empty), take them as the next task, clear ``pending``, and keep
-    ``running=True`` so the caller can dispatch the next turn immediately.
-    If the queue is empty, set ``running=False`` so the thread accepts new
-    replies again.
-
-    Returns the next task string, or None when the queue was empty.
-
-    Opens its own Session; always call via asyncio.to_thread. Imports
-    ``chat.models.GoosecrackerSession`` lazily to avoid a module-level import
-    of the chat package from within the goosecracker package.
-    """
-    from chat.models import GoosecrackerSession
-
-    with Session(get_engine()) as session:
-        row = session.get(GoosecrackerSession, discord_thread)
-        if row is None:
-            return None
-        if row.pending:
-            task = row.pending
-            row.pending = ""
-            # Keep running=True; the caller dispatches the next run.
-            session.add(row)
-            session.commit()
-            return task
-        # Queue empty: allow new replies.
-        row.running = False
-        session.add(row)
-        session.commit()
-        return None
-
-
 def _enqueue_sync(channel_id: str, content: str) -> None:
     """Open a session, enqueue a Discord outbox row, commit. Sync so the async
     runner hands it to a worker thread (a sync Session must not run on the event
@@ -446,8 +411,13 @@ async def run_and_deliver(
     # not wedge the thread. Runs after finally: so the progress stream is already
     # marked done before the next turn potentially starts.
     if recipe == "agent" and discord_thread:
+        # The drain (DB work on chat.goosecracker_sessions) lives in the chat
+        # domain; reach it through chat.api so goosecracker never imports chat
+        # internals (import_boundaries_test).
+        from chat.api import drain_agent_queue
+
         # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
-        next_task = await asyncio.to_thread(_drain_agent_queue, discord_thread)
+        next_task = await asyncio.to_thread(drain_agent_queue, discord_thread)
         if next_task is not None:
             # Update the run ledger for the next task (mirrors dispatch.submit).
             # nosemgrep: no-session-in-to-thread  # threads.upsert_run opens its own Session
