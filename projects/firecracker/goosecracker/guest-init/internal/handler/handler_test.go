@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -341,6 +343,51 @@ func TestFailedRunDoesNotExportSession(t *testing.T) {
 	}
 	if res.SessionDb != "" {
 		t.Errorf("a failed run should not export a session, got %q", res.SessionDb)
+	}
+}
+
+func TestArtifactHTMLReturnedWhenRecipeWroteIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "artifact.html")
+	if err := os.WriteFile(path, []byte("<html>built</html>"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	old := artifactPath
+	artifactPath = path
+	defer func() { artifactPath = old }()
+
+	runner := &fakeRunner{out: "done"}
+	h := New(runner)
+	body, _ := json.Marshal(AgentRequest{Recipe: "artifact", Task: "build", Session: "sess-a"})
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if res.Status != "ok" {
+		t.Fatalf("status = %q, want ok", res.Status)
+	}
+	if res.ArtifactHTML != "<html>built</html>" {
+		t.Errorf("ArtifactHTML = %q, want the built HTML", res.ArtifactHTML)
+	}
+}
+
+func TestNoArtifactHTMLWhenAbsent(t *testing.T) {
+	old := artifactPath
+	artifactPath = filepath.Join(t.TempDir(), "missing.html")
+	defer func() { artifactPath = old }()
+
+	runner := &fakeRunner{out: "done"}
+	h := New(runner)
+	body, _ := json.Marshal(AgentRequest{Recipe: "agent", Task: "t"})
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res := decodeResult(t, resp); res.ArtifactHTML != "" {
+		t.Errorf("ArtifactHTML = %q, want empty (no artifact written)", res.ArtifactHTML)
 	}
 }
 

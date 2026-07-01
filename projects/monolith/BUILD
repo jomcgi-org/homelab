@@ -4063,6 +4063,17 @@ py_test(
 )
 
 py_test(
+    name = "goosecracker_runner_test",
+    srcs = ["goosecracker/tests/runner_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "agent_checks_firing_alerts_test",
     srcs = ["agent/checks_firing_alerts_test.py"],
     imports = ["."],

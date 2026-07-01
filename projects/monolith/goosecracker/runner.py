@@ -25,6 +25,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 
 import httpx
 from sqlmodel import Session
@@ -92,6 +93,53 @@ def _mark_progress_done(session: str) -> None:
     from chat.api import mark_goosecracker_progress_done
 
     mark_goosecracker_progress_done(session)
+
+
+def _publish_artifact(session: str, html: str) -> str:
+    """Publish the built artifact HTML to S3 and return its live URL (ADR 024).
+
+    Reuses the /internal/artifact publish path so the S3 write + URL/version logic
+    lives in one place. The artifact id is the session (== the Discord thread for
+    /artifact), so a reply on the same thread re-publishes the same id and the live
+    page hot-reloads instead of spawning a new artifact.
+    """
+    from artifact.router import PublishRequest, publish_artifact
+
+    return publish_artifact(PublishRequest(html=html, id=session)).url
+
+
+def _extract_summary(result: str) -> str:
+    """Pull the recipe's ``goose-result`` summary line out of goose's output.
+
+    The artifact recipe ends with a ```goose-result``` block carrying
+    ``summary: <what it built>``; surface that one line rather than the raw
+    transcript. Empty when absent.
+    """
+    m = re.search(r"^\s*summary:\s*(.+)$", result, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+async def _delivery_message(session: str, recipe: str, data: dict) -> str:
+    """Build the Discord message for a successful run.
+
+    Artifact runs publish the built HTML and post a clean ``Artifact ready: <url>``
+    (plus the recipe's one-line summary) instead of the raw goose transcript. A run
+    that was meant to build an artifact but produced none gets a clear miss message.
+    Any other run posts its (truncated) result text.
+    """
+    html = data.get("artifactHtml")
+    if html:
+        try:
+            # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+            url = await asyncio.to_thread(_publish_artifact, session, html)
+        except Exception:
+            logger.exception("goosecracker: artifact publish failed for %s", session)
+            return "Build finished, but publishing the artifact failed. Check the logs."
+        summary = _extract_summary(data.get("result", "") or "")
+        return f"Artifact ready: {url}" + (f"\n\n{summary}" if summary else "")
+    if recipe == "artifact":
+        return "Build finished but produced no artifact. Try rephrasing the request."
+    return _truncate(data.get("result", "") or "(no output)")
 
 
 async def _persist_session_db(session: str, session_db_b64: str | None) -> None:
@@ -174,7 +222,9 @@ async def run_and_deliver(
             await _persist_session_db(session, data.get("sessionDb"))
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
             await asyncio.to_thread(threads.mark_completed, session, result)
-            await _deliver(discord_thread, _truncate(f"Artifact ready.\n\n{result}"))
+            await _deliver(
+                discord_thread, await _delivery_message(session, recipe, data)
+            )
         else:
             err = data.get("error", "") or "goose run failed with no detail"
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
