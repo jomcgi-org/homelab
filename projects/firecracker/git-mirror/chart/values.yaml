@@ -16,10 +16,11 @@ image:
 repos:
   - name: homelab
     url: https://github.com/jomcgi/homelab.git
-  # loom is a PRIVATE repo but `jomcgi/loom` does not exist (it is a 50:50 project
-  # with Rowan, so it lives under a different owner/org). Re-add it here with the
-  # CORRECT owner/repo once known: the mirror-side githubToken + insteadOf auth
-  # below is in place, so it is a one-line add. A clone failure stays non-fatal.
+  # loom is a PRIVATE repo under the weave-hand org (50:50 with Rowan). The mirror
+  # clones it via the mirror-side githubToken + insteadOf auth below; the token
+  # must have weave-hand read access or the clone non-fatally skips.
+  - name: loom
+    url: https://github.com/weave-hand/loom.git
 
 # Seconds between git fetch --prune passes. Keep short enough that guests
 # hydrate from a near-head branch, long enough not to hammer GitHub rate limits.
