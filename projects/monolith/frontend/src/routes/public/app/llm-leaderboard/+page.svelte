@@ -77,7 +77,7 @@
   </header>
 
   <section class="panel">
-    <div class="panel-head">Cost / speed / effort</div>
+    <div class="panel-head">Pass rate vs efficiency</div>
     <Scatter {models} {tasks} />
   </section>
 
