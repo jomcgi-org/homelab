@@ -43,15 +43,18 @@ def render_leaderboard(
             )
         )
         lines.append(
-            "| Model | n | pass-rate | median tokens | median turns "
-            "| cost ($) | tool-use ok |"
+            "| Model | n | pass-rate | median tokens | median turns | wall-time (s) "
+            "| cost ($) | $/solve | tool-use ok |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for r in rows:
+            cps = r.get("cost_per_solve")
+            cps_str = f"{cps:.4f}" if cps is not None else "n/a"
             lines.append(
                 f"| {r['model']} | {r.get('n', 0)} | {r.get('pass_rate', 0.0):.2f} "
                 f"| {r.get('med_tokens', 0):.0f} | {r.get('med_turns', 0):.1f} "
-                f"| {r.get('cost', 0.0):.4f} | {r.get('tool_ok_rate', 0.0):.2f} |"
+                f"| {r.get('med_latency_ms', 0) / 1000:.1f} "
+                f"| {r.get('cost', 0.0):.4f} | {cps_str} | {r.get('tool_ok_rate', 0.0):.2f} |"
             )
     else:
         lines.append("No agentic results yet.")

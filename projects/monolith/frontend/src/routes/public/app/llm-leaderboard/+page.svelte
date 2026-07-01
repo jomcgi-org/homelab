@@ -9,8 +9,10 @@
   const pct = (x) => `${Math.round((x ?? 0) * 100)}%`;
   const num = (x) => (x ?? 0).toLocaleString("en-US");
   const money = (x) => `$${(x ?? 0).toFixed(4)}`;
+  const secs = (ms) => (ms == null ? "n/a" : `${(ms / 1000).toFixed(1)}s`);
   // Drop the provider prefix for the headline name, keep the full slug beneath.
   const shortName = (id) => (id.includes("/") ? id.split("/").slice(1).join("/") : id);
+  const isAnchor = (m) => m.role === "anchor";
 
   // Colour a pass-rate cell: full green, partial coral-ish, zero muted.
   const rateClass = (r) => (r >= 0.999 ? "full" : r > 0 ? "partial" : "zero");
@@ -60,13 +62,15 @@
             <th class="n">Pass</th>
             <th class="n">Tokens</th>
             <th class="n">Turns</th>
+            <th class="n">Wall-time</th>
             <th class="n">Cost</th>
+            <th class="n">$/solve</th>
             <th class="n">Tools</th>
           </tr>
         </thead>
         <tbody>
           {#each models as m, i}
-            <tr class:winner={i === 0}>
+            <tr class:winner={i === 0} class:anchor-row={isAnchor(m)}>
               <td class="rk">{i + 1}</td>
               <td class="mdl">
                 <span class="name">{shortName(m.id)}</span>
@@ -79,7 +83,9 @@
               </td>
               <td class="n mono">{num(m.median_tokens)}</td>
               <td class="n mono">{m.median_turns}</td>
+              <td class="n mono">{secs(m.median_latency_ms)}</td>
               <td class="n mono">{money(m.cost_usd)}</td>
+              <td class="n mono">{m.cost_per_solve_usd == null ? "n/a" : money(m.cost_per_solve_usd)}</td>
               <td class="n">
                 <span class="pill {toolLabel(m.tool_use_ok)}">{toolLabel(m.tool_use_ok)}</span>
               </td>
@@ -89,10 +95,12 @@
       </table>
     </div>
     <div class="legend">
-      <span><b>Pass</b> share of tasks solved (first attempt).</span>
-      <span><b>Tokens / Turns</b> median per task — the efficiency lever.</span>
-      <span><b>Cost</b> mean $ per task at list price.</span>
-      <span><b>Tools</b> native tool-calling reliability.</span>
+      <span><b>Pass / Tokens / Turns / Tools</b> are model-intrinsic: the
+        <b>self-host lens</b> (they carry over to running the model on local hardware).</span>
+      <span><b>Wall-time / Cost / $-per-solve</b> are the <b>cloud lens</b>: the real
+        time and money to rent this model, measured against the Claude
+        <b>anchor</b> rows you would be replacing. Wall-time is via OpenRouter, so it
+        reflects a typical cloud request, not local GPU throughput.</span>
     </div>
   </section>
 
@@ -248,6 +256,8 @@
   tr.winner td { background: var(--accent); }
   tr.winner td.rk { color: var(--ink); }
   tr:not(.winner):hover td { background: var(--bg-elev); }
+  /* Claude anchors: the paid baseline you are deciding whether to replace. */
+  tr.anchor-row:not(.winner) td.rk { box-shadow: inset 3px 0 0 var(--blue); }
 
   /* pass-rate cell */
   .rate { font-family: var(--mono); font-weight: 700; font-size: 15px; }

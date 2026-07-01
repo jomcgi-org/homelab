@@ -88,7 +88,9 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
             "pass_rate": 1.0,
             "med_tokens": 1000.0,
             "med_turns": 4.0,
+            "med_latency_ms": 8000.0,
             "cost": 0.001,
+            "cost_per_solve": 0.001,
             "tool_ok_rate": 1.0,
         },
         "anchor/x": {
@@ -96,7 +98,9 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
             "pass_rate": 1.0,
             "med_tokens": 2000.0,
             "med_turns": 3.0,
+            "med_latency_ms": 20000.0,
             "cost": 0.5,
+            "cost_per_solve": 0.5,
             "tool_ok_rate": 1.0,
         },
     }
@@ -114,6 +118,9 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     # Cheapest of two equal-pass models ranks first; anchor role is tagged.
     assert data["models"][0]["id"] == "cheap/win"
     assert data["models"][1]["role"] == "anchor"
+    # Value fields surfaced: wall-time and cost-per-solve.
+    assert data["models"][0]["median_latency_ms"] == 8000
+    assert data["models"][0]["cost_per_solve_usd"] == 0.001
     # The one agentic task appears with its real-test flag, blurb, and pass count.
     (t,) = data["tasks"]
     assert t["id"] == "worldcup-fixtures-guard-01"
