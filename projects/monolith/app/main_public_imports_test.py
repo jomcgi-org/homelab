@@ -32,6 +32,7 @@ FORBIDDEN_MODULES = [
     # Private domains.
     "chat",
     "agent",
+    "goosecracker",
     "scheduler",
     # Trips read path (models + read_router) is public; the write/heavy path
     # must stay out of the public closure (pillow/boto3/defusedxml).
