@@ -125,6 +125,7 @@ py_library(
     name = "bench",
     srcs = [
         "__init__.py",
+        "agent.py",
         "cache.py",
         "cli.py",
         "judge.py",
@@ -233,6 +234,29 @@ py_test(
     imports = [".."],
     deps = [
         ":bench",
+        "@pip//pytest",
+    ],
+)
+
+semgrep_test(
+    name = "agent_semgrep_test",
+    srcs = ["agent.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "agent_test_semgrep_test",
+    srcs = ["agent_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+py_test(
+    name = "agent_test",
+    srcs = ["agent_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "//projects/model-bench/bench/verifiers",
         "@pip//pytest",
     ],
 )
