@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.verifiers import get_verifier
 
 RBAC_YAML = """

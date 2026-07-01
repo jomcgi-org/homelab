@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.cache import cell_key, cell_path, is_cached, HARNESS_VERSION
 
 

@@ -1,3 +1,5 @@
+import pytest  # noqa: F401
+
 from bench.registry import load_registry, active_models, drop_model
 
 YAML = """
