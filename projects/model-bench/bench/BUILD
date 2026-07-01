@@ -211,13 +211,6 @@ py_test(
 )
 
 py_test(
-    name = "sandbox_test",
-    srcs = ["sandbox_test.py"],
-    imports = [".."],
-    deps = [":bench"],
-)
-
-py_test(
     name = "schema_test",
     srcs = ["schema_test.py"],
     imports = [".."],
