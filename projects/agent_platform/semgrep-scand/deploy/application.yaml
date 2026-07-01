@@ -3,6 +3,11 @@ kind: Application
 metadata:
   name: semgrep-scand
   namespace: argocd
+  # Decommission step 1 (semgrep now runs on fc-invoke): add the resources
+  # finalizer so that when this Application is removed from git (step 2), the
+  # root app-of-apps prune cascades to its workloads instead of orphaning them.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   sources:
