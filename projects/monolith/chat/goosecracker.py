@@ -203,6 +203,34 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     )
 
 
+def drain_agent_queue(thread_id: str) -> str | None:
+    """Drain a conversational agent thread's queue after a turn finishes.
+
+    Called by the goosecracker runner (via ``chat.api``) when an agent turn
+    completes. If replies were queued while the turn was running (``pending``
+    non-empty), return them as the next task, clear ``pending``, and keep
+    ``running=True`` so the caller dispatches the next turn. Otherwise set
+    ``running=False`` so the thread accepts new replies again. Sync; the caller
+    invokes it via ``asyncio.to_thread``. Lives here (not in the goosecracker
+    package) so the runner reaches it through ``chat.api`` and never imports
+    ``chat`` internals directly (import_boundaries_test).
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        if row is None:
+            return None
+        if row.pending:
+            task = row.pending
+            row.pending = ""
+            session.add(row)
+            session.commit()
+            return task
+        row.running = False
+        session.add(row)
+        session.commit()
+        return None
+
+
 def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
     """Open a conversational agent session for a Discord thread.
 

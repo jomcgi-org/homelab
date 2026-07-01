@@ -213,7 +213,7 @@ def test_start_agent_session_writes_session_row(engine, fake_api):
     assert row.tier == ""
     assert row.repo == "homelab"
     assert row.transcript == "fix the bug"
-    assert row.running is True
+    assert row.running
     assert row.pending == ""
 
 
@@ -264,7 +264,7 @@ def test_continue_agent_session_dispatches_when_idle(engine, fake_api):
     # running should be True (set before dispatch)
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "agent-t1")
-    assert row.running is True
+    assert row.running
     assert row.pending == ""
 
 
@@ -280,7 +280,7 @@ def test_continue_agent_session_queues_when_running(engine, fake_api):
 
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "agent-t2")
-    assert row.running is True
+    assert row.running
     assert row.pending == "extra instruction"
 
 
@@ -311,7 +311,7 @@ def test_continue_agent_session_consumes_pending_on_dispatch(engine, fake_api):
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "agent-t4")
     assert row.pending == ""
-    assert row.running is True
+    assert row.running
 
 
 def test_continue_session_falls_back_to_cold_on_head_session_error(
@@ -338,3 +338,36 @@ def test_continue_session_falls_back_to_cold_on_head_session_error(
         tier="artifact",
         discord_thread="thread-1",
     )
+
+
+def test_drain_agent_queue_returns_task_and_clears_pending(engine):
+    """When pending is non-empty, drain returns the queued task, clears pending,
+    and keeps running=True so the runner dispatches the next turn."""
+    _make_agent_session(engine, "d-t1", running=True, pending="do something extra")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        task = goosecracker.drain_agent_queue("d-t1")
+
+    assert task == "do something extra"
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "d-t1")
+    assert row.pending == ""
+    assert row.running  # runner handles dispatching the next turn
+
+
+def test_drain_agent_queue_clears_running_when_empty(engine):
+    """When pending is empty, drain returns None and sets running=False so the
+    thread accepts new replies again."""
+    _make_agent_session(engine, "d-t2", running=True, pending="")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        task = goosecracker.drain_agent_queue("d-t2")
+
+    assert task is None
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "d-t2")
+    assert not row.running
+
+
+def test_drain_agent_queue_returns_none_for_unknown_thread(engine):
+    """No session row for the thread: drain returns None gracefully."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        assert goosecracker.drain_agent_queue("no-such-thread") is None
