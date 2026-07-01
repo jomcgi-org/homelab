@@ -715,6 +715,23 @@ class ChatBot(discord.Client):
             # Lost a race with session teardown; let normal handling take it.
             return False
 
+        action = result.get("action") if isinstance(result, dict) else None
+
+        if action == "queued":
+            # A turn is already running; the reply was queued for the next turn.
+            await message.reply("Queued - I'll pick this up after the current turn.")
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
+
+        if action == "dispatched":
+            # Agent thread: a new turn was dispatched (session was idle).
+            progress_msg = await message.reply("🤖 On it. Running the agent now...")
+            self._start_goosecracker_stream(thread_id, progress_msg, kind="agent")
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
+
+        # Artifact path: continue_session returned the raw submit result dict
+        # (action is "create" or "resume" from threads.upsert_run).
         progress_msg = await message.reply(
             "🛠 On it. Rebuilding your artifact; the link above will hot-reload..."
         )

@@ -66,6 +66,18 @@ def _join_transcript(existing: str, message: str) -> str:
     return f"{existing}\n\n{message}"
 
 
+def _append_pending(existing: str, msg: str) -> str:
+    """Join a new reply onto the pending queue (newline-separated).
+
+    Used by the agent conversational path to accumulate replies that arrive
+    while a turn is running; the queue is drained as a single next-turn task
+    when the current turn finishes.
+    """
+    if not existing:
+        return msg
+    return f"{existing}\n{msg}"
+
+
 def start_session(thread_id: str, prompt: str) -> dict:
     """Record a new thread's transcript and dispatch the first artifact run.
 
@@ -96,40 +108,92 @@ def start_session(thread_id: str, prompt: str) -> dict:
 
 
 def continue_session(thread_id: str, message: str) -> dict | None:
-    """Append an owner follow-up and re-dispatch the FULL transcript (Model B).
+    """Append an owner follow-up and re-dispatch or queue depending on recipe.
 
-    Returns the dispatch result, or None when ``thread_id`` is not a goosecracker
-    thread (so the caller can fall through to normal handling). Synchronous; call
-    via ``asyncio.to_thread``.
+    Artifact sessions (recipe="artifact"): re-dispatch the full transcript (Model
+    B), preserving the original ADR 026 Phase 2 resume gate. Returns the raw
+    submit result dict.
+
+    Agent sessions (recipe="agent"): conversational queuing. If a turn is already
+    running, append the message to ``pending`` and return ``{"action": "queued"}``
+    so the bot can acknowledge without starting a new run. When idle, build the
+    next task from any backlog + this message, set running=True, dispatch, and
+    return ``{"action": "dispatched", ...submit result}``.
+
+    Returns None when ``thread_id`` is not a goosecracker thread so the caller
+    can fall through to normal chat handling. Synchronous; call via
+    asyncio.to_thread.
     """
-    from artifact import s3
-    from goosecracker.api import submit
-
     message = message.strip()
+    # Captured inside the session for use after the with-block.
+    _is_agent = False
+    _task = ""
+    _stored_recipe = ""
+    _stored_tier = ""
+    _stored_repo = ""
+    _transcript = ""
+
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
         if row is None:
             return None
+
+        # Accumulate the turn in the curated transcript for all recipe types.
         transcript = _join_transcript(row.transcript, message)
         row.transcript = transcript
         row.updated_at = datetime.now(timezone.utc)
-        session.add(row)
-        session.commit()
 
-    # ADR 026 Phase 2 (Model A vs B): if a persisted goose session exists for this
-    # thread, send only the new reply (Model A) so the guest can restore the
-    # session + prior artifact and edit in place; otherwise cold-rebuild from the
-    # FULL transcript (Model B). Guest-side session resume is still deferred (the
-    # fc-invoke agent handler names the session but does not restore it yet), so
-    # today both paths run cold and the choice only sets how much context is sent.
-    # The S3 check is the fallback gate (Task 2.4): no stored session -> full
-    # transcript, never a failure. Both paths run under the same session id.
+        if row.recipe == AGENT_RECIPE:
+            _is_agent = True
+            if row.running:
+                # A turn is already in flight: queue this reply for the next turn.
+                row.pending = _append_pending(row.pending, message)
+                session.add(row)
+                session.commit()
+                return {"action": "queued"}
+            # Idle: consume any backlog plus the new message as a single task.
+            _task = _append_pending(row.pending, message)
+            _stored_recipe = row.recipe
+            _stored_tier = row.tier
+            _stored_repo = row.repo
+            row.pending = ""
+            row.running = True
+            session.add(row)
+            session.commit()
+        else:
+            # Artifact path: commit the transcript update, then do the S3 check.
+            _transcript = transcript
+            session.add(row)
+            session.commit()
+
+    # Imports are lazy (circular import guard: chat.bot -> chat.goosecracker ->
+    # goosecracker.runner -> chat.api).
+    from goosecracker.api import submit
+
+    if _is_agent:
+        result = submit(
+            _task,
+            session=thread_id,
+            recipe=_stored_recipe,
+            tier=_stored_tier,
+            repo=_stored_repo,
+            discord_thread=thread_id,
+        )
+        return {"action": "dispatched", **result}
+
+    # Artifact path: ADR 026 Phase 2 (Model A vs B). If a persisted goose session
+    # exists for this thread, send only the new reply (Model A) so the guest can
+    # restore the session and edit in place; otherwise cold-rebuild from the full
+    # transcript (Model B). The S3 check is best-effort: a failure falls back to
+    # Model B, never a hard error.
+    from artifact import s3
+
     has_session = False
     try:
         has_session = s3.head_session(thread_id) is not None
     except Exception:
         logger.exception("goosecracker: session existence check failed; cold rebuild")
-    task = message if has_session else transcript
+    task = message if has_session else _transcript
     return submit(
         task,
         session=thread_id,
@@ -140,19 +204,23 @@ def continue_session(thread_id: str, message: str) -> dict | None:
 
 
 def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
-    """Dispatch a one-shot agent run for the given Discord thread.
+    """Open a conversational agent session for a Discord thread.
 
-    Unlike ``start_session`` (artifact), this does not write a
-    GoosecrackerSession DB row, so thread replies fall through to normal chat
-    handling. Iterative /agent threads (continuation) are a future follow-up.
-    Synchronous; call via ``asyncio.to_thread``.
+    Dispatches the first turn and writes a GoosecrackerSession row so that
+    follow-up replies in the thread are routed through ``continue_session``
+    (agent path) with queuing support. The row is written AFTER dispatch so
+    that a failed submit leaves no row (mirroring ``start_session``).
+
+    Synchronous; call via asyncio.to_thread.
     """
     prompt = prompt.strip()
     # Imported lazily for the same reason as start_session (circular import
     # guard: chat.bot -> chat.goosecracker -> goosecracker.runner -> chat.api).
     from goosecracker.api import submit
 
-    return submit(
+    # Dispatch first: a failed submit leaves no session row, avoiding a stuck
+    # thread where future replies queue forever with no runner to drain them.
+    result = submit(
         prompt,
         session=thread_id,
         recipe=AGENT_RECIPE,
@@ -160,6 +228,19 @@ def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
         repo=repo,
         discord_thread=thread_id,
     )
+    with Session(get_engine()) as session:
+        session.add(
+            GoosecrackerSession(
+                discord_thread=thread_id,
+                recipe=AGENT_RECIPE,
+                tier=AGENT_TIER,
+                repo=repo,
+                transcript=prompt,
+                running=True,
+            )
+        )
+        session.commit()
+    return result
 
 
 def is_goosecracker_thread(thread_id: str) -> bool:

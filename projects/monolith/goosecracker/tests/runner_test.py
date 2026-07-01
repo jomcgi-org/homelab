@@ -2,10 +2,17 @@
 
 Covers the artifact publish + Discord message shaping, the default mirror wiring
 (WS2: GOOSECRACKER_GIT_MIRROR defaults gitMirror when caller omits it), and the
-recorded-ref line in delivery messages (WS3).
+recorded-ref line in delivery messages (WS3). Also covers _drain_agent_queue,
+the conversational-queue drain added for /agent thread continuations.
 """
 
 from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.pool import StaticPool
 
 from goosecracker import runner
 
@@ -273,3 +280,86 @@ def test_split_message_hard_splits_an_overlong_line():
     pages = runner._split_message("y" * 4000)
     assert len(pages) >= 2
     assert all(len(p) <= runner._MAX_DISCORD for p in pages)
+
+
+# ---------------------------------------------------------------------------
+# _drain_agent_queue: conversational-queue drain
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(name="engine")
+def engine_fixture():
+    """In-memory SQLite engine with schemas stripped for SQLite compatibility."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original_schemas: dict[str, str] = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    SQLModel.metadata.create_all(engine)
+    yield engine
+    for table in SQLModel.metadata.tables.values():
+        if table.name in original_schemas:
+            table.schema = original_schemas[table.name]
+
+
+def _insert_session(engine, thread_id: str, *, running: bool, pending: str) -> None:
+    from chat.models import GoosecrackerSession
+
+    with Session(engine) as session:
+        session.add(
+            GoosecrackerSession(
+                discord_thread=thread_id,
+                recipe="agent",
+                tier="",
+                repo="homelab",
+                transcript="do the thing",
+                running=running,
+                pending=pending,
+            )
+        )
+        session.commit()
+
+
+def test_drain_agent_queue_returns_task_and_clears_pending(engine):
+    """When pending is non-empty, _drain_agent_queue returns the task, clears
+    pending, and leaves running=True so the caller can dispatch the next turn."""
+    _insert_session(engine, "d-t1", running=True, pending="do something extra")
+
+    with patch("goosecracker.runner.get_engine", return_value=engine):
+        task = runner._drain_agent_queue("d-t1")
+
+    assert task == "do something extra"
+    from chat.models import GoosecrackerSession
+
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "d-t1")
+    assert row.pending == ""
+    assert row.running is True  # caller handles dispatching next turn
+
+
+def test_drain_agent_queue_clears_running_when_empty(engine):
+    """When pending is empty, _drain_agent_queue returns None and sets
+    running=False so the thread accepts new replies."""
+    _insert_session(engine, "d-t2", running=True, pending="")
+
+    with patch("goosecracker.runner.get_engine", return_value=engine):
+        task = runner._drain_agent_queue("d-t2")
+
+    assert task is None
+    from chat.models import GoosecrackerSession
+
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "d-t2")
+    assert row.running is False
+
+
+def test_drain_agent_queue_returns_none_for_unknown_thread(engine):
+    """When no GoosecrackerSession exists for the thread, return None gracefully."""
+    with patch("goosecracker.runner.get_engine", return_value=engine):
+        task = runner._drain_agent_queue("no-such-thread")
+    assert task is None
