@@ -365,11 +365,22 @@ class TestSnapshot:
         assert body["generated_at"].startswith("2026-06-02")
 
     def test_past_dates_excluded(self, client, session):
-        """Dates before today must not appear in days."""
+        """Dates older than the tz boundary must not appear in days.
+
+        The router windows on (UTC today - 1 day), not UTC today: availability
+        and weather are dated in each park's local timezone, and during BC
+        evenings a park's LOCAL today equals UTC yesterday. So the UTC today - 1
+        boundary day is intentionally kept (it is a park's current day), while
+        anything strictly older (two or more days back) is genuinely past and
+        excluded.
+        """
+        two_days_ago = _TODAY - datetime.timedelta(days=2)
         yesterday = _TODAY - datetime.timedelta(days=1)
         session.add(_campground(1, "Alpha Lake"))
+        session.add(_availability(1, two_days_ago, has_availability=True))
+        session.add(_weather(1, two_days_ago, sunny_score=90))
         session.add(_availability(1, yesterday, has_availability=True))
-        session.add(_weather(1, yesterday, sunny_score=90))
+        session.add(_weather(1, yesterday, sunny_score=80))
         session.add(_availability(1, _TODAY, has_availability=True))
         session.add(_weather(1, _TODAY, sunny_score=50))
         session.commit()
@@ -377,5 +388,7 @@ class TestSnapshot:
         r = client.get("/api/campsites/snapshot")
         body = r.json()
         dates = [day["date"] for day in body["parks"][0]["days"]]
-        assert yesterday.isoformat() not in dates
+        assert two_days_ago.isoformat() not in dates
+        # The UTC today - 1 boundary day is kept for the park-local timezone edge.
+        assert yesterday.isoformat() in dates
         assert _TODAY.isoformat() in dates

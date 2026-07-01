@@ -39,6 +39,7 @@ REQUIRED_PREFIXES = [
     "/api/hikes",
     "/api/dr-jobs",
     "/api/trips",
+    "/api/campsites",
 ]
 
 
@@ -75,6 +76,8 @@ ALLOWED_PREFIXES = (
     "/api/hikes",
     "/api/dr-jobs",
     "/api/trips",
+    # BC Parks campsite availability x clear-sky weather (read-only SSR snapshot).
+    "/api/campsites",
     # SSR-only Scotland WC2026 qualification summary (kept off the public
     # HTTPRoute; reached only via the in-pod SSR fetch, never directly).
     "/api/wc2026",
