@@ -3,6 +3,17 @@
   "harness_version": "0.1.4",
   "tasks": [
     {
+      "id": "fc-warmpool-daemonset-01",
+      "class": "code-fix",
+      "verifier": "command",
+      "real_test": false,
+      "tier": "hard",
+      "blurb": "This is the firecracker invoke daemon (\"fc-invoke\"), which keeps a pool of warm",
+      "source_commit": null,
+      "passed": 14,
+      "n": 14
+    },
+    {
       "id": "flights-module-01",
       "class": "code-fix",
       "verifier": "pytest",
@@ -11,6 +22,17 @@
       "blurb": "This app serves feature domains",
       "source_commit": null,
       "passed": 14,
+      "n": 14
+    },
+    {
+      "id": "go-vsock-frame-01",
+      "class": "code-fix",
+      "verifier": "command",
+      "real_test": false,
+      "tier": "standard",
+      "blurb": "frame.go implements the length-prefixed wire framing used over the firecracker vsock",
+      "source_commit": null,
+      "passed": 13,
       "n": 14
     },
     {
@@ -84,21 +106,29 @@
     {
       "id": "qwen/qwen3-coder-30b-a3b-instruct",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 21607,
-      "mean_turns": 6.43,
-      "mean_latency_ms": 34199,
-      "cost_usd": 0.002148,
-      "cost_per_solve_usd": 0.002148,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 23543,
+      "mean_turns": 8.0,
+      "mean_latency_ms": 31953,
+      "cost_usd": 0.002187,
+      "cost_per_solve_usd": 0.002187,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 42394,
+          "turns": 18,
+          "latency_ms": 31081,
+          "cost_usd": 0.003235
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -106,6 +136,14 @@
           "turns": 15,
           "latency_ms": 29289,
           "cost_usd": 0.003016
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 18245,
+          "turns": 9,
+          "latency_ms": 17102,
+          "cost_usd": 0.00141
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -160,21 +198,29 @@
     {
       "id": "google/gemma-4-26b-a4b-it",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 21126,
-      "mean_turns": 6.43,
-      "mean_latency_ms": 75429,
-      "cost_usd": 0.002154,
-      "cost_per_solve_usd": 0.002154,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 35418,
+      "mean_turns": 7.56,
+      "mean_latency_ms": 69215,
+      "cost_usd": 0.002858,
+      "cost_per_solve_usd": 0.002858,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 159453,
+          "turns": 16,
+          "latency_ms": 84198,
+          "cost_usd": 0.009832
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -182,6 +228,14 @@
           "turns": 11,
           "latency_ms": 14290,
           "cost_usd": 0.00133
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 11433,
+          "turns": 7,
+          "latency_ms": 10737,
+          "cost_usd": 0.000811
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -236,21 +290,29 @@
     {
       "id": "deepseek/deepseek-v4-flash",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 27933,
-      "mean_turns": 4.57,
-      "mean_latency_ms": 48225,
-      "cost_usd": 0.002971,
-      "cost_per_solve_usd": 0.002971,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 29029,
+      "mean_turns": 5.89,
+      "mean_latency_ms": 46948,
+      "cost_usd": 0.003005,
+      "cost_per_solve_usd": 0.003005,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 49550,
+          "turns": 14,
+          "latency_ms": 55312,
+          "cost_usd": 0.004686
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -258,6 +320,14 @@
           "turns": 8,
           "latency_ms": 40046,
           "cost_usd": 0.002322
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 16179,
+          "turns": 7,
+          "latency_ms": 29646,
+          "cost_usd": 0.001563
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -312,21 +382,29 @@
     {
       "id": "qwen/qwen3-coder-next",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 34660,
-      "mean_turns": 8.43,
-      "mean_latency_ms": 19344,
-      "cost_usd": 0.005987,
-      "cost_per_solve_usd": 0.005987,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 43368,
+      "mean_turns": 10.11,
+      "mean_latency_ms": 19826,
+      "cost_usd": 0.00663,
+      "cost_per_solve_usd": 0.00663,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 122477,
+          "turns": 21,
+          "latency_ms": 29056,
+          "cost_usd": 0.014353
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -334,6 +412,14 @@
           "turns": 40,
           "latency_ms": 44699,
           "cost_usd": 0.018613
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 25214,
+          "turns": 11,
+          "latency_ms": 13968,
+          "cost_usd": 0.003408
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -388,21 +474,29 @@
     {
       "id": "qwen/qwen3.6-35b-a3b",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 43502,
-      "mean_turns": 6.86,
-      "mean_latency_ms": 50471,
-      "cost_usd": 0.010698,
-      "cost_per_solve_usd": 0.010698,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 38494,
+      "mean_turns": 7.11,
+      "mean_latency_ms": 42025,
+      "cost_usd": 0.009229,
+      "cost_per_solve_usd": 0.009229,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 26260,
+          "turns": 9,
+          "latency_ms": 15489,
+          "cost_usd": 0.005178
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -410,6 +504,14 @@
           "turns": 10,
           "latency_ms": 29745,
           "cost_usd": 0.008641
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 15672,
+          "turns": 7,
+          "latency_ms": 9440,
+          "cost_usd": 0.003004
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -464,21 +566,29 @@
     {
       "id": "z-ai/glm-4.7",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 24363,
-      "mean_turns": 6.86,
-      "mean_latency_ms": 92353,
-      "cost_usd": 0.015035,
-      "cost_per_solve_usd": 0.015035,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 25173,
+      "mean_turns": 8.22,
+      "mean_latency_ms": 84554,
+      "cost_usd": 0.014505,
+      "cost_per_solve_usd": 0.014505,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 40883,
+          "turns": 18,
+          "latency_ms": 79066,
+          "cost_usd": 0.018047
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -486,6 +596,14 @@
           "turns": 17,
           "latency_ms": 45147,
           "cost_usd": 0.019999
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 15134,
+          "turns": 8,
+          "latency_ms": 35446,
+          "cost_usd": 0.007259
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -540,21 +658,29 @@
     {
       "id": "deepseek/deepseek-v4-pro",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 31043,
-      "mean_turns": 5.14,
-      "mean_latency_ms": 67468,
-      "cost_usd": 0.015769,
-      "cost_per_solve_usd": 0.015769,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 29043,
+      "mean_turns": 5.89,
+      "mean_latency_ms": 60681,
+      "cost_usd": 0.014531,
+      "cost_per_solve_usd": 0.014531,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 31891,
+          "turns": 11,
+          "latency_ms": 36931,
+          "cost_usd": 0.014695
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -562,6 +688,14 @@
           "turns": 7,
           "latency_ms": 55998,
           "cost_usd": 0.010012
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 12191,
+          "turns": 6,
+          "latency_ms": 36923,
+          "cost_usd": 0.005703
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -616,21 +750,29 @@
     {
       "id": "qwen/qwen3.6-27b",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 62331,
-      "mean_turns": 8.43,
-      "mean_latency_ms": 76191,
-      "cost_usd": 0.029225,
-      "cost_per_solve_usd": 0.029225,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 53831,
+      "mean_turns": 8.56,
+      "mean_latency_ms": 74849,
+      "cost_usd": 0.024956,
+      "cost_per_solve_usd": 0.024956,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 32624,
+          "turns": 11,
+          "latency_ms": 111756,
+          "cost_usd": 0.013302
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -638,6 +780,14 @@
           "turns": 19,
           "latency_ms": 74141,
           "cost_usd": 0.042664
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 15536,
+          "turns": 7,
+          "latency_ms": 28549,
+          "cost_usd": 0.006727
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -692,21 +842,29 @@
     {
       "id": "z-ai/glm-5.2",
       "role": "candidate",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 25366,
-      "mean_turns": 4.71,
-      "mean_latency_ms": 119092,
-      "cost_usd": 0.030749,
-      "cost_per_solve_usd": 0.030749,
-      "tool_use_ok": 0.7143,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 23471,
+      "mean_turns": 5.44,
+      "mean_latency_ms": 101705,
+      "cost_usd": 0.027761,
+      "cost_per_solve_usd": 0.027761,
+      "tool_use_ok": 0.7778,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 23715,
+          "turns": 10,
+          "latency_ms": 63052,
+          "cost_usd": 0.024226
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -714,6 +872,14 @@
           "turns": 6,
           "latency_ms": 80120,
           "cost_usd": 0.016673
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 9956,
+          "turns": 6,
+          "latency_ms": 18649,
+          "cost_usd": 0.010379
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -768,21 +934,29 @@
     {
       "id": "anthropic/claude-sonnet-4.6",
       "role": "anchor",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 30454,
-      "mean_turns": 5.0,
-      "mean_latency_ms": 69828,
-      "cost_usd": 0.140811,
-      "cost_per_solve_usd": 0.140811,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 32329,
+      "mean_turns": 6.22,
+      "mean_latency_ms": 62657,
+      "cost_usd": 0.139864,
+      "cost_per_solve_usd": 0.139864,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 62359,
+          "turns": 15,
+          "latency_ms": 54237,
+          "cost_usd": 0.215529
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -790,6 +964,14 @@
           "turns": 8,
           "latency_ms": 42842,
           "cost_usd": 0.118047
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 15427,
+          "turns": 6,
+          "latency_ms": 20885,
+          "cost_usd": 0.057573
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -844,21 +1026,29 @@
     {
       "id": "anthropic/claude-opus-4.8",
       "role": "anchor",
-      "n": 7,
+      "n": 9,
       "pass_rate": 1.0,
       "qualified": true,
-      "floor_pass": 5,
-      "floor_n": 5,
+      "floor_pass": 6,
+      "floor_n": 6,
       "floor_failed": [],
-      "hard_pass": 2,
-      "hard_n": 2,
-      "mean_tokens": 21465,
-      "mean_turns": 3.14,
-      "mean_latency_ms": 44907,
-      "cost_usd": 0.195475,
-      "cost_per_solve_usd": 0.195475,
+      "hard_pass": 3,
+      "hard_n": 3,
+      "mean_tokens": 21252,
+      "mean_turns": 3.78,
+      "mean_latency_ms": 39886,
+      "cost_usd": 0.180687,
+      "cost_per_solve_usd": 0.180687,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 27717,
+          "turns": 7,
+          "latency_ms": 29337,
+          "cost_usd": 0.175985
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -866,6 +1056,14 @@
           "turns": 3,
           "latency_ms": 19536,
           "cost_usd": 0.08549
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 13290,
+          "turns": 5,
+          "latency_ms": 15288,
+          "cost_usd": 0.08187
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -920,21 +1118,29 @@
     {
       "id": "google/gemma-4-31b-it",
       "role": "candidate",
-      "n": 7,
-      "pass_rate": 0.8571,
-      "qualified": true,
+      "n": 9,
+      "pass_rate": 0.7778,
+      "qualified": false,
       "floor_pass": 5,
-      "floor_n": 5,
-      "floor_failed": [],
-      "hard_pass": 1,
-      "hard_n": 2,
-      "mean_tokens": 17915,
-      "mean_turns": 6.0,
-      "mean_latency_ms": 148930,
-      "cost_usd": 0.00287,
-      "cost_per_solve_usd": 0.003348,
+      "floor_n": 6,
+      "floor_failed": ["go-vsock-frame-01"],
+      "hard_pass": 2,
+      "hard_n": 3,
+      "mean_tokens": 26749,
+      "mean_turns": 6.67,
+      "mean_latency_ms": 160974,
+      "cost_usd": 0.003796,
+      "cost_per_solve_usd": 0.00488,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 109151,
+          "turns": 12,
+          "latency_ms": 54822,
+          "cost_usd": 0.013306
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -942,6 +1148,14 @@
           "turns": 12,
           "latency_ms": 36581,
           "cost_usd": 0.002506
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": false,
+          "tokens": 6185,
+          "turns": 6,
+          "latency_ms": 351437,
+          "cost_usd": 0.000765
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -996,25 +1210,33 @@
     {
       "id": "google/gemini-3.5-flash",
       "role": "candidate",
-      "n": 7,
-      "pass_rate": 0.4286,
+      "n": 9,
+      "pass_rate": 0.5556,
       "qualified": false,
-      "floor_pass": 2,
-      "floor_n": 5,
+      "floor_pass": 3,
+      "floor_n": 6,
       "floor_failed": [
         "hikes-walkhighlands-dom-01",
         "hikes-walkhighlands-duration-01",
         "worldcup-fixtures-guard-01"
       ],
-      "hard_pass": 1,
-      "hard_n": 2,
-      "mean_tokens": 82728,
-      "mean_turns": 10.29,
-      "mean_latency_ms": 61960,
-      "cost_usd": 0.227067,
-      "cost_per_solve_usd": 0.529822,
+      "hard_pass": 2,
+      "hard_n": 3,
+      "mean_tokens": 83563,
+      "mean_turns": 11.89,
+      "mean_latency_ms": 55864,
+      "cost_usd": 0.210421,
+      "cost_per_solve_usd": 0.378757,
       "tool_use_ok": 1.0,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 147589,
+          "turns": 25,
+          "latency_ms": 48649,
+          "cost_usd": 0.249524
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -1022,6 +1244,14 @@
           "turns": 13,
           "latency_ms": 41989,
           "cost_usd": 0.115206
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 25382,
+          "turns": 10,
+          "latency_ms": 20410,
+          "cost_usd": 0.054798
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -1076,24 +1306,32 @@
     {
       "id": "mistralai/devstral-2512",
       "role": "candidate",
-      "n": 7,
-      "pass_rate": 0.4286,
+      "n": 9,
+      "pass_rate": 0.5556,
       "qualified": false,
-      "floor_pass": 3,
-      "floor_n": 5,
+      "floor_pass": 4,
+      "floor_n": 6,
       "floor_failed": [
         "hikes-walkhighlands-dom-01",
         "worldcup-fixtures-guard-01"
       ],
-      "hard_pass": 0,
-      "hard_n": 2,
-      "mean_tokens": 10467,
-      "mean_turns": 4.86,
-      "mean_latency_ms": 98526,
-      "cost_usd": 0.0076,
-      "cost_per_solve_usd": 0.017732,
-      "tool_use_ok": 0.8571,
+      "hard_pass": 1,
+      "hard_n": 3,
+      "mean_tokens": 13557,
+      "mean_turns": 6.56,
+      "mean_latency_ms": 91787,
+      "cost_usd": 0.008387,
+      "cost_per_solve_usd": 0.015097,
+      "tool_use_ok": 0.8889,
       "tasks": [
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 35489,
+          "turns": 17,
+          "latency_ms": 101172,
+          "cost_usd": 0.01605
+        },
         {
           "id": "flights-module-01",
           "passed": true,
@@ -1101,6 +1339,14 @@
           "turns": 12,
           "latency_ms": 77963,
           "cost_usd": 0.00973
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 13255,
+          "turns": 8,
+          "latency_ms": 35229,
+          "cost_usd": 0.006238
         },
         {
           "id": "hikes-walkhighlands-dom-01",
