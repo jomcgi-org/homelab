@@ -265,6 +265,8 @@ async def _run(args) -> None:
                 cost_usd=0.0,
                 harness_version=HARNESS_VERSION,
                 prompt_template_hash="agent",
+                turns=0,  # mark as agentic so it stays out of the single-shot tables
+                tool_use_ok=False,
             )
 
         async def chat(**kw):
@@ -360,11 +362,11 @@ async def _run(args) -> None:
         fx = fixture_hash(task_fixture_dir) if task_fixture_dir.exists() else ""
         if task.mode == "agentic":
             # Fold mode + agent budget into the key so bumping turns/tokens re-runs.
+            # Temperature is intentionally omitted: the agentic loop always runs at
+            # temperature 0 (deterministic benchmarking), so model.params.temperature
+            # is not an input and must not spuriously invalidate the cache.
             agent_max_tokens = task.agent.max_tokens or model.params.max_tokens
-            params_repr = (
-                f"agentic:{model.params.temperature}:{agent_max_tokens}"
-                f":turns={task.agent.max_turns}"
-            )
+            params_repr = f"agentic:{agent_max_tokens}:turns={task.agent.max_turns}"
         else:
             params_repr = f"{model.params.temperature}:{model.params.max_tokens}"
         src_hash = (
@@ -472,7 +474,12 @@ def _report(args) -> None:
             HARNESS_VERSION,
         )
 
-    agg = aggregate_by_class(cells, task_class_of)
+    # Single-shot and agentic are separate contracts: only single-shot cells feed the
+    # per-class Budget/Anchors/Pareto tables. Agentic cells (turns is not None) have
+    # their own headline table below, so counting them here would inflate a model's
+    # single-shot code-fix score with a tool-calling pass.
+    single_shot_cells = [c for c in cells if c.turns is None]
+    agg = aggregate_by_class(single_shot_cells, task_class_of)
 
     anchor_agg = {mid: cls_map for mid, cls_map in agg.items() if mid in anchor_ids}
     cand_agg = {mid: cls_map for mid, cls_map in agg.items() if mid not in anchor_ids}

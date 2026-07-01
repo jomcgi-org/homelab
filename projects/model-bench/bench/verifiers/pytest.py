@@ -46,9 +46,18 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
             "or install the monolith venv (see projects/model-bench/README.md)",
         )
 
-    # Drop the gold test file(s) on top of the model's workdir (hidden grader).
+    # Drop the gold test file(s) on top of the model's workdir (hidden grader). Test
+    # names are task-authored (trusted, not model-controlled), but a stray ".." would
+    # escape the workdir, so keep the write inside it defensively.
+    workdir_resolved = workdir.resolve()
     for name, content in args.get("tests", {}).items():
-        dest = workdir / name
+        dest = (workdir / name).resolve()
+        try:
+            dest.relative_to(workdir_resolved)
+        except ValueError:
+            return VerifyResult(
+                False, f"[verifier setup] test path {name!r} escapes the workdir"
+            )
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content)
 
