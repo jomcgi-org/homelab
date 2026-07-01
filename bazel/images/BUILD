@@ -41,6 +41,8 @@ multirun(
     commands = [
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
+        "//projects/firecracker/git-mirror/chart:chart.push",
+        "//projects/firecracker/git-mirror:image.push",
         "//projects/firecracker/goosecracker/guest-init:image.push",
         "//projects/firecracker/goosecracker/guest:image.push",
         "//projects/firecracker/semgrep/guest:image.push",

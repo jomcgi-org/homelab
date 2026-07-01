@@ -1,0 +1,24 @@
+# Cluster overrides for git-mirror. The supervisor runs on node-4 and keeps
+# bare clones of registered repos warm via git daemon :9418, so Firecracker
+# agent guests can clone their workspace from a fast in-cluster mirror instead
+# of fetching from GitHub on every turn.
+#
+# The service is reachable at:
+#   git-mirror.monolith.svc.cluster.local:9418
+#
+# Add this to the fc-invoke egress internalAllowlist before agents use it:
+#   - git-mirror.monolith.svc.cluster.local:9418
+repos:
+  - name: homelab
+    url: https://github.com/jomcgi/homelab.git
+  - name: loom
+    url: https://github.com/jomcgi/loom.git
+
+refreshIntervalSeconds: 60
+
+# GC disabled by default. Enable once scratch refs accumulate to bound PVC growth.
+gcRetentionDays: 0
+
+mirrors:
+  storageClass: longhorn
+  size: 10Gi
