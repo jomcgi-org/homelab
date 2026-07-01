@@ -18,12 +18,15 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -109,8 +112,15 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("shim HTTP server listening", "port", vsockproto.GuestHTTPPort)
 
+	// goose stores every session in one SQLite db under XDG_DATA_HOME; the session
+	// store hydrates/exports it for resume (ADR 026 Phase 2).
+	sessionsDB := gooseHome + "/.local/share/goose/sessions/sessions.db"
+
 	// Cold boot: goose needs no warmup, so the guest is ready as soon as it serves.
-	h := handler.New(&execRunner{workspace: handler.Workspace})
+	h := handler.New(
+		&execRunner{workspace: handler.Workspace},
+		handler.WithSessionStore(&execSessionStore{dbPath: sessionsDB}),
+	)
 	srv := shim.NewServer(h, shim.WithReady(func() bool { return true }))
 
 	// Serve in a goroutine so ctx cancellation (SIGTERM) can close the server
@@ -187,6 +197,48 @@ func (r *execRunner) Run(ctx context.Context, argv []string, env map[string]stri
 // Clone clones mirror into dest and checks out ref via the shared ExecGit.
 func (r *execRunner) Clone(ctx context.Context, mirror, ref, dest string) error {
 	return (&capabilities.ExecGit{}).Clone(ctx, mirror, ref, dest)
+}
+
+// execSessionStore is the production handler.SessionStore. It persists goose's
+// single SQLite session db at dbPath (under the guest's XDG_DATA_HOME on the /tmp
+// tmpfs), hydrating it before a resume and exporting it after a run.
+type execSessionStore struct {
+	dbPath string
+}
+
+// Hydrate writes the prior sessions.db to dbPath so `goose run --resume` finds the
+// earlier conversation. It creates the parent dir and clears any stale WAL/SHM
+// sidecars so a leftover journal cannot shadow the restored db (defensive; the
+// tmpfs is fresh each boot).
+func (s *execSessionStore) Hydrate(_ context.Context, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o755); err != nil {
+		return err // nosemgrep: no-bare-error-return
+	}
+	for _, sidecar := range []string{s.dbPath + "-wal", s.dbPath + "-shm"} {
+		if err := os.Remove(sidecar); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err // nosemgrep: no-bare-error-return
+		}
+	}
+	return os.WriteFile(s.dbPath, data, 0o644)
+}
+
+// Export returns the current sessions.db bytes, folding goose's WAL into the main
+// file first so the single exported file is complete. It returns nil (not an
+// error) when no db exists, e.g. a run that never created a session, so the
+// caller simply persists nothing.
+func (s *execSessionStore) Export(ctx context.Context) ([]byte, error) {
+	if _, err := os.Stat(s.dbPath); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	// Best-effort WAL checkpoint via the baked sqlite3 CLI: goose checkpoints on
+	// exit, but TRUNCATE guarantees the -wal is folded in before we read the single
+	// file. A failure (locked db, missing binary) is logged, not fatal; the main
+	// file is still read and the cold fallback covers any incompleteness.
+	cmd := exec.CommandContext(ctx, "sqlite3", s.dbPath, "PRAGMA wal_checkpoint(TRUNCATE);")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("session export: wal_checkpoint failed", "err", err, "out", string(out))
+	}
+	return os.ReadFile(s.dbPath)
 }
 
 // mergeEnv overlays the caller-supplied env (model provider/base-url/tier keys
