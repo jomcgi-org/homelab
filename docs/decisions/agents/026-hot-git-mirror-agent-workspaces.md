@@ -128,7 +128,7 @@ resolved). Guests hydrate with a shallow partial clone (--single-branch
 --depth=1 --filter=blob:none, WS2, PR #3018).
 
 Scratch-ref recording (new). Beyond hydration, an agent records its work: after a
-successful run the guest commits the workspace and pushes HEAD:refs/agents/<session>
+successful run the guest commits the workspace and pushes `HEAD:refs/agents/<session>`
 to the mirror, with no credential. The mirror enables receive-pack but a
 pre-receive hook rejects any ref outside refs/agents/**, so main and all upstream
 refs stay read-only, and the fetch refspec never covers refs/agents/\* (prune
