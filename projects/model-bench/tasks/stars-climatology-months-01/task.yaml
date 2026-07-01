@@ -1,6 +1,7 @@
 id: stars-climatology-months-01
 version: v1
 class: code-fix
+tier: hard
 mode: agentic
 source_commit: 52e97ed330ebc4d11a06402c48371da19bc27f17
 snapshot:

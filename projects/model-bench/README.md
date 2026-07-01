@@ -64,8 +64,13 @@ python3 -m bench run --task worldcup-swing-settled-01 --model qwen3-coder-30b  #
 python3 -m bench report                       # regenerate reports/leaderboard.md
 ```
 
-The leaderboard's headline is the agentic table. It reads on two lenses: the **self-host**
-lens (pass-rate, median tokens/turns, tool-use reliability — model-intrinsic, they carry
-over to local hardware) and the **cloud** lens (median wall-time, cost, cost-per-solve —
-the real time and money to rent the model via OpenRouter, measured against the Claude
-anchor rows). Remote wall-time reflects a typical cloud request, not local GPU throughput.
+The leaderboard uses a **gate model**. Each task carries a difficulty `tier`
+(`easy` / `standard` / `hard`): easy + standard form the qualification **floor**, so a
+model must pass all of them to be viable (else it is disqualified), and the `hard` tasks
+differentiate the qualified. Among the qualified, ranking is hard-task pass, then cost.
+
+It reads on two lenses. The **self-host** lens (hard-task pass, median tokens/turns,
+tool-use reliability) is model-intrinsic and carries over to local hardware. The **cloud**
+lens (median wall-time, cost, cost-per-solve) is the real time and money to rent the model
+via OpenRouter, versus the Claude anchor rows. Remote wall-time reflects a typical cloud
+request, not local GPU throughput.

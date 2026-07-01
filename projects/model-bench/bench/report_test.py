@@ -36,41 +36,57 @@ def test_report_has_per_class_qualification_and_tombstone():
     assert "## Retired" in md and "old/y" in md and "flunked config" in md
 
 
-def test_agentic_section_renders_and_sorts_by_pass_rate():
+def _agentic_stats(**over):
+    base = {
+        "n": 7,
+        "pass_rate": 1.0,
+        "floor_n": 5,
+        "floor_pass": 5,
+        "floor_failed": [],
+        "qualified": True,
+        "hard_n": 2,
+        "hard_pass": 2,
+        "med_tokens": 6500,
+        "med_turns": 4.0,
+        "med_latency_ms": 30000,
+        "cost": 0.0009,
+        "cost_per_solve": 0.0009,
+        "tool_ok_rate": 1.0,
+    }
+    base.update(over)
+    return base
+
+
+def test_agentic_gate_splits_qualified_and_disqualified():
     md = render_leaderboard(
         per_class={},
         anchors={},
         frontier={},
         retired=[],
         agentic={
-            "cheap/win": {
-                "n": 3,
-                "pass_rate": 1.0,
-                "med_tokens": 6500,
-                "med_turns": 4.0,
-                "cost": 0.0009,
-                "tool_ok_rate": 1.0,
-            },
-            "pricey/lose": {
-                "n": 3,
-                "pass_rate": 0.33,
-                "med_tokens": 19500,
-                "med_turns": 9.0,
-                "cost": 0.05,
-                "tool_ok_rate": 0.66,
-            },
+            "cheap/strong": _agentic_stats(hard_pass=2, cost=0.0009),
+            "cheap/weakhard": _agentic_stats(hard_pass=0, cost=0.0005),
+            "flunker": _agentic_stats(
+                qualified=False, floor_pass=3, floor_failed=["slo-budget-breach-01"]
+            ),
         },
     )
-    assert "## Agentic (tool-calling) leaderboard" in md
-    assert "cheap/win" in md and "pricey/lose" in md
-    # Higher pass-rate ranks first.
-    assert md.index("cheap/win") < md.index("pricey/lose")
+    assert "## Agentic leaderboard: qualified" in md
+    assert "## Agentic leaderboard: disqualified" in md
+    q = md.index("## Agentic leaderboard: qualified")
+    dq = md.index("## Agentic leaderboard: disqualified")
+    # The flunker sits in the disqualified section with its failed floor task.
+    assert md.index("flunker") > dq
+    assert "slo-budget-breach-01" in md
+    # Among the qualified, more hard passes rank first even at higher cost.
+    assert q < md.index("cheap/strong") < dq
+    assert md.index("cheap/strong") < md.index("cheap/weakhard") < dq
 
 
 def test_agentic_section_present_when_empty():
     md = render_leaderboard(per_class={}, anchors={}, frontier={}, retired=[])
-    assert "## Agentic (tool-calling) leaderboard" in md
-    assert "No agentic results yet." in md
+    assert "## Agentic leaderboard: qualified" in md
+    assert "No qualified models yet." in md
 
 
 def test_all_results_shows_non_qualifiers():

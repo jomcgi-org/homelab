@@ -1,6 +1,7 @@
 id: worldcup-fixtures-guard-01
 version: v1
 class: code-fix
+tier: standard
 mode: agentic
 source_commit: 10cb9aea1d0aec3245387667927fe6af744a8316
 snapshot:

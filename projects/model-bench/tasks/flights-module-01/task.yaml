@@ -1,6 +1,7 @@
 id: flights-module-01
 version: v1
 class: code-fix
+tier: standard
 mode: agentic
 prompt: |
   This app serves feature domains. Each domain is a top-level package that exposes a

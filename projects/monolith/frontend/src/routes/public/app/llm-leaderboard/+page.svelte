@@ -7,8 +7,12 @@
   const realTestCount = $derived(tasks.filter((t) => t.real_test).length);
   // Join per-model task cells back to task metadata (real-test flag, blurb) by id.
   const taskById = $derived(Object.fromEntries(tasks.map((t) => [t.id, t])));
+  // Gate model: qualified models cleared the easy+standard floor; the rest are out.
+  const qualified = $derived(models.filter((m) => m.qualified));
+  const disqualified = $derived(models.filter((m) => !m.qualified));
+  const floorCount = $derived(tasks.filter((t) => t.tier !== "hard").length);
+  const hardCount = $derived(tasks.filter((t) => t.tier === "hard").length);
 
-  const pct = (x) => `${Math.round((x ?? 0) * 100)}%`;
   const num = (x) => (x ?? 0).toLocaleString("en-US");
   const money = (x) => `$${(x ?? 0).toFixed(4)}`;
   const secs = (ms) => (ms == null ? "n/a" : `${(ms / 1000).toFixed(1)}s`);
@@ -33,8 +37,6 @@
     }
   };
 
-  // Colour a pass-rate cell: full green, partial coral-ish, zero muted.
-  const rateClass = (r) => (r >= 0.999 ? "full" : r > 0 ? "partial" : "zero");
   const toolLabel = (t) =>
     t >= 0.999 ? "ok" : t > 0 ? "flaky" : "none";
 </script>
@@ -55,14 +57,16 @@
       An <strong>agentic</strong> coding benchmark over this homelab's real monolith.
       Each model is dropped into a snapshot of the repo with file tools and has to
       make the change itself over multiple turns; it is then graded by the repo's
-      <strong>own tests</strong>. The question is not raw capability but which cheap,
-      self-hostable models can actually do the offloadable work, ranked by
-      reliability, token efficiency, and cost.
+      <strong>own tests</strong>. Tasks are tiered: a model must clear every
+      <strong>easy + standard</strong> task to <strong>qualify</strong> as viable, and
+      the <strong>hard</strong> tasks plus cost and speed rank the ones that do.
     </p>
     <div class="meta">
-      <span>{models.length} models</span>
+      <span>{qualified.length}/{models.length} qualified</span>
       <span class="dot">·</span>
-      <span>{tasks.length} tasks ({realTestCount} real-test)</span>
+      <span>{floorCount} floor + {hardCount} hard tasks</span>
+      <span class="dot">·</span>
+      <span>{realTestCount} real-test</span>
       <span class="dot">·</span>
       <span>harness {lb.harness_version}</span>
       <span class="dot">·</span>
@@ -72,7 +76,7 @@
 
   <section class="panel">
     <div class="panel-head">
-      Agentic ranking
+      Qualified: ranked by hard tasks, then cost
       <span class="panel-hint">click a row for its per-task breakdown</span>
     </div>
     <div class="scroll">
@@ -81,7 +85,7 @@
           <tr>
             <th class="rk">#</th>
             <th class="mdl">Model</th>
-            <th class="n">Pass</th>
+            <th class="n">Hard</th>
             <th class="n">Tokens</th>
             <th class="n">Turns</th>
             <th class="n">Wall-time</th>
@@ -91,7 +95,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each models as m, i}
+          {#each qualified as m, i}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <tr
               class:winner={i === 0}
@@ -114,8 +118,7 @@
                 {#if m.role === "anchor"}<span class="tag anchor">anchor</span>{/if}
               </td>
               <td class="n">
-                <span class="rate {rateClass(m.pass_rate)}">{pct(m.pass_rate)}</span>
-                <span class="bar"><i style="width:{Math.round(m.pass_rate * 100)}%"></i></span>
+                <span class="rate {m.hard_pass === m.hard_n ? 'full' : 'partial'}">{m.hard_pass}/{m.hard_n}</span>
               </td>
               <td class="n mono">{num(m.median_tokens)}</td>
               <td class="n mono">{m.median_turns}</td>
@@ -164,14 +167,47 @@
       </table>
     </div>
     <div class="legend">
-      <span><b>Pass / Tokens / Turns / Tools</b> are model-intrinsic: the
+      <span><b>Hard / Tokens / Turns / Tools</b> are model-intrinsic: the
         <b>self-host lens</b> (they carry over to running the model on local hardware).</span>
       <span><b>Wall-time / Cost / $-per-solve</b> are the <b>cloud lens</b>: the real
-        time and money to rent this model, measured against the Claude
-        <b>anchor</b> rows you would be replacing. Wall-time is via OpenRouter, so it
-        reflects a typical cloud request, not local GPU throughput.</span>
+        time and money to rent this model, versus the Claude <b>anchor</b> rows you
+        would be replacing. Wall-time is via OpenRouter, so it reflects a typical
+        cloud request, not local GPU throughput.</span>
     </div>
   </section>
+
+  {#if disqualified.length}
+    <section class="panel">
+      <div class="panel-head">Disqualified: missed a floor task</div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th class="mdl">Model</th>
+              <th class="n">Floor</th>
+              <th class="fail">Failed floor tasks</th>
+              <th class="n">Tools</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each disqualified as m}
+              <tr class="dq">
+                <td class="mdl">
+                  <span class="name">{shortName(m.id)}</span>
+                  <span class="slug">{m.id}</span>
+                </td>
+                <td class="n"><span class="rate zero">{m.floor_pass}/{m.floor_n}</span></td>
+                <td class="fail">{(m.floor_failed ?? []).join(", ") || "(none run)"}</td>
+                <td class="n">
+                  <span class="pill {toolLabel(m.tool_use_ok)}">{toolLabel(m.tool_use_ok)}</span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {/if}
 
   <section class="panel">
     <div class="panel-head">The tasks</div>
@@ -180,6 +216,7 @@
         <li>
           <div class="t-top">
             <span class="t-id">{t.id}</span>
+            <span class="tag tier-{t.tier}">{t.tier}</span>
             {#if t.real_test}
               <span class="tag real">repo test</span>
             {:else}
@@ -200,6 +237,9 @@
       fix commit's gold test is run against the result on a vendored venv. A "repo
       test" task is graded by the monolith's own pytest suite; a "behavioural" one
       by a hand-written check. Model calls run through OpenRouter at list price.
+      Tasks carry a difficulty <em>tier</em>: easy + standard form the qualification
+      floor (miss one and a model is disqualified as not yet viable), while the hard
+      tasks and the cost and speed columns rank the ones that clear it.
       Regenerate with <code>python3 -m bench report --json-out</code> in
       <code>projects/model-bench</code>.
     </p>
@@ -413,17 +453,6 @@
   .rate.full { color: var(--teal); }
   .rate.partial { color: var(--ink-2); }
   .rate.zero { color: var(--coral); }
-  .bar {
-    display: block;
-    height: 5px;
-    margin-top: 4px;
-    background: var(--cream);
-    border: 1px solid var(--ink);
-    min-width: 56px;
-    margin-left: auto;
-  }
-  .bar i { display: block; height: 100%; background: var(--ink); }
-  tr.winner .bar { background: var(--paper); }
 
   /* tool-use pill */
   .pill {
@@ -453,6 +482,19 @@
   .tag.anchor { background: var(--blue); }
   .tag.real { background: var(--green); }
   .tag.synth { background: var(--bg-elev); color: var(--ink-2); }
+  .tag.tier-easy { background: var(--bg-elev); color: var(--ink-3); }
+  .tag.tier-standard { background: var(--blue); }
+  .tag.tier-hard { background: var(--accent); }
+
+  /* Disqualified table: the failed-floor-tasks column + muted rows. */
+  th.fail, td.fail { text-align: left; }
+  td.fail {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    line-height: 1.4;
+  }
+  tr.dq .name { color: var(--ink-2); }
 
   .legend {
     display: flex;
