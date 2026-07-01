@@ -13,12 +13,45 @@ Safety invariants:
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import tempfile
 from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
 from bench.schema import Attempt, ResultCell
+
+
+def _parse_structured_or_extract(text: str, target_files: list[str]) -> dict[str, str]:
+    """Prefer a structured {"files": [{path, content}]} JSON response; fall back to
+    lenient text extraction.
+
+    A JSON ``content`` field is a discrete string, so prose, markdown fences, and
+    stray unicode cannot leak into the file the way they do when the model emits the
+    file as free text. Most models return clean JSON when asked; the rest fall back to
+    the text extractor so no model is lost.
+    """
+    try:
+        obj = json.loads(_strip_code_fence(text))
+    except (json.JSONDecodeError, TypeError):
+        obj = None
+    files = obj.get("files") if isinstance(obj, dict) else None
+    if isinstance(files, list) and files:
+        result: dict[str, str] = {}
+        basenames = {t.split("/")[-1]: t for t in target_files}
+        for f in files:
+            if not isinstance(f, dict) or not isinstance(f.get("content"), str):
+                continue
+            path, content = f.get("path", ""), f["content"]
+            if path in target_files:
+                result[path] = content
+            elif path.split("/")[-1] in basenames:
+                result[basenames[path.split("/")[-1]]] = content
+            elif len(target_files) == 1:
+                result[target_files[0]] = content
+        if result:
+            return result
+    return extract_files(text, target_files)
 
 
 def _strip_code_fence(content: str) -> str:
@@ -124,9 +157,11 @@ def _augment_prompt_with_files(
         return prompt
     return (
         prompt
-        + "\n\nHere are the current contents of the file(s) you may edit. Return the "
-        "complete updated file(s), each prefixed with its FILE line:\n\n"
+        + "\n\nHere are the current contents of the file(s) you may edit:\n\n"
         + "\n\n".join(blocks)
+        + '\n\nRespond with ONLY a JSON object of the form {"files": [{"path": '
+        '"<path>", "content": "<full updated file contents>"}]} and nothing else. '
+        "Include every file you changed, with its complete updated contents."
     )
 
 
@@ -171,7 +206,9 @@ async def run_cell(
         )
         workdir1 = _make_workdir(fixture_dir)
         workdirs.append(workdir1)
-        for rel_path, content in extract_files(c1.text, target_files).items():
+        for rel_path, content in _parse_structured_or_extract(
+            c1.text, target_files
+        ).items():
             dest = workdir1 / rel_path
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content)
@@ -211,7 +248,9 @@ async def run_cell(
             # Fresh clean copy: shot-1 writes must not leak into shot 2.
             workdir2 = _make_workdir(fixture_dir)
             workdirs.append(workdir2)
-            for rel_path, content in extract_files(c2.text, target_files).items():
+            for rel_path, content in _parse_structured_or_extract(
+                c2.text, target_files
+            ).items():
                 dest = workdir2 / rel_path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content)
