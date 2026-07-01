@@ -52,7 +52,14 @@ data:
 
       if [ ! -d "$repo_dir" ]; then
         echo "[init] cloning $url -> $repo_dir (bare, non-mirror refspec)"
-        git clone --bare "$url" "$repo_dir"
+        # Non-fatal: a clone failure (e.g. a private repo with no mirror-side
+        # creds) must not crash the whole supervisor and take down every other
+        # mirror. Log, remove the partial dir, and skip this repo.
+        if ! git clone --bare "$url" "$repo_dir"; then
+          echo "[init] WARNING: clone failed for $name ($url); skipping (private repo needs mirror-side creds?)"
+          rm -rf "$repo_dir"
+          return 0
+        fi
 
         # git clone --bare sets a wildcard fetch refspec (+refs/*:refs/*) in
         # some versions, or a heads-only one in others. Explicitly replace it

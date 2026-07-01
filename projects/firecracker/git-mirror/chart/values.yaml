@@ -16,8 +16,10 @@ image:
 repos:
   - name: homelab
     url: https://github.com/jomcgi/homelab.git
-  - name: loom
-    url: https://github.com/jomcgi/loom.git
+  # loom is a PRIVATE repo: the mirror clones anonymously (no GitHub creds), so it
+  # cannot be added until mirror-side read auth exists (a follow-up). ADR 026
+  # assumed public repos; a private repo needs a server-side token on the mirror,
+  # never on the guest. Adding it here without that would fail the clone.
 
 # Seconds between git fetch --prune passes. Keep short enough that guests
 # hydrate from a near-head branch, long enough not to hammer GitHub rate limits.
