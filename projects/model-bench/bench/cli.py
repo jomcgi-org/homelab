@@ -573,7 +573,10 @@ def _report(args) -> None:
             }
         )
 
-    # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model.
+    # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model,
+    # under the gate model. easy + standard tasks form the qualification FLOOR: a model
+    # must pass all of them to be viable. hard tasks differentiate the qualified;
+    # perf/efficiency is the value axis among them.
     from statistics import median
 
     # Only count cells for tasks that are still in the current task set. Cells for a
@@ -583,6 +586,8 @@ def _report(args) -> None:
     # skew the medians away from the published task set. This mirrors the per-task and
     # per-model breakdowns below, which are already scoped to current tasks.
     current_agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
+    tier_of = {t.id: t.tier for t in tasks}
+    FLOOR_TIERS = {"easy", "standard"}
     agentic_groups: dict[str, list[ResultCell]] = {}
     for cell in cells:
         if cell.turns is not None and cell.task_id in current_agentic_ids:
@@ -592,9 +597,20 @@ def _report(args) -> None:
         n = len(group)
         pass_rate = sum(1 for c in group if c.first_attempt_passed) / n
         cost = sum(c.cost_usd for c in group) / n
+        floor = [c for c in group if tier_of.get(c.task_id) in FLOOR_TIERS]
+        hard = [c for c in group if tier_of.get(c.task_id) == "hard"]
+        floor_failed = sorted(c.task_id for c in floor if not c.first_attempt_passed)
         agentic[model_id] = {
             "n": n,
             "pass_rate": pass_rate,
+            # Gate metrics.
+            "floor_n": len(floor),
+            "floor_pass": sum(1 for c in floor if c.first_attempt_passed),
+            "floor_failed": floor_failed,
+            # Qualified iff it cleared every floor task it was run on (and ran on some).
+            "qualified": bool(floor) and not floor_failed,
+            "hard_n": len(hard),
+            "hard_pass": sum(1 for c in hard if c.first_attempt_passed),
             "med_tokens": float(median([c.total_tokens for c in group])),
             "med_turns": float(median([c.turns or 0 for c in group])),
             # Median end-to-end wall-time per task (ms). This is the CLOUD lens: what a
@@ -696,6 +712,7 @@ def _write_leaderboard_json(
             "real_test": (
                 tid in task_meta and task_meta[tid].source_commit is not None
             ),
+            "tier": task_meta[tid].tier if tid in task_meta else "standard",
             "blurb": _blurb(tid),
             "source_commit": (
                 task_meta[tid].source_commit if tid in task_meta else None
@@ -712,6 +729,13 @@ def _write_leaderboard_json(
             "role": "anchor" if mid in anchor_ids else "candidate",
             "n": s["n"],
             "pass_rate": round(s["pass_rate"], 4),
+            # Gate model: qualified iff every floor (easy/standard) task passed.
+            "qualified": s["qualified"],
+            "floor_pass": s["floor_pass"],
+            "floor_n": s["floor_n"],
+            "floor_failed": s["floor_failed"],
+            "hard_pass": s["hard_pass"],
+            "hard_n": s["hard_n"],
             "median_tokens": int(s["med_tokens"]),
             "median_turns": s["med_turns"],
             "median_latency_ms": int(s["med_latency_ms"]),
@@ -730,8 +754,16 @@ def _write_leaderboard_json(
         }
         for mid, s in agentic.items()
     ]
-    # Best first: pass-rate desc, then cost asc, then tokens asc.
-    models_json.sort(key=lambda r: (-r["pass_rate"], r["cost_usd"], r["median_tokens"]))
+    # Best first: qualified above disqualified, then most hard tasks solved, then
+    # cheapest, then fastest. The page reads `qualified` to split the two sections.
+    models_json.sort(
+        key=lambda r: (
+            not r["qualified"],
+            -r["hard_pass"],
+            r["cost_usd"],
+            r["median_latency_ms"],
+        )
+    )
 
     payload = {
         "generated_at": generated_at,

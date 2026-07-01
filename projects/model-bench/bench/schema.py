@@ -50,6 +50,10 @@ class TaskSpec(BaseModel):
     id: str
     version: str
     task_class: TaskClass = Field(alias="class")
+    # Difficulty tier. easy + standard form the qualification FLOOR (a model must pass
+    # them to be a viable candidate); hard tasks differentiate the qualified. See
+    # TIER_WEIGHTS / the gate scoring in the report.
+    tier: Literal["easy", "standard", "hard"] = "standard"
     mode: Literal["single-shot", "agentic"] = "single-shot"
     prompt: str
     target_files: list[str] = Field(default_factory=list)

@@ -1,6 +1,7 @@
 id: worldcup-swing-settled-01
 version: v1
 class: code-fix
+tier: hard
 mode: agentic
 source_commit: 10e5c849c95f3fd2de02f0c0cf39b10e89f1d64d
 snapshot:

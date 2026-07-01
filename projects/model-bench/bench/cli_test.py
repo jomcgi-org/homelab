@@ -82,6 +82,14 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
         _agentic_cell("worldcup-fixtures-guard-01", "cheap/win", True, 4, 1000, True),
         _agentic_cell("worldcup-fixtures-guard-01", "anchor/x", True, 3, 2000, True),
     ]
+    gate = {
+        "floor_n": 1,
+        "floor_pass": 1,
+        "floor_failed": [],
+        "qualified": True,
+        "hard_n": 0,
+        "hard_pass": 0,
+    }
     agentic = {
         "cheap/win": {
             "n": 1,
@@ -92,6 +100,7 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
             "cost": 0.001,
             "cost_per_solve": 0.001,
             "tool_ok_rate": 1.0,
+            **gate,
         },
         "anchor/x": {
             "n": 1,
@@ -102,6 +111,7 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
             "cost": 0.5,
             "cost_per_solve": 0.5,
             "tool_ok_rate": 1.0,
+            **gate,
         },
     }
     out = tmp_path / "leaderboard.json"

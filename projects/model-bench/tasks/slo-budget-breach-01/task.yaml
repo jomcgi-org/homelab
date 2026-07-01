@@ -1,6 +1,7 @@
 id: slo-budget-breach-01
 version: v1
 class: code-fix
+tier: easy
 mode: agentic
 snapshot:
   commit: ba5b4d39afcb67e2581d87836a6c9d98221499d6

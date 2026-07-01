@@ -28,36 +28,65 @@ def render_leaderboard(
     lines.append("# model-bench leaderboard")
     lines.append("")
 
-    # Agentic leaderboard: pass-rate + efficiency (tokens/turns) + $ over real-repo
-    # tool-calling tasks. This is the headline contract; single-shot tables follow.
-    lines.append("## Agentic (tool-calling) leaderboard")
+    # Agentic leaderboard under the gate model: a model must clear the easy+standard
+    # FLOOR to qualify; the qualified are ranked by hard-task pass then cost, with the
+    # perf/efficiency columns as the value axis. The disqualified are listed with the
+    # floor task(s) they missed.
+    rows = [{"model": mid, **stats} for mid, stats in (agentic or {}).items()]
+    qualified = [r for r in rows if r.get("qualified")]
+    disqualified = [r for r in rows if not r.get("qualified")]
+
+    def _cps(r) -> str:
+        cps = r.get("cost_per_solve")
+        return f"{cps:.4f}" if cps is not None else "n/a"
+
+    lines.append("## Agentic leaderboard: qualified")
     lines.append("")
-    if agentic:
-        rows = [{"model": mid, **stats} for mid, stats in agentic.items()]
-        # Best first: highest pass-rate, then cheapest, then fewest tokens.
-        rows.sort(
+    lines.append(
+        "Cleared the easy+standard floor. Ranked by hard-task pass, then cost."
+    )
+    lines.append("")
+    if qualified:
+        # Best first: most hard tasks solved, then cheapest, then fastest.
+        qualified.sort(
             key=lambda r: (
-                -r.get("pass_rate", 0.0),
+                -r.get("hard_pass", 0),
                 r.get("cost", 0.0),
-                r.get("med_tokens", 0.0),
+                r.get("med_latency_ms", 0.0),
             )
         )
         lines.append(
-            "| Model | n | pass-rate | median tokens | median turns | wall-time (s) "
+            "| Model | hard | median tokens | median turns | wall-time (s) "
             "| cost ($) | $/solve | tool-use ok |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
-        for r in rows:
-            cps = r.get("cost_per_solve")
-            cps_str = f"{cps:.4f}" if cps is not None else "n/a"
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        for r in qualified:
             lines.append(
-                f"| {r['model']} | {r.get('n', 0)} | {r.get('pass_rate', 0.0):.2f} "
+                f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
                 f"| {r.get('med_tokens', 0):.0f} | {r.get('med_turns', 0):.1f} "
                 f"| {r.get('med_latency_ms', 0) / 1000:.1f} "
-                f"| {r.get('cost', 0.0):.4f} | {cps_str} | {r.get('tool_ok_rate', 0.0):.2f} |"
+                f"| {r.get('cost', 0.0):.4f} | {_cps(r)} | {r.get('tool_ok_rate', 0.0):.2f} |"
             )
     else:
-        lines.append("No agentic results yet.")
+        lines.append("No qualified models yet.")
+    lines.append("")
+
+    lines.append("## Agentic leaderboard: disqualified")
+    lines.append("")
+    lines.append("Failed one or more floor (easy/standard) tasks, so not yet viable.")
+    lines.append("")
+    if disqualified:
+        disqualified.sort(key=lambda r: -r.get("floor_pass", 0))
+        lines.append("| Model | floor | failed floor tasks | tool-use ok |")
+        lines.append("| --- | --- | --- | --- |")
+        for r in disqualified:
+            failed = ", ".join(r.get("floor_failed", [])) or "(none run)"
+            lines.append(
+                f"| {r['model']} | {r.get('floor_pass', 0)}/{r.get('floor_n', 0)} "
+                f"| {failed} | {r.get('tool_ok_rate', 0.0):.2f} |"
+            )
+    else:
+        lines.append("No disqualified models.")
     lines.append("")
 
     # Budget tier: qualifying candidates sorted by cost ascending
