@@ -3,6 +3,13 @@ kind: Application
 metadata:
   name: fc-agentd
   namespace: argocd
+  # Decommission step 1 (2-step ArgoCD finalizer pattern): superseded by the
+  # goosecracker agent fc-invoke workload (ADR 030). This finalizer makes the
+  # app-of-apps prune CASCADE to fc-agentd's live workloads when the app manifest
+  # is deleted in the follow-up PR; without it the deleted manifest would orphan
+  # the running pod (kubectl delete is forbidden under GitOps).
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   sources:
