@@ -1,8 +1,9 @@
 // Command egress-proxy is a tiny, dependency-free transparent egress proxy that
 // mediates every Firecracker guest's outbound traffic (ADR 023). The guest is
-// vsock-only: fc-agent-init answers every DNS query with 127.0.0.1 and funnels
-// each loopback connection over vsock to fc-agentd, which forwards it here. This
-// sidecar is the only process that reaches the network on the guest's behalf.
+// vsock-only: the guest init answers every DNS query with 127.0.0.1 and funnels
+// each loopback connection over vsock to the fc-invoke daemon, which forwards it
+// here. This sidecar is the only process that reaches the network on the guest's
+// behalf.
 //
 // Each connection arrives as: a one-line preamble carrying the original
 // destination port (the guest funnel knows it from the listening port), then the
@@ -52,7 +53,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	// EGRESS_LISTEN is where fc-agentd forwards guest egress (pod-local).
+	// EGRESS_LISTEN is where the fc-invoke daemon forwards guest egress (pod-local).
 	listen := envOr("EGRESS_LISTEN", ":8888")
 
 	// EGRESS_POLICY: "allow" (default) permits every destination; "allowlist"

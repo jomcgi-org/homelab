@@ -1,6 +1,6 @@
-# Tools image for the fc-agentd base-rootfs initContainer (ADR 022). It builds
-# the agent base rootfs in-cluster from the pinned harness image, so no human on
-# node-4 with sudo is needed: crane exports the harness image filesystem and
+# Tools image for the fc-invoke base-rootfs initContainers (ADR 030). It builds a
+# workload's base rootfs in-cluster from the pinned guest image, so no human on
+# node-4 with sudo is needed: crane exports the guest image filesystem and
 # mkfs.ext4 (e2fsprogs) bakes it into an ext4 image on the mounted nvme disk.
 # Runs as root (apko default) because it writes to the root-owned snapshot dir.
 contents:

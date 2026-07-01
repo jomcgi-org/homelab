@@ -29,7 +29,7 @@ imagePullSecret:
 # preamble; a bare host allows any port, host:port pins the port.
 #
 # Destinations the agent guest reaches (all in-cluster, plain HTTP over the
-# funnel; the same hosts fc-agentd's default tier uses):
+# funnel; the hosts the agent's default tier uses):
 #   - inference.inference.svc.cluster.local:8080  in-cluster model (Qwen; OPENAI_HOST)
 #   - monolith.monolith.svc.cluster.local:8000    monolith progress / artifact sink
 #   - context-forge-...mcpgateway.mcp.svc.cluster.local:80  MCP tools (baked guest ext)

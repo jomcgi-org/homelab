@@ -108,8 +108,8 @@ export const projects = [
     ],
     links: [
       {
-        label: "projects/agent_platform/fc-agentd",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/agent_platform/fc-agentd",
+        label: "projects/firecracker/goosecracker",
+        href: "https://github.com/jomcgi/homelab/tree/main/projects/firecracker/goosecracker",
       },
     ],
   },

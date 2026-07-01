@@ -26,7 +26,7 @@ import (
 
 // tracer spans the cold-boot phases (rootfs provision, firecracker boot) so the
 // cold-start cost is visible per phase in SigNoz (ADR 026 measurement).
-var tracer = otel.Tracer("fc-agentd/driver")
+var tracer = otel.Tracer("fc-invoke/driver")
 
 // Config holds the node-4 substrate paths and microVM sizing.
 type Config struct {
@@ -51,7 +51,7 @@ type Config struct {
 	// captures that path), and the launcher bind-mounts each VM's bundle dir over it
 	// per instance, so concurrent restores from one base each get their own
 	// host-reachable vsock socket. Pairs with ExecLauncher.VsockBindTarget. Empty
-	// keeps the per-thread vsock path (fc-agentd's behaviour).
+	// keeps the per-thread vsock path (the legacy per-thread, no-warm-base behaviour).
 	CanonicalVsockDir string
 	// Provisioner selects the per-thread rootfs strategy (ADR 026): "copy" (the
 	// default CopyProvisioner full file copy) or "devmapper" (DevmapperProvisioner
