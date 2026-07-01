@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "dial_linux.go",
         "dial_other.go",
+        "listen_linux.go",
+        "listen_other.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/vsockdial",
     visibility = ["//projects/firecracker/goosecracker/guest-init:__subpackages__"],

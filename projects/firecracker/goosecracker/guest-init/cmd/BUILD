@@ -6,15 +6,16 @@ go_library(
         "loopback_linux.go",
         "loopback_other.go",
         "main.go",
+        "mount_linux.go",
+        "mount_other.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/firecracker/goosecracker/guest-init/internal/harness",
-        "//projects/firecracker/goosecracker/guest-init/internal/idle",
-        "//projects/firecracker/goosecracker/guest-init/internal/reconnect",
+        "//projects/firecracker/goosecracker/guest-init/internal/handler",
         "//projects/firecracker/goosecracker/guest-init/internal/vsockdial",
-        "//projects/firecracker/goosecracker/guest-init/internal/watchdog",
+        "//projects/firecracker/substrate/shim",
+        "//projects/firecracker/substrate/shim/capabilities",
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
