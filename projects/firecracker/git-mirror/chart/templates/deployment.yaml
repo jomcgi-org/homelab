@@ -61,6 +61,16 @@ spec:
               value: /tmp
             - name: GIT_CONFIG_NOSYSTEM
               value: "1"
+            {{- if .Values.githubToken.enabled }}
+            # Mirror-side read token for private repos. Stays in this trusted pod
+            # only (written to the ephemeral HOME as a credential store by the
+            # supervisor); never on the PVC, never in a guest.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.githubToken.secretRef.name }}
+                  key: {{ .Values.githubToken.secretRef.key }}
+            {{- end }}
           ports:
             - name: git
               containerPort: {{ .Values.gitDaemonPort }}
