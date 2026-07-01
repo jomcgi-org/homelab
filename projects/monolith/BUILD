@@ -2920,6 +2920,16 @@ py_test(
 )
 
 py_test(
+    name = "campsites_client_test",
+    srcs = ["campsites/client_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "stars_init_test",
     srcs = ["stars/__init___test.py"],
     imports = ["."],
