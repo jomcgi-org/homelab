@@ -156,6 +156,11 @@ goosecracker:
   # there through the fc-invoke egress funnel, and the Discord bot polls the
   # in-memory buffer keyed by the session (== the Discord thread id).
   progressUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress"
+  # The in-cluster git mirror base URL (WS2 hydration). The runner defaults
+  # gitMirror to "<gitMirror>/homelab" when the caller does not specify one.
+  # The mirror serves git:// on :9418 (ADR 026 + git-mirror service in
+  # projects/firecracker/git-mirror/). Keep empty if the mirror is not deployed.
+  gitMirror: "git://git-mirror.monolith.svc.cluster.local:9418"
   # Per-tier guest env (relocated from the fc-agentd chart). The runner merges the
   # selected tier into the AgentRequest.env it POSTs to fc-invoke. A tier is the
   # model endpoint plus the secret PLACEHOLDERS the guest may hold: the kloak:

@@ -98,6 +98,10 @@ spec:
             - name: GOOSECRACKER_PROGRESS_URL
               value: {{ .Values.goosecracker.progressUrl | quote }}
             {{- end }}
+            {{- if .Values.goosecracker.gitMirror }}
+            - name: GOOSECRACKER_GIT_MIRROR
+              value: {{ .Values.goosecracker.gitMirror | quote }}
+            {{- end }}
             {{- if .Values.goosecracker.tiers }}
             # Egress secret-swap CA public cert (ADR 023 6b). The fc-invoke egress
             # proxy TLS-terminates swapped hosts with a leaf minted from this CA;

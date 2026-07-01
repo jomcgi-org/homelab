@@ -1,9 +1,8 @@
-"""Unit tests for the goosecracker delivery/publish path (ADR 024).
+"""Unit tests for the goosecracker delivery/publish path (ADR 024) and WS2/WS3.
 
-Covers the artifact publish + Discord message shaping: an artifact run publishes
-the built HTML and posts a clean "Artifact ready: <url>" (with the recipe summary)
-rather than the raw goose transcript; a whiffed artifact build and a publish
-failure both get clear messages.
+Covers the artifact publish + Discord message shaping, the default mirror wiring
+(WS2: GOOSECRACKER_GIT_MIRROR defaults gitMirror when caller omits it), and the
+recorded-ref line in delivery messages (WS3).
 """
 
 from __future__ import annotations
@@ -64,3 +63,74 @@ async def test_delivery_message_publish_failure_is_reported(monkeypatch):
 async def test_delivery_message_non_artifact_posts_result():
     msg = await runner._delivery_message("sess", "agent", {"result": "hello from qwen"})
     assert msg == "hello from qwen"
+
+
+# ---------------------------------------------------------------------------
+# WS2: default mirror wiring via _effective_mirror_ref
+# ---------------------------------------------------------------------------
+
+
+def test_effective_mirror_defaults_to_env_when_caller_omits(monkeypatch):
+    """GOOSECRACKER_GIT_MIRROR is injected as the base; /homelab is appended."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
+    m, r = runner._effective_mirror_ref("", "")
+    assert m == "git://mirror:9418/homelab"
+    assert r == "main"
+
+
+def test_effective_mirror_caller_override_wins(monkeypatch):
+    """Explicit git_mirror from the caller takes precedence over the env default."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
+    m, r = runner._effective_mirror_ref("git://other:9418/loom", "feat/x")
+    assert m == "git://other:9418/loom"
+    assert r == "feat/x"
+
+
+def test_effective_mirror_empty_when_env_unset(monkeypatch):
+    """When GOOSECRACKER_GIT_MIRROR is unset, effective mirror is empty (no clone)."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "")
+    m, r = runner._effective_mirror_ref("", "")
+    assert m == ""
+    assert r == "main"
+
+
+def test_effective_mirror_ref_defaults_to_main_when_only_mirror_set(monkeypatch):
+    """git_ref defaults to 'main' when caller omits it but mirror is specified."""
+    monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
+    m, r = runner._effective_mirror_ref("", "")
+    assert r == "main"
+
+
+# ---------------------------------------------------------------------------
+# WS3: _delivery_message appends recorded ref
+# ---------------------------------------------------------------------------
+
+
+async def test_delivery_message_appends_recorded_ref_for_agent():
+    """A recorded scratch ref is appended to the agent result message."""
+    data = {"result": "did the work", "recordedRef": "refs/agents/sess-abc"}
+    msg = await runner._delivery_message("sess-abc", "agent", data)
+    assert "did the work" in msg
+    assert "recorded: refs/agents/sess-abc" in msg
+
+
+async def test_delivery_message_appends_recorded_ref_for_artifact(monkeypatch):
+    """A recorded ref is also appended when the run produced an artifact."""
+    monkeypatch.setattr(
+        runner, "_publish_artifact", lambda s, h: "https://jomcgi.dev/artifact/x"
+    )
+    data = {
+        "artifactHtml": "<html/>",
+        "result": "",
+        "recordedRef": "refs/agents/sess-art",
+    }
+    msg = await runner._delivery_message("sess-art", "artifact", data)
+    assert "https://jomcgi.dev/artifact/x" in msg
+    assert "recorded: refs/agents/sess-art" in msg
+
+
+async def test_delivery_message_no_recorded_ref_unchanged():
+    """When no recordedRef is present, the message is unchanged."""
+    msg = await runner._delivery_message("sess", "agent", {"result": "result text"})
+    assert msg == "result text"
+    assert "recorded:" not in msg
