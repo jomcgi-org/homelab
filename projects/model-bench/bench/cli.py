@@ -577,7 +577,7 @@ def _report(args) -> None:
     # under the gate model. easy + standard tasks form the qualification FLOOR: a model
     # must pass all of them to be viable. hard tasks differentiate the qualified;
     # perf/efficiency is the value axis among them.
-    from statistics import median
+    from statistics import mean
 
     # Only count cells for tasks that are still in the current task set. Cells for a
     # task that was later removed or renamed linger in the durable results cache; the
@@ -611,13 +611,17 @@ def _report(args) -> None:
             "qualified": bool(floor) and not floor_failed,
             "hard_n": len(hard),
             "hard_pass": sum(1 for c in hard if c.first_attempt_passed),
-            "med_tokens": float(median([c.total_tokens for c in group])),
-            "med_turns": float(median([c.turns or 0 for c in group])),
-            # Median end-to-end wall-time per task (ms). This is the CLOUD lens: what a
+            # Mean (not median) per task: the tasks vary ~5x in size, and a model can
+            # blow up on one hard task (e.g. a greenfield build) while looking tidy on
+            # the median. The mean keeps that tail visible, and it matches how `cost`
+            # below is already aggregated, so all the efficiency columns tell one story.
+            "mean_tokens": float(mean([c.total_tokens for c in group])),
+            "mean_turns": float(mean([c.turns or 0 for c in group])),
+            # Mean end-to-end wall-time per task (ms). This is the CLOUD lens: what a
             # request to this model actually costs in time via OpenRouter. It does NOT
             # transfer to self-hosted 4090 throughput (different HW/quant/batching), but
             # with cost it is the real value signal for offloading work off a paid tier.
-            "med_latency_ms": float(median([c.total_latency_ms for c in group])),
+            "mean_latency_ms": float(mean([c.total_latency_ms for c in group])),
             "cost": cost,
             # Cost per SOLVED task, so a cheap-but-flaky model does not look like a
             # bargain. Infinite when nothing passes (rendered as a sentinel).
@@ -690,6 +694,9 @@ def _write_leaderboard_json(
             "tokens": cell.total_tokens,
             "turns": cell.turns,
             "latency_ms": cell.total_latency_ms,
+            # Per-task cost so the scatter's per-task Cloud view has a real $ per point,
+            # not just the model-level mean.
+            "cost_usd": round(cell.cost_usd, 6),
         }
 
     def _blurb(tid: str) -> str:
@@ -736,9 +743,9 @@ def _write_leaderboard_json(
             "floor_failed": s["floor_failed"],
             "hard_pass": s["hard_pass"],
             "hard_n": s["hard_n"],
-            "median_tokens": int(s["med_tokens"]),
-            "median_turns": s["med_turns"],
-            "median_latency_ms": int(s["med_latency_ms"]),
+            "mean_tokens": int(s["mean_tokens"]),
+            "mean_turns": round(s["mean_turns"], 2),
+            "mean_latency_ms": int(s["mean_latency_ms"]),
             "cost_usd": round(s["cost"], 6),
             "cost_per_solve_usd": (
                 round(s["cost_per_solve"], 6)
@@ -761,7 +768,7 @@ def _write_leaderboard_json(
             not r["qualified"],
             -r["hard_pass"],
             r["cost_usd"],
-            r["median_latency_ms"],
+            r["mean_latency_ms"],
         )
     )
 
