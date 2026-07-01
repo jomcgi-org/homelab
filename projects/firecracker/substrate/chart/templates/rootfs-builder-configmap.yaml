@@ -1,12 +1,11 @@
 {{- if .Values.firecracker.enabled }}
-# Build script for the base-rootfs initContainer. Kept in a ConfigMap so it can
+# Build script for the base-rootfs initContainers. Kept in a ConfigMap so it can
 # be tuned without rebuilding the tools image. Builds the read-only base ext4
 # image a workload's microVMs boot from.
 #
-# PR2 has ONE workload (semgrep), so this builds exactly the semgrep guest's
-# base rootfs. A future enhancement is a per-workload loop (one build per entry
-# in .Values.workloads, each from its own guestImage to its own rootfsPath);
-# until a second guest image lands, a single hardcoded build is simplest.
+# The script is generic: each per-workload rootfs-builder initContainer (see the
+# range in deployment.yaml) runs this same script with its own GUEST_IMAGE and
+# BASE_ROOTFS_PATH, so one script serves every workload (semgrep, agent, ...).
 apiVersion: v1
 kind: ConfigMap
 metadata:

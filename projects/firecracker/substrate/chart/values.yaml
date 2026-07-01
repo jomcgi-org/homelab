@@ -9,12 +9,22 @@ image:
 # Per-workload guest images the base rootfs is built from. Bazel pins
 # repository + tag from each guest image's .info provider at chart-build (see
 # chart/BUILD `images`), so the rootfs the builder bakes always matches the
-# deployed guest and the workload auto-rolls when its guest rebuilds. For PR2
-# there is ONE workload (semgrep); add a sibling block + a rootfs-builder +
-# an images-map pin per new workload.
+# deployed guest and the workload auto-rolls when its guest rebuilds. Each
+# workload has a sibling block here (keyed by workload name), a rootfs-builder
+# initContainer, and an images-map pin. These blocks are top-level (NOT under
+# `workloads`) so the pinned repository/tag never leak into FC_INVOKE_WORKLOADS,
+# whose fields must match the daemon's config.Workload JSON tags exactly.
 semgrep:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
+    tag: latest
+
+# The agent (goosecracker) guest image the agent workload's base rootfs is built
+# from. Repository + tag are Bazel-pinned from the guest image's .info provider
+# at chart-build (see chart/BUILD `images` -> "agent.guestImage").
+agent:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/goosecracker/guest
     tag: latest
 
 # Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build
@@ -89,18 +99,37 @@ workloads:
     readyPath: /shim/ready
     sessioned: false
     requestTimeout: 90s
+  # The agent (goosecracker) workload: a goose coding agent served over the
+  # guest shim HTTP handler. warmBase:false = cold boot per invoke (the agent's
+  # slow part is model inference, not boot, so a warm snapshot buys little and
+  # costs a resident base VM). sessioned:true so the orchestrator can carry a
+  # session across turns (delivered to the guest via /invoke/{workload}/{session}).
+  # egressEnabled:true so the guest reaches the in-cluster model + monolith via
+  # the egress-proxy sidecar (egress.enabled must be true; see deploy/values.yaml).
+  agent:
+    image: agent-guest
+    rootfsPath: /disks/nvme-02/fc-invoke/agent/rootfs.ext4
+    vcpus: 4
+    memMib: 4096
+    concurrency: 2
+    egressEnabled: true
+    warmBase: false
+    readyPath: /shim/ready
+    sessioned: true
+    requestTimeout: 600s
 
 # The limit must hold the capped peak of every workload's guests plus the
-# daemon. The one workload (semgrep) caps at concurrency 4 * 2Gi = 8Gi + ~1Gi
-# daemon overhead = 9Gi. Bursty: request a small floor, let the limit cover the
-# admission-capped peak. The per-workload concurrency cap guarantees the cgroup
-# never exceeds it, and oom_score_adj guarantees a guest dies first if it nears.
+# daemon. semgrep caps at concurrency 4 * 2Gi = 8Gi; agent caps at concurrency
+# 2 * 4Gi = 8Gi; plus ~1Gi daemon overhead = 17Gi if both run at full tilt.
+# Bursty: request a small floor, let the limit cover the admission-capped peak.
+# The per-workload concurrency cap guarantees the cgroup never exceeds it, and
+# oom_score_adj guarantees a guest dies first if it nears (ADR platform/010).
 resources:
   requests:
     cpu: 50m
     memory: 2Gi
   limits:
-    memory: 9Gi
+    memory: 18Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the
@@ -155,10 +184,12 @@ egress:
   allowlist: ""
   # Bazel-pinned at chart-build from the egress-proxy image .info provider.
   image: {}
+  # Repo convention: memory requests == limits (no memory bursting); CPU is a
+  # request only (no CPU limit, to avoid throttling).
   resources:
     requests:
       cpu: 10m
-      memory: 32Mi
+      memory: 64Mi
     limits:
       memory: 64Mi
 

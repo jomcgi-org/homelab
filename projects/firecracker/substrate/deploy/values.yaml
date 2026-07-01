@@ -21,9 +21,23 @@ firecracker:
 imagePullSecret:
   enabled: true
 
-# Egress-proxy sidecar (ADR 023 phase 6a). Off for now: the only live workload
-# is semgrep, which runs with egress disabled. The agent workload PR flips this
-# on and populates egress.allowlist (in-cluster Qwen, the git mirror, the
-# monolith progress endpoint).
+# Egress-proxy sidecar (ADR 023 phase 6a). ON: the agent (goosecracker) workload
+# runs with egress enabled and reaches the network only through this sidecar.
+# Policy is allowlist (fail closed): the sidecar denies any destination whose
+# host is not listed here. Hosts are matched EXACTLY (no suffix/wildcard) against
+# the SNI (TLS) or Host header (plain HTTP), and the port from the guest funnel
+# preamble; a bare host allows any port, host:port pins the port.
+#
+# Destinations the agent guest reaches (all in-cluster, plain HTTP over the
+# funnel; the same hosts fc-agentd's default tier uses):
+#   - inference.inference.svc.cluster.local:8080  in-cluster model (Qwen; OPENAI_HOST)
+#   - monolith.monolith.svc.cluster.local:8000    monolith progress / artifact sink
+#   - context-forge-...mcpgateway.mcp.svc.cluster.local:80  MCP tools (baked guest ext)
+#   - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318  goose OTLP traces
+# There is no in-cluster git mirror, so none is listed. GitHub (api.github.com)
+# needs the credential swap (kloak) from ADR 023 phase 6b, which this plain-mode
+# sidecar does not do yet, so it is deliberately omitted (gh egress is a 6b follow-up).
 egress:
-  enabled: false
+  enabled: true
+  policy: allowlist
+  allowlist: "inference.inference.svc.cluster.local:8080,monolith.monolith.svc.cluster.local:8000,context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80,signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
