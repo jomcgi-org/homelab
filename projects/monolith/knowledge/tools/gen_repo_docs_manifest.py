@@ -6,12 +6,12 @@ projects/monolith/knowledge/repo_docs_manifest.ndjson. Using git (not a filesyst
 walk) makes the output deterministic across platforms and Python versions and
 never picks up untracked files or build artifacts under symlinked bazel-out/ dirs.
 
-When indexed docs change, regenerate and commit the manifest:
-`bazel run //projects/monolith:gen_repo_docs_manifest` (or run this script with
-any python3). CI enforces freshness: bazel/images/validate-generate-scripts.sh
-(run in the Format check action) regenerates the manifest and fails the build if
-it differs from what is committed, with the regen command in the error. The
-private monolith's reconcile job reads the committed manifest from the image.
+Regeneration is automatic: the "Format check" CI action (buildbuddy.yaml) runs
+this generator on every push and auto-commits any change to the manifest on PR
+branches (as ci-format-bot), like any other formatting fix, so a doc edit never
+needs a manual regen. To regenerate locally: run this script with any python3
+(or `bazel run //projects/monolith:gen_repo_docs_manifest`). The private
+monolith's reconcile job reads the committed manifest from the image.
 """
 
 from __future__ import annotations
