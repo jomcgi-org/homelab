@@ -86,9 +86,9 @@ spec:
               value: "http://localhost:3000/"
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
               value: {{ .Values.backend.otelEndpoint | quote }}
-            {{- if .Values.semgrep.scandUrl }}
-            - name: SEMGREP_SCAND_URL
-              value: {{ .Values.semgrep.scandUrl | quote }}
+            {{- if .Values.semgrep.fcInvokeUrl }}
+            - name: FC_INVOKE_URL
+              value: {{ .Values.semgrep.fcInvokeUrl | quote }}
             {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN
