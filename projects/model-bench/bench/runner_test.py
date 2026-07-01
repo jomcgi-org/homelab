@@ -129,3 +129,23 @@ def test_pass_at_2_feeds_stderr_not_golden(tmp_path):
         )
     )
     assert cell.outcome == "pass@2" and len(cell.attempts) == 2
+
+
+def test_parse_structured_json_beats_text(tmp_path):
+    from bench.runner import _parse_structured_or_extract
+
+    # Clean JSON content maps path-agnostically to the single target.
+    got = _parse_structured_or_extract(
+        '{"files": [{"path": "x.py", "content": "def f():\\n    return 1"}]}',
+        ["extract_text.py"],
+    )
+    assert got == {"extract_text.py": "def f():\n    return 1"}
+    # Fenced JSON still parses.
+    got2 = _parse_structured_or_extract(
+        '```json\n{"files": [{"path": "a", "content": "ok"}]}\n```', ["a"]
+    )
+    assert got2 == {"a": "ok"}
+    # Non-JSON falls back to lenient text extraction.
+    assert _parse_structured_or_extract("def f(): pass", ["a.py"]) == {
+        "a.py": "def f(): pass"
+    }

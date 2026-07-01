@@ -1,0 +1,38 @@
+id: null-content-fix-01
+version: v1
+class: code-fix
+source_commit: bc6f81dfb
+prompt: |
+  extract_text() pulls the assistant text out of a chat-completions API response.
+  In production it intermittently crashes a downstream caller with
+  "AttributeError: 'NoneType' object has no attribute ...": some models (reasoning
+  or "thinking" models) return a response whose message "content" field is present
+  but JSON null while they are still reasoning. Fix extract_text so it always
+  returns a string for every response shape, without changing its name or
+  signature. Return the complete updated contents of extract_text.py.
+target_files:
+  - extract_text.py
+verifier:
+  kind: command
+  args:
+    cmd:
+      - python3
+      - -c
+      - |
+        import sys
+        sys.path.insert(0, ".")
+        try:
+            from extract_text import extract_text
+        except Exception as e:
+            sys.stderr.write(f"could not import extract_text: {e}\n"); sys.exit(1)
+        cases = {
+            "normal content": ({"choices": [{"message": {"content": "hello"}}]}, "hello"),
+            "null content (thinking model)": ({"choices": [{"message": {"content": None}}]}, ""),
+            "missing content": ({"choices": [{"message": {}}]}, ""),
+        }
+        for name, (data, want) in cases.items():
+            got = extract_text(data)
+            if not isinstance(got, str):
+                sys.stderr.write(f"{name}: expected a str, got {type(got).__name__} ({got!r})\n"); sys.exit(1)
+            if got != want:
+                sys.stderr.write(f"{name}: expected {want!r}, got {got!r}\n"); sys.exit(1)
