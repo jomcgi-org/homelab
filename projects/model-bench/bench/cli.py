@@ -132,6 +132,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--results", default="results", help="Directory to read result JSON files from"
     )
 
+    # prune-stale
+    p_prune_stale = sub.add_parser(
+        "prune-stale",
+        help="Delete result cells left over from a different harness version",
+    )
+    p_prune_stale.add_argument(
+        "--results", default="results", help="Directory to read result JSON files from"
+    )
+
     # list
     p_list = sub.add_parser("list", help="List models and their status")
     p_list.add_argument("--models", default="models.yaml")
@@ -340,12 +349,30 @@ def _report(args) -> None:
 
     results_root = Path(args.results)
     cells: list[ResultCell] = []
+    stale = 0
     if results_root.exists():
         for json_path in results_root.rglob("*.json"):
             try:
-                cells.append(ResultCell.model_validate_json(json_path.read_text()))
+                cell = ResultCell.model_validate_json(json_path.read_text())
             except Exception as exc:
                 logger.warning("skipping %s: %s", json_path, exc)
+                continue
+            # Only aggregate cells from the current harness version. Results from a
+            # prior version (e.g. before a bug fix bumped HARNESS_VERSION, or under an
+            # old model slug) linger on disk next to fresh cells; counting both would
+            # double-count and mix corrupt data into the leaderboard.
+            if cell.harness_version != HARNESS_VERSION:
+                stale += 1
+                continue
+            cells.append(cell)
+
+    if stale:
+        logger.warning(
+            "ignored %d result cell(s) from a different harness version (current %s); "
+            "run `python -m bench prune-stale` to delete them",
+            stale,
+            HARNESS_VERSION,
+        )
 
     agg = aggregate_by_class(cells, task_class_of)
 
@@ -445,6 +472,25 @@ def _prune(args) -> None:
     print(pruned)
 
 
+def _prune_stale(args) -> None:
+    """Delete result cells whose harness_version differs from the current one."""
+    results_root = Path(args.results)
+    removed = 0
+    if results_root.exists():
+        for json_path in results_root.rglob("*.json"):
+            try:
+                cell = ResultCell.model_validate_json(json_path.read_text())
+            except Exception as exc:
+                logger.warning("skipping unreadable cell %s: %s", json_path, exc)
+                continue
+            if cell.harness_version != HARNESS_VERSION:
+                json_path.unlink()
+                removed += 1
+    print(
+        f"Removed {removed} stale result cell(s) (kept harness version {HARNESS_VERSION})."
+    )
+
+
 def _list(args) -> None:
     """Print each model: id, status, role."""
     reg = load_registry(Path(args.models))
@@ -464,6 +510,8 @@ def main(argv=None) -> None:
         _drop(args)
     elif args.command == "prune":
         _prune(args)
+    elif args.command == "prune-stale":
+        _prune_stale(args)
     elif args.command == "list":
         _list(args)
     else:
