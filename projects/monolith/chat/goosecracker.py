@@ -179,7 +179,10 @@ def continue_session(thread_id: str, message: str) -> dict | None:
             repo=_stored_repo,
             discord_thread=thread_id,
         )
-        return {"action": "dispatched", **result}
+        # Spread the submit result first, then set action: submit returns its own
+        # "action" (create/resume) and a later key wins in a dict merge, so
+        # "dispatched" must come last to override it (the bot routes on this).
+        return {**result, "action": "dispatched"}
 
     # Artifact path: ADR 026 Phase 2 (Model A vs B). If a persisted goose session
     # exists for this thread, send only the new reply (Model A) so the guest can
