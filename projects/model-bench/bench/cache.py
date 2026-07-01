@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-HARNESS_VERSION = "0.1.0"
+HARNESS_VERSION = "0.1.1"
 
 
 def cell_key(

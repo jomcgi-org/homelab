@@ -29,7 +29,7 @@ models:
   - id: mistralai/devstral-2512 # 0.40 -> 2.0  24B Apache coding model, best 32k+ context headroom.
     status: active
 
-  - id: qwen/qwen2.5-coder-32b-instruct # 0.66 -> 1.0  proven dense-32B coder baseline (older).
+  - id: qwen/qwen-2.5-coder-32b-instruct # 0.66 -> 1.0  proven dense-32B coder baseline (older).
     status: active
 
   - id: google/gemma-4-31b-it # 0.12 -> 0.35  dense 31B, 4090-fit (coding aptitude unverified).
