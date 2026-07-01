@@ -1,35 +1,48 @@
-"""BDD tests for the goosecracker sessions.db blob store (ADR 026 Phase 2)."""
+"""Unit tests for the goosecracker sessions.db store seam (ADR 026 Phase 2).
+
+The store is a thin passthrough to ``artifact.s3`` (S3-backed), so the tests
+assert the wiring: load/save delegate to get_session/put_session keyed by the
+session id. artifact.s3 is stubbed with an in-memory dict so no S3 is needed.
+"""
 
 from __future__ import annotations
 
-from goosecracker import sessions, threads
+from goosecracker import sessions
 
 
-def _make_row(session_id: str) -> None:
-    threads.upsert_run(session_id, recipe="agent", tier="", task="t", discord_thread="")
+def test_save_then_load_round_trips_via_s3(monkeypatch):
+    store: dict[str, bytes] = {}
+    monkeypatch.setattr(
+        "artifact.s3.put_session", lambda sid, db: store.__setitem__(sid, db)
+    )
+    monkeypatch.setattr("artifact.s3.get_session", lambda sid: store.get(sid))
 
-
-def test_save_then_load_round_trips_bytes(ledger_db):
-    _make_row("sess-db-1")
     blob = b"\x00sqlite-bytes\xff\x01"
+    sessions.save("sess-1", blob)
 
-    sessions.save("sess-db-1", blob)
-
-    assert sessions.load("sess-db-1") == blob
-
-
-def test_load_returns_none_when_never_saved(ledger_db):
-    _make_row("sess-db-2")
-    assert sessions.load("sess-db-2") is None
+    assert sessions.load("sess-1") == blob
 
 
-def test_load_returns_none_for_unknown_session(ledger_db):
+def test_load_returns_none_when_absent(monkeypatch):
+    monkeypatch.setattr("artifact.s3.get_session", lambda sid: None)
     assert sessions.load("no-such-session") is None
 
 
-def test_save_overwrites_previous_blob(ledger_db):
-    _make_row("sess-db-3")
-    sessions.save("sess-db-3", b"first")
-    sessions.save("sess-db-3", b"second")
+def test_save_overwrites_previous_blob(monkeypatch):
+    store: dict[str, bytes] = {}
+    monkeypatch.setattr(
+        "artifact.s3.put_session", lambda sid, db: store.__setitem__(sid, db)
+    )
+    monkeypatch.setattr("artifact.s3.get_session", lambda sid: store.get(sid))
 
-    assert sessions.load("sess-db-3") == b"second"
+    sessions.save("sess-3", b"first")
+    sessions.save("sess-3", b"second")
+
+    assert sessions.load("sess-3") == b"second"
+
+
+def test_load_delegates_with_session_id(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr("artifact.s3.get_session", lambda sid: seen.append(sid) or b"x")
+    sessions.load("the-session-id")
+    assert seen == ["the-session-id"]
