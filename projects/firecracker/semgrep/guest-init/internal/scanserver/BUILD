@@ -7,8 +7,8 @@ go_library(
         "listen_other.go",
         "scanserver.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/semgrep-guest-init/internal/scanserver",
-    visibility = ["//projects/agent_platform/semgrep-guest-init:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/semgrep/guest-init/internal/scanserver",
+    visibility = ["//projects/firecracker/semgrep/guest-init:__subpackages__"],
     deps = [
         "//projects/firecracker/substrate/vsockproto",
     ] + select({

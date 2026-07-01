@@ -1,7 +1,7 @@
 {
   "version": "v1",
   "config": {
-    "name": "projects/agent_platform/semgrep-guest/apko.yaml",
+    "name": "projects/firecracker/semgrep/guest/apko.yaml",
     "checksum": "sha256-Jnf7LKovnsfuraZWMOd4SkI58RMGbOTIWv0JXVJok9M="
   },
   "contents": {

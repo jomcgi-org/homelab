@@ -6,12 +6,12 @@ image:
   tag: latest
   pullPolicy: Always
 
-# The semgrep-guest image (projects/agent_platform/semgrep-guest) the base rootfs
+# The semgrep-guest image (projects/firecracker/semgrep/guest) the base rootfs
 # is built from. The base-rootfs initContainer exports this image and bakes it
 # into firecracker.baseRootfsPath, so the base always matches the deployed guest
 # (the vsock-serving semgrep-guest-init). Bazel pins repository + tag at build time.
 guestImage:
-  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/semgrep-guest
+  repository: ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest
   tag: latest
 
 # Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build the

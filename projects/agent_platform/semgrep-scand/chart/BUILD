@@ -8,7 +8,7 @@ helm_chart(
     name = "chart",
     images = {
         "image": "//projects/agent_platform/semgrep-scand:image.info",
-        "guestImage": "//projects/agent_platform/semgrep-guest:image.info",
+        "guestImage": "//projects/firecracker/semgrep/guest:image.info",
         "rootfsBuilder.image": "//projects/agent_platform/fc-agentd/rootfs-builder:image.info",
     },
     publish = True,

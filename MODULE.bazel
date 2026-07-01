@@ -470,7 +470,7 @@ apko.translate_lock(
 )
 apko.translate_lock(
     name = "semgrep_guest_lock",
-    lock = "//projects/agent_platform/semgrep-guest:apko.lock.json",
+    lock = "//projects/firecracker/semgrep/guest:apko.lock.json",
 )
 apko.translate_lock(
     name = "semgrep_scand_lock",

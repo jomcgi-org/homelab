@@ -13,7 +13,7 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 # semgrep-guest-init (PID 1), cross-compiled per arch, layered at /usr/local/bin.
 platform_transition_filegroup(
     name = "semgrep_guest_init_amd64_bin",
-    srcs = ["//projects/agent_platform/semgrep-guest-init/cmd"],
+    srcs = ["//projects/firecracker/semgrep/guest-init/cmd"],
     target_platform = "@rules_go//go/toolchain:linux_amd64",
 )
 
@@ -27,7 +27,7 @@ tar(
 
 platform_transition_filegroup(
     name = "semgrep_guest_init_arm64_bin",
-    srcs = ["//projects/agent_platform/semgrep-guest-init/cmd"],
+    srcs = ["//projects/firecracker/semgrep/guest-init/cmd"],
     target_platform = "@rules_go//go/toolchain:linux_arm64",
 )
 
@@ -49,6 +49,6 @@ apko_image(
         "//bazel/semgrep/guest:engine_tar",
         ":semgrep_guest_init_tar",
     ],
-    repository = "ghcr.io/jomcgi/homelab/projects/agent_platform/semgrep-guest",
+    repository = "ghcr.io/jomcgi/homelab/projects/firecracker/semgrep/guest",
     tars = ["//bazel/semgrep/guest:rules_tar"],
 )
