@@ -6,10 +6,11 @@
 > projection). Every capability this design asked Loom for has since **shipped or
 > dissolved** (loom PR #268, reconciled 2026-06-30): the durable substrate is
 > ready and Grimoire needs **no new loom code**. The doc has flipped accordingly,
-> from a Loom feature roadmap to the Grimoire-side build. §7 is now the
-> implementation plan (composing shipped primitives), not a wishlist.
+> from a Loom feature roadmap to the Grimoire-side build: §7 is now a readiness
+> ledger and §7.1 the implementation plan (composing shipped primitives), not a
+> wishlist.
 >
-> Loom state of record: the eight-item ask (A1-A7 in loom
+> Loom state of record: the Grimoire ask (A1-A7, plus A3b, in loom
 > `docs/grimoire-kg-agenda.md`) is fully accounted for. A1-A5 shipped; A6 (atomic
 > per-session check-in) and A7 (fine-grained ACL) **dissolved** into the
 > dataset-partition model (§3.4). Ontology/ACL primitives cited from
