@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -20,6 +21,11 @@ type Workload struct {
 	// Image is the logical guest rootfs image name, resolved to a path by the
 	// launcher.
 	Image string `json:"image"`
+	// RootfsPath is the host path to this workload's base rootfs ext4 image.
+	// Each workload boots its own guest image's rootfs, attached read-only
+	// (all mutable guest state is tmpfs), so one file backs every microVM for
+	// the workload with no per-request copy.
+	RootfsPath string `json:"rootfsPath"`
 	// VCPUs is the number of virtual CPUs to allocate per microVM. Default 2.
 	VCPUs int `json:"vcpus"`
 	// MemMib is the guest memory in MiB. Default 2048.
@@ -65,8 +71,34 @@ type Config struct {
 	// to runtime.GOARCH when FC_INVOKE_ARCH is unset.
 	Arch string
 	// SnapshotRoot is the directory holding FC bundle snapshots on the NVMe
-	// scratch disk.
+	// scratch disk. It maps to the driver's SnapshotRoot.
 	SnapshotRoot string
+
+	// BinPath is the firecracker binary the driver launches.
+	BinPath string
+	// KernelImagePath is the guest kernel (kata vmlinux.container on node-4),
+	// shared by every workload.
+	KernelImagePath string
+	// KernelBootArgs are appended to the kernel command line on cold boot.
+	// Empty uses the driver's default.
+	KernelBootArgs string
+	// HarnessInit is the in-guest init the kernel boots into (the guest shim
+	// init). A raw FC boot ignores the OCI entrypoint, so the driver appends
+	// init=<path>.
+	HarnessInit string
+	// CanonicalVsockDir is the fixed directory whose vsock.sock the base
+	// snapshot embeds; the launcher bind-mounts each microVM's bundle dir over
+	// it per instance so concurrent restores each get their own host-reachable
+	// socket. Pairs with the ExecLauncher's VsockBindTarget.
+	CanonicalVsockDir string
+	// GuestOomScoreAdj is written to each Firecracker child's oom_score_adj so
+	// a guest, never the daemon, is the kernel's first OOM victim under memory
+	// pressure. 0 leaves the inherited score; 1000 strictly prefers guests.
+	GuestOomScoreAdj int
+	// BootReadyTimeout bounds how long an invoker waits for a freshly booted or
+	// restored guest to announce readiness over its shim.
+	BootReadyTimeout time.Duration
+
 	// Workloads is the set of named workloads the daemon can dispatch, keyed
 	// by workload name. Empty when no workload table is configured.
 	Workloads map[string]Workload
@@ -77,14 +109,28 @@ type Config struct {
 // malformed (bad JSON or an unparseable duration string).
 func Load() (Config, error) {
 	c := Config{
-		ListenAddr:   getenvDefault("FC_INVOKE_LISTEN_ADDR", ":8080"),
-		Node:         os.Getenv("FC_INVOKE_NODE"),
-		Arch:         os.Getenv("FC_INVOKE_ARCH"),
-		SnapshotRoot: os.Getenv("FC_INVOKE_SNAPSHOT_ROOT"),
+		ListenAddr:        getenvDefault("FC_INVOKE_LISTEN_ADDR", ":8080"),
+		Node:              os.Getenv("FC_INVOKE_NODE"),
+		Arch:              os.Getenv("FC_INVOKE_ARCH"),
+		SnapshotRoot:      os.Getenv("FC_INVOKE_SNAPSHOT_ROOT"),
+		BinPath:           getenvDefault("FC_INVOKE_FIRECRACKER_BIN", "/opt/kata/bin/firecracker"),
+		KernelImagePath:   getenvDefault("FC_INVOKE_KERNEL_IMAGE", "/opt/kata/share/kata-containers/vmlinux.container"),
+		KernelBootArgs:    os.Getenv("FC_INVOKE_KERNEL_BOOT_ARGS"),
+		HarnessInit:       getenvDefault("FC_INVOKE_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
+		CanonicalVsockDir: getenvDefault("FC_INVOKE_CANONICAL_VSOCK_DIR", "/disks/nvme-02/fc-invoke-vsock"),
+		GuestOomScoreAdj:  atoiDefault("FC_INVOKE_GUEST_OOM_SCORE_ADJ", 1000),
+		BootReadyTimeout:  60 * time.Second,
 	}
 
+	if c.Node == "" {
+		c.Node = os.Getenv("NODE_NAME")
+	}
 	if c.Arch == "" {
 		c.Arch = runtime.GOARCH
+	}
+
+	if err := parseDuration("FC_INVOKE_BOOT_READY_TIMEOUT", &c.BootReadyTimeout); err != nil {
+		return Config{}, err
 	}
 
 	workloads, err := loadWorkloads()
@@ -167,4 +213,31 @@ func getenvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// atoiDefault returns the named environment variable parsed as an int, or def
+// when the variable is unset or unparseable.
+func atoiDefault(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// parseDuration overrides *dst with the named environment variable parsed as a
+// duration. An unset variable leaves *dst unchanged; a malformed value is an
+// error so misconfiguration fails loudly at startup.
+func parseDuration(key string, dst *time.Duration) error {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	*dst = d
+	return nil
 }
