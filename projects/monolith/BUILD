@@ -4042,6 +4042,15 @@ bdd_test(
     ],
 )
 
+bdd_test(
+    name = "goosecracker_sessions_test",
+    srcs = [
+        "goosecracker/tests/__init__.py",
+        "goosecracker/tests/conftest.py",
+        "goosecracker/tests/sessions_test.py",
+    ],
+)
+
 py_test(
     name = "goosecracker_tiers_test",
     srcs = ["goosecracker/tests/tiers_test.py"],

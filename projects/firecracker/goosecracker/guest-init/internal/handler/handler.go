@@ -5,15 +5,18 @@
 // caller-supplied model env while streaming each output line to a progress URL,
 // and return the captured output as an AgentResult.
 //
-// Scope is the cold e2e path (recipe + task -> goose -> result). Session resume,
-// artifact publish, and secret-swap are deliberately deferred; the Runner seam
-// and the AgentRequest fields (Session, GitRef, ...) leave room to slot them in
-// without reshaping the contract.
+// Scope covers the cold path (recipe + task -> goose -> result) and stateful
+// resume (ADR 026 Phase 2): when the caller ships a prior goose sessions.db the
+// handler hydrates it, runs `goose run --resume`, and exports the updated db back
+// so the next reply can resume again. Artifact publish is still deferred; the
+// Runner and SessionStore seams leave room to slot it in without reshaping the
+// contract.
 package handler
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -30,30 +33,35 @@ import (
 // disagree about where the workspace lives.
 const Workspace = "/workspace"
 
-// AgentRequest is the JSON body of an /invoke call. It carries everything a cold
-// goose run needs: the recipe + task, the model provider/base-url env the guest
-// cannot hardcode, an optional progress URL to stream to, and an optional git
-// mirror/ref to seed the workspace. Session is an opaque id used only for goose
-// session naming today (resume is deferred).
+// AgentRequest is the JSON body of an /invoke call. It carries everything a goose
+// run needs: the recipe + task, the model provider/base-url env the guest cannot
+// hardcode, an optional progress URL to stream to, an optional git mirror/ref to
+// seed the workspace, and (for ADR 026 Phase 2 resume) the prior goose sessions.db
+// plus a Resume flag. Session is the goose --name; on resume it selects which
+// session to replay.
 type AgentRequest struct {
 	Recipe      string            `json:"recipe"`      // goose recipe name (e.g. "agent")
 	Task        string            `json:"task"`        // task description fed to the recipe
-	Session     string            `json:"session"`     // opaque session id (goose --name; resume deferred)
+	Session     string            `json:"session"`     // goose --name (selects the session to resume)
 	Env         map[string]string `json:"env"`         // model provider/base-url/tier env to inject
 	ProgressURL string            `json:"progressUrl"` // optional: POST progress lines here mid-run
 	GitMirror   string            `json:"gitMirror"`   // optional: clone this mirror into the workspace
 	GitRef      string            `json:"gitRef"`      // optional: checkout ref after clone
+	Resume      bool              `json:"resume"`      // resume the prior session instead of a cold recipe run
+	SessionDb   string            `json:"sessionDb"`   // optional: base64 prior sessions.db to hydrate before resume
 }
 
 // AgentResult is the JSON body of a successful /invoke response. Status is "ok"
 // when goose ran to completion and "error" when the clone or goose run failed;
 // both are returned at HTTP 200, because a run that ran but failed is data, not
 // a transport error. Only an undecodable request body yields a handler error
-// (which the shim maps to 502).
+// (which the shim maps to 502). SessionDb carries the updated goose session back
+// (base64) so the orchestrator can persist it for the next resume.
 type AgentResult struct {
-	Status string `json:"status"`           // "ok" | "error"
-	Result string `json:"result,omitempty"` // goose output captured from the run
-	Error  string `json:"error,omitempty"`  // failure detail when Status == "error"
+	Status    string `json:"status"`              // "ok" | "error"
+	Result    string `json:"result,omitempty"`    // goose output captured from the run
+	Error     string `json:"error,omitempty"`     // failure detail when Status == "error"
+	SessionDb string `json:"sessionDb,omitempty"` // base64 updated sessions.db to persist
 }
 
 // Runner is the seam the handler uses to run goose and (optionally) clone a git
@@ -68,12 +76,44 @@ type Runner interface {
 	Clone(ctx context.Context, mirror, ref, dest string) error
 }
 
-// New returns a shim.Handler for a single cold goose run. It decodes an
-// AgentRequest, clones the git mirror (when set) into Workspace, builds the goose
-// command via harness.GooseCommand, and runs it through runner while streaming
-// each output line to the request's progress URL. The result is marshalled as an
+// SessionStore hydrates and exports goose's SQLite session db for stateful resume
+// (ADR 026 Phase 2). The production impl writes/reads the guest filesystem and
+// folds goose's WAL into the db before export; tests inject a fake. It is optional
+// (via WithSessionStore): without one the handler runs the cold path only.
+type SessionStore interface {
+	// Hydrate writes the prior sessions.db bytes into the guest so
+	// `goose run --resume` finds the earlier conversation.
+	Hydrate(ctx context.Context, data []byte) error
+	// Export returns the current sessions.db bytes (WAL folded in), or nil when no
+	// session exists (nothing to persist).
+	Export(ctx context.Context) ([]byte, error)
+}
+
+// Option configures the handler built by New.
+type Option func(*config)
+
+type config struct {
+	store SessionStore
+}
+
+// WithSessionStore installs the store used to hydrate/export goose's sessions.db
+// for resume (ADR 026 Phase 2). Without it the handler runs the cold path only.
+func WithSessionStore(s SessionStore) Option {
+	return func(c *config) { c.store = s }
+}
+
+// New returns a shim.Handler for a goose run. It decodes an AgentRequest, clones
+// the git mirror (when set) into Workspace, hydrates a prior goose session for
+// resume (when a store is configured and the request carries one), builds the
+// goose command via harness.GooseCommand, and runs it through runner while
+// streaming each output line to the request's progress URL. On success it exports
+// the updated sessions.db back in the result. The result is marshalled as an
 // AgentResult at HTTP 200; only an undecodable body returns an error.
-func New(runner Runner) shim.Handler {
+func New(runner Runner, opts ...Option) shim.Handler {
+	cfg := &config{}
+	for _, o := range opts {
+		o(cfg)
+	}
 	return func(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 		var req AgentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -89,10 +129,25 @@ func New(runner Runner) shim.Handler {
 			}
 		}
 
+		// Hydrate the prior goose session for resume (ADR 026 Phase 2). On any
+		// failure fall back to a cold run (resume=false): a corrupt or unreadable db
+		// must never fail the run, per the ADR's always-fall-back-to-cold rule.
+		resume := req.Resume
+		if cfg.store != nil && req.SessionDb != "" {
+			if raw, err := base64.StdEncoding.DecodeString(req.SessionDb); err != nil {
+				slog.Warn("handler: session db not decodable; cold run", "err", err)
+				resume = false
+			} else if err := cfg.store.Hydrate(ctx, raw); err != nil {
+				slog.Warn("handler: session hydrate failed; cold run", "err", err)
+				resume = false
+			}
+		}
+
 		argv := harness.GooseCommand(harness.Config{
 			Recipe:      req.Recipe,
 			Task:        req.Task,
 			SessionName: req.Session,
+			Resume:      resume,
 		})
 		if len(argv) == 0 {
 			return jsonResult(AgentResult{Status: "error", Error: "no recipe or task supplied"})
@@ -109,6 +164,17 @@ func New(runner Runner) shim.Handler {
 		if runErr != nil {
 			result.Status = "error"
 			result.Error = runErr.Error()
+			return jsonResult(result)
+		}
+
+		// Export the updated session so the next reply can resume it. Best-effort:
+		// an export failure does not fail a run that already succeeded.
+		if cfg.store != nil {
+			if db, err := cfg.store.Export(ctx); err != nil {
+				slog.Warn("handler: session export failed", "err", err)
+			} else if len(db) > 0 {
+				result.SessionDb = base64.StdEncoding.EncodeToString(db)
+			}
 		}
 		return jsonResult(result)
 	}

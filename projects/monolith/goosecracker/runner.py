@@ -22,6 +22,7 @@ at the end.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 
@@ -29,7 +30,7 @@ import httpx
 from sqlmodel import Session
 
 from app.db import get_engine
-from goosecracker import threads, tiers
+from goosecracker import sessions, threads, tiers
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,23 @@ def _mark_progress_done(session: str) -> None:
     mark_goosecracker_progress_done(session)
 
 
+async def _persist_session_db(session: str, session_db_b64: str | None) -> None:
+    """Persist the guest's returned sessions.db blob for a later resume.
+
+    Best-effort (ADR 026 Phase 2): decode the base64 blob the guest exported and
+    store it against the session. Any failure is logged and swallowed, because a
+    failed persist only costs the next reply a cold rebuild, never the current run.
+    """
+    if not session_db_b64:
+        return
+    try:
+        blob = base64.b64decode(session_db_b64)
+        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+        await asyncio.to_thread(sessions.save, session, blob)
+    except Exception:
+        logger.exception("goosecracker: failed to persist session db for %s", session)
+
+
 async def run_and_deliver(
     session: str,
     *,
@@ -113,6 +131,13 @@ async def run_and_deliver(
             raise RuntimeError("FC_INVOKE_URL is not configured")
 
         env = tiers.env_for_tier(tier)
+        # ADR 026 Phase 2: restore the thread's persisted goose session so this run
+        # resumes the prior conversation (Model A) instead of cold-rebuilding
+        # (Model B). Resume is derived from the blob's presence, not a stored flag:
+        # a stored db means resume, its absence (first run) means cold. The guest
+        # falls back to cold if the db fails to hydrate/resume.
+        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+        session_db = await asyncio.to_thread(sessions.load, session)
         payload = {
             "recipe": recipe,
             "task": task,
@@ -121,6 +146,8 @@ async def run_and_deliver(
             "progressUrl": _progress_url(session),
             "gitMirror": git_mirror,
             "gitRef": git_ref,
+            "resume": session_db is not None,
+            "sessionDb": base64.b64encode(session_db).decode() if session_db else "",
         }
         timeout = httpx.Timeout(_READ_TIMEOUT, connect=_CONNECT_TIMEOUT)
         url = f"{FC_INVOKE_URL}/invoke/agent/{session}"
@@ -141,6 +168,10 @@ async def run_and_deliver(
         status = data.get("status")
         if status == "ok":
             result = data.get("result", "") or "(no output)"
+            # Persist the updated goose session so the next reply resumes it
+            # (ADR 026 Phase 2). Best-effort: a persist failure must not fail the
+            # run (the next reply just cold-rebuilds).
+            await _persist_session_db(session, data.get("sessionDb"))
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
             await asyncio.to_thread(threads.mark_completed, session, result)
             await _deliver(discord_thread, _truncate(f"Artifact ready.\n\n{result}"))

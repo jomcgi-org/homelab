@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -72,6 +73,25 @@ func (s *progressSink) got() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.chunks...)
+}
+
+// fakeSessionStore is a SessionStore double: it records the bytes handed to
+// Hydrate and returns canned bytes/errors from Hydrate/Export.
+type fakeSessionStore struct {
+	hydrated   []byte
+	hydrateErr error
+
+	exportData []byte
+	exportErr  error
+}
+
+func (f *fakeSessionStore) Hydrate(_ context.Context, data []byte) error {
+	f.hydrated = data
+	return f.hydrateErr // nosemgrep: no-bare-error-return
+}
+
+func (f *fakeSessionStore) Export(_ context.Context) ([]byte, error) {
+	return f.exportData, f.exportErr
 }
 
 func invoke(t *testing.T, h shim.Handler, body string) (*shim.Response, error) {
@@ -205,6 +225,122 @@ func TestUndecodableBodyReturnsHandlerError(t *testing.T) {
 	}
 	if resp != nil {
 		t.Errorf("want nil response on error, got %+v", resp)
+	}
+}
+
+func TestResumeHydratesSessionAndExportsUpdatedDb(t *testing.T) {
+	runner := &fakeRunner{out: "resumed answer"}
+	store := &fakeSessionStore{exportData: []byte("updated-db")}
+	h := New(runner, WithSessionStore(store))
+
+	req := AgentRequest{
+		Recipe:    "agent",
+		Task:      "make it bigger",
+		Session:   "sess-9",
+		Resume:    true,
+		SessionDb: base64.StdEncoding.EncodeToString([]byte("prior-db")),
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if res.Status != "ok" {
+		t.Fatalf("status = %q, want ok (err=%q)", res.Status, res.Error)
+	}
+
+	// prior db hydrated into the guest.
+	if string(store.hydrated) != "prior-db" {
+		t.Errorf("hydrated = %q, want %q", store.hydrated, "prior-db")
+	}
+	// argv resumes the named session (no --recipe).
+	argv := strings.Join(runner.gotArgv, " ")
+	if !strings.Contains(argv, "--name sess-9 --resume") {
+		t.Errorf("argv %q missing resume", argv)
+	}
+	if strings.Contains(argv, "--recipe") {
+		t.Errorf("argv %q should not re-pass --recipe on resume", argv)
+	}
+	// updated db exported back.
+	wantDb := base64.StdEncoding.EncodeToString([]byte("updated-db"))
+	if res.SessionDb != wantDb {
+		t.Errorf("result SessionDb = %q, want %q", res.SessionDb, wantDb)
+	}
+}
+
+func TestHydrateFailureFallsBackToColdRun(t *testing.T) {
+	runner := &fakeRunner{out: "cold answer"}
+	store := &fakeSessionStore{hydrateErr: io.ErrUnexpectedEOF}
+	h := New(runner, WithSessionStore(store))
+
+	req := AgentRequest{
+		Recipe:    "agent",
+		Task:      "t",
+		Session:   "sess-10",
+		Resume:    true,
+		SessionDb: base64.StdEncoding.EncodeToString([]byte("corrupt")),
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res := decodeResult(t, resp); res.Status != "ok" {
+		t.Fatalf("status = %q, want ok (a hydrate failure must fall back, not fail)", res.Status)
+	}
+	// falls back to a cold recipe run, not a resume.
+	argv := strings.Join(runner.gotArgv, " ")
+	if strings.Contains(argv, "--resume") {
+		t.Errorf("argv %q should fall back to cold (no --resume) on hydrate failure", argv)
+	}
+	if !strings.Contains(argv, "--recipe agent") {
+		t.Errorf("argv %q missing cold recipe run", argv)
+	}
+}
+
+func TestColdRunExportsFirstSession(t *testing.T) {
+	runner := &fakeRunner{out: "first answer"}
+	store := &fakeSessionStore{exportData: []byte("first-db")}
+	h := New(runner, WithSessionStore(store))
+
+	req := AgentRequest{Recipe: "agent", Task: "first", Session: "sess-11"}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if store.hydrated != nil {
+		t.Errorf("cold run should not hydrate, got %q", store.hydrated)
+	}
+	wantDb := base64.StdEncoding.EncodeToString([]byte("first-db"))
+	if res.SessionDb != wantDb {
+		t.Errorf("result SessionDb = %q, want %q (first run must persist its session)", res.SessionDb, wantDb)
+	}
+}
+
+func TestFailedRunDoesNotExportSession(t *testing.T) {
+	runner := &fakeRunner{out: "partial", runErr: io.ErrClosedPipe}
+	store := &fakeSessionStore{exportData: []byte("should-not-be-read")}
+	h := New(runner, WithSessionStore(store))
+
+	req := AgentRequest{Recipe: "agent", Task: "t", Session: "sess-12"}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if res.Status != "error" {
+		t.Fatalf("status = %q, want error", res.Status)
+	}
+	if res.SessionDb != "" {
+		t.Errorf("a failed run should not export a session, got %q", res.SessionDb)
 	}
 }
 

@@ -1,4 +1,4 @@
-h1:QROGm4QgWgz8FqVX99d4+skmtwTMooqQrrYaMTJ+ZX4=
+h1:qFioJN4yd/QxVzlIXWuPRZkv2E+TJzOdRA3GwKzinOc=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -76,3 +76,4 @@ h1:QROGm4QgWgz8FqVX99d4+skmtwTMooqQrrYaMTJ+ZX4=
 20260630150000_campsites_schema.sql h1:uaakw8ShuM2KGnwOStR23Y1uJPWB8FUkTWQ+imSm0j4=
 20260630150100_campsites_public_reader_grant.sql h1:vXU+Rc+U8htY+yjBb5whSk5dYKLp3mzXa172GxkAah8=
 20260630160000_agent_threads_run_ledger.sql h1:CefVRWBVKiOubsPri1QExT9efKAcYvnPhFSLI9Nu0Ew=
+20260701120000_agent_threads_session_db.sql h1:4/JGaQPLywa9h/aIn4arv10pfBdwVQMX9ZhzvqEdgi8=
