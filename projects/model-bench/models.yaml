@@ -1,63 +1,39 @@
-# Model ids must match OpenRouter /models slugs; verify before a real run.
-# Anchors define the qualification bar: a budget candidate must reach anchor
-# pass@1 on a class at materially lower cost to qualify for that class.
-#
-# Prices are 2026-07 snapshots ($/M tokens, input -> output) for reference only;
-# the harness pulls live pricing from OpenRouter /models at run time. Candidate
-# selection is grounded in a cited research pass (mid-2026 coding + 4090 landscape).
 models:
-  # --- Anchors: bar = Sonnet, ceiling = Opus ---
-  - id: anthropic/claude-opus-4.8 # 5 -> 25  quality ceiling
+  - id: anthropic/claude-opus-4.8
     role: anchor
     status: active
-
-  - id: anthropic/claude-sonnet-4.6 # 3 -> 15  qualification bar
+  - id: anthropic/claude-sonnet-4.6
     role: anchor
     status: active
-
-  # --- Tier A: open coders self-hostable on a single 24GB 4090 at int4 (the prize:
-  # test on OpenRouter, self-host the winner on node-4 for free) ---
-  - id: qwen/qwen3.6-27b # 0.29 -> 2.4  dense 27B, ~17GB Q4, #1 4090 coder (77.2 SWE-bench).
-    status: active #              NOTE: the REAL dense 27B, distinct from node-4's 35B-A3B alias.
-
-  - id: qwen/qwen3.6-35b-a3b # 0.14 -> 1.0  MoE 35B/3B, node-4's current model (73.4 SWE-bench).
+  - id: qwen/qwen3.6-27b
     status: active
-
-  - id: qwen/qwen3-coder-30b-a3b-instruct # 0.07 -> 0.27  Apache coder MoE, best tool-use ergonomics.
+  - id: qwen/qwen3.6-35b-a3b
     status: active
-
-  - id: mistralai/devstral-2512 # 0.40 -> 2.0  24B Apache coding model, best 32k+ context headroom.
+  - id: qwen/qwen3-coder-30b-a3b-instruct
     status: active
-
-  - id: qwen/qwen-2.5-coder-32b-instruct # 0.66 -> 1.0  proven dense-32B coder baseline (older).
+  - id: mistralai/devstral-2512
     status: active
-
-  - id: google/gemma-4-31b-it # 0.12 -> 0.35  dense 31B, 4090-fit (coding aptitude unverified).
+  - id: qwen/qwen-2.5-coder-32b-instruct
+    status: retired
+    retired_reason:
+      "0/15 agentic: OpenRouter provider 4xxes on tool-calling requests,
+      cannot participate"
+    retired_date: "2026-07-01"
+  - id: google/gemma-4-31b-it
     status: active
-
-  - id: google/gemma-4-26b-a4b-it # 0.06 -> 0.33  MoE 26B/4B, 4090-fit (coding aptitude unverified).
+  - id: google/gemma-4-26b-a4b-it
     status: active
-
-  # --- Tier B: cheap cloud coders (too big to self-host on a 4090) ---
-  - id: deepseek/deepseek-v4-flash # 0.10 -> 0.20  best coding-per-dollar (79.0 SWE-bench, 284B/13B).
+  - id: deepseek/deepseek-v4-flash
     status: active
-
-  - id: deepseek/deepseek-v4-pro # 0.44 -> 0.87  cheapest high-quality API coder (80.6 SWE-bench).
+  - id: deepseek/deepseek-v4-pro
     status: active
-
-  - id: qwen/qwen3-coder-next # 0.11 -> 0.80  strong open coder (71.3 SWE-bench), 80B so cloud-only.
+  - id: qwen/qwen3-coder-next
     status: active
-
-  - id: z-ai/glm-4.7 # 0.40 -> 1.75  GLM mid-tier coder.
+  - id: z-ai/glm-4.7
     status: active
-
-  - id: z-ai/glm-5.2 # 0.93 -> 3.0  #1 open-weight on the Artificial Analysis Intelligence Index.
+  - id: z-ai/glm-5.2
     status: active
-
-  # --- Closed-model sanity check (pricey for a "flash"; coding lead was unverified) ---
-  - id: google/gemini-3.5-flash # 1.5 -> 9.0
+  - id: google/gemini-3.5-flash
     status: active
-
-  # --- Free lane (zero cost, rate-limited) ---
-  - id: qwen/qwen3-coder:free # 0 -> 0
+  - id: qwen/qwen3-coder:free
     status: experimental

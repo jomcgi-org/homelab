@@ -23,11 +23,15 @@ class AgentConfig(BaseModel):
 
     max_turns caps the tool-use loop; max_tokens caps a single completion. A null
     max_tokens falls back to the model's own params.max_tokens so a task need not
-    restate it. These values feed the cache key so bumping a budget re-runs the cell.
+    restate it. exec grants the sandboxed `run` shell tool (for tasks where the model
+    must set up its own toolchain, e.g. `go mod tidy` + `go test`); it is off by default
+    so the file-only tasks keep their calibrated behaviour. These values feed the cache
+    key so bumping a budget re-runs the cell.
     """
 
     max_turns: int = 20
     max_tokens: int | None = None
+    exec: bool = False
 
 
 class ModelParams(BaseModel):

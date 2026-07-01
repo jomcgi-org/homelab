@@ -75,11 +75,42 @@ TOOLS = [
     },
 ]
 
+# Opt-in shell tool (task.agent.exec). For tasks where the model must stand up its own
+# toolchain, e.g. initialise a Go module and run its tests. Off by default so the
+# file-only tasks keep their calibrated behaviour.
+RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run",
+        "description": (
+            "Run a shell command in the repo root; returns its combined stdout+stderr "
+            "and exit code. Use for toolchain setup and tests, for example "
+            "`go mod init <module>`, `go mod tidy`, and `go test ./...`. Runs in a "
+            "scrubbed sandbox with no cluster credentials; network access is available "
+            "so dependency fetches work."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to run.",
+                }
+            },
+            "required": ["command"],
+        },
+    },
+}
+RUN_TIMEOUT_S = 240  # go mod tidy + go test can be slow on the first dependency fetch.
+MAX_RUN_OUTPUT = 20_000
+
 AGENT_SYSTEM = (
     "You are a software engineer working inside a real code repository. Use the tools "
     "to explore the files, then make the change the task asks for by writing complete "
     "updated file contents with write_file. Keep changes minimal and consistent with "
-    "the surrounding code. When the change is complete, call done."
+    "the surrounding code. If a `run` tool is available you may execute shell commands "
+    "to set up a toolchain and run the tests yourself before finishing. When the change "
+    "is complete, call done."
 )
 
 
@@ -96,6 +127,16 @@ def _safe_path(workdir: Path, rel: str) -> Path | None:
 def _execute_tool(name: str, args: dict, workdir: Path) -> str:
     if name == "done":
         return "acknowledged"
+    if name == "run":
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return "error: command must be a non-empty string"
+        # Reuse the verifier sandbox: scrubbed env (no creds), temp cwd, hard timeout.
+        from bench.verifiers.sandbox import run_sandboxed
+
+        res = run_sandboxed(["sh", "-c", command], cwd=workdir, timeout_s=RUN_TIMEOUT_S)
+        out = (res.stdout or "") + (res.stderr or "")
+        return f"exit {res.rc}\n{out[:MAX_RUN_OUTPUT]}"
     rel = args.get("path", "")
     target = _safe_path(workdir, rel)
     if target is None:
@@ -136,14 +177,17 @@ async def run_agent_cell(
     cost_fn,
     max_turns: int = 20,
     max_tokens: int = 8192,
+    allow_exec: bool = False,
 ) -> ResultCell:
     """Run one agentic (task, model) cell and grade the resulting workdir.
 
     chat: async (*, model, messages, tools, temperature, max_tokens) -> ChatResult.
     verify: (workdir, args) -> VerifyResult, run once after the agent finishes.
+    allow_exec: expose the sandboxed `run` shell tool (task.agent.exec).
     """
     workdir = Path(tempfile.mkdtemp())
     shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
+    tools = TOOLS + [RUN_TOOL] if allow_exec else TOOLS
     messages: list[dict] = [
         {"role": "system", "content": AGENT_SYSTEM},
         {"role": "user", "content": task_prompt},
@@ -157,7 +201,7 @@ async def run_agent_cell(
             res = await chat(
                 model=model_id,
                 messages=messages,
-                tools=TOOLS,
+                tools=tools,
                 temperature=0.0,
                 max_tokens=max_tokens,
             )

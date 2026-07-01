@@ -155,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_drop.add_argument(
         "model", help="Model id to retire (e.g. qwen/qwen-2.5-coder-32b-instruct)"
     )
+    p_drop.add_argument("--models", default="models.yaml", help="Path to models.yaml")
     p_drop.add_argument("--reason", required=True, help="Short retirement reason")
 
     # prune
@@ -162,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prune.add_argument(
         "--retired", action="store_true", help="(reserved, currently unused)"
     )
+    p_prune.add_argument("--models", default="models.yaml", help="Path to models.yaml")
     p_prune.add_argument(
         "--results",
         default=_DEFAULT_RESULTS,
@@ -312,6 +314,7 @@ async def _run(args) -> None:
             cost_fn=lambda p, c: client.cost_usd(model.id, p, c),
             max_turns=task.agent.max_turns,
             max_tokens=task.agent.max_tokens or model.params.max_tokens,
+            allow_exec=task.agent.exec,
         )
 
     async def _judge_cell(task: TaskSpec, model, key: str) -> ResultCell | None:
@@ -392,7 +395,10 @@ async def _run(args) -> None:
             # temperature 0 (deterministic benchmarking), so model.params.temperature
             # is not an input and must not spuriously invalidate the cache.
             agent_max_tokens = task.agent.max_tokens or model.params.max_tokens
-            params_repr = f"agentic:{agent_max_tokens}:turns={task.agent.max_turns}"
+            params_repr = (
+                f"agentic:{agent_max_tokens}:turns={task.agent.max_turns}"
+                f":exec={task.agent.exec}"
+            )
         else:
             params_repr = f"{model.params.temperature}:{model.params.max_tokens}"
         src_hash = (
@@ -588,9 +594,16 @@ def _report(args) -> None:
     current_agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
     tier_of = {t.id: t.tier for t in tasks}
     FLOOR_TIERS = {"easy", "standard"}
+    # Retired models are excluded from the leaderboard even if their cells linger in the
+    # durable cache, so `bench drop` alone removes a model without needing a cell prune.
+    retired_ids = {m.id for m in reg if m.status == "retired"}
     agentic_groups: dict[str, list[ResultCell]] = {}
     for cell in cells:
-        if cell.turns is not None and cell.task_id in current_agentic_ids:
+        if (
+            cell.turns is not None
+            and cell.task_id in current_agentic_ids
+            and cell.model_id not in retired_ids
+        ):
             agentic_groups.setdefault(cell.model_id, []).append(cell)
     agentic: dict[str, dict] = {}
     for model_id, group in agentic_groups.items():
