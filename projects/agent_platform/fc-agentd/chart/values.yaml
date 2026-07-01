@@ -6,12 +6,12 @@ image:
   tag: latest
   pullPolicy: Always
 
-# The harness image (projects/agent_platform/harness) the base rootfs is built
+# The harness image (projects/firecracker/goosecracker/guest) the base rootfs is built
 # from. The base-rootfs initContainer exports this image and bakes it into
 # firecracker.baseRootfsPath, so the base always matches the deployed harness
 # (the vsock-dialing fc-agent-init). Bazel pins repository + tag at build time.
 harnessImage:
-  repository: ghcr.io/jomcgi/homelab/projects/agent_platform/harness
+  repository: ghcr.io/jomcgi/homelab/projects/firecracker/goosecracker/guest
   tag: latest
 
 # Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build the

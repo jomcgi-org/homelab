@@ -6,8 +6,8 @@ go_library(
         "dial_linux.go",
         "dial_other.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/vsockdial",
-    visibility = ["//projects/agent_platform/fc-agent-init:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/vsockdial",
+    visibility = ["//projects/firecracker/goosecracker/guest-init:__subpackages__"],
     deps = select({
         "@rules_go//go/platform:android": [
             "@org_golang_x_sys//unix",

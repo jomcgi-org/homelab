@@ -8,7 +8,7 @@ helm_chart(
     name = "chart",
     images = {
         "image": "//projects/agent_platform/fc-agentd:image.info",
-        "harnessImage": "//projects/agent_platform/harness:image.info",
+        "harnessImage": "//projects/firecracker/goosecracker/guest:image.info",
         "rootfsBuilder.image": "//projects/agent_platform/fc-agentd/rootfs-builder:image.info",
         "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
     },
