@@ -25,3 +25,16 @@ def test_compile_python_detects_syntax_error(tmp_path):
     v = get_verifier("py-compile")
     r = v(tmp_path, {"file": "m.py"})
     assert not r.passed and "SyntaxError" in r.feedback
+
+
+def test_command_write_files_drops_hidden_test(tmp_path):
+    # write_files drops a hidden grading file into the workdir before the command runs.
+    v = get_verifier("command")
+    r = v(
+        tmp_path,
+        {
+            "write_files": {"check.py": "open('marker','w').write('x')\n"},
+            "cmd": ["python3", "check.py"],
+        },
+    )
+    assert r.passed and (tmp_path / "marker").exists()

@@ -145,6 +145,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="List models and their status")
     p_list.add_argument("--models", default="models.yaml")
 
+    # snapshot
+    p_snap = sub.add_parser(
+        "snapshot",
+        help="Materialize task fixtures from a pinned git commit (real repo state)",
+    )
+    p_snap.add_argument("--tasks", default="tasks", help="Path to tasks directory")
+    p_snap.add_argument(
+        "--repo",
+        default=str(Path.home() / "repos" / "homelab"),
+        help="Path to the source git repo",
+    )
+    p_snap.add_argument(
+        "task", nargs="?", help="Only snapshot this task id (default: all)"
+    )
+
     return parser
 
 
@@ -491,6 +506,54 @@ def _prune_stale(args) -> None:
     )
 
 
+def _snapshot(args) -> None:
+    """Materialize task fixtures from a pinned git commit.
+
+    A task.yaml may carry a `snapshot: {commit, paths}` block. This extracts those
+    paths from the source repo at that commit into the task's fixture/ directory, so
+    fixtures are real repo state and can be regenerated or bumped to a newer commit
+    later by editing the commit and re-running snapshot.
+    """
+    import subprocess
+
+    repo = Path(args.repo)
+    tasks_dir = Path(args.tasks)
+    for subdir in sorted(tasks_dir.iterdir()):
+        task_file = subdir / "task.yaml"
+        if not task_file.exists():
+            continue
+        mapping = _load_yaml_mapping(task_file)
+        if args.task and mapping.get("id") != args.task:
+            continue
+        snap = mapping.get("snapshot")
+        if not isinstance(snap, dict):
+            continue
+        commit, paths = snap.get("commit"), snap.get("paths", [])
+        if not commit or not paths:
+            print(f"{mapping.get('id')}: snapshot needs commit + paths; skipping")
+            continue
+        fixture = subdir / "fixture"
+        if fixture.exists():
+            shutil.rmtree(fixture)
+        fixture.mkdir(parents=True)
+        # git archive <commit> -- <paths> | tar -x -C fixture
+        archive = subprocess.run(
+            ["git", "-C", str(repo), "archive", commit, "--", *paths],
+            capture_output=True,
+            check=True,
+            timeout=120,
+        )
+        tar_cmd = ["tar", "-x", "-C", str(fixture)]
+        strip = snap.get("strip_components")
+        if strip:
+            tar_cmd.append(f"--strip-components={strip}")
+        subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
+        n = sum(1 for _ in fixture.rglob("*") if _.is_file())
+        print(
+            f"{mapping.get('id')}: snapshotted {n} file(s) from {commit[:12]} into {fixture}"
+        )
+
+
 def _list(args) -> None:
     """Print each model: id, status, role."""
     reg = load_registry(Path(args.models))
@@ -514,5 +577,7 @@ def main(argv=None) -> None:
         _prune_stale(args)
     elif args.command == "list":
         _list(args)
+    elif args.command == "snapshot":
+        _snapshot(args)
     else:
         parser.print_help()
