@@ -113,10 +113,15 @@
       const cx = xScale(p.x);
       const cy = yScale(p.y);
       const leftSide = cx > rightThreshold; // near right edge -> label to the left
-      return { ...p, cx, cy, leftSide, ly: cy };
+      // Only label the spread-out, decision-relevant points: the frontier, the Claude
+      // anchors, and any model below a perfect pass rate. The dense band of 100%-pass
+      // models would collide into mush if all labelled; the ranked table below (and the
+      // hover title) identifies them instead.
+      const show = frontierIds.has(p.id) || p.anchor || p.y < 0.999;
+      return { ...p, cx, cy, leftSide, ly: cy, show };
     });
     for (const side of [true, false]) {
-      const grp = rows.filter((r) => r.leftSide === side).sort((a, b) => a.ly - b.ly);
+      const grp = rows.filter((r) => r.show && r.leftSide === side).sort((a, b) => a.ly - b.ly);
       for (let i = 1; i < grp.length; i++) {
         if (grp[i].ly - grp[i - 1].ly < 13) grp[i].ly = grp[i - 1].ly + 13;
       }
@@ -177,19 +182,19 @@
       {#each laidOut as p (p.id)}
         <g class="pt" class:on-frontier={frontierIds.has(p.id)}>
           <title>{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% pass</title>
-          {#if p.leftSide}
-            <line class="lead" x1={p.cx} y1={p.cy} x2={p.cx - 10} y2={p.ly} />
-          {:else}
-            <line class="lead" x1={p.cx} y1={p.cy} x2={p.cx + 10} y2={p.ly} />
+          {#if p.show}
+            <line class="lead" x1={p.cx} y1={p.cy} x2={p.leftSide ? p.cx - 10 : p.cx + 10} y2={p.ly} />
           {/if}
           <circle class="mark" cx={p.cx} cy={p.cy} r={p.anchor ? 6.5 : 5.5} style="fill:{provColor(p.id)}" class:anchor={p.anchor} />
-          <text
-            class="lbl"
-            x={p.leftSide ? p.cx - 13 : p.cx + 13}
-            y={p.ly + 3}
-            text-anchor={p.leftSide ? "end" : "start"}
-            style="fill:{provColor(p.id)}">{p.name}{p.anchor ? " (anchor)" : ""}</text
-          >
+          {#if p.show}
+            <text
+              class="lbl"
+              x={p.leftSide ? p.cx - 13 : p.cx + 13}
+              y={p.ly + 3}
+              text-anchor={p.leftSide ? "end" : "start"}
+              style="fill:{provColor(p.id)}">{p.name}{p.anchor ? " (anchor)" : ""}</text
+            >
+          {/if}
         </g>
       {/each}
     </svg>
