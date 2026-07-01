@@ -53,37 +53,43 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- end }}
-      {{- if and .Values.firecracker.enabled .Values.workloads.semgrep }}
-      # Build the semgrep workload's base rootfs in-cluster from its pinned guest
-      # image, so the node never needs a manual sudo rootfs placement. Idempotent:
-      # rebuilds only when the guest image ref changes. PR2 builds the single
-      # semgrep workload; a per-workload loop is a future enhancement.
+      {{- if and .Values.firecracker.enabled (or .Values.workloads.semgrep .Values.workloads.agent) }}
+      # Build each workload's base rootfs in-cluster from its pinned guest image,
+      # so the node never needs a manual sudo rootfs placement. One builder per
+      # workload that declares a top-level `<name>.guestImage` block (Bazel pins
+      # its repository:tag from the guest image's .info provider); the builder
+      # bakes that guest's filesystem into the workload's rootfsPath. Idempotent:
+      # each rebuilds only when its guest image ref changes. Init containers run
+      # sequentially and share /work, which each build clears before use.
       initContainers:
-        - name: build-semgrep-rootfs
-          image: "{{ .Values.rootfsBuilder.image.repository }}:{{ .Values.rootfsBuilder.image.tag }}"
+        {{- range $name, $wl := .Values.workloads }}
+        {{- $top := index $.Values $name }}
+        {{- if and $top $top.guestImage $top.guestImage.repository }}
+        - name: build-{{ $name }}-rootfs
+          image: "{{ $.Values.rootfsBuilder.image.repository }}:{{ $.Values.rootfsBuilder.image.tag }}"
           command: ["/bin/bash", "/scripts/build-base-rootfs.sh"]
           env:
             - name: GUEST_IMAGE
-              value: "{{ .Values.semgrep.guestImage.repository }}:{{ .Values.semgrep.guestImage.tag }}"
+              value: "{{ $top.guestImage.repository }}:{{ $top.guestImage.tag }}"
             - name: BASE_ROOTFS_PATH
-              value: {{ .Values.workloads.semgrep.rootfsPath | quote }}
+              value: {{ $wl.rootfsPath | quote }}
             - name: ROOTFS_SIZE
-              value: {{ .Values.rootfsBuilder.rootfsSize | quote }}
-            {{- if .Values.imagePullSecret.enabled }}
-            # crane reads $DOCKER_CONFIG/config.json to pull the private
-            # semgrep-guest image (proprietary engine + Pro rules).
+              value: {{ $.Values.rootfsBuilder.rootfsSize | quote }}
+            {{- if $.Values.imagePullSecret.enabled }}
+            # crane reads $DOCKER_CONFIG/config.json to pull the private guest
+            # images (proprietary engines / rules).
             - name: DOCKER_CONFIG
               value: /ghcr
             {{- end }}
           volumeMounts:
             - name: nvme
-              mountPath: {{ .Values.firecracker.nvmeRoot }}
+              mountPath: {{ $.Values.firecracker.nvmeRoot }}
             - name: rootfs-builder-script
               mountPath: /scripts
               readOnly: true
             - name: rootfs-builder-work
               mountPath: /work
-            {{- if .Values.imagePullSecret.enabled }}
+            {{- if $.Values.imagePullSecret.enabled }}
             - name: ghcr-creds
               mountPath: /ghcr
               readOnly: true
@@ -94,6 +100,8 @@ spec:
               memory: 512Mi
             limits:
               memory: 512Mi
+        {{- end }}
+        {{- end }}
       {{- end }}
       containers:
         - name: fc-invoke
@@ -228,7 +236,7 @@ spec:
           hostPath:
             path: {{ .Values.firecracker.nvmeRoot }}
             type: Directory
-        {{- if .Values.workloads.semgrep }}
+        {{- if or .Values.workloads.semgrep .Values.workloads.agent }}
         - name: rootfs-builder-script
           configMap:
             name: {{ include "fc-invoke.fullname" . }}-rootfs-builder

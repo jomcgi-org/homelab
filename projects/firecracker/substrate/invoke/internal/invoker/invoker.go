@@ -11,6 +11,8 @@ package invoker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -230,7 +232,6 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 	if base, gen, ok := inv.currentBase(); ok {
 		warmSpec := substrate.ClaimSpec{
 			Arch:            inv.cfg.Arch,
-			ThreadID:        session,
 			BaseSnapshotRef: base,
 		}
 		resp, cleanup, err := inv.claimInvoke(ctx, warmSpec, session, body, true)
@@ -253,8 +254,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 	}
 
 	coldSpec := substrate.ClaimSpec{
-		Arch:     inv.cfg.Arch,
-		ThreadID: session,
+		Arch: inv.cfg.Arch,
 	}
 	resp, cleanup, err := inv.claimInvoke(ctx, coldSpec, session, body, false)
 	if err != nil {
@@ -277,6 +277,18 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 // A Claim or WaitReady failure returns *GuestUnavailableError. A RoundTrip
 // failure is returned as-is (the caller decides the 502/503 mapping).
 func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader, warm bool) (*http.Response, func(), error) {
+	// Each claim gets a fresh single-use microVM, so the host bundle + vsock
+	// socket identity MUST be unique per claim, never the logical session. The
+	// egress listen socket is derived from VsockUDSPath(threadID) as
+	// "<uds>_<EgressPort>" (see internal/egress); if two turns of one session
+	// (a sessioned workload reuses the same session id across turns) shared a
+	// threadID they would share that socket path, letting a finishing
+	// forwarder's deferred os.Remove race the next turn's Listen. A per-claim
+	// threadID keeps the two turns on disjoint paths, so that race cannot occur.
+	// The session still reaches the guest via the /invoke/{session} path below,
+	// which is where session continuity actually lives; the host thread id is
+	// purely a per-VM bundle name.
+	spec.ThreadID = newThreadID()
 	h, err := inv.driver.Claim(ctx, spec)
 	if err != nil {
 		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
@@ -424,6 +436,16 @@ func (inv *Invoker) discard(h substrate.Handle) {
 	if err := inv.driver.RemoveBundle(h.ThreadID); err != nil {
 		inv.logger.Warn("invoker: remove guest bundle", "thread", h.ThreadID, "err", err)
 	}
+}
+
+// newThreadID returns a per-invocation unique host thread id. It names the
+// microVM's on-disk bundle and, transitively, its egress listen socket; making
+// it unique per claim (rather than reusing the session) is what keeps two turns
+// of one sessioned workload from colliding on the same egress socket path.
+func newThreadID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "inv-" + hex.EncodeToString(b[:])
 }
 
 // currentBase returns the warm base ref, the build generation it was taken
