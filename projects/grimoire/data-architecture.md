@@ -1,5 +1,7 @@
 # Grimoire - Data Architecture
 
+> **Storage superseded by [ADR 011](../../docs/decisions/services/011-grimoire-hot-tier-schema.md).** The persistence model below (polymorphic `Entity` + `jsonb properties`, standalone Postgres) predates the Loom architecture. Grimoire now runs its hot tier in the monolith's Postgres with a typed class-table-inheritance schema (real columns for queryable scalars, `jsonb` only for irregular nested payloads) checked out from Loom. The extraction/resolution/chunking/embedding pipeline design below still stands; only the storage shape changed. See [loom-mapping.md](loom-mapping.md).
+
 ## Design Decisions
 
 - **No spaCy NER, no heuristic classifier** - fine-tuning NER needs 2-5K labeled spans and still won't generalize to homebrew. Heuristics are premature before we've seen enough extraction variety. Gemini Flash across 1000s of pages costs cents. Send all section-grouped chunks to Flash for entity identification, structured extraction, and relationship extraction in a single pass. Heuristics can be derived later from Flash output patterns if needed for optimization.

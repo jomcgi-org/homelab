@@ -377,8 +377,10 @@ extra machinery.
 ## 9. Open implementation decisions
 
 The Loom-side questions (FGAC priority, per-session atomic commit) are closed by
-the dataset-partition model. What remains is Grimoire-side and blocks §7.1, not
-Loom:
+the dataset-partition model. The hot-tier schema decisions (monolith Postgres,
+grant-overlay visibility, typed class-table-inheritance) are recorded in
+[ADR 011](../../docs/decisions/services/011-grimoire-hot-tier-schema.md). What
+remains is Grimoire-side and blocks §7.1, not Loom:
 
 - **Nested values** (§3.1): struct columns vs child ObjectTypes for
   `actions[]` / `ability_scores{}`.
