@@ -821,15 +821,34 @@
     line-height: 1.4;
   }
 
-  /* Mobile: list + detail become bottom sheets; the map still owns the top of
-     the screen (map-first). A selected park's detail takes over the sheet space,
-     so the list hides while it is open to avoid stacking two bottom sheets. */
+  /* Mobile: slim top bar, full-width bottom list bar that is always visible,
+     legend behind a pop-out chip, detail sheet clearing the bar from above. */
   @media (max-width: 768px) {
+    /* Slim single-line top bar: drop the verbose crumb-note, compact padding,
+       switch to row layout so only one line of breadcrumb is shown. */
     .crumb-card {
       top: 12px;
       left: 12px;
+      min-height: auto;
+      padding: 6px 10px;
+      flex-direction: row;
+      align-items: center;
     }
 
+    .crumb {
+      flex-wrap: nowrap;
+      font-size: 11px;
+      overflow: hidden;
+    }
+
+    /* Hide the "As of HH:MM UTC. Green = open AND clear skies." note on mobile.
+       The same context is available in the legend pop-out and on desktop. */
+    .crumb-note {
+      display: none;
+    }
+
+    /* Full-width bottom sheet. z-index 30 means the bar always wins over the
+       legend pop-out (z-index 10 inside map-wrap) and the detail (z-index 20). */
     .list-panel {
       top: auto;
       bottom: 0;
@@ -839,18 +858,33 @@
       max-width: none;
       max-height: 46vh;
       border-width: 2px 0 0;
+      z-index: 30;
     }
 
+    /* Collapsed bar: exactly 48px so legend chip, legend panel, and detail sheet
+       can use a known offset to clear it (bottom: 56px for chip, bottom: 96px
+       for legend, bottom: 48px for detail). */
     .list-panel.collapsed {
       bottom: 0;
+      height: 48px;
+      min-height: 48px;
+      max-height: 48px;
+      box-sizing: border-box;
+      overflow: hidden;
     }
 
+    /* When a park is selected: keep the 48px collapsed bar visible at the bottom
+       rather than hiding the whole panel. The detail sheet clears it from above
+       (bottom: 48px) so both are simultaneously visible. */
     .has-selection .list-panel {
-      display: none;
+      display: flex;
+      max-height: 48px;
+      overflow: hidden;
     }
 
+    /* Detail sheet: bottom = 48px so the RANKED PARKS bar is never obscured. */
     .detail {
-      bottom: 0;
+      bottom: 48px;
       left: 0;
       right: 0;
       height: auto;
@@ -858,6 +892,7 @@
       border-width: 2px 0 0;
       box-shadow: none;
       padding-bottom: calc(12px + env(safe-area-inset-bottom));
+      z-index: 20;
     }
 
     .campsites-page.list-open .detail {

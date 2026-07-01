@@ -26,6 +26,27 @@
   let resizeObs = null;
   let layerReady = $state(false); // $state so effects re-evaluate after load
 
+  // Legend pop-out state: only relevant on mobile; on desktop the legend is
+  // always visible and the toggle button is hidden via CSS.
+  let legendOpen = $state(false);
+  let legendEl; // DOM ref for click-outside detection
+  let toggleEl; // DOM ref for click-outside detection
+
+  // Close the legend when the user taps anywhere outside it on mobile.
+  $effect(() => {
+    if (!legendOpen) return;
+    function onDocPointerdown(e) {
+      if (
+        legendEl && !legendEl.contains(e.target) &&
+        toggleEl && !toggleEl.contains(e.target)
+      ) {
+        legendOpen = false;
+      }
+    }
+    document.addEventListener("pointerdown", onDocPointerdown, { capture: true });
+    return () => document.removeEventListener("pointerdown", onDocPointerdown, { capture: true });
+  });
+
   // Data-viz ramp colors: outside the design-token system (intentionally, same
   // pattern as ShipsMap VESSEL_COLORS / HEAT_COLORS). They live in plain JS
   // constants so the hexes never appear as a `:` + `#hex` pair inside a style
@@ -355,7 +376,13 @@
 <div class="map-wrap">
   <div class="map" bind:this={mapContainer}></div>
 
-  <div class="legend">
+  <!-- Legend: always visible on desktop; a pop-out toggled by the chip on mobile. -->
+  <div
+    class="legend"
+    id="campsites-legend"
+    class:legend-open={legendOpen}
+    bind:this={legendEl}
+  >
     <p class="legend-title">Open sites + clear sky</p>
     <ul class="legend-list">
       {#each LEGEND_ITEMS as item (item.label)}
@@ -375,6 +402,17 @@
     </div>
     <p class="legend-note">Pin size = clear-sky days</p>
   </div>
+
+  <!-- Mobile-only chip to open/close the legend pop-out.
+       Hidden on desktop via CSS; always a real focusable button. -->
+  <button
+    type="button"
+    class="legend-toggle"
+    aria-expanded={legendOpen}
+    aria-controls="campsites-legend"
+    onclick={() => (legendOpen = !legendOpen)}
+    bind:this={toggleEl}
+  >{legendOpen ? "Close" : "Legend"}</button>
 </div>
 
 <style>
@@ -559,19 +597,68 @@
     letter-spacing: 0.02em;
   }
 
-  @media (max-width: 640px) {
+  /* Legend toggle chip: hidden on desktop, revealed on mobile only. */
+  .legend-toggle {
+    display: none;
+    position: absolute;
+    bottom: 56px;
+    left: 12px;
+    z-index: 10;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 2px solid var(--ink);
+    cursor: pointer;
+    transition: transform 110ms ease;
+  }
+
+  .legend-toggle:hover,
+  .legend-toggle:focus-visible {
+    transform: translate(-2px, -2px);
+    outline: none;
+  }
+
+  /* Mobile (<=768px): legend becomes a pop-out, toggle chip is visible.
+     The list bar is 48px tall at bottom:0. The toggle chip sits at
+     bottom:56px (8px clear). The legend pops above the chip at bottom:96px
+     (56px base + ~36px chip + 4px gap). */
+  @media (max-width: 768px) {
+    /* Hidden by default; display:block added via .legend-open when toggled. */
     .legend {
-      bottom: 12px;
+      display: none;
+      bottom: 96px;
       left: 12px;
       width: auto;
       height: auto;
       max-width: 200px;
       padding: 9px 11px;
+      z-index: 10;
+    }
+
+    .legend.legend-open {
+      display: block;
+    }
+
+    /* Show the toggle chip above the list bar. */
+    .legend-toggle {
+      display: flex;
+      align-items: center;
+    }
+
+    /* Zoom controls: nudge above the 48px list bar so they never overlap it. */
+    .map :global(.maplibregl-ctrl-bottom-right) {
+      bottom: calc(56px + env(safe-area-inset-bottom, 0));
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .map :global(.maplibregl-ctrl-group button) {
+    .map :global(.maplibregl-ctrl-group button),
+    .legend-toggle {
       transition: none;
     }
   }
