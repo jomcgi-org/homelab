@@ -23,6 +23,14 @@ class Completion:
     latency_ms: int
 
 
+@dataclass
+class ChatResult:
+    message: dict  # full assistant message (content + any tool_calls)
+    prompt_tokens: int
+    completion_tokens: int
+    latency_ms: int
+
+
 class OpenRouterClient:
     def __init__(
         self,
@@ -86,6 +94,52 @@ class OpenRouterClient:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             latency_ms=latency_ms,
+        )
+
+    async def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 8192,
+    ) -> ChatResult:
+        """One turn of a tool-using conversation.
+
+        Passes ``tools`` through so the provider enforces the function-call schema
+        (the API serializes arguments, so file content never has to be hand-written
+        JSON). Returns the full assistant message, which may carry ``tool_calls``.
+        """
+        t0 = time.monotonic()
+        payload: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+        resp: httpx.Response | None = None
+        for attempt in range(5):
+            resp = await self._client.post("/chat/completions", json=payload)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < 4:
+                    await asyncio.sleep(min(2**attempt, 8))
+                    continue
+                resp.raise_for_status()
+            elif resp.status_code >= 400:
+                resp.raise_for_status()
+            break
+        assert resp is not None
+        data = resp.json()
+        message = data.get("choices", [{}])[0].get("message", {}) or {}
+        usage = data.get("usage", {})
+        return ChatResult(
+            message=message,
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            latency_ms=int((time.monotonic() - t0) * 1000),
         )
 
     async def load_prices(self) -> None:
