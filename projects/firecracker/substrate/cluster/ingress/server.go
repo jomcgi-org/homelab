@@ -1,25 +1,27 @@
-// Package server is the HTTP front of the fc-invoke daemon. It exposes
-// POST /invoke/{workload}[/{session}] (route the request to the Invoker
-// registered for that workload and proxy the guest response through verbatim)
-// and GET /healthz. The handler depends on the Invoker interface, not the
-// concrete *invoker.Invoker, so the request/response path is unit-testable
-// with a fake (no microVM).
+// Package ingress is the control-plane HTTP front of the fc-invoke daemon
+// (ADR 031). It exposes POST /invoke/{workload}[/{session}] (route the request
+// to the substrate.NodeExecutor registered for that workload and proxy the guest
+// response through verbatim) and GET /healthz. The handler depends on the
+// substrate.NodeExecutor seam, not the concrete node/invoker, so the
+// request/response path is unit-testable with a fake (no microVM) and the same
+// handler routes to a remote node daemon once the planes split.
 //
-// Status policy lives here, not in the Invoker: a failure to boot or obtain a
-// guest at all is an infra failure returned 503 (the Invoker signals this with
+// Status policy lives here, not in the executor: a failure to boot or obtain a
+// guest at all is an infra failure returned 503 (the executor signals this with
 // an error implementing GuestUnavailable() bool); any other error from Invoke
 // means the VM ran but the HTTP round-trip failed and is returned 502. A
-// request body that exceeds the cap is returned 413 before the Invoker is
+// request body that exceeds the cap is returned 413 before the executor is
 // called.
-package server
+package ingress
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 // defaultMaxBytes caps the request body forwarded to the guest. Workload
@@ -27,18 +29,12 @@ import (
 // ballooning the daemon's memory before the body is streamed to the guest.
 const defaultMaxBytes int64 = 8 << 20 // 8 MiB
 
-// Invoker runs one invocation for a workload. The real *invoker.Invoker
-// satisfies it; tests inject a fake. A returned error whose chain implements
-// GuestUnavailable() bool means no guest could be obtained (mapped to 503);
-// any other error means the HTTP round-trip itself failed (mapped to 502).
-type Invoker interface {
-	Invoke(ctx context.Context, session string, body io.Reader) (*http.Response, error)
-}
-
-// Handler routes /invoke/{workload}[/{session}] to the Invoker registered for
-// that workload and proxies the guest HTTP response to the caller verbatim.
+// Handler routes /invoke/{workload}[/{session}] to the substrate.NodeExecutor
+// registered for that workload and proxies the guest HTTP response to the caller
+// verbatim. The workload-to-executor map is the (trivial, single-node) placement
+// table today; a placement package slots in here when there is more than one node.
 type Handler struct {
-	invokers map[string]Invoker
+	invokers map[string]substrate.NodeExecutor
 	logger   *slog.Logger
 	maxBytes int64
 }
@@ -52,8 +48,8 @@ func WithMaxBytes(n int64) Option {
 	return func(h *Handler) { h.maxBytes = n }
 }
 
-// New builds a Handler over the given workload-to-Invoker map.
-func New(invokers map[string]Invoker, logger *slog.Logger, opts ...Option) *Handler {
+// New builds a Handler over the given workload-to-executor map.
+func New(invokers map[string]substrate.NodeExecutor, logger *slog.Logger, opts ...Option) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}

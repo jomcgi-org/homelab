@@ -6,11 +6,12 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/firecracker/substrate/fcvm/driver",
-        "//projects/firecracker/substrate/invoke/internal/config",
-        "//projects/firecracker/substrate/invoke/internal/invoker",
-        "//projects/firecracker/substrate/invoke/internal/server",
-        "//projects/firecracker/substrate/invoke/internal/vsockhttp",
+        "//projects/firecracker/substrate/cluster/catalog",
+        "//projects/firecracker/substrate/cluster/ingress",
+        "//projects/firecracker/substrate/node/fcvm/driver",
+        "//projects/firecracker/substrate/node/invoker",
+        "//projects/firecracker/substrate/node/vsockhttp",
+        "//projects/firecracker/substrate/substrate",
     ],
 )
 

@@ -1,4 +1,4 @@
-package server
+package ingress
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
 
 // fakeInvoker is an injectable Invoker: it drains the request body (so the
@@ -50,7 +52,7 @@ func (unavailableErr) Error() string          { return "no guest" }
 func (unavailableErr) GuestUnavailable() bool { return true }
 
 func TestHealthz(t *testing.T) {
-	h := New(map[string]Invoker{}, nil)
+	h := New(map[string]substrate.NodeExecutor{}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -61,7 +63,7 @@ func TestHealthz(t *testing.T) {
 
 func TestInvokeRoutesToWorkload(t *testing.T) {
 	fake := &fakeInvoker{resp: bodyResponse(200, "findings", "application/json")}
-	h := New(map[string]Invoker{"semgrep": fake}, nil)
+	h := New(map[string]substrate.NodeExecutor{"semgrep": fake}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/semgrep", strings.NewReader("req-body"))
 	rec := httptest.NewRecorder()
@@ -81,7 +83,7 @@ func TestInvokeRoutesToWorkload(t *testing.T) {
 
 func TestInvokeParsesSession(t *testing.T) {
 	fake := &fakeInvoker{resp: bodyResponse(200, "", "")}
-	h := New(map[string]Invoker{"agent": fake}, nil)
+	h := New(map[string]substrate.NodeExecutor{"agent": fake}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/agent/t-abc", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -97,7 +99,7 @@ func TestInvokeParsesSession(t *testing.T) {
 
 func TestInvokeNoSessionIsEmpty(t *testing.T) {
 	fake := &fakeInvoker{resp: bodyResponse(200, "", "")}
-	h := New(map[string]Invoker{"semgrep": fake}, nil)
+	h := New(map[string]substrate.NodeExecutor{"semgrep": fake}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/semgrep", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -112,7 +114,7 @@ func TestInvokeNoSessionIsEmpty(t *testing.T) {
 }
 
 func TestUnknownWorkload404(t *testing.T) {
-	h := New(map[string]Invoker{}, nil)
+	h := New(map[string]substrate.NodeExecutor{}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/nope", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -125,7 +127,7 @@ func TestUnknownWorkload404(t *testing.T) {
 
 func TestGuestUnavailableIs503(t *testing.T) {
 	fake := &fakeInvoker{err: unavailableErr{}}
-	h := New(map[string]Invoker{"semgrep": fake}, nil)
+	h := New(map[string]substrate.NodeExecutor{"semgrep": fake}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/semgrep", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -138,7 +140,7 @@ func TestGuestUnavailableIs503(t *testing.T) {
 
 func TestOtherErrorIs502(t *testing.T) {
 	fake := &fakeInvoker{err: errors.New("round-trip failed")}
-	h := New(map[string]Invoker{"semgrep": fake}, nil)
+	h := New(map[string]substrate.NodeExecutor{"semgrep": fake}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/semgrep", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -153,7 +155,7 @@ func TestBodyCapEnforced(t *testing.T) {
 	// The fake reads the body; the MaxBytesReader cap surfaces as an error
 	// returned from Invoke, which the handler maps to 413.
 	fake := &fakeInvoker{resp: bodyResponse(200, "", "")}
-	h := New(map[string]Invoker{"semgrep": fake}, nil, WithMaxBytes(8))
+	h := New(map[string]substrate.NodeExecutor{"semgrep": fake}, nil, WithMaxBytes(8))
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/semgrep", strings.NewReader("this body is definitely longer than 8 bytes"))
 	rec := httptest.NewRecorder()
@@ -168,7 +170,7 @@ func TestGuestStatusCodeProxied(t *testing.T) {
 	// A non-200 success code from the guest (e.g. 201, 204) must be forwarded
 	// verbatim rather than normalised to 200.
 	fake := &fakeInvoker{resp: bodyResponse(201, "created", "")}
-	h := New(map[string]Invoker{"agent": fake}, nil)
+	h := New(map[string]substrate.NodeExecutor{"agent": fake}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/invoke/agent", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -180,7 +182,7 @@ func TestGuestStatusCodeProxied(t *testing.T) {
 }
 
 func TestUnknownPathIs404(t *testing.T) {
-	h := New(map[string]Invoker{}, nil)
+	h := New(map[string]substrate.NodeExecutor{}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/not-a-real-path", nil)
 	rec := httptest.NewRecorder()

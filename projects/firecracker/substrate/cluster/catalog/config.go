@@ -1,9 +1,11 @@
-// Package config loads fc-invoke configuration from the environment. The
-// daemon multiplexes named workloads over a shared pool of Firecracker
-// microVMs; global daemon settings come from FC_INVOKE_* env vars and the
-// workload table is provided as JSON via FC_INVOKE_WORKLOADS (inline) or
-// FC_INVOKE_WORKLOADS_FILE (path to a JSON file, takes precedence).
-package config
+// Package catalog loads fc-invoke configuration from the environment: global
+// daemon settings from FC_INVOKE_* env vars and the workload table (as
+// substrate.Workload specs) from FC_INVOKE_WORKLOADS (inline) or
+// FC_INVOKE_WORKLOADS_FILE (a JSON file path, which takes precedence). It is the
+// control plane's view of "what workloads exist" (ADR 031); the Workload spec
+// itself lives in the neutral substrate seam so the node plane can consume it
+// without importing the cluster plane.
+package catalog
 
 import (
 	"encoding/json"
@@ -12,57 +14,9 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
-
-// Workload describes one named guest workload that fc-invoke can dispatch.
-// Fields are loaded from the JSON workload table; per-workload defaults are
-// applied by Load after unmarshalling.
-type Workload struct {
-	// Image is the logical guest rootfs image name, resolved to a path by the
-	// launcher.
-	Image string `json:"image"`
-	// RootfsPath is the host path to this workload's base rootfs ext4 image.
-	// Each workload boots its own guest image's rootfs, attached read-only
-	// (all mutable guest state is tmpfs), so one file backs every microVM for
-	// the workload with no per-request copy.
-	RootfsPath string `json:"rootfsPath"`
-	// HarnessInit is the in-guest PID-1 path the kernel boots into (the guest
-	// shim server) for this workload. Different guest images install their init
-	// at different paths (semgrep-guest-init vs the agent's), so this is
-	// per-workload; empty falls back to the daemon-global HarnessInit.
-	HarnessInit string `json:"harnessInit"`
-	// VCPUs is the number of virtual CPUs to allocate per microVM. Default 2.
-	VCPUs int `json:"vcpus"`
-	// MemMib is the guest memory in MiB. Default 2048.
-	MemMib int `json:"memMib"`
-	// Concurrency is the maximum number of live microVMs for this workload.
-	// Default 4.
-	Concurrency int `json:"concurrency"`
-
-	// EgressEnabled controls whether the egress-proxy sidecar is attached to
-	// microVMs launched for this workload.
-	EgressEnabled bool `json:"egressEnabled"`
-	// EgressSecrets lists the 1Password secret names whose values the egress
-	// proxy should swap into outgoing requests.
-	EgressSecrets []string `json:"egressSecrets"`
-
-	// WarmBase enables the snapshot-restore hot path: restore a pre-warmed
-	// microVM per request rather than booting cold.
-	WarmBase bool `json:"warmBase"`
-	// ReadyPath is the guest-side vsock path the shim exposes to signal
-	// readiness. Default "/shim/ready".
-	ReadyPath string `json:"readyPath"`
-	// Sessioned marks the workload as session-aware: the caller may reuse a
-	// live microVM across multiple requests within a session.
-	Sessioned bool `json:"sessioned"`
-
-	// RequestTimeout is the parsed form of RequestTimeoutStr. It is excluded
-	// from JSON marshalling; Load sets it from RequestTimeoutStr (default 90s).
-	RequestTimeout time.Duration `json:"-"`
-	// RequestTimeoutStr is the human-readable timeout for a single request
-	// (e.g. "90s", "3m"). Parsed into RequestTimeout by Load.
-	RequestTimeoutStr string `json:"requestTimeout"`
-}
 
 // Config is the fully-resolved fc-invoke daemon configuration.
 type Config struct {
@@ -113,7 +67,7 @@ type Config struct {
 
 	// Workloads is the set of named workloads the daemon can dispatch, keyed
 	// by workload name. Empty when no workload table is configured.
-	Workloads map[string]Workload
+	Workloads map[string]substrate.Workload
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -159,7 +113,7 @@ func Load() (Config, error) {
 // set, takes precedence) or FC_INVOKE_WORKLOADS (inline JSON object). An
 // absent or empty source yields an empty map without error. Per-workload
 // defaults are applied after unmarshalling.
-func loadWorkloads() (map[string]Workload, error) {
+func loadWorkloads() (map[string]substrate.Workload, error) {
 	var raw []byte
 	var source string // used in error messages to name the JSON source
 
@@ -176,15 +130,15 @@ func loadWorkloads() (map[string]Workload, error) {
 	}
 
 	if len(raw) == 0 {
-		return map[string]Workload{}, nil
+		return map[string]substrate.Workload{}, nil
 	}
 
-	var table map[string]Workload
+	var table map[string]substrate.Workload
 	if err := json.Unmarshal(raw, &table); err != nil {
 		return nil, fmt.Errorf("parsing workloads JSON from %s: %w", source, err)
 	}
 	if table == nil {
-		return map[string]Workload{}, nil
+		return map[string]substrate.Workload{}, nil
 	}
 
 	// Apply per-workload defaults and parse durations. Map entries are
