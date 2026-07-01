@@ -9,9 +9,10 @@
 //
 // This is the disposable-VM (cold-run) model: there is no snapshot/idle detector,
 // no host control channel, and no session/artifact persistence. The task arrives
-// in the HTTP request body, not over a vsock control handshake. Session resume,
-// artifact publish, and secret-swap (guest CA install) are deferred; the handler
-// and AgentRequest leave hooks for them.
+// in the HTTP request body, not over a vsock control handshake. The egress
+// secret-swap CA is installed per invoke from the request env (ADR 023 6b, see
+// installGuestCA). Session resume and artifact publish are still deferred; the
+// handler and AgentRequest leave hooks for them.
 package main
 
 import (
@@ -140,6 +141,11 @@ type execRunner struct {
 // non-zero), which the handler surfaces as an error result rather than a
 // transport failure.
 func (r *execRunner) Run(ctx context.Context, argv []string, env map[string]string, onLine func(string)) (string, error) {
+	// Install the egress secret-swap CA (ADR 023 6b) before goose starts, so its
+	// TLS to a swapped host trusts the sidecar's minted leaf. The CA cert rides in
+	// the per-invoke env (EGRESS_CA_CERT), so this happens here, not at boot.
+	installGuestCA(slog.Default(), env)
+
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = r.workspace
 	cmd.Env = mergeEnv(env)
@@ -390,5 +396,67 @@ func funnelToHost(logger *slog.Logger, local net.Conn, port int) {
 func ensureEnv(key, def string) {
 	if os.Getenv(key) == "" {
 		_ = os.Setenv(key, def)
+	}
+}
+
+// guestCABundle is the baked system trust bundle most TLS clients read. It is on
+// the read-only shared rootfs, so it is readable but not writable.
+const guestCABundle = "/etc/ssl/certs/ca-certificates.crt"
+
+// tmpfs paths for the guest's writable trust material (the rootfs is read-only,
+// so unlike the old writable-rootfs guest we cannot append to the baked bundle;
+// we copy it to /tmp and append there). /tmp is a tmpfs mounted in run().
+const (
+	guestCABundleRW   = "/tmp/ca-bundle.crt"
+	guestCAStandalone = "/tmp/egress-ca.pem"
+)
+
+// installGuestCA installs the egress secret-swap CA (ADR 023 6b) into the guest
+// trust store for a single goose run, using the CA cert carried in the invoke env
+// (EGRESS_CA_CERT). It is a no-op when that env is empty (no swap configured),
+// which keeps the plain-egress and test paths untouched.
+//
+// The shared rootfs is read-only, so it writes writable trust material to the
+// /tmp tmpfs instead of appending to the baked bundle: a full bundle (the baked
+// public roots plus our CA) at guestCABundleRW, and the CA alone at
+// guestCAStandalone. It then points goose's TLS clients at those via SSL_CERT_FILE
+// / GIT_SSL_CAINFO (full bundle, so real HTTPS to non-swapped hosts still
+// validates against the public roots) and NODE_EXTRA_CA_CERTS (node appends the
+// standalone cert to its defaults). Keys are only set when unset, so an explicit
+// override still wins. The real destination cert is still validated by the
+// sidecar when it re-originates; this only makes the guest trust the sidecar.
+func installGuestCA(logger *slog.Logger, env map[string]string) {
+	caPEM := strings.TrimSpace(env["EGRESS_CA_CERT"])
+	if caPEM == "" {
+		return
+	}
+
+	// The baked bundle is readable on the ro rootfs; tolerate its absence (tests,
+	// a stripped image) by falling back to just our CA.
+	baked, err := os.ReadFile(guestCABundle)
+	if err != nil {
+		logger.Warn("guest CA: read baked bundle failed; using CA only", "err", err)
+		baked = nil
+	}
+	full := append(append([]byte{}, baked...), []byte("\n"+caPEM+"\n")...)
+	if err := os.WriteFile(guestCABundleRW, full, 0o644); err != nil {
+		logger.Warn("guest CA: write bundle failed; egress swap TLS may fail", "err", err)
+		return
+	}
+	if err := os.WriteFile(guestCAStandalone, []byte(caPEM), 0o644); err != nil {
+		logger.Warn("guest CA: write standalone cert failed", "err", err)
+	}
+
+	setIfUnset(env, "SSL_CERT_FILE", guestCABundleRW)
+	setIfUnset(env, "GIT_SSL_CAINFO", guestCABundleRW)
+	setIfUnset(env, "NODE_EXTRA_CA_CERTS", guestCAStandalone)
+	logger.Info("guest egress CA installed", "bundle", guestCABundleRW)
+}
+
+// setIfUnset sets m[key]=val only when key is absent or empty, so an explicit
+// value in the invoke env still wins.
+func setIfUnset(m map[string]string, key, val string) {
+	if m[key] == "" {
+		m[key] = val
 	}
 }

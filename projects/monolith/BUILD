@@ -4043,6 +4043,16 @@ bdd_test(
 )
 
 py_test(
+    name = "goosecracker_tiers_test",
+    srcs = ["goosecracker/tests/tiers_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "agent_checks_firing_alerts_test",
     srcs = ["agent/checks_firing_alerts_test.py"],
     imports = ["."],

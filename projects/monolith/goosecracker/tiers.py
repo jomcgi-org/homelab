@@ -58,11 +58,28 @@ def _load_tiers() -> dict[str, dict[str, str]]:
     return out
 
 
+# The egress secret-swap CA (ADR 023 6b) public cert, injected into every tier's
+# guest env so goose trusts the sidecar's minted leaf when a placeholder is
+# swapped on a TLS host (api.github.com, openrouter.ai). Sourced from the
+# fc-invoke-egress-ca Secret via the deployment env (never hardcoded); empty when
+# the CA is not deployed, which leaves the swap inert (the guest just holds the
+# placeholder).
+_CA_ENV_VAR = "EGRESS_CA_CERT"
+
+
 def env_for_tier(tier: str) -> dict[str, str]:
-    """The guest env dict for ``tier`` (empty/unknown falls back to default)."""
+    """The guest env dict for ``tier`` (empty/unknown falls back to default).
+
+    The egress CA cert is merged in from the process env so the guest can trust
+    the swap sidecar's leaf; a tier that sets it explicitly still wins.
+    """
     tiers = _load_tiers()
     key = tier or _DEFAULT_TIER
     env = tiers.get(key)
     if env is None and key != _DEFAULT_TIER:
         env = tiers.get(_DEFAULT_TIER)
-    return dict(env or {})
+    out = dict(env or {})
+    ca_cert = os.environ.get(_CA_ENV_VAR, "").strip()
+    if ca_cert and not out.get(_CA_ENV_VAR):
+        out[_CA_ENV_VAR] = ca_cert
+    return out

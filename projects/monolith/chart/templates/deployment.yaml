@@ -98,6 +98,22 @@ spec:
             - name: GOOSECRACKER_PROGRESS_URL
               value: {{ .Values.goosecracker.progressUrl | quote }}
             {{- end }}
+            {{- if .Values.goosecracker.tiers }}
+            # Egress secret-swap CA public cert (ADR 023 6b). The fc-invoke egress
+            # proxy TLS-terminates swapped hosts with a leaf minted from this CA;
+            # the guest must trust it. Only the fc-invoke daemon can inject env at
+            # boot, but the guest env is orchestrator-owned (carried in the
+            # AgentRequest), so the monolith reads the public cert here and the
+            # goosecracker runner injects it into every tier's guest env. Same
+            # namespace as the substrate release; optional so the monolith still
+            # starts before the CA Secret exists (the swap is inert until then).
+            - name: EGRESS_CA_CERT
+              valueFrom:
+                secretKeyRef:
+                  name: fc-invoke-egress-ca
+                  key: tls.crt
+                  optional: true
+            {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN
               valueFrom:

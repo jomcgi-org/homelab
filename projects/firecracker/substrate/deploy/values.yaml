@@ -34,10 +34,45 @@ imagePullSecret:
 #   - monolith.monolith.svc.cluster.local:8000    monolith progress / artifact sink
 #   - context-forge-...mcpgateway.mcp.svc.cluster.local:80  MCP tools (baked guest ext)
 #   - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318  goose OTLP traces
-# There is no in-cluster git mirror, so none is listed. GitHub (api.github.com)
-# needs the credential swap (kloak) from ADR 023 phase 6b, which this plain-mode
-# sidecar does not do yet, so it is deliberately omitted (gh egress is a 6b follow-up).
+# There is no in-cluster git mirror, so none is listed. The two external hosts
+# (api.github.com, openrouter.ai) carry a credential, so they ride the ADR 023
+# phase 6b swap path (secrets below) and must ALSO be listed here on :443, since
+# the sidecar's permits() consults only this allowlist, not the catalog.
 egress:
   enabled: true
   policy: allowlist
-  allowlist: "inference.inference.svc.cluster.local:8080,monolith.monolith.svc.cluster.local:8000,context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80,signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
+  # A real list for readability; the chart joins it into the comma-separated
+  # EGRESS_ALLOWLIST the sidecar parses. A bare host allows any port; host:port
+  # pins the port.
+  allowlist:
+    - inference.inference.svc.cluster.local:8080 # in-cluster model (Qwen; OPENAI_HOST)
+    - monolith.monolith.svc.cluster.local:8000 # monolith progress / artifact sink
+    - context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80 # MCP tools
+    - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318 # goose OTLP traces
+    - api.github.com:443 # gh/API (6b swap host)
+    - openrouter.ai:443 # artifact tier model (6b swap host)
+  # ADR 023 phase 6b secret catalog. Each guest holds only the high-entropy
+  # placeholder as env; the sidecar TLS-terminates the egressTo host with a leaf
+  # minted from the cert-manager egress CA and swaps the placeholder for the real
+  # value (from the referenced in-namespace Secret) only on that host. Everywhere
+  # else the inert placeholder passes through, so a prompt-injected agent cannot
+  # exfiltrate a real credential. A non-empty catalog enables the CA + swap path.
+  secrets:
+    # The agent's gh/API calls carry this placeholder (default tier GITHUB_TOKEN);
+    # the sidecar swaps it for the real token (already in-namespace, synced by the
+    # monolith from 1Password) only on api.github.com. Literal swap: gh API works;
+    # raw git-over-HTTPS Basic (a base64'd token) is ADR-deferred. placeholder MUST
+    # match goosecracker.tiers.default.GITHUB_TOKEN in the monolith deploy values.
+    - env: GITHUB_TOKEN
+      placeholder: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
+      egressTo: [api.github.com]
+      secretRef: { name: monolith-chat-secrets, key: GITHUB_TOKEN }
+    # The artifact tier's OpenRouter key (ADR 024): the guest holds this
+    # placeholder as OPENROUTER_API_KEY (goosecracker.tiers.artifact); the sidecar
+    # swaps it for the real key only on openrouter.ai. The real value is synced
+    # from 1Password into the `goosecracker` Secret by the monolith chart's
+    # OnePasswordItem. placeholder MUST match tiers.artifact.OPENROUTER_API_KEY.
+    - env: OPENROUTER_KEY
+      placeholder: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
+      egressTo: [openrouter.ai]
+      secretRef: { name: goosecracker, key: OPENROUTER_API_KEY }

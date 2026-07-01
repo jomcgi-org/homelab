@@ -215,15 +215,56 @@ spec:
               value: {{ .Values.egress.policy | default "allowlist" | quote }}
             {{- if eq (.Values.egress.policy | default "allowlist") "allowlist" }}
             # Under policy=allowlist the sidecar denies any destination not in this
-            # list (fail closed). Empty until the agent PR populates it.
+            # list (fail closed). It must include each secrets[].egressTo host so
+            # the swap path is reachable. Values carry a YAML list for readability;
+            # join it into the comma-separated form the sidecar parses.
             - name: EGRESS_ALLOWLIST
-              value: {{ .Values.egress.allowlist | quote }}
+              value: {{ join "," .Values.egress.allowlist | quote }}
             {{- end }}
+            {{- if .Values.egress.secrets }}
+            # Secret swap (ADR 023 6b). EGRESS_SECRETS is the non-secret catalog
+            # (placeholder -> env -> egressTo); the real value of each is supplied
+            # below from its Secret (or a literal for tests). The CA (cert + key)
+            # is mounted so the sidecar can mint leaves; the key never leaves here.
+            {{- $catalog := list }}
+            {{- range $s := .Values.egress.secrets }}
+            {{- $catalog = append $catalog (dict "placeholder" $s.placeholder "env" $s.env "egressTo" $s.egressTo) }}
+            {{- end }}
+            - name: EGRESS_SECRETS
+              value: {{ $catalog | toJson | quote }}
+            - name: EGRESS_CA_CERT_FILE
+              value: /etc/egress-ca/tls.crt
+            - name: EGRESS_CA_KEY_FILE
+              value: /etc/egress-ca/tls.key
+            {{- range $s := .Values.egress.secrets }}
+            - name: {{ $s.env }}
+              {{- if $s.secretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.secretRef.name }}
+                  key: {{ $s.secretRef.key }}
+              {{- else }}
+              value: {{ $s.value | quote }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- if .Values.egress.secrets }}
+          volumeMounts:
+            - name: egress-ca
+              mountPath: /etc/egress-ca
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.egress.resources | nindent 12 }}
         {{- end }}
       {{- if .Values.firecracker.enabled }}
       volumes:
+        {{- if and .Values.egress.enabled .Values.egress.secrets }}
+        # cert-manager-issued egress CA (cert + key), mounted into the sidecar only.
+        - name: egress-ca
+          secret:
+            secretName: {{ include "fc-invoke.fullname" . }}-egress-ca
+        {{- end }}
         - name: dev-kvm
           hostPath:
             path: /dev/kvm
