@@ -5,12 +5,12 @@
 // caller-supplied model env while streaming each output line to a progress URL,
 // and return the captured output as an AgentResult.
 //
-// Scope covers the cold path (recipe + task -> goose -> result) and stateful
-// resume (ADR 026 Phase 2): when the caller ships a prior goose sessions.db the
-// handler hydrates it, runs `goose run --resume`, and exports the updated db back
-// so the next reply can resume again. Artifact publish is still deferred; the
-// Runner and SessionStore seams leave room to slot it in without reshaping the
-// contract.
+// Scope covers the cold path (recipe + task -> goose -> result), stateful resume
+// (ADR 026 Phase 2): when the caller ships a prior goose sessions.db the handler
+// hydrates it, runs `goose run --resume`, and exports the updated db back so the
+// next reply can resume again; and artifact publish (ADR 024): when the recipe
+// writes /tmp/artifact.html the handler returns its bytes in the result so the
+// orchestrator can publish it to a live URL (the guest holds no S3 credential).
 package handler
 
 import (
@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/harness"
@@ -58,10 +59,11 @@ type AgentRequest struct {
 // (which the shim maps to 502). SessionDb carries the updated goose session back
 // (base64) so the orchestrator can persist it for the next resume.
 type AgentResult struct {
-	Status    string `json:"status"`              // "ok" | "error"
-	Result    string `json:"result,omitempty"`    // goose output captured from the run
-	Error     string `json:"error,omitempty"`     // failure detail when Status == "error"
-	SessionDb string `json:"sessionDb,omitempty"` // base64 updated sessions.db to persist
+	Status       string `json:"status"`                 // "ok" | "error"
+	Result       string `json:"result,omitempty"`       // goose output captured from the run
+	Error        string `json:"error,omitempty"`        // failure detail when Status == "error"
+	SessionDb    string `json:"sessionDb,omitempty"`    // base64 updated sessions.db to persist
+	ArtifactHTML string `json:"artifactHtml,omitempty"` // the built artifact HTML for the orchestrator to publish (ADR 024)
 }
 
 // Runner is the seam the handler uses to run goose and (optionally) clone a git
@@ -176,8 +178,33 @@ func New(runner Runner, opts ...Option) shim.Handler {
 				result.SessionDb = base64.StdEncoding.EncodeToString(db)
 			}
 		}
+
+		// Return the built artifact (if the recipe wrote one) so the orchestrator
+		// can publish it to a live URL (ADR 024). The guest has no S3 credential,
+		// so it ships the bytes back rather than publishing directly; a run that
+		// wrote no artifact (a non-artifact recipe, or a whiffed build) just leaves
+		// this empty.
+		if html := readArtifact(); len(html) > 0 {
+			result.ArtifactHTML = string(html)
+		}
 		return jsonResult(result)
 	}
+}
+
+// artifactPath is where the artifact recipe writes its single self-contained
+// HTML document (ADR 024); the harness ships it back for the orchestrator to
+// publish. A package var so tests can point it at a temp file.
+var artifactPath = "/tmp/artifact.html"
+
+// readArtifact returns the built artifact HTML, or nil when the run produced
+// none (a non-artifact recipe, or a build that failed to write the file). It
+// never errors: a missing or empty file just means "nothing to publish".
+func readArtifact() []byte {
+	data, err := os.ReadFile(artifactPath)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return data
 }
 
 // jsonResult marshals res into a 200 shim.Response. A marshal failure (which
