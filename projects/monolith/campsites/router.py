@@ -82,14 +82,21 @@ def get_snapshot(
 
     today = datetime.now(timezone.utc).date()
     cutoff = today + timedelta(days=_LOOKAHEAD_DAYS - 1)
+    # Window lower bound is one day behind UTC-today so a park whose local date
+    # is still "yesterday" (BC evenings, UTC 00:00-07:00) is not hidden from
+    # the response. The job stores park-local dates, so this keeps the two grids
+    # aligned. Upper bound is unchanged: the job stores at most ~14 days ahead.
+    window_start = today - timedelta(days=1)
 
     avail_rows = session.exec(
         select(Availability)
-        .where(Availability.date >= today)
+        .where(Availability.date >= window_start)
         .where(Availability.date <= cutoff)
     ).all()
     weather_rows = session.exec(
-        select(Weather).where(Weather.date >= today).where(Weather.date <= cutoff)
+        select(Weather)
+        .where(Weather.date >= window_start)
+        .where(Weather.date <= cutoff)
     ).all()
 
     # Index by (resource_location_id, date) for O(1) merge.

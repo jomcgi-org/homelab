@@ -9,6 +9,7 @@ import json
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 BASE = "https://camping.bcparks.ca"
 HEADERS = {
@@ -228,7 +229,7 @@ def main():
             indent=2,
         )
     )
-    with open("/tmp/catalog.json", "w") as f:
+    with open(Path(__file__).parent / "catalog.json", "w") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
 
 

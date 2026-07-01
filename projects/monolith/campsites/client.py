@@ -194,6 +194,27 @@ def merge_availability(
 # ---------------------------------------------------------------------------
 
 
+def _park_local_today(iana_tz: str) -> datetime.date:
+    """Return today's date in the park's local timezone, falling back to UTC.
+
+    GoingToCamp interprets the startDate param in the park's local time, so
+    anchoring to the park's local date keeps availability and weather on the
+    same per-date grid. Falls back gracefully to UTC if zoneinfo cannot resolve
+    the timezone identifier (logs a warning; does NOT crash the job).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.datetime.now(ZoneInfo(iana_tz)).date()
+    except Exception:
+        logger.warning(
+            "campsites: tz %s unresolved, falling back to UTC date",
+            iana_tz,
+            exc_info=True,
+        )
+        return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 async def fetch_availability(
     session: AsyncSession,
     cg: CampgroundRow,
@@ -236,9 +257,14 @@ async def fetch_availability(
 async def fetch_all_availability(
     session: AsyncSession,
     cats: list[CampgroundRow],
-    start_date: datetime.date,
 ) -> dict[int, list[DayAvail]]:
     """Fetch availability for all campgrounds sequentially with a politeness delay.
+
+    For each park, the availability window is anchored to that park's local
+    today (via _park_local_today) so the returned DayAvail dates align with the
+    park-local dates that Open-Meteo returns for the same timezone. GoingToCamp
+    interprets startDate in park-local time, so using UTC-today during BC
+    evenings (UTC 00:00-07:00) would shift the grid one day forward.
 
     Between parks, waits INTER_REQUEST_DELAY_S plus a deterministic per-index
     jitter (random.Random(i).uniform(0, 0.3)) so behaviour is reproducible and
@@ -255,11 +281,12 @@ async def fetch_all_availability(
             jitter = random.Random(i).uniform(0, 0.3)
             await asyncio.sleep(INTER_REQUEST_DELAY_S + jitter)
 
-        avail = await fetch_availability(session, cg, start_date)
+        local_start = _park_local_today(cg.iana_tz)
+        avail = await fetch_availability(session, cg, local_start)
 
         if avail is None:
             await asyncio.sleep(2.0)
-            avail = await fetch_availability(session, cg, start_date)
+            avail = await fetch_availability(session, cg, local_start)
 
         if avail is None:
             consecutive_failures += 1

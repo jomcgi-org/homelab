@@ -83,13 +83,15 @@ def _load_and_upsert_catalog() -> list[client.CampgroundRow]:
 
 def _upsert_availability(
     avail: dict[int, list[client.DayAvail]],
-    start_date: datetime.date,
+    prune_floor: datetime.date,
 ) -> int:
     """Upsert per-park-per-date availability rows, then prune past-window rows.
 
     Uses session.merge (upsert on the (resource_location_id, date) PK), so no
-    session.add-in-loop savepoint concern. Rows with date < start_date are
-    pruned in the same transaction to keep the 14-day rolling window small.
+    session.add-in-loop savepoint concern. Rows with date < prune_floor are
+    pruned in the same transaction to keep the rolling window small. prune_floor
+    is UTC-today minus one day so a park-local boundary date is never pruned
+    during BC evenings (UTC 00:00-07:00) when UTC-today is one day ahead.
     Returns the number of rows written. A no-op (empty input) writes nothing but
     still prunes elapsed rows.
     """
@@ -112,20 +114,21 @@ def _upsert_availability(
                     )
                 )
                 written += 1
-        session.execute(delete(Availability).where(Availability.date < start_date))
+        session.execute(delete(Availability).where(Availability.date < prune_floor))
         session.commit()
     return written
 
 
 def _upsert_weather(
     wx: dict[int, list[weather.WxDay]],
-    start_date: datetime.date,
+    prune_floor: datetime.date,
 ) -> int:
     """Upsert per-park-per-date forecast rows, then prune past-window rows.
 
     Same shape as _upsert_availability: merge() upserts on the composite PK and
     a single delete prunes elapsed dates. precip_prob is stored as an int (the
     Weather column is INTEGER); Open-Meteo returns whole-percent values.
+    prune_floor matches the availability floor so both tables stay aligned.
     """
     from sqlmodel import Session, delete
 
@@ -152,7 +155,7 @@ def _upsert_weather(
                     )
                 )
                 written += 1
-        session.execute(delete(Weather).where(Weather.date < start_date))
+        session.execute(delete(Weather).where(Weather.date < prune_floor))
         session.commit()
     return written
 
@@ -169,7 +172,11 @@ async def refresh_handler(session) -> datetime.datetime | None:
     inside a worker thread. Returning None lets the scheduler compute the next
     run from the configured interval.
     """
-    start_date = dt.now(timezone.utc).date()
+    # Prune floor is UTC-today minus one day so a park whose local date is still
+    # "yesterday" (BC evenings, UTC 00:00-07:00) is never pruned mid-run.
+    # Availability is anchored per-park to park-local today inside
+    # client.fetch_all_availability; weather already uses each park's iana_tz.
+    prune_floor = dt.now(timezone.utc).date() - datetime.timedelta(days=1)
 
     # 1. Static catalog: read the committed JSON and upsert the campgrounds.
     cats = await asyncio.to_thread(_load_and_upsert_catalog)
@@ -179,7 +186,7 @@ async def refresh_handler(session) -> datetime.datetime | None:
     avail: dict[int, list[client.DayAvail]] = {}
     try:
         async with AsyncSession(impersonate=_IMPERSONATE) as gc:
-            avail = await client.fetch_all_availability(gc, cats, start_date)
+            avail = await client.fetch_all_availability(gc, cats)
     except Exception:
         logger.error("campsites refresh: availability phase failed", exc_info=True)
 
@@ -205,8 +212,8 @@ async def refresh_handler(session) -> datetime.datetime | None:
 
     # Commit whatever succeeded. Each helper still prunes elapsed rows even when
     # its own source was empty, so the rolling window stays clean.
-    avail_written = await asyncio.to_thread(_upsert_availability, avail, start_date)
-    wx_written = await asyncio.to_thread(_upsert_weather, wx, start_date)
+    avail_written = await asyncio.to_thread(_upsert_availability, avail, prune_floor)
+    wx_written = await asyncio.to_thread(_upsert_weather, wx, prune_floor)
     logger.info(
         "campsites refresh: wrote %d availability rows (%d parks), "
         "%d weather rows (%d parks)",
