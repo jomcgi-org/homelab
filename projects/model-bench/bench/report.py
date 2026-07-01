@@ -16,7 +16,7 @@ def render_leaderboard(
         anchors: model_id -> task_class -> dict with keys pass1, cost.
         frontier: task_class -> list of non-dominated model ids.
         retired: list of dicts with keys id, reason, date, pass1, cost.
-        agentic: model_id -> dict with keys n, pass_rate, med_tokens, med_turns,
+        agentic: model_id -> dict with keys n, pass_rate, mean_tokens, mean_turns,
                  cost, tool_ok_rate. The agentic tool-calling leaderboard: the
                  primary contract of this benchmark. Optional/back-compatible.
 
@@ -52,19 +52,19 @@ def render_leaderboard(
             key=lambda r: (
                 -r.get("hard_pass", 0),
                 r.get("cost", 0.0),
-                r.get("med_latency_ms", 0.0),
+                r.get("mean_latency_ms", 0.0),
             )
         )
         lines.append(
-            "| Model | hard | median tokens | median turns | wall-time (s) "
+            "| Model | hard | mean tokens | mean turns | wall-time (s) "
             "| cost ($) | $/solve | tool-use ok |"
         )
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for r in qualified:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
-                f"| {r.get('med_tokens', 0):.0f} | {r.get('med_turns', 0):.1f} "
-                f"| {r.get('med_latency_ms', 0) / 1000:.1f} "
+                f"| {r.get('mean_tokens', 0):.0f} | {r.get('mean_turns', 0):.1f} "
+                f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
                 f"| {r.get('cost', 0.0):.4f} | {_cps(r)} | {r.get('tool_ok_rate', 0.0):.2f} |"
             )
     else:

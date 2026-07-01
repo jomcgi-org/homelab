@@ -1,4 +1,6 @@
 <script>
+  import Scatter from "$lib/public/llm-leaderboard/Scatter.svelte";
+
   let { data } = $props();
 
   const lb = $derived(data.leaderboard ?? {});
@@ -75,6 +77,11 @@
   </header>
 
   <section class="panel">
+    <div class="panel-head">Cost / speed / effort</div>
+    <Scatter {models} {tasks} />
+  </section>
+
+  <section class="panel">
     <div class="panel-head">
       Qualified: ranked by hard tasks, then cost
       <span class="panel-hint">click a row for its per-task breakdown</span>
@@ -120,9 +127,9 @@
               <td class="n">
                 <span class="rate {m.hard_pass === m.hard_n ? 'full' : 'partial'}">{m.hard_pass}/{m.hard_n}</span>
               </td>
-              <td class="n mono">{num(m.median_tokens)}</td>
-              <td class="n mono">{m.median_turns}</td>
-              <td class="n mono">{secs(m.median_latency_ms)}</td>
+              <td class="n mono">{num(m.mean_tokens)}</td>
+              <td class="n mono">{m.mean_turns}</td>
+              <td class="n mono">{secs(m.mean_latency_ms)}</td>
               <td class="n mono">{money(m.cost_usd)}</td>
               <td class="n mono">{m.cost_per_solve_usd == null ? "n/a" : money(m.cost_per_solve_usd)}</td>
               <td class="n">
@@ -167,12 +174,13 @@
       </table>
     </div>
     <div class="legend">
-      <span><b>Hard / Tokens / Turns / Tools</b> are model-intrinsic: the
-        <b>self-host lens</b> (they carry over to running the model on local hardware).</span>
-      <span><b>Wall-time / Cost / $-per-solve</b> are the <b>cloud lens</b>: the real
-        time and money to rent this model, versus the Claude <b>anchor</b> rows you
-        would be replacing. Wall-time is via OpenRouter, so it reflects a typical
-        cloud request, not local GPU throughput.</span>
+      <span><b>Tokens / Turns / Wall-time</b> are the <b>mean per task</b> (not the
+        median): the tasks vary ~5x in size, so the mean keeps a blow-up on one hard
+        task visible instead of hiding it. Open a row for the per-task split.</span>
+      <span><b>Hard / Tokens / Turns / Tools</b> are model-intrinsic (the
+        <b>self-host lens</b>); <b>Wall-time / Cost / $-per-solve</b> are the
+        <b>cloud lens</b>: the real time and money to rent this model versus the Claude
+        <b>anchor</b> rows you would be replacing. Wall-time is via OpenRouter.</span>
     </div>
   </section>
 

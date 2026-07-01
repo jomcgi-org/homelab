@@ -94,9 +94,9 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
         "cheap/win": {
             "n": 1,
             "pass_rate": 1.0,
-            "med_tokens": 1000.0,
-            "med_turns": 4.0,
-            "med_latency_ms": 8000.0,
+            "mean_tokens": 1000.0,
+            "mean_turns": 4.0,
+            "mean_latency_ms": 8000.0,
             "cost": 0.001,
             "cost_per_solve": 0.001,
             "tool_ok_rate": 1.0,
@@ -105,9 +105,9 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
         "anchor/x": {
             "n": 1,
             "pass_rate": 1.0,
-            "med_tokens": 2000.0,
-            "med_turns": 3.0,
-            "med_latency_ms": 20000.0,
+            "mean_tokens": 2000.0,
+            "mean_turns": 3.0,
+            "mean_latency_ms": 20000.0,
             "cost": 0.5,
             "cost_per_solve": 0.5,
             "tool_ok_rate": 1.0,
@@ -129,13 +129,15 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     assert data["models"][0]["id"] == "cheap/win"
     assert data["models"][1]["role"] == "anchor"
     # Value fields surfaced: wall-time and cost-per-solve.
-    assert data["models"][0]["median_latency_ms"] == 8000
+    assert data["models"][0]["mean_latency_ms"] == 8000
     assert data["models"][0]["cost_per_solve_usd"] == 0.001
     # Per-task breakdown is embedded for the deep-dive: one entry per graded task,
     # carrying pass/fail plus the per-task tokens and turns.
     (mt,) = data["models"][0]["tasks"]
     assert mt["id"] == "worldcup-fixtures-guard-01"
     assert mt["passed"] is True and mt["tokens"] == 1000 and mt["turns"] == 4
+    # Per-task cost is carried too, for the scatter's per-task Cloud view.
+    assert mt["cost_usd"] == 0.01
     # The one agentic task appears with its real-test flag, blurb, and pass count.
     (t,) = data["tasks"]
     assert t["id"] == "worldcup-fixtures-guard-01"

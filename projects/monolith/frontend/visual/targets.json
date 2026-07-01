@@ -23,6 +23,7 @@
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },
     { "id": "cv", "path": "/cv" },
-    { "id": "engineering", "path": "/engineering" }
+    { "id": "engineering", "path": "/engineering" },
+    { "id": "llm-leaderboard", "path": "/app/llm-leaderboard" }
   ]
 }
