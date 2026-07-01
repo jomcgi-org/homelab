@@ -182,11 +182,14 @@ func mergeEnv(env map[string]string) []string {
 }
 
 // defaultEgressPorts are the loopback ports the funnel captures when EGRESS_PORTS
-// is unset: HTTP, HTTPS, and the in-cluster model's port. With wildcard DNS every
-// name resolves to loopback, so a destination on any other port connects to
-// loopback with no listener and fails closed rather than escaping. Generic
-// any-port capture (iptables REDIRECT) is future work (ADR 023).
-var defaultEgressPorts = []int{80, 443, 8080}
+// is unset (nothing injects EGRESS_PORTS into a raw-FC guest today, so these
+// defaults are what actually apply). They must cover every port the workload's
+// egress allowlist declares, since wildcard DNS points every name at loopback and
+// only these ports have a funnel listener; any other port fails closed. Covered:
+// 80 (MCP gateway), 443 (HTTPS/open web), 8000 (monolith progress + artifact
+// sink), 8080 (in-cluster model), 4318 (SigNoz OTLP, when tracing is wired).
+// Generic any-port capture (iptables REDIRECT) is future work (ADR 023).
+var defaultEgressPorts = []int{80, 443, 8000, 8080, 4318}
 
 // setupTransparentEgress makes the guest a dumb egress funnel (ADR 023). It
 // points the resolver at a wildcard responder that answers every name with
