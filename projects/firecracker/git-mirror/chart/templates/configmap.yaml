@@ -113,17 +113,18 @@ data:
     echo "[supervisor] starting: mirrors=$MIRRORS_DIR port=$GIT_DAEMON_PORT interval=${REFRESH_INTERVAL}s gc_days=$GC_RETENTION_DAYS"
     mkdir -p "$MIRRORS_DIR"
 
-    # Optional mirror-side GitHub read auth so the mirror can clone PRIVATE repos
-    # (e.g. loom). The token lives ONLY in this trusted pod's ephemeral HOME
-    # (/tmp, emptyDir): it is never written to the PVC (remote URLs stay
-    # token-less) and never reaches a guest (guests clone from the mirror over
-    # git:// with no credential). Reuses the in-namespace token synced from
-    # 1Password. A credential.helper store keyed on github.com covers clone +
-    # every periodic fetch without tokenizing any remote URL.
+    # Optional mirror-side GitHub read auth so the mirror can clone PRIVATE repos.
+    # The token lives ONLY in this trusted pod's ephemeral HOME (/tmp, emptyDir),
+    # never on the PVC and never in a guest (guests clone from the mirror over
+    # git:// with no credential). We use a url.<tokenized>.insteadOf rewrite (pure
+    # git core, applied at transport) rather than credential.helper store, because
+    # the wolfi git package ships no git-credential-store binary ("cannot exec
+    # 'git credential-store get'"). The stored remote URLs stay token-less; the
+    # token only appears in the rewrite in the ephemeral /tmp gitconfig.
     if [ -n "${GITHUB_TOKEN:-}" ]; then
-      git config --global credential.helper store
-      printf 'https://x-access-token:%s@github.com\n' "$GITHUB_TOKEN" > "$HOME/.git-credentials"
-      chmod 600 "$HOME/.git-credentials"
+      git config --global \
+        "url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf" \
+        "https://github.com/"
       echo "[init] GitHub read auth configured (private repos enabled)"
     fi
 

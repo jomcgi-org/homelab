@@ -16,12 +16,10 @@ image:
 repos:
   - name: homelab
     url: https://github.com/jomcgi/homelab.git
-  # loom is a PRIVATE repo; the mirror clones it using githubToken below (a
-  # mirror-side read token that never reaches a guest). A clone failure is still
-  # non-fatal, so a token/scope problem degrades to skipping loom, it does not
-  # crash the mirror.
-  - name: loom
-    url: https://github.com/jomcgi/loom.git
+  # loom is a PRIVATE repo but `jomcgi/loom` does not exist (it is a 50:50 project
+  # with Rowan, so it lives under a different owner/org). Re-add it here with the
+  # CORRECT owner/repo once known: the mirror-side githubToken + insteadOf auth
+  # below is in place, so it is a one-line add. A clone failure stays non-fatal.
 
 # Seconds between git fetch --prune passes. Keep short enough that guests
 # hydrate from a near-head branch, long enough not to hammer GitHub rate limits.
