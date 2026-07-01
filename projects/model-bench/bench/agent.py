@@ -150,7 +150,6 @@ async def run_agent_cell(
     ]
     prompt_tokens = completion_tokens = latency_ms = 0
     turns = 0
-    error: str | None = None
     try:
         for turns in range(1, max_turns + 1):
             res = await chat(
