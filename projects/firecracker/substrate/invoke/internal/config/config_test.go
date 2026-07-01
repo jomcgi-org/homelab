@@ -16,6 +16,10 @@ func TestLoadDefaultsNoWorkloads(t *testing.T) {
 		"FC_INVOKE_LISTEN_ADDR", "FC_INVOKE_NODE",
 		"FC_INVOKE_ARCH", "FC_INVOKE_SNAPSHOT_ROOT",
 		"FC_INVOKE_WORKLOADS", "FC_INVOKE_WORKLOADS_FILE",
+		"FC_INVOKE_FIRECRACKER_BIN", "FC_INVOKE_KERNEL_IMAGE",
+		"FC_INVOKE_KERNEL_BOOT_ARGS", "FC_INVOKE_HARNESS_INIT",
+		"FC_INVOKE_CANONICAL_VSOCK_DIR", "FC_INVOKE_GUEST_OOM_SCORE_ADJ",
+		"FC_INVOKE_BOOT_READY_TIMEOUT", "NODE_NAME",
 	} {
 		t.Setenv(k, "")
 	}
@@ -33,6 +37,24 @@ func TestLoadDefaultsNoWorkloads(t *testing.T) {
 	if len(c.Workloads) != 0 {
 		t.Errorf("Workloads = %v, want empty map", c.Workloads)
 	}
+	if c.BinPath != "/opt/kata/bin/firecracker" {
+		t.Errorf("BinPath = %q, want /opt/kata/bin/firecracker", c.BinPath)
+	}
+	if c.KernelImagePath != "/opt/kata/share/kata-containers/vmlinux.container" {
+		t.Errorf("KernelImagePath = %q, want the kata vmlinux.container default", c.KernelImagePath)
+	}
+	if c.HarnessInit != "/usr/local/bin/fc-shim-init" {
+		t.Errorf("HarnessInit = %q, want /usr/local/bin/fc-shim-init", c.HarnessInit)
+	}
+	if c.CanonicalVsockDir != "/disks/nvme-02/fc-invoke-vsock" {
+		t.Errorf("CanonicalVsockDir = %q, want /disks/nvme-02/fc-invoke-vsock", c.CanonicalVsockDir)
+	}
+	if c.GuestOomScoreAdj != 1000 {
+		t.Errorf("GuestOomScoreAdj = %d, want 1000", c.GuestOomScoreAdj)
+	}
+	if c.BootReadyTimeout != 60*time.Second {
+		t.Errorf("BootReadyTimeout = %s, want 60s", c.BootReadyTimeout)
+	}
 }
 
 // TestLoadWorkloadsInlineJSON verifies that a JSON object set in
@@ -44,6 +66,7 @@ func TestLoadWorkloadsInlineJSON(t *testing.T) {
 	t.Setenv("FC_INVOKE_WORKLOADS", `{
 		"semgrep": {
 			"image": "semgrep-guest",
+			"rootfsPath": "/disks/nvme-02/images/semgrep-guest.ext4",
 			"egressEnabled": false,
 			"warmBase": true
 		},
@@ -83,6 +106,9 @@ func TestLoadWorkloadsInlineJSON(t *testing.T) {
 	}
 	if !sg.WarmBase {
 		t.Error("semgrep WarmBase = false, want true")
+	}
+	if sg.RootfsPath != "/disks/nvme-02/images/semgrep-guest.ext4" {
+		t.Errorf("semgrep RootfsPath = %q, want /disks/nvme-02/images/semgrep-guest.ext4", sg.RootfsPath)
 	}
 
 	// Verify artifact workload explicit values.
