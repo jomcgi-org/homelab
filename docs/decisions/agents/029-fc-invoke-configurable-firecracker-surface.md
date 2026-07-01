@@ -50,7 +50,7 @@ graph TB
     Caller["caller: monolith MCP / Discord bot / CI webhook"]
     Caller -->|"POST /invoke/{workload}[/{session}]"| FCI
 
-    subgraph FCI["fc-invoke daemon (node-4) — stateless"]
+    subgraph FCI["fc-invoke daemon (node-4, stateless)"]
         REG["workload registry<br/>(Helm values)"]
         SEM["per-workload concurrency cap"]
         WB["warm-base manager"]
