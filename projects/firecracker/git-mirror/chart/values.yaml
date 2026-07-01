@@ -1,0 +1,82 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/firecracker/git-mirror
+  tag: latest
+  pullPolicy: Always
+
+# List of repos to mirror. Each entry: name (used as the bare clone dir
+# <name>.git under the mirrors volume) and url (upstream fetch URL). The
+# supervisor clones each repo on first start if absent, configures
+# +refs/heads/*:refs/heads/* and +refs/tags/*:refs/tags/* as the only fetch
+# refspecs (never refs/agents/**), and installs a pre-receive hook that
+# restricts pushes to refs/agents/** only. Structured so a DB-backed registry
+# can replace this static list later (ADR 026 open question 2).
+repos:
+  - name: homelab
+    url: https://github.com/jomcgi/homelab.git
+  - name: loom
+    url: https://github.com/jomcgi/loom.git
+
+# Seconds between git fetch --prune passes. Keep short enough that guests
+# hydrate from a near-head branch, long enough not to hammer GitHub rate limits.
+refreshIntervalSeconds: 60
+
+# Port git-daemon listens on (git:// protocol). Matches the internalAllowlist
+# entry in the fc-invoke egress config.
+gitDaemonPort: 9418
+
+# Stale scratch-ref GC. Set to a positive integer to delete refs/agents/** refs
+# older than this many days and run git gc --auto after each refresh pass.
+# 0 (default) disables GC entirely; enable once scratch refs accumulate.
+gcRetentionDays: 0
+
+# Persistent volume for bare clone storage. All repos + their scratch refs live
+# here across pod restarts. Size to fit both repos' full history plus scratch
+# refs with headroom; ~10Gi covers the homelab + loom repos comfortably.
+mirrors:
+  storageClass: longhorn
+  size: 10Gi
+
+# Pin to node-4: Firecracker guests are node-bound and reach the mirror via
+# the egress-proxy sidecar's node-local hop. This deployment must be co-located.
+nodeSelector:
+  kubernetes.io/hostname: node-4
+
+tolerations: []
+affinity: {}
+
+# Linkerd injection disabled: the mirror is an in-cluster TCP service reached
+# via the egress-proxy; Linkerd sidecars are not needed here and would add
+# unnecessary latency and resource overhead to a node-local hop.
+podAnnotations:
+  linkerd.io/inject: disabled
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Resource sizing: git-daemon + a refresh loop are lightweight. CPU request only
+# (no limit per repo convention); memory request = limit.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 256Mi
+
+serviceAccount:
+  create: false
+  name: ""

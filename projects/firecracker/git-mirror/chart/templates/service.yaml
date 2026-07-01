@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "git-mirror.fullname" . }}
+  labels:
+    {{- include "git-mirror.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  # Node-local traffic policy: Firecracker guests are on node-4 and reach the
+  # mirror via the egress-proxy sidecar on the same node. This ensures git://
+  # connections are served by the co-located pod, not forwarded to a remote
+  # endpoint (which would be unavailable anyway since we pin to a single node).
+  internalTrafficPolicy: Local
+  selector:
+    {{- include "git-mirror.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: git
+      port: {{ .Values.gitDaemonPort }}
+      targetPort: git
+      protocol: TCP
