@@ -435,6 +435,23 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
+    # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
+    # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
+    # calls), and upserts campsites.{campgrounds,availability,weather}.
+    - name: campsites-refresh
+      replaces: campsites.refresh
+      args: ["campsites-refresh"]
+      schedule: "0 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 900
+      suspend: false
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""

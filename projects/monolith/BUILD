@@ -98,6 +98,11 @@ py_venv_binary(
         # Path(__file__).parent/"ratings"/"elo_2026.json"; the "worldcup/**/*.py"
         # glob does not capture the .json, so ship it explicitly into runfiles.
         "worldcup/ratings/elo_2026.json",
+        # campsites.client.load_catalog reads this committed static catalog at
+        # runtime via importlib.resources.files("campsites")/"catalog.json"; the
+        # "campsites/**/*.py" glob does not capture the .json, so ship it into
+        # runfiles explicitly (mirrors the worldcup Elo snapshot above).
+        "campsites/catalog.json",
         "knowledge/repo_docs_manifest.ndjson",
         ":frontend_dist",
     ],
@@ -122,6 +127,11 @@ py_venv_binary(
     data = [
         "knowledge/repo_docs_manifest.ndjson",
         "worldcup/ratings/elo_2026.json",
+        # The campsites-refresh job (campsites.jobs.refresh_handler) reads this
+        # static catalog from runfiles via campsites.client.load_catalog, so it
+        # must ship in the jobs image too (data on :main does not propagate to
+        # this separate binary).
+        "campsites/catalog.json",
     ],
     imports = ["."],  # keep
     main = "app/jobs_main.py",
@@ -232,6 +242,7 @@ py_library(
         "@pip//beautifulsoup4",
         "@pip//boto3",
         "@pip//certifi",
+        "@pip//curl_cffi",  # campsites/client.py (browser-TLS impersonation vs BC Parks WAF)
         "@pip//defusedxml",  # trips/transform.py (KML parsing)
         "@pip//discord_py",
         "@pip//dulwich",
@@ -364,10 +375,12 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "worldcup/ratings/elo_2026.json",
     # Campsites: only the read path (models.py + router.py + __init__.py) ships in
     # the public image. The scraper and weather-fetch modules (jobs/client/weather)
-    # pull httpx/scheduler and stay out of the public binary.
+    # pull curl_cffi/httpx and stay out of the public binary, as does the run-by-hand
+    # catalog generator (gen_catalog.py).
     "campsites/jobs.py",
     "campsites/client.py",
     "campsites/weather.py",
+    "campsites/gen_catalog.py",
     # Private entrypoint + MCP app.
     "app/main.py",
     "app/mcp_app.py",
@@ -2922,6 +2935,9 @@ py_test(
 py_test(
     name = "campsites_client_test",
     srcs = ["campsites/client_test.py"],
+    # The load_catalog / _read_catalog_json tests read the committed static
+    # catalog from runfiles, so ship it as test data.
+    data = ["campsites/catalog.json"],
     imports = ["."],
     deps = [
         ":monolith_backend",
@@ -2936,6 +2952,17 @@ py_test(
     deps = [
         ":monolith_backend",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "campsites_jobs_test",
+    srcs = ["campsites/jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 

@@ -1,22 +1,28 @@
 """BC Parks GoingToCamp reservation API client.
 
-Talks to camping.bcparks.ca (Azure WAF-protected) to fetch campground catalog
-and nightly availability. The WAF passes browser-like requests; every call
-must send the HEADERS dict defined below or the server returns 403.
+Talks to camping.bcparks.ca (Azure WAF-protected) to fetch nightly
+availability. The WAF fingerprints the TLS handshake (JA3), so httpx and urllib
+get a 403 even with perfect browser headers: only a browser-TLS-impersonating
+client passes. We use curl_cffi with impersonate="chrome". The HEADERS dict is
+still sent on every call as defence in depth.
 
-This module has NO database writes. It is used only by campsites.jobs (the
-hourly refresh job). It is excluded from the public binary.
+The campground catalog is STATIC (committed at campsites/catalog.json, generated
+offline by gen_catalog.py); load_catalog() reads it at runtime rather than
+scraping it live. This module has NO database writes. It is used only by
+campsites.jobs (the hourly refresh job) and is excluded from the public binary.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 import random
 from dataclasses import dataclass
+from pathlib import Path
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 logger = logging.getLogger("monolith.campsites")
 
@@ -73,132 +79,74 @@ class DayAvail:
 
 
 # ---------------------------------------------------------------------------
-# Helpers (pure, no network)
+# Static catalog loader
 # ---------------------------------------------------------------------------
 
+BOOKING_ROOT = "https://camping.bcparks.ca/"
 
-def _extract_gps(entry: dict) -> tuple[float, float] | None:
-    """Extract (latitude, longitude) from a resourceLocation entry.
 
-    The API has been observed to serve gpsCoordinates in at least two shapes:
-      flat:   {"latitude": 49.x, "longitude": -119.x}
-      nested: {"point": {"latitude": 49.x, "longitude": -119.x}}
+def _read_catalog_json() -> list[dict]:
+    """Locate and parse the packaged catalog.json.
 
-    We try the flat shape first, then probe any nested dict values as a
-    fallback. Returns None when coordinates are absent or non-numeric.
+    Prefers importlib.resources (robust under Bazel runfiles, where the file
+    ships as a data dependency next to this package) and falls back to the
+    filesystem path beside this module for a plain source checkout.
     """
-    gps = entry.get("gpsCoordinates")
-    if not gps:
-        return None
-
-    lat = gps.get("latitude")
-    lon = gps.get("longitude")
-
-    if lat is None or lon is None:
-        for v in gps.values():
-            if isinstance(v, dict):
-                lat = v.get("latitude")
-                lon = v.get("longitude")
-                if lat is not None and lon is not None:
-                    break
-
     try:
-        return float(lat), float(lon)
-    except (TypeError, ValueError):
-        return None
+        from importlib.resources import files
+
+        text = files("campsites").joinpath("catalog.json").read_text(encoding="utf-8")
+    except Exception:
+        logger.debug(
+            "campsites: importlib.resources catalog lookup failed, "
+            "falling back to the module-relative path",
+            exc_info=True,
+        )
+        text = (Path(__file__).parent / "catalog.json").read_text(encoding="utf-8")
+    return json.loads(text)
 
 
-def _pick_localized(values: list, culture: str = "en-CA") -> dict:
-    """Return the localized entry for ``culture``, or the first entry if absent."""
-    if not values:
-        return {}
-    for v in values:
-        if v.get("cultureName") == culture:
-            return v
-    return values[0]
+def load_catalog() -> list[CampgroundRow]:
+    """Load the committed static campground catalog as CampgroundRow rows.
 
-
-# ---------------------------------------------------------------------------
-# Pure catalog + availability parsers (unit-tested)
-# ---------------------------------------------------------------------------
-
-
-def parse_catalog(resource_json: list, maps_json: list) -> list[CampgroundRow]:
-    """Join maps links to resourceLocation entries and return CampgroundRows.
-
-    Builds a resourceLocationId -> (childMapId, map_title) index from maps_json,
-    then iterates resource_json to produce rows. Entries with no matching
-    park_map_id or no GPS coordinates are dropped and logged at DEBUG level.
-    If one resourceLocationId appears in multiple mapLinks, the first is kept.
-
-    Name resolution order: en-CA shortName -> en-CA fullName -> map link title.
-    booking_url is BASE + "/" for now (a later task may refine to per-park URLs).
+    Reads campsites/catalog.json (generated offline by gen_catalog.py). The
+    runtime job does NOT scrape the catalog; it only fetches availability and
+    weather live each hour. Rows with a null latitude or longitude are skipped
+    and logged at WARNING: the map cannot plot them and the weather join needs
+    coordinates. booking_url is the park's bcparks.ca website when present, else
+    the GoingToCamp reservation root.
     """
-    # Build resourceLocationId -> (childMapId, title) from the maps tree.
-    map_index: dict[int, tuple[int, str]] = {}
-    for top in maps_json or []:
-        for link in top.get("mapLinks", []) or []:
-            rid = link.get("resourceLocationId")
-            child_map_id = link.get("childMapId")
-            if rid is None or child_map_id is None:
-                continue
-            rid = int(rid)
-            if rid in map_index:
-                continue  # keep the first link per location
-            locs = link.get("localizations") or []
-            loc = _pick_localized(locs)
-            title = loc.get("title") or ""
-            map_index[rid] = (int(child_map_id), title)
-
     rows: list[CampgroundRow] = []
-    for entry in resource_json or []:
-        rid = entry.get("resourceLocationId")
-        if rid is None:
-            continue
-        rid = int(rid)
-
-        if rid not in map_index:
-            logger.debug(
-                "campsites catalog: resourceLocationId %d has no map link, skipping",
-                rid,
+    for entry in _read_catalog_json():
+        lat = entry.get("latitude")
+        lon = entry.get("longitude")
+        if lat is None or lon is None:
+            logger.warning(
+                "campsites catalog: park %s (%s) has no coordinates, skipping",
+                entry.get("resource_location_id"),
+                entry.get("name"),
             )
             continue
-
-        park_map_id, map_title = map_index[rid]
-
-        gps = _extract_gps(entry)
-        if gps is None:
-            logger.debug(
-                "campsites catalog: resourceLocationId %d has no GPS coords, skipping",
-                rid,
-            )
-            continue
-
-        lat, lon = gps
-        loc_vals = entry.get("localizedValues") or []
-        loc = _pick_localized(loc_vals)
-        short_name = loc.get("shortName") or ""
-        full_name = loc.get("fullName") or ""
-        name = short_name or full_name or map_title or ""
-        description = loc.get("description") or ""
-        region = entry.get("region") or ""
-        iana_tz = entry.get("ianaTimeZone") or "America/Vancouver"
-
+        website = entry.get("website") or ""
         rows.append(
             CampgroundRow(
-                resource_location_id=rid,
-                park_map_id=park_map_id,
-                name=name,
-                region=region,
-                latitude=lat,
-                longitude=lon,
-                iana_tz=iana_tz,
-                description=description,
-                booking_url=BASE + "/",
+                resource_location_id=int(entry["resource_location_id"]),
+                park_map_id=int(entry["park_map_id"]),
+                name=entry.get("name") or "",
+                region=entry.get("region") or "",
+                latitude=float(lat),
+                longitude=float(lon),
+                iana_tz=entry.get("iana_tz") or "America/Vancouver",
+                description=entry.get("description") or "",
+                booking_url=website or BOOKING_ROOT,
             )
         )
-
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Pure availability parser (unit-tested)
+# ---------------------------------------------------------------------------
 
 
 def merge_availability(
@@ -237,33 +185,17 @@ def merge_availability(
 
 
 # ---------------------------------------------------------------------------
-# Async network functions (caller passes an httpx.AsyncClient)
+# Async network functions (caller passes a curl_cffi AsyncSession)
+#
+# The session MUST be created with impersonate="chrome" (or another browser
+# profile). That is what defeats the Azure WAF's JA3 TLS fingerprint check;
+# httpx and urllib get a 403 regardless of headers. HEADERS is still passed on
+# every request as defence in depth.
 # ---------------------------------------------------------------------------
 
 
-async def fetch_catalog(client: httpx.AsyncClient) -> list[CampgroundRow]:
-    """GET the resourceLocation and maps catalogs, join, and return CampgroundRows.
-
-    The client must be configured with HEADERS (so the WAF passes the request).
-    Returns an empty list on any network or parse error (logged at ERROR).
-    """
-    try:
-        r_res = await client.get(f"{BASE}/api/resourceLocation")
-        r_res.raise_for_status()
-        resource_json = r_res.json()
-
-        r_maps = await client.get(f"{BASE}/api/maps")
-        r_maps.raise_for_status()
-        maps_json = r_maps.json()
-
-        return parse_catalog(resource_json, maps_json)
-    except Exception:
-        logger.error("campsites: catalog fetch failed", exc_info=True)
-        return []
-
-
 async def fetch_availability(
-    client: httpx.AsyncClient,
+    session: AsyncSession,
     cg: CampgroundRow,
     start_date: datetime.date,
 ) -> list[DayAvail] | None:
@@ -284,7 +216,12 @@ async def fetch_availability(
         "partySize": 4,
     }
     try:
-        resp = await client.get(f"{BASE}/api/availability/map", params=params)
+        resp = await session.get(
+            f"{BASE}/api/availability/map",
+            params=params,
+            headers=HEADERS,
+            timeout=25,
+        )
         resp.raise_for_status()
         return merge_availability(resp.json(), start_date)
     except Exception:
@@ -297,7 +234,7 @@ async def fetch_availability(
 
 
 async def fetch_all_availability(
-    client: httpx.AsyncClient,
+    session: AsyncSession,
     cats: list[CampgroundRow],
     start_date: datetime.date,
 ) -> dict[int, list[DayAvail]]:
@@ -318,11 +255,11 @@ async def fetch_all_availability(
             jitter = random.Random(i).uniform(0, 0.3)
             await asyncio.sleep(INTER_REQUEST_DELAY_S + jitter)
 
-        avail = await fetch_availability(client, cg, start_date)
+        avail = await fetch_availability(session, cg, start_date)
 
         if avail is None:
             await asyncio.sleep(2.0)
-            avail = await fetch_availability(client, cg, start_date)
+            avail = await fetch_availability(session, cg, start_date)
 
         if avail is None:
             consecutive_failures += 1
