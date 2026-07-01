@@ -44,6 +44,12 @@ FC_INVOKE_URL = os.environ.get("FC_INVOKE_URL", "")
 # guest's id-less {"chunk": ...} posts land in the right per-session buffer.
 PROGRESS_URL_BASE = os.environ.get("GOOSECRACKER_PROGRESS_URL", "")
 
+# Base URL of the in-cluster git mirror. Injected from Helm values
+# (GOOSECRACKER_GIT_MIRROR); never hardcoded here (semgrep no-hardcoded-k8s-service-url).
+# When set, the runner defaults every agent run to clone from <mirror>/homelab
+# unless the caller specifies git_mirror explicitly.
+GOOSECRACKER_GIT_MIRROR = os.environ.get("GOOSECRACKER_GIT_MIRROR", "")
+
 # A fast connect surfaces a down daemon quickly; a generous read budget lets a
 # multi-turn goose run finish (cold Qwen runs take minutes).
 _CONNECT_TIMEOUT = 5.0
@@ -57,6 +63,25 @@ def _progress_url(session: str) -> str:
     if not PROGRESS_URL_BASE:
         return ""
     return f"{PROGRESS_URL_BASE.rstrip('/')}/{session}"
+
+
+def _effective_mirror_ref(git_mirror: str, git_ref: str) -> tuple[str, str]:
+    """Return the (mirror URL, ref) pair for a goose run, applying defaults.
+
+    When the caller does not specify a mirror, defaults to
+    ``<GOOSECRACKER_GIT_MIRROR>/homelab`` (the in-cluster mirror). When no ref
+    is specified, defaults to ``main``. Both values are passed through
+    unchanged when explicitly supplied by the caller, so an override always
+    wins.
+
+    Returns ("", "main") when GOOSECRACKER_GIT_MIRROR is also unset, which
+    makes the handler skip the clone step entirely (no mirror configured).
+    """
+    effective_mirror = git_mirror
+    if not effective_mirror and GOOSECRACKER_GIT_MIRROR:
+        effective_mirror = GOOSECRACKER_GIT_MIRROR.rstrip("/") + "/homelab"
+    effective_ref = git_ref or "main"
+    return effective_mirror, effective_ref
 
 
 def _truncate(text_body: str) -> str:
@@ -125,7 +150,9 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     Artifact runs publish the built HTML and post a clean ``Artifact ready: <url>``
     (plus the recipe's one-line summary) instead of the raw goose transcript. A run
     that was meant to build an artifact but produced none gets a clear miss message.
-    Any other run posts its (truncated) result text.
+    Any other run posts its (truncated) result text. When the guest recorded a
+    scratch ref (WS3), a ``recorded: refs/agents/<session>`` line is appended for
+    all run types.
     """
     html = data.get("artifactHtml")
     if html:
@@ -136,10 +163,16 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
             logger.exception("goosecracker: artifact publish failed for %s", session)
             return "Build finished, but publishing the artifact failed. Check the logs."
         summary = _extract_summary(data.get("result", "") or "")
-        return f"Artifact ready: {url}" + (f"\n\n{summary}" if summary else "")
-    if recipe == "artifact":
-        return "Build finished but produced no artifact. Try rephrasing the request."
-    return _truncate(data.get("result", "") or "(no output)")
+        msg = f"Artifact ready: {url}" + (f"\n\n{summary}" if summary else "")
+    elif recipe == "artifact":
+        msg = "Build finished but produced no artifact. Try rephrasing the request."
+    else:
+        msg = _truncate(data.get("result", "") or "(no output)")
+
+    recorded_ref = data.get("recordedRef")
+    if recorded_ref:
+        msg += f"\nrecorded: {recorded_ref}"
+    return msg
 
 
 async def _persist_session_db(session: str, session_db_b64: str | None) -> None:
@@ -186,14 +219,19 @@ async def run_and_deliver(
         # falls back to cold if the db fails to hydrate/resume.
         # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
         session_db = await asyncio.to_thread(sessions.load, session)
+        # WS2 - Hydration: default the mirror and ref when the caller did not
+        # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
+        # via Helm values. An empty effective_mirror means no clone (no mirror
+        # configured in this environment).
+        effective_mirror, effective_ref = _effective_mirror_ref(git_mirror, git_ref)
         payload = {
             "recipe": recipe,
             "task": task,
             "session": session,
             "env": env,
             "progressUrl": _progress_url(session),
-            "gitMirror": git_mirror,
-            "gitRef": git_ref,
+            "gitMirror": effective_mirror,
+            "gitRef": effective_ref,
             "resume": session_db is not None,
             "sessionDb": base64.b64encode(session_db).decode() if session_db else "",
         }

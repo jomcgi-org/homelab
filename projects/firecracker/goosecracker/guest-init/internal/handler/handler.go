@@ -53,29 +53,39 @@ type AgentRequest struct {
 }
 
 // AgentResult is the JSON body of a successful /invoke response. Status is "ok"
-// when goose ran to completion and "error" when the clone or goose run failed;
-// both are returned at HTTP 200, because a run that ran but failed is data, not
-// a transport error. Only an undecodable request body yields a handler error
+// when goose ran to completion and "error" when the goose run failed; both are
+// returned at HTTP 200, because a run that ran but failed is data, not a
+// transport error. Only an undecodable request body yields a handler error
 // (which the shim maps to 502). SessionDb carries the updated goose session back
-// (base64) so the orchestrator can persist it for the next resume.
+// (base64) so the orchestrator can persist it for the next resume. RecordedRef
+// is the git ref pushed to the mirror on a successful scratch-ref recording
+// (WS3); empty when no changes were committed or no mirror is configured.
 type AgentResult struct {
 	Status       string `json:"status"`                 // "ok" | "error"
 	Result       string `json:"result,omitempty"`       // goose output captured from the run
 	Error        string `json:"error,omitempty"`        // failure detail when Status == "error"
 	SessionDb    string `json:"sessionDb,omitempty"`    // base64 updated sessions.db to persist
 	ArtifactHTML string `json:"artifactHtml,omitempty"` // the built artifact HTML for the orchestrator to publish (ADR 024)
+	RecordedRef  string `json:"recordedRef,omitempty"`  // git ref pushed to the mirror (WS3); empty when no changes
 }
 
-// Runner is the seam the handler uses to run goose and (optionally) clone a git
-// mirror. The production implementation shells goose and git via os/exec; tests
-// inject a fake so the handler is exercised with no goose/git binary present.
+// Runner is the seam the handler uses to run goose and (optionally) clone a
+// git mirror or record workspace changes after a run. The production
+// implementation shells goose and git via os/exec; tests inject a fake so the
+// handler is exercised with no goose/git binary present.
 type Runner interface {
 	// Run executes argv with env overlaid on the process environment, invoking
 	// onLine for each output line as it is produced, and returns the full
 	// captured output. A non-nil error means goose ran but exited non-zero.
 	Run(ctx context.Context, argv []string, env map[string]string, onLine func(string)) (string, error)
-	// Clone replicates the repository at mirror into dest and checks out ref.
+	// Clone replicates the repository at mirror into dest (shallow partial
+	// clone) and checks out ref.
 	Clone(ctx context.Context, mirror, ref, dest string) error
+	// RecordScratch commits any workspace changes and pushes them to
+	// refs/agents/<session> on mirrorURL (WS3 scratch-ref recording). Returns
+	// the pushed ref name, or an empty string when nothing was committed. The
+	// caller treats a non-nil error as best-effort: log and continue.
+	RecordScratch(ctx context.Context, workspace, mirrorURL, session string) (string, error)
 }
 
 // SessionStore hydrates and exports goose's SQLite session db for stateful resume
@@ -122,12 +132,15 @@ func New(runner Runner, opts ...Option) shim.Handler {
 			return nil, fmt.Errorf("handler: decode agent request: %w", err)
 		}
 
-		// Seed the workspace from the git mirror before goose starts, so the recipe
-		// operates on a checked-out tree. A clone failure is a run failure, not a
-		// transport error, so it is reported as an error result at 200.
+		// Seed the workspace from the git mirror before goose starts so the recipe
+		// operates on a checked-out tree. Clone failures are soft (best-effort per
+		// ADR 026 risk row): log and continue with an empty workspace rather than
+		// aborting the run. An agent can still complete useful work even without the
+		// checked-out source.
 		if req.GitMirror != "" {
 			if err := runner.Clone(ctx, req.GitMirror, req.GitRef, Workspace); err != nil {
-				return jsonResult(AgentResult{Status: "error", Error: fmt.Sprintf("clone %s: %v", req.GitMirror, err)})
+				slog.Warn("handler: mirror clone failed; continuing with empty workspace",
+					"mirror", req.GitMirror, "ref", req.GitRef, "err", err)
 			}
 		}
 
@@ -187,6 +200,21 @@ func New(runner Runner, opts ...Option) shim.Handler {
 		if html := readArtifact(); len(html) > 0 {
 			result.ArtifactHTML = string(html)
 		}
+
+		// WS3 - Scratch-ref recording: commit workspace changes and push them to
+		// refs/agents/<session> on the mirror. Best-effort: a commit/push failure
+		// must not fail a run that already succeeded. The mirror is the same one we
+		// hydrated from (WS2), so it already has the base commit and the push is
+		// thin.
+		if req.GitMirror != "" {
+			if ref, err := runner.RecordScratch(ctx, Workspace, req.GitMirror, req.Session); err != nil {
+				slog.Warn("handler: scratch ref recording failed; run still succeeded",
+					"mirror", req.GitMirror, "session", req.Session, "err", err)
+			} else if ref != "" {
+				result.RecordedRef = ref
+			}
+		}
+
 		return jsonResult(result)
 	}
 }

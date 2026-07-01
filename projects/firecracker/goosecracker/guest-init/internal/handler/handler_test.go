@@ -17,8 +17,8 @@ import (
 )
 
 // fakeRunner is a Runner test double: it records the argv/env it was invoked
-// with, replays a canned set of output lines through onLine, and reports whether
-// Clone was called and with which args. It runs no real goose or git.
+// with, replays a canned set of output lines through onLine, and records Clone
+// and RecordScratch calls. It runs no real goose or git.
 type fakeRunner struct {
 	lines    []string
 	out      string
@@ -30,6 +30,14 @@ type fakeRunner struct {
 	cloneCall struct {
 		called            bool
 		mirror, ref, dest string
+	}
+
+	// RecordScratch seam: configure the returned ref and error.
+	recordScratchRef  string
+	recordScratchErr  error
+	recordScratchCall struct {
+		called                        bool
+		workspace, mirrorURL, session string
 	}
 }
 
@@ -46,6 +54,14 @@ func (f *fakeRunner) Clone(_ context.Context, mirror, ref, dest string) error {
 	f.cloneCall.called = true
 	f.cloneCall.mirror, f.cloneCall.ref, f.cloneCall.dest = mirror, ref, dest
 	return f.cloneErr // nosemgrep: no-bare-error-return
+}
+
+func (f *fakeRunner) RecordScratch(_ context.Context, workspace, mirrorURL, session string) (string, error) {
+	f.recordScratchCall.called = true
+	f.recordScratchCall.workspace = workspace
+	f.recordScratchCall.mirrorURL = mirrorURL
+	f.recordScratchCall.session = session
+	return f.recordScratchRef, f.recordScratchErr // nosemgrep: no-bare-error-return
 }
 
 // progressSink is an httptest server that records the "chunk" of every progress
@@ -182,11 +198,14 @@ func TestGitMirrorTriggersCloneIntoWorkspace(t *testing.T) {
 	}
 }
 
-func TestCloneFailureIsErrorResultAt200(t *testing.T) {
-	runner := &fakeRunner{cloneErr: io.ErrUnexpectedEOF}
+func TestCloneFailureContinuesWithEmptyWorkspace(t *testing.T) {
+	// Clone failure is soft (best-effort per ADR 026): the run continues with an
+	// empty workspace rather than aborting. The result is "ok" when goose itself
+	// succeeds, even though the mirror clone failed.
+	runner := &fakeRunner{cloneErr: io.ErrUnexpectedEOF, out: "ok despite no workspace"}
 	h := New(runner)
 
-	req := AgentRequest{Recipe: "agent", Task: "t", GitMirror: "https://git/mirror.git"}
+	req := AgentRequest{Recipe: "agent", Task: "t", GitMirror: "git://mirror:9418/repo", GitRef: "main"}
 	body, _ := json.Marshal(req)
 
 	resp, err := invoke(t, h, string(body))
@@ -197,8 +216,132 @@ func TestCloneFailureIsErrorResultAt200(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.Status)
 	}
 	res := decodeResult(t, resp)
-	if res.Status != "error" || res.Error == "" {
-		t.Errorf("want error result, got %+v", res)
+	// clone failure is soft: the run must not be reported as an error
+	if res.Status != "ok" {
+		t.Errorf("clone failure should not fail the run (soft-fail); got status %q error %q", res.Status, res.Error)
+	}
+}
+
+// TestHandlerRecordsScratchRefOnSuccess verifies that after a successful goose
+// run the handler calls RecordScratch and populates RecordedRef in the result.
+func TestHandlerRecordsScratchRefOnSuccess(t *testing.T) {
+	r := &fakeRunner{out: "done", recordScratchRef: "refs/agents/sess-5"}
+	h := New(r)
+
+	req := AgentRequest{
+		Recipe:    "agent",
+		Task:      "t",
+		Session:   "sess-5",
+		GitMirror: "git://mirror:9418/repo",
+		GitRef:    "main",
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if res.Status != "ok" {
+		t.Fatalf("status = %q, want ok", res.Status)
+	}
+
+	// RecordScratch must have been called with the right args.
+	if !r.recordScratchCall.called {
+		t.Fatal("RecordScratch was not called")
+	}
+	if r.recordScratchCall.workspace != Workspace {
+		t.Errorf("RecordScratch workspace = %q, want %q", r.recordScratchCall.workspace, Workspace)
+	}
+	if r.recordScratchCall.mirrorURL != "git://mirror:9418/repo" {
+		t.Errorf("RecordScratch mirrorURL = %q, want git://mirror:9418/repo", r.recordScratchCall.mirrorURL)
+	}
+	if r.recordScratchCall.session != "sess-5" {
+		t.Errorf("RecordScratch session = %q, want sess-5", r.recordScratchCall.session)
+	}
+
+	// RecordedRef set in the result.
+	if res.RecordedRef != "refs/agents/sess-5" {
+		t.Errorf("RecordedRef = %q, want refs/agents/sess-5", res.RecordedRef)
+	}
+}
+
+// TestHandlerSkipsScratchWhenNoChanges verifies that when RecordScratch returns
+// ("", nil) (workspace clean), RecordedRef is empty in the result.
+func TestHandlerSkipsScratchWhenNoChanges(t *testing.T) {
+	r := &fakeRunner{out: "done", recordScratchRef: ""} // empty ref = no changes
+	h := New(r)
+
+	req := AgentRequest{
+		Recipe:    "agent",
+		Task:      "t",
+		Session:   "sess-6",
+		GitMirror: "git://mirror:9418/repo",
+		GitRef:    "main",
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if res.Status != "ok" {
+		t.Fatalf("status = %q, want ok", res.Status)
+	}
+	if res.RecordedRef != "" {
+		t.Errorf("RecordedRef = %q, want empty when no changes", res.RecordedRef)
+	}
+}
+
+// TestHandlerScratchFailureDoesNotFailRun verifies that a RecordScratch error
+// does not fail a run that already succeeded (best-effort, non-fatal).
+func TestHandlerScratchFailureDoesNotFailRun(t *testing.T) {
+	r := &fakeRunner{out: "done", recordScratchErr: io.ErrUnexpectedEOF}
+	h := New(r)
+
+	req := AgentRequest{
+		Recipe:    "agent",
+		Task:      "t",
+		Session:   "sess-7",
+		GitMirror: "git://mirror:9418/repo",
+		GitRef:    "main",
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	// A RecordScratch failure must not change the run status from "ok".
+	if res.Status != "ok" {
+		t.Errorf("RecordScratch failure should not fail the run; got status %q", res.Status)
+	}
+	if res.RecordedRef != "" {
+		t.Errorf("RecordedRef = %q, want empty on failure", res.RecordedRef)
+	}
+}
+
+// TestHandlerSkipsScratchWhenNoMirrorSet verifies that when no GitMirror is
+// provided, RecordScratch is not called at all.
+func TestHandlerSkipsScratchWhenNoMirrorSet(t *testing.T) {
+	r := &fakeRunner{out: "done"}
+	h := New(r)
+
+	req := AgentRequest{Recipe: "agent", Task: "t", Session: "sess-8"}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	res := decodeResult(t, resp)
+	if res.Status != "ok" {
+		t.Fatalf("status = %q, want ok", res.Status)
+	}
+	if r.recordScratchCall.called {
+		t.Error("RecordScratch must not be called when no GitMirror is set")
 	}
 }
 
