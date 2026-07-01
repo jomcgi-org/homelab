@@ -54,6 +54,38 @@ def render_leaderboard(
         lines.append("No qualifying budget candidates yet.")
     lines.append("")
 
+    # All results: every candidate x class, including non-qualifiers, so rejects
+    # (models that fail the bar or cost more than it) stay visible instead of
+    # vanishing from the only candidate table. This tool is used to reject models,
+    # so the rejects have to be shown.
+    lines.append("## All results")
+    lines.append("")
+    all_rows: list[dict] = []
+    for model_id, class_data in per_class.items():
+        for cls, scores in class_data.items():
+            all_rows.append(
+                {
+                    "model": model_id,
+                    "class": cls,
+                    "pass1": scores.get("pass1", 0.0),
+                    "cost": scores.get("cost", 0.0),
+                    "tier": scores.get("tier", ""),
+                    "qualifies": "yes" if scores.get("qualifies") else "no",
+                }
+            )
+    all_rows.sort(key=lambda r: (r["class"], r["cost"]))
+    if all_rows:
+        lines.append("| Model | Class | pass@1 | cost ($) | tier | qualifies |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for row in all_rows:
+            lines.append(
+                f"| {row['model']} | {row['class']} | {row['pass1']:.2f} "
+                f"| {row['cost']:.4f} | {row['tier']} | {row['qualifies']} |"
+            )
+    else:
+        lines.append("No results yet.")
+    lines.append("")
+
     # Anchors: baseline pass1/cost per class
     lines.append("## Anchors")
     lines.append("")

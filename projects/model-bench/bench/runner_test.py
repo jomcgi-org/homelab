@@ -31,6 +31,16 @@ def test_extract_unfenced_passthrough():
     }
 
 
+def test_extract_single_target_ignores_mismatched_file_path():
+    # Model wrote `FILE values.yaml` but the target is `chart/values.yaml`. The
+    # content must still map to the target, not be dropped (which would grade the
+    # untouched fixture). This is the helm shot-1 failure regression.
+    text = "FILE values.yaml\nimage:\n  repository: myrepo/demo\n  tag: 1.4.2"
+    assert extract_files(text, ["chart/values.yaml"]) == {
+        "chart/values.yaml": "image:\n  repository: myrepo/demo\n  tag: 1.4.2"
+    }
+
+
 def make_model(script):  # script: list of outputs per attempt
     calls = {"i": 0}
 
