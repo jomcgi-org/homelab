@@ -41,7 +41,10 @@ def test_command_write_files_drops_hidden_test(tmp_path):
 
 
 def test_pytest_verifier_registers():
-    assert get_verifier("pytest").__module__ == "bench.verifiers.pytest"
+    # The import root differs between a bare `python3 -m bench` run (module is
+    # "bench.verifiers.pytest") and bazel's imports=["../.."] ("verifiers.pytest"),
+    # so match the stable suffix rather than the full dotted path.
+    assert get_verifier("pytest").__module__.endswith("verifiers.pytest")
 
 
 def test_pytest_verifier_resolves_venv_precedence(tmp_path, monkeypatch):
