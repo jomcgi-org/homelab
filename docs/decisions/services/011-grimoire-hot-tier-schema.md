@@ -27,17 +27,17 @@ These are coupled (the schema decides how checkout loads and how visibility comb
 
 **2. Per-player visibility is a grant overlay combined at read time, not fine-grained access control.** Canonical entity/chunk/relationship tables carry a coarse `is_global` flag; a `knowledge_grant` table holds per-character reveals with a `grant_scope`. A subject's view is the predicate `is_global OR (granted to me)`, applied as an ordinary `WHERE`/`JOIN`. Loom does the coarse dataset-level `Read` gate on checkout; Postgres does the fine per-subject combine. This is exactly the `KnowledgeGrant` model Grimoire already designed, so it needs no new mechanism, and it is why Loom fine-grained ACL (loom ask A7) dissolved.
 
-**3. The schema is typed class-table-inheritance (CTI), not polymorphic `jsonb`.** A thin type-agnostic `entity` spine plus one typed detail table per `entity_type` (real columns for queryable scalars), with `jsonb` reserved only for genuinely irregular, display-only nested payloads (`actions[]`, `traits[]`). The two type-agnostic workloads, vector search and graph traversal, keep their own shared tables (`entity_embedding`, `relationship`) so typing the detail does not fragment them. This supersedes the polymorphic-`Entity` decision in [data-architecture.md](../../../projects/grimoire/data-architecture.md), and it makes checkout a straight load from Loom's already-typed datasets with no un-shred transform.
+**3. The schema is typed class-table-inheritance (CTI), not polymorphic `jsonb`.** A thin type-agnostic `entity` spine (carrying `id`, `entity_type`, `name`, a `source_type` `extracted` / `homebrew` discriminator, and `is_global`) plus one typed detail table per `entity_type` (real columns for queryable scalars), with `jsonb` reserved only for genuinely irregular, display-only nested payloads (`actions[]`, `traits[]`). The two type-agnostic workloads keep their own shared tables so typing the detail does not fragment them: a single generic `embedding` table keyed by `(embeddable_kind, embeddable_id)` spanning entities, knowledge chunks, and session transcripts (one ANN surface, one index, so "search sourcebook knowledge and session history with the same vector query" is a single kNN scan), and a single `relationship` edge table. This supersedes the polymorphic-`Entity` decision in [data-architecture.md](../../../projects/grimoire/data-architecture.md), and it makes checkout a straight load from Loom's already-typed datasets with no un-shred transform.
 
-| Aspect                                     | data-architecture.md (older)                  | Decided                                                                      |
-| ------------------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------- |
-| Hot tier location                          | Standalone Postgres (implied)                 | Monolith `monolith-pg`, per-campaign schema (ADR 010 module)                 |
-| Entity storage                             | One polymorphic `Entity` + `jsonb properties` | Typed CTI: `entity` spine + per-type detail tables                           |
-| Queryable stats (AC, CR, level, school)    | `jsonb` keys, `->>` + casts                   | Real typed columns, btree-indexable                                          |
-| Irregular nested (`actions[]`, `traits[]`) | `jsonb`                                       | `jsonb` on the typed table (unchanged, this is where jsonb earns its place)  |
-| Vector search surface                      | Per-entity `embedding` column                 | One shared `entity_embedding` table + index (type-agnostic)                  |
-| Graph surface                              | `Relationship` edge table                     | Unchanged: one shared `relationship` edge table                              |
-| Per-player visibility                      | `KnowledgeGrant` filter in app                | Same, encoded as `is_global` + `knowledge_grant`, combined by read predicate |
+| Aspect                                     | data-architecture.md (older)                            | Decided                                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Hot tier location                          | Standalone Postgres (implied)                           | Monolith `monolith-pg`, per-campaign schema (ADR 010 module)                                                              |
+| Entity storage                             | One polymorphic `Entity` + `jsonb properties`           | Typed CTI: `entity` spine + per-type detail tables                                                                        |
+| Queryable stats (AC, CR, level, school)    | `jsonb` keys, `->>` + casts                             | Real typed columns, btree-indexable                                                                                       |
+| Irregular nested (`actions[]`, `traits[]`) | `jsonb`                                                 | `jsonb` on the typed table (unchanged, this is where jsonb earns its place)                                               |
+| Vector search surface                      | Per-row `embedding` columns (entity, chunk, transcript) | One generic `embedding` table keyed by `(embeddable_kind, embeddable_id)`: entities + chunks + transcripts, one ANN index |
+| Graph surface                              | `Relationship` edge table                               | Unchanged: one shared `relationship` edge table                                                                           |
+| Per-player visibility                      | `KnowledgeGrant` filter in app                          | Same, encoded as `is_global` + `knowledge_grant`, combined by read predicate                                              |
 
 ---
 
@@ -51,27 +51,35 @@ graph LR
         LG["global datasets<br/>(typed per ObjectType)"]
         LP["facts_&lt;player&gt; datasets<br/>(typed, per party slot)"]
     end
-    subgraph PG["monolith-pg (hot tier, per-campaign schema)"]
-        SP["entity (spine)<br/>id, entity_type, name, is_global"]
-        DT["entity_creature / _spell /<br/>_npc / _location / ... (typed detail)"]
-        EM["entity_embedding<br/>(one ANN surface)"]
-        RE["relationship (one edge table)"]
-        KG["knowledge_grant<br/>entity_id, pc_id, grant_scope, revealed_details"]
+    subgraph PG["monolith-pg (hot tier)"]
+        subgraph Corpus["shared corpus schema (read-only, refreshed on ingest)"]
+            SP["entity (spine)<br/>id, entity_type, name, source_type, is_global"]
+            DT["entity_creature / _spell /<br/>_npc / _location / ... (typed detail)"]
+            KC["knowledge_chunk /<br/>chunk_entity_mention"]
+            EM["embedding<br/>(embeddable_kind, embeddable_id)<br/>one ANN surface: entities + chunks + transcripts"]
+            RE["relationship (one edge table)"]
+        end
+        subgraph Camp["per-campaign schema (checkout / check-in)"]
+            KG["knowledge_grant<br/>entity_id, pc_id, grant_scope, revealed_details"]
+            HB["homebrew entities + live session state + transcripts"]
+        end
     end
-    LG -- "checkout (Arrow Flight)" --> SP
-    LG --> DT
-    LP -- "reveals" --> KG
+    LG -- "ingest (out of band)" --> SP
+    LP -- "checkout: reveals (Arrow Flight)" --> KG
     SP --- DT
+    SP --- KC
     SP --- EM
     SP --- RE
-    SP --- KG
+    KG -.-> SP
 ```
 
-Checkout mapping (no un-shred):
+The hot tier is two schemas, matching Loom's two lifecycles ([loom-mapping.md](../../../projects/grimoire/loom-mapping.md) §2.2): a **shared, read-only corpus schema** (sourcebook entities, chunks, embeddings, edges) refreshed out of band on new-book ingest and **not** duplicated per campaign, plus a **per-campaign schema** holding only the mutable working set (grants, homebrew entities, live character state, sessions and transcripts). A player read joins across the two (grants in the campaign schema against the shared corpus spine), which Postgres does natively across schemas.
 
-- Loom `global` typed dataset rows -> `entity` (with `is_global = true`) + the matching `entity_<type>` detail row + `entity_embedding` row.
-- Loom `facts_<player>` datasets -> `knowledge_grant` rows keyed by `(entity_id, player_character_id)`, carrying `grant_scope` (`full` / `partial` / `name_only`) and `revealed_details`; any player-exclusive entities load into the canonical tables with `is_global = false`.
-- `relationship`, `knowledge_chunk`, `chunk_entity_mention` load into shared tables regardless of node type.
+Checkout / load mapping (no un-shred):
+
+- Loom `global` typed dataset rows -> corpus `entity` (`is_global = true`, `source_type = extracted`) + the matching `entity_<type>` detail row + an `embedding` row (`embeddable_kind = entity`). Chunks land in `knowledge_chunk` with their own `embedding` rows (`embeddable_kind = chunk`). Edges land in `relationship`. This is the out-of-band corpus refresh, not the per-game checkout.
+- Per game, Loom `facts_<player>` datasets -> `knowledge_grant` rows keyed by `(entity_id, player_character_id)`, carrying `grant_scope` (`full` / `partial` / `name_only`) and `revealed_details`; any player-exclusive entities load with `is_global = false`. Homebrew entities created live in the tier land with `source_type = homebrew` and get `embedding` rows the same way.
+- In-game session transcripts get `embedding` rows (`embeddable_kind = transcript`) so history is searchable by the same kNN scan.
 
 The player-scoped read (vector, graph, or lookup) is always the same union-as-predicate:
 
@@ -83,7 +91,9 @@ LEFT JOIN knowledge_grant g
 WHERE e.is_global OR g.id IS NOT NULL;   -- global ∪ my slice
 ```
 
-`grant_scope` drives projection at the application layer: `full` returns the joined typed detail, `partial` returns only `revealed_details`, `name_only` returns a recognition stub (name + type, no retrievable body). The DM tier omits the predicate. Vector search runs over `entity_embedding` and then applies the same join; graph traversal is a recursive CTE over `relationship` that returns ids and applies the same join on hydration.
+`grant_scope` drives projection at the application layer: `full` returns the joined typed detail, `partial` returns only `revealed_details`, and `name_only` is **recognition only, not retrieval**, the entity may appear in relationship context ("you are in Zadash") but is suppressed from direct lookups and vector hits, matching data-architecture.md (a `name_only` "tell me about Zadash" returns no result). Because the base predicate `is_global OR g.id IS NOT NULL` does surface `name_only` rows, the retrieval path must drop them explicitly; only the relationship-context path keeps them. The DM tier omits the predicate. Vector search runs over the generic `embedding` table (filtered to the caller's readable ids by the same join) and returns mixed entity/chunk/transcript hits; graph traversal is a recursive CTE over `relationship` that returns ids and applies the same join on hydration.
+
+The reverse direction, check-in, serializes this schema back to Loom: `is_global` rows and `full` grants write to the `global` / per-character datasets, `partial` / `name_only` write the `revealed_details` / stub into the target `facts_<player>` dataset (the "what gets written into the slice" of [loom-mapping.md](../../../projects/grimoire/loom-mapping.md) §3.4). The orchestration and idempotency rules live in loom-mapping.md §2.4, not here.
 
 ---
 
