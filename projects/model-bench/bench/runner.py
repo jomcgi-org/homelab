@@ -13,13 +13,32 @@ Safety invariants:
 from __future__ import annotations
 
 import hashlib
-import re
 import shutil
 import tempfile
 from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
 from bench.schema import Attempt, ResultCell
+
+
+def _strip_code_fence(content: str) -> str:
+    """Remove a surrounding markdown code fence if present, tolerating prose
+    before or after the fence.
+
+    Models routinely wrap file output in ```lang ... ``` even when asked for raw
+    content; leaving the backticks in corrupts the file (yaml.safe_load chokes on
+    a leading backtick, compilers reject it). Returns the fenced body, or the
+    content trimmed of surrounding blank lines when no fence is present.
+    """
+    lines = content.split("\n")
+    fence_idxs = [i for i, ln in enumerate(lines) if ln.lstrip().startswith("```")]
+    if len(fence_idxs) >= 2:
+        # Body between the first opening fence and the last closing fence.
+        return "\n".join(lines[fence_idxs[0] + 1 : fence_idxs[-1]])
+    if len(fence_idxs) == 1:
+        # Only an opening fence survived (e.g. truncated); take everything after.
+        return "\n".join(lines[fence_idxs[0] + 1 :]).strip("\n")
+    return content.strip("\n")
 
 
 def extract_files(text: str, target_files: list[str]) -> dict[str, str]:
@@ -66,21 +85,13 @@ def extract_files(text: str, target_files: list[str]) -> dict[str, str]:
             if block_lines and block_lines[0] == "":
                 block_lines = block_lines[1:]
             content = "\n".join(block_lines)
-            # Strip one trailing newline.
-            if content.endswith("\n"):
-                content = content[:-1]
-            result[path] = content
+            # Models often wrap the block in a code fence after the FILE header.
+            result[path] = _strip_code_fence(content)
         return result
 
     # No FILE headers found.
     if len(target_files) == 1:
-        content = text
-        # Strip surrounding fenced code block if the whole response is fenced.
-        stripped = content.strip()
-        fence_match = re.match(r"^```[^\n]*\n(.*)\n```$", stripped, re.DOTALL)
-        if fence_match:
-            content = fence_match.group(1)
-        return {target_files[0]: content}
+        return {target_files[0]: _strip_code_fence(text)}
 
     return {}
 

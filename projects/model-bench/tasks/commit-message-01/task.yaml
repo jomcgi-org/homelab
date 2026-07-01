@@ -10,7 +10,7 @@ target_files: []
 verifier:
   kind: judge
   args:
-    judge_model: anthropic/claude-sonnet-4.6
+    judge_model: anthropic/claude-opus-4.8
     criteria:
       - "valid Conventional Commits subject (type(scope): description)"
       - "body explains the motivation, not just the what"

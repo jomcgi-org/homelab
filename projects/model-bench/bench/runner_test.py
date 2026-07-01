@@ -3,8 +3,32 @@ from pathlib import Path
 
 import pytest  # noqa: F401
 
-from bench.runner import run_cell
+from bench.runner import extract_files, run_cell
 from bench.verifiers import VerifyResult
+
+
+def test_extract_strips_fence_after_file_header():
+    text = "FILE clusterrole.yaml\n```yaml\nrules:\n- verbs: [get, list]\n```"
+    assert extract_files(text, ["clusterrole.yaml"]) == {
+        "clusterrole.yaml": "rules:\n- verbs: [get, list]"
+    }
+
+
+def test_extract_strips_bare_fence_single_target():
+    assert extract_files("```yaml\nfoo: 1\n```", ["values.yaml"]) == {
+        "values.yaml": "foo: 1"
+    }
+
+
+def test_extract_strips_fence_with_surrounding_prose():
+    text = "Here is the fixed file:\n```yaml\nfoo: 1\n```\nThat adds the key."
+    assert extract_files(text, ["values.yaml"]) == {"values.yaml": "foo: 1"}
+
+
+def test_extract_unfenced_passthrough():
+    assert extract_files("foo: 1\nbar: 2", ["values.yaml"]) == {
+        "values.yaml": "foo: 1\nbar: 2"
+    }
 
 
 def make_model(script):  # script: list of outputs per attempt
