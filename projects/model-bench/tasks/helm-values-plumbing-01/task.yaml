@@ -1,0 +1,19 @@
+id: helm-values-plumbing-01
+version: v1
+class: config-plumbing
+source_commit: null
+prompt: |
+  The Helm chart at chart/ renders a Deployment whose container image tag comes
+  from .Values.image.tag in chart/values.yaml, which is currently empty. Set the
+  image tag to 1.4.2 by returning the complete updated contents of
+  chart/values.yaml. Return only the file, prefixed with a line "FILE chart/values.yaml".
+target_files:
+  - chart/values.yaml
+verifier:
+  kind: helm-template
+  args:
+    release: demo
+    chart: chart
+    values: chart/values.yaml
+    assert_contains:
+      - "myrepo/demo:1.4.2"
