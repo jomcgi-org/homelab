@@ -6,3 +6,8 @@
 # repo root. Without this, gazelle fails dependency validation for every intra-package
 # import. gazelle generates the py_library / py_test targets below this line.
 # gazelle:python_root
+#
+# bench/__main__.py is the `python -m bench` shim (vendored python only, not a Bazel
+# target). It is excluded because a guarded/entrypoint module would make gazelle emit a
+# py_binary, which this repo maps to py_venv_binary (mandatory `main`) and fails to load.
+# gazelle:exclude bench/__main__.py
