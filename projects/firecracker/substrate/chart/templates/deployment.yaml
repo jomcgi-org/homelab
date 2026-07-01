@@ -257,14 +257,17 @@ spec:
           resources:
             {{- toYaml .Values.egress.resources | nindent 12 }}
         {{- end }}
-      {{- if .Values.firecracker.enabled }}
+      {{- if or .Values.firecracker.enabled (and .Values.egress.enabled .Values.egress.secrets) }}
       volumes:
         {{- if and .Values.egress.enabled .Values.egress.secrets }}
         # cert-manager-issued egress CA (cert + key), mounted into the sidecar only.
+        # Independent of firecracker.enabled so the sidecar's volumeMount never
+        # dangles: the secret-swap feature does not require the FC driver.
         - name: egress-ca
           secret:
             secretName: {{ include "fc-invoke.fullname" . }}-egress-ca
         {{- end }}
+        {{- if .Values.firecracker.enabled }}
         - name: dev-kvm
           hostPath:
             path: /dev/kvm
@@ -290,6 +293,7 @@ spec:
             items:
               - key: .dockerconfigjson
                 path: config.json
+        {{- end }}
         {{- end }}
         {{- end }}
       {{- end }}
