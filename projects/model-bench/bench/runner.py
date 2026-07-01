@@ -33,8 +33,10 @@ def _strip_code_fence(content: str) -> str:
     lines = content.split("\n")
     fence_idxs = [i for i, ln in enumerate(lines) if ln.lstrip().startswith("```")]
     if len(fence_idxs) >= 2:
-        # Body between the first opening fence and the last closing fence.
-        return "\n".join(lines[fence_idxs[0] + 1 : fence_idxs[-1]])
+        # Body of the FIRST fenced block (first opening fence to the next fence).
+        # Using the first pair, not first-to-last, keeps a trailing example block
+        # (e.g. a ```bash one-liner after the file) from leaking into the content.
+        return "\n".join(lines[fence_idxs[0] + 1 : fence_idxs[1]])
     if len(fence_idxs) == 1:
         # Only an opening fence survived (e.g. truncated); take everything after.
         return "\n".join(lines[fence_idxs[0] + 1 :]).strip("\n")
@@ -102,6 +104,32 @@ def _make_workdir(fixture_dir: Path) -> Path:
     return dst
 
 
+def _augment_prompt_with_files(
+    prompt: str, fixture_dir: Path, target_files: list[str]
+) -> str:
+    """Append the current contents of the editable files to the prompt.
+
+    A full-file-replacement task asks the model to return the complete updated file,
+    but without the current contents the model has nothing to update: a careful model
+    refuses (Opus: "returning a fabricated file could drop your existing config") and a
+    careless one guesses. Injecting the fixture's current file contents makes the task
+    well-posed. Free-text tasks (no target_files) are returned unchanged.
+    """
+    blocks = []
+    for tf in target_files:
+        p = fixture_dir / tf
+        if p.exists():
+            blocks.append(f"FILE {tf}\n{p.read_text()}")
+    if not blocks:
+        return prompt
+    return (
+        prompt
+        + "\n\nHere are the current contents of the file(s) you may edit. Return the "
+        "complete updated file(s), each prefixed with its FILE line:\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
 async def run_cell(
     *,
     task_id: str,
@@ -129,6 +157,9 @@ async def run_cell(
     workdirs: list[Path] = []
     outcome: str
     attempts: list[Attempt]
+
+    # Give the model the current file contents so it can return a complete update.
+    prompt = _augment_prompt_with_files(prompt, fixture_dir, target_files)
 
     try:
         # Shot 1

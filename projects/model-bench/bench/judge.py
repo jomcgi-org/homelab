@@ -70,13 +70,31 @@ def judge_free_text(
             f"Task prompt: {task_prompt}\n\n"
             f"Criteria (evaluate in this order):\n{criteria_block}\n\n"
             f"Candidate output:\n{candidate}\n\n"
-            f"Reply with exactly PASS if the candidate satisfies all criteria, "
-            f"or FAIL if it does not."
+            "For each criterion, state on one line whether it is met and why. Then end "
+            "with a final line exactly of the form 'VERDICT: PASS' if every criterion is "
+            "met, or 'VERDICT: FAIL' if one or more is not met."
         )
 
-        verdict = caller(prompt)
-        vote = "PASS" if verdict.strip().upper().startswith("PASS") else "FAIL"
-        votes.append(vote)
+        votes.append(_parse_verdict(caller(prompt)))
 
     passed = votes.count("PASS") > len(votes) / 2
     return JudgeResult(passed=passed, votes=votes)
+
+
+def _parse_verdict(text: str) -> str:
+    """Extract PASS/FAIL from a reasoned judge reply.
+
+    The judge reasons per-criterion and ends with a ``VERDICT: PASS``/``FAIL`` line,
+    so a naive startswith() on the whole reply misreads it. Look from the last
+    ``VERDICT`` marker (falling back to the whole text) and take whichever of
+    PASS/FAIL appears first there. Defaults to FAIL when neither is present.
+    """
+    up = text.upper()
+    marker = up.rfind("VERDICT")
+    tail = up[marker:] if marker != -1 else up
+    p, f = tail.find("PASS"), tail.find("FAIL")
+    if p == -1:
+        return "FAIL"
+    if f == -1:
+        return "PASS"
+    return "PASS" if p < f else "FAIL"
