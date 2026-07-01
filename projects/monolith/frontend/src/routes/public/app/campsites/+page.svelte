@@ -15,24 +15,16 @@
   let selectedPark = $derived(parks.find((p) => p.id === selectedId) ?? null);
 
   // List panel collapse (map-first: the whole map stays visible when collapsed).
-  let listOpen = $state(true);
+  // Starts closed so the map is unobstructed on load.
+  let listOpen = $state(false);
 
   // Sort and filter state.
-  let sortKey = $state("best_score"); // "best_score" | "good_days" | "name" | "region"
-  let filterRegion = $state("");
+  let sortKey = $state("best_score"); // "best_score" | "good_days" | "name"
   let clearOnly = $state(false);
-
-  // Unique region options, alphabetised.
-  let regions = $derived(
-    [...new Set(parks.map((p) => p.region).filter(Boolean))].sort((a, b) =>
-      a.localeCompare(b),
-    ),
-  );
 
   // Filter then sort. $derived.by for the multi-step computation.
   let visibleParks = $derived.by(() => {
     let list = parks;
-    if (filterRegion) list = list.filter((p) => p.region === filterRegion);
     if (clearOnly) list = list.filter((p) => p.good_days > 0);
     const out = [...list];
     if (sortKey === "best_score") {
@@ -45,12 +37,6 @@
       );
     } else if (sortKey === "name") {
       out.sort((a, b) => a.name.localeCompare(b.name));
-    } else if (sortKey === "region") {
-      out.sort(
-        (a, b) =>
-          (a.region ?? "").localeCompare(b.region ?? "") ||
-          a.name.localeCompare(b.name),
-      );
     }
     return out;
   });
@@ -186,7 +172,7 @@
           <div class="sort-row">
             <span class="control-label">Sort</span>
             <div class="toggle" role="group" aria-label="Sort parks by">
-              {#each [["best_score", "Score"], ["good_days", "Days"], ["name", "Name"], ["region", "Region"]] as [key, label] (key)}
+              {#each [["best_score", "Score"], ["good_days", "Days"], ["name", "Name"]] as [key, label] (key)}
                 <button
                   type="button"
                   class="seg"
@@ -199,16 +185,6 @@
           </div>
 
           <div class="filter-row">
-            <label class="field-wrap">
-              <span class="sr-only">Filter by region</span>
-              <select class="region-select" bind:value={filterRegion}>
-                <option value="">All regions</option>
-                {#each regions as r (r)}
-                  <option value={r}>{r}</option>
-                {/each}
-              </select>
-            </label>
-
             <label class="check-label">
               <input
                 type="checkbox"
@@ -413,7 +389,9 @@
   }
 
   /* Right-side ranked-list panel. Narrow by default so the page reads map-first;
-     collapse button shrinks it to just the header handle. */
+     collapse button shrinks it to just the header handle. z-index 20 ensures the
+     panel and its toggle sit above the MapLibre control group (z-index ~2) so the
+     open panel covers the zoom/attribution buttons cleanly. */
   .list-panel {
     position: absolute;
     top: 64px;
@@ -426,6 +404,7 @@
     background: var(--paper);
     border: 2px solid var(--ink);
     overflow: hidden;
+    z-index: 20;
   }
 
   .list-panel.collapsed {
@@ -469,15 +448,12 @@
     color: var(--ink);
     border: 2px solid var(--ink);
     cursor: pointer;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
+    transition: transform 110ms ease;
   }
 
   .collapse-btn:hover,
   .collapse-btn:focus-visible {
     transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
     outline: none;
   }
 
@@ -522,7 +498,6 @@
     cursor: pointer;
     transition:
       transform 120ms ease,
-      box-shadow 120ms ease,
       background 120ms ease;
   }
 
@@ -537,7 +512,6 @@
 
   .seg:hover {
     transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
     z-index: 2;
   }
 
@@ -546,25 +520,6 @@
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-  }
-
-  .field-wrap {
-    display: contents;
-  }
-
-  .region-select {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    padding: 5px 8px;
-    background: var(--paper);
-    color: var(--ink);
-    border: 2px solid var(--ink);
-    border-radius: 0;
-    -webkit-appearance: none;
-    appearance: none;
-    cursor: pointer;
   }
 
   .check-label {
@@ -715,7 +670,6 @@
     padding: 12px 14px;
     background: var(--paper);
     border: 2px solid var(--ink);
-    box-shadow: 4px 4px 0 var(--ink);
   }
 
   .detail-close {
@@ -774,15 +728,12 @@
     color: var(--paper);
     border: 2px solid var(--ink);
     white-space: nowrap;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
+    transition: transform 110ms ease;
   }
 
   .book-link:hover,
   .book-link:focus-visible {
     transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink-3);
     outline: none;
   }
 
@@ -805,7 +756,9 @@
     flex-direction: column;
     align-items: center;
     gap: 3px;
+    flex: 0 0 40px;
     width: 40px;
+    height: 64px;
     padding: 5px 3px;
     border: 1.5px solid var(--ink);
     cursor: default;
