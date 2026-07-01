@@ -110,18 +110,6 @@ semgrep_test(
 )
 
 semgrep_test(
-    name = "sandbox_semgrep_test",
-    srcs = ["sandbox.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "sandbox_test_semgrep_test",
-    srcs = ["sandbox_test.py"],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
     name = "schema_semgrep_test",
     srcs = ["schema.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
@@ -145,7 +133,6 @@ py_library(
         "registry.py",
         "report.py",
         "runner.py",
-        "sandbox.py",
         "schema.py",
     ],
     imports = [".."],
