@@ -22,6 +22,53 @@ def test_execute_tool_rejects_path_escape(tmp_path):
     assert "outside the repo" in out
 
 
+def test_execute_tool_run_executes_shell(tmp_path):
+    out = _execute_tool("run", {"command": "echo hi && pwd"}, tmp_path)
+    assert out.startswith("exit 0")
+    assert "hi" in out
+
+
+def test_execute_tool_run_rejects_empty_command(tmp_path):
+    assert "error" in _execute_tool("run", {"command": "  "}, tmp_path)
+
+
+def test_run_tool_gated_by_allow_exec(tmp_path):
+    # The `run` tool is only offered when a task opts into exec; file-only tasks
+    # keep their calibrated tool set.
+    seen = {}
+
+    async def fake_chat(**kwargs):
+        seen["tool_names"] = [t["function"]["name"] for t in kwargs["tools"]]
+        return ChatResult(
+            message={
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "done", "arguments": "{}"}}
+                ]
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=1,
+        )
+
+    for allow, want in ((False, False), (True, True)):
+        asyncio.run(
+            run_agent_cell(
+                task_id="t",
+                task_version="v1",
+                model_id="m",
+                content_hash="h",
+                fixture_dir=tmp_path,
+                task_prompt="p",
+                chat=fake_chat,
+                verify=lambda w, a: VerifyResult(True, ""),
+                verifier_args={},
+                cost_fn=lambda p, c: 0.0,
+                allow_exec=allow,
+            )
+        )
+        assert ("run" in seen["tool_names"]) is want
+
+
 def test_run_agent_cell_edits_then_grades(tmp_path):
     (tmp_path / "f.py").write_text("BAD\n")
 
