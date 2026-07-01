@@ -16,10 +16,12 @@ image:
 repos:
   - name: homelab
     url: https://github.com/jomcgi/homelab.git
-  # loom is a PRIVATE repo: the mirror clones anonymously (no GitHub creds), so it
-  # cannot be added until mirror-side read auth exists (a follow-up). ADR 026
-  # assumed public repos; a private repo needs a server-side token on the mirror,
-  # never on the guest. Adding it here without that would fail the clone.
+  # loom is a PRIVATE repo; the mirror clones it using githubToken below (a
+  # mirror-side read token that never reaches a guest). A clone failure is still
+  # non-fatal, so a token/scope problem degrades to skipping loom, it does not
+  # crash the mirror.
+  - name: loom
+    url: https://github.com/jomcgi/loom.git
 
 # Seconds between git fetch --prune passes. Keep short enough that guests
 # hydrate from a near-head branch, long enough not to hammer GitHub rate limits.
@@ -90,3 +92,15 @@ serviceAccount:
 imagePullSecret:
   enabled: true
   name: ghcr-imagepull-secret
+
+# Mirror-side GitHub read token so the mirror can clone PRIVATE repos (e.g. loom).
+# The token lives ONLY in this trusted pod (written to the ephemeral HOME as a
+# credential store by the supervisor); it is never on the PVC and never in a
+# guest (guests clone from the mirror over git:// with no credential). Reuses the
+# in-namespace token synced from 1Password. A dedicated fine-grained read-only PAT
+# scoped to just these repos would be tighter; a follow-up.
+githubToken:
+  enabled: true
+  secretRef:
+    name: monolith-chat-secrets
+    key: GITHUB_TOKEN
