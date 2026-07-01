@@ -54,14 +54,10 @@ const (
 	GuestCID    uint32 = 3
 	ControlPort uint32 = 1024
 	EgressPort  uint32 = 1025
-	// ScanPort carries the semgrep scan request/response channel: the host dials
-	// the guest (semgrep-guest-init) on this port, sends one ScanRequest, and
-	// reads back one ScanResult. It is separate from the control/egress ports so a
-	// scan never contends with the control handshake or an egress tunnel.
-	ScanPort uint32 = 1026
 	// GuestHTTPPort carries the inbound HTTP request the fc-invoke daemon
 	// reverse-proxies to the guest's shim HTTP server (ADR 030). Separate from
-	// the control/egress/scan ports so an invocation never contends with them.
+	// the control/egress ports so an invocation never contends with them. (1026
+	// is left free: it was the retired semgrep scan-RPC port.)
 	GuestHTTPPort uint32 = 1027
 )
 

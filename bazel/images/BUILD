@@ -46,8 +46,6 @@ multirun(
         "//projects/agent_platform/fc-agentd/rootfs-builder:image.push",
         "//projects/agent_platform/fc-agentd:image.push",
         "//projects/agent_platform/harness:image.push",
-        "//projects/agent_platform/semgrep-scand/chart:chart.push",
-        "//projects/agent_platform/semgrep-scand:image.push",
         "//projects/firecracker/semgrep/guest:image.push",
         "//projects/firecracker/substrate/chart:chart.push",
         "//projects/firecracker/substrate/egress-proxy:image.push",

@@ -4,4 +4,3 @@ kind: Kustomization
 # service's deploy/ so the home-cluster root can reference this one directory.
 resources:
   - fc-agentd/deploy
-  - semgrep-scand/deploy
