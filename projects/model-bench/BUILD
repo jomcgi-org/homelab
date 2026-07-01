@@ -11,3 +11,8 @@
 # target). It is excluded because a guarded/entrypoint module would make gazelle emit a
 # py_binary, which this repo maps to py_venv_binary (mandatory `main`) and fails to load.
 # gazelle:exclude bench/__main__.py
+#
+# tasks/ holds benchmark fixtures (including intentionally imperfect code such as an
+# RBAC handler.py that a task asks the model to fix). Exclude it so gazelle does not
+# turn fixtures into build targets or semgrep-scan deliberately flawed fixture code.
+# gazelle:exclude tasks
