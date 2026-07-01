@@ -41,11 +41,11 @@ multirun(
     commands = [
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
-        "//projects/agent_platform/fc-agent-init:image.push",
         "//projects/agent_platform/fc-agentd/chart:chart.push",
         "//projects/agent_platform/fc-agentd/rootfs-builder:image.push",
         "//projects/agent_platform/fc-agentd:image.push",
-        "//projects/agent_platform/harness:image.push",
+        "//projects/firecracker/goosecracker/guest-init:image.push",
+        "//projects/firecracker/goosecracker/guest:image.push",
         "//projects/firecracker/semgrep/guest:image.push",
         "//projects/firecracker/substrate/chart:chart.push",
         "//projects/firecracker/substrate/egress-proxy:image.push",

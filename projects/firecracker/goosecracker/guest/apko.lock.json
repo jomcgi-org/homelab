@@ -1,7 +1,7 @@
 {
   "version": "v1",
   "config": {
-    "name": "projects/agent_platform/harness/apko.yaml",
+    "name": "projects/firecracker/goosecracker/guest/apko.yaml",
     "checksum": "sha256-44fsLkVrwR+F9D/tBTtqea1VaOxzf6QugZsD3Xs/+UE="
   },
   "contents": {

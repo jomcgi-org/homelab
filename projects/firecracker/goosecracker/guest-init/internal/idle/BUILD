@@ -3,8 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "idle",
     srcs = ["idle.go"],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/idle",
-    visibility = ["//projects/agent_platform/fc-agent-init:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/idle",
+    visibility = ["//projects/firecracker/goosecracker/guest-init:__subpackages__"],
     deps = ["//projects/firecracker/substrate/vsockproto"],
 )
 

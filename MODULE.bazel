@@ -458,7 +458,7 @@ apko.translate_lock(
 )
 apko.translate_lock(
     name = "harness_lock",
-    lock = "//projects/agent_platform/harness:apko.lock.json",
+    lock = "//projects/firecracker/goosecracker/guest:apko.lock.json",
 )
 apko.translate_lock(
     name = "rootfs_builder_lock",

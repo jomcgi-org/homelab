@@ -7,14 +7,14 @@ go_library(
         "loopback_other.go",
         "main.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/cmd",
+    importpath = "github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//projects/agent_platform/fc-agent-init/internal/harness",
-        "//projects/agent_platform/fc-agent-init/internal/idle",
-        "//projects/agent_platform/fc-agent-init/internal/reconnect",
-        "//projects/agent_platform/fc-agent-init/internal/vsockdial",
-        "//projects/agent_platform/fc-agent-init/internal/watchdog",
+        "//projects/firecracker/goosecracker/guest-init/internal/harness",
+        "//projects/firecracker/goosecracker/guest-init/internal/idle",
+        "//projects/firecracker/goosecracker/guest-init/internal/reconnect",
+        "//projects/firecracker/goosecracker/guest-init/internal/vsockdial",
+        "//projects/firecracker/goosecracker/guest-init/internal/watchdog",
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [

@@ -30,7 +30,7 @@ pkg_tar(
 # fc-agent-init binary, cross-compiled per arch and layered at /usr/local/bin.
 platform_transition_filegroup(
     name = "fc_agent_init_amd64_bin",
-    srcs = ["//projects/agent_platform/fc-agent-init/cmd"],
+    srcs = ["//projects/firecracker/goosecracker/guest-init/cmd"],
     target_platform = "@rules_go//go/toolchain:linux_amd64",
 )
 
@@ -44,7 +44,7 @@ tar(
 
 platform_transition_filegroup(
     name = "fc_agent_init_arm64_bin",
-    srcs = ["//projects/agent_platform/fc-agent-init/cmd"],
+    srcs = ["//projects/firecracker/goosecracker/guest-init/cmd"],
     target_platform = "@rules_go//go/toolchain:linux_arm64",
 )
 
@@ -64,7 +64,7 @@ apko_image(
         "@goose//:tar",
         ":fc_agent_init_tar",
     ],
-    repository = "ghcr.io/jomcgi/homelab/projects/agent_platform/harness",
+    repository = "ghcr.io/jomcgi/homelab/projects/firecracker/goosecracker/guest",
     tars = [
         ":config_tar",
         ":recipes_tar",

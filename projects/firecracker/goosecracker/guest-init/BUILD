@@ -4,5 +4,5 @@ load("//bazel/tools/oci:go_image.bzl", "go_image")
 # layers this binary in as its entrypoint.
 go_image(
     name = "image",
-    binary = "//projects/agent_platform/fc-agent-init/cmd",
+    binary = "//projects/firecracker/goosecracker/guest-init/cmd",
 )

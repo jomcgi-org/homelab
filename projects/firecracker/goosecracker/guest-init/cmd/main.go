@@ -29,11 +29,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/harness"
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/idle"
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/reconnect"
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/vsockdial"
-	"github.com/jomcgi/homelab/projects/agent_platform/fc-agent-init/internal/watchdog"
+	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/harness"
+	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/idle"
+	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/reconnect"
+	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/vsockdial"
+	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/watchdog"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
