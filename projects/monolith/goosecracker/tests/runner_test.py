@@ -89,6 +89,36 @@ async def test_delivery_message_agent_posts_trailing_narrative():
     assert "Loading recipe" not in msg  # recipe banner stripped
 
 
+async def test_delivery_message_agent_prefers_typed_response():
+    # The agent recipe's response.json_schema makes goose emit a JSON object as
+    # its last line; delivery posts its summary + details + real url, not the
+    # transcript.
+    result = (
+        "Loading recipe: Agent\n"
+        "  ▸ shell git status\n"
+        '{"type": "pr", "summary": "Fixed the parser null check.", '
+        '"details": "Added a guard in parse() and a regression test.", '
+        '"url": "https://github.com/jomcgi/homelab/pull/99"}'
+    )
+    msg = await runner._delivery_message("s-10", "agent", {"result": result})
+    assert "Fixed the parser null check." in msg
+    assert "Added a guard in parse()" in msg
+    assert "https://github.com/jomcgi/homelab/pull/99" in msg
+    assert "▸ shell" not in msg  # transcript not dumped
+
+
+async def test_delivery_message_agent_typed_response_summary_only():
+    result = '{"type": "answer", "summary": "There were 3 commits today."}'
+    msg = await runner._delivery_message("s-11", "agent", {"result": result})
+    assert "There were 3 commits today." in msg
+
+
+def test_parse_structured_result_none_when_no_trailing_json():
+    assert runner._parse_structured_result("just prose, no json") is None
+    assert runner._parse_structured_result("{ not valid json }") is None
+    assert runner._parse_structured_result('{"summary": "ok"}')["summary"] == "ok"
+
+
 async def test_delivery_message_publishes_and_links(monkeypatch):
     monkeypatch.setattr(
         runner, "_publish_artifact", lambda s, h: "https://jomcgi.dev/artifact/abc123"
