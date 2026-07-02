@@ -111,14 +111,19 @@ spec:
 
 ## Replica Configuration
 
-### Default Replica Count
+**homelab production default: 1 replica** (`values-prod.yaml` `defaultReplicaCount: 1`).
+The three tiers below describe the available trade-offs, but because the cluster
+runs single-replica by default most volumes have no node-loss tolerance and rely
+on daily S3 backups for durability.
+
+### Three Replicas (Longhorn upstream default)
 
 ```yaml
 # Implicit in all PVCs using longhorn StorageClass
 kind: PersistentVolumeClaim
 spec:
   storageClassName: longhorn
-  # Inherits numberOfReplicas from StorageClass (homelab uses 1 via values-prod.yaml)
+  # Inherits numberOfReplicas from StorageClass (Longhorn upstream default is 3)
 ```
 
 **Tolerance:** Can lose 2 nodes before data loss

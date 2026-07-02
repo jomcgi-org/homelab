@@ -12,18 +12,18 @@ Kubernetes manifests on their own — they only supply reusable helpers.
 
 ### Templates
 
-| Template | File | Renders |
-|---|---|---|
-| `homelab.name` / `homelab.fullname` / `homelab.chart` | `_helpers.tpl` | Standard name/label helpers |
-| `homelab.labels` / `homelab.selectorLabels` | `_helpers.tpl` | Common + selector label blocks |
-| `homelab.componentLabels` / `homelab.componentSelectorLabels` | `_helpers.tpl` | Per-component labels (`app.kubernetes.io/component`) |
-| `homelab.serviceAccountName` | `_helpers.tpl` | Service account name resolution |
-| `homelab.deployment` | `_deployment.tpl` | Complete `apps/v1` Deployment |
-| `homelab.statefulset` | `_statefulset.tpl` | Complete `apps/v1` StatefulSet with a PVC |
-| `homelab.service` | `_service.tpl` | `v1` Service (single or multi-port) |
-| `homelab.serviceaccount` | `_serviceaccount.tpl` | `v1` ServiceAccount (optional) |
-| `homelab.imagepullsecret` | `_imagepullsecret.tpl` | 1Password-backed GHCR pull secret (`OnePasswordItem`) |
-| `homelab.imageupdater` | `_imageupdater.tpl` | ArgoCD `ImageUpdater` CRD |
+| Template                                                      | File                   | Renders                                               |
+| ------------------------------------------------------------- | ---------------------- | ----------------------------------------------------- |
+| `homelab.name` / `homelab.fullname` / `homelab.chart`         | `_helpers.tpl`         | Standard name/label helpers                           |
+| `homelab.labels` / `homelab.selectorLabels`                   | `_helpers.tpl`         | Common + selector label blocks                        |
+| `homelab.componentLabels` / `homelab.componentSelectorLabels` | `_helpers.tpl`         | Per-component labels (`app.kubernetes.io/component`)  |
+| `homelab.serviceAccountName`                                  | `_helpers.tpl`         | Service account name resolution                       |
+| `homelab.deployment`                                          | `_deployment.tpl`      | Complete `apps/v1` Deployment                         |
+| `homelab.statefulset`                                         | `_statefulset.tpl`     | Complete `apps/v1` StatefulSet with a PVC             |
+| `homelab.service`                                             | `_service.tpl`         | `v1` Service (single or multi-port)                   |
+| `homelab.serviceaccount`                                      | `_serviceaccount.tpl`  | `v1` ServiceAccount (optional)                        |
+| `homelab.imagepullsecret`                                     | `_imagepullsecret.tpl` | 1Password-backed GHCR pull secret (`OnePasswordItem`) |
+| `homelab.imageupdater`                                        | `_imageupdater.tpl`    | ArgoCD `ImageUpdater` CRD                             |
 
 ### Convention
 
@@ -32,14 +32,18 @@ from `.Values.<component>`. Consumer templates set up values on that key, then
 call:
 
 ```yaml
-{{- include "homelab.deployment" (dict "context" . "component" "api") }}
+{ { - include "homelab.deployment" (dict "context" . "component" "api") } }
 ```
 
 The optional `componentName` key lets the values key be camelCase while the
 Kubernetes resource name stays kebab-case:
 
 ```yaml
-{{- include "homelab.deployment" (dict "context" . "component" "wsGateway" "componentName" "ws-gateway") }}
+{
+  {
+    - include "homelab.deployment" (dict "context" . "component" "wsGateway" "componentName" "ws-gateway"),
+  },
+}
 ```
 
 Security defaults: every Deployment and StatefulSet mounts an `emptyDir` at
@@ -64,14 +68,11 @@ Adjust the relative path depth as needed (services nested one level deeper use
 
 ### Consumers
 
-| Project | Chart path |
-|---|---|
-| `trips` | `projects/trips/chart` |
-| `grimoire` | `projects/grimoire/chart` |
-| `agent_platform/orchestrator` | `projects/agent_platform/chart/orchestrator` |
-| `agent_platform/mcp-servers` | `projects/agent_platform/chart/mcp-servers` |
+| Project                     | Chart path                                 |
+| --------------------------- | ------------------------------------------ |
+| `grimoire`                  | `projects/grimoire/chart`                  |
 | `mcp/context-forge-gateway` | `projects/mcp/context-forge-gateway/chart` |
-| `monolith-public` | `projects/monolith-public/chart` |
+| `monolith-public`           | `projects/monolith-public/chart`           |
 
 ### Bumping the version
 
