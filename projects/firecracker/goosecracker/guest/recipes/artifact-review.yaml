@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.1.0"
 title: "Review"
 description: "Review and polish an already-built web artifact in isolated context (ADR 024): read /tmp/artifact.html, fix real correctness and design issues IN PLACE, and re-gate that the JS still parses."
 instructions: |
@@ -63,12 +63,13 @@ parameters:
   - key: task_file
     description: "Path to a file with the original artifact request, so the review stays true to intent"
     input_type: string
-    requirement: required
+    requirement: optional
+    default: "/tmp/goose/task.md"
   - key: context_file
     description: "Path to an optional file with router-gathered context (constraints, prior thread state); may be empty"
     input_type: string
     requirement: optional
-    default: ""
+    default: "/tmp/goose/context.md"
 extensions:
   - type: builtin
     name: developer

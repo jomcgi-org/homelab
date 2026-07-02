@@ -1,4 +1,4 @@
-version: "1.2.0"
+version: "1.3.0"
 title: "Artifact"
 description: "Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024)."
 instructions: |
@@ -74,24 +74,32 @@ instructions: |
   summary: <1-2 sentences: what you built>
   ```
 prompt: |
-  Build this artifact now. Start immediately by writing /tmp/artifact.html with
-  the shell or editor; do not reply with a plan or a description first.
+  Build or update this artifact now. Start immediately by writing
+  /tmp/artifact.html with the shell or editor; do not reply with a plan or a
+  description first.
 
   What to build is in the file {{ task_file }}: read it first, for example
   `cat {{ task_file }}`.
 
-  Router context may be in the file {{ context_file }} (the path may be empty,
-  meaning none): if it is a non-empty path, read it too.
+  If /tmp/artifact.html ALREADY EXISTS, this is very likely a follow-up change to
+  that page (for example "add real product pics" or "make it darker"): read the
+  existing file first and MODIFY it in place to satisfy the new request,
+  preserving everything that is not being changed. Only build a fresh page from
+  scratch when none exists yet.
+
+  Router context may be in the file {{ context_file }} (it may be empty or
+  missing): read it if it is a non-empty file.
 parameters:
   - key: task_file
     description: "Path to a file describing what to build"
     input_type: string
-    requirement: required
+    requirement: optional
+    default: "/tmp/goose/task.md"
   - key: context_file
     description: "Path to an optional file with router-gathered context (constraints, prior thread state); may be empty"
     input_type: string
     requirement: optional
-    default: ""
+    default: "/tmp/goose/context.md"
 extensions:
   - type: builtin
     name: developer
