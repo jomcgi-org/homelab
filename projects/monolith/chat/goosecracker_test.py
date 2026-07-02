@@ -371,3 +371,19 @@ def test_drain_agent_queue_returns_none_for_unknown_thread(engine):
     """No session row for the thread: drain returns None gracefully."""
     with patch("chat.goosecracker.get_engine", return_value=engine):
         assert goosecracker.drain_agent_queue("no-such-thread") is None
+
+
+def test_artifact_id_is_random_stable_and_not_the_thread_id(engine):
+    """Capability URL (ADR 024 amendment): the artifact id is a random token
+    stored on the thread's session row, reused across publishes, and never the
+    enumerable Discord thread id."""
+    thread = "1512814732392927463"
+    with Session(engine) as s:
+        s.add(GoosecrackerSession(discord_thread=thread, recipe="artifact"))
+        s.commit()
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        first = goosecracker.artifact_id_for_thread(thread)
+        second = goosecracker.artifact_id_for_thread(thread)
+    assert first == second  # stable across re-publish (hot-reload)
+    assert first != thread  # not the enumerable thread id
+    assert len(first) >= 10  # unguessable capability token

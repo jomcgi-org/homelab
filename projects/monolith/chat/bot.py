@@ -713,9 +713,6 @@ class ChatBot(discord.Client):
         if message.author.bot:
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
-        # Agent threads are open to everyone (ADR 029); artifact threads stay
-        # owner-only. The thread is already bound to its repo, so replies can't
-        # cross to another repo.
         # Agent threads are open to everyone (ADR 029). Artifact threads are open
         # to whoever is granted /artifact in this server (ADR 024 amendment), so
         # the person who built an artifact can iterate on it, not just the owner.

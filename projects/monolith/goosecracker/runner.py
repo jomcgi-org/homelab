@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import re
-import secrets
 
 import httpx
 from sqlmodel import Session
@@ -168,38 +167,18 @@ def _mark_progress_done(session: str) -> None:
     mark_goosecracker_progress_done(session)
 
 
-def _artifact_id_for_thread(thread_id: str) -> str:
-    """Return the thread's unguessable capability artifact id, assigning one on
-    first use (ADR 024 amendment).
-
-    Random per thread and stored on the session row so a re-publish reuses it and
-    the live page hot-reloads at a stable URL, while the URL is NOT the enumerable
-    Discord thread id, so it is not publicly discoverable but is safe to share by
-    link. Falls back to a fresh random id if the thread has no session row.
-    """
-    from chat.models import GoosecrackerSession
-
-    with Session(get_engine()) as session:
-        row = session.get(GoosecrackerSession, thread_id)
-        if row is None:
-            return secrets.token_urlsafe(9)
-        if not row.artifact_id:
-            row.artifact_id = secrets.token_urlsafe(9)
-            session.add(row)
-            session.commit()
-        return row.artifact_id
-
-
 def _publish_artifact(session: str, html: str) -> str:
     """Publish the built artifact HTML to S3 and return its live URL (ADR 024).
 
     Reuses the /internal/artifact publish path so the S3 write + URL/version logic
     lives in one place. Publishes under the thread's random capability id (not the
-    thread id) so the URL is unguessable but stable across re-publishes.
+    thread id, via chat.api) so the URL is unguessable but stable across
+    re-publishes (ADR 024 amendment).
     """
     from artifact.router import PublishRequest, publish_artifact
+    from chat.api import artifact_id_for_thread
 
-    artifact_id = _artifact_id_for_thread(session)
+    artifact_id = artifact_id_for_thread(session)
     return publish_artifact(PublishRequest(html=html, id=artifact_id)).url
 
 
