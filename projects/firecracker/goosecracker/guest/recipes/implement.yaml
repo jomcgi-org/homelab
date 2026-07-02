@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Implement"
 description: "Implementation sub-recipe: make a code or config change, commit it, and open a PR."
 instructions: |
@@ -23,6 +23,11 @@ instructions: |
   Keep the change minimal and focused on the task. Tests run in CI on push,
   not locally; make the change correct by reading the surrounding code and
   existing tests, and update any tests that assert on values you changed.
+
+  Keep tool output small: you run in a limited context window, so bound reads
+  (`head`, `wc -l` first, sample) rather than dumping a full `git log` or
+  large files, which can overflow context and trigger a compaction that loses
+  progress.
 
   Your final message is returned verbatim to the routing agent: state the
   action taken and the outcome in one or two sentences, the branch name,
