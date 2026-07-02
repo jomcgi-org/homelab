@@ -43,13 +43,12 @@ On PR branches, CI auto-commits formatting fixes as `ci-format-bot`. On main, fo
 
 ## Key Targets (CI-only)
 
-| Target                               | Description               |
-| ------------------------------------ | ------------------------- |
-| `//projects/<service>/image:image`   | Container image           |
-| `//projects/<service>/image:push`    | Push image to registry    |
-| `//bazel/images:push_all`            | Push all container images |
-| `//projects/websites:push_all_pages` | Deploy all CF Pages sites |
-| `//bazel/tools/format:format`        | Format + render all       |
+| Target                             | Description               |
+| ---------------------------------- | ------------------------- |
+| `//projects/<service>/image:image` | Container image           |
+| `//projects/<service>/image:push`  | Push image to registry    |
+| `//bazel/images:push_all`          | Push all container images |
+| `//bazel/tools/format:format`      | Format + render all       |
 
 ## Writing BUILD Files
 

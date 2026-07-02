@@ -107,23 +107,7 @@ extract_targets_from_build bazel/images/BUILD >"$TMPDIR_VALIDATE/push_all_grep.t
 
 compare_targets "push-all" "$TMPDIR_VALIDATE/push_all_grep.txt" "$TMPDIR_VALIDATE/push_all_query.txt"
 
-# --- Validation 2: generate-push-all-pages.sh ---
-
-echo "Validating generate-push-all-pages.sh ..."
-
-# Run the grep-based script (it writes projects/websites/BUILD)
-bash bazel/images/generate-push-all-pages.sh
-
-# Extract targets from the generated BUILD file
-extract_targets_from_build projects/websites/BUILD >"$TMPDIR_VALIDATE/push_pages_grep.txt"
-
-# Run equivalent bazel query
-bazel_query_retry 'kind("wrangler_pages_push", //...)' |
-	filter_labels | LC_ALL=C sort >"$TMPDIR_VALIDATE/push_pages_query.txt"
-
-compare_targets "push-all-pages" "$TMPDIR_VALIDATE/push_pages_grep.txt" "$TMPDIR_VALIDATE/push_pages_query.txt"
-
-# --- Validation 3: generate-home-cluster.sh ---
+# --- Validation 2: generate-home-cluster.sh ---
 
 echo "Validating generate-home-cluster.sh ..."
 
