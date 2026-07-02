@@ -1,4 +1,4 @@
-version: "1.4.1"
+version: "1.4.2"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -25,6 +25,17 @@ instructions: |
     self-contained HTML document to exactly `/tmp/artifact.html` (the harness
     publishes that path and only that path). Never write the page into the repo
     workspace: a file left in /workspace is not published and is lost.
+
+    HARD GATE for artifact mode: do NOT call `recipe__final_output` with
+    `mode: artifact` until you have actually produced the page in THIS run, by
+    one of two observable actions:
+      1. the `artifact` sub-recipe tool has been called and RETURNED a result, or
+      2. you have written a non-empty `/tmp/artifact.html` yourself.
+    Deciding to dispatch is not dispatching. If your most recent action was a
+    thought about routing (or a plan to build it) rather than an actual `artifact`
+    tool call or a file write, the page does not exist yet and finishing now
+    publishes an empty artifact. Take the action, wait for its result or confirm
+    the file is written, and only then emit the final output.
 
   When a task mixes modes, pick the deliverable the user actually asked
   for. "Fix X" is implement. "How should we fix X" is plan. "Is X broken"
@@ -64,8 +75,11 @@ instructions: |
   you routed to; a `type` (pr/issue/note/answer/artifact); and a `url` only if
   the worker reported a real PR or issue URL. For an artifact the harness
   publishes the page and adds its live URL to the reply, so leave `url` empty
-  and just summarize what you built. The summary describes the ACTION and
-  RESULT, not your reasoning.
+  and just summarize what you built. Before emitting `mode: artifact`, re-check
+  the HARD GATE above: the `artifact` sub-recipe must have returned, or
+  `/tmp/artifact.html` must already be written. Do not summarize a page you only
+  intended to build. The summary describes the ACTION and RESULT, not your
+  reasoning.
 
   Be brief and finish fast. Length is the main thing that makes a reply feel
   slow: this runs on a local model, so every extra sentence is real wall-time,
