@@ -7,5 +7,4 @@ resources:
   - incidentio-channel.yaml
   - signoz-httpcheck-alert.yaml
   - jomcgi-dev-httpcheck-alert.yaml
-  - hikes-httpcheck-alert.yaml
   - trips-pages-httpcheck-alert.yaml
