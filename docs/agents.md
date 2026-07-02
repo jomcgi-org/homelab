@@ -1,534 +1,462 @@
 # Agent Platform
 
-This document describes the agent infrastructure end-to-end: how agent sandboxes are provisioned, how the orchestrator manages job lifecycles, and how Claude chat connects through to a running agent pod.
+This document describes the agent stack end-to-end: how **goosecracker** turns a
+Discord slash command into a goose run, how that run executes inside an isolated
+Firecracker microVM behind the **fc-invoke** daemon, and how the result (an
+answer, a PR, or a live-hot-reloading artifact) gets back to the thread.
+
+The whole stack lives in two places:
+
+- **Orchestration + integration** in the monolith (`projects/monolith/goosecracker/`,
+  `projects/monolith/chat/`, `projects/monolith/artifact/`). Trigger, gate, session
+  ledger, tiers, progress buffer, result delivery, artifact publish/serve.
+- **Execution substrate** in `projects/firecracker/` (`substrate/` = the fc-invoke
+  daemon + Firecracker driver + egress proxy; `goosecracker/` = the guest image and
+  recipes; `git-mirror/` = fast workspace hydration).
+
+> **Legacy note.** Earlier versions of this doc described an `agent-orchestrator`
+> (Go, NATS JetStream) and the `kubernetes-sigs/agent-sandbox` controller with
+> `SandboxClaim` / `SandboxWarmPool` CRDs. Both are gone: the orchestrator is
+> decommissioned (only a stale UI dir remains under `projects/agent_platform/`),
+> and the pod-shaped agent-sandbox controller was rejected in
+> [ADR 022](decisions/agents/022-firecracker-snapshot-restore-controller.md) in
+> favour of driving Firecracker directly. See [Superseded Architecture](#superseded-architecture)
+> at the end.
 
 ## Component Map
 
 ```
-Claude.ai / Claude Code (external)
+Discord  (owner types /artifact <prompt> or /agent <prompt>)
     │
-    │  HTTPS  mcp.jomcgi.dev
     ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Cloudflare Access  (Managed OAuth — ADR 011)                                              │
-│  RFC 9728 discovery + DCR · token issuance + validation at edge                            │
-│  Injects Cf-Access-Authenticated-User-Email header                                         │
+│  monolith / chat  (projects/monolith/chat/bot.py + goosecracker.py)                        │
+│  Owner gate (OWNER_DISCORD_USER_ID, fails closed) · non-owner gets a Qwen roast            │
+│  Opens a Discord thread, curates the transcript (session id == thread id)                  │
 └──────────────────────────────────────────┬─────────────────────────────────────────────────┘
-                                           │ forwards via Cloudflare Tunnel
+                                           │  submit(task, session, recipe, tier)
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Context Forge  (prod / mcp namespace)                                                     │
-│  projects/agent_platform/context_forge  ·  IBM mcp-context-forge v1.0.0-RC1                │
-│  MCP gateway — aggregates tool servers, RBAC by team                                       │
-│  Backends: Postgres (state) + Redis (sessions)                                             │
-└───────┬──────────────────────────────────┬───────────────────────┬─────────────────────────┘
-        │                                  │                       │
-        ▼                                  ▼                       ▼
-  signoz-mcp                         buildbuddy-mcp          agent-orchestrator-mcp
-  argocd-mcp                         kubernetes-mcp          todo-mcp
-  (projects/agent_platform/mcp_servers_chart — one pod per server, registered at startup)
-                                                                   │
-                                                                   │ HTTP  ClusterIP :8080
-                                                                   ▼
+│  monolith / goosecracker  (dispatch → runner → threads/sessions/tiers)                     │
+│  Writes the run-ledger row, fires a detached task, POSTs the goose run to fc-invoke        │
+│  Streams progress into an in-memory buffer · enqueues the result to the Discord outbox     │
+└──────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                           │  POST /invoke/agent/{session}   (HTTP)
+                                           ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Agent Orchestrator  (prod / agent-orchestrator namespace)                                 │
-│  projects/agent_platform/orchestrator  ·  projects/agent_platform/orchestrator/deploy      │
-│  Go service — HTTP API + NATS JetStream consumer                                           │
-└──────────┬─────────────────────────────────────────────────────────────────────────────────┘
-           │ SandboxClaim CRUD  +  pod/exec
-           ▼
+│  fc-invoke daemon  (projects/firecracker/substrate · node-4 · namespace monolith)          │
+│  ADR 030/031 · one configurable surface for Firecracker workloads                          │
+│  Restores a warm-base microVM (~tens of ms) · reverse-proxies HTTP over vsock to the guest │
+│  Egress proxy swaps kloak: secret placeholders at the egress hop (ADR 023)                 │
+└──────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                           │  HTTP over vsock
+                                           ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Agent Sandbox Controller  (cluster-critical)                                              │
-│  projects/platform/agent-sandbox  ·  registry.k8s.io/agent-sandbox v0.1.1                  │
-│  CRDs: Sandbox · SandboxTemplate · SandboxClaim · SandboxWarmPool                          │
-└──────────┬─────────────────────────────────────────────────────────────────────────────────┘
-           │ allocates pod from warm pool / creates pod
-           ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Goose Sandbox Pod  (prod / goose-sandboxes namespace)                                     │
-│  projects/agent_platform/sandboxes  +  projects/agent_platform/goose_agent (apko image)    │
-│  Runs: goose run --text <task>                                                             │
-│  Tools: developer (builtin) · context-forge (MCP) · github                                 │
-│  LLM: Claude Max via LiteLLM proxy (claude-code provider)                                  │
+│  Guest microVM  (projects/firecracker/goosecracker/guest · apko image, uid 65532)          │
+│  Hydrates /workspace from the git mirror (ADR 026) · runs goose --recipe <recipe>          │
+│  Recipes: agent (router → query/plan/implement) · artifact (build one HTML file)           │
+│  Model: in-cluster Qwen (default tier) or Gemini via OpenRouter (artifact tier)            │
+│  Streams goose stdout to the progress endpoint · publishes artifact HTML to the monolith   │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 1. Agent Provisioning
+## 1. goosecracker: Trigger, Gate, Session
 
-**Controller:** `projects/platform/agent-sandbox` — runs in `agent-sandbox-system` (cluster-critical)
+**Source:** `projects/monolith/chat/goosecracker.py` (gate + transcript + dispatch glue),
+`projects/monolith/chat/bot.py` (Discord bot + slash commands),
+`projects/monolith/goosecracker/` (dispatch, runner, ledger, tiers).
 
-The [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) controller (SIG Apps, v0.1.1) manages isolated agent pod lifecycle via purpose-built CRDs. It fills the gap between Deployments and StatefulSets with a single stateful pod abstraction.
+goosecracker is the owner-gated Discord agent introduced in
+[ADR 024](decisions/agents/024-discord-agent-hosted-model-tiers-and-artifacts.md).
+It is not a standalone service: it lives inside the monolith and reuses the
+monolith's Discord bot, Postgres, and S3.
 
-### CRDs
+### Slash commands
 
-| CRD                                                    | Purpose                                                               |
-| ------------------------------------------------------ | --------------------------------------------------------------------- |
-| `Sandbox` (`agents.x-k8s.io/v1alpha1`)                 | Single-pod workload with PVC, headless Service, auto-delete lifecycle |
-| `SandboxTemplate` (`agents.x-k8s.io/v1alpha1`)         | Reusable pod spec — image, env, resources defined once                |
-| `SandboxClaim` (`extensions.agents.x-k8s.io/v1alpha1`) | Per-job request that claims a sandbox from a pool or creates one      |
-| `SandboxWarmPool` (`agents.x-k8s.io/v1alpha1`)         | Pre-warmed pods for near-instant allocation                           |
+Two application (slash) commands are registered on the bot's `CommandTree`
+(`bot.py` `_register_commands`):
 
-### Goose Sandboxes
+| Command              | Guest recipe | Deliverable                                                                  |
+| -------------------- | ------------ | ---------------------------------------------------------------------------- |
+| `/artifact <prompt>` | `artifact`   | A self-contained HTML artifact, published and served live (hot-reloading)    |
+| `/agent <prompt>`    | `agent`      | An answer, a plan doc, or a PR (the router classifies) against a chosen repo |
 
-**Chart:** `projects/agent_platform/sandboxes/` — deployed to `goose-sandboxes` namespace
+`/agent` takes a `target` choice (`homelab` or `loom`) selecting which repo the
+guest checks out. Each command opens a Discord thread; **the thread id is the
+session id** for the whole conversation.
 
-Installs:
+### Owner gate
 
-- `SandboxTemplate` named `goose-agent` (references the apko-built image)
-- `SandboxWarmPool` named `goose-pool` (size: 1)
-- `LimitRange` — 1–4 CPU, 2–8Gi memory per pod
-- `ResourceQuota` — max 5 pods, 8 CPU, 16Gi across namespace
-- 1Password secrets: Claude OAuth token, GitHub PAT + BuildBuddy key, per-profile MCP tokens
+Access is a server-side allowlist of exactly one identity:
 
-### Goose Agent Image
+```python
+# projects/monolith/chat/goosecracker.py
+def is_owner(user_id) -> bool:
+    owner = os.environ.get("OWNER_DISCORD_USER_ID", "")
+    return bool(owner) and str(user_id) == owner  # fails closed if unset
+```
 
-**Built with:** apko + rules_apko (`projects/agent_platform/goose_agent/image/apko.yaml`)
-**Registry:** `ghcr.io/jomcgi/homelab/projects/agent_platform/goose_agent/image`
-**Architectures:** x86_64 + aarch64 · **User:** uid/gid 65532
+A non-owner does not silently fail: the bot asks the in-cluster Qwen model to
+generate a short roast ("Nice try, /artifact is owner-only"), falling back to a
+fixed string when the model is down. There is no role or team model here, unlike
+the old Context Forge RBAC. One owner, everyone else refused.
+
+### Session model (Model B)
+
+Each owner follow-up in a thread re-runs goose. The current implementation is
+**Model B**: every turn re-runs goose from scratch with the full _curated_
+transcript (the owner's directed messages plus goose's own outputs, not ambient
+thread chatter). This keeps the artifact id stable across turns, so the published
+artifact hot-reloads in the browser instead of moving. It is simple and fast at
+the cost of not preserving goose's mid-run reasoning across turns.
+
+Model A (resume goose's prior `sessions.db` from S3 and send only the new
+message) is the future path described in
+[ADR 026](decisions/agents/026-fast-microvm-starts-and-stateful-artifact-iteration.md)
+Phase 2; the guest already checkpoints its SQLite WAL into `sessions.db` for it.
+
+---
+
+## 2. Dispatch and Delivery
+
+**Source:** `projects/monolith/goosecracker/{dispatch,runner,threads,sessions,tiers}.py`
+
+The dispatch seam is trigger-agnostic on purpose: Discord is the only trigger
+today, but an MCP tool or a CI hook can call the same `submit()`.
+
+```
+submit(task, session, recipe, tier)               # dispatch.py
+    │  write run-ledger row (PENDING)  ·  fire detached task  ·  return immediately
+    ▼
+run_and_deliver()                                  # runner.py  (detached daemon thread)
+    │  POST {FC_INVOKE_URL}/invoke/agent/{session}  {task, recipe, env: <tier> }
+    │  (a single blocking round-trip, up to ~600s: the whole goose run)
+    ▼
+on return:  mark ledger row  ·  enqueue result to the Discord outbox
+    ▼
+the bot drains discord_outbox and posts the summary / PR link / artifact URL to the thread
+```
+
+- **Detached execution.** `submit()` is called via `asyncio.to_thread` (a sync DB
+  write must not run on the gateway event loop), so `runner` runs the
+  ~600s fc-invoke round-trip to completion in a dedicated daemon thread and never
+  blocks the Discord bot.
+- **`FC_INVOKE_URL`** is injected from Helm values and is the same in-cluster
+  fc-invoke daemon the `semgrep_scan` MCP tool uses. The workload name in the path
+  is `agent` (`/invoke/agent/{session}`).
+- **Result shape.** The `agent` recipe returns a structured result (summary,
+  optional details, mode, type of pr/issue/note/answer, and a real `url` only if
+  the worker opened one). The runner posts the summary and, for `/artifact`, a
+  clean `Artifact ready: <url>` line.
+
+### Live progress
+
+While goose runs, the guest streams its stdout back through the fc-invoke egress
+funnel to the monolith's own progress endpoint:
+
+```yaml
+# projects/monolith/deploy/values.yaml
+goosecracker:
+  progressUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress"
+```
+
+The runner hands the guest `<progressUrl>/<session>`; the guest POSTs `{chunk: ...}`
+frames there; the monolith keeps a per-session in-memory rolling buffer
+(`chat/goosecracker_progress.py`); the Discord bot polls that buffer and edits the
+thread message so the owner watches goose think in near-real-time. The buffer is
+keyed by session (== the Discord thread id).
+
+### Run ledger
+
+Every run writes a row to the `claude_agent` run-ledger (schema in
+`projects/monolith/chart/migrations/`), tracking `session`, `state`, `recipe`,
+`tier`, `task`, and the thread it fronts. State is owned entirely by the monolith;
+fc-invoke is stateless (see [ADR 030](decisions/agents/030-fc-invoke-configurable-firecracker-surface.md)).
+
+---
+
+## 3. Recipes: the Sub-Recipe Router
+
+**Location:** `projects/firecracker/goosecracker/guest/recipes/`
+
+Recipes are goose recipe YAML baked into the guest image. There are two entry
+recipes plus three sub-recipes the router dispatches to.
+
+| Recipe           | Version | Role                                                                                        |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `agent.yaml`     | 1.3.0   | **Router.** Classifies the task and dispatches exactly one sub-recipe. Does no work itself. |
+| `query.yaml`     | 1.2.0   | Read-only. Answers a question, grounded in `.claude/CLAUDE.md` + the project's CLAUDE.md.   |
+| `plan.yaml`      | 1.2.0   | Writes an implementation plan to `docs/plans/` and opens a PR on a `claude/-` branch.       |
+| `implement.yaml` | 1.2.0   | Autonomous coding: reads, edits, commits, pushes, opens a PR on a `claude/-` branch.        |
+| `artifact.yaml`  | 1.0.0   | Writes ONE self-contained HTML file; the harness publishes it. Used by `/artifact`.         |
+
+### Why a router (`agent.yaml`)
+
+`/agent` runs the router, which classifies the incoming task into one mode and
+delegates:
+
+- **query**: a question ("how does X work", "why did Z fail"). Deliverable is an answer.
+- **plan**: a design or a large/ambiguous change. Deliverable is a plan document.
+- **implement**: a concrete, actionable change. Deliverable is a commit and a PR.
+
+The router runs on the in-cluster Qwen model with a **small** context window, so
+it is disciplined about not doing the work itself: it skims the repo's
+`.claude/CLAUDE.md`, locates the relevant project directory, notes prior thread
+state, and passes a short briefing into the sub-recipe's `context` param. A large
+tool output in the router (a full `git log`, a wide `grep`) would overflow its
+shared context and trigger a compaction that drops the answer mid-run, so
+context-gathering is a couple of small, bounded reads only. The heavy reading is
+the sub-recipe's job.
+
+On a resumed thread the router classifies the _new_ message: a follow-up question
+after an implement run routes to `query`; "now do it" after a plan run routes to
+`implement`.
+
+### `artifact.yaml`
+
+The `/artifact` recipe is deliberately narrow: write one complete, self-contained
+HTML file and nothing else. No action statements, only the file write counts.
+Constraints: https-only resources, self-contained or CDN libs. The harness
+auto-publishes the file after execution and retries if it comes back empty.
+
+---
+
+## 4. Tiers and Model Routing
+
+**Source:** `projects/monolith/goosecracker/tiers.py`, values in `projects/monolith/deploy/values.yaml`
+
+A **tier** is the guest environment for a run: the model endpoint plus the secret
+_placeholders_ the guest is allowed to hold. The runner merges the selected tier
+into the env it POSTs to fc-invoke. Tiers are injected from Helm values (no code
+change to add or retune one).
+
+| Tier       | Model endpoint                                      | Model                     | Secret handling                             |
+| ---------- | --------------------------------------------------- | ------------------------- | ------------------------------------------- |
+| `default`  | `inference.inference.svc.cluster.local:8080` (Qwen) | `qwen3.6-27b`             | `sk-noauth` (in-cluster, no real secret)    |
+| `artifact` | `openrouter.ai/api/v1`                              | `google/gemini-3.5-flash` | `kloak:` placeholder, swapped at egress hop |
+
+```yaml
+# projects/monolith/deploy/values.yaml (excerpt)
+goosecracker:
+  tiers:
+    default:
+      OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
+      OPENAI_API_KEY: sk-noauth
+      GOOSE_PROVIDER: openai
+      GOOSE_MODEL: qwen3.6-27b
+      GOOSE_CONTEXT_LIMIT: "32768" # true vLLM window; goose compacts at ~80%
+      GOOSE_MAX_TOOL_RESPONSE_SIZE: "10000" # cap one tool output so it cannot fill 32k
+      GOOSE_MAX_TOKENS: "8000" # cap per-response generation
+    artifact:
+      OPENAI_HOST: https://openrouter.ai/api/v1
+      OPENAI_API_KEY: "kloak:or:<high-entropy-placeholder>"
+      GOOSE_PROVIDER: openai
+      GOOSE_MODEL: "google/gemini-3.5-flash"
+```
+
+**The tier is the credential trust boundary.** The `default` tier runs on a model
+inside the cluster and needs no real secret. The `artifact` tier reaches
+OpenRouter, but the guest never holds the real key: it holds an inert `kloak:`
+placeholder, and the fc-invoke egress proxy swaps it for the real OpenRouter key
+(from the `goosecracker` 1Password item) at the egress hop
+([ADR 023](decisions/agents/023-egress-secret-proxy.md)). A compromised guest
+leaks a placeholder, not a credential.
+
+The `GOOSE_CONTEXT_LIMIT` / `GOOSE_MAX_*` knobs on the `default` tier exist
+because the Qwen endpoint's real window is 32k: without telling goose the true
+window it assumes 128k, never compacts, and a big tool output overruns the model
+and sends goose into a reactive summarize loop.
+
+---
+
+## 5. fc-invoke: the Execution Substrate
+
+**Source:** `projects/firecracker/substrate/`
+**Chart:** `projects/firecracker/substrate/chart/` · **Deploy:** `projects/firecracker/substrate/deploy/`
+**Namespace:** `monolith` · **Node:** `node-4` (privileged, `/dev/kvm`)
+**ADRs:** [030](decisions/agents/030-fc-invoke-configurable-firecracker-surface.md) (the surface),
+[031](decisions/agents/031-cluster-node-control-data-plane-split.md) (control/data-plane split),
+[022](decisions/agents/022-firecracker-snapshot-restore-controller.md) (FC-direct snapshot/restore)
+
+fc-invoke is a single configurable HTTP daemon that runs _any_ workload inside a
+Firecracker microVM. It replaced the earlier one-daemon-per-workload approach:
+the retired `semgrep-scand` and `fc-agentd` daemons are both absorbed into it. It
+drives Firecracker processes directly (as E2B does), not through a kata-fc shim,
+because kata exposes no snapshot/restore API.
+
+### Surface
+
+```
+POST /invoke/{workload}[/{session}]     run a workload; optional session for resume/routing
+GET  /healthz
+```
+
+The request body is opaque to the daemon: fc-invoke restores the workload's
+warm-base microVM and reverse-proxies the HTTP request over **vsock** to a server
+running inside the guest. The daemon knows nothing about goose, semgrep, or
+recipes; the guest owns all of that.
+
+### Workloads are Helm values
+
+A workload is a named entry in the substrate chart's values with a small set of
+generic knobs (no per-workload code in the daemon):
+
+| Knob             | Meaning                                                    |
+| ---------------- | ---------------------------------------------------------- |
+| `image`          | The guest OCI image (apko-built)                           |
+| `resources`      | vCPU / memory for the microVM                              |
+| `concurrency`    | Max concurrent invocations                                 |
+| `egress`         | `{enabled, secrets}`: which `kloak:` placeholders to swap  |
+| `warmBase`       | `{build, readyPath}`: snapshot prep + readiness probe path |
+| `sessioned`      | Whether the workload takes a `{session}` path segment      |
+| `requestTimeout` | Per-invoke deadline                                        |
+
+Today's workloads: **`agent`** (goosecracker's goose runner) and **`semgrep`**
+(the diff scanner behind the `semgrep_scan` MCP tool). The guest hydrates its
+workspace from the separate **git-mirror** service.
+
+### Warm-base restore
+
+Each workload has a platform VM snapshot restored per invoke in tens of
+milliseconds (~28ms measured in the ADR 022 spike), so a run does not pay a cold
+boot. The guest is disposable: it is discarded after the invoke returns.
+
+### Egress and secret swap
+
+The egress proxy sits on the host side of the guest's network funnel. The guest's
+network is default-deny to the cluster with an explicit allowlist, and `external`
+egress is allowed but inspected so `kloak:` placeholders can be swapped for real
+secrets before the request leaves the node:
+
+```yaml
+# projects/firecracker/substrate/deploy/values.yaml (excerpt)
+egress:
+  enabled: true
+  external: allow
+  internal:
+    default: deny
+    allowlist:
+      - inference.inference.svc.cluster.local:8080 # in-cluster model (default tier)
+      - monolith.monolith.svc.cluster.local:8000 # progress + artifact publish sink
+      - context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80 # MCP tools
+      - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318 # OTLP traces
+      - git-mirror.monolith.svc.cluster.local:9418 # hot git mirror (ADR 026)
+```
+
+### Git mirror and session hydration
+
+- **Workspace.** The guest clones `/workspace` from the in-cluster git mirror
+  (`git://git-mirror.monolith.svc.cluster.local:9418`, from
+  `projects/firecracker/git-mirror/`). This decouples repo freshness from VM base
+  freshness ([ADR 026](decisions/agents/026-hot-git-mirror-agent-workspaces.md)):
+  the microVM snapshot can be old while the checkout is current. The runner
+  defaults the mirror to `<gitMirror>/homelab` when the caller does not specify a
+  repo.
+- **Session (Model A path).** The guest checkpoints goose's SQLite WAL into
+  `sessions.db` and can ship it to S3 for resume; the `sqlite` CLI is baked into
+  the image for exactly this (goose does not checkpoint on exit).
+
+---
+
+## 6. Guest Image
+
+**Built with:** apko + rules_apko (`projects/firecracker/goosecracker/guest/apko.yaml`)
+**Config:** `projects/firecracker/goosecracker/guest/config.yaml` (goose extensions)
+**Architectures:** x86_64 + aarch64 · **User:** uid/gid 65532 · no Dockerfile
 
 Wolfi packages baked in:
 
-| Package                        | Purpose                              |
-| ------------------------------ | ------------------------------------ |
-| `goose`                        | Agent framework — entrypoint         |
-| `go`                           | Build/test Go services               |
-| `nodejs` + `pnpm`              | Build frontend apps                  |
-| `git` + `gh`                   | Clone repos, push branches, open PRs |
-| `bash`, `coreutils`, `busybox` | Shell tooling for recipe scripts     |
-| `ca-certificates-bundle`       | TLS for outbound HTTPS               |
+| Package(s)                         | Purpose                                        |
+| ---------------------------------- | ---------------------------------------------- |
+| `goose`                            | Agent framework (via recipes; entrypoint)      |
+| `go`, `nodejs`, `pnpm`             | Build/test the target repos                    |
+| `git`, `gh`, `openssh-client`      | Clone from the mirror, push branches, open PRs |
+| `sqlite`                           | Checkpoint goose's WAL into `sessions.db`      |
+| `bash`, `busybox`, `coreutils`     | Shell tooling for recipes                      |
+| `libgcc`, `libgomp`, `libstdc++`   | Runtime libs goose dynamically links           |
+| `ca-certificates-bundle`, `tzdata` | TLS + timezone data                            |
 
-Goose extensions baked into the image (`~/.config/goose/config.yaml`):
-
-| Extension       | Type              | Endpoint                                                             |
-| --------------- | ----------------- | -------------------------------------------------------------------- |
-| `developer`     | builtin           | Filesystem, shell, text editor (scoped to `/workspace`)              |
-| `context-forge` | `streamable_http` | `http://context-forge.mcp-gateway.svc.cluster.local:8000/mcp`        |
-| `github`        | stdio             | `pnpm dlx @modelcontextprotocol/server-github` (uses `GITHUB_TOKEN`) |
-
-### Agent Profiles
-
-Profiles narrow tool access for specific task types. Each maps to a Goose recipe YAML and a scoped Context Forge token (stored in `goose-mcp-tokens` secret).
-
-| Profile    | Tools                 | Use case                                   |
-| ---------- | --------------------- | ------------------------------------------ |
-| _(none)_   | All extensions        | General coding tasks                       |
-| `ci-debug` | `buildbuddy-mcp` only | CI failure investigation                   |
-| `code-fix` | No cluster tools      | Pure code changes, no observability access |
-
-Profile definitions are documented in `projects/agent_platform/sandboxes/profiles.yaml`. Recipes live in `projects/agent_platform/goose_agent/image/recipes/`.
-
-### Long-Lived Agents
-
-`projects/agent_platform/sandboxes` also supports persistent agents as Kubernetes Deployments. Each entry under `agents:` in `values.yaml` generates a `ConfigMap` (prompt) + `Deployment` (Goose runner). A `checksum/prompt` annotation on the pod template triggers rollouts when the prompt changes.
-
-```yaml
-# projects/agent_platform/goose-sandboxes/deploy/values.yaml
-agents:
-  ci-watcher:
-    enabled: true
-    prompt: |
-      Monitor open PRs for CI failures and fix them...
-```
+Goose extensions (`config.yaml`): `developer` (builtin filesystem/shell/editor
+scoped to `/workspace`), `context-forge` (`streamable_http` to the MCP gateway,
+for observability/cluster read tools), and `github` (the `gh` CLI in PATH with a
+swapped-at-egress token). Provider and model come from the tier env, not from this
+file.
 
 ---
 
-## 2. Lean Agent Toolchain
+## 7. Artifacts: Publish and Serve
 
-All container images are built **remotely and hermetically** via BuildBuddy RBE — never locally.
+**Source:** `projects/monolith/artifact/` (`router.py`, `s3.py`, `jobs.py`)
 
-```
-projects/agent_platform/goose_agent/image/
-├── apko.yaml          # Wolfi packages, uid 65532, dual-arch declaration
-├── apko.lock.json     # Pinned package SHAs — hermetic builds
-├── config.yaml        # Goose extensions baked into image
-└── recipes/           # Goose recipe YAML per profile
-    ├── ci-debug.yaml
-    └── code-fix.yaml
-```
+An `/artifact` run's HTML is published by the guest and served live by the
+monolith, with the untrusted HTML kept in a sandboxed iframe
+([ADR 024](decisions/agents/024-discord-agent-hosted-model-tiers-and-artifacts.md)
+decision 4).
 
-**Image pipeline for `goose-agent`:**
+- **Publish** (`write_router`, in-cluster only): the guest POSTs the HTML to
+  `POST /internal/artifact`; the monolith stores it in S3 and returns the public
+  URL `<public-base>/artifact/{id}`. Session-blob routes
+  (`/internal/artifact/{id}/session`) back the Model A resume path.
+- **Serve** (`read_router`, in-cluster only): `GET /internal/artifact/{id}/raw`
+  returns the HTML under a strict CSP; `GET .../version` is the ETag the browser
+  poller watches for hot reload.
+- **Isolation.** `/internal/*` is never on the public HTTPRoute; the SSR frontend
+  is the sole public origin. The raw artifact is framed with
+  `sandbox=allow-scripts` (no `allow-same-origin`), so agent-generated HTML has no
+  ambient authority even though it runs in the owner's browser.
 
-```
-bazel run //projects/agent_platform/goose_agent/image:push
-    │
-    ├─ BuildBuddy RBE builds apko image (rules_apko)
-    ├─ Hermetic: all deps from apko.lock.json SHAs
-    ├─ Output: dual-arch OCI image
-    └─ Push: ghcr.io/jomcgi/homelab/projects/agent_platform/goose_agent/image:<tag>
-           │
-           └─ ArgoCD Image Updater detects new digest
-              └─ Writes back to projects/agent_platform/goose-sandboxes/deploy/values.yaml
-```
-
-The `agent-orchestrator` Go binary follows the same pattern:
-
-```
-projects/agent_platform/orchestrator/ -> go_binary -> go_image (apko base)
-    -> ghcr.io/jomcgi/homelab/projects/agent_platform/orchestrator
-```
-
-No Dockerfiles. All images: apko-based, dual-arch, non-root (uid 65532), `capabilities.drop: [ALL]`.
+Because Model B keeps the artifact id stable across a thread's turns, re-running
+the same thread republishes to the same id and the open browser tab hot-reloads
+via the ETag poll.
 
 ---
 
-## 3. Agent Orchestrator
-
-**Source:** `projects/agent_platform/orchestrator/` (Go)
-**Chart:** `projects/agent_platform/orchestrator/deploy/`
-**Deploy:** `projects/agent_platform/agent-orchestrator/deploy/`
-**In-cluster:** `http://agent-orchestrator.agent-orchestrator.svc.cluster.local:8080` (ClusterIP only)
-
-A single Go binary combining an HTTP API and a NATS JetStream consumer. Accepts job submissions, queues them durably, and executes them in isolated Goose sandbox pods.
-
-### Architecture
-
-```
-┌────────────────────────────────────────────────────────┐
-│               agent-orchestrator                       │
-│                                                        │
-│  HTTP :8080                                            │
-│  ┌──────────┐    NATS JetStream                        │
-│  │ REST API ├──▶ stream: agent-jobs                    │
-│  │          │    subject: agent.jobs                   │
-│  │          │    WorkQueue · max 1000 msgs             │
-│  └────┬─────┘         │                                │
-│       │               │ pull (MaxAckPending=3)         │
-│       │               ▼                                │
-│       │    ┌────────────────────┐                      │
-│       │    │ Consumer goroutine  │                     │
-│       │    │ (up to 3 concurrent)│                     │
-│       ▼    └─────────┬──────────┘                      │
-│  ┌──────────┐        │                                 │
-│  │ NATS KV  │◀───────┘                                 │
-│  │ bucket:  │   job records (TTL 7 days)               │
-│  │job-records│                                         │
-│  └──────────┘                                          │
-└────────────────────────────────────────────────────────┘
-```
-
-Both the JetStream stream (`agent-jobs`) and KV bucket (`job-records`) are **self-provisioned** on startup via idempotent `CreateOrUpdate` calls — no manual NATS setup required.
-
-### Job Lifecycle
-
-```
-POST /jobs
-    │
-    ▼
-PENDING ──▶ RUNNING ──▶ SUCCEEDED
-                   └──▶ FAILED     (retries exhausted)
-                   └──▶ CANCELLED  (via API or KV flag)
-                   └──▶ PENDING    (retry — message NAK'd for re-delivery)
-```
-
-State is persisted in NATS KV, keyed by ULID (lexicographically sortable = free chronological ordering).
-
-**Cancellation** is cooperative: the consumer polls KV status before each lifecycle phase. Setting `status: CANCELLED` in KV is sufficient — no separate signal channel.
-
-**Retry with context inheritance:** On failure with retries remaining, the next attempt's prompt is enriched with the previous exit code and last 2,000 chars of output, helping the agent avoid the same failure mode.
-
-**Inactivity watchdog:** Output streams through a `syncBuffer`. If no bytes arrive within 10 minutes (configurable), the execution context is cancelled — prevents hung Goose sessions from blocking the queue.
-
-### Consumer: Sandbox Execution Steps
-
-```
-1. Pull job ID from JetStream
-2. Read JobRecord from NATS KV
-3. If CANCELLED -> ACK and skip
-4. Create SandboxClaim:
-       apiVersion: extensions.agents.x-k8s.io/v1alpha1
-       kind: SandboxClaim
-       spec.sandboxTemplateRef.name: "goose-agent"
-       spec.lifecycle.shutdownPolicy: "Delete"
-5. Poll SandboxClaim.status.sandbox until name appears
-6. Resolve pod name from Sandbox.annotations["agents.x-k8s.io/pod-name"]
-7. Wait for goose container Ready
-8. Exec (refresh): git -C /workspace/homelab pull --ff-only origin main
-9. Exec (run):     goose run --text <task>
-       (profile):  goose run --recipe <path> --no-profile --params task_description=<task>
-10. Capture stdout+stderr -> syncBuffer (last 32KB)
-11. Flush output to KV every 30s (live progress visible via GET /jobs/{id}/output)
-12. On exit: KV -> SUCCEEDED | FAILED | CANCELLED
-13. Delete SandboxClaim -> controller cleans up pod
-```
-
-Step 8 ensures agents always work from the latest `main`.
-
-### REST API
-
-| Method | Path                | Description                                                  |
-| ------ | ------------------- | ------------------------------------------------------------ |
-| `POST` | `/jobs`             | Submit job -> 202 Accepted                                   |
-| `GET`  | `/jobs`             | List jobs (`?status=RUNNING,PENDING`, `?limit=`, `?offset=`) |
-| `GET`  | `/jobs/{id}`        | Job detail + all attempt records                             |
-| `POST` | `/jobs/{id}/cancel` | Cancel PENDING or RUNNING job                                |
-| `GET`  | `/jobs/{id}/output` | Latest attempt output (last 32KB)                            |
-| `GET`  | `/health`           | Liveness / readiness                                         |
-
-**Submit example:**
-
-```json
-// POST /jobs
-{ "task": "Fix the flaky test in services/grimoire", "profile": "ci-debug", "max_retries": 2 }
-
-// 202 Accepted
-{ "id": "01JQXK5P...", "status": "PENDING", "created_at": "2026-03-08T..." }
-```
-
-### Data Model
-
-```go
-type JobRecord struct {
-    ID         string    // ULID — lexicographically sorted by time
-    Task       string
-    Profile    string    // "", "ci-debug", "code-fix"
-    Status     JobStatus // PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
-    CreatedAt  time.Time
-    UpdatedAt  time.Time
-    MaxRetries int       // default: 2, max: 10
-    Source     string    // "api" | "github" | "cli"
-    Attempts   []Attempt
-}
-
-type Attempt struct {
-    Number           int        // 1-based
-    SandboxClaimName string     // "orch-<ulid>-<attempt>"
-    ExitCode         *int
-    Output           string     // last 32KB of goose stdout+stderr
-    Truncated        bool
-    StartedAt        time.Time
-    FinishedAt       *time.Time
-}
-```
-
-### RBAC
-
-The orchestrator's `ServiceAccount` has the minimum permissions needed to drive sandbox lifecycle:
-
-| Resource                                   | Verbs                            |
-| ------------------------------------------ | -------------------------------- |
-| `extensions.agents.x-k8s.io/sandboxclaims` | create, get, list, watch, delete |
-| `agents.x-k8s.io/sandboxes`                | get, list, watch                 |
-| `core/pods`                                | get, list, watch                 |
-| `core/pods/exec`                           | create                           |
-
----
-
-## 4. Claude Chat -> Agent Orchestrator MCP
-
-**Source:** `projects/agent_platform/orchestrator/mcp/` (Python, FastMCP + httpx)
-**Transport:** `STREAMABLEHTTP`
-**Deployed via:** `projects/agent_platform/mcp_servers_chart/` (entry in `projects/agent_platform/mcp-servers/deploy/values.yaml`)
-**In-cluster:** `http://agent-orchestrator-mcp.mcp-servers.svc.cluster.local:8000`
-
-A thin FastMCP wrapper around the orchestrator REST API. Registered with Context Forge at deploy time by `projects/agent_platform/mcp_servers_chart/templates/registration-job.yaml`.
-
-### MCP Tools
-
-| Tool             | Wraps                    | Description                                 |
-| ---------------- | ------------------------ | ------------------------------------------- |
-| `submit_job`     | `POST /jobs`             | Queue a task for agent execution            |
-| `list_jobs`      | `GET /jobs`              | List jobs with status filter and pagination |
-| `get_job`        | `GET /jobs/{id}`         | Full job record with attempt history        |
-| `cancel_job`     | `POST /jobs/{id}/cancel` | Cancel a pending or running job             |
-| `get_job_output` | `GET /jobs/{id}/output`  | Latest attempt output (last 32KB)           |
-
-### Full Request Path: Claude Chat -> Running Agent
-
-```mermaid
-sequenceDiagram
-    actor Claude as Claude.ai / Claude Code
-    participant CFA as Cloudflare Access
-    participant CF as Context Forge
-    participant MCP as agent-orchestrator-mcp
-    participant Orch as agent-orchestrator
-    participant NATS as NATS JetStream
-    participant Ctrl as agent-sandbox controller
-    participant Pod as Goose sandbox pod
-
-    Claude->>CFA: MCP: submit_job(task="Fix CI")
-    CFA->>CFA: Validate token (Managed OAuth)
-    CFA->>CF: forward + Cf-Access-Authenticated-User-Email
-    CF->>CF: RBAC check (team scope)
-    CF->>MCP: route to agent-orchestrator-mcp
-    MCP->>Orch: POST /jobs {task, profile, max_retries}
-    Orch->>NATS: KV PUT job-records/<ULID> {PENDING}
-    Orch->>NATS: JS PUB agent.jobs <ULID>
-    Orch-->>Claude: 202 {id: "01JQ...", status: "PENDING"}
-
-    Note over Orch,Pod: Consumer goroutine (async)
-    NATS-->>Orch: Pull job ID
-    Orch->>NATS: KV PUT {RUNNING}
-    Orch->>Ctrl: Create SandboxClaim "orch-01jq...-1"
-    Ctrl->>Pod: Allocate from warm pool
-    Orch->>Pod: exec: git pull --ff-only origin main
-    Orch->>Pod: exec: goose run --text "Fix CI"
-    Pod->>CF: MCP tool calls (SigNoz logs, ArgoCD status…)
-    Pod->>Pod: edit code · git commit · git push · gh pr create
-    Pod-->>Orch: exit 0
-    Orch->>NATS: KV PUT {SUCCEEDED}
-    Orch->>Ctrl: Delete SandboxClaim
-
-    Claude->>CFA: MCP: get_job_output(id="01JQ...")
-    CFA->>CF: forward
-    CF->>MCP: route
-    MCP->>Orch: GET /jobs/01JQ.../output
-    Orch->>NATS: KV GET job-records/01JQ...
-    Orch-->>Claude: {output: "PR #42 opened", exit_code: 0}
-```
-
-**Polling:** The MCP server is stateless. Claude must call `get_job` or `get_job_output` to poll for progress. Output is flushed to NATS KV every 30 seconds during execution, so intermediate results are visible before the job completes.
-
----
-
-## 5. Context Forge
-
-**Chart:** `projects/agent_platform/context_forge/` (wraps upstream IBM `mcp-stack` Helm chart)
-**Deploy:** `projects/agent_platform/context-forge/deploy/`
-**Namespace:** `mcp-gateway`
-**External:** `https://mcp.jomcgi.dev/mcp/` (Cloudflare Managed OAuth -> Cloudflare Tunnel -> Context Forge)
-**In-cluster:** `http://context-forge.mcp-gateway.svc.cluster.local:8000/mcp`
-
-IBM's [`mcp-context-forge`](https://github.com/ibm/mcp-context-forge) aggregates multiple upstream MCP servers behind a single endpoint with RBAC-based tool distribution.
-
-### Deployed Components
-
-| Component             | Purpose                                                 |
-| --------------------- | ------------------------------------------------------- |
-| Context Forge gateway | MCP protocol routing, tool registry, RBAC               |
-| Postgres              | Durable state — tool registrations, teams, tokens       |
-| Redis                 | Session caching                                         |
-| Schema migration Job  | Applied on upgrade, pinned to same image tag as gateway |
-
-### Auth Stack (External Access)
-
-```
-Claude.ai / Claude Code
-    │
-    │ HTTPS
-    ▼
-Cloudflare Access          (Managed OAuth — ADR 011)
-    │  - RFC 9728 discovery + DCR (Dynamic Client Registration)
-    │  - Token issuance and validation at edge
-    │  - Injects Cf-Access-Authenticated-User-Email header
-    ▼
-Cloudflare Tunnel          (DDoS protection, TLS termination)
-    │
-    ▼
-Context Forge              (TRUST_PROXY_AUTH=true)
-    │  - Reads identity from Cf-Access-Authenticated-User-Email header
-    │  - Resolves team membership from identity
-    │  - Applies RBAC: tools.read + tools.execute for "developer" role
-    ▼
-MCP Server (e.g., agent-orchestrator-mcp)
-```
-
-In-cluster agents (Goose pods) reach Context Forge directly via ClusterIP at `:8000` — no auth required.
-
-### RBAC Model
-
-Context Forge uses two authorization layers (see [ADR 005](decisions/agents/005-role-based-mcp-access.md)):
-
-1. **Token scoping** — JWT `teams` claim controls which tools an agent can see
-2. **Role** — `developer` grants `tools.read` + `tools.execute`
-
-| Client                            | Team            | Visible tools          |
-| --------------------------------- | --------------- | ---------------------- |
-| Claude Code / Claude.ai           | `infra-agents`  | All registered servers |
-| Claude.ai web chat                | `web-chat`      | SigNoz read tools only |
-| In-cluster Goose pods (ClusterIP) | — (bypass auth) | All tools              |
-
-### Registered MCP Servers
-
-All servers run in `mcp-servers` namespace. Registration happens once at deploy time via a Kubernetes `Job` that calls the Context Forge admin API.
-
-| Server                   | Image                                      | Transport      | Tools                                     |
-| ------------------------ | ------------------------------------------ | -------------- | ----------------------------------------- |
-| `signoz-mcp`             | `docker.io/signoz/signoz-mcp-server`       | STREAMABLEHTTP | Logs, traces, metrics, alerts, dashboards |
-| `buildbuddy-mcp`         | homelab Go service                         | STREAMABLEHTTP | CI invocations, build logs, targets       |
-| `kubernetes-mcp`         | `ghcr.io/containers/kubernetes-mcp-server` | STREAMABLEHTTP | Pod list/logs/exec, resource reads        |
-| `argocd-mcp`             | `ghcr.io/argoproj-labs/mcp-for-argocd`     | STREAMABLEHTTP | App status, sync, history                 |
-| `todo-mcp`               | homelab Python service                     | STREAMABLEHTTP | Todo CRUD                                 |
-| `agent-orchestrator-mcp` | homelab Python service                     | STREAMABLEHTTP | Job submit/list/cancel/output             |
-
-All server definitions live in `projects/agent_platform/mcp-servers/deploy/values.yaml`. ArgoCD Image Updater maintains digest-pinned image tags automatically.
-
----
-
-## 6. Agent Orchestrator Events
-
-The orchestrator uses **NATS JetStream** as both job queue and state store.
-
-### NATS Resources
-
-| Resource                | Type         | Config                                       |
-| ----------------------- | ------------ | -------------------------------------------- |
-| `agent-jobs` stream     | WorkQueue    | subject: `agent.jobs`, max 1000 msgs         |
-| `job-records` KV bucket | KeyValue     | keyed by ULID, TTL 7 days                    |
-| `orchestrator` consumer | Durable pull | MaxAckPending=3, AckWait=JOB_MAX_DURATION+1m |
-
-All three are self-provisioned on orchestrator startup. Single-node NATS at `nats://nats.nats.svc.cluster.local:4222` (`projects/platform/nats/`).
-
-### Event Flow
-
-```
-POST /jobs  ──▶  KV PUT   job-records/<ULID>  { status: PENDING }
-             ──▶  JS PUB   agent.jobs          <ULID>
-
-Consumer pull
-    ├─▶  KV PUT   { status: RUNNING, attempts: [{...}] }
-    ├─▶  [every 30s] KV PUT  { attempts[-1].output: <partial> }
-    └─▶  KV PUT   { status: SUCCEEDED | FAILED | CANCELLED }
-         JS ACK   (success / retries exhausted / cancelled)
-         JS NAK   (retry — message redelivered)
-```
-
-State transitions are the events. Job status changes are immediately visible via `GET /jobs/{id}` or direct KV reads.
-
-### Consuming State Changes Externally
-
-Any service with NATS access can watch the KV bucket for real-time job state changes:
-
-```go
-// Watch all job-record changes (delta delivery — not full scans)
-watcher, _ := kv.WatchAll(ctx)
-for entry := range watcher.Updates() {
-    var job JobRecord
-    json.Unmarshal(entry.Value(), &job)
-    // react to job.Status transitions
-}
-```
-
-This is the intended extension point for future webhook dispatch, DLQ handling, or GitHub issue creation on failure (see [ADR 007](decisions/agents/007-agent-orchestrator.md)).
+## Superseded Architecture
+
+For anyone reading old commits or ADRs, these are gone and should not be built on:
+
+| Was                                                          | Status                                                                                                                                                                                                                      |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-orchestrator` (Go, NATS JetStream job queue)          | Decommissioned. Only a stale UI dir remains under `projects/agent_platform/`. Superseded by fc-invoke.                                                                                                                      |
+| `kubernetes-sigs/agent-sandbox` controller + `Sandbox*` CRDs | Rejected in [ADR 022](decisions/agents/022-firecracker-snapshot-restore-controller.md); never deployed. Firecracker-direct chosen instead.                                                                                  |
+| Goose sandboxes as long-lived K8s pods / warm pool           | Replaced by disposable Firecracker microVMs restored from a snapshot per invoke.                                                                                                                                            |
+| Context Forge as a multi-server federating MCP gateway       | Still deployed (the guest reaches it for developer tools), but flagged for removal in [ADR 020](decisions/agents/020-deprecate-context-forge-mcp-gateway.md): serve the monolith MCP directly, auth at the Cloudflare edge. |
+| `submit_job` / `list_jobs` orchestrator MCP tools            | Gone with the orchestrator. Runs are triggered from Discord (and, in future, the `submit()` seam).                                                                                                                          |
 
 ---
 
 ## Related ADRs
 
-| ADR                                                                              | Decision                           |
-| -------------------------------------------------------------------------------- | ---------------------------------- |
-| [001 - Background Agents](decisions/agents/001-background-agents.md)             | Initial motivation                 |
-| [002 - OpenHands Agent Sandbox](decisions/agents/002-openhands-agent-sandbox.md) | Superseded approach                |
-| [003 - Context Forge](decisions/agents/003-context-forge.md)                     | MCP gateway deployment             |
-| [004 - Autonomous Agents](decisions/agents/004-autonomous-agents.md)             | Goose + agent-sandbox architecture |
-| [005 - Role-Based MCP Access](decisions/agents/005-role-based-mcp-access.md)     | Context Forge RBAC model           |
-| [006 - OIDC Auth MCP Gateway](decisions/agents/006-oidc-auth-mcp-gateway.md)     | OAuth proxy + Google OIDC (superseded by 011) |
-| [007 - Agent Orchestrator](decisions/agents/007-agent-orchestrator.md)           | Orchestrator service design        |
-| [011 - Cloudflare Managed OAuth](decisions/agents/011-cloudflare-managed-oauth.md) | Replaces in-cluster OAuth proxy with Cloudflare Access |
+| ADR                                                                                                                           | Status   | Decision                                                     |
+| ----------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------ |
+| [019 - Substrate Executor + AgentWorkflow](decisions/agents/019-substrate-executor-agentworkflow.md)                          | Accepted | Opaque `Exec` seam; substrate is goose-agnostic              |
+| [020 - Deprecate Context Forge](decisions/agents/020-deprecate-context-forge-mcp-gateway.md)                                  | Accepted | Serve monolith MCP directly, auth at the edge                |
+| [022 - Firecracker Snapshot/Restore](decisions/agents/022-firecracker-snapshot-restore-controller.md)                         | Accepted | FC-direct on node-4 (rejects kata-fc / agent-sandbox)        |
+| [023 - Egress Secret Proxy](decisions/agents/023-egress-secret-proxy.md)                                                      | Draft    | `kloak:` placeholders swapped at the egress hop              |
+| [024 - Discord Agent, Tiers, Artifacts](decisions/agents/024-discord-agent-hosted-model-tiers-and-artifacts.md)               | Draft    | goosecracker: owner gate, tiers, sandboxed live artifacts    |
+| [025 - Three-Layer Agent Stack](decisions/agents/025-three-layer-agent-stack-goosecracker.md)                                 | Draft    | Layering: firecracker-substrate / goosecracker / discord     |
+| [026 - Fast MicroVM Starts + Stateful Artifacts](decisions/agents/026-fast-microvm-starts-and-stateful-artifact-iteration.md) | Accepted | CoW rootfs, `sessions.db` to S3, disposable VM model         |
+| [026 - Hot Git Mirror](decisions/agents/026-hot-git-mirror-agent-workspaces.md)                                               | Draft    | In-cluster mirror decouples repo freshness from VM base      |
+| [027 - Agent GitHub App Roles](decisions/agents/027-agent-github-app-roles.md)                                                | Draft    | Implementer / reviewer GitHub apps, scoped permissions       |
+| [028 - Elastic MicroVM Capacity](decisions/agents/028-elastic-agent-microvm-capacity-and-reclaim.md)                          | Draft    | State-preserving reclaim of node-4 microVM slots             |
+| [030 - fc-invoke](decisions/agents/030-fc-invoke-configurable-firecracker-surface.md)                                         | Draft    | One configurable Firecracker surface (absorbs older daemons) |
+| [031 - Control/Data-Plane Split](decisions/agents/031-cluster-node-control-data-plane-split.md)                               | Accepted | Go interface split; enables future cross-node gRPC           |
 
 ## Quick Reference
 
 ```bash
-# Explore the agent platform
-ls projects/platform/agent-sandbox/              # Controller chart + CRDs
-ls projects/agent_platform/sandboxes/            # SandboxTemplate, warm pool, namespace config
-ls projects/agent_platform/goose_agent/image/    # apko spec, Goose config, recipes
-ls projects/agent_platform/orchestrator/         # Go service source (api.go, consumer.go, sandbox.go)
-ls projects/agent_platform/orchestrator/mcp/     # Python MCP wrapper
-ls projects/agent_platform/orchestrator/deploy/  # Orchestrator Helm chart + ArgoCD Application
-ls projects/agent_platform/context_forge/deploy/ # MCP gateway (wraps IBM mcp-stack)
-ls projects/agent_platform/mcp_servers_chart/deploy/  # All MCP server pods + registration jobs
-ls projects/agent_platform/sandboxes/deploy/     # Prod sandbox values + image tags
-ls projects/agent_platform/mcp_servers/deploy/   # MCP servers deploy config
+# Orchestration (in the monolith)
+ls projects/monolith/goosecracker/            # dispatch, runner, threads, sessions, tiers
+ls projects/monolith/chat/ | grep goose       # Discord gate, bot glue, progress buffer
+ls projects/monolith/artifact/                # publish + sandboxed serve
+grep -n -A40 '^goosecracker:' projects/monolith/deploy/values.yaml   # tiers, progressUrl, gitMirror
+
+# Execution substrate
+ls projects/firecracker/substrate/            # fc-invoke daemon, FC driver, vsock, egress proxy
+ls projects/firecracker/goosecracker/guest/   # apko image, goose config, recipes
+ls projects/firecracker/goosecracker/guest/recipes/   # agent (router), query, plan, implement, artifact
+ls projects/firecracker/git-mirror/           # hot git mirror service
+cat projects/firecracker/substrate/deploy/values.yaml # node, egress allowlist, workloads
 ```
