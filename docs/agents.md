@@ -83,7 +83,7 @@ Two application (slash) commands are registered on the bot's `CommandTree`
 | `/artifact <prompt>` | `artifact`   | A self-contained HTML artifact, published and served live (hot-reloading)    |
 | `/agent <prompt>`    | `agent`      | An answer, a plan doc, or a PR (the router classifies) against a chosen repo |
 
-`/agent` takes a `target` choice (`homelab` or `loom`) selecting which repo the
+`/agent` takes a `repo` choice (`homelab` or `loom`) selecting which repo the
 guest checks out. Each command opens a Discord thread; **the thread id is the
 session id** for the whole conversation.
 
@@ -232,16 +232,20 @@ _placeholders_ the guest is allowed to hold. The runner merges the selected tier
 into the env it POSTs to fc-invoke. Tiers are injected from Helm values (no code
 change to add or retune one).
 
-| Tier       | Model endpoint                                      | Model                     | Secret handling                             |
-| ---------- | --------------------------------------------------- | ------------------------- | ------------------------------------------- |
-| `default`  | `inference.inference.svc.cluster.local:8080` (Qwen) | `qwen3.6-27b`             | `sk-noauth` (in-cluster, no real secret)    |
-| `artifact` | `openrouter.ai/api/v1`                              | `google/gemini-3.5-flash` | `kloak:` placeholder, swapped at egress hop |
+| Tier       | Provider / endpoint                                            | Model                     | Model auth                                |
+| ---------- | -------------------------------------------------------------- | ------------------------- | ----------------------------------------- |
+| `default`  | `openai` → `inference.inference.svc.cluster.local:8080` (Qwen) | `qwen3.6-27b`             | `sk-noauth` (in-cluster, no real secret)  |
+| `artifact` | `openrouter` (OpenRouter's own API endpoint)                   | `google/gemini-3.5-flash` | `OPENROUTER_API_KEY` `kloak:` placeholder |
+
+Both tiers also carry a `GITHUB_TOKEN` `kloak:` placeholder so `plan` / `implement`
+runs can push branches and open PRs, plus `GOOSE_MODE: auto` (the sandboxed guest
+needs no interactive approval) and OTLP trace env.
 
 ```yaml
-# projects/monolith/deploy/values.yaml (excerpt)
+# projects/monolith/deploy/values.yaml (excerpt, trimmed)
 goosecracker:
   tiers:
-    default:
+    default: # in-cluster Qwen; model needs no real secret
       OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
       OPENAI_API_KEY: sk-noauth
       GOOSE_PROVIDER: openai
@@ -249,20 +253,25 @@ goosecracker:
       GOOSE_CONTEXT_LIMIT: "32768" # true vLLM window; goose compacts at ~80%
       GOOSE_MAX_TOOL_RESPONSE_SIZE: "10000" # cap one tool output so it cannot fill 32k
       GOOSE_MAX_TOKENS: "8000" # cap per-response generation
-    artifact:
-      OPENAI_HOST: https://openrouter.ai/api/v1
-      OPENAI_API_KEY: "kloak:or:<high-entropy-placeholder>"
-      GOOSE_PROVIDER: openai
-      GOOSE_MODEL: "google/gemini-3.5-flash"
+      GITHUB_TOKEN: "kloak:gh:..." # swapped at egress on api.github.com
+      GOOSE_MODE: auto
+    artifact: # Gemini via OpenRouter
+      GOOSE_PROVIDER: openrouter
+      OPENROUTER_API_KEY: "kloak:or:..." # swapped at egress on openrouter.ai
+      GOOSE_MODEL: google/gemini-3.5-flash
+      GOOSE_MAX_TOKENS: "32000" # Gemini thinking tokens count against this budget
+      ARTIFACT_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/artifact
 ```
 
-**The tier is the credential trust boundary.** The `default` tier runs on a model
-inside the cluster and needs no real secret. The `artifact` tier reaches
-OpenRouter, but the guest never holds the real key: it holds an inert `kloak:`
-placeholder, and the fc-invoke egress proxy swaps it for the real OpenRouter key
-(from the `goosecracker` 1Password item) at the egress hop
-([ADR 023](decisions/agents/023-egress-secret-proxy.md)). A compromised guest
-leaks a placeholder, not a credential.
+**The tier is the credential trust boundary.** No tier puts a real secret in the
+guest. The `default` tier's model auth is `sk-noauth` because the model runs inside
+the cluster; the `artifact` tier reaches OpenRouter but holds only an inert
+`OPENROUTER_API_KEY` placeholder. Both tiers also carry a `GITHUB_TOKEN`
+placeholder. Every `kloak:` value stays inert until the fc-invoke egress proxy
+swaps it for the real secret (from the `goosecracker` 1Password item) at the egress
+hop, on the destination host only
+([ADR 023](decisions/agents/023-egress-secret-proxy.md)). A compromised guest leaks
+a placeholder, not a credential.
 
 The `GOOSE_CONTEXT_LIMIT` / `GOOSE_MAX_*` knobs on the `default` tier exist
 because the Qwen endpoint's real window is 32k: without telling goose the true
@@ -379,10 +388,10 @@ Wolfi packages baked in:
 | `ca-certificates-bundle`, `tzdata` | TLS + timezone data                            |
 
 Goose extensions (`config.yaml`): `developer` (builtin filesystem/shell/editor
-scoped to `/workspace`), `context-forge` (`streamable_http` to the MCP gateway,
-for observability/cluster read tools), and `github` (the `gh` CLI in PATH with a
-swapped-at-egress token). Provider and model come from the tier env, not from this
-file.
+scoped to `/workspace`) and `context-forge` (`streamable_http` to the MCP gateway,
+for observability/cluster read tools). GitHub access is not a goose extension: it
+is the `gh` CLI on PATH, authenticated by the tier's `GITHUB_TOKEN` placeholder
+(swapped at egress). Provider and model come from the tier env, not from this file.
 
 ---
 
