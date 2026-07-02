@@ -716,12 +716,22 @@ class ChatBot(discord.Client):
         # Agent threads are open to everyone (ADR 029); artifact threads stay
         # owner-only. The thread is already bound to its repo, so replies can't
         # cross to another repo.
+        # Agent threads are open to everyone (ADR 029). Artifact threads are open
+        # to whoever is granted /artifact in this server (ADR 024 amendment), so
+        # the person who built an artifact can iterate on it, not just the owner.
         is_agent = await asyncio.to_thread(goosecracker.is_agent_thread, thread_id)
-        if not is_agent and not goosecracker.is_owner(message.author.id):
-            roast = await goosecracker.build_roast(message.content)
-            await message.reply(roast)
-            await asyncio.to_thread(self._complete_lock, msg_id)
-            return True
+        if not is_agent:
+            guild_id = message.guild.id if message.guild else None
+            allowed = goosecracker.is_owner(
+                message.author.id
+            ) or await asyncio.to_thread(
+                acl.is_granted, guild_id, message.author.id, "artifact"
+            )
+            if not allowed:
+                roast = await goosecracker.build_roast(message.content)
+                await message.reply(roast)
+                await asyncio.to_thread(self._complete_lock, msg_id)
+                return True
 
         try:
             result = await asyncio.to_thread(

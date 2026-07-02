@@ -144,6 +144,11 @@ class GoosecrackerSession(SQLModel, table=True):
     # pending: newline-joined replies queued while running=True; consumed on drain.
     running: bool = Field(default=False)
     pending: str = Field(default="")
+    # Unguessable capability id the artifact is published under (ADR 024 amend).
+    # Random per thread, assigned on first publish and reused on re-publish so the
+    # live page hot-reloads at a stable but non-discoverable URL (never the
+    # enumerable Discord thread id).
+    artifact_id: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
