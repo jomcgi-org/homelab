@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Review"
 description: "Review and polish an already-built web artifact in isolated context (ADR 024): read /tmp/artifact.html, fix real correctness and design issues IN PLACE, and re-gate that the JS still parses."
 instructions: |
@@ -23,7 +23,12 @@ instructions: |
     function and actually does something. The most common defect is a single
     JavaScript syntax error in an inline <script> that silently kills EVERY
     handler while the page still renders. If you find one, fix it. Never ship a
-    page whose script does not parse.
+    page whose script does not parse. Two sibling defects render as nothing the
+    same way: an invalid built-in Tailwind color class (e.g. slate-705, the scale
+    is 50,100..900,950), and an interactivity directive with no runtime loaded
+    (Alpine/Vue x-data/@click/:class without an Alpine/Vue script, Franken uk-*
+    without UIkit/Franken, data-lucide without a lucide.createIcons() call). Fix
+    any you find.
   - Polish: consistent spacing and alignment, a clear visual hierarchy, and a
     visible hover / active / focus state on every interactive surface. Remove
     orphaned controls and anything that does not earn its place.
@@ -33,7 +38,11 @@ instructions: |
     slop". Kill the tells: purple-to-blue gradients, gradient text on headings or
     numbers, cyan-on-dark, neon-on-dark, everything centered, cards nested in
     cards, monospace used as a lazy "techie" font, pure #000 or #fff. Tighten
-    toward a cohesive palette and a real type hierarchy. Deeper guidance, if you
+    toward a cohesive palette and a real type hierarchy. If repeated UI elements
+    are styled ad-hoc, nudge them toward one system (shadcn-style CSS-variable
+    tokens: --background/--foreground/--muted/--border/--ring, a single --radius,
+    thin border plus soft shadow instead of heavy boxes) rather than rewriting
+    the page. Deeper guidance, if you
     need it, is in the files under /opt/impeccable/ (typography.md,
     color-and-contrast.md, spatial-design.md, motion-design.md,
     interaction-design.md, ux-writing.md) when present.
@@ -76,9 +85,10 @@ extensions:
 settings:
   max_turns: 20
   max_tool_repetitions: 5
-# Re-gate after the reviewer's own edits: if a fix broke the inline JS, the page
-# would render but every button would be dead, exactly the defect this pass
-# exists to catch. Same parse check as artifact-build.yaml; self-heals via failure_prompt.
+# Re-gate after the reviewer's own edits: if a fix broke the inline JS, an invalid
+# Tailwind color class, or a directive whose runtime is not loaded, the page would
+# render but look broken or half-styled, exactly the defects this pass exists to
+# catch. Same static checks as artifact-build.yaml; self-heals via failure_prompt.
 retry:
   max_retries: 2
   checks:
@@ -87,22 +97,34 @@ retry:
         test -s /tmp/artifact.html && node -e '
         const fs=require("fs"),vm=require("vm");
         const html=fs.readFileSync("/tmp/artifact.html","utf8");
+        const errs=[];
         const re=/<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-        let m,err=null;
+        let m;
         while((m=re.exec(html))){
           const a=m[1]||"",b=m[2]||"";
           if(/\bsrc\s*=/.test(a))continue;
           if(/type\s*=\s*["\x27]?module/i.test(a))continue;
           if(!b.trim())continue;
-          try{new vm.Script(b,{filename:"inline.js"});}catch(e){err=e.message;break;}
+          try{new vm.Script(b,{filename:"inline.js"});}catch(e){errs.push("Inline <script> JavaScript syntax error: "+e.message);break;}
         }
-        if(err){try{fs.writeFileSync("/tmp/artifact_error.txt",err);}catch(_){}console.error("Invalid JS in /tmp/artifact.html: "+err);process.exit(1);}
+        const COLORS="slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
+        const STEPS=new Set(["50","100","200","300","400","500","600","700","800","900","950"]);
+        const cre=new RegExp("(?:"+COLORS+")-([0-9]{2,3})\\b","g");
+        let cm;const bad=new Set();
+        while((cm=cre.exec(html))){if(!STEPS.has(cm[1]))bad.add(cm[0]);}
+        if(bad.size)errs.push("Invalid Tailwind color class(es) that render as nothing: "+[...bad].join(", ")+" (the built-in scale is 50,100..900,950).");
+        if(/(\sx-data=|\s@click=|\s:class=|\sv-if=|\sv-for=)/.test(html)&&!/<script[^>]+src=[^>]*(alpine|vue)/i.test(html))errs.push("Alpine/Vue directives (x-data / @click / :class) are used but no Alpine or Vue <script src> is loaded, so nothing will be interactive.");
+        if(/\s(?:data-)?uk-[a-z]/.test(html)&&!/<script[^>]+src=[^>]*(uikit|franken)/i.test(html))errs.push("Franken UI / uk-* attributes are used but no UIkit/Franken UI <script src> is loaded, so those components will not initialize.");
+        if(/data-lucide=/.test(html)&&!/lucide\s*\.\s*createIcons\s*\(/.test(html))errs.push("data-lucide icons are used but lucide.createIcons() is never called, so no icons will render.");
+        if(errs.length){try{fs.writeFileSync("/tmp/artifact_error.txt",errs.join("\n"));}catch(_){}console.error(errs.join("\n"));process.exit(1);}
         '
   failure_prompt: |
-    Your edit left /tmp/artifact.html with an inline <script> that has a
-    JavaScript SYNTAX ERROR, so the whole script fails to load and every button
-    is now dead. If /tmp/artifact_error.txt exists, read it: it holds the exact
-    parser error and location. Fix the script and re-write the COMPLETE,
-    self-contained HTML document to /tmp/artifact.html now. Do not reply with
-    prose. If you cannot fix it cleanly, restore the working version you started
-    from.
+    Your edit left /tmp/artifact.html looking broken or half-styled. A static
+    check found one of: an inline <script> with a JavaScript SYNTAX ERROR (kills
+    every handler), an invalid Tailwind color class like slate-705 (renders as
+    nothing), or an interactivity directive (Alpine/Vue x-data/@click/:class,
+    Franken uk-*, data-lucide) whose runtime script is never loaded. If
+    /tmp/artifact_error.txt exists, read it: it lists the exact problems. Fix them
+    and re-write the COMPLETE, self-contained HTML document to /tmp/artifact.html
+    now. Do not reply with prose. If you cannot fix it cleanly, restore the
+    working version you started from.
