@@ -1,4 +1,4 @@
-version: "1.3.0"
+version: "1.4.0"
 title: "Implement"
 description: "Implementation sub-recipe: make a code or config change, commit it, and open a PR."
 instructions: |
@@ -33,6 +33,17 @@ instructions: |
   action taken and the outcome in one or two sentences, the branch name,
   and the PR URL if you opened one (only a URL you actually received, never
   an invented one).
+
+  When you are unsure about an EXTERNAL fact (an upstream API or flag, a
+  library version, current best practice) do not guess and do not silently
+  assume. Write ONE specific question to /tmp/goose/research-question.md
+  (for example `printf '%s' 'what flags does X v2 accept for Y?' >
+  /tmp/goose/research-question.md`), then dispatch the research sub-recipe
+  and wait for its result. It searches the web and returns a short cited
+  answer. Use it for external facts only: questions about THIS repo you
+  answer yourself by reading the code. At most 2 research calls per task;
+  if research cannot confirm something, state the uncertainty in your
+  output rather than blocking.
 parameters:
   - key: task_file
     description: "Path to a file containing the change to implement"
@@ -53,6 +64,12 @@ prompt: |
 extensions:
   - type: builtin
     name: developer
+sub_recipes:
+  - name: research
+    path: /home/goose-agent/recipes/research.yaml
+    values:
+      task_file: /tmp/goose/research-question.md
+      context_file: /tmp/goose/context.md
 settings:
   max_turns: 50
   max_tool_repetitions: 5
