@@ -299,7 +299,15 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
         except Exception:
             logger.exception("goosecracker: artifact publish failed for %s", session)
             return "Build finished, but publishing the artifact failed. Check the logs."
-        summary = _extract_summary(data.get("result", "") or "")
+        # Summary can come from the artifact recipe's markdown goose-result
+        # (/artifact command) or the router's typed JSON (a /agent run routed to
+        # the artifact sub-recipe). Prefer the structured summary, fall back to
+        # the markdown one.
+        result_text = data.get("result", "") or ""
+        structured = _parse_structured_result(result_text)
+        summary = (
+            str(structured.get("summary", "")).strip() if structured else ""
+        ) or _extract_summary(result_text)
         msg = f"Artifact ready: {url}" + (f"\n\n{summary}" if summary else "")
     elif recipe == "artifact":
         msg = "Build finished but produced no artifact. Try rephrasing the request."
