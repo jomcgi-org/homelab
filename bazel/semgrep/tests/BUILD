@@ -119,7 +119,6 @@ filegroup(
     srcs = ["fixtures/no-session-in-to-thread.yaml"],
 )
 
-
 # Fixture for the css-import-after-rules rule (languages: generic, paths: **/*.css).
 # Referenced by //bazel/semgrep/rules:css_import_after_rules_test.
 filegroup(
