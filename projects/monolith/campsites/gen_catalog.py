@@ -25,9 +25,12 @@ HEADERS = {
 # British Columbia bounding box (generous): lat 48..60, lon -139..-114.
 BC = {"lat_lo": 48.0, "lat_hi": 60.5, "lon_lo": -139.5, "lon_hi": -113.5}
 
-# Coordinates the Open-Meteo geocoder cannot resolve (unusual names, trails,
-# Indigenous place names). Keyed by resourceLocationId, hand-verified to the
-# park area. Weather is regional so park-centroid precision is sufficient.
+# Hand-verified coordinates that override the Open-Meteo geocoder. Some names the
+# geocoder cannot resolve (unusual names, trails, Indigenous place names); others
+# it resolves to the WRONG place (e.g. "Strathcona" -> the East Vancouver
+# neighbourhood instead of the Vancouver Island park). Keyed by
+# resourceLocationId, hand-verified to the park area. These take precedence over a
+# geocode result. Weather is regional so park-centroid precision is sufficient.
 MANUAL_COORDS = {
     -2147483642: (53.030, -119.230),  # Berg Lake Trail (Mount Robson)
     -2147483618: (49.064, -120.782),  # E. C. Manning
@@ -35,6 +38,8 @@ MANUAL_COORDS = {
     -2147483592: (49.133, -118.983),  # Kettle River
     -2147483550: (49.556, -123.233),  # Porteau Cove
     -2147483535: (49.270, -121.480),  # Silver Lake (near Hope)
+    -2147483527: (49.783, -125.583),  # Strathcona (Buttle Lake, Vancouver Island)
+    -2147483526: (49.783, -125.583),  # Strathcona Backcountry (Vancouver Island)
     -2147483627: (49.083, -121.433),  # Sx̱otsaqel / Chilliwack Lake
     -2147483637: (59.350, -129.100),  # Ta Ch'ila / Boya Lake
 }
@@ -196,14 +201,16 @@ def main():
                 source = "gps"
             except Exception:
                 lat = lon = None
+        # A hand-verified override beats the geocoder, which sometimes resolves a
+        # park name to the wrong place (see MANUAL_COORDS).
+        if lat is None and row["resource_location_id"] in MANUAL_COORDS:
+            lat, lon = MANUAL_COORDS[row["resource_location_id"]]
+            source = "manual"
         if lat is None:
             g = geocode(row["name"])
             if g:
                 lat, lon, _ = g
                 source = "geocode"
-        if lat is None and row["resource_location_id"] in MANUAL_COORDS:
-            lat, lon = MANUAL_COORDS[row["resource_location_id"]]
-            source = "manual"
         entry = {
             "resource_location_id": row["resource_location_id"],
             "park_map_id": row["park_map_id"],

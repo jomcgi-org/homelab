@@ -1335,22 +1335,22 @@
     "park_map_id": -2147483399,
     "name": "Strathcona",
     "region": "",
-    "latitude": 49.27655,
-    "longitude": -123.09117,
+    "latitude": 49.783,
+    "longitude": -125.583,
     "iana_tz": "America/Los_Angeles",
     "website": "https://bcparks.ca/strathcona-park/",
-    "coord_source": "geocode"
+    "coord_source": "manual"
   },
   {
     "resource_location_id": -2147483526,
     "park_map_id": -2147483255,
     "name": "Strathcona Backcountry",
     "region": "",
-    "latitude": 49.27655,
-    "longitude": -123.09117,
+    "latitude": 49.783,
+    "longitude": -125.583,
     "iana_tz": "America/Los_Angeles",
     "website": "https://bcparks.ca/strathcona-park/#backcountry-camping",
-    "coord_source": "geocode"
+    "coord_source": "manual"
   },
   {
     "resource_location_id": -2147483525,
