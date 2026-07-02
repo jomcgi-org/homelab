@@ -19,16 +19,16 @@ type Config struct {
 	// so the session is persisted under a stable name; on a resume it selects which
 	// session to replay (ADR 026 Phase 2). Empty means goose auto-manages.
 	SessionName string
-	// Resume runs the named session with --resume instead of the recipe: goose
-	// replays the full prior conversation (which already contains the recipe's
-	// system prompt from turn 1) and continues with Task as the new instruction
-	// (ADR 026 Phase 2, Model A). Requires SessionName; ignored without it.
+	// Resume replays the named session (--resume) and continues with Task as the
+	// new instruction (ADR 026 Phase 2, Model A). The recipe is re-passed so goose
+	// re-applies its response schema and settings to the follow-up turn (see
+	// GooseCommand). Requires SessionName; ignored without it.
 	Resume bool
 }
 
 // GooseCommand returns the argv to run, mirroring the established invocation:
 //
-//	resume:         goose run --name <session> --resume --no-profile --with-builtin developer -t <task>
+//	resume:         goose run --recipe <recipe> --name <session> --resume --no-profile --with-builtin developer --params task_description=<task>
 //	with a recipe:  goose run --recipe <recipe> [--name <session>] --no-profile --with-builtin developer --params task_description=<task>
 //	bare task only: goose run --text <task>
 //
@@ -38,15 +38,33 @@ type Config struct {
 // to the model but not run a shell). --with-builtin developer explicitly loads the
 // shell/editor extension so the agent can actually do work.
 //
-// On resume the recipe is NOT re-passed: turn 1 wrote the recipe's system prompt
-// into the session, and --resume replays the whole conversation, so re-passing it
-// would duplicate the instructions. The task is the latest instruction, given via
-// -t (the recipe's task_description param does not apply without --recipe).
+// On resume the recipe IS re-passed. goose applies a recipe's system prompt and
+// response schema (settings.response.json_schema, which forces the structured
+// final output the delivery path depends on) at RUNTIME on every invocation, not
+// as replayed messages, so re-passing does not duplicate the instructions:
+// --resume replays the prior conversation, and the recipe re-applies the schema
+// and settings on top of it. Dropping --recipe on resume silently loses the
+// schema, so a follow-up turn emits no structured output and delivery falls back
+// to scraping the raw transcript. The new instruction goes via --params (goose's
+// CLI makes -t/-i conflict with --recipe, so the task cannot be passed with -t
+// alongside a recipe). When there is no recipe to re-pass (an edge case), fall
+// back to a plain --resume with the reply as -t.
 //
 // It returns nil when there is nothing to run (a warm-base boot with no task),
 // in which case fc-agent-init idles without a harness until a task arrives.
 func GooseCommand(c Config) []string {
 	if c.Resume && c.SessionName != "" {
+		if c.Recipe != "" {
+			return []string{
+				"goose", "run",
+				"--recipe", c.Recipe,
+				"--name", c.SessionName,
+				"--resume",
+				"--no-profile",
+				"--with-builtin", "developer",
+				"--params", fmt.Sprintf("task_description=%s", c.Task),
+			}
+		}
 		return []string{
 			"goose", "run",
 			"--name", c.SessionName,

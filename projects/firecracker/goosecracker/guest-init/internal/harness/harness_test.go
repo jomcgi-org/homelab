@@ -37,9 +37,21 @@ func TestGooseCommandColdBuildNamesSession(t *testing.T) {
 }
 
 func TestGooseCommandResume(t *testing.T) {
-	// Resume replays the named session (--resume, no --recipe) with the reply as -t.
-	got := GooseCommand(Config{Recipe: "artifact.yaml", Task: "make it bigger", SessionName: "thread-1", Resume: true})
-	want := "goose run --name thread-1 --resume --no-profile --with-builtin developer -t make it bigger"
+	// Resume replays the named session AND re-passes the recipe so goose re-applies
+	// the recipe's response schema + settings to the follow-up turn. The task goes
+	// via --params (-t conflicts with --recipe in goose's CLI).
+	got := GooseCommand(Config{Recipe: "agent.yaml", Task: "how does it work?", SessionName: "thread-1", Resume: true})
+	want := "goose run --recipe agent.yaml --name thread-1 --resume --no-profile --with-builtin developer --params task_description=how does it work?"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("got %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestGooseCommandResumeWithoutRecipeUsesText(t *testing.T) {
+	// Edge case: a resume with a session but no recipe to re-pass falls back to a
+	// plain --resume with the reply as -t (no schema to restore).
+	got := GooseCommand(Config{Task: "keep going", SessionName: "thread-1", Resume: true})
+	want := "goose run --name thread-1 --resume --no-profile --with-builtin developer -t keep going"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("got %q, want %q", strings.Join(got, " "), want)
 	}
