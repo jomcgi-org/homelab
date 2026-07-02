@@ -29,19 +29,19 @@ Every recipe change is judged against two numbers, not vibes:
 Optional argument: a lookback window, or one session_id for a targeted
 "that just went badly" analysis.
 
-Find the backend pod (verify the namespace/label against the live cluster;
-the command below is the last-known-good invocation, correct it here if it
-drifts):
+Find the monolith pod. There is no pod named "backend": the API lives in the
+`backend` CONTAINER of the `monolith-*` pod (alongside linkerd-proxy and
+frontend). Verified live 2026-07-02; correct here if it drifts:
 
 ```bash
-kubectl get pods -n monolith -o name | grep backend | head -1
+kubectl get pods -n monolith -o name | grep '^pod/monolith-' | grep -v pg | grep -v atlas | grep -v searxng | head -1
 ```
 
 Run a subcommand by piping the helper script over stdin into the pod's venv
-python:
+python (note the `-c backend` container selector):
 
 ```bash
-kubectl exec -i -n monolith <pod> -- env \
+kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   gather --since 2026-06-28T00:00:00Z \
@@ -52,7 +52,7 @@ kubectl exec -i -n monolith <pod> -- env \
 takes the eval JSON base64-encoded as an argv argument instead of stdin:
 
 ```bash
-kubectl exec -i -n monolith <pod> -- env \
+kubectl exec -i -n monolith <pod> -c backend -- env \
   PYTHONPATH=/projects/monolith/main.runfiles/_main/projects/monolith \
   /projects/monolith/main.runfiles/_main/projects/monolith/.main/bin/python3 - \
   put-eval <session_id> <base64-encoded-eval-json> \
