@@ -1,4 +1,4 @@
-version: "1.3.0"
+version: "1.4.0"
 title: "Artifact"
 description: "Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024)."
 instructions: |
@@ -40,6 +40,16 @@ instructions: |
   button and control to a real, defined function. Keep the logic simple enough
   that you are sure it runs.
 
+  Two more silent-breakage traps, both of which make a page look half-built:
+  - Invalid utility classes render as NOTHING. With CDN Tailwind the color scale
+    is 50, 100..900, 950 only, so bg-slate-705 or text-slate-405 are not real
+    classes and silently do nothing. Double-check any unusual number.
+  - Interactivity directives need their runtime actually loaded. If you use
+    Alpine or Vue bindings (x-data, @click, :class) you MUST load Alpine/Vue from
+    a CDN; if you use Franken UI (uk-*) you MUST load UIkit/Franken; if you use
+    data-lucide icons you MUST call lucide.createIcons(). A directive with no
+    loaded runtime leaves a dead, unstyled element.
+
   DESIGN BAR. Do not produce generic "AI slop". First decide, in one line to
   yourself (do not write it out, just build to it): who this is for, the tone,
   and the one thing they will remember. Then commit to ONE bold, specific
@@ -61,6 +71,19 @@ instructions: |
     elastic easing.
   - Details: give every interactive surface clear hover, active and focus states.
     Cut anything that does not earn its place. Use real content, not lorem ipsum.
+  - Components: give repeated UI elements ONE consistent system, not ad-hoc
+    styling per element. Borrow shadcn/ui's token discipline: define your palette
+    as CSS variables on :root (--background, --foreground, --muted,
+    --muted-foreground, --border, --ring, --radius) and reference those instead
+    of scattering raw hex. Commit to a single corner radius everywhere. Build
+    surfaces from a 1px --border plus a soft shadow, not heavy filled boxes.
+    Secondary text uses --muted-foreground; every control gets a visible focus
+    ring from --ring. This token discipline is what reads as "designed" rather
+    than "assembled". For a dense, component-heavy UI you MAY instead pull a
+    CDN-distributed, shadcn-grade component base rather than hand-rolling: Franken
+    UI (a shadcn look built on UIkit web components, loaded via <link> + <script>
+    and used through uk-* / data-uk-* attributes) is a good default. If you do,
+    follow its attribute API exactly so the components actually initialize.
   The test: if someone could glance at it and say "an AI made this", redesign it.
   For deeper guidance on a specific dimension you may read the files under
   /opt/impeccable/ (typography.md, color-and-contrast.md, spatial-design.md,
@@ -107,15 +130,25 @@ settings:
   max_turns: 50
   max_tool_repetitions: 5
 # Belt-and-suspenders: goose re-runs the turn with failure_prompt injected (rather
-# than the harness publishing a broken page) if either check fails:
+# than the harness publishing a broken page) if any static check fails. All checks
+# are cheap and static (no browser), and write their messages to
+# /tmp/artifact_error.txt for the retry to read:
 #   1. /tmp/artifact.html is missing or empty (the occasional model whiff where it
 #      chats instead of writing; GOOSE_MAX_TOKENS already makes this rare).
 #   2. an inline <script> has a JavaScript SYNTAX ERROR. A single bad token makes
 #      the whole script fail to load, so the page renders but every button is dead
 #      and a screenshot cannot see it. This shipped a dead "battle bar" artifact
 #      (session 1522293776134045918); the parse check catches it and self-heals.
-# The check node-parses each inline (non-src, non-module) <script> with vm.Script
-# and writes the first error to /tmp/artifact_error.txt for the retry to read.
+#   3. a built-in Tailwind color class uses an invalid scale step (e.g. slate-705),
+#      which renders as nothing and leaves the page half-styled. Only the 22
+#      built-in color names are checked, so custom palette colors do not false-
+#      positive. Motivated by session 1521910928088498437 (slate-705, text-slate-405).
+#   4. an interactivity directive is used with no runtime loaded: Alpine/Vue
+#      bindings without an Alpine/Vue script, uk-*/Franken without UIkit/Franken,
+#      or data-lucide icons without a lucide.createIcons() call. Each leaves a
+#      dead, unstyled element while the page still renders.
+# A dynamic "does the button work when clicked" check needs a headless browser in
+# the guest and is deliberately out of scope here (tracked as a follow-up).
 retry:
   max_retries: 2
   checks:
@@ -124,22 +157,34 @@ retry:
         test -s /tmp/artifact.html && node -e '
         const fs=require("fs"),vm=require("vm");
         const html=fs.readFileSync("/tmp/artifact.html","utf8");
+        const errs=[];
         const re=/<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-        let m,err=null;
+        let m;
         while((m=re.exec(html))){
           const a=m[1]||"",b=m[2]||"";
           if(/\bsrc\s*=/.test(a))continue;
           if(/type\s*=\s*["\x27]?module/i.test(a))continue;
           if(!b.trim())continue;
-          try{new vm.Script(b,{filename:"inline.js"});}catch(e){err=e.message;break;}
+          try{new vm.Script(b,{filename:"inline.js"});}catch(e){errs.push("Inline <script> JavaScript syntax error: "+e.message);break;}
         }
-        if(err){try{fs.writeFileSync("/tmp/artifact_error.txt",err);}catch(_){}console.error("Invalid JS in /tmp/artifact.html: "+err);process.exit(1);}
+        const COLORS="slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
+        const STEPS=new Set(["50","100","200","300","400","500","600","700","800","900","950"]);
+        const cre=new RegExp("(?:"+COLORS+")-([0-9]{2,3})\\b","g");
+        let cm;const bad=new Set();
+        while((cm=cre.exec(html))){if(!STEPS.has(cm[1]))bad.add(cm[0]);}
+        if(bad.size)errs.push("Invalid Tailwind color class(es) that render as nothing: "+[...bad].join(", ")+" (the built-in scale is 50,100..900,950).");
+        if(/(\sx-data=|\s@click=|\s:class=|\sv-if=|\sv-for=)/.test(html)&&!/<script[^>]+src=[^>]*(alpine|vue)/i.test(html))errs.push("Alpine/Vue directives (x-data / @click / :class) are used but no Alpine or Vue <script src> is loaded, so nothing will be interactive.");
+        if(/\s(?:data-)?uk-[a-z]/.test(html)&&!/<script[^>]+src=[^>]*(uikit|franken)/i.test(html))errs.push("Franken UI / uk-* attributes are used but no UIkit/Franken UI <script src> is loaded, so those components will not initialize.");
+        if(/data-lucide=/.test(html)&&!/lucide\s*\.\s*createIcons\s*\(/.test(html))errs.push("data-lucide icons are used but lucide.createIcons() is never called, so no icons will render.");
+        if(errs.length){try{fs.writeFileSync("/tmp/artifact_error.txt",errs.join("\n"));}catch(_){}console.error(errs.join("\n"));process.exit(1);}
         '
   failure_prompt: |
-    Your /tmp/artifact.html is not publishable yet. Either it is missing/empty, or
-    an inline <script> has a JavaScript SYNTAX ERROR, which makes the whole script
-    fail to load: the page still renders but every button and interaction is
-    silently dead. If /tmp/artifact_error.txt exists, read it first, it holds the
-    exact parser error and location. Fix the script (or write the file) and
-    re-write the COMPLETE, self-contained HTML document to /tmp/artifact.html now.
-    Do not reply with prose, a plan, or the HTML in text.
+    Your /tmp/artifact.html is not publishable yet. It is missing/empty, or a
+    static check found a defect that makes the page look broken or half-styled:
+    an inline <script> with a JavaScript SYNTAX ERROR (kills every handler), an
+    invalid Tailwind color class like slate-705 (renders as nothing), or an
+    interactivity directive (Alpine/Vue x-data/@click/:class, Franken uk-*,
+    data-lucide) whose runtime script is never loaded. If /tmp/artifact_error.txt
+    exists, read it first: it lists the exact problems. Fix them (or write the
+    file) and re-write the COMPLETE, self-contained HTML document to
+    /tmp/artifact.html now. Do not reply with prose, a plan, or the HTML in text.
