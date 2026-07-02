@@ -157,7 +157,15 @@ async def _apply_reaction(bot, channel, row: dict) -> None:
     (nothing to react to). An add failure propagates so the drain retries it."""
     import discord
 
-    message = await channel.fetch_message(int(row["target_message_id"]))
+    try:
+        message = await channel.fetch_message(int(row["target_message_id"]))
+    except discord.NotFound:
+        # The target message was deleted: nothing to react to. Resolve the row
+        # rather than burn its retry budget re-fetching a message that is gone.
+        logger.debug(
+            "outbox: reaction target %s gone; skipping", row["target_message_id"]
+        )
+        return
     emoji = row["reaction"]
     if row["reaction_remove"]:
         try:

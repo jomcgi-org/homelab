@@ -11,6 +11,7 @@ from chat.changelog import run_changelog_for_config  # re-exported
 from chat.goosecracker import ack_inflight  # re-exported
 from chat.goosecracker import artifact_id_for_thread  # re-exported
 from chat.goosecracker import drain_agent_queue  # re-exported
+from chat.goosecracker import force_idle_thread  # re-exported
 from chat.goosecracker import mark_inflight_running  # re-exported
 from chat.goosecracker import reclaim_orphaned_agent_sessions  # re-exported
 from chat.goosecracker_progress import (  # re-exported
@@ -24,6 +25,7 @@ __all__ = [
     "ack_inflight",
     "artifact_id_for_thread",
     "drain_agent_queue",
+    "force_idle_thread",
     "mark_inflight_running",
     "reclaim_orphaned_agent_sessions",
     "enqueue_message",

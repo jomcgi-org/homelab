@@ -326,6 +326,18 @@ def drain_agent_queue(thread_id: str) -> tuple[str, list[str]] | None:
         row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
         if row is None:
             return None
+        if row.runner_instance != INSTANCE_TOKEN:
+            # Another process re-owned this turn (a reclaim after this replica lost
+            # leadership without exiting): stop this now-demoted chain and let the
+            # new owner drive the queue. Do NOT idle the row - the new owner is
+            # running it. Returning None ends the caller's loop.
+            logger.info(
+                "goosecracker: drain aborted for %s; turn re-owned by another "
+                "process (%s)",
+                thread_id,
+                row.runner_instance or "?",
+            )
+            return None
         if row.pending:
             task = row.pending
             ack_ids = _split_ids(row.pending_message_ids)
@@ -349,12 +361,17 @@ def drain_agent_queue(thread_id: str) -> tuple[str, list[str]] | None:
         return None
 
 
-def _inflight_ack_ids(thread_id: str) -> list[str]:
-    """Read the currently-running turn's ack message ids for ``thread_id``."""
+def _owned_inflight_ack_ids(thread_id: str) -> list[str] | None:
+    """This process's in-flight ack ids for ``thread_id``, or None if not owner.
+
+    Returns None when the row is missing or has been re-owned by another process
+    (leadership handed over), so callers can skip acting on a turn they no longer
+    own. Returns [] when owned but nothing is queued.
+    """
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
-        if row is None:
-            return []
+        if row is None or row.runner_instance != INSTANCE_TOKEN:
+            return None
         return _split_ids(row.inflight_ack_ids)
 
 
@@ -365,9 +382,10 @@ def mark_inflight_running(thread_id: str) -> None:
     ops (leader-safe) rather than touching Discord directly, so it works from the
     runner's off-loop thread. A no-op when the turn has no queued acks (e.g. the
     first turn of a session, whose triggering message rides the live progress
-    reply instead of a reaction). Sync; call via ``asyncio.to_thread``.
+    reply instead of a reaction) or when this process no longer owns the turn.
+    Sync; call via ``asyncio.to_thread``.
     """
-    ids = _inflight_ack_ids(thread_id)
+    ids = _owned_inflight_ack_ids(thread_id)
     if not ids:
         return
     from chat.outbox import enqueue_reaction
@@ -376,6 +394,27 @@ def mark_inflight_running(thread_id: str) -> None:
         for msg_id in ids:
             enqueue_reaction(session, thread_id, msg_id, REACTION_QUEUED, remove=True)
             enqueue_reaction(session, thread_id, msg_id, REACTION_RUNNING)
+        session.commit()
+
+
+def force_idle_thread(thread_id: str) -> None:
+    """Best-effort reset a thread to idle after a bookkeeping failure (self-heal).
+
+    Called by the runner when the post-turn queue bookkeeping raised, so the
+    thread does not wedge on ``running=True`` for the full stale timeout. CAS on
+    ownership: only idles the row if this process still owns it, so it never
+    clobbers a turn another process has already re-owned. Sync; call via
+    ``asyncio.to_thread``.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        if row is None or row.runner_instance != INSTANCE_TOKEN:
+            return
+        row.running = False
+        row.running_since = None
+        row.inflight_task = ""
+        row.inflight_ack_ids = ""
+        session.add(row)
         session.commit()
 
 
@@ -394,7 +433,9 @@ def ack_inflight(thread_id: str, success: bool) -> None:
     terminal = REACTION_DONE if success else REACTION_FAILED
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
-        if row is None:
+        if row is None or row.runner_instance != INSTANCE_TOKEN:
+            # Not our turn anymore (re-owned after a leadership handover): the new
+            # owner will resolve these reactions. Skip rather than double-post.
             return
         for msg_id in _split_ids(row.inflight_ack_ids):
             enqueue_reaction(session, thread_id, msg_id, REACTION_QUEUED, remove=True)
