@@ -1,4 +1,4 @@
-version: "1.2.0"
+version: "1.2.1"
 title: "Plan"
 description: "Planning sub-recipe: turn a feature or change request into a written implementation plan, without implementing it."
 instructions: |
@@ -53,10 +53,10 @@ parameters:
     requirement: optional
     default: ""
 prompt: |
-  {{ task_description | indent(2) }}
+  {{ task_description }}
 
   Router context (may be empty):
-  {{ context | indent(2) }}
+  {{ context }}
 extensions:
   - type: builtin
     name: developer

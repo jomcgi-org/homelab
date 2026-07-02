@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.0.1"
 title: "Artifact"
 description: "Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024)."
 instructions: |
@@ -43,7 +43,7 @@ prompt: |
   Build this artifact now. Start immediately by writing /tmp/artifact.html with
   the shell or editor; do not reply with a plan or a description first:
 
-  {{ task_description | indent(2) }}
+  {{ task_description }}
 parameters:
   - key: task_description
     description: "What to build"
