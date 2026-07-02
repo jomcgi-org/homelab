@@ -225,16 +225,39 @@ def _parse_structured_result(result: str) -> dict | None:
     return None
 
 
+# A clean answer never contains goose's terminal chrome: the startup banner text,
+# the tool-call bullet (``▸``), or the box-drawing separators between tool blocks.
+# If a message we are about to deliver still carries any of these, extraction
+# failed and we are about to ship the raw transcript, which is noise and can leak
+# the contents of files goose read (including this module's own source). Suppress
+# it in favor of a clear miss instead.
+_TRANSCRIPT_CHROME = ("goose is ready", "▸", "─")
+
+_NO_CLEAN_ANSWER = (
+    "I couldn't produce a clean answer for that one. Try rephrasing or narrowing "
+    "the question."
+)
+
+
+def _looks_like_transcript(text: str) -> bool:
+    """True when text still carries goose terminal chrome (see _TRANSCRIPT_CHROME)."""
+    return any(marker in text for marker in _TRANSCRIPT_CHROME)
+
+
 def _agent_narrative(result: str) -> str:
     """Extract goose's final narrative answer from a transcript that has no
     ``goose-result`` block (e.g. a question rather than a coding action).
 
-    Goose's answer is what it writes at the END, after the recipe banner and any
-    tool calls, so strip the ``...goose is ready`` preamble and return the full
-    body; _deliver pages it into multiple messages rather than truncating.
+    Goose's answer is what it writes after the startup banner, so strip the
+    ``...goose is ready`` preamble and return the body. Anchor on the FIRST
+    occurrence of the marker (the real startup banner prints it once): the string
+    recurs wherever goose read a file that mentions it, including this module's own
+    source, so ``rfind`` would slice the body mid-file. The caller guards the
+    result with _looks_like_transcript, so a body that is still raw transcript
+    (goose ran tools but never wrote a clean answer) is dropped rather than shipped.
     """
     marker = "goose is ready"
-    idx = result.rfind(marker)
+    idx = result.find(marker)
     body = (result[idx + len(marker) :] if idx != -1 else result).strip()
     return body or "(no output)"
 
@@ -289,8 +312,19 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
                     msg += f"\n{url}"
             else:
                 # goose's answer is its trailing narrative (post that, not the head
-                # of the transcript, which is the recipe banner + tool calls).
-                msg = _agent_narrative(result)
+                # of the transcript, which is the recipe banner + tool calls). If
+                # what's left still looks like a raw transcript, extraction failed
+                # (goose ran tools but never emitted structured output or a clean
+                # answer, e.g. a truncated run): ship a miss, never the transcript.
+                narrative = _agent_narrative(result)
+                if _looks_like_transcript(narrative):
+                    logger.warning(
+                        "goosecracker: no clean answer for %s; suppressing raw transcript",
+                        session,
+                    )
+                    msg = _NO_CLEAN_ANSWER
+                else:
+                    msg = narrative
 
     recorded_ref = data.get("recordedRef")
     if recorded_ref:

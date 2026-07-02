@@ -77,18 +77,43 @@ async def test_delivery_message_agent_falls_back_to_transcript_without_block():
 
 
 async def test_delivery_message_agent_posts_trailing_narrative():
-    # A question (no goose-result block): the answer is goose's trailing
-    # narrative, so post that (banner stripped), not the head of the transcript.
+    # A question answered with a clean narrative (no goose-result block, no tool
+    # chrome): the answer is goose's trailing narrative, so post that (banner
+    # stripped), not the head of the transcript.
     result = (
         "Loading recipe: Agent\n"
         "  __( O)>  goose is ready\n"
-        "  ▸ shell git log --oneline\n"
-        "abc123 some commit\n"
         "Joe has been working on the git mirror and the /agent command this week."
     )
     msg = await runner._delivery_message("s-9", "agent", {"result": result})
     assert "Joe has been working on the git mirror" in msg
     assert "Loading recipe" not in msg  # recipe banner stripped
+    assert "goose is ready" not in msg  # no terminal chrome leaks
+
+
+async def test_delivery_message_agent_suppresses_raw_transcript():
+    # The incident: a resume turn ran without the response schema, so no structured
+    # JSON and no goose-result block. goose spent the run cat-ing files (including
+    # runner.py, whose source literally contains the "goose is ready" marker) and
+    # never wrote a clean answer. Delivery must NOT ship the raw transcript, and the
+    # old rfind bug must not slice into the cat-ed source (it anchored on the marker
+    # inside runner.py's own source).
+    result = (
+        "  __( O)>  goose is ready\n"
+        "  ────────────────────────────────\n"
+        "  ▸ shell\n"
+        "    command: cat runner.py\n"
+        '    marker = "goose is ready"\n'
+        "    idx = result.rfind(marker)\n"
+        "    body = result[idx + len(marker) :]\n"
+        "  ────────────────────────────────\n"
+        "Now I have a thorough picture. Let me compile the answer."
+    )
+    msg = await runner._delivery_message("s-12", "agent", {"result": result})
+    assert "rfind(marker)" not in msg  # did not ship (or slice into) the cat-ed source
+    assert "▸" not in msg
+    assert "goose is ready" not in msg
+    assert "couldn't produce a clean answer" in msg
 
 
 async def test_delivery_message_agent_prefers_typed_response():
