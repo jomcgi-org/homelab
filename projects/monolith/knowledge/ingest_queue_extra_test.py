@@ -131,7 +131,7 @@ class TestIngestHandler:
         self.mock_failed.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_successful_youtube_ingest_calls_fetcher(self, tmp_path):
+    async def test_successful_youtube_ingest_calls_fetcher(self):
         """youtube source_type dispatches to fetch_youtube_transcript."""
         item = _make_item(source_type="youtube", url="https://youtube.com/watch?v=abc")
         session = MagicMock()
@@ -140,13 +140,12 @@ class TestIngestHandler:
             patch("knowledge.ingest_queue._claim_one", return_value=item),
             patch("knowledge.ingest_queue.fetch_youtube_transcript", mock_fetch),
             patch("knowledge.ingest_queue.ingest_raw"),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
         mock_fetch.assert_awaited_once_with(item.url)
 
     @pytest.mark.asyncio
-    async def test_successful_youtube_ingest_marks_done(self, tmp_path):
+    async def test_successful_youtube_ingest_marks_done(self):
         """Successful youtube ingest calls _mark_queue_done exactly once."""
         item = _make_item(source_type="youtube")
         session = MagicMock()
@@ -157,7 +156,6 @@ class TestIngestHandler:
                 AsyncMock(return_value=("Title", "body")),
             ),
             patch("knowledge.ingest_queue.ingest_raw"),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)
         assert result is None
@@ -165,9 +163,7 @@ class TestIngestHandler:
         self.mock_failed.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_successful_youtube_ingest_passes_item_id_to_mark_done(
-        self, tmp_path
-    ):
+    async def test_successful_youtube_ingest_passes_item_id_to_mark_done(self):
         """Successful youtube ingest passes the item's id to _mark_queue_done."""
         item = _make_item(source_type="youtube", item_id=42)
         session = MagicMock()
@@ -178,7 +174,6 @@ class TestIngestHandler:
                 AsyncMock(return_value=("Title", "body")),
             ),
             patch("knowledge.ingest_queue.ingest_raw"),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
         # Positional args: (engine, item_id). Engine is the MagicMock-derived
@@ -187,7 +182,7 @@ class TestIngestHandler:
         assert args[1] == 42
 
     @pytest.mark.asyncio
-    async def test_successful_webpage_ingest_calls_fetcher(self, tmp_path):
+    async def test_successful_webpage_ingest_calls_fetcher(self):
         """webpage source_type dispatches to fetch_webpage."""
         item = _make_item(source_type="webpage", url="https://example.com/post")
         session = MagicMock()
@@ -196,13 +191,12 @@ class TestIngestHandler:
             patch("knowledge.ingest_queue._claim_one", return_value=item),
             patch("knowledge.ingest_queue.fetch_webpage", mock_fetch),
             patch("knowledge.ingest_queue.ingest_raw"),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
         mock_fetch.assert_awaited_once_with(item.url)
 
     @pytest.mark.asyncio
-    async def test_successful_webpage_ingest_marks_done(self, tmp_path):
+    async def test_successful_webpage_ingest_marks_done(self):
         """Successful webpage ingest calls _mark_queue_done exactly once."""
         item = _make_item(source_type="webpage", url="https://example.com")
         session = MagicMock()
@@ -213,7 +207,6 @@ class TestIngestHandler:
                 AsyncMock(return_value=("Title", "body")),
             ),
             patch("knowledge.ingest_queue.ingest_raw"),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)
         assert result is None
@@ -221,7 +214,7 @@ class TestIngestHandler:
         self.mock_failed.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_marks_failed(self, tmp_path):
+    async def test_failed_fetch_marks_failed(self):
         """When the fetcher raises, _mark_queue_failed is called exactly once."""
         item = _make_item(source_type="youtube")
         session = MagicMock()
@@ -231,7 +224,6 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_youtube_transcript",
                 AsyncMock(side_effect=RuntimeError("transcript unavailable")),
             ),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)
         assert result is None
@@ -239,7 +231,7 @@ class TestIngestHandler:
         self.mock_done.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_passes_item_id_to_mark_failed(self, tmp_path):
+    async def test_failed_fetch_passes_item_id_to_mark_failed(self):
         """Failed fetch passes the item's id to _mark_queue_failed."""
         item = _make_item(source_type="youtube", item_id=99)
         session = MagicMock()
@@ -249,7 +241,6 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_youtube_transcript",
                 AsyncMock(side_effect=RuntimeError("boom")),
             ),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
         # Positional args: (engine, item_id, error). We assert item_id.
@@ -257,7 +248,7 @@ class TestIngestHandler:
         assert args[1] == 99
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_passes_error_message_to_mark_failed(self, tmp_path):
+    async def test_failed_fetch_passes_error_message_to_mark_failed(self):
         """The (truncated) error message is forwarded to _mark_queue_failed."""
         item = _make_item(source_type="youtube")
         session = MagicMock()
@@ -268,7 +259,6 @@ class TestIngestHandler:
                 "knowledge.ingest_queue.fetch_youtube_transcript",
                 AsyncMock(side_effect=RuntimeError(error_text)),
             ),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             await ingest_handler(session)
         # Positional args: (engine, item_id, error).
@@ -276,7 +266,7 @@ class TestIngestHandler:
         assert error_text in args[2]
 
     @pytest.mark.asyncio
-    async def test_ingest_handler_returns_none_on_success(self, tmp_path):
+    async def test_ingest_handler_returns_none_on_success(self):
         """ingest_handler always returns None (not a datetime)."""
         item = _make_item(source_type="webpage", url="https://example.com")
         session = MagicMock()
@@ -287,7 +277,6 @@ class TestIngestHandler:
                 AsyncMock(return_value=("Title", "body")),
             ),
             patch("knowledge.ingest_queue.ingest_raw"),
-            patch.dict("os.environ", {"VAULT_ROOT": str(tmp_path)}),
         ):
             result = await ingest_handler(session)
         assert result is None
