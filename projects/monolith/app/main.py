@@ -78,8 +78,14 @@ async def _start_singletons(app: FastAPI) -> None:
         from chat.summarizer import on_startup as chat_startup
 
         # Idempotently seed the default Discord feature grants (ADR 029) before
-        # the bot accepts commands, so the home server + owner work out of the box.
-        bootstrap_defaults()
+        # the bot accepts commands, so the home server + owner work out of the
+        # box. Non-fatal: a failed seed (e.g. DB briefly unreachable) leaves the
+        # ACL fail-closed and re-seeds on the next restart, rather than taking
+        # down the bot.
+        try:
+            bootstrap_defaults()
+        except Exception:
+            logger.exception("acl: failed to seed default feature grants; continuing")
 
         bot = create_bot()
         app.state.bot = bot
