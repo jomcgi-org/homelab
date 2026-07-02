@@ -97,17 +97,19 @@ def bootstrap_defaults() -> None:
     home = os.environ.get("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "")
     owner = os.environ.get("OWNER_DISCORD_USER_ID", "")
 
+    # Scopes follow the GitHub owner/repo convention (ADR 029), matching the
+    # names registered on the git-mirror.
     defaults: list[tuple[str, str, str, str]] = []
     if home:
-        # homelab is public: anyone in the home server may run /agent on it.
-        defaults.append((home, "", "agent", "homelab"))
+        # jomcgi/homelab is public: anyone in the home server may run /agent on it.
+        defaults.append((home, "", "agent", "jomcgi/homelab"))
         if owner:
             # loom is private: from the home server only the owner gets it, so a
             # home-server member cannot drive the private repo. Loom-server
             # members get loom via the LOOM_GUILD_ID grant below.
-            defaults.append((home, owner, "agent", "loom"))
+            defaults.append((home, owner, "agent", "weave-hand/loom"))
             defaults.append((home, owner, "artifact", ""))
-    defaults.append((LOOM_GUILD_ID, "", "agent", "loom"))
+    defaults.append((LOOM_GUILD_ID, "", "agent", "weave-hand/loom"))
     # Artifact viewing is behind unguessable capability URLs and runs on the free
     # qwen tier, so it is safe to open /artifact to the Loom server (ADR 024
     # amendment). Everyone in the Loom server may build artifacts there.

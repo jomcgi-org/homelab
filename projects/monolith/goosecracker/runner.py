@@ -85,24 +85,22 @@ def _effective_mirror_ref(
 ) -> tuple[str, str]:
     """Return the (mirror URL, ref) pair for a goose run, applying defaults.
 
-    When the caller does not specify a mirror, defaults to
-    ``<GOOSECRACKER_GIT_MIRROR>/<repo or "homelab">`` (the in-cluster mirror).
-    When no ref is specified, defaults to ``main``. Both values are passed
-    through unchanged when explicitly supplied by the caller, so an override
-    always wins.
+    When the caller does not specify a mirror but names a ``repo``, defaults to
+    ``<GOOSECRACKER_GIT_MIRROR>/<repo>`` (the in-cluster mirror). ``repo`` is the
+    GitHub-convention ``owner/repo`` name registered on the git-mirror; the slash
+    simply nests the git:// path. When no ref is specified, defaults to ``main``.
+    An explicit ``git_mirror`` is passed through unchanged and always wins, with
+    ``repo`` ignored in that case.
 
-    The ``repo`` param selects which repository under the mirror base to clone;
-    it defaults to ``"homelab"`` when empty. Explicit ``git_mirror`` takes
-    precedence and ``repo`` is ignored in that case.
-
-    Returns ("", "main") when GOOSECRACKER_GIT_MIRROR is also unset, which
-    makes the handler skip the clone step entirely (no mirror configured).
+    There is NO implicit default repo: an empty ``repo`` (and no explicit mirror)
+    yields an empty mirror, which makes the handler skip the clone entirely. That
+    is the repo-less path, e.g. a ``/agent`` artifact build that needs no checkout
+    (ADR 029). An empty mirror is also returned when GOOSECRACKER_GIT_MIRROR is
+    unset (no mirror configured in this environment).
     """
     effective_mirror = git_mirror
-    if not effective_mirror and GOOSECRACKER_GIT_MIRROR:
-        effective_mirror = (
-            GOOSECRACKER_GIT_MIRROR.rstrip("/") + "/" + (repo or "homelab")
-        )
+    if not effective_mirror and GOOSECRACKER_GIT_MIRROR and repo:
+        effective_mirror = GOOSECRACKER_GIT_MIRROR.rstrip("/") + "/" + repo
     effective_ref = git_ref or "main"
     return effective_mirror, effective_ref
 

@@ -13,14 +13,27 @@ image:
 # refspecs (never refs/agents/**), and installs a pre-receive hook that
 # restricts pushes to refs/agents/** only. Structured so a DB-backed registry
 # can replace this static list later (ADR 026 open question 2).
+#
+# Names follow the GitHub owner/repo convention (ADR 029): the name is the ACL
+# scope, the /agent dropdown label, the on-disk mirror dir, and the git-daemon
+# path all at once, so mirroring the GitHub path keeps every collaborator repo
+# self-documenting. A slash just nests the bare clone (/mirrors/owner/repo.git);
+# git clone --bare mkdir-ps the parent and git-daemon's enter_repo() resolves the
+# nested path + .git suffix exactly as it does for a flat name.
 repos:
-  - name: homelab
+  - name: jomcgi/homelab
     url: https://github.com/jomcgi/homelab.git
   # loom is a PRIVATE repo under the weave-hand org (50:50 with Rowan). The mirror
   # clones it via the mirror-side githubToken + insteadOf auth below; the token
   # must have weave-hand read access or the clone non-fatally skips.
-  - name: loom
+  - name: weave-hand/loom
     url: https://github.com/weave-hand/loom.git
+  # Collaborator forks, public, opted in per-server via the ACL (ADR 029). Public
+  # so no mirror-side creds are needed.
+  - name: colincee/homelab
+    url: https://github.com/ColinCee/homelab.git
+  - name: scotscottmca/parkedlikea
+    url: https://github.com/scotscottmca/parkedlikea.git
 
 # Seconds between git fetch --prune passes. Keep short enough that guests
 # hydrate from a near-head branch, long enough not to hammer GitHub rate limits.
@@ -36,8 +49,9 @@ gitDaemonPort: 9418
 gcRetentionDays: 0
 
 # Persistent volume for bare clone storage. All repos + their scratch refs live
-# here across pod restarts. Size to fit both repos' full history plus scratch
-# refs with headroom; ~10Gi covers the homelab + loom repos comfortably.
+# here across pod restarts. The registered repos total well under 200Mi of
+# history (jomcgi/homelab dominates at ~125Mi; the collaborator forks are a few
+# Mi each), so 10Gi is ample headroom for their history plus agent scratch refs.
 mirrors:
   storageClass: longhorn
   size: 10Gi

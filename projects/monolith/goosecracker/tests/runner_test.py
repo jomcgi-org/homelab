@@ -190,11 +190,15 @@ async def test_delivery_message_non_artifact_posts_result():
 # ---------------------------------------------------------------------------
 
 
-def test_effective_mirror_defaults_to_env_when_caller_omits(monkeypatch):
-    """GOOSECRACKER_GIT_MIRROR is injected as the base; /homelab is appended."""
+def test_effective_mirror_empty_when_no_repo(monkeypatch):
+    """No repo and no explicit mirror -> empty mirror (repo-less run, no clone).
+
+    There is no implicit default repo (ADR 029): an omitted repo is the
+    artifact/no-checkout path, so the handler skips the clone.
+    """
     monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
     m, r = runner._effective_mirror_ref("", "")
-    assert m == "git://mirror:9418/homelab"
+    assert m == ""
     assert r == "main"
 
 
@@ -227,18 +231,19 @@ def test_effective_mirror_ref_defaults_to_main_when_only_mirror_set(monkeypatch)
 
 
 def test_effective_mirror_custom_repo_appended(monkeypatch):
-    """repo='loom' -> gitMirror <base>/loom, not <base>/homelab."""
+    """An owner/repo name is appended under the base; the slash just nests the
+    git:// path (ADR 029 naming convention)."""
     monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
-    m, r = runner._effective_mirror_ref("", "", "loom")
-    assert m == "git://mirror:9418/loom"
+    m, r = runner._effective_mirror_ref("", "", "colincee/homelab")
+    assert m == "git://mirror:9418/colincee/homelab"
     assert r == "main"
 
 
-def test_effective_mirror_empty_repo_falls_back_to_homelab(monkeypatch):
-    """repo='' -> gitMirror <base>/homelab (same as 2-arg default behavior)."""
+def test_effective_mirror_empty_repo_skips_clone(monkeypatch):
+    """repo='' -> empty mirror: no implicit default, the handler skips the clone."""
     monkeypatch.setattr(runner, "GOOSECRACKER_GIT_MIRROR", "git://mirror:9418")
     m, r = runner._effective_mirror_ref("", "", "")
-    assert m == "git://mirror:9418/homelab"
+    assert m == ""
     assert r == "main"
 
 

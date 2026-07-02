@@ -56,13 +56,13 @@ configures the restricted fetch refspecs, installs the pre-receive hook, runs
 
 ## Configuration (`chart/values.yaml`)
 
-| Value                    | Default              | Meaning                                                                                               |
-| ------------------------ | -------------------- | ----------------------------------------------------------------------------------------------------- |
-| `repos`                  | homelab, loom        | Static list of `{name, url}` to mirror. A DB-backed registry is deferred until the static list hurts. |
-| `refreshIntervalSeconds` | 60                   | Fetch loop cadence (freshness vs GitHub rate limits).                                                 |
-| `gitDaemonPort`          | 9418                 | The `git://` listener.                                                                                |
-| `gcRetentionDays`        | 0 (off)              | Optional auto-expiry of old scratch refs.                                                             |
-| `githubToken`            | 1Password secret ref | Mirror-side read access for private repos.                                                            |
+| Value                    | Default              | Meaning                                                                                                                                                                                                                                 |
+| ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repos`                  | `owner/repo` list    | Static list of `{name, url}` to mirror. `name` follows the GitHub `owner/repo` convention (it is also the ACL scope + `/agent` label); a slash just nests the bare clone. A DB-backed registry is deferred until the static list hurts. |
+| `refreshIntervalSeconds` | 60                   | Fetch loop cadence (freshness vs GitHub rate limits).                                                                                                                                                                                   |
+| `gitDaemonPort`          | 9418                 | The `git://` listener.                                                                                                                                                                                                                  |
+| `gcRetentionDays`        | 0 (off)              | Optional auto-expiry of old scratch refs.                                                                                                                                                                                               |
+| `githubToken`            | 1Password secret ref | Mirror-side read access for private repos.                                                                                                                                                                                              |
 
 Service address (also on the fc-invoke internal egress allowlist):
 `git-mirror.monolith.svc.cluster.local:9418`. Liveness is delayed 120 s so the

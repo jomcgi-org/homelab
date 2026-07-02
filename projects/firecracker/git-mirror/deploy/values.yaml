@@ -8,15 +8,23 @@
 #
 # Add this to the fc-invoke egress internalAllowlist before agents use it:
 #   - git-mirror.monolith.svc.cluster.local:9418
+# Names follow the GitHub owner/repo convention (ADR 029): the name is the ACL
+# scope, the /agent dropdown label, and the git-daemon path. Keep in sync with
+# chart/values.yaml.
 repos:
-  - name: homelab
+  - name: jomcgi/homelab
     url: https://github.com/jomcgi/homelab.git
   # loom is PRIVATE, under the weave-hand org (not jomcgi). The mirror clones it
   # via the mirror-side githubToken + insteadOf rewrite; the token has weave-hand
-  # read access. A jomcgi/loom URL 404s and the clone non-fatally skips, so /loom
-  # is "not exported" to guests. Keep this in sync with chart/values.yaml.
-  - name: loom
+  # read access. A jomcgi/loom URL 404s and the clone non-fatally skips, so
+  # weave-hand/loom is "not exported" to guests.
+  - name: weave-hand/loom
     url: https://github.com/weave-hand/loom.git
+  # Public collaborator forks, opted in per-server via the ACL (ADR 029).
+  - name: colincee/homelab
+    url: https://github.com/ColinCee/homelab.git
+  - name: scotscottmca/parkedlikea
+    url: https://github.com/scotscottmca/parkedlikea.git
 
 refreshIntervalSeconds: 60
 
