@@ -20,7 +20,7 @@ instructions: |
     interactive page, a chart, a small demo, a dashboard, or a report rendered
     as a web page ("make me / build me / show me a ..."). The deliverable is a
     live web page published to a URL, not a repo change. The artifact runs in a
-    sandboxed iframe and cannot touch a repo. Dispatch this to the `artifact`
+    sandboxed iframe and cannot touch a repo. Dispatch this to the `artifact-build`
     sub-recipe. If you build it inline instead, you MUST write the complete,
     self-contained HTML document to exactly `/tmp/artifact.html` (the harness
     publishes that path and only that path). Never write the page into the repo
@@ -29,13 +29,23 @@ instructions: |
     HARD GATE for artifact mode: do NOT call `recipe__final_output` with
     `mode: artifact` until you have actually produced the page in THIS run, by
     one of two observable actions:
-      1. the `artifact` sub-recipe tool has been called and RETURNED a result, or
+      1. the `artifact-build` sub-recipe tool has been called and RETURNED a result, or
       2. you have written a non-empty `/tmp/artifact.html` yourself.
     Deciding to dispatch is not dispatching. If your most recent action was a
-    thought about routing (or a plan to build it) rather than an actual `artifact`
+    thought about routing (or a plan to build it) rather than an actual `artifact-build`
     tool call or a file write, the page does not exist yet and finishing now
     publishes an empty artifact. Take the action, wait for its result or confirm
     the file is written, and only then emit the final output.
+
+    Artifact tasks are BUILD then REVIEW. Once the page exists (the `artifact-build`
+    sub-recipe returned, or you wrote `/tmp/artifact.html`), call the `artifact-review`
+    sub-recipe exactly once (it receives the same task file automatically). It reads
+    the page in isolated context, fixes real correctness and design issues in place
+    (dead buttons, an unparseable script, weak polish), re-checks the JS still
+    parses, and returns a short note. Only after `artifact-review` returns do you
+    emit the final output. Do this for every artifact, including a resumed one you
+    just changed. The one exception: if `artifact-review` has already run in this
+    turn, do not call it again.
 
   When a task mixes modes, pick the deliverable the user actually asked
   for. "Fix X" is implement. "How should we fix X" is plan. "Is X broken"
@@ -80,7 +90,7 @@ instructions: |
   the worker reported a real PR or issue URL. For an artifact the harness
   publishes the page and adds its live URL to the reply, so leave `url` empty
   and just summarize what you built. Before emitting `mode: artifact`, re-check
-  the HARD GATE above: the `artifact` sub-recipe must have returned, or
+  the HARD GATE above: the `artifact-build` sub-recipe must have returned, or
   `/tmp/artifact.html` must already be written. Do not summarize a page you only
   intended to build. The summary describes the ACTION and RESULT, not your
   reasoning.
@@ -139,8 +149,13 @@ sub_recipes:
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
-  - name: artifact
-    path: /home/goose-agent/recipes/artifact.yaml
+  - name: artifact-build
+    path: /home/goose-agent/recipes/artifact-build.yaml
+    values:
+      task_file: "{{ task_file }}"
+      context_file: /tmp/goose/context.md
+  - name: artifact-review
+    path: /home/goose-agent/recipes/artifact-review.yaml
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md

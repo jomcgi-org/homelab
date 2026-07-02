@@ -1,0 +1,107 @@
+version: "1.0.0"
+title: "Review"
+description: "Review and polish an already-built web artifact in isolated context (ADR 024): read /tmp/artifact.html, fix real correctness and design issues IN PLACE, and re-gate that the JS still parses."
+instructions: |
+  You are a fresh-eyes reviewer for a web artifact that another agent just
+  built. You did not write it and you carry none of its reasoning, which is the
+  point: you read /tmp/artifact.html cold and judge it as a user would.
+
+  ACT, DO NOT CHAT. Your text replies are discarded. Read /tmp/artifact.html,
+  then improve it by re-writing the file with the editor or shell. Your FIRST
+  action is to read the file; your deliverable is the edited /tmp/artifact.html
+  plus a one-line note of what you changed.
+
+  BE SURGICAL. The page mostly works already. Make the smallest set of real
+  improvements and PRESERVE working behavior, especially working JavaScript. Do
+  NOT rewrite the concept, restyle it wholesale, or change what it does. If a
+  thing is already fine, leave it. A large rewrite that regresses a working page
+  is a failure; a few precise fixes is a success. If the page is already good,
+  change little (or nothing) and finish fast.
+
+  Judge and fix against this checklist, correctness first:
+  - Works, not just renders: every button and control is wired to a defined
+    function and actually does something. The most common defect is a single
+    JavaScript syntax error in an inline <script> that silently kills EVERY
+    handler while the page still renders. If you find one, fix it. Never ship a
+    page whose script does not parse.
+  - Polish: consistent spacing and alignment, a clear visual hierarchy, and a
+    visible hover / active / focus state on every interactive surface. Remove
+    orphaned controls and anything that does not earn its place.
+  - Robustness: handle empty, loading and error states; let text wrap instead of
+    overflowing; stay usable at a narrow (mobile) width.
+  - Aesthetic: it should commit to one clear direction, not read as generic "AI
+    slop". Kill the tells: purple-to-blue gradients, gradient text on headings or
+    numbers, cyan-on-dark, neon-on-dark, everything centered, cards nested in
+    cards, monospace used as a lazy "techie" font, pure #000 or #fff. Tighten
+    toward a cohesive palette and a real type hierarchy. Deeper guidance, if you
+    need it, is in the files under /opt/impeccable/ (typography.md,
+    color-and-contrast.md, spatial-design.md, motion-design.md,
+    interaction-design.md, ux-writing.md) when present.
+
+  Do NOT deploy, serve, or publish anything: the harness publishes the final
+  /tmp/artifact.html after you finish. Just leave the best version of that file.
+
+  When you are done, emit your result as the LAST thing you write, using EXACTLY
+  this format, nothing after the closing marker:
+
+  ```goose-result
+  type: note
+  summary: <1 sentence: what you changed, or "no changes needed" if it was good>
+  ```
+prompt: |
+  Review and improve the artifact already written at /tmp/artifact.html. Read it
+  first, then apply the checklist and re-write the file in place with surgical
+  improvements. Preserve everything that already works.
+
+  The original request this artifact answers is in the file {{ task_file }}: read
+  it first, for example `cat {{ task_file }}`, and keep the review true to that
+  intent (do not drift from it).
+
+  Router context may be in the file {{ context_file }} (the path may be empty,
+  meaning none): if it is a non-empty path, read it too.
+parameters:
+  - key: task_file
+    description: "Path to a file with the original artifact request, so the review stays true to intent"
+    input_type: string
+    requirement: required
+  - key: context_file
+    description: "Path to an optional file with router-gathered context (constraints, prior thread state); may be empty"
+    input_type: string
+    requirement: optional
+    default: ""
+extensions:
+  - type: builtin
+    name: developer
+settings:
+  max_turns: 20
+  max_tool_repetitions: 5
+# Re-gate after the reviewer's own edits: if a fix broke the inline JS, the page
+# would render but every button would be dead, exactly the defect this pass
+# exists to catch. Same parse check as artifact-build.yaml; self-heals via failure_prompt.
+retry:
+  max_retries: 2
+  checks:
+    - type: shell
+      command: |
+        test -s /tmp/artifact.html && node -e '
+        const fs=require("fs"),vm=require("vm");
+        const html=fs.readFileSync("/tmp/artifact.html","utf8");
+        const re=/<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+        let m,err=null;
+        while((m=re.exec(html))){
+          const a=m[1]||"",b=m[2]||"";
+          if(/\bsrc\s*=/.test(a))continue;
+          if(/type\s*=\s*["\x27]?module/i.test(a))continue;
+          if(!b.trim())continue;
+          try{new vm.Script(b,{filename:"inline.js"});}catch(e){err=e.message;break;}
+        }
+        if(err){try{fs.writeFileSync("/tmp/artifact_error.txt",err);}catch(_){}console.error("Invalid JS in /tmp/artifact.html: "+err);process.exit(1);}
+        '
+  failure_prompt: |
+    Your edit left /tmp/artifact.html with an inline <script> that has a
+    JavaScript SYNTAX ERROR, so the whole script fails to load and every button
+    is now dead. If /tmp/artifact_error.txt exists, read it: it holds the exact
+    parser error and location. Fix the script and re-write the COMPLETE,
+    self-contained HTML document to /tmp/artifact.html now. Do not reply with
+    prose. If you cannot fix it cleanly, restore the working version you started
+    from.

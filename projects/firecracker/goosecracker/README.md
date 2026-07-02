@@ -60,8 +60,18 @@ graph TD
     A[agent.yaml router<br/>classify the task] -->|question to answer| Q[query.yaml]
     A -->|design doc wanted| P[plan.yaml]
     A -->|code change wanted| I[implement.yaml]
-    B[artifact.yaml<br/>HTML artifact builds]
+    A -->|web page wanted| B[artifact-build.yaml<br/>one-shot HTML build]
+    B --> R[artifact-review.yaml<br/>fresh-eyes polish + re-gate, in place]
 ```
+
+Artifact tasks are a two-step pipeline: `artifact-build.yaml` writes
+`/tmp/artifact.html` in one shot, then the router dispatches `artifact-review.yaml`,
+which reads the page in
+isolated context (no builder chatter), fixes real correctness and design issues in
+place, and re-checks the inline JS still parses before the harness publishes it.
+Both build and review gate publication on the script parsing, so a page that
+renders but has dead buttons (a single inline-JS syntax error) self-heals instead
+of shipping.
 
 The model is not baked into the image: `GOOSE_PROVIDER` and `GOOSE_MODEL` arrive in
 `AgentRequest.Env`, so the same guest serves in-cluster Qwen via `inference` or any
