@@ -20,3 +20,8 @@
 
 # Git worktrees have their own formatting
 .claude/worktrees/
+
+# Vendored third-party docs (impeccable frontend-design references, Apache-2.0):
+# kept byte-identical to upstream so the vendored copy stays verifiable. Baked
+# into the goosecracker guest image at /opt/impeccable/.
+**/vendor/impeccable/**

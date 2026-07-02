@@ -9,3 +9,8 @@ docs/decisions/
 # source docs are linted in place; the manifest is a build artifact. (The sibling
 # repo_docs_manifest.ndjson is skipped automatically as an unknown language.)
 projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
+
+# Vendored third-party docs (impeccable frontend-design references, Apache-2.0):
+# not our source to lint, and their upstream copyright notices must stay verbatim
+# (the stale-copyright-year rule false-positives on them).
+projects/firecracker/goosecracker/guest/vendor/impeccable/

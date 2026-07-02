@@ -91,7 +91,10 @@ repos:
         # config. It is a generated artifact; the source docs are linted in place.
         # pre-commit's exclude filters files before they reach semgrep (a
         # .semgrepignore entry is not honoured for explicitly-passed files).
-        exclude: "^(bazel/semgrep/rules/|projects/monolith/frontend/src/lib/public/docs/docs-manifest\\.json$)"
+        # Vendored third-party docs (impeccable, Apache-2.0) carry upstream
+        # copyright notices we must keep verbatim; the stale-copyright-year rule
+        # false-positives on them. They are not our source to lint.
+        exclude: "^(bazel/semgrep/rules/|projects/monolith/frontend/src/lib/public/docs/docs-manifest\\.json$|projects/firecracker/goosecracker/guest/vendor/impeccable/)"
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.2
     hooks:
