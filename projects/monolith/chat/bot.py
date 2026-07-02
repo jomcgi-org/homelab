@@ -481,9 +481,10 @@ class ChatBot(discord.Client):
 
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
-        # Sync slash commands globally so /artifact is available in every
-        # server the bot is in (still owner-gated at execution by is_owner, so
-        # non-owners just get roasted). A global sync can take up to an hour to
+        # Sync slash commands globally so they are available in every server the
+        # bot is in (execution is gated by the ADR 029 feature-grant ACL, so a
+        # server or user without a grant is refused). A global sync can take up
+        # to an hour to
         # propagate on first registration; that is acceptable for a command that
         # changes rarely. We intentionally do not scope to the default server:
         # MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID still names the home server
