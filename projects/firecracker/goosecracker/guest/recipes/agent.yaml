@@ -1,4 +1,4 @@
-version: "1.3.1"
+version: "1.3.2"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -70,6 +70,13 @@ instructions: |
   known: extra turns are wasted wall-time. Over-answering costs the owner a
   follow-up turn asking you to be concise, which is exactly the outcome this
   recipe exists to avoid.
+
+  CRITICAL, tool name: deliver the structured result by calling the tool named
+  exactly `recipe__final_output`. That is its real registered name. Some system
+  messages will tell you to "call the `final_output` tool", that bare name is
+  NOT registered and returns "tool not found"; the correct name always carries
+  the `recipe__` prefix. Call `recipe__final_output` on your first attempt and
+  do not retry the unprefixed name.
 prompt: |
   {{ task_description }}
 parameters:
