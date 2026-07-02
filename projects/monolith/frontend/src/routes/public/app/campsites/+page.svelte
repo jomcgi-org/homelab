@@ -18,6 +18,10 @@
   // Starts closed so the map is unobstructed on load.
   let listOpen = $state(false);
 
+  // Night selector collapse (map-first: starts collapsed to a summary pill so it
+  // is not permanently over the map; expands on click, like the list panel).
+  let nightsOpen = $state(false);
+
   // Sort and filter state.
   let sortKey = $state("best_score"); // "best_score" | "good_days" | "name"
   let clearOnly = $state(false);
@@ -59,6 +63,14 @@
   // parks with no availability on the chosen nights; at the default (all live)
   // the list still shows every park, matching the pre-filter behaviour.
   let narrowed = $derived(activeDates.size < liveDates.length);
+
+  // Collapsed-pill summary of the current pick.
+  let nightsSummary = $derived.by(() => {
+    if (selectedDates === null) return "All nights";
+    const n = activeDates.size;
+    if (n === 0) return "No nights";
+    return n === 1 ? "1 night" : `${n} nights`;
+  });
 
   // Re-score every park over the active nights: best_score = best clear-sky
   // score among its open active nights, good_days = count of clear open nights,
@@ -288,43 +300,61 @@
 
   <!-- Night selector: pick the nights you are free. Dead nights (no park open)
        are greyed and disabled. Filters the map, list and per-park scores. -->
-  <div class="nights-card">
-    <div class="nights-head">
-      <span class="nights-title">Nights you're free</span>
-      <div class="nights-actions">
-        <button type="button" class="nights-act" onclick={selectAllNights}
-          >All</button
-        >
-        <button type="button" class="nights-act" onclick={selectWeekends}
-          >Weekends</button
-        >
-        <button type="button" class="nights-act" onclick={clearNights}
-          >Clear</button
-        >
-      </div>
-    </div>
-    <div
-      class="nights-strip"
-      role="group"
-      aria-label="Select the nights you are free"
+  <div class="nights-card" class:collapsed={!nightsOpen}>
+    <button
+      type="button"
+      class="nights-toggle"
+      aria-expanded={nightsOpen}
+      onclick={() => (nightsOpen = !nightsOpen)}
     >
-      {#each windowDates as iso (iso)}
-        <button
-          type="button"
-          class="night-btn"
-          class:on={activeDates.has(iso)}
-          class:dead={deadDates.has(iso)}
-          disabled={deadDates.has(iso)}
-          aria-pressed={activeDates.has(iso)}
-          title={deadDates.has(iso) ? "No sites open this night" : fmtDayCell(iso)}
-          onclick={() => toggleNight(iso)}
+      <span class="nights-toggle-label">Nights you're free</span>
+      <span class="nights-toggle-summary">{nightsSummary}</span>
+      <span class="nights-toggle-chevron" aria-hidden="true"
+        >{nightsOpen ? "▾" : "▸"}</span
+      >
+    </button>
+
+    {#if nightsOpen}
+      <div class="nights-body">
+        <div class="nights-actions">
+          <button type="button" class="nights-act" onclick={selectAllNights}
+            >All</button
+          >
+          <button type="button" class="nights-act" onclick={selectWeekends}
+            >Weekends</button
+          >
+          <button type="button" class="nights-act" onclick={clearNights}
+            >Clear</button
+          >
+        </div>
+        <div
+          class="nights-strip"
+          role="group"
+          aria-label="Select the nights you are free"
         >
-          {fmtDayCell(iso)}
-        </button>
-      {/each}
-    </div>
-    {#if activeDates.size === 0}
-      <p class="nights-hint">Pick the nights you can go to see matching parks.</p>
+          {#each windowDates as iso (iso)}
+            <button
+              type="button"
+              class="night-btn"
+              class:on={activeDates.has(iso)}
+              class:dead={deadDates.has(iso)}
+              disabled={deadDates.has(iso)}
+              aria-pressed={activeDates.has(iso)}
+              title={deadDates.has(iso)
+                ? "No sites open this night"
+                : fmtDayCell(iso)}
+              onclick={() => toggleNight(iso)}
+            >
+              {fmtDayCell(iso)}
+            </button>
+          {/each}
+        </div>
+        {#if activeDates.size === 0}
+          <p class="nights-hint">
+            Pick the nights you can go to see matching parks.
+          </p>
+        {/if}
+      </div>
     {/if}
   </div>
 
@@ -580,21 +610,34 @@
     transform: translateX(-50%);
     max-width: min(560px, calc(100% - 32px));
     box-sizing: border-box;
-    padding: 8px 12px;
     background: var(--paper);
     border: 2px solid var(--ink);
     z-index: 20;
   }
 
-  .nights-head {
+  /* Header doubles as the collapse toggle: a full-width button showing the
+     title, a summary of the current pick, and a chevron. Collapsed, this is the
+     entire card (a compact pill); expanded, the body sits below it. */
+  .nights-toggle {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
-    margin-bottom: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--paper);
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    transition: background 110ms ease;
   }
 
-  .nights-title {
+  .nights-toggle:hover,
+  .nights-toggle:focus-visible {
+    background: var(--rule);
+    outline: none;
+  }
+
+  .nights-toggle-label {
     font-family: var(--mono);
     font-size: 11px;
     font-weight: 700;
@@ -603,9 +646,29 @@
     color: var(--ink-3);
   }
 
+  .nights-toggle-summary {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+
+  .nights-toggle-chevron {
+    font-size: 10px;
+    color: var(--ink-3);
+  }
+
+  .nights-body {
+    padding: 10px 12px;
+    border-top: 2px solid var(--ink);
+  }
+
   .nights-actions {
     display: inline-flex;
     gap: 6px;
+    margin-bottom: 8px;
   }
 
   .nights-act {
