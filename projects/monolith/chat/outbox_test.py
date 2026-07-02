@@ -4,9 +4,53 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.pool import StaticPool
 
 import chat.outbox as outbox
+from chat.models import DiscordOutbox
 from chat.outbox import drain_once, enqueue_message, enqueue_reaction
+
+
+@pytest.fixture(name="engine")
+def engine_fixture():
+    """In-memory SQLite engine with the chat schema stripped, so the DB-level
+    CHECK constraint (mirrored into the model) is actually exercised."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original[table.name] = table.schema
+            table.schema = None
+    SQLModel.metadata.create_all(engine)
+    yield engine
+    for table in SQLModel.metadata.tables.values():
+        if table.name in original:
+            table.schema = original[table.name]
+
+
+def test_reaction_row_satisfies_content_or_embed_check(engine):
+    """A reaction row (no content, no embed) must be accepted by the DB CHECK -
+    the regression that wedged prod: the constraint required content OR embed."""
+    with Session(engine) as session:
+        enqueue_reaction(session, "chan", "msg", "⏳", remove=True)
+        session.commit()
+    with Session(engine) as session:
+        row = session.query(DiscordOutbox).one()
+    assert row.reaction == "⏳" and row.content is None and row.embed_json is None
+
+
+def test_fully_empty_outbox_row_is_rejected(engine):
+    """The relaxed CHECK still rejects a row with no content, embed, or reaction."""
+    with Session(engine) as session:
+        session.add(DiscordOutbox(channel_id="chan"))
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 def test_enqueue_text_adds_row():
