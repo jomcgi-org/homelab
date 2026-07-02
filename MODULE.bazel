@@ -483,10 +483,10 @@ multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archiv
 
 multiarch_http_archive(
     name = "goose",
-    amd64_sha256 = "cfd81f9e17a02d3b87917de7411e43daa7bb72fb3b79fc26c3329010a0471f1e",
-    amd64_url = "https://github.com/block/goose/releases/download/v1.27.1/goose-x86_64-unknown-linux-gnu.tar.bz2",
-    arm64_sha256 = "fae890273700778a73891c51afe992aee254657fb0882702596eb7a6aeb1b894",
-    arm64_url = "https://github.com/block/goose/releases/download/v1.27.1/goose-aarch64-unknown-linux-gnu.tar.bz2",
+    amd64_sha256 = "cf0100d2f4e085e4ec537e8399950d4695661bff83d12dc45a9a6d357cd33c41",
+    amd64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-x86_64-unknown-linux-gnu.tar.bz2",
+    arm64_sha256 = "a0a03859f0b3810863ce212b0c11a6cf3126a074db708bf39cf46af513bdd273",
+    arm64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-aarch64-unknown-linux-gnu.tar.bz2",
     binary_name = "goose",
     package_dir = "/usr/local/bin",
 )

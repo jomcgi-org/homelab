@@ -174,6 +174,22 @@ goosecracker:
       OPENAI_API_KEY: sk-noauth
       GOOSE_PROVIDER: openai
       GOOSE_MODEL: qwen3.6-27b
+      # Context budget for the qwen endpoint (vLLM maxModelLen 32768). Without
+      # GOOSE_CONTEXT_LIMIT goose assumes 128k and never compacts before the real
+      # 32k wall, so a large tool output (e.g. a full git log) overruns the model,
+      # errors, and goose reactively summarizes in a loop that can drop the answer.
+      # Telling goose the true window makes it compact proactively at ~80%.
+      GOOSE_CONTEXT_LIMIT: "32768"
+      # Cap a single tool response so one big output cannot fill a 32k window
+      # (goose >= 1.38 truncates above this many characters). Catches git-log /
+      # wide-grep dumps while leaving normal file reads intact.
+      GOOSE_MAX_TOOL_RESPONSE_SIZE: "10000"
+      # Cap per-response generation (output tokens), leaving input room in 32k.
+      # Bounds a text answer; a PR is built across many turns so it is unaffected.
+      GOOSE_MAX_TOKENS: "8000"
+      # Summarize older tool outputs after this many calls (default 10) to keep
+      # long resumed threads lean on a small window.
+      GOOSE_TOOL_CALL_CUTOFF: "5"
       # A default-tier guest holds the gh placeholder; the fc-invoke egress proxy
       # swaps it for the real token only on api.github.com.
       GITHUB_TOKEN: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
