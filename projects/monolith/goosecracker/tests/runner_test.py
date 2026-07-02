@@ -499,3 +499,34 @@ async def test_run_and_deliver_non_agent_runs_once(monkeypatch):
 
     assert turns == ["build it"]
     fake_api.drain_agent_queue.assert_not_called()
+
+
+async def test_run_and_deliver_idles_thread_on_bookkeeping_error(monkeypatch):
+    """If post-turn bookkeeping raises (a DB blip), the loop force-idles the
+    thread and stops instead of dying with running=True (which would wedge the
+    thread for the full stale timeout)."""
+    turns = []
+
+    async def fake_turn(session, **kwargs):
+        turns.append(kwargs["task"])
+        return True
+
+    monkeypatch.setattr(runner, "_run_one_turn", fake_turn)
+
+    fake_api = MagicMock()
+    fake_api.ack_inflight = MagicMock(side_effect=RuntimeError("db blip"))
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        await runner.run_and_deliver(
+            "sess",
+            task="first turn",
+            recipe="agent",
+            tier="",
+            git_mirror="",
+            git_ref="",
+            discord_thread="T",
+        )
+
+    assert turns == ["first turn"]  # ran the turn, then stopped cleanly
+    fake_api.force_idle_thread.assert_called_once_with("T")
+    fake_api.drain_agent_queue.assert_not_called()

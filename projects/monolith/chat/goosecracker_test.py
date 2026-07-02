@@ -562,6 +562,60 @@ def test_reclaim_orphaned_agent_sessions_redispatches(engine, fake_api):
     assert live.inflight_task == "in progress"  # untouched
 
 
+def test_drain_agent_queue_aborts_when_reowned(engine):
+    """If the turn was re-owned by another process (leadership handover), drain
+    returns None WITHOUT touching pending/running - the new owner drives it."""
+    _make_agent_session(
+        engine,
+        "reowned",
+        running=True,
+        runner_instance="other-process",
+        pending="queued work",
+        pending_message_ids="m1",
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        assert goosecracker.drain_agent_queue("reowned") is None
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "reowned")
+    # Untouched: the new owner still has the queued work to run.
+    assert row.pending == "queued work"
+    assert row.running
+
+
+def test_ack_inflight_skips_when_reowned(engine):
+    """ack_inflight is a no-op when another process owns the turn (no double-post,
+    no clobber of the new owner's in-flight slot)."""
+    _make_agent_session(
+        engine,
+        "reowned-ack",
+        running=True,
+        runner_instance="other-process",
+        inflight_task="work",
+        inflight_ack_ids="m1",
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.ack_inflight("reowned-ack", True)
+    with Session(engine) as session:
+        assert session.query(DiscordOutbox).count() == 0
+        row = session.get(GoosecrackerSession, "reowned-ack")
+    assert row.inflight_ack_ids == "m1"  # left for the new owner
+
+
+def test_force_idle_thread_cas(engine):
+    """force_idle_thread idles a row this process owns, but leaves a re-owned row
+    alone (never clobbers a turn another process now runs)."""
+    _make_agent_session(
+        engine, "mine", running=True, runner_instance=goosecracker.INSTANCE_TOKEN
+    )
+    _make_agent_session(engine, "theirs", running=True, runner_instance="other-process")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.force_idle_thread("mine")
+        goosecracker.force_idle_thread("theirs")
+    with Session(engine) as session:
+        assert not session.get(GoosecrackerSession, "mine").running
+        assert session.get(GoosecrackerSession, "theirs").running  # untouched
+
+
 def test_reclaim_orphaned_idles_when_nothing_to_run(engine, fake_api):
     """A foreign-owned running session with no recoverable task is idled, not
     re-dispatched (never dispatches an empty turn)."""

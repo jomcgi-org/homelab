@@ -577,16 +577,31 @@ async def run_and_deliver(
         if not is_agent_thread:
             return
 
-        from chat.api import ack_inflight, drain_agent_queue
+        from chat.api import ack_inflight, drain_agent_queue, force_idle_thread
 
-        # Resolve this turn's queued messages (👀 → ✅/❌) before draining the next
-        # batch, so their reactions reflect this turn's outcome.
-        # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
-        await asyncio.to_thread(ack_inflight, discord_thread, ok)
-        # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
-        drained = await asyncio.to_thread(drain_agent_queue, discord_thread)
+        # Post-turn bookkeeping. Guard it: if a transient DB error escaped here the
+        # loop would die with running=True and the thread would wedge for the full
+        # stale timeout. On failure, best-effort idle the row (CAS on ownership) so
+        # the next reply can start a fresh turn, then stop this chain.
+        try:
+            # Resolve this turn's queued messages (👀 → ✅/❌) before draining the
+            # next batch, so their reactions reflect this turn's outcome.
+            # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+            await asyncio.to_thread(ack_inflight, discord_thread, ok)
+            # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+            drained = await asyncio.to_thread(drain_agent_queue, discord_thread)
+        except Exception:
+            logger.exception(
+                "goosecracker: post-turn bookkeeping failed for %s; idling thread",
+                discord_thread,
+            )
+            # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+            await asyncio.to_thread(force_idle_thread, discord_thread)
+            return
         if drained is None:
-            return  # queue empty: drain_agent_queue set running=False, thread idle
+            # Queue empty (running=False set by drain) or this turn was re-owned by
+            # another process after a leadership handover: either way, stop.
+            return
         next_task, _ack_ids = drained
         # Update the run ledger for the next task (mirrors dispatch.submit).
         # nosemgrep: no-session-in-to-thread  # threads.upsert_run opens its own Session
