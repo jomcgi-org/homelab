@@ -27,6 +27,19 @@ pkg_tar(
     package_dir = "/home/goose-agent/recipes",
 )
 
+# Bake impeccable's frontend-design reference docs at /opt/impeccable/. The
+# artifact-build / artifact-review recipes consult these on demand for depth on
+# a specific dimension. Vendored unmodified (Apache-2.0); NOTICE.md ships with
+# them to carry attribution in the distributed image (see impeccable/LICENSE).
+pkg_tar(
+    name = "impeccable_tar",
+    srcs = glob(["vendor/impeccable/*.md"]),
+    mode = "0644",
+    owner = "65532.65532",
+    package_dir = "/opt/impeccable",
+    strip_prefix = "vendor/impeccable",
+)
+
 # fc-agent-init binary, cross-compiled per arch and layered at /usr/local/bin.
 platform_transition_filegroup(
     name = "fc_agent_init_amd64_bin",
@@ -68,5 +81,6 @@ apko_image(
     tars = [
         ":config_tar",
         ":recipes_tar",
+        ":impeccable_tar",
     ],
 )
