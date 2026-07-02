@@ -9,7 +9,7 @@ the conversational-queue drain added for /agent thread continuations.
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -530,3 +530,33 @@ async def test_run_and_deliver_idles_thread_on_bookkeeping_error(monkeypatch):
     assert turns == ["first turn"]  # ran the turn, then stopped cleanly
     fake_api.force_idle_thread.assert_called_once_with("T")
     fake_api.drain_agent_queue.assert_not_called()
+
+
+async def test_run_one_turn_resets_progress_buffer_at_start(monkeypatch):
+    """Every turn clears the live-progress buffer before running, so a stale
+    done=True left by a prior (streamless) turn cannot render "Done in 0:01" on
+    the next turn's message. Verified by spying the reset seam; the turn is forced
+    to fail fast (no FC_INVOKE_URL) so no real fc-invoke/DB work runs."""
+
+    reset_spy = MagicMock()
+    fake_api = MagicMock()
+    fake_api.reset_goosecracker_progress = reset_spy
+
+    monkeypatch.setattr(runner, "FC_INVOKE_URL", "")  # fail fast in the try body
+    monkeypatch.setattr(runner.threads, "mark_failed", MagicMock())
+    monkeypatch.setattr(runner, "_deliver", AsyncMock())
+    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        ok = await runner._run_one_turn(
+            "sess-x",
+            task="do it",
+            recipe="agent",
+            tier="",
+            git_mirror="",
+            git_ref="",
+            discord_thread="T",
+        )
+
+    assert ok is False  # fail-fast path (no FC_INVOKE_URL)
+    reset_spy.assert_called_once_with("sess-x")  # buffer reset before the turn ran
