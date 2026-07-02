@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
 from pydantic import field_validator
-from sqlalchemy import Column, UniqueConstraint
+from sqlalchemy import CheckConstraint, Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -100,12 +100,21 @@ class DiscordOutbox(SQLModel, table=True):
     so posting works regardless of which replica a request lands on.
 
     embed_json holds a JSON-serialised Discord embed dict (TEXT, not JSONB, so
-    the SQLite test fixtures build it cleanly); content is plain text. Exactly
-    one of the two is set.
+    the SQLite test fixtures build it cleanly); content is plain text. A post row
+    sets exactly one of the two; a reaction row (target_message_id + reaction)
+    sets neither. The CHECK mirrors the DB constraint so the SQLite test fixtures
+    enforce it too (create_all does not see migration-only constraints, which is
+    how a reaction row's NULL/NULL content once slipped past tests into prod).
     """
 
     __tablename__ = "discord_outbox"
-    __table_args__ = {"schema": "chat", "extend_existing": True}
+    __table_args__ = (
+        CheckConstraint(
+            "content IS NOT NULL OR embed_json IS NOT NULL OR reaction IS NOT NULL",
+            name="discord_outbox_content_or_embed",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     channel_id: str
