@@ -213,12 +213,12 @@ actions:
     steps:
       - run: ./bazel/helm/ci-diff-manifests.sh
 
-  # Visual regression - screenshots public pages against committed mock data,
-  # diffs vs committed baselines, posts inline before/after/diff to the PR.
-  # Standalone Node tool (NOT bazel test). Runs in ubuntu-24.04 so the bb/bazel
-  # wrapper + repo tooling work natively; only chromium is added at runtime.
-  # Baselines are only valid from this image; regenerate via a commit message
-  # containing [update-baselines]. Informational (no depends_on), like Manifest diff.
+  # Visual regression - screenshots public pages against committed mock data and
+  # diffs the PR render vs the `origin/main` render (no committed baselines, no
+  # sentinel). Posts inline before/after/diff to the PR for the pages this PR
+  # changes. The capture is a hermetic, cached bazel action (chromium runs on RBE
+  # inside the ci/visual-chromium exec image); the runner only orchestrates and
+  # posts the comment. Informational (no depends_on), like Manifest diff.
   - name: "Visual regression"
     container_image: "ubuntu-24.04"
     max_retries: 1
@@ -236,14 +236,6 @@ actions:
       # rules). apt is run with sudo only when not already root. bazel builds are
       # not piped through `tail`, so a build failure propagates under `set -e`.
       - run: |
-          # Skip the baseline bot's own push. NOT ci-format-bot: its commit is the
-          # PR head, so we must screenshot it or the head shows a stale result.
-          AUTHOR="$(git log -1 --format='%an')"
-          case "$AUTHOR" in
-            visual-baseline-bot)
-              echo "Skipping automated commit from $AUTHOR"; exit 0 ;;
-          esac
-
           set -eu
           SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 
@@ -266,50 +258,75 @@ actions:
             curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_${GH_ARCH}.tar.gz" | $SUDO tar -xz -C /usr/local --strip-components=1
           fi
 
-          # Capture + diff run as hermetic, cached bazel actions: :diff depends on
-          # :capture, which boots :build_public + the mock seam and screenshots
-          # the pages with chromium INSIDE the ci/visual-chromium exec image (the
-          # browser is vendored via rules_playwright). No system node / npm / npx /
-          # playwright-install on the runner any more.
+          # The capture is a cached bazel action: it boots :build_public + the mock
+          # seam and screenshots the pages with chromium INSIDE the ci/visual-chromium
+          # exec image (browser vendored via rules_playwright), so no system node /
+          # npm / npx / playwright-install on the runner.
           #   --config=ci: the mixed-arch workflow pool shares ~/.cache; build:ci
-          #     disables the disk cache, avoiding wrong-arch binaries.
-          #   --remote_download_outputs=all: the outputs are consumed below OUTSIDE
-          #     bazel (staged + read by gh/jq), so force them onto disk even on a
-          #     remote action-cache hit. On a non-frontend PR this is a cache hit
-          #     and no browser runs.
+          #     disables the disk cache (build:ci --disk_cache=), so a build never
+          #     pulls a wrong-arch binary.
+          #   --remote_download_outputs=all: the out/ tree is consumed below OUTSIDE
+          #     bazel (staged + read by gh/jq), so force it onto disk even on a
+          #     remote action-cache hit.
           REPO_ROOT="$(git rev-parse --show-toplevel)"
-          bazel build //projects/monolith/frontend/visual:diff --config=ci --remote_download_outputs=all
+          VDIR="$REPO_ROOT/projects/monolith/frontend/visual"
+          BB="$REPO_ROOT/bazel-bin/projects/monolith/frontend/visual"
 
-          # Resolve the PR number from the checked-out branch (BuildBuddy does not
-          # set BUILDBUDDY_PULL_REQUEST_NUMBER in this action env). `// empty` so a
-          # closed/absent PR yields "" (not the string "null", which would pass the
-          # scripts' [ -z ] guard then fail gh).
-          export GH_TOKEN="${GHCR_TOKEN:-}"
+          # Capture state needed after the in-place ref-switch below: the branch name
+          # (abbrev-ref returns "HEAD" once detached) and the PR head SHA.
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          ORIG_SHA="$(git rev-parse HEAD)"
+
+          # Branch-vs-main render gate. The rendered pixels are a pure function of the
+          # frontend subtree + the shared CSS tokens + the workspace dep lock + the
+          # bazel module pins; everything else (notably the Python backend, which is
+          # mocked out via the API_BASE fixtures) cannot change a pixel. If none of
+          # these differ from main, the two renders are identical by construction, so
+          # skip both captures and report no changes. This list MUST stay a SUPERSET
+          # of :capture's real inputs: too broad only costs a redundant (cache-hit)
+          # build, too narrow silently misses a real regression.
+          git fetch origin main --quiet 2>/dev/null || true
+          RENDER_PATHS="projects/monolith/frontend projects/websites/shared pnpm-lock.yaml pnpm-workspace.yaml package.json MODULE.bazel MODULE.bazel.lock"
+
+          rm -rf "$VDIR/out" && mkdir -p "$VDIR/out/baseline"
+          if git diff --quiet origin/main "$ORIG_SHA" -- $RENDER_PATHS; then
+            echo "No render-relevant changes vs origin/main; reporting no visual changes."
+            printf '{"changed":[],"added":[],"unchanged":0}\n' > "$VDIR/out/report.json"
+          else
+            # PR render (after).
+            bazel build //projects/monolith/frontend/visual:capture --config=ci --remote_download_outputs=all
+            cp -rL "$BB/out/." "$VDIR/out/"
+
+            # Main render (before). The in-place checkout reuses the WARM bazel
+            # output_base: `git checkout` only rewrites the files that differ between
+            # the PR and main, so unchanged capture inputs are not re-analyzed (unlike
+            # a fresh worktree, which re-runs loading/analysis and re-fetches external
+            # repos from a cold output_base). The capture action is keyed on input
+            # content, so main's render is a remote-cache download whenever main's
+            # frontend is unchanged.
+            git checkout --quiet --detach origin/main
+            bazel build //projects/monolith/frontend/visual:capture --config=ci --remote_download_outputs=all
+            cp -L "$BB/out/"*.png "$VDIR/out/baseline/"
+            # Restore the exact PR commit (not "$BRANCH": abbrev-ref yields "HEAD"
+            # in a detached checkout, which would strand the runner on main).
+            git checkout --quiet "$ORIG_SHA"
+
+            # Pixel-diff PR (out/) vs main (out/baseline/) -> out/report.json + out/diff/.
+            # Hermetic js_binary (no system node on the runner). Absolute paths in,
+            # so the launcher's cwd is irrelevant.
+            CAPTURE_DIR="$VDIR/out" BASELINE_DIR="$VDIR/out/baseline" OUT_DIR="$VDIR/out" \
+              bazel run //projects/monolith/frontend/visual:diff_bin --config=ci
+          fi
+
+          # Resolve the PR number from the branch (BuildBuddy does not set
+          # BUILDBUDDY_PULL_REQUEST_NUMBER in this action env). `// empty` so a
+          # closed/absent PR yields "" (not the string "null", which would pass the
+          # script's [ -z ] guard then fail gh).
+          export GH_TOKEN="${GHCR_TOKEN:-}"
           BUILDBUDDY_PULL_REQUEST_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           export BUILDBUDDY_PULL_REQUEST_NUMBER
 
-          # Stage the cached bazel outputs into the out/ layout the scripts expect:
-          # current PNGs + manifest.json from :capture (bazel-bin .../visual/out),
-          # report.json + diff/ from :diff (bazel-bin .../visual/diff_out). Read via
-          # the bazel-bin convenience symlink (NOT `bazel info bazel-bin --config=ci`,
-          # which fails to resolve @@buildbuddy_toolchain). cp -L derefs the output
-          # symlinks. out/ is gitignored, so this is ephemeral.
-          VDIR="$REPO_ROOT/projects/monolith/frontend/visual"
-          BB="$REPO_ROOT/bazel-bin/projects/monolith/frontend/visual"
-          rm -rf "$VDIR/out" && mkdir -p "$VDIR/out"
-          cp -rL "$BB/out/." "$VDIR/out/"
-          cp -rL "$BB/diff_out/." "$VDIR/out/"
-
-          # Seed/refresh baselines when the sentinel file is present, else post the
-          # before/after/diff PR comment. A sentinel FILE (not a HEAD commit marker)
-          # is used because chart-version-bot lands commits on top of the trigger;
-          # update-baselines.sh removes it in its own bot commit (one-shot).
-          if [ -f "$VDIR/.reseed-baselines" ]; then
-            ./projects/monolith/frontend/visual/update-baselines.sh
-          else
-            ./projects/monolith/frontend/visual/report-to-pr.sh
-          fi
+          ./projects/monolith/frontend/visual/report-to-pr.sh
 
   # Buck2 rules — builds & tests the Buck2 image/helm rules under buck2/**
   # (the Buck2 counterparts to bazel/helm + bazel/tools/oci, consumed by the

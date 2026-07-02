@@ -2,9 +2,11 @@
 
 A small, self-contained Node tool (its own `package.json`, deliberately NOT part
 of the hermetic Bazel app build) that deterministically screenshots every public
-monolith SvelteKit page against committed mock data, then pixel-diffs the result
-against committed baselines. A dedicated BuildBuddy action runs it on PRs that
-touch the frontend and posts before/after/diff images for the pages that changed.
+monolith SvelteKit page against committed mock data, then pixel-diffs the PR
+render against the `origin/main` render. A dedicated BuildBuddy action runs it on
+PRs and posts before/after/diff images for the pages that changed. There are no
+committed baselines and no reseed step: `main` IS the baseline, rendered on
+demand.
 
 This mirrors how `bazel/helm/ci-diff-manifests.sh` is a standalone PR-comment
 script, not a `bazel test`. Do not build an apko image for it: the CI runner is
@@ -24,29 +26,26 @@ site paths.
 Fixtures are past-dated and deterministic. The browser clock is frozen per page
 in the capture step so "X ago" copy and `setInterval` marquees are stable.
 
-## Baselines are CI-only
+## Branch-vs-main: there are no committed baselines
 
-Baseline PNGs are valid ONLY when generated in the Linux Playwright container,
-because macOS vs Linux font hinting and WebGL (SwiftShader) rasterization differ
-at the pixel level. Never commit baselines captured on a workstation. The mock
-server, capture, and diff logic CAN and SHOULD be smoke-run locally (pages
-render, diff math works); only the committed pixel baselines must come from CI.
+The "before" image is `origin/main`'s render, captured on demand in the same CI
+run as the "after" (PR) render. Both come from the identical Linux Playwright
+exec image, so font hinting and WebGL (SwiftShader) rasterization match by
+construction. macOS vs Linux differs at the pixel level, so the smoke-run below
+validates only that pages render and the diff math works, never the pixels.
 
-## Reseeding baselines: do not auto-merge the sentinel PR
+CI renders both sides with an in-place ref-switch in one Bazel output_base
+(`git checkout origin/main` between the two `:capture` builds), so the second
+build reuses the warm analysis cache instead of paying a cold worktree analysis.
+A cheap path gate (`git diff origin/main HEAD -- <frontend subtree, shared CSS,
+workspace lock, MODULE.bazel>`) skips both captures entirely when nothing
+render-relevant changed; the gate is a SUPERSET of `:capture`'s inputs, so being
+too broad only costs a redundant cache-hit build, never a missed regression.
 
-To accept a render change, commit an empty `.reseed-baselines` sentinel. The
-PR-triggered visual action then reseeds the baselines, commits them back to the
-PR branch as `visual-baseline-bot`, and deletes the sentinel (one-shot). That
-reseed runs ONLY in `pull_request` context (there is no `push: main` trigger),
-and the action is informational (no `depends_on`), so it does not gate merge.
-
-Consequence: never enable auto-merge on a reseed PR. Auto-merge can pass the
-required checks and merge the raw sentinel onto main in a couple of minutes,
-before the slower visual action (npm install + chromium + screenshots) pushes
-the baseline commit. A sentinel that reaches main is then stuck (nothing
-consumes it on `push: main`) and the next unrelated PR silently reseeds. Instead
-wait for the `visual-baseline-bot` commit to land on the PR branch, confirm the
-baselines updated, then merge.
+There is nothing to accept and no auto-merge hazard: when a PR that changes a
+page merges, `main`'s render moves with it, so the next PR diffs against the new
+truth automatically. The action is informational (no `depends_on`), so it never
+gates merge.
 
 ## Basemap interception (Option A: flat backdrop)
 
@@ -75,5 +74,7 @@ APP_ENTRY=$(bazel info bazel-bin)/projects/monolith/frontend/build_public/index.
 ```
 
 `out/` and `node_modules/` are git-ignored. On macOS this validates that pages
-render and the pipeline runs end to end; the resulting pixels are NOT a valid
-baseline (see "Baselines are CI-only" above).
+render and the pipeline runs end to end; the resulting pixels are NOT
+CI-comparable (see "Branch-vs-main" above). To exercise the diff math locally,
+capture two trees into separate dirs and run
+`CAPTURE_DIR=out BASELINE_DIR=other-out node diff.mjs`.
