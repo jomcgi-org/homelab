@@ -114,6 +114,13 @@ def _render_goosecracker_progress(snap, elapsed: int, kind: str = "artifact") ->
     else:
         lines.append(f"🧠 Thinking... ({el})")
 
+    # A transient retry notice (set by the runner while it rides out a flaky
+    # fc-invoke) is shown before real output flows, so the owner sees the run
+    # is waiting to start rather than a bare "Thinking".
+    notice = snap.notice if snap else ""
+    if notice and not done:
+        lines.append(notice)
+
     wrote = _GOOSECRACKER_WROTE_RE.search(text)
     if wrote:
         lines.append(f"📝 Wrote {wrote.group(1)} lines")

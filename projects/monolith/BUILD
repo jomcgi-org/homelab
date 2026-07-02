@@ -4080,6 +4080,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_backend",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
