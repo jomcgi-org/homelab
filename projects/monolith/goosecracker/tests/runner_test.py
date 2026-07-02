@@ -8,6 +8,8 @@ the conversational-queue drain added for /agent thread continuations.
 
 from __future__ import annotations
 
+import httpx
+import pytest
 
 from goosecracker import runner
 
@@ -300,3 +302,126 @@ def test_split_message_hard_splits_an_overlong_line():
     pages = runner._split_message("y" * 4000)
     assert len(pages) >= 2
     assert all(len(p) <= runner._MAX_DISCORD for p in pages)
+
+
+# ---------------------------------------------------------------------------
+# _post_agent_run: transient-failure retry (fc-invoke single-replica rollout gap)
+# ---------------------------------------------------------------------------
+
+
+class _FakeClient:
+    """Stand-in for httpx.AsyncClient that replays a scripted POST sequence.
+
+    Each POST pops the next scripted item: an httpx.Response is returned (the
+    caller runs raise_for_status/json on it), an Exception is raised.
+    """
+
+    def __init__(self, script):
+        self._script = list(script)
+        self.calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None):
+        self.calls += 1
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _resp(status, *, json_body=None, text=""):
+    req = httpx.Request("POST", "http://fc-invoke/invoke/agent/s")
+    if json_body is not None:
+        return httpx.Response(status, request=req, json=json_body)
+    return httpx.Response(status, request=req, text=text)
+
+
+def _patch(monkeypatch, script):
+    """Point runner.httpx.AsyncClient at one shared fake and no-op the backoff.
+
+    Returns (fake_client, sleeps) so a test can assert call and backoff counts.
+    """
+    fake = _FakeClient(script)
+    monkeypatch.setattr(runner.httpx, "AsyncClient", lambda **kw: fake)
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(runner.asyncio, "sleep", _fake_sleep)
+    return fake, sleeps
+
+
+async def test_post_agent_run_retries_504_then_succeeds(monkeypatch):
+    fake, sleeps = _patch(
+        monkeypatch,
+        [
+            _resp(504, text="gateway timeout"),
+            _resp(200, json_body={"status": "ok", "result": "done"}),
+        ],
+    )
+    retries = []
+    data = await runner._post_agent_run(
+        "http://fc-invoke/invoke/agent/s",
+        {"task": "x"},
+        lambda attempt, wait, reason: retries.append((attempt, wait, reason)),
+    )
+    assert data == {"status": "ok", "result": "done"}
+    assert fake.calls == 2
+    assert retries == [(1, runner._RETRY_BASE, "HTTP 504")]
+    assert sleeps == [runner._RETRY_BASE]  # one backoff of the base delay
+
+
+async def test_post_agent_run_retries_connect_error(monkeypatch):
+    fake, _ = _patch(
+        monkeypatch,
+        [
+            httpx.ConnectError("connection refused"),
+            _resp(200, json_body={"status": "ok"}),
+        ],
+    )
+    reasons = []
+    data = await runner._post_agent_run(
+        "http://fc/s", {}, lambda attempt, wait, reason: reasons.append(reason)
+    )
+    assert data == {"status": "ok"}
+    assert fake.calls == 2
+    assert reasons == ["connection failed"]
+
+
+async def test_post_agent_run_no_retry_on_read_timeout(monkeypatch):
+    # A read timeout means goose was accepted and ran long; a retry would spawn
+    # a duplicate, so it must surface immediately.
+    fake, _ = _patch(monkeypatch, [httpx.ReadTimeout("read timed out")])
+    retries = []
+    with pytest.raises(RuntimeError, match="could not reach fc-invoke"):
+        await runner._post_agent_run("http://fc/s", {}, lambda *a: retries.append(a))
+    assert fake.calls == 1
+    assert retries == []
+
+
+async def test_post_agent_run_no_retry_on_non_transient_status(monkeypatch):
+    fake, _ = _patch(monkeypatch, [_resp(400, text="bad request")])
+    retries = []
+    with pytest.raises(RuntimeError, match="fc-invoke returned HTTP 400"):
+        await runner._post_agent_run("http://fc/s", {}, lambda *a: retries.append(a))
+    assert fake.calls == 1
+    assert retries == []
+
+
+async def test_post_agent_run_gives_up_after_deadline(monkeypatch):
+    # With a zero deadline the first transient failure exhausts the budget, so
+    # the loop raises instead of sleeping or calling back.
+    monkeypatch.setattr(runner, "_RETRY_DEADLINE", 0.0)
+    fake, sleeps = _patch(monkeypatch, [_resp(504, text="gateway timeout")])
+    retries = []
+    with pytest.raises(RuntimeError, match="fc-invoke returned HTTP 504"):
+        await runner._post_agent_run("http://fc/s", {}, lambda *a: retries.append(a))
+    assert fake.calls == 1
+    assert sleeps == []
+    assert retries == []

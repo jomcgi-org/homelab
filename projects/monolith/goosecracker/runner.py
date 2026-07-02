@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import httpx
 from sqlmodel import Session
@@ -55,6 +56,19 @@ GOOSECRACKER_GIT_MIRROR = os.environ.get("GOOSECRACKER_GIT_MIRROR", "")
 # multi-turn goose run finish (cold Qwen runs take minutes).
 _CONNECT_TIMEOUT = 5.0
 _READ_TIMEOUT = 600.0
+
+# fc-invoke is a single replica with a ~90s cold start (it builds base rootfs
+# and warms a snapshot before its HTTP shim listens). A chart bump rolls it, and
+# any run landing in that gap gets a gateway 502/503/504 or a refused
+# connection: the run never started, so re-POSTing the same session is safe.
+# Ride that out with a small exponential backoff bounded by _RETRY_DEADLINE of
+# wall time; a genuine outage still surfaces within ~2 minutes. A read timeout
+# (the run was accepted and goose ran long) or any other status is terminal:
+# retrying there would spawn a duplicate run.
+_RETRY_STATUSES = frozenset({502, 503, 504})
+_RETRY_DEADLINE = 120.0  # total wall time across all attempts, seconds
+_RETRY_BASE = 2.0  # first backoff sleep, doubled each attempt
+_RETRY_MAX_SLEEP = 20.0  # cap on any single backoff sleep
 
 # Discord's hard message limit is 2000 chars; leave room for the prefix.
 _MAX_DISCORD = 1800
@@ -351,6 +365,56 @@ async def _persist_session_db(session: str, session_db_b64: str | None) -> None:
         logger.exception("goosecracker: failed to persist session db for %s", session)
 
 
+async def _post_agent_run(url: str, payload: dict, on_retry) -> dict:
+    """POST a goose run to fc-invoke, retrying transient failures with backoff.
+
+    Returns the parsed JSON body on the first success. Retries only failures
+    where the run never started (a gateway 502/503/504 from a rollout gap, or a
+    connect/transport error from a mid-restart daemon), sleeping with a small
+    exponential backoff bounded by _RETRY_DEADLINE of wall time and calling
+    ``on_retry(attempt, wait, reason)`` before each sleep so the caller can tell
+    the user. A read timeout (the run was accepted and goose ran long) or a
+    non-transient status re-raises a RuntimeError with the same message shape as
+    before, so the caller's existing failure path is unchanged.
+    """
+    timeout = httpx.Timeout(_READ_TIMEOUT, connect=_CONNECT_TIMEOUT)
+    deadline = time.monotonic() + _RETRY_DEADLINE
+    attempt = 0
+    while True:
+        attempt += 1
+        transient = False
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            transient = status in _RETRY_STATUSES
+            reason = f"HTTP {status}"
+            err = RuntimeError(
+                f"fc-invoke returned HTTP {status}: {exc.response.text[:500]}"
+            )
+            cause = exc
+        except httpx.ReadTimeout as exc:
+            # The run was accepted and goose ran past the read budget; retrying
+            # would spawn a duplicate. Terminal.
+            raise RuntimeError(f"could not reach fc-invoke: {exc}") from exc
+        except httpx.HTTPError as exc:
+            # Connect/transport error: the daemon is mid-restart and nothing
+            # started, so a re-POST of the same session is safe.
+            transient = True
+            reason = "connection failed"
+            err = RuntimeError(f"could not reach fc-invoke: {exc}")
+            cause = exc
+
+        wait = min(_RETRY_BASE * 2 ** (attempt - 1), _RETRY_MAX_SLEEP)
+        if not transient or time.monotonic() + wait >= deadline:
+            raise err from cause
+        on_retry(attempt, wait, reason)
+        await asyncio.sleep(wait)
+
+
 async def run_and_deliver(
     session: str,
     *,
@@ -397,21 +461,29 @@ async def run_and_deliver(
             "resume": session_db is not None,
             "sessionDb": base64.b64encode(session_db).decode() if session_db else "",
         }
-        timeout = httpx.Timeout(_READ_TIMEOUT, connect=_CONNECT_TIMEOUT)
         url = f"{FC_INVOKE_URL}/invoke/agent/{session}"
 
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(url, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
-                f"fc-invoke returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"could not reach fc-invoke: {exc}") from exc
+        def _notify_retry(attempt: int, wait: float, reason: str) -> None:
+            # Surface the retry on the live-progress message the bot is already
+            # editing (a fast in-memory buffer write, no DB), so the owner sees
+            # the run is waiting on fc-invoke rather than a bare "Thinking".
+            from chat.api import set_goosecracker_progress_notice
+
+            logger.info(
+                "goosecracker: transient fc-invoke failure for %s (%s); "
+                "retry %d in %.0fs",
+                session,
+                reason,
+                attempt,
+                wait,
+            )
+            set_goosecracker_progress_notice(
+                session,
+                f"⏳ fc-invoke busy ({reason}); retrying "
+                f"(attempt {attempt}, waiting {wait:.0f}s)…",
+            )
+
+        data = await _post_agent_run(url, payload, _notify_retry)
 
         status = data.get("status")
         if status == "ok":

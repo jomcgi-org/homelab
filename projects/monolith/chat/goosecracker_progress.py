@@ -24,10 +24,17 @@ _MAX_BUFFER = 16384
 
 @dataclass
 class Progress:
-    """A single run's accumulated stdout tail and completion flag."""
+    """A single run's accumulated stdout tail and completion flag.
+
+    ``notice`` is a transient out-of-band status line (e.g. "retrying a
+    transient fc-invoke failure") that the runner sets before the guest starts
+    streaming, so the bot can show the owner what is happening during a retry
+    instead of a bare "Thinking". It is cleared as soon as real stdout flows.
+    """
 
     text: str = ""
     done: bool = False
+    notice: str = ""
     updated_at: float = field(default_factory=time.monotonic)
 
 
@@ -42,6 +49,21 @@ def append(artifact_id: str, chunk: str) -> None:
     with _lock:
         p = _store.setdefault(artifact_id, Progress())
         p.text = (p.text + chunk)[-_MAX_BUFFER:]
+        # Real output supersedes any pre-run retry notice: once the guest is
+        # streaming, the retry is over, so drop the stale line automatically.
+        p.notice = ""
+        p.updated_at = time.monotonic()
+
+
+def set_notice(artifact_id: str, notice: str) -> None:
+    """Set a transient out-of-band status line for a run (see Progress.notice).
+
+    Used by the runner to tell the owner that a transient fc-invoke failure is
+    being retried, before the guest starts streaming its own stdout.
+    """
+    with _lock:
+        p = _store.setdefault(artifact_id, Progress())
+        p.notice = notice
         p.updated_at = time.monotonic()
 
 
@@ -59,7 +81,9 @@ def get(artifact_id: str) -> Progress | None:
         p = _store.get(artifact_id)
         if p is None:
             return None
-        return Progress(text=p.text, done=p.done, updated_at=p.updated_at)
+        return Progress(
+            text=p.text, done=p.done, notice=p.notice, updated_at=p.updated_at
+        )
 
 
 def clear(artifact_id: str) -> None:

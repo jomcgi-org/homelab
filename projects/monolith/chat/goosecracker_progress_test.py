@@ -69,3 +69,25 @@ def test_clear_removes_entry():
     gp.append("t7", "data")
     gp.clear("t7")
     assert gp.get("t7") is None
+
+
+def test_set_notice_is_returned_in_snapshot():
+    _fresh("t8")
+    gp.set_notice("t8", "retrying...")
+    snap = gp.get("t8")
+    assert snap is not None
+    assert snap.notice == "retrying..."
+    assert snap.text == ""
+    _fresh("t8")
+
+
+def test_append_clears_a_pending_notice():
+    # Real stdout supersedes a pre-run retry notice, so it drops automatically
+    # once the guest starts streaming.
+    _fresh("t9")
+    gp.set_notice("t9", "retrying...")
+    gp.append("t9", "first real output")
+    snap = gp.get("t9")
+    assert snap.notice == ""
+    assert snap.text == "first real output"
+    _fresh("t9")
