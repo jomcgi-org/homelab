@@ -108,17 +108,23 @@ class TestBootstrapDefaults:
         monkeypatch.setenv("OWNER_DISCORD_USER_ID", "owner1")
         with patch("chat.acl.get_engine", return_value=engine):
             acl.bootstrap_defaults()
-            # homelab (public) is open to everyone in the home server
-            assert acl.is_granted("home1", "anyone", "agent", "homelab") is True
+            # jomcgi/homelab (public) is open to everyone in the home server
+            assert acl.is_granted("home1", "anyone", "agent", "jomcgi/homelab") is True
             # loom (private) from the home server is owner-only
-            assert acl.is_granted("home1", "owner1", "agent", "loom") is True
-            assert acl.is_granted("home1", "anyone", "agent", "loom") is False
+            assert acl.is_granted("home1", "owner1", "agent", "weave-hand/loom") is True
+            assert (
+                acl.is_granted("home1", "anyone", "agent", "weave-hand/loom") is False
+            )
             assert acl.is_granted("home1", "owner1", "artifact") is True
             assert acl.is_granted("home1", "someone", "artifact") is False
             # loom-server members get loom, but never homelab
-            assert acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "loom") is True
             assert (
-                acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "homelab") is False
+                acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "weave-hand/loom")
+                is True
+            )
+            assert (
+                acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "jomcgi/homelab")
+                is False
             )
             # loom server can build artifacts (safe: capability URLs + qwen)
             assert acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "artifact") is True
@@ -139,4 +145,7 @@ class TestBootstrapDefaults:
         monkeypatch.delenv("OWNER_DISCORD_USER_ID", raising=False)
         with patch("chat.acl.get_engine", return_value=engine):
             acl.bootstrap_defaults()
-            assert acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "loom") is True
+            assert (
+                acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "weave-hand/loom")
+                is True
+            )

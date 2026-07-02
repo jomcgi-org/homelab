@@ -467,24 +467,41 @@ class ChatBot(discord.Client):
 
         @self.tree.command(
             name="agent",
-            description="Run the coding agent on a repo",
+            description="Run the coding agent on a repo (or leave repo empty to build an artifact)",
         )
         @discord.app_commands.describe(
             prompt="The task for the agent",
-            repo="Repo to hydrate from",
-        )
-        @discord.app_commands.choices(
-            repo=[
-                discord.app_commands.Choice(name="homelab", value="homelab"),
-                discord.app_commands.Choice(name="loom", value="loom"),
-            ]
+            repo="Repo to hydrate from; leave empty to just build an artifact",
         )
         async def agent_command(
             interaction: discord.Interaction,
             prompt: str,
-            repo: discord.app_commands.Choice[str],
+            repo: str = "",
         ) -> None:
-            await self._handle_agent_command(interaction, prompt, repo.value)
+            await self._handle_agent_command(interaction, prompt, repo)
+
+        @agent_command.autocomplete("repo")
+        async def agent_repo_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[discord.app_commands.Choice[str]]:
+            """Offer only the repos this server is granted (ADR 029).
+
+            The suggestions are UX only; the real gate is server-side in
+            ``_handle_agent_command`` via ``acl.is_granted``, so a user typing a
+            non-granted repo is still refused. Discord caps autocomplete at 25.
+            """
+            scopes = await asyncio.to_thread(
+                acl.allowed_scopes,
+                interaction.guild_id,
+                interaction.user.id,
+                "agent",
+            )
+            needle = (current or "").lower()
+            return [
+                discord.app_commands.Choice(name=scope, value=scope)
+                for scope in sorted(scopes)
+                if needle in scope.lower()
+            ][:25]
 
     async def on_ready(self):
         logger.info("Discord bot connected as %s", self.user)
@@ -597,8 +614,15 @@ class ChatBot(discord.Client):
         self, interaction: discord.Interaction, prompt: str, repo: str
     ) -> None:
         """/agent (open per ADR 029): allowed for everyone in a server that is
-        opted in, with the repo bound to that server's grants."""
+        opted in, with the repo bound to that server's grants.
+
+        ``repo`` is optional: an empty repo is a repo-less run (no checkout, e.g.
+        a "build me a site" artifact). ``is_granted`` with an empty scope only
+        requires that the caller hold some agent grant in this server, so a
+        repo-less run is permitted wherever /agent is; a non-empty repo must be
+        in the server's grants."""
         guild_id = interaction.guild_id
+        repo = repo.strip()
         if not await asyncio.to_thread(acl.feature_enabled, guild_id, "agent"):
             await interaction.response.send_message(
                 "/agent isn't enabled in this server.", ephemeral=True
@@ -611,8 +635,9 @@ class ChatBot(discord.Client):
                 acl.allowed_scopes, guild_id, interaction.user.id, "agent"
             )
             allowed = ", ".join(sorted(scopes)) or "none"
+            target = f"'{repo}'" if repo else "an artifact (no repo)"
             await interaction.response.send_message(
-                f"This server can't run /agent on '{repo}'. Allowed here: {allowed}.",
+                f"This server can't run /agent on {target}. Allowed here: {allowed}.",
                 ephemeral=True,
             )
             return
