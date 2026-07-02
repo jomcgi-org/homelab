@@ -23,7 +23,7 @@ flowchart LR
 
 ## Architecture
 
-The chart deploys four Kyverno controllers plus three custom ClusterPolicies:
+The chart deploys four Kyverno controllers plus five custom ClusterPolicies:
 
 - **Admission Controller** - Intercepts API server requests to mutate and validate resources against policies
 - **Background Controller** - Applies policies retroactively to existing resources (not just new ones)
@@ -35,6 +35,8 @@ Custom policies included:
 - **OTel Injection** (`inject-otel-env-vars`) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
 - **Linkerd Injection** (`inject-linkerd-namespace-annotation`) - Mutates Namespaces to add `linkerd.io/inject: enabled` annotation for automatic sidecar injection
 - **Linkerd Jobs Disable** (`disable-linkerd-on-jobs`) - Annotates Job pods with `linkerd.io/inject: disabled` to prevent the sidecar from blocking Job completion
+- **Require Resource Requests** (`require-resource-requests`) - Audits workloads for missing CPU/memory resource requests
+- **Clone Monolith PG Secret** (`clone-monolith-pg-app`) - Clones the monolith Postgres app secret into target namespaces
 
 ## Key Features
 
