@@ -1,13 +1,17 @@
 # rules_wrangler
 
 Bazel rules for deploying static sites to Cloudflare Pages via the `wrangler`
-CLI. Every site in `projects/websites/` (and front-end projects that ship as
-Cloudflare Pages) is published by these rules. In CI, BuildBuddy runs
-`bazel run //projects/websites:push_all_pages` on the main branch to push all
-sites in parallel.
+CLI. A front-end project that ships as a Cloudflare Pages site declares a
+`wrangler_pages` target and a matching `wrangler_pages_push` target for
+deployment.
 
 Nothing here touches a Kubernetes cluster; the sites are pure static assets
 sent directly to Cloudflare's edge.
+
+> Note: the repo currently has no active Cloudflare Pages sites. The public web
+> (apex `jomcgi.dev`, `/docs`, the `/app/*` apps) moved to the monolith's
+> read-only public tier (ADR docs/002), so this ruleset has no consumers today.
+> It is retained for reuse; see the follow-up on whether to remove it.
 
 ## Public API
 
@@ -18,8 +22,8 @@ not load `pages.bzl` directly.
 load("//bazel/wrangler:defs.bzl", "wrangler_pages")
 ```
 
-| Symbol          | Kind  | Source      | Use                                                   |
-| --------------- | ----- | ----------- | ----------------------------------------------------- |
+| Symbol           | Kind  | Source      | Use                                                      |
+| ---------------- | ----- | ----------- | -------------------------------------------------------- |
 | `wrangler_pages` | macro | `pages.bzl` | Create a `.push` target that deploys to Cloudflare Pages |
 
 ## `wrangler_pages`
@@ -38,11 +42,11 @@ load("//bazel/wrangler:defs.bzl", "wrangler_pages")
 wrangler_bin.wrangler_binary(name = "wrangler")
 
 wrangler_pages(
-    name = "trips",
+    name = "my_site",
     dist = ":build_dist",
-    project_name = "trips-jomcgi-dev",
+    project_name = "my-site",
     wrangler = ":wrangler",
-    visibility = ["//projects/websites:__pkg__"],
+    visibility = ["//visibility:private"],
 )
 ```
 
@@ -54,14 +58,14 @@ bazel run //projects/trips/frontend:trips.push
 
 ### Attributes
 
-| Attribute      | Type   | Required | Default | Description                                                                           |
-| -------------- | ------ | -------- | ------- | ------------------------------------------------------------------------------------- |
-| `name`         | string | yes      |         | Base name; a `<name>.push` executable target is created.                             |
-| `dist`         | label  | yes      |         | Label for the built dist directory or a filegroup of assets to deploy.               |
-| `project_name` | string | yes      |         | Cloudflare Pages project name, as it appears in the Cloudflare dashboard.            |
+| Attribute      | Type   | Required | Default | Description                                                                             |
+| -------------- | ------ | -------- | ------- | --------------------------------------------------------------------------------------- |
+| `name`         | string | yes      |         | Base name; a `<name>.push` executable target is created.                                |
+| `dist`         | label  | yes      |         | Label for the built dist directory or a filegroup of assets to deploy.                  |
+| `project_name` | string | yes      |         | Cloudflare Pages project name, as it appears in the Cloudflare dashboard.               |
 | `wrangler`     | label  | yes      |         | Wrangler binary target. Created with `wrangler_bin.wrangler_binary(name = "wrangler")`. |
-| `branch`       | string | no       | `""`    | Git branch for deployment preview URLs. Empty lets wrangler auto-detect from git.    |
-| `visibility`   | list   | no       | `None`  | Bazel visibility for the generated targets.                                          |
+| `branch`       | string | no       | `""`    | Git branch for deployment preview URLs. Empty lets wrangler auto-detect from git.       |
+| `visibility`   | list   | no       | `None`  | Bazel visibility for the generated targets.                                             |
 
 The `dist` attribute accepts either a single directory output (e.g., the
 `build_dist` out-directory from `vite_build`) or a filegroup. When a filegroup
@@ -122,22 +126,22 @@ the part before the first `.` (e.g., `jomcgi.dev` produces target `jomcgi`,
 
 Generated rules get these defaults:
 
-| Attribute      | Generated value             |
-| -------------- | --------------------------- |
-| `dist`         | `:build_dist`               |
-| `wrangler`     | `:wrangler`                 |
-| `visibility`   | `["//projects/websites:__pkg__"]` |
+| Attribute    | Generated value            |
+| ------------ | -------------------------- |
+| `dist`       | `:build_dist`              |
+| `wrangler`   | `:wrangler`                |
+| `visibility` | `["//visibility:private"]` |
 
 ### Directives
 
 Place these in the BUILD file to control generation:
 
-| Directive                       | Effect                                                                 |
-| ------------------------------- | ---------------------------------------------------------------------- |
-| `# gazelle:wrangler disabled`   | Skip generation in this directory (use for hand-maintained BUILD files). |
-| `# gazelle:wrangler enabled`    | Re-enable generation (overrides a parent `disabled`).                  |
-| `# gazelle:wrangler_enabled`    | Alternative form to enable generation.                                 |
-| `# gazelle:wrangler_dist :label` | Override the default `dist` label (e.g., `:public` for static sites). |
+| Directive                        | Effect                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `# gazelle:wrangler disabled`    | Skip generation in this directory (use for hand-maintained BUILD files). |
+| `# gazelle:wrangler enabled`     | Re-enable generation (overrides a parent `disabled`).                    |
+| `# gazelle:wrangler_enabled`     | Alternative form to enable generation.                                   |
+| `# gazelle:wrangler_dist :label` | Override the default `dist` label (e.g., `:public` for static sites).    |
 
 Example for a static site whose assets live in `public/` rather than a build
 output:
@@ -156,8 +160,5 @@ overwriting them.
 - Declare `wrangler_bin.wrangler_binary(name = "wrangler")` in the same BUILD
   file as `wrangler_pages`. Each site package vendors its own wrangler via pnpm
   (loaded from `@npm//path/to/package:wrangler/package_json.bzl`).
-- `push_all_pages` in `projects/websites/BUILD` (auto-generated by
-  `bazel/images/generate-push-all-pages`) collects every `*.push` target and
-  runs them in parallel. CI invokes this on the main branch.
 - Never run `wrangler` directly from the command line in this repo; always go
   through `bazel run` so Bazel resolves the correct vendored binary and runfiles.

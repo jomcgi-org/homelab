@@ -1,5 +1,5 @@
-// Pure, unit-tested filter helpers for the /app/hikes planner, ported from the
-// legacy vanilla-JS frontend (projects/hikes/frontend/public/app.js). Semantics
+// Pure, unit-tested filter helpers for the /app/hikes planner, originally ported
+// from the now-removed standalone hikes frontend. Semantics
 // are kept identical: characteristic bounds are inclusive, the radius test uses
 // the same haversine, and date bucketing uses the UK (Europe/London) calendar
 // day, since the walks are Scotland-based.

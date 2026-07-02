@@ -10,12 +10,12 @@ its load path.
 
 ## Public API
 
-| Symbol            | Load path                                   | Kind  | Purpose                                                     |
-| ----------------- | ------------------------------------------- | ----- | ----------------------------------------------------------- |
-| `vite_build`      | `//bazel/tools/js:vite_build.bzl`           | macro | Standard Vite or Astro build producing a `dist` filegroup   |
-| `tailwind_build`  | `//bazel/tools/js:tailwind_build.bzl`       | macro | Process CSS with the Tailwind v4 standalone CLI             |
-| `node_modules_tar`| `//bazel/tools/js:node_modules_tar.bzl`     | macro | Pack `js_library` node_modules into a tar for apko images  |
-| `exec_filegroup`  | `//bazel/tools/js:exec_filegroup.bzl`       | rule  | Pin a dependency to the exec (host) configuration           |
+| Symbol             | Load path                               | Kind  | Purpose                                                   |
+| ------------------ | --------------------------------------- | ----- | --------------------------------------------------------- |
+| `vite_build`       | `//bazel/tools/js:vite_build.bzl`       | macro | Standard Vite or Astro build producing a `dist` filegroup |
+| `tailwind_build`   | `//bazel/tools/js:tailwind_build.bzl`   | macro | Process CSS with the Tailwind v4 standalone CLI           |
+| `node_modules_tar` | `//bazel/tools/js:node_modules_tar.bzl` | macro | Pack `js_library` node_modules into a tar for apko images |
+| `exec_filegroup`   | `//bazel/tools/js:exec_filegroup.bzl`   | rule  | Pin a dependency to the exec (host) configuration         |
 
 ## `vite_build`
 
@@ -31,8 +31,8 @@ The consuming BUILD file must declare the binary target itself from the
 package-scoped `package_json.bzl` before calling the macro.
 
 ```python
-# projects/trips/frontend/BUILD
-load("@npm//projects/trips/frontend:vite/package_json.bzl", vite_bin = "bin")
+# projects/my_app/frontend/BUILD
+load("@npm//projects/my_app/frontend:vite/package_json.bzl", vite_bin = "bin")
 load("//bazel/tools/js:vite_build.bzl", "vite_build")
 
 vite_bin.vite_binary(name = "vite")
@@ -58,15 +58,15 @@ For Astro projects, pass `config = "astro.config.mjs"` and use the `astro`
 binary instead of `vite`. Cross-package dependencies (shared CSS, design
 tokens, etc.) go in `bazel_deps` as Bazel labels rather than `deps`.
 
-| Arg          | Default          | Purpose                                                   |
-| ------------ | ---------------- | --------------------------------------------------------- |
-| `srcs`       | required         | All source files for the build (glob recommended)         |
-| `tool`       | required         | Label of the vite/astro binary target                     |
-| `config`     | `vite.config.js` | Config file; use `astro.config.mjs` for Astro             |
-| `deps`       | `[]`             | npm package names to link (strings, not labels)           |
-| `bazel_deps` | `[]`             | Bazel labels for cross-package deps (e.g. shared CSS)     |
-| `out_dir`    | `dist`           | Output directory name                                     |
-| `build_args` | `["build"]`      | Arguments forwarded to the tool                           |
+| Arg          | Default          | Purpose                                               |
+| ------------ | ---------------- | ----------------------------------------------------- |
+| `srcs`       | required         | All source files for the build (glob recommended)     |
+| `tool`       | required         | Label of the vite/astro binary target                 |
+| `config`     | `vite.config.js` | Config file; use `astro.config.mjs` for Astro         |
+| `deps`       | `[]`             | npm package names to link (strings, not labels)       |
+| `bazel_deps` | `[]`             | Bazel labels for cross-package deps (e.g. shared CSS) |
+| `out_dir`    | `dist`           | Output directory name                                 |
+| `build_args` | `["build"]`      | Arguments forwarded to the tool                       |
 
 ## `tailwind_build`
 
@@ -75,7 +75,7 @@ Processes a CSS file with the Tailwind CSS v4 standalone CLI via
 directive natively.
 
 ```python
-load("@npm//projects/websites/my_site:@tailwindcss/cli/package_json.bzl", tailwind_bin = "bin")
+load("@npm//projects/my_app:@tailwindcss/cli/package_json.bzl", tailwind_bin = "bin")
 load("//bazel/tools/js:tailwind_build.bzl", "tailwind_build")
 
 tailwind_bin.tailwindcss_binary(name = "tailwindcss")
@@ -90,15 +90,15 @@ tailwind_build(
 )
 ```
 
-| Arg        | Default | Purpose                                              |
-| ---------- | ------- | ---------------------------------------------------- |
-| `src`      | required| Input CSS file                                       |
-| `out`      | required| Output CSS file path                                 |
-| `tool`     | required| Label of the tailwindcss binary target               |
-| `srcs`     | `[]`    | Source files Tailwind scans for class usage          |
-| `deps`     | `[]`    | npm deps needed for CSS processing                   |
-| `minify`   | `True`  | Pass `--minify` to the CLI                           |
-| `sourcemap`| `False` | Pass `--map` to the CLI                              |
+| Arg         | Default  | Purpose                                     |
+| ----------- | -------- | ------------------------------------------- |
+| `src`       | required | Input CSS file                              |
+| `out`       | required | Output CSS file path                        |
+| `tool`      | required | Label of the tailwindcss binary target      |
+| `srcs`      | `[]`     | Source files Tailwind scans for class usage |
+| `deps`      | `[]`     | npm deps needed for CSS processing          |
+| `minify`    | `True`   | Pass `--minify` to the CLI                  |
+| `sourcemap` | `False`  | Pass `--map` to the CLI                     |
 
 ## `exec_filegroup`
 
@@ -152,10 +152,10 @@ apko_image(
 )
 ```
 
-| Arg           | Default                              | Purpose                              |
-| ------------- | ------------------------------------ | ------------------------------------ |
-| `deps`        | required                             | `js_library` targets to pack         |
-| `package_dir` | `/usr/local/lib/node_modules`        | Install path inside the image        |
+| Arg           | Default                       | Purpose                       |
+| ------------- | ----------------------------- | ----------------------------- |
+| `deps`        | required                      | `js_library` targets to pack  |
+| `package_dir` | `/usr/local/lib/node_modules` | Install path inside the image |
 
 ## How it fits the toolchain
 

@@ -1,7 +1,7 @@
 # rules_ocaml — native OCaml rules for building Semgrep
 
 The fifth custom Bazel ruleset in this repo (alongside `bazel/helm`,
-`bazel/semgrep`, `bazel/wrangler`, `bazel/vitepress`). It exists for one
+`bazel/semgrep`, `bazel/wrangler`). It exists for one
 reason: **building Semgrep (whose engine is OCaml) with Bazel on this repo's
 infrastructure** (ADR tooling/004). It started as a deliberate toy; the
 scaling plan (`docs/plans/2026-06-10-ocaml-rules-semgrep-scale.md`) is turning

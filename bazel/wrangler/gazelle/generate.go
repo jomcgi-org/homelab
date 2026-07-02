@@ -78,7 +78,7 @@ func generateRules(args language.GenerateArgs) language.GenerateResult {
 	r.SetAttr("dist", cfg.dist)
 	r.SetAttr("project_name", wranglerCfg.Name)
 	r.SetAttr("wrangler", ":wrangler")
-	r.SetAttr("visibility", []string{"//projects/websites:__pkg__"})
+	r.SetAttr("visibility", []string{"//visibility:private"})
 
 	result.Gen = append(result.Gen, r)
 	result.Imports = append(result.Imports, nil)

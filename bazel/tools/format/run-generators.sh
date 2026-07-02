@@ -11,8 +11,8 @@
 #
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
-#   - home-cluster kustomization, push-all / push-all-pages BUILD lists,
-#     monolith routes, the ADR sidebar, and the two doc-index manifests
+#   - home-cluster kustomization, the push-all BUILD list, monolith routes,
+#     and the two doc-index manifests
 #     (repo_docs_manifest.ndjson + the public docs-manifest.json).
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
@@ -35,8 +35,6 @@ run() {
 
 run ./bazel/images/generate-home-cluster.sh
 run ./bazel/images/generate-push-all.sh
-run ./bazel/images/generate-push-all-pages.sh
-run ./bazel/images/generate-docs-sidebar.sh
 run ./projects/monolith/generate-routes.sh
 run python3 ./projects/monolith/knowledge/tools/gen_repo_docs_manifest.py
 run python3 ./projects/monolith/knowledge/tools/gen_docs_manifest.py

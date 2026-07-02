@@ -192,8 +192,6 @@ Runs on every push/PR:
 
 **Push to test.** This is the inner loop. After the run starts, monitor with `gh pr checks <number> --watch`. Read failures via `mcp__buildbuddy__get_invocation` + `get_log` (see Cluster Investigation table). Don't try to short-circuit by running `bazel test` from your workstation.
 
-Static sites deploy via `bazel run //projects/websites:push_all_pages` on main branch (BuildBuddy CI).
-
 **CI failure diagnosis — quote before hypothesizing.** When CI is red, the first action is to fetch the actual log: `mcp__buildbuddy__get_invocation` (use `commitSha` selector to skip the invocation-ID lookup) → `get_target` to find failing targets → `get_log` for the trace.
 
 Quote the actual assertion error or exception message verbatim before proposing a cause. Do **not** mention infrastructure issues (BuildBuddy outages, flaky runners, RBE hiccups) unless a real test failure has been ruled out — Claude has hallucinated infra failures here before, and the cost of one wrong "it's just flaky" is several wasted iterations.

@@ -2,12 +2,6 @@
 packages:
   - packages/*
   - bazel/tools
-  - projects/ships/frontend/web
-  - projects/trips/frontend
-  - projects/websites/jomcgi.dev
-  - projects/websites/docs.jomcgi.dev
-  - projects/hikes/frontend
   - projects/grimoire/frontend
   - projects/monolith/frontend
   - projects/monolith/frontend/visual
-  - projects/agent_platform/orchestrator/ui

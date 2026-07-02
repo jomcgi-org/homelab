@@ -39,20 +39,18 @@ This document provides an overview of all services running in the cluster.
 
 ## Development Services (dev)
 
-| Service             | Purpose                                          | Location                                                                     |
-| ------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
-| **Grimoire**        | D&D knowledge management with Redis              | [projects/grimoire](../projects/grimoire/)                                   |
-| **OCI Model Cache** | HuggingFace model caching operator               | [projects/operators/oci-model-cache](../projects/operators/oci-model-cache/) |
-| **Stargazer**       | Dark sky location finder with weather scoring    | [projects/stargazer](../projects/stargazer/)                                 |
+| Service             | Purpose                             | Location                                                                     |
+| ------------------- | ----------------------------------- | ---------------------------------------------------------------------------- |
+| **Grimoire**        | D&D knowledge management with Redis | [projects/grimoire](../projects/grimoire/)                                   |
+| **OCI Model Cache** | HuggingFace model caching operator  | [projects/operators/oci-model-cache](../projects/operators/oci-model-cache/) |
 
-## Static Websites
+## Public Web
 
-| Site                 | Description                                                  | Location                                                                     |
-| -------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| **docs.jomcgi.dev**  | Architecture docs and ADRs (VitePress, Cloudflare Pages)     | [projects/websites/docs.jomcgi.dev](../projects/websites/docs.jomcgi.dev/)   |
-| **hikes.jomcgi.dev** | Hiking route finder (static, Cloudflare R2)                  | [projects/hikes/frontend](../projects/hikes/frontend/)                       |
-| **jomcgi.dev**       | Personal website (Astro, Cloudflare Pages)                   | [projects/websites/jomcgi.dev](../projects/websites/jomcgi.dev/)             |
-| **trips.jomcgi.dev** | Road trip tracker and photo viewer (Astro, Cloudflare Pages) | [projects/websites/trips.jomcgi.dev](../projects/websites/trips.jomcgi.dev/) |
+The public website (apex `jomcgi.dev`, including `/docs`, the `/app/*` apps, and
+the CV) is served by the monolith's read-only public tier, not standalone static
+sites. See [monolith-public](../projects/monolith-public/) and the
+[monolith frontend](../projects/monolith/frontend/). The old Astro/VitePress
+Cloudflare Pages frontends were decommissioned (ADR docs/002).
 
 ## Service Details
 
