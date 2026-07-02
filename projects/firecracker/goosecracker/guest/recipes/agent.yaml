@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -24,9 +24,13 @@ instructions: |
   plan run routes to implement.
 
   Before dispatching, spend at most a few tool calls gathering context the
-  worker will need: skim ./CLAUDE.md at the repo root, locate the relevant
+  worker will need: skim the repo's root CLAUDE.md, locate the relevant
   project directory, and note prior thread state (an earlier plan or PR in
-  this conversation). Pass what you found in the sub-recipe's context
+  this conversation). The root conventions file is not always ./CLAUDE.md:
+  in this repo it lives at .claude/CLAUDE.md. Locate it before reading, for
+  example `find . -maxdepth 2 -name CLAUDE.md`, rather than assuming the
+  path (a wrong guess wastes tool calls on a "No such file" error). Pass
+  what you found in the sub-recipe's context
   parameter as a short briefing: relevant paths, constraints, and any
   earlier results the worker cannot see (sub-recipes do not share your
   conversation history). Do not do the task yourself and do not deep-dive;
@@ -42,6 +46,13 @@ instructions: |
   you routed to; a `type` (pr/issue/note/answer); and a `url` only if the
   worker reported a real PR or issue URL. The summary describes the ACTION
   and RESULT, not your reasoning.
+
+  Keep it tight. For a casual or conversational question the summary is one
+  or two sentences and is the whole answer; leave `details` empty. Put length
+  in `details` only when the task explicitly asks for depth (a full
+  explanation, a breakdown, a report). Do not expand a simple question into a
+  wall of text: an over-long answer costs the owner a follow-up turn asking
+  you to be concise, which is the outcome this recipe exists to avoid.
 prompt: |
   {{ task_description | indent(2) }}
 parameters:

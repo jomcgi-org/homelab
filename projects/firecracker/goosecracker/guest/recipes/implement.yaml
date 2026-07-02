@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.1.0"
 title: "Implement"
 description: "Implementation sub-recipe: make a code or config change, commit it, and open a PR."
 instructions: |
@@ -9,9 +9,11 @@ instructions: |
   build. Commit with Conventional Commits and push a claude/-prefixed
   branch, opening a PR when the change is ready.
 
-  Before you make changes, read ./CLAUDE.md at the repo root and the
+  Before you make changes, read the repo's root CLAUDE.md and the
   CLAUDE.md in any project directory you touch
-  (e.g. projects/<service>/CLAUDE.md). They hold the repo's conventions,
+  (e.g. projects/<service>/CLAUDE.md). The root file is not always
+  ./CLAUDE.md: in this repo it lives at .claude/CLAUDE.md, so locate it
+  first, for example `find . -maxdepth 2 -name CLAUDE.md`. They hold the repo's conventions,
   patterns, and anti-patterns (container images are apko not Dockerfiles,
   GitOps via ArgoCD, chart version bumps must update both Chart.yaml and
   deploy/application.yaml, secrets via the 1Password operator, writing
