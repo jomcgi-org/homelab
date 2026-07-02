@@ -35,8 +35,8 @@ type Config struct {
 
 	// BinPath is the firecracker binary the driver launches.
 	BinPath string
-	// KernelImagePath is the guest kernel (kata vmlinux.container on node-4),
-	// shared by every workload.
+	// KernelImagePath is the guest kernel (kata's vmlinux.container, baked into
+	// the image at /opt/fc), shared by every workload.
 	KernelImagePath string
 	// KernelBootArgs are appended to the kernel command line on cold boot.
 	// Empty uses the driver's default.
@@ -79,8 +79,8 @@ func Load() (Config, error) {
 		Node:              os.Getenv("FC_INVOKE_NODE"),
 		Arch:              os.Getenv("FC_INVOKE_ARCH"),
 		SnapshotRoot:      os.Getenv("FC_INVOKE_SNAPSHOT_ROOT"),
-		BinPath:           getenvDefault("FC_INVOKE_FIRECRACKER_BIN", "/opt/kata/bin/firecracker"),
-		KernelImagePath:   getenvDefault("FC_INVOKE_KERNEL_IMAGE", "/opt/kata/share/kata-containers/vmlinux.container"),
+		BinPath:           getenvDefault("FC_INVOKE_FIRECRACKER_BIN", "/opt/fc/firecracker"),
+		KernelImagePath:   getenvDefault("FC_INVOKE_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
 		KernelBootArgs:    os.Getenv("FC_INVOKE_KERNEL_BOOT_ARGS"),
 		HarnessInit:       getenvDefault("FC_INVOKE_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
 		CanonicalVsockDir: getenvDefault("FC_INVOKE_CANONICAL_VSOCK_DIR", "/disks/nvme-02/fc-invoke-vsock"),

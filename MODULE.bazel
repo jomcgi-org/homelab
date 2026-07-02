@@ -491,6 +491,21 @@ multiarch_http_archive(
     package_dir = "/usr/local/bin",
 )
 
+# firecracker binary + guest kernel for the fc-invoke daemon, extracted from the
+# kata-containers static bundle and baked into the fc-invoke image so a node needs
+# no /opt/kata install (see projects/platform/firecracker-node). Pinned to a kata
+# release rather than the old install-kata.sh `releases/latest`. Both arches are
+# required: the fc-invoke image is dual-arch and apko needs a per-arch tar layer.
+kata_firecracker_archive = use_repo_rule("//bazel/tools/http:kata_firecracker_archive.bzl", "kata_firecracker_archive")
+
+kata_firecracker_archive(
+    name = "kata_firecracker",
+    amd64_sha256 = "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
+    amd64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-amd64.tar.zst",
+    arm64_sha256 = "8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5",
+    arm64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-arm64.tar.zst",
+)
+
 # Download multiarch binaries (raw binary files)
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 

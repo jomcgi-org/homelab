@@ -138,8 +138,11 @@ resources:
 # daemon serves /healthz and rejects /invoke (no substrate).
 firecracker:
   enabled: false
-  binPath: /opt/kata/bin/firecracker
-  kernelImagePath: /opt/kata/share/kata-containers/vmlinux.container
+  # firecracker binary + guest kernel are baked into the image at /opt/fc (see
+  # @kata_firecracker in MODULE.bazel), so no node-level /opt/kata install is
+  # needed. A node only has to provide /dev/kvm and the nvme scratch dir.
+  binPath: /opt/fc/firecracker
+  kernelImagePath: /opt/fc/vmlinux.container
   # The shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
   # guest path is a tmpfs, so one read-only rootfs file safely backs every microVM.
   kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"

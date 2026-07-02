@@ -53,7 +53,13 @@ apko_image(
     name = "image",
     config = "apko.yaml",
     contents = "@fc_invoke_lock//:contents",
-    multiarch_tars = [":fc_invoke_tar"],
+    # :fc_invoke_tar is the Go binary; @kata_firecracker//:tar bakes the
+    # firecracker binary + guest kernel into /opt/fc so the node needs no
+    # /opt/kata install. apko appends _amd64/_arm64 to each base per arch.
+    multiarch_tars = [
+        ":fc_invoke_tar",
+        "@kata_firecracker//:tar",
+    ],
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/substrate/invoke",
     tars = [":dmsetup_symlink_tar"],
 )

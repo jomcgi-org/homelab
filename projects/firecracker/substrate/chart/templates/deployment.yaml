@@ -43,9 +43,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- if .Values.firecracker.enabled }}
-      # Driving Firecracker needs the host KVM device, the kata binary + kernel,
-      # and the nvme scratch dir. Privileged (CAP_SYS_ADMIN) is also required for
-      # the per-instance vsock mount namespaces.
+      # Driving Firecracker needs the host KVM device and the nvme scratch dir
+      # (the firecracker binary + guest kernel are baked into the image at
+      # /opt/fc). Privileged (CAP_SYS_ADMIN) is also required for the
+      # per-instance vsock mount namespaces.
       securityContext:
         runAsUser: 0
         runAsGroup: 0
@@ -181,9 +182,6 @@ spec:
           volumeMounts:
             - name: dev-kvm
               mountPath: /dev/kvm
-            - name: kata
-              mountPath: /opt/kata
-              readOnly: true
             - name: nvme
               mountPath: {{ .Values.firecracker.nvmeRoot }}
           {{- end }}
@@ -285,10 +283,6 @@ spec:
           hostPath:
             path: /dev/kvm
             type: CharDevice
-        - name: kata
-          hostPath:
-            path: /opt/kata
-            type: Directory
         - name: nvme
           hostPath:
             path: {{ .Values.firecracker.nvmeRoot }}
