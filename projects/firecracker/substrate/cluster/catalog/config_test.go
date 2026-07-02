@@ -19,7 +19,7 @@ func TestLoadDefaultsNoWorkloads(t *testing.T) {
 		"FC_INVOKE_FIRECRACKER_BIN", "FC_INVOKE_KERNEL_IMAGE",
 		"FC_INVOKE_KERNEL_BOOT_ARGS", "FC_INVOKE_HARNESS_INIT",
 		"FC_INVOKE_CANONICAL_VSOCK_DIR", "FC_INVOKE_GUEST_OOM_SCORE_ADJ",
-		"FC_INVOKE_BOOT_READY_TIMEOUT", "NODE_NAME",
+		"FC_INVOKE_BOOT_READY_TIMEOUT", "FC_INVOKE_DRAIN_TIMEOUT", "NODE_NAME",
 	} {
 		t.Setenv(k, "")
 	}
@@ -54,6 +54,41 @@ func TestLoadDefaultsNoWorkloads(t *testing.T) {
 	}
 	if c.BootReadyTimeout != 60*time.Second {
 		t.Errorf("BootReadyTimeout = %s, want 60s", c.BootReadyTimeout)
+	}
+	// With no workloads, the drain budget falls back to BootReadyTimeout.
+	if c.DrainTimeout != 60*time.Second {
+		t.Errorf("DrainTimeout = %s, want 60s (BootReadyTimeout fallback)", c.DrainTimeout)
+	}
+}
+
+// TestDrainTimeoutDerivesFromLongestWorkload verifies the graceful-shutdown
+// budget defaults to the longest workload RequestTimeout plus the flush/discard
+// margin, and that FC_INVOKE_DRAIN_TIMEOUT overrides it outright.
+func TestDrainTimeoutDerivesFromLongestWorkload(t *testing.T) {
+	t.Setenv("FC_INVOKE_WORKLOADS_FILE", "")
+	t.Setenv("FC_INVOKE_DRAIN_TIMEOUT", "")
+	t.Setenv("FC_INVOKE_WORKLOADS", `{
+		"semgrep": {"image": "semgrep-guest", "requestTimeout": "90s"},
+		"agent":   {"image": "agent-guest",   "requestTimeout": "600s"}
+	}`)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	// Longest workload (agent, 600s) + 30s margin.
+	if want := 630 * time.Second; c.DrainTimeout != want {
+		t.Errorf("DrainTimeout = %s, want %s (longest requestTimeout + margin)", c.DrainTimeout, want)
+	}
+
+	// An explicit env value pins the budget regardless of the workload table.
+	t.Setenv("FC_INVOKE_DRAIN_TIMEOUT", "120s")
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if want := 120 * time.Second; c.DrainTimeout != want {
+		t.Errorf("DrainTimeout = %s, want %s (env override)", c.DrainTimeout, want)
 	}
 }
 
