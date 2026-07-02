@@ -89,18 +89,23 @@ def bootstrap_defaults() -> None:
     """Idempotently seed the baked-in default grants (ADR 029).
 
     Reads the existing owner/home-server env so the home server always works out
-    of the box: home gets /agent on homelab + loom, the owner gets /artifact, and
-    the Loom server gets /agent on loom. Safe to call on every startup; existing
-    rows are left untouched.
+    of the box: the home server gets /agent on the public homelab repo for
+    everyone, the owner additionally gets /agent on the private loom repo and
+    /artifact, and the Loom server gets /agent on loom for its members. Safe to
+    call on every startup; existing rows are left untouched.
     """
     home = os.environ.get("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "")
     owner = os.environ.get("OWNER_DISCORD_USER_ID", "")
 
     defaults: list[tuple[str, str, str, str]] = []
     if home:
+        # homelab is public: anyone in the home server may run /agent on it.
         defaults.append((home, "", "agent", "homelab"))
-        defaults.append((home, "", "agent", "loom"))
         if owner:
+            # loom is private: from the home server only the owner gets it, so a
+            # home-server member cannot drive the private repo. Loom-server
+            # members get loom via the LOOM_GUILD_ID grant below.
+            defaults.append((home, owner, "agent", "loom"))
             defaults.append((home, owner, "artifact", ""))
     defaults.append((LOOM_GUILD_ID, "", "agent", "loom"))
 

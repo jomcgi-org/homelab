@@ -47,5 +47,5 @@ Rationale: one table gates all commands, per-server, optionally per-user, option
 
 ## Live target for the first rollout
 
-- Home server (`MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID`): `agent` on `homelab` and `loom`; `artifact` for the owner.
-- Loom server (`1512814732392927463`): `agent` on `loom`.
+- Home server (`MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID`): `agent` on the public `homelab` for everyone in the server; `agent` on the private `loom` for the owner only; `artifact` for the owner. (Loom is scoped to the owner here so a home-server member cannot drive the private repo; loom-server members get loom via the grant below.)
+- Loom server (`1512814732392927463`): `agent` on `loom` for its members.
