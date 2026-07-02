@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
+  import { browser } from "$app/environment";
   import CampsitesMap from "$lib/public/components/campsites/CampsitesMap.svelte";
 
   let { data } = $props();
@@ -12,7 +13,6 @@
   // selectedId here, and clicking a list row sets it from the parent.
   // CampsitesMap uses $bindable(null) so both directions work.
   let selectedId = $state(null);
-  let selectedPark = $derived(parks.find((p) => p.id === selectedId) ?? null);
 
   // List panel collapse (map-first: the whole map stays visible when collapsed).
   // Starts closed so the map is unobstructed on load.
@@ -22,9 +22,76 @@
   let sortKey = $state("best_score"); // "best_score" | "good_days" | "name"
   let clearOnly = $state(false);
 
+  // --- Night selector -------------------------------------------------------
+  // "One trip" planning: mark which nights in the window you are free (a
+  // weekend, scattered weekdays). A park matches if it is open on AT LEAST one
+  // selected night, re-scored over just those nights. Selection lives in the URL
+  // (?nights=YYYY-MM-DD,...) so it is shareable. `null` means "all live nights",
+  // which is the default and what SSR renders before hydration, so there is no
+  // flash and the no-JS view stays the full list.
+  let selectedDates = $state(null); // null => all live nights; Set otherwise
+
+  // The window: sorted unique dates present across all parks.
+  let windowDates = $derived.by(() => {
+    const set = new Set();
+    for (const p of parks) for (const d of p.days) set.add(d.date);
+    return [...set].sort();
+  });
+
+  // Dead nights: no park is open, so they cannot be picked (greyed out).
+  let deadDates = $derived.by(() => {
+    const alive = new Set();
+    for (const p of parks)
+      for (const d of p.days) if (d.available) alive.add(d.date);
+    return new Set(windowDates.filter((d) => !alive.has(d)));
+  });
+
+  let liveDates = $derived(windowDates.filter((d) => !deadDates.has(d)));
+
+  // Resolve the sentinel to a concrete Set, always dropping dead nights (a URL
+  // may name a night that has since sold out).
+  let activeDates = $derived.by(() => {
+    if (selectedDates === null) return new Set(liveDates);
+    return new Set([...selectedDates].filter((d) => !deadDates.has(d)));
+  });
+
+  // Narrowed = a strict subset of live nights is chosen. Only then do we hide
+  // parks with no availability on the chosen nights; at the default (all live)
+  // the list still shows every park, matching the pre-filter behaviour.
+  let narrowed = $derived(activeDates.size < liveDates.length);
+
+  // Re-score every park over the active nights: best_score = best clear-sky
+  // score among its open active nights, good_days = count of clear open nights,
+  // open_nights = how many active nights it is bookable (the match test).
+  let scoredParks = $derived.by(() => {
+    const active = activeDates;
+    return parks.map((p) => {
+      let best = 0;
+      let good = 0;
+      let openNights = 0;
+      for (const d of p.days) {
+        if (!active.has(d.date) || !d.available) continue;
+        openNights += 1;
+        if (d.sunny_score > best) best = d.sunny_score;
+        if (d.is_good) good += 1;
+      }
+      return {
+        ...p,
+        best_score: best,
+        good_days: good,
+        open_nights: openNights,
+      };
+    });
+  });
+
+  let selectedPark = $derived(
+    scoredParks.find((p) => p.id === selectedId) ?? null,
+  );
+
   // Filter then sort. $derived.by for the multi-step computation.
   let visibleParks = $derived.by(() => {
-    let list = parks;
+    let list = scoredParks;
+    if (narrowed) list = list.filter((p) => p.open_nights > 0);
     if (clearOnly) list = list.filter((p) => p.good_days > 0);
     const out = [...list];
     if (sortKey === "best_score") {
@@ -114,7 +181,70 @@
     selectedId = selectedId === id ? null : id;
   }
 
+  // --- Night selection helpers ---------------------------------------------
+  function weekdayOf(iso) {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d).getDay(); // 0 Sun .. 6 Sat
+  }
+
+  // Write the current selection into ?nights= (client only). The null sentinel
+  // clears the param so the shared/default URL stays clean.
+  function syncURL() {
+    if (!browser) return;
+    const url = new URL(location.href);
+    if (selectedDates === null) url.searchParams.delete("nights");
+    else url.searchParams.set("nights", [...selectedDates].sort().join(","));
+    history.replaceState(history.state, "", url);
+  }
+
+  // Normalize "all live nights" back to the null sentinel so the URL stays clean
+  // and `narrowed` reads false when nothing is actually filtered.
+  function commitSelection(next) {
+    const isAll =
+      next.size === liveDates.length && liveDates.every((d) => next.has(d));
+    selectedDates = isAll ? null : next;
+    syncURL();
+  }
+
+  function toggleNight(iso) {
+    if (deadDates.has(iso)) return;
+    const base =
+      selectedDates === null ? new Set(liveDates) : new Set(selectedDates);
+    if (base.has(iso)) base.delete(iso);
+    else base.add(iso);
+    commitSelection(base);
+  }
+
+  function selectAllNights() {
+    commitSelection(new Set(liveDates));
+  }
+
+  function clearNights() {
+    commitSelection(new Set()); // empty: nothing selected
+  }
+
+  function selectWeekends() {
+    // Fri, Sat, Sun nights among the live dates.
+    const wk = liveDates.filter((d) => [5, 6, 0].includes(weekdayOf(d)));
+    commitSelection(new Set(wk));
+  }
+
+  // Absent param => null (all live). Present-but-empty (?nights=) => a real
+  // empty selection, so a cleared state round-trips instead of snapping back.
+  function readURL() {
+    const params = new URLSearchParams(location.search);
+    if (!params.has("nights")) return null;
+    const raw = params.get("nights") || "";
+    return new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+  }
+
   onMount(() => {
+    selectedDates = readURL();
     // Re-run the SSR load every 15 min so the page stays fresh.
     const refresh = setInterval(() => invalidateAll(), 15 * 60_000);
     return () => clearInterval(refresh);
@@ -134,7 +264,7 @@
        SEO + a11y. -->
   <h1 class="sr-only">BC Parks campsites, open sites and clear-sky weather</h1>
 
-  <CampsitesMap {parks} bind:selectedId />
+  <CampsitesMap parks={visibleParks} bind:selectedId />
 
   <!-- Top-left crumb / title card. -->
   <div class="crumb-card">
@@ -144,12 +274,58 @@
       >
       <span class="crumb-sep">/</span>
       <span class="crumb-name">campsites</span>
-      <span class="crumb-count"><strong>{parks.length}</strong> parks</span>
+      <span class="crumb-count"
+        ><strong>{visibleParks.length}</strong>{narrowed || clearOnly
+          ? " matching parks"
+          : " parks"}</span
+      >
     </nav>
     <p class="crumb-note">
       {#if generatedAt}As of {fmtGeneratedAt(generatedAt)}. {/if}Green = open AND
       clear skies.
     </p>
+  </div>
+
+  <!-- Night selector: pick the nights you are free. Dead nights (no park open)
+       are greyed and disabled. Filters the map, list and per-park scores. -->
+  <div class="nights-card">
+    <div class="nights-head">
+      <span class="nights-title">Nights you're free</span>
+      <div class="nights-actions">
+        <button type="button" class="nights-act" onclick={selectAllNights}
+          >All</button
+        >
+        <button type="button" class="nights-act" onclick={selectWeekends}
+          >Weekends</button
+        >
+        <button type="button" class="nights-act" onclick={clearNights}
+          >Clear</button
+        >
+      </div>
+    </div>
+    <div
+      class="nights-strip"
+      role="group"
+      aria-label="Select the nights you are free"
+    >
+      {#each windowDates as iso (iso)}
+        <button
+          type="button"
+          class="night-btn"
+          class:on={activeDates.has(iso)}
+          class:dead={deadDates.has(iso)}
+          disabled={deadDates.has(iso)}
+          aria-pressed={activeDates.has(iso)}
+          title={deadDates.has(iso) ? "No sites open this night" : fmtDayCell(iso)}
+          onclick={() => toggleNight(iso)}
+        >
+          {fmtDayCell(iso)}
+        </button>
+      {/each}
+    </div>
+    {#if activeDates.size === 0}
+      <p class="nights-hint">Pick the nights you can go to see matching parks.</p>
+    {/if}
   </div>
 
   <!-- Right-side list panel (collapsible). -->
@@ -271,6 +447,7 @@
               class="day-cell"
               class:day-open={day.available}
               class:day-good={day.is_good}
+              class:day-inactive={!activeDates.has(day.date)}
               style="background: {dayCellBg(day)}"
               title={dayTitle(day)}
             >
@@ -391,6 +568,129 @@
     line-height: 1.4;
     letter-spacing: 0.02em;
     color: var(--ink-3);
+  }
+
+  /* Top-center night selector. z-index 20 to sit above the MapLibre controls,
+     like the list panel. Centered on wide screens; drops below the crumb card
+     on narrow ones so the three top overlays never overlap. */
+  .nights-card {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: min(560px, calc(100% - 32px));
+    box-sizing: border-box;
+    padding: 8px 12px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    z-index: 20;
+  }
+
+  .nights-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .nights-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  .nights-actions {
+    display: inline-flex;
+    gap: 6px;
+  }
+
+  .nights-act {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 2px solid var(--ink);
+    cursor: pointer;
+    transition: transform 110ms ease;
+  }
+
+  .nights-act:hover,
+  .nights-act:focus-visible {
+    transform: translate(-2px, -2px);
+    outline: none;
+  }
+
+  .nights-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .night-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    min-width: 40px;
+    padding: 5px 6px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 2px solid var(--ink);
+    cursor: pointer;
+    transition:
+      transform 110ms ease,
+      background 110ms ease;
+  }
+
+  .night-btn:hover:not(:disabled),
+  .night-btn:focus-visible:not(:disabled) {
+    transform: translate(-2px, -2px);
+    outline: none;
+  }
+
+  .night-btn.on {
+    background: var(--accent);
+  }
+
+  .night-btn.dead {
+    color: var(--ink-3);
+    background: var(--rule);
+    border-color: var(--ink-3);
+    cursor: not-allowed;
+    text-decoration: line-through;
+    opacity: 0.6;
+  }
+
+  .nights-hint {
+    margin: 8px 0 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--ink-3);
+  }
+
+  /* Nights not in the current selection are dimmed in the detail strip so the
+     chosen nights read clearly against the full 14-day context. */
+  .day-inactive {
+    opacity: 0.35;
+  }
+
+  @media (max-width: 860px) {
+    .nights-card {
+      left: 16px;
+      right: 16px;
+      top: 84px;
+      transform: none;
+      max-width: none;
+    }
   }
 
   /* Right-side ranked-list panel. Narrow by default so the page reads map-first;
