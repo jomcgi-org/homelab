@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Plan"
 description: "Planning sub-recipe: turn a feature or change request into a written implementation plan, without implementing it."
 instructions: |
@@ -21,6 +21,10 @@ instructions: |
     docs/plans/ for prior plans that overlap.
   - Read the actual code and deploy configs the plan would change; a plan
     grounded in real file paths beats one written from memory.
+  - Keep tool output small: you run in a limited context window, so bound
+    reads (`head`, `wc -l` first, sample, narrow the query) rather than
+    dumping a full `git log` or large files, which can overflow context and
+    trigger a compaction that loses progress.
 
   The plan itself:
   - Start with the goal in one or two sentences, then list 2-3 candidate

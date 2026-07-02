@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Query"
 description: "Read-only investigation sub-recipe: answer a question about the repo or cluster without changing anything."
 instructions: |
@@ -17,6 +17,12 @@ instructions: |
   - READ ONLY. Do not edit files, do not commit, do not push, do not open
     PRs or issues. Shell commands must be non-mutating (cat, ls, grep, find,
     git log, git show).
+  - Keep tool output small. You run in a limited context window; a large dump
+    (a full `git log`, a wide `grep`, a big file) can overflow it and trigger
+    a compaction that loses your progress and can drop the final answer. Bound
+    every read: pipe through `head`, count with `wc -l` first, sample, or
+    narrow the query, and analyze incrementally rather than pulling everything
+    in at once.
   - Cite evidence: name the files and paths your answer rests on.
   - If the answer is genuinely not in the repo, say so plainly instead of
     guessing.

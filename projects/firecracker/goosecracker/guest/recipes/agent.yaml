@@ -1,4 +1,4 @@
-version: "1.2.0"
+version: "1.3.0"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -35,6 +35,15 @@ instructions: |
   earlier results the worker cannot see (sub-recipes do not share your
   conversation history). Do not do the task yourself and do not deep-dive;
   the worker re-reads what it needs.
+
+  Dispatch the actual work; never run it in the router. Your context is
+  shared across the whole thread, so a large tool output here (a full
+  `git log`, a wide `grep`, a big file) can overflow it and trigger a
+  compaction that drops the answer mid-run. Context-gathering is a couple of
+  SMALL reads only. If answering needs the git history, many files, or large
+  output, that is the sub-recipe's job, not yours: route it. Bound anything
+  you do read (pipe through `head`, count with `wc -l` first, sample) and
+  never pull hundreds of log lines into your context.
 
   Then call the matching sub-recipe tool with the task (verbatim or lightly
   clarified) and your context briefing, and wait for its result.
