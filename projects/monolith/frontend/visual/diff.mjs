@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
 
@@ -13,32 +13,15 @@ export function isChanged({ mismatched = 0, total = 1, added = false }) {
   return mismatched > FLOOR && mismatched / total > RATIO;
 }
 
-// Resolve an execroot-relative path (set by the BUILD) to absolute: this
-// js_run_binary runs from the execroot with cwd under <execroot>/bazel-out/...,
-// so a bare relative path would not resolve. See capture.mjs for the same trap.
-function fromExecroot(rel) {
-  const cwd = process.cwd();
-  return cwd.includes("/bazel-out/")
-    ? resolve(cwd.split("/bazel-out/")[0], rel)
-    : rel;
-}
-
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // Inputs/outputs under Bazel: the capture PNGs are a separate target's output
-  // (CAPTURE_OUT, execroot-relative); baselines are committed srcs read via HERE
-  // (read-only runfiles); the report + diff PNGs are written to the declared
-  // out_dir (BAZEL_BINDIR + DIFF_OUT_SUBDIR). All fall back to HERE for a local
-  // smoke run.
-  const captureOut = process.env.CAPTURE_OUT
-    ? fromExecroot(process.env.CAPTURE_OUT)
-    : join(HERE, "out");
-  const outDir =
-    process.env.BAZEL_BINDIR && process.env.DIFF_OUT_SUBDIR
-      ? fromExecroot(
-          join(process.env.BAZEL_BINDIR, process.env.DIFF_OUT_SUBDIR),
-        )
-      : join(HERE, "out");
-  const baselineDir = join(HERE, "baseline");
+  // Branch-vs-main: there are no committed baselines any more. CI captures the
+  // PR (CAPTURE_DIR) and main (BASELINE_DIR) into two staged directories and
+  // passes both as absolute paths; the report + diff PNGs are written to OUT_DIR.
+  // All fall back to HERE for a local smoke run. No execroot path-juggling: the
+  // tool is invoked with absolute paths, so cwd is irrelevant.
+  const captureOut = process.env.CAPTURE_DIR || join(HERE, "out");
+  const baselineDir = process.env.BASELINE_DIR || join(HERE, "out", "baseline");
+  const outDir = process.env.OUT_DIR || captureOut;
 
   const names = JSON.parse(readFileSync(join(captureOut, "manifest.json")));
   mkdirSync(join(outDir, "diff"), { recursive: true });
