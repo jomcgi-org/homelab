@@ -8,6 +8,9 @@ the conversational-queue drain added for /agent thread continuations.
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import MagicMock, patch
+
 import httpx
 import pytest
 
@@ -430,3 +433,69 @@ async def test_post_agent_run_gives_up_after_deadline(monkeypatch):
     assert fake.calls == 1
     assert sleeps == []
     assert retries == []
+
+
+# ---------------------------------------------------------------------------
+# run_and_deliver conversational loop (the orphan-free next-turn dispatch)
+# ---------------------------------------------------------------------------
+
+
+async def test_run_and_deliver_runs_drained_turn_in_loop(monkeypatch):
+    """The drained next turn runs inside the same run_and_deliver call (awaited),
+    not via a create_task that asyncio.run would cancel on teardown. Also drives
+    the reaction lifecycle: mark_inflight_running each turn, ack_inflight at each
+    turn's end."""
+    turns = []
+
+    async def fake_turn(session, **kwargs):
+        turns.append(kwargs["task"])
+        return True
+
+    monkeypatch.setattr(runner, "_run_one_turn", fake_turn)
+    monkeypatch.setattr(runner.threads, "upsert_run", MagicMock())
+
+    fake_api = MagicMock()
+    # One queued batch, then the queue is empty.
+    fake_api.drain_agent_queue = MagicMock(side_effect=[("second turn", ["m1"]), None])
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        await runner.run_and_deliver(
+            "sess",
+            task="first turn",
+            recipe="agent",
+            tier="",
+            git_mirror="",
+            git_ref="",
+            discord_thread="T",
+        )
+
+    assert turns == ["first turn", "second turn"]  # both ran in one call
+    assert fake_api.mark_inflight_running.call_count == 2
+    fake_api.ack_inflight.assert_any_call("T", True)
+    assert fake_api.ack_inflight.call_count == 2
+
+
+async def test_run_and_deliver_non_agent_runs_once(monkeypatch):
+    """A non-agent (artifact) run does one turn and never touches the queue."""
+    turns = []
+
+    async def fake_turn(session, **kwargs):
+        turns.append(kwargs["task"])
+        return True
+
+    monkeypatch.setattr(runner, "_run_one_turn", fake_turn)
+    fake_api = MagicMock()
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        await runner.run_and_deliver(
+            "sess",
+            task="build it",
+            recipe="artifact",
+            tier="artifact",
+            git_mirror="",
+            git_ref="",
+            discord_thread="T",
+        )
+
+    assert turns == ["build it"]
+    fake_api.drain_agent_queue.assert_not_called()

@@ -18,14 +18,36 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db import get_engine
 from chat.models import GoosecrackerSession
 
 logger = logging.getLogger(__name__)
+
+# Reaction lifecycle emojis for queued agent replies. A reply queued behind a
+# running turn is acknowledged with QUEUED (no noisy text message); when its turn
+# starts it flips to RUNNING, and on completion to DONE (or FAILED). Driven by the
+# runner via the Discord outbox reaction verb (chat.outbox.enqueue_reaction).
+REACTION_QUEUED = "⏳"  # ⏳
+REACTION_RUNNING = "\U0001f440"  # 👀
+REACTION_DONE = "✅"  # ✅
+REACTION_FAILED = "❌"  # ❌
+
+# Per-process boot token. Every turn stamps the session's runner_instance with
+# this; a running session whose runner_instance differs from the live process's
+# token was owned by a process that has since died (in-process daemon threads do
+# not survive a restart), so it is safe to reclaim. Precise "it reset" signal
+# with no external pod-health probe: the owner identity is the liveness proof.
+INSTANCE_TOKEN = secrets.token_hex(8)
+
+# A running turn older than this is presumed dead (the owning process wedged or
+# died without the startup sweep catching it). Generous: well above the fc-invoke
+# run cap (~600s) plus retries, so a genuinely slow turn is never reclaimed out
+# from under itself. The startup sweep is the fast path; this is the backstop.
+STALE_AFTER = timedelta(minutes=30)
 
 # The artifact recipe + model tier (ADR 024). The tier selects Gemini via
 # OpenRouter (key swapped at egress) and bounds the secret placeholders the guest
@@ -79,6 +101,48 @@ def _append_pending(existing: str, msg: str) -> str:
     return f"{existing}\n{msg}"
 
 
+def _append_id(existing: str, msg_id: str) -> str:
+    """Append a Discord message id to a newline-joined id list."""
+    if not existing:
+        return msg_id
+    return f"{existing}\n{msg_id}"
+
+
+def _merge_ids(*id_lists: str) -> str:
+    """Merge newline-joined id lists, dropping blanks, preserving order."""
+    ids: list[str] = []
+    for chunk in id_lists:
+        ids.extend(i for i in chunk.split("\n") if i)
+    return "\n".join(ids)
+
+
+def _split_ids(joined: str) -> list[str]:
+    """Split a newline-joined id list into non-empty ids."""
+    return [i for i in joined.split("\n") if i]
+
+
+def _is_stale(row: GoosecrackerSession, now: datetime) -> bool:
+    """True when ``row`` is a running turn presumed dead (stale or foreign owner).
+
+    A row is reclaimable when it is running AND either owned by a different
+    process (the owner died: its in-process turn cannot exist here) or older than
+    STALE_AFTER (wedged without a restart). ``running_since`` naive from SQLite is
+    coerced to UTC so the comparison is offset-consistent in tests and prod.
+    """
+    if not row.running:
+        return False
+    if row.runner_instance and row.runner_instance != INSTANCE_TOKEN:
+        return True
+    since = row.running_since
+    if since is None:
+        # Running with no timestamp (legacy row / pre-migration): treat as stale
+        # so it can never wedge the thread forever.
+        return True
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    return (now - since) > STALE_AFTER
+
+
 def start_session(thread_id: str, prompt: str) -> dict:
     """Record a new thread's transcript and dispatch the first artifact run.
 
@@ -108,7 +172,7 @@ def start_session(thread_id: str, prompt: str) -> dict:
     return result
 
 
-def continue_session(thread_id: str, message: str) -> dict | None:
+def continue_session(thread_id: str, message: str, message_id: str = "") -> dict | None:
     """Append an owner follow-up and re-dispatch or queue depending on recipe.
 
     Artifact sessions (recipe="artifact"): re-dispatch the full transcript (Model
@@ -116,10 +180,12 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     submit result dict.
 
     Agent sessions (recipe="agent"): conversational queuing. If a turn is already
-    running, append the message to ``pending`` and return ``{"action": "queued"}``
-    so the bot can acknowledge without starting a new run. When idle, build the
-    next task from any backlog + this message, set running=True, dispatch, and
-    return ``{"action": "dispatched", ...submit result}``.
+    running (and not stale), append the message to ``pending`` + its id to
+    ``pending_message_ids`` and return ``{"action": "queued"}`` so the bot can
+    acknowledge with a ⏳ reaction instead of a text reply. When idle (or the prior
+    turn is stale and reclaimed), build the next task from any backlog + this
+    message, set running=True, dispatch, and return
+    ``{"action": "dispatched", ...submit result}``.
 
     Returns None when ``thread_id`` is not a goosecracker thread so the caller
     can fall through to normal chat handling. Synchronous; call via
@@ -135,30 +201,61 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     _transcript = ""
 
     with Session(get_engine()) as session:
-        row = session.get(GoosecrackerSession, thread_id)
+        # Lock the row for the whole read-modify-write so a concurrent
+        # drain_agent_queue (runner thread) cannot clobber pending/running with a
+        # stale read. No-op on SQLite (tests), real SELECT FOR UPDATE on Postgres.
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
         if row is None:
             return None
 
         # Accumulate the turn in the curated transcript for all recipe types.
         transcript = _join_transcript(row.transcript, message)
         row.transcript = transcript
-        row.updated_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        row.updated_at = now
 
         if row.recipe == AGENT_RECIPE:
             _is_agent = True
-            if row.running:
-                # A turn is already in flight: queue this reply for the next turn.
+            if row.running and not _is_stale(row, now):
+                # A live turn is in flight: queue this reply for the next turn and
+                # record its id so the runner can react ⏳→👀→✅ on this message.
                 row.pending = _append_pending(row.pending, message)
+                row.pending_message_ids = _append_id(
+                    row.pending_message_ids, message_id
+                )
                 session.add(row)
                 session.commit()
                 return {"action": "queued"}
-            # Idle: consume any backlog plus the new message as a single task.
-            _task = _append_pending(row.pending, message)
+            if row.running:
+                # Stale/foreign-owned turn: the owner died or wedged. Reclaim its
+                # in-flight work by folding it back into this dispatch so nothing
+                # is lost (the startup sweep is the fast path; this is the inline
+                # backstop when the process lived but the turn died silently).
+                logger.warning(
+                    "goosecracker: reclaiming stale turn for thread %s "
+                    "(owner=%s, since=%s)",
+                    thread_id,
+                    row.runner_instance or "?",
+                    row.running_since,
+                )
+            # Idle (or reclaimed): consume the dead turn's task (if any), the
+            # backlog, and this message as a single task. Backlog + reclaimed
+            # message ids become this turn's ack set (they show the reaction
+            # lifecycle); the triggering message rides the live progress reply.
+            _task = _append_pending(
+                _append_pending(row.inflight_task, row.pending), message
+            )
+            ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
             _stored_recipe = row.recipe
             _stored_tier = row.tier
             _stored_repo = row.repo
             row.pending = ""
+            row.pending_message_ids = ""
+            row.inflight_task = _task
+            row.inflight_ack_ids = ack_ids
             row.running = True
+            row.running_since = now
+            row.runner_instance = INSTANCE_TOKEN
             session.add(row)
             session.commit()
         else:
@@ -207,32 +304,189 @@ def continue_session(thread_id: str, message: str) -> dict | None:
     )
 
 
-def drain_agent_queue(thread_id: str) -> str | None:
+def drain_agent_queue(thread_id: str) -> tuple[str, list[str]] | None:
     """Drain a conversational agent thread's queue after a turn finishes.
 
     Called by the goosecracker runner (via ``chat.api``) when an agent turn
     completes. If replies were queued while the turn was running (``pending``
-    non-empty), return them as the next task, clear ``pending``, and keep
-    ``running=True`` so the caller dispatches the next turn. Otherwise set
-    ``running=False`` so the thread accepts new replies again. Sync; the caller
-    invokes it via ``asyncio.to_thread``. Lives here (not in the goosecracker
-    package) so the runner reaches it through ``chat.api`` and never imports
-    ``chat`` internals directly (import_boundaries_test).
+    non-empty), return ``(task, message_ids)`` as the next turn, promote them to
+    the in-flight slot (``inflight_task``/``inflight_ack_ids``), re-own the turn
+    under this process, and keep ``running=True`` so the caller dispatches the
+    next turn. Otherwise fully idle the row (``running=False``, in-flight cleared)
+    so the thread accepts new replies again, and return None.
+
+    The row is locked FOR UPDATE for the whole read-modify-write so a message
+    arriving concurrently in ``continue_session`` cannot clobber the drain (or be
+    clobbered by it). Sync; the caller invokes it via ``asyncio.to_thread``. Lives
+    here (not in the goosecracker package) so the runner reaches it through
+    ``chat.api`` and never imports ``chat`` internals directly
+    (import_boundaries_test).
     """
     with Session(get_engine()) as session:
-        row = session.get(GoosecrackerSession, thread_id)
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
         if row is None:
             return None
         if row.pending:
             task = row.pending
+            ack_ids = _split_ids(row.pending_message_ids)
+            # Promote the drained batch into the in-flight slot so a reclaim can
+            # rebuild it and the runner's mark/ack reaction calls resolve it.
+            row.inflight_task = task
+            row.inflight_ack_ids = "\n".join(ack_ids)
             row.pending = ""
+            row.pending_message_ids = ""
+            row.running_since = datetime.now(timezone.utc)
+            row.runner_instance = INSTANCE_TOKEN
             session.add(row)
             session.commit()
-            return task
+            return task, ack_ids
         row.running = False
+        row.running_since = None
+        row.inflight_task = ""
+        row.inflight_ack_ids = ""
         session.add(row)
         session.commit()
         return None
+
+
+def _inflight_ack_ids(thread_id: str) -> list[str]:
+    """Read the currently-running turn's ack message ids for ``thread_id``."""
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        if row is None:
+            return []
+        return _split_ids(row.inflight_ack_ids)
+
+
+def mark_inflight_running(thread_id: str) -> None:
+    """Flip the running turn's queued messages ⏳ → 👀 (turn has started).
+
+    Called by the runner at the start of each agent turn. Enqueues outbox reaction
+    ops (leader-safe) rather than touching Discord directly, so it works from the
+    runner's off-loop thread. A no-op when the turn has no queued acks (e.g. the
+    first turn of a session, whose triggering message rides the live progress
+    reply instead of a reaction). Sync; call via ``asyncio.to_thread``.
+    """
+    ids = _inflight_ack_ids(thread_id)
+    if not ids:
+        return
+    from chat.outbox import enqueue_reaction
+
+    with Session(get_engine()) as session:
+        for msg_id in ids:
+            enqueue_reaction(session, thread_id, msg_id, REACTION_QUEUED, remove=True)
+            enqueue_reaction(session, thread_id, msg_id, REACTION_RUNNING)
+        session.commit()
+
+
+def ack_inflight(thread_id: str, success: bool) -> None:
+    """Resolve the running turn's queued messages 👀 → ✅ (or ❌), and clear the
+    in-flight slot.
+
+    Called by the runner when an agent turn finishes (before it drains the next
+    batch). Removes the transient ⏳/👀 markers and adds the terminal reaction on
+    each acked message, then clears ``inflight_task``/``inflight_ack_ids`` (that
+    batch is done; the next drain repopulates them). Sync; call via
+    ``asyncio.to_thread``.
+    """
+    from chat.outbox import enqueue_reaction
+
+    terminal = REACTION_DONE if success else REACTION_FAILED
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        if row is None:
+            return
+        for msg_id in _split_ids(row.inflight_ack_ids):
+            enqueue_reaction(session, thread_id, msg_id, REACTION_QUEUED, remove=True)
+            enqueue_reaction(session, thread_id, msg_id, REACTION_RUNNING, remove=True)
+            enqueue_reaction(session, thread_id, msg_id, terminal)
+        row.inflight_task = ""
+        row.inflight_ack_ids = ""
+        session.add(row)
+        session.commit()
+
+
+def reclaim_orphaned_agent_sessions() -> int:
+    """Re-dispatch agent turns orphaned by a dead owner (leader restart / crash).
+
+    Every running turn stamps its session with this process's ``INSTANCE_TOKEN``.
+    A running agent session whose token differs was owned by a process that no
+    longer exists (in-process daemon threads do not survive a restart), so its
+    turn is dead and must be reclaimed or the thread wedges forever with queued
+    replies stuck on ⏳. Rebuilds the next task losslessly from ``inflight_task``
+    + ``pending``, re-owns it under this process, and re-dispatches (durably, on
+    the leader's long-lived loop). Returns the number reclaimed.
+
+    Invoked once from ``_start_singletons`` on leader acquisition. Sync; call via
+    ``asyncio.to_thread``.
+    """
+    now = datetime.now(timezone.utc)
+    with Session(get_engine()) as session:
+        candidates = session.exec(
+            select(GoosecrackerSession.discord_thread)
+            .where(GoosecrackerSession.running == True)  # noqa: E712 - SQL boolean
+            .where(GoosecrackerSession.recipe == AGENT_RECIPE)
+            .where(GoosecrackerSession.runner_instance != INSTANCE_TOKEN)
+        ).all()
+
+    reclaimed = 0
+    for thread_id in candidates:
+        dispatch = _reclaim_one(thread_id, now)
+        if dispatch is None:
+            continue
+        task, recipe, tier, repo = dispatch
+        from goosecracker.api import submit
+
+        submit(
+            task,
+            session=thread_id,
+            recipe=recipe,
+            tier=tier,
+            repo=repo,
+            discord_thread=thread_id,
+        )
+        reclaimed += 1
+    if reclaimed:
+        logger.warning(
+            "goosecracker: reclaimed %d orphaned agent turn(s) on startup", reclaimed
+        )
+    return reclaimed
+
+
+def _reclaim_one(thread_id: str, now: datetime) -> tuple[str, str, str, str] | None:
+    """Re-own one orphaned session and return its dispatch params, or None.
+
+    Locks the row, re-checks it is still a foreign-owned running turn (another
+    replica may have raced), rebuilds the task from inflight + pending, and stamps
+    it under this process. Returns None (and idles the row) when there is nothing
+    to run, so the sweep never dispatches an empty turn."""
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        if row is None or not row.running or row.recipe != AGENT_RECIPE:
+            return None
+        if row.runner_instance == INSTANCE_TOKEN:
+            return None  # this process already owns it; still alive
+        task = _append_pending(row.inflight_task, row.pending)
+        ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
+        recipe, tier, repo = row.recipe, row.tier, row.repo
+        row.pending = ""
+        row.pending_message_ids = ""
+        if not task:
+            # Nothing recoverable to run: idle the thread so new replies flow.
+            row.running = False
+            row.running_since = None
+            row.inflight_task = ""
+            row.inflight_ack_ids = ""
+            session.add(row)
+            session.commit()
+            return None
+        row.inflight_task = task
+        row.inflight_ack_ids = ack_ids
+        row.running_since = now
+        row.runner_instance = INSTANCE_TOKEN
+        session.add(row)
+        session.commit()
+        return task, recipe, tier, repo
 
 
 def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
@@ -269,6 +523,11 @@ def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
                 repo=repo,
                 transcript=prompt,
                 running=True,
+                # Stamp the in-flight turn so a reply arriving during it queues
+                # (not "stale"), and a reclaim can rebuild it losslessly.
+                inflight_task=prompt,
+                running_since=datetime.now(timezone.utc),
+                runner_instance=INSTANCE_TOKEN,
             )
         )
         session.commit()

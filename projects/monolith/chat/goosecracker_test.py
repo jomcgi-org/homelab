@@ -4,6 +4,7 @@ with the chat schema stripped. goosecracker.api is injected as a fake module so
 the test does not pull the real executor (and so no run is dispatched)."""
 
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +12,11 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from chat import goosecracker
-from chat.models import GoosecrackerSession
+from chat.models import DiscordOutbox, GoosecrackerSession
+
+# Sentinel so _make_agent_session can distinguish "caller passed None" from
+# "caller passed nothing" for the running_since / runner_instance overrides.
+_UNSET = object()
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +220,12 @@ def test_start_agent_session_writes_session_row(engine, fake_api):
     assert row.transcript == "fix the bug"
     assert row.running
     assert row.pending == ""
+    # The first turn is stamped live (owned by this process, timestamped) so a
+    # reply arriving during it queues rather than being reclaimed as "stale".
+    assert row.runner_instance == goosecracker.INSTANCE_TOKEN
+    assert row.running_since is not None
+    assert row.inflight_task == "fix the bug"
+    assert not goosecracker._is_stale(row, datetime.now(timezone.utc))
 
 
 # ---------------------------------------------------------------------------
@@ -228,8 +239,24 @@ def _make_agent_session(
     repo: str = "homelab",
     running: bool = False,
     pending: str = "",
+    pending_message_ids: str = "",
+    inflight_task: str = "",
+    inflight_ack_ids: str = "",
+    running_since: object = _UNSET,
+    runner_instance: object = _UNSET,
 ) -> None:
-    """Insert a GoosecrackerSession row for an agent thread directly."""
+    """Insert a GoosecrackerSession row for an agent thread directly.
+
+    A running session defaults to a *live* turn (running_since=now, owned by this
+    process) so the queue tests exercise the queue path rather than the stale
+    reclaim path. Pass ``running_since=None`` / a foreign ``runner_instance`` to
+    simulate an orphaned/stale turn.
+    """
+    now = datetime.now(timezone.utc)
+    if running_since is _UNSET:
+        running_since = now if running else None
+    if runner_instance is _UNSET:
+        runner_instance = goosecracker.INSTANCE_TOKEN if running else ""
     with Session(engine) as session:
         session.add(
             GoosecrackerSession(
@@ -240,6 +267,11 @@ def _make_agent_session(
                 transcript="initial task",
                 running=running,
                 pending=pending,
+                pending_message_ids=pending_message_ids,
+                inflight_task=inflight_task,
+                inflight_ack_ids=inflight_ack_ids,
+                running_since=running_since,
+                runner_instance=runner_instance,
             )
         )
         session.commit()
@@ -273,7 +305,9 @@ def test_continue_agent_session_queues_when_running(engine, fake_api):
     returns action='queued' without dispatching."""
     with patch("chat.goosecracker.get_engine", return_value=engine):
         _make_agent_session(engine, "agent-t2", running=True)
-        result = goosecracker.continue_session("agent-t2", "extra instruction")
+        result = goosecracker.continue_session(
+            "agent-t2", "extra instruction", "msg-99"
+        )
 
     assert result == {"action": "queued"}
     fake_api.submit.assert_not_called()
@@ -282,6 +316,8 @@ def test_continue_agent_session_queues_when_running(engine, fake_api):
         row = session.get(GoosecrackerSession, "agent-t2")
     assert row.running
     assert row.pending == "extra instruction"
+    # The queued message's id is recorded so the runner can react on it.
+    assert row.pending_message_ids == "msg-99"
 
 
 def test_continue_agent_session_queues_multiple_appends_to_pending(engine, fake_api):
@@ -341,21 +377,32 @@ def test_continue_session_falls_back_to_cold_on_head_session_error(
 
 
 def test_drain_agent_queue_returns_task_and_clears_pending(engine):
-    """When pending is non-empty, drain returns the queued task, clears pending,
-    and keeps running=True so the runner dispatches the next turn."""
-    _make_agent_session(engine, "d-t1", running=True, pending="do something extra")
+    """When pending is non-empty, drain returns (task, ack_ids), clears pending,
+    promotes the batch into the in-flight slot, and keeps running=True so the
+    runner dispatches the next turn."""
+    _make_agent_session(
+        engine,
+        "d-t1",
+        running=True,
+        pending="do something extra",
+        pending_message_ids="m1\nm2",
+    )
     with patch("chat.goosecracker.get_engine", return_value=engine):
-        task = goosecracker.drain_agent_queue("d-t1")
+        drained = goosecracker.drain_agent_queue("d-t1")
 
-    assert task == "do something extra"
+    assert drained == ("do something extra", ["m1", "m2"])
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "d-t1")
     assert row.pending == ""
+    assert row.pending_message_ids == ""
+    assert row.inflight_task == "do something extra"
+    assert row.inflight_ack_ids == "m1\nm2"
+    assert row.runner_instance == goosecracker.INSTANCE_TOKEN
     assert row.running  # runner handles dispatching the next turn
 
 
 def test_drain_agent_queue_clears_running_when_empty(engine):
-    """When pending is empty, drain returns None and sets running=False so the
+    """When pending is empty, drain returns None and fully idles the row so the
     thread accepts new replies again."""
     _make_agent_session(engine, "d-t2", running=True, pending="")
     with patch("chat.goosecracker.get_engine", return_value=engine):
@@ -365,12 +412,170 @@ def test_drain_agent_queue_clears_running_when_empty(engine):
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "d-t2")
     assert not row.running
+    assert row.running_since is None
+    assert row.inflight_task == ""
 
 
 def test_drain_agent_queue_returns_none_for_unknown_thread(engine):
     """No session row for the thread: drain returns None gracefully."""
     with patch("chat.goosecracker.get_engine", return_value=engine):
         assert goosecracker.drain_agent_queue("no-such-thread") is None
+
+
+# ---------------------------------------------------------------------------
+# Self-heal: stale / orphaned running turns
+# ---------------------------------------------------------------------------
+
+
+def test_continue_agent_session_reclaims_stale_running_turn(engine, fake_api):
+    """A running turn owned by a dead process (foreign runner_instance) is not
+    treated as live: the new reply reclaims it, folding the dead turn's inflight
+    task + this message into a fresh dispatch so nothing is lost."""
+    _make_agent_session(
+        engine,
+        "stale-t1",
+        running=True,
+        runner_instance="dead-process",
+        inflight_task="prev work",
+        inflight_ack_ids="m1",
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        result = goosecracker.continue_session("stale-t1", "resume please", "m2")
+
+    assert result.get("action") == "dispatched"
+    call = fake_api.submit.call_args
+    assert call.args[0] == "prev work\nresume please"  # dead task folded in
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "stale-t1")
+    assert row.runner_instance == goosecracker.INSTANCE_TOKEN  # re-owned
+    assert row.inflight_ack_ids == "m1"  # prior queued msg still tracked
+    assert row.running
+
+
+def test_continue_agent_session_stale_by_timeout_is_reclaimed(engine, fake_api):
+    """A running turn older than STALE_AFTER with no live owner is reclaimed even
+    when the runner_instance matches (process lived but the turn died silently)."""
+    old = datetime.now(timezone.utc) - goosecracker.STALE_AFTER - timedelta(minutes=1)
+    _make_agent_session(
+        engine,
+        "stale-t2",
+        running=True,
+        runner_instance=goosecracker.INSTANCE_TOKEN,
+        running_since=old,
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        result = goosecracker.continue_session("stale-t2", "still there?", "m3")
+
+    assert result.get("action") == "dispatched"
+    fake_api.submit.assert_called_once()
+
+
+def test_mark_inflight_running_enqueues_running_reactions(engine):
+    """mark_inflight_running flips each in-flight message ⏳→👀 via outbox rows."""
+    _make_agent_session(engine, "r-t1", running=True, inflight_ack_ids="m1\nm2")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.mark_inflight_running("r-t1")
+
+    with Session(engine) as session:
+        rows = session.query(DiscordOutbox).order_by(DiscordOutbox.id).all()
+    # Two messages x (remove ⏳, add 👀) = 4 reaction rows, all on the thread.
+    assert len(rows) == 4
+    assert {r.target_message_id for r in rows} == {"m1", "m2"}
+    assert all(r.channel_id == "r-t1" for r in rows)
+    removes = [r for r in rows if r.reaction_remove]
+    adds = [r for r in rows if not r.reaction_remove]
+    assert all(r.reaction == goosecracker.REACTION_QUEUED for r in removes)
+    assert all(r.reaction == goosecracker.REACTION_RUNNING for r in adds)
+
+
+def test_mark_inflight_running_noop_without_acks(engine):
+    """No queued messages -> no reaction rows (first turn rides progress reply)."""
+    _make_agent_session(engine, "r-t2", running=True, inflight_ack_ids="")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.mark_inflight_running("r-t2")
+    with Session(engine) as session:
+        assert session.query(DiscordOutbox).count() == 0
+
+
+def test_ack_inflight_success_adds_done_and_clears(engine):
+    """On success, ack_inflight adds ✅ (and removes transient markers) per acked
+    message, then clears the in-flight slot."""
+    _make_agent_session(
+        engine, "a-t1", running=True, inflight_task="work", inflight_ack_ids="m1"
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.ack_inflight("a-t1", True)
+
+    with Session(engine) as session:
+        rows = session.query(DiscordOutbox).all()
+        row = session.get(GoosecrackerSession, "a-t1")
+    added = [r for r in rows if not r.reaction_remove]
+    assert [r.reaction for r in added] == [goosecracker.REACTION_DONE]
+    assert row.inflight_task == ""
+    assert row.inflight_ack_ids == ""
+
+
+def test_ack_inflight_failure_adds_cross(engine):
+    """On failure, the terminal reaction is ❌."""
+    _make_agent_session(engine, "a-t2", running=True, inflight_ack_ids="m1")
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.ack_inflight("a-t2", False)
+    with Session(engine) as session:
+        added = [r for r in session.query(DiscordOutbox).all() if not r.reaction_remove]
+    assert [r.reaction for r in added] == [goosecracker.REACTION_FAILED]
+
+
+def test_reclaim_orphaned_agent_sessions_redispatches(engine, fake_api):
+    """A running agent session owned by a dead process is re-dispatched and
+    re-owned; a live one (this process's token) is left alone."""
+    _make_agent_session(
+        engine,
+        "orphan",
+        running=True,
+        runner_instance="dead-process",
+        inflight_task="half-done work",
+        inflight_ack_ids="m1",
+        pending="a queued follow-up",
+        pending_message_ids="m2",
+    )
+    _make_agent_session(
+        engine,
+        "live",
+        running=True,
+        runner_instance=goosecracker.INSTANCE_TOKEN,
+        inflight_task="in progress",
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        reclaimed = goosecracker.reclaim_orphaned_agent_sessions()
+
+    assert reclaimed == 1
+    call = fake_api.submit.call_args
+    # Dead turn's inflight + pending folded losslessly into the re-dispatch.
+    assert call.args[0] == "half-done work\na queued follow-up"
+    assert call.kwargs["discord_thread"] == "orphan"
+    with Session(engine) as session:
+        orphan = session.get(GoosecrackerSession, "orphan")
+        live = session.get(GoosecrackerSession, "live")
+    assert orphan.runner_instance == goosecracker.INSTANCE_TOKEN  # re-owned
+    assert orphan.inflight_ack_ids == "m1\nm2"
+    assert orphan.pending == ""
+    assert live.inflight_task == "in progress"  # untouched
+
+
+def test_reclaim_orphaned_idles_when_nothing_to_run(engine, fake_api):
+    """A foreign-owned running session with no recoverable task is idled, not
+    re-dispatched (never dispatches an empty turn)."""
+    _make_agent_session(
+        engine, "empty-orphan", running=True, runner_instance="dead-process"
+    )
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        reclaimed = goosecracker.reclaim_orphaned_agent_sessions()
+
+    assert reclaimed == 0
+    fake_api.submit.assert_not_called()
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "empty-orphan")
+    assert not row.running
 
 
 def test_artifact_id_is_random_stable_and_not_the_thread_id(engine):
