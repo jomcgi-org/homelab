@@ -17,13 +17,13 @@ bzl_library(
 )
 
 bzl_library(
-    name = "multiarch_http_archive",
-    srcs = ["multiarch_http_archive.bzl"],
+    name = "kata_firecracker_archive",
+    srcs = ["kata_firecracker_archive.bzl"],
     visibility = ["//visibility:public"],
 )
 
 bzl_library(
-    name = "kata_firecracker_archive",
-    srcs = ["kata_firecracker_archive.bzl"],
+    name = "multiarch_http_archive",
+    srcs = ["multiarch_http_archive.bzl"],
     visibility = ["//visibility:public"],
 )
