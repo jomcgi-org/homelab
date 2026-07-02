@@ -309,7 +309,7 @@ class TestSnapshot:
         r = client.get("/api/campsites/snapshot")
         assert r.status_code == 200
         assert r.headers["Cache-Control"] == (
-            "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
+            "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400"
         )
 
     def test_etag_header_present(self, client, session):
