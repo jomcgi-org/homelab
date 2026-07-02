@@ -21,7 +21,7 @@ Public apps served by the monolith at [jomcgi.dev/app](https://jomcgi.dev/app):
 - [**Stargazing**](projects/monolith/frontend/src/routes/public/app/stars/): Best stargazing spots in Scotland with cloud-cover and darkness forecasts.
 - [**Campsites**](projects/monolith/frontend/src/routes/public/app/campsites/): BC Parks availability crossed with weather.
 - [**World Cup 2026 odds**](projects/monolith/frontend/src/routes/public/app/wc2026/): Scotland's qualification odds via an Elo Monte Carlo model.
-- [**Hiking routes**](projects/hikes/): Scottish route finder with weather-based recommendations.
+- [**Hiking routes**](projects/monolith/frontend/src/routes/public/app/hikes/): Scottish route finder with weather-based recommendations.
 
 ## Infrastructure patterns
 
@@ -50,9 +50,8 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── monolith-public/  #   Read-only public replica of the monolith
 ├── mcp/              #   Context Forge gateway + MCP servers
 ├── inference/        #   On-cluster vLLM (Qwen3.6) + llama.cpp embeddings
-├── hikes/            #   Scottish hiking routes (standalone Pages frontend)
 ├── operators/        #   Custom Kubernetes operators
-├── websites/         #   Static sites (VitePress, Astro)
+├── sextant/          #   State-machine code generator for operators
 └── home-cluster/     #   Auto-generated ArgoCD root kustomization
 bazel/                # Build infrastructure (rules, tools, images, semgrep)
 buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)

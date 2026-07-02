@@ -6,14 +6,13 @@ This document covers common tasks and workflows for contributing to the homelab.
 
 This is a GitOps monorepo where related code and deployment configuration live together.
 
-| Directory                  | Purpose                                                                  |
-| -------------------------- | ------------------------------------------------------------------------ |
-| `projects/`                | All services, operators, websites — colocated with deploy configs        |
-| `projects/platform/`       | Cluster-critical infrastructure (ArgoCD, Linkerd, SigNoz, etc.)          |
-| `projects/agent_platform/` | Agent services (Context Forge, MCP servers, orchestrator, etc.)          |
-| `projects/home-cluster/`   | Auto-generated root kustomization that discovers all deploy/ directories |
-| `bazel/`                   | Build infrastructure (Helm rules, tools, images, semgrep, wrangler)      |
-| `docs/`                    | Design docs, ADRs, and plans                                             |
+| Directory                | Purpose                                                                  |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `projects/`              | All services, operators, websites — colocated with deploy configs        |
+| `projects/platform/`     | Cluster-critical infrastructure (ArgoCD, Linkerd, SigNoz, etc.)          |
+| `projects/home-cluster/` | Auto-generated root kustomization that discovers all deploy/ directories |
+| `bazel/`                 | Build infrastructure (Helm rules, tools, images, semgrep, wrangler)      |
+| `docs/`                  | Design docs, ADRs, and plans                                             |
 
 **Colocation principle:** Each service's deployment configuration (ArgoCD Application, Helm values) lives next to its source code, not in a separate overlays directory. This makes it easy to understand what belongs together.
 
@@ -79,10 +78,13 @@ projects/
 │   ├── kyverno/
 │   └── kustomization.yaml  ← references all platform services
 │
-├── agent_platform/        # Agent services
-│   ├── orchestrator/deploy/
-│   ├── context_forge/deploy/
-│   └── kustomization.yaml  ← references all agent services
+├── monolith/               # Colocated service
+│   ├── chart/
+│   ├── deploy/
+│   │   ├── application.yaml
+│   │   ├── kustomization.yaml
+│   │   └── values.yaml
+│   └── backend/            # Source code lives alongside
 │
 ├── grimoire/              # Individual project with colocated deploy/
 │   ├── chart/             # Custom Helm chart

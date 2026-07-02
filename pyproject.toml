@@ -97,12 +97,6 @@ dependencies = [
     "youtube-transcript-api",
     "trafilatura",
     "lxml-html-clean",  # explicit: overrides.txt strips lxml[html-clean] to break Bazel cycle
-    # Event-sourced lakehouse pipeline (ADRs agents/015, agents/016, agents/017,
-    # platform/004) — used only by the new projects/lakehouse/ packages; additive.
-    "temporalio>=1.8",  # Temporal Python SDK — workflow/worker orchestration
-    "pyiceberg>=0.8",  # Apache Iceberg table writes/reads on SeaweedFS
-    "pyarrow>=17",  # Arrow tables backing PyIceberg writers
-    "duckdb>=1.1",  # DuckDB query helpers + serving-artifact build
 ]
 
 # See https://docs.astral.sh/ruff/configuration/

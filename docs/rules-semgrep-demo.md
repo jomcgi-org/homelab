@@ -35,7 +35,7 @@ py_venv_binary(deps = ["@pip//requests"])
     - SCA:  requirements.txt scanned against vulnerability advisories
 ```
 
-> **Open:** [scrape_walkhighlands target on BuildBuddy](https://jomcgi.buildbuddy.io/invocation/e8f10161-1793-41ac-b6ab-b8f138900106?target=%2F%2Fservices%2Fhikes%2Fscrape_walkhighlands%3Ascrape_semgrep_test&targetStatus=5#@7) — show a real semgrep_target_test execution with SAST + SCA passes.
+> **Open:** [main target on BuildBuddy](https://jomcgi.buildbuddy.io/invocation/e8f10161-1793-41ac-b6ab-b8f138900106?target=%2F%2Fprojects%2Fmonolith%3Amain_semgrep_test&targetStatus=5#@7): show a real semgrep_target_test execution with SAST + SCA passes.
 
 ## 4. New rules invalidate precisely
 
