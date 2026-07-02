@@ -8,9 +8,11 @@ contents:
     - busybox
     - ca-certificates-bundle
     - coreutils
+    - curl
     - git
     - gh
     - go
+    - jq
     # Runtime libs the goose binary dynamically links (libgomp.so.1,
     # libstdc++.so.6, libgcc_s.so.1); without them goose exits 127 at load.
     - libgcc
