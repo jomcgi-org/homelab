@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/harness"
@@ -158,9 +159,18 @@ func New(runner Runner, opts ...Option) shim.Handler {
 			}
 		}
 
+		// Write the task to a file the recipe reads, rather than templating it into
+		// the recipe YAML (see taskFilePath). Only the recipe paths use it; the
+		// bare-task/resume-without-recipe paths pass req.Task raw via --text.
+		if err := writeTaskFile(req.Task); err != nil {
+			slog.Error("handler: task file write failed", "err", err)
+			return jsonResult(AgentResult{Status: "error", Error: err.Error()})
+		}
+
 		argv := harness.GooseCommand(harness.Config{
 			Recipe:      req.Recipe,
 			Task:        req.Task,
+			TaskFile:    taskFilePath,
 			SessionName: req.Session,
 			Resume:      resume,
 		})
@@ -178,6 +188,11 @@ func New(runner Runner, opts ...Option) shim.Handler {
 		result := AgentResult{Status: "ok", Result: out}
 		if runErr != nil {
 			result.Status = "error"
+			// Keep goose's captured output on the failure path: for a run that
+			// started but exited non-zero (e.g. a recipe that failed to load) the
+			// only diagnostic is what goose printed. Dropping it leaves a bare
+			// "exit status 1" in the ledger and the reply, forcing a log dig.
+			result.Result = out
 			result.Error = runErr.Error()
 			return jsonResult(result)
 		}
@@ -223,6 +238,40 @@ func New(runner Runner, opts ...Option) shim.Handler {
 // HTML document (ADR 024); the harness ships it back for the orchestrator to
 // publish. A package var so tests can point it at a temp file.
 var artifactPath = "/tmp/artifact.html"
+
+// taskFilePath / contextFilePath are the files recipes read the task and the
+// router's context briefing from, instead of having that (untrusted, possibly
+// multi-line) text templated into the recipe YAML. goose renders a recipe as a
+// template and re-parses it as YAML before running, so a newline in a value
+// substituted into a `prompt: |` block scalar breaks the parse; a fixed
+// single-line path never can. The handler writes the task here; the router
+// writes its briefing to contextFilePath (sub-recipes read both via pre-bound
+// values). Package vars so tests can point them at a temp dir. These paths must
+// match the ones wired into the recipes (agent.yaml sub_recipes values).
+var (
+	taskFilePath    = "/tmp/goose/task.md"
+	contextFilePath = "/tmp/goose/context.md"
+)
+
+// writeTaskFile writes the task to taskFilePath and truncates contextFilePath to
+// empty, creating the parent dir. Truncating context clears any briefing left by
+// a prior turn in the same (snapshot-restored) microVM, so a sub-recipe never
+// reads a stale one; the router overwrites it when it has something to say. A
+// failure to write the task file is fatal to the run (the recipe would read an
+// empty task); a context-truncate failure is soft.
+func writeTaskFile(task string) error {
+	if err := os.MkdirAll(filepath.Dir(taskFilePath), 0o755); err != nil {
+		return fmt.Errorf("handler: create task dir: %w", err)
+	}
+	if err := os.WriteFile(taskFilePath, []byte(task), 0o644); err != nil {
+		return fmt.Errorf("handler: write task file: %w", err)
+	}
+	if err := os.WriteFile(contextFilePath, nil, 0o644); err != nil {
+		slog.Warn("handler: could not truncate context file; a stale briefing may leak",
+			"path", contextFilePath, "err", err)
+	}
+	return nil
+}
 
 // readArtifact returns the built artifact HTML, or nil when the run produced
 // none (a non-artifact recipe, or a build that failed to write the file). It

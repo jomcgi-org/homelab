@@ -13,8 +13,18 @@ type Config struct {
 	// their own settings.max_turns / max_tool_repetitions, which is what bounds
 	// the run and gives the idle detector a quiescent boundary.
 	Recipe string
-	// Task is the task description fed to the recipe (FC_TASK).
+	// Task is the raw task text. It is passed directly to goose as --text/-t on
+	// the recipe-less paths (bare task, resume-without-recipe), where goose uses
+	// it verbatim as the prompt and multi-line content is safe.
 	Task string
+	// TaskFile is the path to a file holding the task, used on the recipe paths
+	// (--params task_file=<TaskFile>). Recipes read the task from this file rather
+	// than having it templated into their YAML: goose renders a recipe as a
+	// template and re-parses it as YAML before running, so a multi-line task
+	// substituted into a `prompt: |` block scalar breaks the parse ("could not
+	// find expected ':'"), and goose dropped the `indent` filter that used to
+	// re-indent it in v1.39.0. A single-line file path is always safe.
+	TaskFile string
 	// SessionName names goose's SQLite session (--name). On a cold build it is set
 	// so the session is persisted under a stable name; on a resume it selects which
 	// session to replay (ADR 026 Phase 2). Empty means goose auto-manages.
@@ -28,8 +38,8 @@ type Config struct {
 
 // GooseCommand returns the argv to run, mirroring the established invocation:
 //
-//	resume:         goose run --recipe <recipe> --name <session> --resume --no-profile --with-builtin developer --params task_description=<task>
-//	with a recipe:  goose run --recipe <recipe> [--name <session>] --no-profile --with-builtin developer --params task_description=<task>
+//	resume:         goose run --recipe <recipe> --name <session> --resume --no-profile --with-builtin developer --params task_file=<taskfile>
+//	with a recipe:  goose run --recipe <recipe> [--name <session>] --no-profile --with-builtin developer --params task_file=<taskfile>
 //	bare task only: goose run --text <task>
 //
 // --no-profile keeps the run deterministic (it ignores the baked config.yaml), but
@@ -62,7 +72,7 @@ func GooseCommand(c Config) []string {
 				"--resume",
 				"--no-profile",
 				"--with-builtin", "developer",
-				"--params", fmt.Sprintf("task_description=%s", c.Task),
+				"--params", fmt.Sprintf("task_file=%s", c.TaskFile),
 			}
 		}
 		return []string{
@@ -83,7 +93,7 @@ func GooseCommand(c Config) []string {
 		return append(argv,
 			"--no-profile",
 			"--with-builtin", "developer",
-			"--params", fmt.Sprintf("task_description=%s", c.Task),
+			"--params", fmt.Sprintf("task_file=%s", c.TaskFile),
 		)
 	}
 	if c.Task != "" {

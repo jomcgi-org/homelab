@@ -1,4 +1,4 @@
-version: "1.4.2"
+version: "1.5.0"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -49,12 +49,14 @@ instructions: |
   this conversation). The root conventions file is not always ./CLAUDE.md:
   in this repo it lives at .claude/CLAUDE.md. Locate it before reading, for
   example `find . -maxdepth 2 -name CLAUDE.md`, rather than assuming the
-  path (a wrong guess wastes tool calls on a "No such file" error). Pass
-  what you found in the sub-recipe's context
-  parameter as a short briefing: relevant paths, constraints, and any
-  earlier results the worker cannot see (sub-recipes do not share your
-  conversation history). Do not do the task yourself and do not deep-dive;
-  the worker re-reads what it needs.
+  path (a wrong guess wastes tool calls on a "No such file" error). Write
+  what you found as a short briefing to the file /tmp/goose/context.md (for
+  example with the editor, or `printf '%s' '...' > /tmp/goose/context.md`):
+  relevant paths, constraints, and any earlier results the worker cannot see
+  (sub-recipes do not share your conversation history). Every sub-recipe reads
+  that file automatically, so this is how the briefing reaches the worker. Keep
+  it short; if you have nothing useful to add, leave the file untouched. Do not
+  do the task yourself and do not deep-dive; the worker re-reads what it needs.
 
   Dispatch the actual work; never run it in the router. Your context is
   shared across the whole thread, so a large tool output here (a full
@@ -65,8 +67,10 @@ instructions: |
   you do read (pipe through `head`, count with `wc -l` first, sample) and
   never pull hundreds of log lines into your context.
 
-  Then call the matching sub-recipe tool with the task (verbatim or lightly
-  clarified) and your context briefing, and wait for its result.
+  Then call the matching sub-recipe tool and wait for its result. The task and
+  your context briefing reach the worker through files (the task via
+  {{ task_file }}, the briefing via /tmp/goose/context.md), pre-wired on each
+  sub-recipe, so you do not pass them as tool arguments.
 
   When it returns, produce the structured result enforced by the response
   schema below, from the sub-recipe's output: a short `summary` of the
@@ -103,22 +107,43 @@ instructions: |
   the `recipe__` prefix. Call `recipe__final_output` on your first attempt and
   do not retry the unprefixed name.
 prompt: |
-  {{ task_description }}
+  Your task is in the file {{ task_file }}. Read it in full first, for example
+  `cat {{ task_file }}`, then classify and route it.
 parameters:
-  - key: task_description
-    description: "The task to perform"
+  - key: task_file
+    description: "Path to a file containing the task to perform"
     input_type: string
     requirement: required
+# Sub-recipes receive the task and the router briefing through files, not
+# templated params: task_file is threaded through from this recipe's param,
+# context_file is the fixed path the router writes its briefing to. Passing the
+# untrusted, possibly multi-line task text as a recipe parameter would be
+# substituted into the sub-recipe YAML and re-parsed, which breaks the block
+# scalar on any newline (goose renders the recipe as a template before parsing,
+# and dropped the `indent` filter in v1.39.0). File paths are single-line and
+# safe.
 sub_recipes:
   - name: query
     path: /home/goose-agent/recipes/query.yaml
+    values:
+      task_file: "{{ task_file }}"
+      context_file: /tmp/goose/context.md
   - name: plan
     path: /home/goose-agent/recipes/plan.yaml
+    values:
+      task_file: "{{ task_file }}"
+      context_file: /tmp/goose/context.md
   - name: implement
     path: /home/goose-agent/recipes/implement.yaml
     sequential_when_repeated: true
+    values:
+      task_file: "{{ task_file }}"
+      context_file: /tmp/goose/context.md
   - name: artifact
     path: /home/goose-agent/recipes/artifact.yaml
+    values:
+      task_file: "{{ task_file }}"
+      context_file: /tmp/goose/context.md
 extensions:
   - type: builtin
     name: developer

@@ -112,6 +112,20 @@ func (f *fakeSessionStore) Export(_ context.Context) ([]byte, error) {
 	return f.exportData, f.exportErr
 }
 
+// TestMain points the task/context file paths at a temp dir so the handler's
+// per-run file write does not touch the real /tmp during tests.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "goose-handler-test")
+	if err != nil {
+		panic(err)
+	}
+	taskFilePath = filepath.Join(dir, "task.md")
+	contextFilePath = filepath.Join(dir, "context.md")
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func invoke(t *testing.T, h shim.Handler, body string) (*shim.Response, error) {
 	t.Helper()
 	return h(context.Background(), &shim.Request{Path: "/invoke", Body: strings.NewReader(body)})
@@ -158,12 +172,17 @@ func TestColdRunBuildsArgvStreamsAndReturnsResult(t *testing.T) {
 		t.Errorf("result = %q, want %q", res.Result, "final answer")
 	}
 
-	// argv reflects recipe + task + session.
+	// argv reflects recipe + session + the task-file param (the task itself is
+	// written to that file, not templated into the recipe).
 	argv := strings.Join(runner.gotArgv, " ")
-	for _, want := range []string{"--recipe agent", "--name sess-1", "task_description=do the thing"} {
+	for _, want := range []string{"--recipe agent", "--name sess-1", "task_file=" + taskFilePath} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("argv %q missing %q", argv, want)
 		}
+	}
+	// the task text landed in the task file
+	if b, err := os.ReadFile(taskFilePath); err != nil || string(b) != "do the thing" {
+		t.Errorf("task file = %q (err %v), want %q", b, err, "do the thing")
 	}
 
 	// env forwarded verbatim.
@@ -360,6 +379,11 @@ func TestGooseRunErrorIsErrorResultAt200(t *testing.T) {
 	if res.Status != "error" || res.Error == "" {
 		t.Errorf("want error result, got %+v", res)
 	}
+	// goose's captured output is preserved on the error path so the failure is
+	// self-diagnosing (a bare exit code is useless).
+	if res.Result != "partial" {
+		t.Errorf("error result should keep goose output for diagnosis, got Result %q", res.Result)
+	}
 }
 
 func TestUndecodableBodyReturnsHandlerError(t *testing.T) {
@@ -410,8 +434,11 @@ func TestResumeHydratesSessionAndExportsUpdatedDb(t *testing.T) {
 	if !strings.Contains(argv, "--recipe agent") {
 		t.Errorf("argv %q should re-pass --recipe on resume", argv)
 	}
-	if !strings.Contains(argv, "task_description=make it bigger") {
-		t.Errorf("argv %q should pass the task via --params on resume", argv)
+	if !strings.Contains(argv, "task_file="+taskFilePath) {
+		t.Errorf("argv %q should pass the task file via --params on resume", argv)
+	}
+	if b, err := os.ReadFile(taskFilePath); err != nil || string(b) != "make it bigger" {
+		t.Errorf("resume task file = %q (err %v), want %q", b, err, "make it bigger")
 	}
 	// updated db exported back.
 	wantDb := base64.StdEncoding.EncodeToString([]byte("updated-db"))
