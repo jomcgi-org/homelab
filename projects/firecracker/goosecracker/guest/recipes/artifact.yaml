@@ -1,4 +1,4 @@
-version: "1.0.1"
+version: "1.1.0"
 title: "Artifact"
 description: "Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024)."
 instructions: |
@@ -44,11 +44,19 @@ prompt: |
   the shell or editor; do not reply with a plan or a description first:
 
   {{ task_description }}
+
+  Context from the router (may be empty):
+  {{ context }}
 parameters:
   - key: task_description
     description: "What to build"
     input_type: string
     requirement: required
+  - key: context
+    description: "Context the router gathered: constraints, prior thread state"
+    input_type: string
+    requirement: optional
+    default: ""
 extensions:
   - type: builtin
     name: developer

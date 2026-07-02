@@ -1,4 +1,4 @@
-version: "1.3.2"
+version: "1.4.0"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -16,6 +16,11 @@ instructions: |
     is a plan document, not the change itself.
   - implement: the task is a concrete, actionable change to code, config,
     or docs. The deliverable is a commit and a PR.
+  - artifact: the task asks for a thing to look at, a visualization, an
+    interactive page, a chart, a small demo, a dashboard, or a report rendered
+    as a web page ("make me / build me / show me a ..."). The deliverable is a
+    live web page published to a URL, not a repo change. The artifact runs in a
+    sandboxed iframe and cannot touch a repo.
 
   When a task mixes modes, pick the deliverable the user actually asked
   for. "Fix X" is implement. "How should we fix X" is plan. "Is X broken"
@@ -52,9 +57,11 @@ instructions: |
   schema below, from the sub-recipe's output: a short `summary` of the
   action and outcome, or the answer itself if the task was a question;
   optional `details` for the fuller answer or notable findings; the `mode`
-  you routed to; a `type` (pr/issue/note/answer); and a `url` only if the
-  worker reported a real PR or issue URL. The summary describes the ACTION
-  and RESULT, not your reasoning.
+  you routed to; a `type` (pr/issue/note/answer/artifact); and a `url` only if
+  the worker reported a real PR or issue URL. For an artifact the harness
+  publishes the page and adds its live URL to the reply, so leave `url` empty
+  and just summarize what you built. The summary describes the ACTION and
+  RESULT, not your reasoning.
 
   Be brief and finish fast. Length is the main thing that makes a reply feel
   slow: this runs on a local model, so every extra sentence is real wall-time,
@@ -92,6 +99,8 @@ sub_recipes:
   - name: implement
     path: /home/goose-agent/recipes/implement.yaml
     sequential_when_repeated: true
+  - name: artifact
+    path: /home/goose-agent/recipes/artifact.yaml
 extensions:
   - type: builtin
     name: developer
@@ -110,12 +119,12 @@ response:
         description: "Optional longer detail: the full answer, notable findings, or next steps. May be empty."
       mode:
         type: string
-        enum: ["query", "plan", "implement"]
+        enum: ["query", "plan", "implement", "artifact"]
         description: "Which sub-recipe the task was routed to."
       type:
         type: string
-        enum: ["pr", "issue", "note", "answer"]
-        description: "The kind of result."
+        enum: ["pr", "issue", "note", "answer", "artifact"]
+        description: "The kind of result. Use 'artifact' for a published web page; the harness adds its live URL, so leave `url` empty."
       url:
         type: string
         description: "A PR or issue URL ONLY if the worker actually opened one in this run (it reported the real URL); otherwise an empty string. Never invent, guess, or reconstruct a URL."
