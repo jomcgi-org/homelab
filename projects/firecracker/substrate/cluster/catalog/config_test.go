@@ -37,11 +37,11 @@ func TestLoadDefaultsNoWorkloads(t *testing.T) {
 	if len(c.Workloads) != 0 {
 		t.Errorf("Workloads = %v, want empty map", c.Workloads)
 	}
-	if c.BinPath != "/opt/kata/bin/firecracker" {
-		t.Errorf("BinPath = %q, want /opt/kata/bin/firecracker", c.BinPath)
+	if c.BinPath != "/opt/fc/firecracker" {
+		t.Errorf("BinPath = %q, want /opt/fc/firecracker", c.BinPath)
 	}
-	if c.KernelImagePath != "/opt/kata/share/kata-containers/vmlinux.container" {
-		t.Errorf("KernelImagePath = %q, want the kata vmlinux.container default", c.KernelImagePath)
+	if c.KernelImagePath != "/opt/fc/vmlinux.container" {
+		t.Errorf("KernelImagePath = %q, want the baked-in /opt/fc/vmlinux.container default", c.KernelImagePath)
 	}
 	if c.HarnessInit != "/usr/local/bin/fc-shim-init" {
 		t.Errorf("HarnessInit = %q, want /usr/local/bin/fc-shim-init", c.HarnessInit)
