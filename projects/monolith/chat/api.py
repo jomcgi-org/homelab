@@ -15,6 +15,7 @@ from chat.goosecracker import force_idle_thread  # re-exported
 from chat.goosecracker import mark_inflight_running  # re-exported
 from chat.goosecracker import reclaim_orphaned_agent_sessions  # re-exported
 from chat.goosecracker_progress import (  # re-exported
+    clear as reset_goosecracker_progress,
     mark_done as mark_goosecracker_progress_done,
     set_notice as set_goosecracker_progress_notice,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "reclaim_orphaned_agent_sessions",
     "enqueue_message",
     "mark_goosecracker_progress_done",
+    "reset_goosecracker_progress",
     "set_goosecracker_progress_notice",
     "run_changelog_for_config",
     "run_summary_generation",

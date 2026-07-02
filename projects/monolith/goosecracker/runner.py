@@ -440,6 +440,16 @@ async def _run_one_turn(
     drain/next-turn loop lives in ``run_and_deliver``, which calls this per turn.
     """
     ok = False
+    # Reset the live-progress buffer for this session before the turn starts, so a
+    # stale done=True left by a prior turn cannot poison this one. A runner-driven
+    # turn (a reclaimed or drained await-loop turn) marks the buffer done with no
+    # bot stream to consume+clear it, and the next bot-streamed turn would then
+    # read that stale done and render "Done in 0:01" instead of live progress. The
+    # bot's stream sleeps before its first poll, so clearing at dispatch wins the
+    # race. Reached through chat.api so goosecracker never imports chat internals.
+    from chat.api import reset_goosecracker_progress
+
+    reset_goosecracker_progress(session)
     try:
         if not FC_INVOKE_URL:
             raise RuntimeError("FC_INVOKE_URL is not configured")
