@@ -1,4 +1,4 @@
-version: "1.6.0"
+version: "1.7.0"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -11,6 +11,11 @@ instructions: |
   - query: the task is a question. It wants an answer or an explanation,
     not a change. ("how does X work", "where is Y configured", "why did
     Z fail")
+  - research: the task needs facts from OUTSIDE the repo and cluster:
+    upstream docs, current versions, API details, best practices, product
+    comparisons, news. ("what's the latest X", "how do I use library Y",
+    "compare A vs B"). If the answer lives in this repo or this cluster,
+    that is query, not research.
   - plan: the task wants a design or implementation plan written, or is a
     large/ambiguous change where planning must precede code. The deliverable
     is a plan document, not the change itself.
@@ -144,6 +149,11 @@ sub_recipes:
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
+  - name: research
+    path: /home/goose-agent/recipes/research.yaml
+    values:
+      task_file: "{{ task_file }}"
+      context_file: /tmp/goose/context.md
   - name: plan
     path: /home/goose-agent/recipes/plan.yaml
     values:
@@ -183,7 +193,7 @@ response:
         description: "Optional longer detail: the full answer, notable findings, or next steps. May be empty."
       mode:
         type: string
-        enum: ["query", "plan", "implement", "artifact"]
+        enum: ["query", "plan", "implement", "artifact", "research"]
         description: "Which sub-recipe the task was routed to."
       type:
         type: string
