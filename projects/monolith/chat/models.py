@@ -146,3 +146,21 @@ class GoosecrackerSession(SQLModel, table=True):
     pending: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class DiscordFeatureGrant(SQLModel, table=True):
+    """Generic per-server Discord bot feature ACL (ADR 029).
+
+    A grant permits a subject to use a feature in a scope within a server.
+    Empty-string sentinels are wildcards: guild_id "" matches any server,
+    subject_id "" matches every user in that server, scope "" grants the whole
+    feature. For the "agent" feature, scope is the repo name. Allow-list only.
+    """
+
+    __tablename__ = "discord_feature_grant"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    guild_id: str = Field(default="", primary_key=True)
+    subject_id: str = Field(default="", primary_key=True)
+    feature: str = Field(primary_key=True)
+    scope: str = Field(default="", primary_key=True)

@@ -280,6 +280,17 @@ def is_goosecracker_thread(thread_id: str) -> bool:
         return session.get(GoosecrackerSession, thread_id) is not None
 
 
+def is_agent_thread(thread_id: str) -> bool:
+    """True for an agent (not artifact) goosecracker thread. Synchronous.
+
+    Lets the reply gate open agent threads to everyone while keeping artifact
+    threads owner-only (ADR 029).
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        return row is not None and row.recipe == AGENT_RECIPE
+
+
 async def build_roast(attempt_text: str) -> str:
     """Roast a non-owner who tried to run the agent, via the in-cluster qwen
     model (same path as the changelog roasts). Falls back to a fixed line if the

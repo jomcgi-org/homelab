@@ -72,9 +72,14 @@ async def _start_singletons(app: FastAPI) -> None:
     bot = None
     discord_token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if discord_token:
+        from chat.acl import bootstrap_defaults
         from chat.bot import create_bot
         from chat.summarizer import build_llm_caller
         from chat.summarizer import on_startup as chat_startup
+
+        # Idempotently seed the default Discord feature grants (ADR 029) before
+        # the bot accepts commands, so the home server + owner work out of the box.
+        bootstrap_defaults()
 
         bot = create_bot()
         app.state.bot = bot

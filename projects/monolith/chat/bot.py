@@ -28,6 +28,7 @@ from shared.embedding import EmbeddingClient
 from chat.store import MessageStore
 from chat.vision import VisionClient
 from chat.web_search import search_web
+from chat import acl
 from chat import goosecracker
 from chat import goosecracker_progress
 from app.db import get_engine
@@ -459,7 +460,7 @@ class ChatBot(discord.Client):
 
         @self.tree.command(
             name="agent",
-            description="Run the coding agent on a repo (owner only)",
+            description="Run the coding agent on a repo",
         )
         @discord.app_commands.describe(
             prompt="The task for the agent",
@@ -541,8 +542,10 @@ class ChatBot(discord.Client):
     async def _handle_goosecracker_command(
         self, interaction: discord.Interaction, prompt: str
     ) -> None:
-        """Owner-gated /artifact: open a thread and dispatch the first run."""
-        if not goosecracker.is_owner(interaction.user.id):
+        """Grant-gated /artifact: open a thread and dispatch the first run."""
+        if not await asyncio.to_thread(
+            acl.is_granted, interaction.guild_id, interaction.user.id, "artifact"
+        ):
             # Defer first: the roast hits the qwen model (with retries), which
             # routinely exceeds Discord's 3s initial-response deadline. Without
             # the defer the interaction 404s and the roast never lands.
@@ -585,11 +588,25 @@ class ChatBot(discord.Client):
     async def _handle_agent_command(
         self, interaction: discord.Interaction, prompt: str, repo: str
     ) -> None:
-        """Owner-gated /agent: open a thread and dispatch a one-shot agent run."""
-        if not goosecracker.is_owner(interaction.user.id):
-            await interaction.response.defer(ephemeral=True)
-            roast = await goosecracker.build_roast(prompt)
-            await interaction.followup.send(roast, ephemeral=True)
+        """/agent (open per ADR 029): allowed for everyone in a server that is
+        opted in, with the repo bound to that server's grants."""
+        guild_id = interaction.guild_id
+        if not await asyncio.to_thread(acl.feature_enabled, guild_id, "agent"):
+            await interaction.response.send_message(
+                "/agent isn't enabled in this server.", ephemeral=True
+            )
+            return
+        if not await asyncio.to_thread(
+            acl.is_granted, guild_id, interaction.user.id, "agent", repo
+        ):
+            scopes = await asyncio.to_thread(
+                acl.allowed_scopes, guild_id, interaction.user.id, "agent"
+            )
+            allowed = ", ".join(sorted(scopes)) or "none"
+            await interaction.response.send_message(
+                f"This server can't run /agent on '{repo}'. Allowed here: {allowed}.",
+                ephemeral=True,
+            )
             return
 
         channel = interaction.channel
@@ -695,7 +712,11 @@ class ChatBot(discord.Client):
         if message.author.bot:
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
-        if not goosecracker.is_owner(message.author.id):
+        # Agent threads are open to everyone (ADR 029); artifact threads stay
+        # owner-only. The thread is already bound to its repo, so replies can't
+        # cross to another repo.
+        is_agent = await asyncio.to_thread(goosecracker.is_agent_thread, thread_id)
+        if not is_agent and not goosecracker.is_owner(message.author.id):
             roast = await goosecracker.build_roast(message.content)
             await message.reply(roast)
             await asyncio.to_thread(self._complete_lock, msg_id)
