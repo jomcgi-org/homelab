@@ -205,6 +205,11 @@ goosecracker:
       # defaults to OTLP/HTTP.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
       OTEL_SERVICE_NAME: goose-coding
+      # SearXNG JSON API for the research sub-recipe. Not a secret; the
+      # egress sidecar must also allowlist this host:port (substrate deploy
+      # values). Leave unset in deployments without SearXNG: the recipe
+      # skips web search gracefully.
+      SEARXNG_URL: http://monolith-searxng.monolith.svc.cluster.local:8080
     # The artifact tier runs on the in-cluster qwen model (free, no OpenRouter
     # cost). Artifacts are served behind unguessable capability URLs, so a paid
     # large-context tier is no longer needed. Same OpenAI-compatible in-cluster
@@ -227,6 +232,11 @@ goosecracker:
       GOOSE_DISABLE_SESSION_NAMING: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
       OTEL_SERVICE_NAME: goosecracker-artifact
+      # SearXNG JSON API for the research sub-recipe. Not a secret; the
+      # egress sidecar must also allowlist this host:port (substrate deploy
+      # values). Leave unset in deployments without SearXNG: the recipe
+      # skips web search gracefully.
+      SEARXNG_URL: http://monolith-searxng.monolith.svc.cluster.local:8080
 
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
 # gardener paused, the raw export / file moves can be done as a controlled
