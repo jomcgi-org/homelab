@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.1.0"
 title: "Plan"
 description: "Planning sub-recipe: turn a feature or change request into a written implementation plan, without implementing it."
 instructions: |
@@ -10,9 +10,11 @@ instructions: |
   your only deliverable.
 
   Ground yourself before planning:
-  - Read ./CLAUDE.md at the repo root: it holds the repo's conventions,
+  - Read the repo's root CLAUDE.md: it holds the repo's conventions,
     key patterns (GitOps, apko images, chart version bumps, secrets), and
-    anti-patterns. A plan that violates them is a bad plan.
+    anti-patterns. A plan that violates them is a bad plan. It is not always
+    ./CLAUDE.md: in this repo it lives at .claude/CLAUDE.md, so locate it
+    first, for example `find . -maxdepth 2 -name CLAUDE.md`.
   - Read the CLAUDE.md of any project directory the plan touches
     (e.g. projects/<service>/CLAUDE.md).
   - Check docs/decisions/ for ADRs that constrain the design, and

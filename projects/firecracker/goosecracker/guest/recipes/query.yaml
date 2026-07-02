@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.1.0"
 title: "Query"
 description: "Read-only investigation sub-recipe: answer a question about the repo or cluster without changing anything."
 instructions: |
@@ -6,8 +6,10 @@ instructions: |
   microVM, on a checkout of the repo at /workspace.
 
   Answer the question below by reading the repo. Ground yourself first: read
-  ./CLAUDE.md at the repo root for the repository layout, conventions, and
-  where things live (projects/, docs/, bazel/). If the question touches a
+  the repo's root CLAUDE.md for the repository layout, conventions, and where
+  things live (projects/, docs/, bazel/). It is not always ./CLAUDE.md: in
+  this repo it lives at .claude/CLAUDE.md, so locate it before reading, for
+  example `find . -maxdepth 2 -name CLAUDE.md`. If the question touches a
   specific service, also read that service's CLAUDE.md if one exists
   (e.g. projects/<service>/CLAUDE.md) and its deploy/ directory.
 
