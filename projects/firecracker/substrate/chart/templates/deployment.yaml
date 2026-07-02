@@ -26,6 +26,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      # Safe-rollout drain: give the daemon time to finish in-flight invokes on
+      # SIGTERM before Kubernetes SIGKILLs it. Set above drain.timeoutSeconds (the
+      # daemon's own drain budget, FC_INVOKE_DRAIN_TIMEOUT below) so the grace
+      # window always outlasts the drain. See values.yaml `drain`.
+      terminationGracePeriodSeconds: {{ add .Values.drain.timeoutSeconds 30 }}
       serviceAccountName: {{ include "fc-invoke.serviceAccountName" . }}
       {{- if .Values.imagePullSecret.enabled }}
       imagePullSecrets:
@@ -124,6 +129,11 @@ spec:
               value: ":{{ .Values.service.port }}"
             - name: FC_INVOKE_NODE
               value: {{ .Values.node | quote }}
+            # Graceful-drain budget (safe rollout): how long the daemon waits for
+            # in-flight invokes before exiting on SIGTERM. Pinned from
+            # drain.timeoutSeconds; terminationGracePeriodSeconds is set above it.
+            - name: FC_INVOKE_DRAIN_TIMEOUT
+              value: "{{ .Values.drain.timeoutSeconds }}s"
             - name: FC_INVOKE_ARCH
               value: {{ .Values.arch | quote }}
             # The named workload table, rendered as JSON. The daemon builds one

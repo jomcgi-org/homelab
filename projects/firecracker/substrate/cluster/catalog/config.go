@@ -57,6 +57,15 @@ type Config struct {
 	// BootReadyTimeout bounds how long an invoker waits for a freshly booted or
 	// restored guest to announce readiness over its shim.
 	BootReadyTimeout time.Duration
+	// DrainTimeout bounds graceful shutdown: on SIGTERM the daemon stops
+	// accepting new invocations and waits up to this long for in-flight guests
+	// to finish before exiting, so a rollout never drops a running task. It must
+	// cover the longest workload RequestTimeout, and the pod's
+	// terminationGracePeriodSeconds must exceed it so Kubernetes does not SIGKILL
+	// mid-drain. Overridable via FC_INVOKE_DRAIN_TIMEOUT; defaults to the longest
+	// workload RequestTimeout plus a flush/discard margin (or BootReadyTimeout
+	// when no workloads are configured).
+	DrainTimeout time.Duration
 
 	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address
 	// (ADR 023 phase 6a). Egress-enabled workloads tunnel each guest's vsock
@@ -106,7 +115,31 @@ func Load() (Config, error) {
 	}
 	c.Workloads = workloads
 
+	// Derive the drain budget from the workload table so it can never silently
+	// fall behind a requestTimeout bump, then let FC_INVOKE_DRAIN_TIMEOUT pin it.
+	c.DrainTimeout = defaultDrainTimeout(c.Workloads, c.BootReadyTimeout)
+	if err := parseDuration("FC_INVOKE_DRAIN_TIMEOUT", &c.DrainTimeout); err != nil {
+		return Config{}, err
+	}
+
 	return c, nil
+}
+
+// defaultDrainTimeout is the graceful-shutdown budget when FC_INVOKE_DRAIN_TIMEOUT
+// is unset: the longest workload RequestTimeout plus a margin for the guest
+// response to flush and the microVM to be discarded, so an in-flight invocation
+// is never cut short. Falls back to bootReady when no workloads are configured.
+func defaultDrainTimeout(workloads map[string]substrate.Workload, bootReady time.Duration) time.Duration {
+	var longest time.Duration
+	for _, w := range workloads {
+		if w.RequestTimeout > longest {
+			longest = w.RequestTimeout
+		}
+	}
+	if longest <= 0 {
+		return bootReady
+	}
+	return longest + 30*time.Second
 }
 
 // loadWorkloads parses the workload table from FC_INVOKE_WORKLOADS_FILE (if

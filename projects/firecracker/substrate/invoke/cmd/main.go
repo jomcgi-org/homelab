@@ -158,8 +158,13 @@ func run(logger *slog.Logger) error {
 		}
 		return err
 	case <-ctx.Done():
-		logger.Info("shutdown signal received; draining")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.BootReadyTimeout)
+		// Stop accepting new invocations and wait for in-flight ones to finish.
+		// Each /invoke is a synchronous request that holds its guest until the
+		// response is proxied back, so Shutdown draining handlers == draining
+		// running tasks. The budget covers the longest workload so a rollout
+		// never drops a task; the pod's grace period is set above it.
+		logger.Info("shutdown signal received; draining in-flight invocations", "budget", cfg.DrainTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.DrainTimeout)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}

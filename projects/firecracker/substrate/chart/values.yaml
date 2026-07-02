@@ -54,6 +54,18 @@ replicas: 1
 
 podAnnotations: {}
 
+# Safe-rollout drain budget. On SIGTERM the daemon stops accepting new invokes
+# and waits up to drain.timeoutSeconds for in-flight guests to finish before
+# exiting, so a rollout (or any pod delete) never drops a running task. This
+# MUST cover the longest workload requestTimeout (agent: 600s below) or a
+# mid-flight goose run is cut short. terminationGracePeriodSeconds is set to
+# drain.timeoutSeconds + 30s of margin so Kubernetes does not SIGKILL the pod
+# mid-drain (the guest response still needs to flush and the microVM be
+# discarded after the request context ends). Raise this in lockstep if any
+# workload's requestTimeout grows past it.
+drain:
+  timeoutSeconds: 600
+
 # node + arch the daemon runs on. Firecracker guests are node/arch-affine, so
 # the daemon is pinned to its node.
 node: node-4
