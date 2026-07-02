@@ -53,7 +53,6 @@ filegroup(
         # These rules are wired to dedicated semgrep_test targets below.
         exclude = [
             "python/migration-destructive-ddl.yaml",
-            "python/no-pytest-mark-asyncio-without-plugin.yaml",
         ],
     ) + ["@semgrep_pro_rules_python//:rules"],
 )
@@ -398,24 +397,6 @@ semgrep_test(
     srcs = ["//bazel/semgrep/tests:no_bare_nosemgrep_fixtures"],
     env = {"SEMGREP_TEST_MODE": "1"},
     rules = [":no_bare_nosemgrep_rule"],
-    tags = ["semgrep"],
-)
-
-# no-pytest-mark-asyncio-without-plugin is excluded from python_rules because
-# semgrep-core ignores paths: filters (pysemgrep-only feature) and the rule would
-# produce false positives for project files that legitimately use @pip//pytest_asyncio.
-# Enforcement is via the Semgrep Cloud Platform scan (which respects paths: include:
-# ["projects/lakehouse/**"]) and the check-asyncio-mark-build-dep PreToolUse hook.
-filegroup(
-    name = "no_pytest_mark_asyncio_without_plugin_rule",
-    srcs = ["python/no-pytest-mark-asyncio-without-plugin.yaml"],
-)
-
-semgrep_test(
-    name = "no_pytest_mark_asyncio_without_plugin_test",
-    srcs = ["//bazel/semgrep/tests:no_pytest_mark_asyncio_without_plugin_fixtures"],
-    env = {"SEMGREP_TEST_MODE": "1"},
-    rules = [":no_pytest_mark_asyncio_without_plugin_rule"],
     tags = ["semgrep"],
 )
 

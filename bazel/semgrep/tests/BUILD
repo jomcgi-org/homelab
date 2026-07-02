@@ -119,14 +119,6 @@ filegroup(
     srcs = ["fixtures/no-session-in-to-thread.yaml"],
 )
 
-# Fixture for the no-pytest-mark-asyncio-without-plugin rule (languages: python,
-# paths: projects/lakehouse/**). Excluded from python_rules to avoid false positives
-# on project files that legitimately have @pip//pytest_asyncio in BUILD deps.
-# Referenced by //bazel/semgrep/rules:no_pytest_mark_asyncio_without_plugin_test.
-filegroup(
-    name = "no_pytest_mark_asyncio_without_plugin_fixtures",
-    srcs = ["fixtures/no-pytest-mark-asyncio-without-plugin.yaml"],
-)
 
 # Fixture for the css-import-after-rules rule (languages: generic, paths: **/*.css).
 # Referenced by //bazel/semgrep/rules:css_import_after_rules_test.

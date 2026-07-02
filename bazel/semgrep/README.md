@@ -52,18 +52,18 @@ invoked directly does not honour `# nosemgrep`.
 Rules live under `bazel/semgrep/rules/`, one subdirectory per language.
 Named filegroup targets are declared in `rules/BUILD` and are publicly visible.
 
-| Dir            | Filegroup target           | Sample rules                                                                                    |
-| -------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
-| `bazel/`       | `:bazel_rules`             | `no-rules-python` (enforce `@aspect_rules_py`), `py-glob-missing-tests-exclude`                |
-| `dockerfile/`  | `:dockerfile_rules`        | `no-dockerfile` (all images must use apko)                                                      |
-| `generic/`     | `:generic_rules`           | `no-stale-repo-paths`, `no-generic-test-filename`, `no-deprecated-api-subdomain`, `css-import-after-rules` |
-| `golang/`      | `:golang_rules`            | `no-hardcoded-k8s-service-url`, `no-bare-error-return`, `no-discarded-json-marshal`, `stale-copyright-year` |
-| `kubernetes/`  | `:kubernetes_rules`        | `no-hardcoded-image-digest`, `no-privileged`, `require-readiness-probe`, `require-resource-limits`, `require-fsgroup-with-pvc` |
-| `python/`      | `:python_rules`            | `no-hardcoded-k8s-service-url`, `no-hardcoded-secret`, `no-requests` (use httpx), `sqlmodel-*`, `no-sync-session-in-async-def` |
-| `shell/`       | `:shell_rules`             | `no-kubectl-mutate` (GitOps guard), `no-direct-test`, `claude-print-missing-permission-mode`   |
-| `sql/`         | `:sql_rules`               | `no-create-extension-sql`                                                                       |
-| `typescript/`  | `:typescript_rules`        | `fetch-no-timeout`, `sveltekit-form-action-unvalidated-path`, `svelte-hardcoded-color-in-style` |
-| `yaml/`        | `:yaml_rules`              | `no-hardcoded-k8s-url-in-helm-env`, `argocd-retry-under-spec`, `no-httproute-rule-without-timeout`, `no-unquoted-helm-range-args` |
+| Dir           | Filegroup target    | Sample rules                                                                                                                      |
+| ------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `bazel/`      | `:bazel_rules`      | `no-rules-python` (enforce `@aspect_rules_py`), `py-glob-missing-tests-exclude`                                                   |
+| `dockerfile/` | `:dockerfile_rules` | `no-dockerfile` (all images must use apko)                                                                                        |
+| `generic/`    | `:generic_rules`    | `no-stale-repo-paths`, `no-generic-test-filename`, `no-deprecated-api-subdomain`, `css-import-after-rules`                        |
+| `golang/`     | `:golang_rules`     | `no-hardcoded-k8s-service-url`, `no-bare-error-return`, `no-discarded-json-marshal`, `stale-copyright-year`                       |
+| `kubernetes/` | `:kubernetes_rules` | `no-hardcoded-image-digest`, `no-privileged`, `require-readiness-probe`, `require-resource-limits`, `require-fsgroup-with-pvc`    |
+| `python/`     | `:python_rules`     | `no-hardcoded-k8s-service-url`, `no-hardcoded-secret`, `no-requests` (use httpx), `sqlmodel-*`, `no-sync-session-in-async-def`    |
+| `shell/`      | `:shell_rules`      | `no-kubectl-mutate` (GitOps guard), `no-direct-test`, `claude-print-missing-permission-mode`                                      |
+| `sql/`        | `:sql_rules`        | `no-create-extension-sql`                                                                                                         |
+| `typescript/` | `:typescript_rules` | `fetch-no-timeout`, `sveltekit-form-action-unvalidated-path`, `svelte-hardcoded-color-in-style`                                   |
+| `yaml/`       | `:yaml_rules`       | `no-hardcoded-k8s-url-in-helm-env`, `argocd-retry-under-spec`, `no-httproute-rule-without-timeout`, `no-unquoted-helm-range-args` |
 
 The `:javascript_rules` filegroup combines `:typescript_rules` with the
 upstream Semgrep Pro JavaScript rule pack. The `:kubernetes_rules` filegroup
@@ -75,12 +75,12 @@ filegroup aggregates every rule YAML for convenience.
 Supply Chain Analysis rule packs are vendored from the Semgrep registry as
 separate OCI archives and exposed as filegroup targets:
 
-| Target                   | Ecosystem  |
-| ------------------------ | ---------- |
-| `:sca_golang_rules`      | Go modules |
-| `:sca_python_rules`      | pip/uv     |
-| `:sca_javascript_rules`  | npm/pnpm   |
-| `:sca_rules`             | all three  |
+| Target                  | Ecosystem  |
+| ----------------------- | ---------- |
+| `:sca_golang_rules`     | Go modules |
+| `:sca_python_rules`     | pip/uv     |
+| `:sca_javascript_rules` | npm/pnpm   |
+| `:sca_rules`            | all three  |
 
 When a `semgrep_test` or `semgrep_target_test` target has `lockfiles` set,
 the Gazelle extension auto-selects the matching SCA rules. See
@@ -114,9 +114,9 @@ published to `ghcr.io/jomcgi/homelab/tools/`. A Bazel module extension
 instantiates one repository per platform; a `select()`-based alias resolves
 the correct binary at analysis time.
 
-| Target                                         | Binary                      | Source image prefix                    |
-| ---------------------------------------------- | --------------------------- | -------------------------------------- |
-| `//bazel/semgrep/third_party/semgrep:engine`   | `semgrep-core`              | `jomcgi/homelab/tools/semgrep/engine-` |
+| Target                                           | Binary                     | Source image prefix                        |
+| ------------------------------------------------ | -------------------------- | ------------------------------------------ |
+| `//bazel/semgrep/third_party/semgrep:engine`     | `semgrep-core`             | `jomcgi/homelab/tools/semgrep/engine-`     |
 | `//bazel/semgrep/third_party/semgrep_pro:engine` | `semgrep-core-proprietary` | `jomcgi/homelab/tools/semgrep-pro/engine-` |
 
 Supported platforms: `linux/amd64`, `linux/arm64`, `macos/x86_64`,
@@ -148,11 +148,10 @@ the engine version.
 - Load only from `//bazel/semgrep/defs:defs.bzl`.
 - Suppress false positives with `exclude_rules` in the BUILD entry, not
   `# nosemgrep` in source. `semgrep-core` does not honour inline suppressions.
-- Rules that use `languages: [generic]` with path filters (e.g.
-  `no-pytest-mark-asyncio-without-plugin`) must be wired to dedicated
-  `semgrep_test` targets rather than added to the broad language filegroup,
-  because `semgrep-core` ignores `paths:` filters (a `pysemgrep`-only feature)
-  and would produce false positives against all project files.
+- Rules that use path filters (e.g. `migration-destructive-ddl`) must be wired
+  to dedicated `semgrep_test` targets rather than added to the broad language
+  filegroup, because `semgrep-core` ignores `paths:` filters (a `pysemgrep`-only
+  feature) and would produce false positives against all project files.
 - The `semgrep_manifest_test` used by `argocd_app` in `bazel/helm` defaults
   to `//bazel/semgrep/rules:kubernetes_rules`. Override via
   `semgrep_rules = [...]` on `argocd_app`, or suppress individual rules with
