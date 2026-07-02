@@ -105,9 +105,15 @@ export const STARS_HISTORY_CACHE_CONTROL =
 export const TRIPS_CACHE_CONTROL =
   "public, max-age=60, s-maxage=300, stale-while-revalidate=3600";
 
-// /app/campsites snapshot: availability + 14-day weather, refreshed hourly.
-// 30 min CDN freshness with 1 h SWR keeps the edge warm between fetches.
-// Mirrors _SNAPSHOT_CACHE_CONTROL in
+// /app/campsites snapshot: availability + 14-day weather, refreshed hourly by
+// the campsites-refresh CronWorkflow. 60s edge freshness so a deploy becomes
+// visible within ~1 min without a CDN purge: on deploy the SvelteKit build
+// version changes, which busts the versioned page ETag, and the short s-maxage
+// means the CDN revalidates and picks up the new build within a minute instead of
+// holding the pre-deploy render for up to 30 min. Browser max-age=0 already
+// revalidates each load, and the (build x data)-derived ETag keeps the extra
+// revalidations cheap 304s when nothing moved. 1 h SWR / 1 d SIE preserve CDN
+// offload and origin-outage resilience. Mirrors _SNAPSHOT_CACHE_CONTROL in
 // projects/monolith/campsites/router.py, keep in sync.
 export const CAMPSITES_SNAPSHOT_CACHE_CONTROL =
-  "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
+  "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400";

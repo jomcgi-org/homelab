@@ -25,10 +25,15 @@ logger = logging.getLogger("monolith.campsites")
 
 router = APIRouter(prefix="/api/campsites", tags=["campsites"])
 
-# Weather refreshes hourly; 30 min edge freshness with 1 h SWR is plenty.
-# Mirrors CAMPSITES_SNAPSHOT_CACHE_CONTROL in
+# Data refreshes hourly (campsites-refresh CronWorkflow), but 60s edge freshness
+# lets a deploy become visible within ~1 min without a CDN purge: the versioned
+# page ETag busts on deploy and the short s-maxage makes the CDN revalidate
+# promptly, while the (build x data)-derived ETag keeps the extra revalidations
+# cheap 304s. Mirrors CAMPSITES_SNAPSHOT_CACHE_CONTROL in
 # frontend/src/lib/cache-headers.js, keep in sync.
-_SNAPSHOT_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400"
+_SNAPSHOT_CACHE_CONTROL = (
+    "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400"
+)
 
 _LOOKAHEAD_DAYS = 14
 
