@@ -11,8 +11,12 @@
 repos:
   - name: homelab
     url: https://github.com/jomcgi/homelab.git
+  # loom is PRIVATE, under the weave-hand org (not jomcgi). The mirror clones it
+  # via the mirror-side githubToken + insteadOf rewrite; the token has weave-hand
+  # read access. A jomcgi/loom URL 404s and the clone non-fatally skips, so /loom
+  # is "not exported" to guests. Keep this in sync with chart/values.yaml.
   - name: loom
-    url: https://github.com/jomcgi/loom.git
+    url: https://github.com/weave-hand/loom.git
 
 refreshIntervalSeconds: 60
 
