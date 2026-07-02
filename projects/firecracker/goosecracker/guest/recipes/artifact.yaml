@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Artifact"
 description: "Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024)."
 instructions: |
@@ -41,19 +41,20 @@ instructions: |
   ```
 prompt: |
   Build this artifact now. Start immediately by writing /tmp/artifact.html with
-  the shell or editor; do not reply with a plan or a description first:
+  the shell or editor; do not reply with a plan or a description first.
 
-  {{ task_description }}
+  What to build is in the file {{ task_file }}: read it first, for example
+  `cat {{ task_file }}`.
 
-  Context from the router (may be empty):
-  {{ context }}
+  Router context may be in the file {{ context_file }} (the path may be empty,
+  meaning none): if it is a non-empty path, read it too.
 parameters:
-  - key: task_description
-    description: "What to build"
+  - key: task_file
+    description: "Path to a file describing what to build"
     input_type: string
     requirement: required
-  - key: context
-    description: "Context the router gathered: constraints, prior thread state"
+  - key: context_file
+    description: "Path to an optional file with router-gathered context (constraints, prior thread state); may be empty"
     input_type: string
     requirement: optional
     default: ""

@@ -1,4 +1,4 @@
-version: "1.2.1"
+version: "1.3.0"
 title: "Implement"
 description: "Implementation sub-recipe: make a code or config change, commit it, and open a PR."
 instructions: |
@@ -34,20 +34,22 @@ instructions: |
   and the PR URL if you opened one (only a URL you actually received, never
   an invented one).
 parameters:
-  - key: task_description
-    description: "The change to implement"
+  - key: task_file
+    description: "Path to a file containing the change to implement"
     input_type: string
     requirement: required
-  - key: context
-    description: "Context the router gathered: relevant paths, prior thread state, constraints, or a plan to follow"
+  - key: context_file
+    description: "Path to an optional file with router-gathered context (relevant paths, prior thread state, constraints, or a plan to follow); may be empty"
     input_type: string
     requirement: optional
     default: ""
 prompt: |
-  {{ task_description }}
+  The change to implement is in the file {{ task_file }}. Read it in full first,
+  for example `cat {{ task_file }}`.
 
-  Router context (may be empty):
-  {{ context }}
+  Router context may be in the file {{ context_file }} (the path may be empty,
+  meaning none): if it is a non-empty path, read it too, for example
+  `cat {{ context_file }}`.
 extensions:
   - type: builtin
     name: developer
