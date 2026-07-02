@@ -1,4 +1,4 @@
-version: "1.2.0"
+version: "1.2.1"
 title: "Implement"
 description: "Implementation sub-recipe: make a code or config change, commit it, and open a PR."
 instructions: |
@@ -44,10 +44,10 @@ parameters:
     requirement: optional
     default: ""
 prompt: |
-  {{ task_description | indent(2) }}
+  {{ task_description }}
 
   Router context (may be empty):
-  {{ context | indent(2) }}
+  {{ context }}
 extensions:
   - type: builtin
     name: developer
