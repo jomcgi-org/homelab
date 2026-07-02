@@ -35,7 +35,7 @@ The wrangler binary is not bundled; you must declare it in the same BUILD file
 before calling the macro:
 
 ```python
-load("@npm//projects/trips/frontend:wrangler/package_json.bzl", wrangler_bin = "bin")
+load("@npm//projects/my_app/frontend:wrangler/package_json.bzl", wrangler_bin = "bin")
 load("//bazel/wrangler:defs.bzl", "wrangler_pages")
 
 # Declare the wrangler binary (one per BUILD file that uses wrangler_pages).
@@ -53,7 +53,7 @@ wrangler_pages(
 Deploy with:
 
 ```bash
-bazel run //projects/trips/frontend:trips.push
+bazel run //projects/my_app/frontend:my_site.push
 ```
 
 ### Attributes

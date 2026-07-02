@@ -94,15 +94,15 @@ Declares an ArgoCD overlay. Always emits a `template_test` and (by default) a
 `semgrep_test`; opt into pre-rendered `render_manifests` and a live `diff`.
 
 ```python
-# projects/lakehouse/deploy/BUILD
+# projects/my_app/deploy/BUILD
 argocd_app(
-    name = "lakehouse",
-    chart = "projects/lakehouse/chart",
-    chart_files = "//projects/lakehouse/chart:chart",
-    namespace = "lakehouse",
-    release_name = "lakehouse",
+    name = "my_app",
+    chart = "projects/my_app/chart",
+    chart_files = "//projects/my_app/chart:chart",
+    namespace = "my_app",
+    release_name = "my_app",
     values_files = [
-        "//projects/lakehouse/chart:values.yaml",
+        "//projects/my_app/chart:values.yaml",
         "values.yaml",
     ],
     semgrep_exclude_rules = ["require-readiness-probe"],

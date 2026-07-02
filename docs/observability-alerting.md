@@ -137,19 +137,12 @@ The `thresholds` block is still needed for the SigNoz UI to render threshold con
 
 Monitor service availability via the OTel httpcheck receiver. Pattern: `max(httpcheck.status)` (space aggregation) where `http.url = '<url>'`, alert when `< 1` for 5 consecutive checks. Uses `max` space aggregation to avoid false positives from stale metric series left by previous collector pod incarnations.
 
-| Service          | URL                                       | Location                                      |
-| ---------------- | ----------------------------------------- | --------------------------------------------- |
-| ArgoCD           | `https://private.jomcgi.dev/app/argocd/healthz` | `projects/platform/argocd/`                   |
-| Longhorn         | `https://private.jomcgi.dev/app/longhorn/` | `projects/platform/longhorn/`                 |
-| SigNoz           | `https://private.jomcgi.dev/app/signoz`   | `projects/platform/signoz/`                   |
-| hikes.jomcgi.dev | `https://hikes.jomcgi.dev`                | `projects/platform/signoz/`                   |
-| jomcgi.dev       | `https://jomcgi.dev`                      | `projects/platform/signoz/`                   |
-| trips pages      | `https://trips.jomcgi.dev`                | `projects/platform/signoz/`                   |
-| marine           | `https://marine.jomcgi.dev/health`        | `projects/ships/deploy/`                      |
-| api-gateway      | `https://api.jomcgi.dev/status.json`      | `projects/agent_platform/api-gateway/deploy/` |
-| todo             | `https://todo.jomcgi.dev`                 | `projects/todo_app/deploy/`                   |
-| todo-admin       | `https://todo-admin.jomcgi.dev/health`    | `projects/todo_app/deploy/`                   |
-| img              | `https://img.jomcgi.dev/health`           | `projects/trips/deploy/`                      |
+| Service    | URL                                             | Location                      |
+| ---------- | ----------------------------------------------- | ----------------------------- |
+| ArgoCD     | `https://private.jomcgi.dev/app/argocd/healthz` | `projects/platform/argocd/`   |
+| Longhorn   | `https://private.jomcgi.dev/app/longhorn/`      | `projects/platform/longhorn/` |
+| SigNoz     | `https://private.jomcgi.dev/app/signoz`         | `projects/platform/signoz/`   |
+| jomcgi.dev | `https://jomcgi.dev`                            | `projects/platform/signoz/`   |
 
 ### ArgoCD App State Alerts
 
@@ -203,7 +196,7 @@ To add SLO alerts to a chart:
 2. Add `sloDefaults` and `slos` to `values.yaml`
 3. Create `templates/slo-alerts.yaml` that ranges over `.Values.slos` and includes `signoz-alerts.slo`
 
-See `projects/agent_platform/api_gateway/deploy/` for a working example.
+See `projects/monolith/deploy/` for a working example.
 
 ## Sidecar Architecture
 

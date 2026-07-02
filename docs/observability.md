@@ -44,8 +44,9 @@ The following diagram shows how observability is automatically added to every po
 │  - Python: auto-instrument init container                           │
 │  - Node.js: require-hook init container                             │
 │                                                                     │
-│  Currently enabled for: trips, knowledge-graph, api-gateway,        │
-│  mcp-servers, todo, grimoire                                        │
+│  Auto-instrumentation is enabled cluster-wide via the OpenTelemetry │
+│  operator and Kyverno OTEL injection; see                           │
+│  projects/platform/opentelemetry-operator                           │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
