@@ -1,4 +1,4 @@
-version: "1.7.0"
+version: "1.7.1"
 title: "Agent"
 description: "Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe."
 instructions: |
@@ -16,6 +16,16 @@ instructions: |
     comparisons, news. ("what's the latest X", "how do I use library Y",
     "compare A vs B"). If the answer lives in this repo or this cluster,
     that is query, not research.
+
+    You do NOT research yourself in the router, even when the question looks
+    easy. Only the research sub-recipe has the working web-search wiring
+    (the SEARXNG_URL endpoint and its exact query incantation); the router
+    does not, so inline research wastes many turns failing against public
+    search endpoints that block you. HARD GATE: for a research task your
+    ONLY action after context-gathering is dispatching the research
+    sub-recipe and WAITING for its result, then reporting `mode: research`.
+    If your last action was a thought rather than the actual sub-recipe tool
+    call, you have not dispatched yet.
   - plan: the task wants a design or implementation plan written, or is a
     large/ambiguous change where planning must precede code. The deliverable
     is a plan document, not the change itself.

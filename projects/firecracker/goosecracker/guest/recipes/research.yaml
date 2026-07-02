@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.0.1"
 title: "Research"
 description: "Web research sub-recipe: search and read public sources to answer a question, confirm an assumption, or gather current external facts. Read-only."
 instructions: |
@@ -13,8 +13,9 @@ instructions: |
     GitHub repos (`gh api`, raw.githubusercontent.com), package registries.
   - `curl` for fetching, `jq` for JSON, `gh` for GitHub.
 
-  To search, run EXACTLY this pipeline (do not invent flags):
-    curl -s "${SEARXNG_URL}/search?q=YOUR+QUERY&format=json" | jq -r '.results[:5][] | "\(.title)\n\(.url)\n\(.content)\n"'
+  To search, run EXACTLY this pipeline (do not invent flags; the GET form
+  of this endpoint returns HTML, only POST form data returns JSON):
+    curl -s -X POST "${SEARXNG_URL}/search" -d "q=YOUR+QUERY&format=json" | jq -r '.results[:5][] | "\(.title)\n\(.url)\n\(.content)\n"'
   Replace spaces in the query with +. Run ONE search, then read sources.
   Search again only if the results were clearly off-target, three searches
   maximum.
