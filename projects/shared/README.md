@@ -23,7 +23,6 @@ Kubernetes manifests on their own — they only supply reusable helpers.
 | `homelab.service`                                             | `_service.tpl`         | `v1` Service (single or multi-port)                   |
 | `homelab.serviceaccount`                                      | `_serviceaccount.tpl`  | `v1` ServiceAccount (optional)                        |
 | `homelab.imagepullsecret`                                     | `_imagepullsecret.tpl` | 1Password-backed GHCR pull secret (`OnePasswordItem`) |
-| `homelab.imageupdater`                                        | `_imageupdater.tpl`    | ArgoCD `ImageUpdater` CRD                             |
 
 ### Convention
 
