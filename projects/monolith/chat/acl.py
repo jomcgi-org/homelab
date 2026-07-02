@@ -109,6 +109,7 @@ def bootstrap_defaults() -> None:
             defaults.append((home, owner, "artifact", ""))
     defaults.append((LOOM_GUILD_ID, "", "agent", "loom"))
 
+    to_add: list[DiscordFeatureGrant] = []
     with Session(get_engine()) as session:
         to_add = [
             DiscordFeatureGrant(
