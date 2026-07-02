@@ -764,7 +764,7 @@ class ChatBot(discord.Client):
 
         try:
             result = await asyncio.to_thread(
-                goosecracker.continue_session, thread_id, message.content
+                goosecracker.continue_session, thread_id, message.content, msg_id
             )
         except Exception:
             logger.exception("goosecracker: failed to continue session")
@@ -780,7 +780,13 @@ class ChatBot(discord.Client):
 
         if action == "queued":
             # A turn is already running; the reply was queued for the next turn.
-            await message.reply("Queued - I'll pick this up after the current turn.")
+            # Acknowledge with a ⏳ reaction on the user's own message instead of a
+            # text reply, so a burst of replies does not spam the thread. The
+            # runner flips it ⏳ → 👀 → ✅/❌ as the queued turn runs and finishes.
+            try:
+                await message.add_reaction(goosecracker.REACTION_QUEUED)
+            except discord.HTTPException:
+                logger.exception("goosecracker: failed to react queued on %s", msg_id)
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
 

@@ -55,6 +55,30 @@ def enqueue_message(
     )
 
 
+def enqueue_reaction(
+    session: Session,
+    channel_id: str,
+    message_id: str,
+    emoji: str,
+    *,
+    remove: bool = False,
+) -> None:
+    """Enqueue an add/remove of ``emoji`` on ``message_id`` in ``channel_id``.
+
+    A reaction row carries no content/embed; the drain resolves the message and
+    adds (or removes) the bot's reaction. Used off-loop by the goose runner to
+    drive the ⏳→👀→✅/❌ lifecycle on a queued reply. Caller commits the session.
+    """
+    session.add(
+        DiscordOutbox(
+            channel_id=channel_id,
+            target_message_id=message_id,
+            reaction=emoji,
+            reaction_remove=remove,
+        )
+    )
+
+
 def _claim_pending(engine) -> list[dict]:
     """Read the oldest unposted, not-exhausted rows. Returns plain dicts so the
     async drain never holds an ORM row across an await."""
@@ -63,7 +87,10 @@ def _claim_pending(engine) -> list[dict]:
             select(DiscordOutbox)
             .where(DiscordOutbox.posted_at.is_(None))
             .where(DiscordOutbox.attempts < _MAX_ATTEMPTS)
-            .order_by(DiscordOutbox.created_at)
+            # Order by (created_at, id) so a remove-then-add reaction pair enqueued
+            # together drains in insertion order (id breaks created_at ties), never
+            # leaving the stale emoji on top of the new one.
+            .order_by(DiscordOutbox.created_at, DiscordOutbox.id)
             .limit(_BATCH)
         ).all()
         return [
@@ -73,6 +100,9 @@ def _claim_pending(engine) -> list[dict]:
                 "content": r.content,
                 "embed_json": r.embed_json,
                 "level": r.level,
+                "target_message_id": r.target_message_id,
+                "reaction": r.reaction,
+                "reaction_remove": r.reaction_remove,
             }
             for r in rows
         ]
@@ -108,12 +138,34 @@ async def _post_row(bot, row: dict) -> None:
     channel = bot.get_channel(int(row["channel_id"]))
     if channel is None:
         channel = await bot.fetch_channel(int(row["channel_id"]))
-    if row["embed_json"] is not None:
+    if row.get("reaction") is not None:
+        await _apply_reaction(bot, channel, row)
+    elif row["embed_json"] is not None:
         embed = discord.Embed.from_dict(json.loads(row["embed_json"]))
         await channel.send(embed=embed)
     else:
         prefix = _LEVEL_PREFIX.get(row["level"], "")
         await channel.send(f"{prefix}{row['content']}")
+
+
+async def _apply_reaction(bot, channel, row: dict) -> None:
+    """Add or remove the bot's reaction on a target message.
+
+    A removal of an absent reaction (or a message that lost it) is not an error:
+    the lifecycle is idempotent, so a missing prior emoji is swallowed rather than
+    burning the row's retry budget. A missing *message* likewise resolves the row
+    (nothing to react to). An add failure propagates so the drain retries it."""
+    import discord
+
+    message = await channel.fetch_message(int(row["target_message_id"]))
+    emoji = row["reaction"]
+    if row["reaction_remove"]:
+        try:
+            await message.remove_reaction(emoji, bot.user)
+        except (discord.NotFound, discord.HTTPException) as exc:
+            logger.debug("outbox: reaction remove no-op (%s): %s", emoji, exc)
+    else:
+        await message.add_reaction(emoji)
 
 
 async def drain_once(bot, engine) -> int:

@@ -112,12 +112,20 @@ class DiscordOutbox(SQLModel, table=True):
     content: str | None = Field(default=None)
     embed_json: str | None = Field(default=None)
     level: str = Field(default="info")
+    # Reaction verb: when reaction is set, this row is not a post but an add/remove
+    # of a unicode reaction on target_message_id in channel_id (reaction_remove
+    # picks which). Lets an off-loop producer (the goose runner) drive the ⏳/👀/✅
+    # lifecycle on a user's message through the same leader-safe drain.
+    target_message_id: str | None = Field(default=None)
+    reaction: str | None = Field(default=None)
+    reaction_remove: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     posted_at: datetime | None = Field(default=None)
     attempts: int = Field(default=0)
     last_error: str | None = Field(default=None)
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (running_since is intentionally NULL until a turn goes running)
 class GoosecrackerSession(SQLModel, table=True):
     """Per-Discord-thread curated transcript for the goosecracker agent (ADR 024).
 
@@ -142,8 +150,22 @@ class GoosecrackerSession(SQLModel, table=True):
     # Conversational queue state (agent sessions only).
     # running: a turn is currently in flight.
     # pending: newline-joined replies queued while running=True; consumed on drain.
+    # pending_message_ids: newline-joined Discord message ids, one per queued reply
+    #   (parallel to pending), so the runner can react ⏳/👀/✅ on the exact messages.
     running: bool = Field(default=False)
     pending: str = Field(default="")
+    pending_message_ids: str = Field(default="")
+    # In-flight turn bookkeeping, for the reaction lifecycle and self-heal.
+    # inflight_task: the task text the currently-running turn is executing; kept so
+    #   a reclaim (startup sweep or stale-timeout) can rebuild the turn losslessly.
+    # inflight_ack_ids: Discord message ids the running turn will resolve (⏳→👀→✅).
+    # running_since: when the current turn went running (stale-timeout backstop).
+    # runner_instance: boot token of the process that owns the running turn; a
+    #   mismatch on startup means the owner died, so the turn is reclaimable.
+    inflight_task: str = Field(default="")
+    inflight_ack_ids: str = Field(default="")
+    running_since: datetime | None = Field(default=None)
+    runner_instance: str = Field(default="")
     # Unguessable capability id the artifact is published under (ADR 024 amend).
     # Random per thread, assigned on first publish and reused on re-publish so the
     # live page hot-reloads at a stable but non-discoverable URL (never the

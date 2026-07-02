@@ -421,7 +421,7 @@ async def _post_agent_run(url: str, payload: dict, on_retry) -> dict:
         await asyncio.sleep(wait)
 
 
-async def run_and_deliver(
+async def _run_one_turn(
     session: str,
     *,
     task: str,
@@ -431,12 +431,15 @@ async def run_and_deliver(
     git_mirror: str,
     git_ref: str,
     discord_thread: str,
-) -> None:
-    """POST the goose run to fc-invoke, then mark + deliver the result.
+) -> bool:
+    """POST one goose turn to fc-invoke, then mark + deliver the result.
 
-    Always marks the progress stream done (in a ``finally``) so the bot's stream
-    loop ends whether the run succeeded, failed, or the daemon was unreachable.
+    Returns True when the run succeeded, False on any failure. Always marks the
+    progress stream done (in a ``finally``) so the bot's stream loop ends whether
+    the run succeeded, failed, or the daemon was unreachable. The conversational
+    drain/next-turn loop lives in ``run_and_deliver``, which calls this per turn.
     """
+    ok = False
     try:
         if not FC_INVOKE_URL:
             raise RuntimeError("FC_INVOKE_URL is not configured")
@@ -503,6 +506,7 @@ async def run_and_deliver(
             await _deliver(
                 discord_thread, await _delivery_message(session, recipe, data)
             )
+            ok = True
         else:
             err = data.get("error", "") or "goose run failed with no detail"
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
@@ -518,43 +522,80 @@ async def run_and_deliver(
         await _deliver(discord_thread, f"Run failed: {exc}")
     finally:
         _mark_progress_done(session)
+    return ok
 
-    # For agent runs fronting a Discord thread: drain any replies that arrived
-    # while this turn was running, then dispatch them as the next turn.
-    # This also clears running=False on the failed path so a crashed turn does
-    # not wedge the thread. Runs after finally: so the progress stream is already
-    # marked done before the next turn potentially starts.
-    if recipe == "agent" and discord_thread:
-        # The drain (DB work on chat.goosecracker_sessions) lives in the chat
-        # domain; reach it through chat.api so goosecracker never imports chat
-        # internals (import_boundaries_test).
-        from chat.api import drain_agent_queue
 
+async def run_and_deliver(
+    session: str,
+    *,
+    task: str,
+    recipe: str,
+    tier: str,
+    repo: str = "",
+    git_mirror: str,
+    git_ref: str,
+    discord_thread: str,
+) -> None:
+    """Run a conversational agent thread to completion, one turn at a time.
+
+    Runs the given turn, then for agent threads drains any replies that arrived
+    while it ran and runs them as the next turn, looping until the queue is empty.
+    Each turn is ``await``-ed in place (never ``create_task``-ed): ``submit``
+    dispatches the first turn on a throwaway daemon thread via ``asyncio.run``,
+    which tears its loop down the instant the coroutine returns, so a
+    ``create_task``-ed next turn would be cancelled before it ran (the "queued
+    reply never comes back" bug). Awaiting keeps the whole chain inside that one
+    live loop. Serial-by-design: one turn per thread at a time.
+
+    Reaction lifecycle: each turn flips its queued messages ⏳→👀 at the start
+    (``mark_inflight_running``) and 👀→✅/❌ at the end (``ack_inflight``), so a
+    queued reply shows honest state on the user's own message with no text spam.
+    """
+    is_agent_thread = recipe == "agent" and bool(discord_thread)
+    current_task = task
+    while True:
+        if is_agent_thread:
+            # The queue/reaction bookkeeping lives in the chat domain; reach it
+            # through chat.api so goosecracker never imports chat internals
+            # (import_boundaries_test).
+            from chat.api import mark_inflight_running
+
+            # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+            await asyncio.to_thread(mark_inflight_running, discord_thread)
+
+        ok = await _run_one_turn(
+            session,
+            task=current_task,
+            recipe=recipe,
+            tier=tier,
+            repo=repo,
+            git_mirror=git_mirror,
+            git_ref=git_ref,
+            discord_thread=discord_thread,
+        )
+
+        if not is_agent_thread:
+            return
+
+        from chat.api import ack_inflight, drain_agent_queue
+
+        # Resolve this turn's queued messages (👀 → ✅/❌) before draining the next
+        # batch, so their reactions reflect this turn's outcome.
         # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
-        next_task = await asyncio.to_thread(drain_agent_queue, discord_thread)
-        if next_task is not None:
-            # Update the run ledger for the next task (mirrors dispatch.submit).
-            # nosemgrep: no-session-in-to-thread  # threads.upsert_run opens its own Session
-            await asyncio.to_thread(
-                threads.upsert_run,
-                session,
-                recipe=recipe,
-                tier=tier,
-                task=next_task,
-                discord_thread=discord_thread,
-            )
-            # Schedule the next turn as a detached task on the current event loop.
-            # No import of dispatch (circular: dispatch imports runner); use
-            # create_task directly since we are already inside an async context.
-            asyncio.create_task(
-                run_and_deliver(
-                    session,
-                    task=next_task,
-                    recipe=recipe,
-                    tier=tier,
-                    repo=repo,
-                    git_mirror=git_mirror,
-                    git_ref=git_ref,
-                    discord_thread=discord_thread,
-                )
-            )
+        await asyncio.to_thread(ack_inflight, discord_thread, ok)
+        # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+        drained = await asyncio.to_thread(drain_agent_queue, discord_thread)
+        if drained is None:
+            return  # queue empty: drain_agent_queue set running=False, thread idle
+        next_task, _ack_ids = drained
+        # Update the run ledger for the next task (mirrors dispatch.submit).
+        # nosemgrep: no-session-in-to-thread  # threads.upsert_run opens its own Session
+        await asyncio.to_thread(
+            threads.upsert_run,
+            session,
+            recipe=recipe,
+            tier=tier,
+            task=next_task,
+            discord_thread=discord_thread,
+        )
+        current_task = next_task

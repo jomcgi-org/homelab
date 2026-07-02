@@ -110,6 +110,20 @@ async def _start_singletons(app: FastAPI) -> None:
         tasks.append(drain_task)
         logger.info("Discord outbox drain starting")
 
+        # Reclaim goosecracker agent turns orphaned by the prior owner's death
+        # (this replica just became leader, so any turn still marked running was
+        # owned by a process that is gone). Re-dispatches them so queued replies
+        # do not wedge forever on ⏳. One-shot; non-fatal so a sweep failure never
+        # blocks startup. Runs off the loop (sync DB work) via to_thread.
+        try:
+            from chat.api import reclaim_orphaned_agent_sessions
+
+            reclaimed = await asyncio.to_thread(reclaim_orphaned_agent_sessions)
+            if reclaimed:
+                logger.info("Reclaimed %d orphaned goosecracker turn(s)", reclaimed)
+        except Exception:
+            logger.exception("goosecracker: orphaned-turn reclaim sweep failed")
+
     # Supervised AISStream ingest (reconnects forever; CancelledError on stop).
     from ships.ingest import ais_stream_loop
 
