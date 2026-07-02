@@ -242,9 +242,9 @@ def continue_session(thread_id: str, message: str, message_id: str = "") -> dict
             # backlog, and this message as a single task. Backlog + reclaimed
             # message ids become this turn's ack set (they show the reaction
             # lifecycle); the triggering message rides the live progress reply.
-            _task = _append_pending(
-                _append_pending(row.inflight_task, row.pending), message
-            )
+            # Join non-empty parts only: an empty pending/inflight must not inject
+            # a blank line into the task.
+            _task = "\n".join(p for p in (row.inflight_task, row.pending, message) if p)
             ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
             _stored_recipe = row.recipe
             _stored_tier = row.tier
@@ -507,7 +507,7 @@ def _reclaim_one(thread_id: str, now: datetime) -> tuple[str, str, str, str] | N
             return None
         if row.runner_instance == INSTANCE_TOKEN:
             return None  # this process already owns it; still alive
-        task = _append_pending(row.inflight_task, row.pending)
+        task = "\n".join(p for p in (row.inflight_task, row.pending) if p)
         ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
         recipe, tier, repo = row.recipe, row.tier, row.repo
         row.pending = ""
