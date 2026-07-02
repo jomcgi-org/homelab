@@ -203,19 +203,19 @@ goosecracker:
       # defaults to OTLP/HTTP.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
       OTEL_SERVICE_NAME: goose-coding
-    # The artifact tier reaches Gemini via OpenRouter. The OPENROUTER_API_KEY is a
-    # placeholder the fc-invoke egress proxy swaps for the real key on
-    # openrouter.ai (ADR 023 6b, catalog in the substrate deploy values); the guest
-    # never holds the real key. Requires the egress CA (fc-invoke-egress-ca),
-    # injected into the guest env by the goosecracker runner.
+    # The artifact tier runs on the in-cluster qwen model (free, no OpenRouter
+    # cost). Artifacts are served behind unguessable capability URLs, so a paid
+    # large-context tier is no longer needed. Same OpenAI-compatible in-cluster
+    # endpoint as the default tier, plus the artifact publish/progress sinks.
     artifact:
-      GOOSE_PROVIDER: openrouter
-      OPENROUTER_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
-      GOOSE_MODEL: google/gemini-3.5-flash
-      # Gemini 3.5 Flash is a thinking model whose max_tokens budget counts
-      # thinking tokens, so give it ample room for reasoning AND the write
-      # tool_call (GOOSE_MAX_TOKENS is the working path, not predefined models).
-      GOOSE_MAX_TOKENS: "32000"
+      OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
+      OPENAI_API_KEY: sk-noauth
+      GOOSE_PROVIDER: openai
+      GOOSE_MODEL: qwen3.6-27b
+      # Match vLLM maxModelLen so goose compacts before the wall; leave ample room
+      # for a single HTML write (max_tokens counts the write tool_call output).
+      GOOSE_CONTEXT_LIMIT: "32768"
+      GOOSE_MAX_TOKENS: "16000"
       # Where the artifact recipe publishes (in-cluster monolith backend, reached
       # through the egress funnel; no secret swap for this host).
       ARTIFACT_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/artifact

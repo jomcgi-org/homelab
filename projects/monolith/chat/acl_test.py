@@ -120,6 +120,8 @@ class TestBootstrapDefaults:
             assert (
                 acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "homelab") is False
             )
+            # loom server can build artifacts (safe: capability URLs + qwen)
+            assert acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "artifact") is True
 
     def test_idempotent(self, engine, monkeypatch):
         monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "home1")
@@ -129,8 +131,8 @@ class TestBootstrapDefaults:
             acl.bootstrap_defaults()
             with Session(engine) as session:
                 rows = session.exec(select(DiscordFeatureGrant)).all()
-            # home: 2 agent + 1 artifact, loom: 1 agent = 4, not doubled
-            assert len(rows) == 4
+            # home: 2 agent + 1 artifact, loom: 1 agent + 1 artifact = 5, not doubled
+            assert len(rows) == 5
 
     def test_no_home_env_still_seeds_loom(self, engine, monkeypatch):
         monkeypatch.delenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", raising=False)

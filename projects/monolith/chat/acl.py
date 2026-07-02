@@ -108,6 +108,10 @@ def bootstrap_defaults() -> None:
             defaults.append((home, owner, "agent", "loom"))
             defaults.append((home, owner, "artifact", ""))
     defaults.append((LOOM_GUILD_ID, "", "agent", "loom"))
+    # Artifact viewing is behind unguessable capability URLs and runs on the free
+    # qwen tier, so it is safe to open /artifact to the Loom server (ADR 024
+    # amendment). Everyone in the Loom server may build artifacts there.
+    defaults.append((LOOM_GUILD_ID, "", "artifact", ""))
 
     to_add: list[DiscordFeatureGrant] = []
     with Session(get_engine()) as session:
