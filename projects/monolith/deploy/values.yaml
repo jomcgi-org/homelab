@@ -145,8 +145,10 @@ chat:
 semgrep:
   fcInvokeUrl: "http://fc-invoke.monolith.svc.cluster.local:8080"
 
-# goosecracker artifact tier (ADR 024): sync the OpenRouter API key into the
-# `goosecracker` Secret for the fc-invoke egress proxy to swap on openrouter.ai.
+# goosecracker Discord agent (ADR 024): OnePasswordItem-backed `goosecracker`
+# Secret for the agent's config. The artifact tier now runs on in-cluster qwen,
+# so no OpenRouter key is needed here (any OpenRouter entry in the 1Password item
+# is unused and can be pruned).
 goosecracker:
   enabled: true
   onepassword:

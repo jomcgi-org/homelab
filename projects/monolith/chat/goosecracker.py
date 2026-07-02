@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 
 from sqlmodel import Session
@@ -289,6 +290,26 @@ def is_agent_thread(thread_id: str) -> bool:
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
         return row is not None and row.recipe == AGENT_RECIPE
+
+
+def artifact_id_for_thread(thread_id: str) -> str:
+    """Return the thread's unguessable capability artifact id, assigning one on
+    first use (ADR 024 amendment). Synchronous; call via ``asyncio.to_thread``.
+
+    Random per thread and stored on the session row so a re-publish reuses it and
+    the live page hot-reloads at a stable URL, while the URL is NOT the enumerable
+    Discord thread id, so it is not publicly discoverable but is safe to share by
+    link. Falls back to a fresh random id if the thread has no session row.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        if row is None:
+            return secrets.token_urlsafe(9)
+        if not row.artifact_id:
+            row.artifact_id = secrets.token_urlsafe(9)
+            session.add(row)
+            session.commit()
+        return row.artifact_id
 
 
 async def build_roast(attempt_text: str) -> str:
