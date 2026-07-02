@@ -37,16 +37,27 @@ fi
 # --- Determine dependency directories ---
 DEP_DIRS=""
 if [[ -n "$BAZEL_PACKAGE" ]]; then
-	# Query Bazel for transitive source deps
-	DEP_DIRS=$(bazel query "deps(${BAZEL_PACKAGE})" --output=package 2>/dev/null |
+	# Query Bazel for transitive source deps. --keep_going is load-bearing: a
+	# dependency whose external closure fails to preload (e.g. an apko image
+	# layer pulling wolfi packages) otherwise fails the WHOLE query, and we
+	# silently under-scope to the chart dir below, missing image-content changes
+	# that must bump the chart. With --keep_going the query still emits the
+	# main-repo packages it could load, including the guest package where content
+	# like recipes lives. See oci_image_info(image=...), which widens this closure
+	# on purpose so a change layered into a pinned image bumps the dependent chart.
+	DEP_DIRS=$(bazel query "deps(${BAZEL_PACKAGE})" --output=package --keep_going 2>/dev/null |
 		grep -v '^@' |
 		sed 's|^//||' ||
 		true)
 fi
 
 if [[ -z "$DEP_DIRS" ]]; then
-	# Fallback: use chart directory only
-	echo >&2 "INFO: Bazel query unavailable or returned no results, using chart dir only"
+	# Fallback: chart directory only. This is a DEGRADED mode: a change to a
+	# dependency outside the chart dir (application code, a pinned image's
+	# content) will NOT bump the chart. Logged as a warning so a regression to
+	# dir-only scoping is visible in CI instead of surfacing later as a missing
+	# bump that needs a manual chart version fix.
+	echo >&2 "WARNING: Bazel dependency query returned nothing for ${BAZEL_PACKAGE}; falling back to chart-dir-only scoping (${CHART_DIR}). Dependency-scoped version bumping is DISABLED for this run."
 	DEP_DIRS="$CHART_DIR"
 fi
 
