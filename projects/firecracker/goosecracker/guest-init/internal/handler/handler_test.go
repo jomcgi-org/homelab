@@ -400,13 +400,18 @@ func TestResumeHydratesSessionAndExportsUpdatedDb(t *testing.T) {
 	if string(store.hydrated) != "prior-db" {
 		t.Errorf("hydrated = %q, want %q", store.hydrated, "prior-db")
 	}
-	// argv resumes the named session (no --recipe).
+	// argv resumes the named session AND re-passes --recipe so goose re-applies
+	// the recipe's response schema + settings to the follow-up turn; the task goes
+	// via --params (-t conflicts with --recipe in goose's CLI).
 	argv := strings.Join(runner.gotArgv, " ")
 	if !strings.Contains(argv, "--name sess-9 --resume") {
 		t.Errorf("argv %q missing resume", argv)
 	}
-	if strings.Contains(argv, "--recipe") {
-		t.Errorf("argv %q should not re-pass --recipe on resume", argv)
+	if !strings.Contains(argv, "--recipe agent") {
+		t.Errorf("argv %q should re-pass --recipe on resume", argv)
+	}
+	if !strings.Contains(argv, "task_description=make it bigger") {
+		t.Errorf("argv %q should pass the task via --params on resume", argv)
 	}
 	// updated db exported back.
 	wantDb := base64.StdEncoding.EncodeToString([]byte("updated-db"))
