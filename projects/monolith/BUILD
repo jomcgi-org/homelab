@@ -1384,6 +1384,18 @@ py_test(
 )
 
 py_test(
+    name = "chat_orchestrator_client_test",
+    srcs = ["chat/orchestrator_client_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "chat_summarizer_llm_caller_test",
     srcs = ["chat/summarizer_llm_caller_test.py"],
     imports = ["."],
