@@ -523,6 +523,27 @@ async def _run_one_turn(
         # falls back to cold if the db fails to hydrate/resume.
         # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
         session_db = await asyncio.to_thread(sessions.load, session)
+        # ADR 040: stage caller-provided context for this turn. Reached through
+        # chat.api like the other chat.* calls in this module
+        # (import_boundaries_test); rebuilt every turn so /injected-context/
+        # persists and accumulates across turns on the guest's ephemeral tmpfs.
+        # Best-effort: a build failure must not fail the run, the agent just runs
+        # without the extra context.
+        injected_context: dict[str, str] = {}
+        if discord_thread:
+            from chat.api import build_injected_context
+
+            try:
+                # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+                injected_context = await asyncio.to_thread(
+                    build_injected_context, discord_thread, tier
+                )
+            except Exception:
+                logger.exception(
+                    "goosecracker: build_injected_context failed for %s; "
+                    "continuing without it",
+                    session,
+                )
         # WS2 - Hydration: default the mirror and ref when the caller did not
         # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
         # via Helm values. An empty effective_mirror means no clone (no mirror
@@ -540,6 +561,7 @@ async def _run_one_turn(
             "gitRef": effective_ref,
             "resume": session_db is not None,
             "sessionDb": base64.b64encode(session_db).decode() if session_db else "",
+            "injectedContext": injected_context,
         }
         url = f"{FC_INVOKE_URL}/invoke/agent/{session}"
 

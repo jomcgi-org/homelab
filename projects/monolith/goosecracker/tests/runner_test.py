@@ -562,6 +562,46 @@ async def test_run_one_turn_resets_progress_buffer_at_start(monkeypatch):
     reset_spy.assert_called_once_with("sess-x")  # buffer reset before the turn ran
 
 
+async def test_run_one_turn_ships_injected_context_in_payload(monkeypatch):
+    """ADR 040: the runner rebuilds the injected-context bundle every turn,
+    reached through chat.api (not chat internals, per import_boundaries_test),
+    and ships it in the fc-invoke payload as "injectedContext" so the guest can
+    stage it to /injected-context/ on its ephemeral tmpfs."""
+    import chat.api
+
+    captured_payload = {}
+
+    async def fake_post(url, payload, on_retry):
+        captured_payload.update(payload)
+        return {"status": "ok", "result": "done", "sessionDb": ""}
+
+    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
+    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
+    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
+    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
+    monkeypatch.setattr(runner, "_deliver", AsyncMock())
+    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
+    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
+    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
+    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
+    monkeypatch.setattr(
+        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
+    )
+
+    ok = await runner._run_one_turn(
+        "sess-1",
+        task="q",
+        recipe="agent",
+        tier="",
+        git_mirror="",
+        git_ref="",
+        discord_thread="thr-1",
+    )
+
+    assert ok is True
+    assert captured_payload["injectedContext"] == {"transcript.md": "hi"}
+
+
 # ---------------------------------------------------------------------------
 # Conversational reply (_agent_reply_message): rephrase the typed summary in the
 # bot's voice using channel context, fail-open to the deterministic summary.
