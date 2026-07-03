@@ -107,9 +107,7 @@ def _sample_doc() -> dict:
 
 
 def test_to_chunks_merges_split_monster_and_actions():
-    chunks = marker.to_chunks(
-        _sample_doc(), book_id="mm", image_key_prefix="books/mm/raw/img/"
-    )
+    chunks = marker.to_chunks(_sample_doc(), image_key_prefix="books/mm/raw/img/")
     text = [c for c in chunks if "image_ref" not in c]
     # Both GOBLIN sections (lore + stat) and the ACTIONS sub-section collapse
     # into a single text chunk.
@@ -125,7 +123,7 @@ def test_to_chunks_merges_split_monster_and_actions():
 
 def test_to_chunks_emits_image_chunk_with_s3_ref():
     chunks = marker.to_chunks(
-        _sample_doc(), book_id="mm", image_key_prefix="s3://grimoire/books/mm/raw/img/"
+        _sample_doc(), image_key_prefix="s3://grimoire/books/mm/raw/img/"
     )
     imgs = [c for c in chunks if "image_ref" in c]
     assert len(imgs) == 1
@@ -162,7 +160,7 @@ def test_to_chunks_prepends_section_name_when_absent_from_body():
     # The content block points at a header id with no text (SectionHeader/1
     # absent), so its section name is unknown and no title is prepended; the
     # header block itself forms its own titled run.
-    chunks = marker.to_chunks(doc, book_id="mm", image_key_prefix="p/")
+    chunks = marker.to_chunks(doc, image_key_prefix="p/")
     header_chunk = [c for c in chunks if c["section_path"] == "THE UNDERDARK"][0]
     assert header_chunk["content"].startswith("THE UNDERDARK")
 
@@ -184,4 +182,4 @@ def test_to_chunks_drops_empty_content():
         ],
         "metadata": {},
     }
-    assert marker.to_chunks(doc, book_id="mm", image_key_prefix="p/") == []
+    assert marker.to_chunks(doc, image_key_prefix="p/") == []

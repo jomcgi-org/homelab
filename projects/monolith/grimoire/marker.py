@@ -125,21 +125,19 @@ def iter_blocks(doc: dict) -> Iterator[dict]:
 
 
 def build_header_text(doc: dict) -> dict[str, str]:
-    """Map every SectionHeader block id -> its plain-text heading."""
+    """Map every SectionHeader block id -> its plain-text heading.
+
+    Headers with no id are skipped: an empty-string key would collide with the
+    ``headers.get(sid or "")`` lookups used for section-less blocks and mislabel
+    them with an unrelated heading.
+    """
     headers: dict[str, str] = {}
     for block in iter_blocks(doc):
         if block.get("block_type") == "SectionHeader":
-            headers[block.get("id", "")] = html_to_text(block.get("html"))
+            hid = block.get("id")
+            if hid:
+                headers[hid] = html_to_text(block.get("html"))
     return headers
-
-
-def leaf_section_id(block: dict) -> str | None:
-    """The deepest (nearest) SectionHeader id governing this block, or None."""
-    sh = block.get("section_hierarchy") or {}
-    if not sh:
-        return None
-    deepest = max(sh, key=lambda k: int(k))
-    return sh[deepest]
 
 
 def effective_section_id(block: dict, headers: dict[str, str]) -> str | None:
@@ -183,11 +181,12 @@ def _image_content(alt: str, caption: str) -> str:
     return caption.strip() or alt.strip()
 
 
-def to_chunks(doc: dict, *, book_id: str, image_key_prefix: str) -> list[dict]:
+def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
     """Convert a Marker ``JSONOutput`` dict to grimoire chunk dicts.
 
     ``image_key_prefix`` is prepended to each image's src filename to form its
-    ``image_ref`` (our S3 key), e.g. ``"books/monster-manual/raw/img/"``.
+    ``image_ref`` (our S3 key), e.g.
+    ``"s3://grimoire/books/monster-manual/raw/img/"``.
 
     Text chunks are contiguous runs of blocks sharing the same section name (in
     document order): Marker emits a monster's lore and its stat block under two
@@ -226,14 +225,12 @@ def to_chunks(doc: dict, *, book_id: str, image_key_prefix: str) -> list[dict]:
             src, alt, caption = parse_image_block(block.get("html") or "")
             content = _image_content(alt, caption)
             if content:
+                img_sid = effective_section_id(block, headers)
                 image_chunks.append(
                     {
                         "chunk_ref": block.get("id", ""),
                         "content": content,
-                        "section_path": headers.get(
-                            effective_section_id(block, headers) or ""
-                        )
-                        or None,
+                        "section_path": (headers.get(img_sid) if img_sid else None),
                         "image_ref": (image_key_prefix + src) if src else None,
                     }
                 )
@@ -252,7 +249,13 @@ def to_chunks(doc: dict, *, book_id: str, image_key_prefix: str) -> list[dict]:
             flush()
             run = {
                 "key": key,
-                "chunk_ref": sid or _page_of(block),
+                # chunk_ref must be unique per run (it is the upsert key with
+                # book_id). Use the run's first block id, which is globally
+                # unique in Marker output: the effective section id is NOT unique
+                # because same-name runs deliberately share it, and non-adjacent
+                # runs (the family-of-monsters layout) would collide and
+                # overwrite each other on load.
+                "chunk_ref": block.get("id") or _page_of(block),
                 "section_path": section_path or None,
                 "parts": [],
             }
@@ -281,7 +284,7 @@ def convert_file(
     # imgproxy consumes directly (s3://bucket/key), no bucket-prefixing needed
     # at render time.
     image_key_prefix = f"s3://{bucket}/books/{book_id}/raw/img/"
-    return to_chunks(doc, book_id=book_id, image_key_prefix=image_key_prefix)
+    return to_chunks(doc, image_key_prefix=image_key_prefix)
 
 
 def main(argv: list[str] | None = None) -> int:
