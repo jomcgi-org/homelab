@@ -376,7 +376,7 @@ def _insert_mention(
 ) -> bool:
     existing = (
         session.execute(
-            select(ChunkEntityMention.id).where(
+            select(ChunkEntityMention.chunk_id).where(
                 ChunkEntityMention.chunk_id == chunk_id,
                 ChunkEntityMention.entity_id == entity_id,
             )
@@ -425,7 +425,7 @@ def _select_pending_chunks(session: Session, limit: int) -> list[KnowledgeChunk]
     whatever order the DB happens to return unprocessed rows in.
     """
     mention_exists = (
-        select(ChunkEntityMention.id)
+        select(ChunkEntityMention.chunk_id)
         .where(ChunkEntityMention.chunk_id == KnowledgeChunk.id)
         .exists()
     )

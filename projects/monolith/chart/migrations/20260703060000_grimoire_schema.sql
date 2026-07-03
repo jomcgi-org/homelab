@@ -72,11 +72,14 @@ CREATE TABLE grimoire.knowledge_chunk (
     UNIQUE (book_id, chunk_ref)
 );
 
+-- Pure association table: (chunk_id, entity_id) is the natural key, so it is
+-- the composite PRIMARY KEY (no surrogate id). This matches the SQLModel in
+-- models.py, which selects on these columns only.
 CREATE TABLE grimoire.chunk_entity_mention (
     chunk_id     UUID NOT NULL REFERENCES grimoire.knowledge_chunk(id) ON DELETE CASCADE,
     entity_id    UUID NOT NULL REFERENCES grimoire.entity(id) ON DELETE CASCADE,
     mention_text TEXT,
-    UNIQUE (chunk_id, entity_id)
+    PRIMARY KEY (chunk_id, entity_id)
 );
 
 CREATE TABLE grimoire.relationship (
