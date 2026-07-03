@@ -66,7 +66,7 @@ class TestAmbientClassification:
     @pytest.mark.asyncio
     async def test_ignores_below_threshold(self):
         message = _make_message(content="maybe you could help")
-        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.5}')
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.3}')
         result = await evaluate(
             message, "help with code", _BOT_USER, is_ambient=True, _caller=caller
         )
@@ -96,7 +96,7 @@ class TestRecentTagWeighting:
     @pytest.mark.asyncio
     async def test_recently_tagged_engages_below_default_threshold(self):
         message = _make_message(content="is that actually true though?")
-        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.6}')
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.4}')
         result = await evaluate(
             message,
             "",
@@ -105,14 +105,14 @@ class TestRecentTagWeighting:
             recently_tagged=True,
             _caller=caller,
         )
-        assert result.confidence == 0.6
+        assert result.confidence == 0.4
         assert result.confidence < ATTENTION_THRESHOLD
         assert result.engage is True
 
     @pytest.mark.asyncio
     async def test_same_confidence_ignored_without_recent_tag(self):
         message = _make_message(content="is that actually true though?")
-        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.6}')
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.4}')
         result = await evaluate(
             message,
             "",
@@ -121,7 +121,7 @@ class TestRecentTagWeighting:
             recently_tagged=False,
             _caller=caller,
         )
-        assert result.confidence == 0.6
+        assert result.confidence == 0.4
         assert result.engage is False
 
     @pytest.mark.asyncio

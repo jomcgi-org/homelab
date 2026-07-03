@@ -14,8 +14,8 @@ import os
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-ATTENTION_THRESHOLD = float(os.environ.get("ATTENTION_THRESHOLD", "0.8"))
-_RECENT_TAG_THRESHOLD = float(os.environ.get("ATTENTION_RECENT_TAG_THRESHOLD", "0.5"))
+ATTENTION_THRESHOLD = float(os.environ.get("ATTENTION_THRESHOLD", "0.5"))
+_RECENT_TAG_THRESHOLD = float(os.environ.get("ATTENTION_RECENT_TAG_THRESHOLD", "0.35"))
 
 
 @dataclass
@@ -56,17 +56,17 @@ async def evaluate(
             caller = build_llm_caller()
         text = (message.content or "")[:500]
         prompt = (
-            "You decide whether the assistant (a Discord bot named Bosun) should "
-            "jump into this message unprompted. Engage (true) when the message is "
-            "an open question or request that EITHER addresses the bot or the group "
-            "and wants a response, OR is about a code repository or codebase, OR "
-            "would benefit from a web search or fact-check (a factual claim, a "
-            "current event, anything checkable). Lean ignore (false) for idle "
-            "chatter, statements not seeking help, or messages clearly between "
-            "other people.\n"
+            "You are Bosun, a friendly, chatty bot hanging out in this Discord "
+            "channel. Lean toward joining the conversation. Engage (true) if the "
+            "message addresses you or the group, greets you, asks anything, is "
+            "trying to get your attention, could use a reply, or would benefit "
+            "from a web search or fact-check. Only ignore (false) if it is clearly "
+            "aimed at another specific person (not you), is pure noise or a bare "
+            "reaction with nothing to respond to, or is between other people and "
+            "not for you. When unsure, engage.\n"
             + (
-                "The bot was recently mentioned in this channel, so lean toward "
-                "engaging on a relevant follow-up.\n"
+                "You were recently mentioned in this channel, so lean even harder "
+                "toward engaging on the follow-up.\n"
                 if recently_tagged
                 else ""
             )

@@ -1278,7 +1278,7 @@ class ChatBot(discord.Client):
         try:
             async with message.channel.typing():
                 sent, response_text, thinking = await self._stream_response(
-                    message, attachments
+                    message, attachments, with_buttons=not force_respond
                 )
         except Exception:
             logger.exception("Failed to respond to message %s", msg_id)
@@ -1318,12 +1318,18 @@ class ChatBot(discord.Client):
         self,
         message: discord.Message,
         current_attachments: list[dict] | None = None,
+        *,
+        with_buttons: bool = True,
     ) -> tuple[discord.Message, str, str | None]:
         """Build context and stream the PydanticAI agent response.
 
         Sends an initial Discord reply on the first event, then progressively
         edits the message as new content arrives. Returns
         (sent_message, response_text, thinking_text).
+
+        ``with_buttons`` controls whether the "Show thinking" / fact-check
+        action row is attached. Ambient (unprompted) replies pass ``False`` so
+        they read as an organic message rather than a bot card (ADR 035).
         """
         from chat.agent import ChatDeps
 
@@ -1507,9 +1513,14 @@ class ChatBot(discord.Client):
                 if raw:
                     thinking_text = _truncate_thinking(raw)
 
-            await sent.edit(
-                content=response_text, view=BotMessageView(response_text, thinking_text)
-            )
+            if with_buttons:
+                await sent.edit(
+                    content=response_text,
+                    view=BotMessageView(response_text, thinking_text),
+                )
+            else:
+                # Ambient reply: no action row, so it reads as an organic message.
+                await sent.edit(content=response_text)
 
             # A directive change proposed this run needs a human 👍/👎 confirm
             # before it applies (ADR 035 Phase 5): post the summary, seed the
