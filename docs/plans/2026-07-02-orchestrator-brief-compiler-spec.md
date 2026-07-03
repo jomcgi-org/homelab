@@ -21,7 +21,7 @@
 
 One call per escalation, two possible outcomes:
 
-- **`route: chat`** — the request is conversational. The reply is produced by the existing local-Qwen conversational path; no microVM boots, no brief persists beyond telemetry.
+- **`route: chat`** — the request is conversational. No microVM boots. The call returns **reply guidance** (the `reply_guidance` block in the schema below); the reply itself is written by the existing local-Qwen concierge, seeded with that guidance as extra context. The guidance persists in telemetry.
 - **`route: goose`** — the call returns a **brief** (schema below), which becomes the session's task input.
 
 **Timeout:** 10s (env `ORCHESTRATOR_TIMEOUT_S`). Timeout, HTTP error, or unparseable output all fail open to direct submit.
@@ -35,24 +35,37 @@ The orchestrator returns strict JSON (schema-enforced client-side; invalid JSON 
 ```json
 {
   "route": "chat | goose",
+
+  "//goose": "the fields below are set on the goose route, null/absent on chat",
   "recipe": "query | research | plan | implement | artifact",
   "repo": "<repo scope or empty>",
   "repo_paths": ["projects/monolith/chat/bot.py"],
   "hints": "prose: relevant structures, prior art, gotchas",
   "constraints": "prose: what must not change",
   "done_criteria": ["checkable statement", "..."],
-  "stages": [{ "title": "..." }]
+  "stages": [{ "title": "..." }],
+
+  "//chat": "the field below is set on the chat route, null/absent on goose",
+  "reply_guidance": {
+    "context": "prose: what retrieval surfaced that the reply should use",
+    "redirect": "prose or null: a suggested steer, e.g. offer to escalate to a repo task",
+    "direction": "prose: how to shape the reply (length, tone, what to point at)"
+  }
 }
 ```
 
+- Fields partition by `route`: the goose route sets the brief fields and leaves `reply_guidance` null/absent; the chat route sets `reply_guidance` and leaves the brief fields null/absent. The parser validates the block that matches `route` and tolerates the other being missing; a route whose matching block fails validation is a parse failure (fail open).
 - `stages` pre-renders the ADR 035 checklist immediately (before guest boot); the guest's own `::stages::` announcement replaces it if the plan changes.
 - The brief is **advisory**: the guest may re-route or re-plan; ACLs, recipes, and the egress boundary constrain execution exactly as without a brief. `repo` must be within the invoker's ADR 029 scopes or the brief's repo is discarded in favour of the invoker-selected one.
-- The compiled task input the guest receives is the brief rendered as markdown plus the raw user prompt (never the brief alone; the user's words are ground truth).
+- `reply_guidance` is **advisory** too: the local Qwen concierge stays the author of the reply and may ignore a redirect or direction that does not fit. It shapes the reply, it never takes an action, never escalates on its own, and cannot widen scope.
+- The compiled task input the guest receives is the brief rendered as markdown plus the raw user prompt. The compiled reply input the concierge receives is the raw user prompt plus `reply_guidance` as supplementary context. In both cases the user's words are ground truth; the orchestrator output is never sent alone.
 
 **Acceptance.**
 
 - A goose-routed request shows a checklist message populated from `stages` before the session's first stage marker arrives.
 - A brief naming a repo outside the invoker's grants results in the invoker's own repo scope being used, and the discrepancy logged.
+- A chat-routed escalation produces a concierge reply (local Qwen) written with `reply_guidance` in context, and that guidance is recorded in telemetry.
+- A chat-route `redirect` suggestion does not force an escalation: the concierge may decline it, and no session is submitted unless the ADR 035 escape hatch fires on a later turn.
 
 ## 4. Prompt assembly and caching
 
@@ -73,17 +86,17 @@ No timestamps, ids, or unsorted collections anywhere before the volatile tail. T
 
 Every orchestrator call writes one row to `chat.orchestrator_brief`:
 
-| Column                                                | Notes                                                                    |
-| ----------------------------------------------------- | ------------------------------------------------------------------------ |
-| `id`, `created_at`                                    |                                                                          |
-| `thread_id`                                           | Links to `goosecracker_sessions` (null for `chat` routes with no thread) |
-| `model`                                               | OpenRouter model id used                                                 |
-| `route`                                               | `chat`/`goose`/`failopen`                                                |
-| `brief_json`                                          | Full brief (null on failopen)                                            |
-| `directive_version`                                   | Directive the call ran under                                             |
-| `latency_ms`                                          |                                                                          |
-| `prompt_tokens`, `completion_tokens`, `cached_tokens` | From the provider response when available                                |
-| `error`                                               | Populated on failopen (timeout, HTTP status, parse)                      |
+| Column                                                | Notes                                                                                                                   |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `id`, `created_at`                                    |                                                                                                                         |
+| `thread_id`                                           | Links to `goosecracker_sessions` (null for `chat` routes with no thread)                                                |
+| `model`                                               | OpenRouter model id used                                                                                                |
+| `route`                                               | `chat`/`goose`/`failopen`                                                                                               |
+| `brief_json`                                          | Full orchestrator output: the brief on the goose route, the `reply_guidance` block on the chat route (null on failopen) |
+| `directive_version`                                   | Directive the call ran under                                                                                            |
+| `latency_ms`                                          |                                                                                                                         |
+| `prompt_tokens`, `completion_tokens`, `cached_tokens` | From the provider response when available                                                                               |
+| `error`                                               | Populated on failopen (timeout, HTTP status, parse)                                                                     |
 
 This is the substrate for brief-vs-execution attribution and the future ADR 037 loop. No separate spend dashboard in scope; token columns are enough to compute cost.
 
