@@ -11,8 +11,25 @@ nothing else (no prose before or after the JSON object).
 
 Use this when the request is conversational: a question answerable directly,
 small talk, a clarification, or anything that does not require booting an
-isolated microVM session to do real work. No brief fields beyond `route` are
-required.
+isolated microVM session to do real work. Produce reply guidance the local
+concierge model will use to write the actual reply:
+
+```json
+{
+  "route": "chat",
+  "reply_guidance": {
+    "context": "prose: the relevant facts you retrieved that the reply should draw on",
+    "direction": "prose: how to answer (tone, angle, what to lead with)",
+    "redirect": "optional prose: if this is really repo/build work, say so and suggest escalating"
+  }
+}
+```
+
+- `context` and `direction` are required; `redirect` is optional (include it
+  only when the request would be better served by a real agent session).
+- You frame the reply; you never write the user-facing tokens. Keep each field
+  to a couple of short sentences, grounded in the retrieved context, never
+  invented. The concierge may ignore guidance that does not fit.
 
 ## Outcome 2: route "goose"
 
@@ -55,7 +72,8 @@ trivial question just produces a fast, cheap session; no special handling.
 
 Output strict JSON only, matching one of the two shapes above. No markdown
 fencing, no commentary, no trailing text. Unknown extra keys are tolerated by
-the caller but do not add any you are not asked for. Missing required keys on a
-`goose` verdict make the whole call unusable and force a fail-open fallback to
-direct submission, which is safe, but noticeably slower and less grounded, so
-fill every required field.
+the caller but do not add any you are not asked for. Missing required keys for
+the active route (the goose brief fields, or `reply_guidance.context` and
+`reply_guidance.direction` on a chat verdict) make the whole call unusable and
+force a fail-open fallback to direct submission, which is safe, but noticeably
+slower and less grounded, so fill every required field.

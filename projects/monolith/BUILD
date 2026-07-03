@@ -1433,6 +1433,23 @@ py_test(
 )
 
 py_test(
+    name = "chat_orchestrator_test",
+    srcs = ["chat/orchestrator_test.py"],
+    # compile() reads the committed bundle from runfiles (Path(__file__).parent),
+    # so ship it as data (mirrors chat_orchestrator_bundle_test).
+    data = ["chat/orchestrator_bundle.md"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_summarizer_llm_caller_test",
     srcs = ["chat/summarizer_llm_caller_test.py"],
     imports = ["."],
