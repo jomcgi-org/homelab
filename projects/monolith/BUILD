@@ -202,6 +202,22 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
 )
 
+# Stdlib-only generator for the ADR 036 orchestrator baked context bundle.
+# Concatenates chat/orchestrator_prompt.md, the guest recipe catalog under
+# projects/firecracker/goosecracker/guest/recipes/*.yaml, and a repo structure
+# digest into the committed chat/orchestrator_bundle.md, byte-deterministic (git
+# ls-files driven, no timestamps) so the orchestrator's system-message prefix
+# stays cache-stable across escalations. Run via
+# `bazel run //projects/monolith:gen_orchestrator_bundle`; wired into
+# bazel/tools/format/run-generators.sh alongside the doc manifests so the Format
+# check action auto-commits drift. Same no `imports` attr rationale as
+# gen_repo_docs_manifest above.
+py_venv_binary(
+    name = "gen_orchestrator_bundle",
+    main = "knowledge/tools/gen_orchestrator_bundle.py",
+    visibility = ["//:__subpackages__"],
+)
+
 py_library(
     name = "monolith_backend",
     srcs = glob(
@@ -836,6 +852,27 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_orchestrator_bundle_test",
+    srcs = ["chat/orchestrator_bundle_test.py"],
+    # The test reads both the hand-written base prompt and the committed
+    # generated bundle directly from runfiles (Path(__file__).parent), so ship
+    # them as data (mirrors chat_directives_test's directive_seed.md). The
+    # generator itself is exercised via its pure functions only: the git
+    # ls-files-driven path discovery has no .git to walk inside the bazel test
+    # sandbox, same reason gen_repo_docs_manifest_test.py never calls
+    # iter_doc_paths.
+    data = [
+        "chat/orchestrator_bundle.md",
+        "chat/orchestrator_prompt.md",
+    ],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 
