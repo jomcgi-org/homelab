@@ -838,9 +838,9 @@ def build_injected_context(thread_id: str, tier: str = "") -> dict[str, str]:
     transcript = "\n".join(lines)
     readme = (
         "# Injected context\n\n"
-        "This directory holds context the caller staged for this task. You did "
-        "not gather it and it is not in the repo. Grep or read it when the user "
-        "refers to an earlier discussion.\n\n"
+        "This directory (`/injected-context/`) holds context the caller staged "
+        "for this task. You did not gather it and it is not in the repo. Grep or "
+        "read it when the user refers to an earlier discussion.\n\n"
         f"- Source: recent messages from Discord channel `{parent}` "
         "(the parent of this agent thread).\n"
         f"- `transcript.md`: the last {len(rows)} message(s), oldest first, "
