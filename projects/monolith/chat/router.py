@@ -128,7 +128,7 @@ async def post_progress(body: ProgressIn) -> Response:
     if not _ID_RE.match(body.id):
         raise HTTPException(400, "invalid id")
     if body.chunk:
-        gp.append(body.id, body.chunk)
+        gp.append(body.id, body.chunk + "\n")
     if body.done:
         gp.mark_done(body.id)
     return Response(status_code=204)
@@ -148,13 +148,21 @@ async def post_progress_by_id(run_id: str, body: ProgressChunkIn) -> Response:
     the run id rides in the path here rather than the body. Same in-memory buffer,
     keyed by ``run_id`` (== the Discord thread the bot polls), so the live stream
     just works.
+
+    The guest streams goose stdout one line per POST, and its scanner strips the
+    trailing newline, so each chunk is a complete line with no newline. Restore
+    it before appending: the buffer's marker parser treats a marker-prefixed
+    fragment with no trailing newline as an incomplete line and holds it (waiting
+    for a newline that never arrives on the next, different line), so without this
+    every ``::stage::`` marker would accumulate unparsed and the checklist would
+    never render (ADR 035).
     """
     from chat import goosecracker_progress as gp
 
     if not _ID_RE.match(run_id):
         raise HTTPException(400, "invalid id")
     if body.chunk:
-        gp.append(run_id, body.chunk)
+        gp.append(run_id, body.chunk + "\n")
     if body.done:
         gp.mark_done(run_id)
     return Response(status_code=204)
