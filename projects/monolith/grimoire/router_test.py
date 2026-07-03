@@ -14,6 +14,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from app.db import get_session
+from grimoire.models import Entity
 from grimoire.router import router
 
 
@@ -65,6 +66,14 @@ def _create_character(client, campaign_id, character_name="Elowen"):
     return r.json()
 
 
+def _seed_entity(session, entity_id, name="Strahd", entity_type="npc"):
+    """Insert an Entity row directly (there is no create-entity route: entities
+    come from the extraction pipeline). Grants FK entity_id, so create_grant now
+    requires the target to exist."""
+    session.add(Entity(id=entity_id, entity_type=entity_type, name=name))
+    session.commit()
+
+
 class TestCampaigns:
     def test_create_list_get(self, client):
         created = _create_campaign(client)
@@ -107,11 +116,12 @@ class TestCharacters:
 
 
 class TestGrants:
-    def test_create_duplicate_and_pc_mismatch(self, client):
+    def test_create_duplicate_and_pc_mismatch(self, client, session):
         campaign = _create_campaign(client)
         other_campaign = _create_campaign(client, name="Storm King's Thunder")
         character = _create_character(client, campaign["id"])
         entity_id = "entity-strahd"
+        _seed_entity(session, entity_id)
 
         created = client.post(
             f"/api/grimoire/campaigns/{campaign['id']}/grants",
@@ -152,9 +162,10 @@ class TestGrants:
         listed = client.get(f"/api/grimoire/campaigns/{campaign['id']}/grants").json()
         assert len(listed) == 1
 
-    def test_patch_partial_then_full(self, client):
+    def test_patch_partial_then_full(self, client, session):
         campaign = _create_campaign(client)
         character = _create_character(client, campaign["id"])
+        _seed_entity(session, "entity-strahd")
         created = client.post(
             f"/api/grimoire/campaigns/{campaign['id']}/grants",
             json={
@@ -190,6 +201,23 @@ class TestGrants:
             json={"grant_scope": "full"},
         )
         assert r.status_code == 404
+
+    def test_create_grant_unknown_entity_404(self, client):
+        # entity_id is a FK; a missing entity must be a 404, not the 500 the
+        # Postgres IntegrityError would otherwise produce (the SQLite fixture
+        # does not enforce the FK, so the router's own guard is what is tested).
+        campaign = _create_campaign(client)
+        character = _create_character(client, campaign["id"])
+        r = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            json={
+                "entity_id": "no-such-entity",
+                "player_character_id": character["id"],
+                "grant_scope": "full",
+            },
+        )
+        assert r.status_code == 404
+        assert r.json().get("detail") == "entity not found"
 
 
 class TestSessions:
