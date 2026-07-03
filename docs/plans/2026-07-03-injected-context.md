@@ -85,7 +85,7 @@ func TestInjectedContextRejectsPathTraversal(t *testing.T) {
 
 Match `callHandler` / `New(Config{})` to the exact invocation pattern the neighbouring tests use (e.g. `TestColdRunBuildsArgvStreamsAndReturnsResult` at :143). Do not invent a new harness.
 
-**Step 2: Run tests to verify they fail** — defer to CI (compile error: `InjectedContext` / `injectedContextDir` undefined).
+**Step 2: Run tests to verify they fail**: defer to CI (compile error: `InjectedContext` / `injectedContextDir` undefined).
 
 **Step 3: Implement**
 
@@ -144,7 +144,7 @@ Wire it into the handler right after the `writeTaskFile` block succeeds (after :
 
 Confirm `strings` is imported (add to the import block if not).
 
-**Step 4: Verify** — defer to CI.
+**Step 4: Verify**: defer to CI.
 
 **Step 5: Commit**
 
@@ -186,7 +186,7 @@ def test_build_injected_context_empty_when_no_parent_channel(session_fixture):
     assert build_injected_context("unknown-thread", tier="") == {}
 ```
 
-**Step 2: Run test to verify it fails** — defer to CI (`build_injected_context` undefined).
+**Step 2: Run test to verify it fails**: defer to CI (`build_injected_context` undefined).
 
 **Step 3: Implement** in `chat/goosecracker.py`:
 
@@ -263,7 +263,7 @@ from chat.goosecracker import build_injected_context  # re-exported
     "build_injected_context",
 ```
 
-**Step 4: Verify** — defer to CI.
+**Step 4: Verify**: defer to CI.
 
 **Step 5: Commit**
 
@@ -315,7 +315,7 @@ async def test_run_one_turn_injects_context_bundle(monkeypatch):
 
 Reuse whatever stubbing the neighbouring `_run_one_turn` tests already do for the boundary calls, do not re-stub from scratch.
 
-**Step 2: Run test to verify it fails** — defer to CI (`injectedContext` absent from payload).
+**Step 2: Run test to verify it fails**: defer to CI (`injectedContext` absent from payload).
 
 **Step 3: Implement** in `runner.py`. After the `session_db = await asyncio.to_thread(sessions.load, session)` line (:525), build the bundle via the boundary (only when there is a Discord thread to source from):
 
@@ -348,7 +348,7 @@ Add the field to the `payload` dict (after the `sessionDb` line at :542):
             "injectedContext": injected_context,
 ```
 
-**Step 4: Verify** — defer to CI.
+**Step 4: Verify**: defer to CI.
 
 **Step 5: Commit**
 
@@ -383,7 +383,7 @@ Insert after line 8 (the "dispatch ONE sub-recipe" sentence), before the "Route 
 
 Keep the wording source-blind (no "Discord", no "conversation-only"), so the line stays correct for any future injector.
 
-**Step 2: Verify** — defer to CI (the recipe is loaded/validated in the guest image build; a YAML error fails that build). No unit test.
+**Step 2: Verify**: defer to CI (the recipe is loaded/validated in the guest image build; a YAML error fails that build). No unit test.
 
 **Step 3: Commit**
 
@@ -400,7 +400,7 @@ Code-only PRs deploy nothing in this repo, releases roll out by bumping chart ve
 
 **Files:**
 
-- Modify: `projects/monolith/chart/Chart.yaml` (version) **and** `projects/monolith/deploy/application.yaml` (`targetRevision`) — keep in sync.
+- Modify: `projects/monolith/chart/Chart.yaml` (version) **and** `projects/monolith/deploy/application.yaml` (`targetRevision`): keep in sync.
 - Modify: the goosecracker guest image chart. **Verify which chart owns the guest image build** (fc-invoke vs a goosecracker guest chart) before bumping. Memory is contradictory on whether guest/recipe changes auto-bump fc-invoke (#3042 said fixed, #3090 said still not bumping), so treat this as manual: find the chart whose image bakes `projects/firecracker/goosecracker/guest-init` + `guest/recipes`, bump its `Chart.yaml` version and matching `deploy/application.yaml` `targetRevision`.
 
 **Step 1:** Run `format` (regenerates BUILD files and the home-cluster root kustomization) after all code changes:
