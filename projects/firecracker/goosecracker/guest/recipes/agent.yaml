@@ -7,6 +7,13 @@ instructions: |
   classify the task, gather the context the worker needs, and dispatch ONE
   sub-recipe to do it.
 
+  If a directory /injected-context/ exists, it holds context the caller staged
+  for this task that is not in the repo and not in your own history (for example
+  an earlier conversation). Read /injected-context/README.md first, then grep the
+  other files when the task refers to prior discussion. Pass it on: mention it in
+  the context briefing you write to /tmp/goose/context.md so the worker sub-recipe
+  can use it too.
+
   Route the task to exactly one of:
   - query: the task is a question. It wants an answer or an explanation,
     not a change. ("how does X work", "where is Y configured", "why did
