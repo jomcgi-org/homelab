@@ -224,13 +224,22 @@ def _upsert_book_chunks(
                 session.flush()
                 upserted += 1
                 pending_embed.append(row)
-            elif existing.content != item["content"]:
-                existing.content = item["content"]
-                existing.section_path = item["section_path"]
-                existing.image_ref = item["image_ref"]
-                upserted += 1
-                pending_embed.append(existing)
-            # else: unchanged, skip entirely (idempotent re-run).
+            else:
+                content_changed = existing.content != item["content"]
+                meta_changed = (
+                    existing.section_path != item["section_path"]
+                    or existing.image_ref != item["image_ref"]
+                )
+                if content_changed or meta_changed:
+                    existing.content = item["content"]
+                    existing.section_path = item["section_path"]
+                    existing.image_ref = item["image_ref"]
+                    upserted += 1
+                    # Only re-embed when the embedded text (content) changed; a
+                    # metadata-only fix does not move the vector.
+                    if content_changed:
+                        pending_embed.append(existing)
+                # else: fully unchanged, skip entirely (idempotent re-run).
     session.commit()
     return pending_embed, upserted
 

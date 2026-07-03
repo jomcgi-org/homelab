@@ -76,8 +76,12 @@ rclone copyto "$TMP/output.json.gz" "${DEST}/raw/output.json.gz"
 if [ -f "$SRC_DIR/output.metadata.json" ]; then
 	rclone copyto "$SRC_DIR/output.metadata.json" "${DEST}/raw/output.metadata.json"
 fi
-# Cropped illustrations (flat in the source dir) -> raw/img/.
-rclone copy "$SRC_DIR" "${DEST}/raw/img/" --include "*_img.jpg"
+# Cropped illustrations (flat in the source dir) -> raw/img/. Match any image
+# extension: image_ref is built from the verbatim filename Marker emitted in the
+# <img src>, which is not guaranteed to be *_img.jpg for every book/vendor.
+rclone copy "$SRC_DIR" "${DEST}/raw/img/" \
+	--include "*.jpg" --include "*.jpeg" --include "*.png" \
+	--include "*.gif" --include "*.webp"
 
 if [ -f "$SRC_DIR/chunks.ndjson" ]; then
 	echo "uploading chunks -> ${BUCKET}/books/${BOOK_ID}/chunks/ ..." >&2
