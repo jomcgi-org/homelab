@@ -129,6 +129,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" $ }}-openrouter
                   key: OPENROUTER_API_KEY
+                  # Optional: the Secret only exists once the "openrouter"
+                  # 1Password item is created; the pod must not be blocked on it
+                  # (the extract job already skips cleanly when the key is unset).
+                  optional: true
             - name: GRIMOIRE_S3_BUCKET
               value: {{ $.Values.grimoire.s3Bucket | quote }}
             - name: GRIMOIRE_EXTRACT_MODEL
