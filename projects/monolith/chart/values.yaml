@@ -629,6 +629,22 @@ grimoire:
   # change.
   extractLimit: ""
 
+# ADR 036 orchestrator brief compiler: a host-side OpenRouter call that routes
+# chat vs goose and compiles a grounded task brief for escalations. Disabled
+# by default (Phase 1: plumbing only, no chart bump until Phase 3 flips this
+# on). OPENROUTER_API_KEY is synced from the 1Password item named by
+# onepassword.itemPath (item "openrouter", field "OPENROUTER_API_KEY", the
+# same item grimoire uses) into the {fullname}-orchestrator Secret. model is
+# pinned (never ":auto") so briefs stay attributable; timeoutSeconds bounds
+# the fail-open budget before the flow falls back to direct submit.
+orchestrator:
+  enabled: false
+  onepassword:
+    itemPath: ""
+  model: "deepseek/deepseek-chat-v4-flash"
+  baseUrl: "https://openrouter.ai/api/v1"
+  timeoutSeconds: 10
+
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.
 # Reuses the existing 1Password "marine" vault item (shared with the legacy
 # standalone ships app) so the secret keeps materializing after that app is
