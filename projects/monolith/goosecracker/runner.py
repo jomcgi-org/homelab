@@ -170,12 +170,6 @@ def _enqueue_sync(channel_id: str, content: str) -> None:
         session.commit()
 
 
-# Discord caps a single message at 2000 chars. A terminal result that fits is
-# settled into the run's one live message (edit in place); a longer one falls
-# back to a fresh paged post so the full answer still reaches the thread.
-_DISCORD_MESSAGE_LIMIT = 2000
-
-
 async def _deliver(discord_thread: str, content: str) -> None:
     """Post a result/error into the run's Discord thread, if it fronts one.
 
@@ -209,9 +203,12 @@ async def _settle(discord_thread: str, content: str) -> None:
 
     Overwrites the run's live progress message in place via the durable,
     leader-safe outbox edit, so the checklist message becomes the result: one
-    message, not a separate second post. Falls back to a fresh paged post when
-    there is no live message id (an MCP session, or a lost row) or the content is
-    too long for one Discord message, so the result is never dropped.
+    message, not a separate second post. A result too long for one Discord
+    message settles the live message to its first page and posts the overflow as
+    follow-ups, so the live message always ends on the real result (never a
+    stranded checklist) and the full answer still reaches the thread. Falls back
+    to a fresh paged post when there is no live message id (an MCP session, or a
+    lost row) or the edit cannot be enqueued, so the result is never dropped.
 
     The live message id is consumed (read-and-cleared) so it is settled at most
     once: a later turn in the same run (the conversational drain posts no fresh
@@ -230,13 +227,20 @@ async def _settle(discord_thread: str, content: str) -> None:
         logger.exception(
             "goosecracker: failed to read live message id for %s", discord_thread
         )
-    if msg_id and len(content) <= _DISCORD_MESSAGE_LIMIT:
+    if msg_id:
+        # Edit the live message to the first page (so it settles on the result,
+        # not a stranded spinner) and post any overflow pages as follow-ups.
+        pages = _split_message(content)
         try:
-            await asyncio.to_thread(_enqueue_edit_sync, discord_thread, msg_id, content)
+            await asyncio.to_thread(
+                _enqueue_edit_sync, discord_thread, msg_id, pages[0]
+            )
+            for page in pages[1:]:
+                await asyncio.to_thread(_enqueue_sync, discord_thread, page)
             return
         except Exception:
             logger.exception(
-                "goosecracker: failed to enqueue edit for %s; posting instead",
+                "goosecracker: failed to settle edit for %s; posting instead",
                 discord_thread,
             )
     await _deliver(discord_thread, content)
