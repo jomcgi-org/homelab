@@ -10,17 +10,17 @@
 
 **Key references:**
 
-- `projects/monolith/grimoire/extract.py` — `OpenRouterClient`, `_parse_content`, `_select_pending_chunks`, `extract_chunks`, `_apply_extraction`, `EXTRACTION_PROMPT`, `OPENROUTER_URL`, `DEFAULT_MODEL`.
-- `projects/monolith/grimoire/models.py` — SQLModel table pattern: `_UUID` helper, `__table_args__ = {"schema": "grimoire", "extend_existing": True}`, `created_at` Field. Header says "keep in sync" with the migration.
-- `projects/monolith/grimoire/jobs.py` — `grimoire_extract_entities` (the `OPENROUTER_API_KEY` skip guard lives here).
-- `projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql` — schema DDL to mirror.
-- `projects/monolith/BUILD` — hand-added `grimoire_*_test` `py_test` targets (~line 2596+). Per repo convention a NEW `*_test.py` needs its `py_test` added by hand; Format check passes green without it, so do not rely on gazelle.
-- `projects/monolith/deploy/values.yaml` — `llamaCppUrl`/`embeddingUrl` and the goosecracker `OPENAI_HOST: http://inference.inference.svc.cluster.local:8080` / `GOOSE_MODEL: qwen3.6-27b` precedent for reaching in-cluster Qwen. Workflows pods get env via `jobs.cronWorkflows` values.
-- `projects/monolith/chart/Chart.yaml` + `projects/monolith/deploy/application.yaml` — version + `targetRevision` must move together.
+- `projects/monolith/grimoire/extract.py` - `OpenRouterClient`, `_parse_content`, `_select_pending_chunks`, `extract_chunks`, `_apply_extraction`, `EXTRACTION_PROMPT`, `OPENROUTER_URL`, `DEFAULT_MODEL`.
+- `projects/monolith/grimoire/models.py` - SQLModel table pattern: `_UUID` helper, `__table_args__ = {"schema": "grimoire", "extend_existing": True}`, `created_at` Field. Header says "keep in sync" with the migration.
+- `projects/monolith/grimoire/jobs.py` - `grimoire_extract_entities` (the `OPENROUTER_API_KEY` skip guard lives here).
+- `projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql` - schema DDL to mirror.
+- `projects/monolith/BUILD` - hand-added `grimoire_*_test` `py_test` targets (~line 2596+). Per repo convention a NEW `*_test.py` needs its `py_test` added by hand; Format check passes green without it, so do not rely on gazelle.
+- `projects/monolith/deploy/values.yaml` - `llamaCppUrl`/`embeddingUrl` and the goosecracker `OPENAI_HOST: http://inference.inference.svc.cluster.local:8080` / `GOOSE_MODEL: qwen3.6-27b` precedent for reaching in-cluster Qwen. Workflows pods get env via `jobs.cronWorkflows` values.
+- `projects/monolith/chart/Chart.yaml` + `projects/monolith/deploy/application.yaml` - version + `targetRevision` must move together.
 
 **Gotchas to bake in:**
 
-- `model_dump()` on a `table=True` SQLModel silently drops SQLAlchemy-expired attributes after commit — flatten via `__table__.columns.keys()` + `getattr` when you need a dict from a persisted row.
+- `model_dump()` on a `table=True` SQLModel silently drops SQLAlchemy-expired attributes after commit - flatten via `__table__.columns.keys()` + `getattr` when you need a dict from a persisted row.
 - Migration timestamp IDs can collide with concurrent PRs; the `atlas_sum_test` catches it after rebase. Number the new migration LATER than `20260703070000`, and let the Atlas pre-commit hook rehash `atlas.sum` (do not hand-edit the sum).
 - SQLite test fixtures use `SQLModel.metadata.create_all` (no migrations), so mirror any CHECK constraint in `__table_args__` or SQLite won't enforce it.
 - No local test loop: implement, commit, push the branch, watch `gh pr checks <n> --watch` + BuildBuddy MCP for failures. Do NOT run `bazel test` locally.
@@ -79,7 +79,7 @@ def test_chunk_extraction_status_check(session):
 
 Match the existing fixture/import style already in `models_test.py` (reuse its session fixture; add `import pytest` if absent).
 
-**Step 2: Verify it fails** — `ChunkExtraction` does not exist yet (import error).
+**Step 2: Verify it fails** - `ChunkExtraction` does not exist yet (import error).
 
 **Step 3: Add the model** in `models.py` (after `ChunkEntityMention`), mirroring the schema/`_UUID` conventions. Composite PK across the three key columns; CHECK on status mirrored so SQLite enforces it:
 
@@ -233,7 +233,7 @@ session.add(ChunkExtraction(
 
 The marker is added inside the same loop iteration that succeeds; the existing `_commit(session)` after the loop persists markers + extraction together. On the `except (OpenRouterError, ValueError)` / invalid-shape paths, `continue` WITHOUT adding a marker (unchanged) so the chunk stays pending. Do not use `model_dump()` on the marker; construct it field-by-field as above.
 
-**Step 4: Verify tests pass.** (Local run not available — reason through the logic; final verification is CI.)
+**Step 4: Verify tests pass.** (Local run not available - reason through the logic; final verification is CI.)
 
 **Step 5: Commit**
 
@@ -270,7 +270,7 @@ def test_extract_raises_after_failed_correction():
 
 **Step 2: Verify they fail** (no fence strip; one bad body currently raises immediately, no correction turn).
 
-**Step 3: Implement.** Add local cleanup, then a single correction turn built from the original messages plus the bad output and the parse error. Keep the transient-HTTP retry loop (`EXTRACT_MAX_RETRIES`) unchanged and separate — this correction is a distinct, single retry on _parse_ failure only.
+**Step 3: Implement.** Add local cleanup, then a single correction turn built from the original messages plus the bad output and the parse error. Keep the transient-HTTP retry loop (`EXTRACT_MAX_RETRIES`) unchanged and separate - this correction is a distinct, single retry on _parse_ failure only.
 
 ````python
 import re
@@ -343,7 +343,7 @@ def test_base_url_env_override(monkeypatch):
     assert c.base_url == "http://local/v1/chat/completions"
 ```
 
-If `jobs_test.py` does not exist, create it and add a `grimoire_jobs_test` `py_test` target in `projects/monolith/BUILD` (copy an existing `grimoire_*_test` block; new `*_test.py` needs the hand-added target — Format check will pass without it).
+If `jobs_test.py` does not exist, create it and add a `grimoire_jobs_test` `py_test` target in `projects/monolith/BUILD` (copy an existing `grimoire_*_test` block; new `*_test.py` needs the hand-added target - Format check will pass without it).
 
 **Step 2: Verify they fail.**
 
@@ -412,7 +412,7 @@ env:
   # GRIMOIRE_EXTRACT_LIMIT / GRIMOIRE_EXTRACT_BOOK left unset (defaults / manual staging)
 ```
 
-Do NOT change `DEFAULT_MODEL`/`OPENROUTER_URL` in code — deployment wiring via values is the source of truth (keeps OpenRouter as the neutral code fallback). Confirm the extraction CronWorkflow stays `suspend: true` (manual-only).
+Do NOT change `DEFAULT_MODEL`/`OPENROUTER_URL` in code - deployment wiring via values is the source of truth (keeps OpenRouter as the neutral code fallback). Confirm the extraction CronWorkflow stays `suspend: true` (manual-only).
 
 **Step 2: Render to verify** the env lands on the workflow:
 
