@@ -135,7 +135,7 @@ Written per artifact via `put-eval <artifact_id> <base64-payload>`, alongside
 the artifact's index.html in `s3://artifacts/{artifact_id}/`. Keys:
 
 - `artifact_id`
-- `session_id` (same value; nullable if no thread row matched)
+- `session_id` (the Discord thread id, from gather; nullable if no session row matched)
 - `recipe` (from gather; nullable)
 - `rubric_version`
 - `scores`: dimension -> `{score, rationale}`

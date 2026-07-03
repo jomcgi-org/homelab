@@ -26,14 +26,21 @@ from app.db import get_engine
 from artifact import s3
 
 # Recipe/thread context for the artifact ids found in the bucket. Artifact ids
-# share the session id namespace (the guest publishes under its session id),
-# so the join key is agent_threads.session_id.
+# are random capability tokens minted per thread (chat.goosecracker_sessions.
+# artifact_id), NOT session ids, so recover the Discord thread via
+# goosecracker_sessions and join agent_threads on it. DISTINCT ON keeps the
+# most recent thread row when a thread ran multiple turns.
 _CONTEXT_SQL = """
-SELECT at.session_id, at.recipe, at.tier, at.state,
+SELECT DISTINCT ON (gs.artifact_id)
+       gs.artifact_id,
+       gs.discord_thread AS session_id,
+       at.recipe, at.tier, at.state,
        LEFT(at.task, 500) AS task,
        at.created_at
-FROM claude_agent.agent_threads at
-WHERE at.session_id = ANY(:ids)
+FROM chat.goosecracker_sessions gs
+LEFT JOIN claude_agent.agent_threads at ON at.session_id = gs.discord_thread
+WHERE gs.artifact_id = ANY(:ids)
+ORDER BY gs.artifact_id, at.created_at DESC
 """
 
 _EVAL_LEAF = "design-eval.json"
@@ -74,12 +81,13 @@ def gather(since):
     if ids:
         with get_engine().connect() as conn:
             rows = conn.execute(text(_CONTEXT_SQL), {"ids": ids}).mappings()
-            context = {r["session_id"]: dict(r) for r in rows}
+            context = {r["artifact_id"]: dict(r) for r in rows}
     for aid in sorted(ids, key=lambda a: have[a]["index.html"], reverse=True):
         leaves = have[aid]
         ctx = context.get(aid, {})
         rec = {
             "artifact_id": aid,
+            "session_id": ctx.get("session_id"),
             "published_at": str(leaves["index.html"]),
             "recipe": ctx.get("recipe"),
             "tier": ctx.get("tier"),
