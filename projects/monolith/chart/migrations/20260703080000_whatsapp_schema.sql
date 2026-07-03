@@ -5,9 +5,8 @@
 -- provisions the schema, never any tables.
 --
 -- The migration runs as the `app` role, which therefore owns the schema; the
--- gateway connects as the same role, so it can CREATE tables here. The explicit
--- grant is redundant with ownership but documents the intended access.
+-- gateway connects as the same role, so it can CREATE tables here. Ownership
+-- carries the needed access, so no explicit GRANT is required (matching the
+-- other schema-provisioning migrations).
 
 CREATE SCHEMA IF NOT EXISTS whatsapp;
-
-GRANT USAGE, CREATE ON SCHEMA whatsapp TO app;

@@ -33,10 +33,12 @@ _RECORD_PHRASES = (
 # names both a reminder verb and an event verb but is a reminder.
 _REMINDER_PHRASES = ("remind ", "reminder", "don't forget", "dont forget")
 
-# Schedule: an explicit calendar word, or an event verb paired with a time-ish
-# token (a weekday, today/tomorrow/tonight, or a clock time). The verb-plus-time
-# rule catches "add dinner with Sam Friday 7pm" without a bare "add" hijacking
-# every message.
+# Schedule: an explicit calendar word, an event noun on its own, or a weaker
+# event verb paired with a time-ish token (a weekday, today/tomorrow/tonight, or
+# a clock time). An event noun ("dinner", "meeting") is a strong enough signal to
+# route to schedule even without a time, because the calendar handler then asks a
+# single clarifying question (spec 5b). A bare verb ("add", "put") needs the time
+# token so it does not hijack every "add milk" style message.
 _CALENDAR_PHRASES = (
     "calendar",
     "schedule ",
@@ -46,19 +48,21 @@ _CALENDAR_PHRASES = (
     "book a table",
     "book the table",
 )
+_EVENT_NOUNS = (
+    "dinner",
+    "lunch",
+    "brunch",
+    "drinks",
+    "meeting",
+    "party",
+)
 _EVENT_VERBS = (
     "add ",
     "book ",
     "put ",
     "set up ",
     "plan ",
-    "dinner",
-    "lunch",
-    "brunch",
-    "drinks",
-    "meeting",
     "meet ",
-    "party",
 )
 _TIMEY = re.compile(
     r"\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
@@ -86,6 +90,8 @@ def classify_intent(text: str) -> str:
         return "reminder"
 
     if any(p in t for p in _CALENDAR_PHRASES):
+        return "schedule"
+    if any(n in t for n in _EVENT_NOUNS):
         return "schedule"
     if any(v in t for v in _EVENT_VERBS) and _looks_timey(t):
         return "schedule"

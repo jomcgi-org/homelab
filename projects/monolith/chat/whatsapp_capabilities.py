@@ -206,7 +206,7 @@ def _capture_record(
     and the author (JID + push name) so a captured note is traceable to who said
     it in which group.
     """
-    from knowledge.ingest_queue import ingest_raw
+    from knowledge.api import ingest_raw
 
     with Session(get_engine()) as session:
         ingest_raw(

@@ -24,6 +24,7 @@ __all__ = [
     "search_notes",
     "search_public_chunks",
     "get_embedding_client",
+    "ingest_raw",
 ]
 
 # Over-fetch factor for the public-chunk search: pull this many times the
@@ -31,6 +32,30 @@ __all__ = [
 # chunks do not crowd out the rest before we have K distinct notes. The public
 # set is small and slow-changing, so a generous over-fetch is cheap.
 _PUBLIC_CHUNK_OVERFETCH = 8
+
+
+def ingest_raw(
+    session: "Session",
+    *,
+    content: str,
+    source: str,
+    original_url: str | None = None,
+    extra: dict | None = None,
+):
+    """Persist raw content into the knowledge pipeline (knowledge.ingest_queue).
+
+    The ingest stack is imported lazily so cross-domain callers of this facade
+    do not pull trafilatura, youtube, and the S3 raw store at load time.
+    """
+    from knowledge.ingest_queue import ingest_raw as _ingest_raw
+
+    return _ingest_raw(
+        session,
+        content=content,
+        source=source,
+        original_url=original_url,
+        extra=extra,
+    )
 
 
 def search_notes(session: "Session", query_embedding: list[float], **kwargs):

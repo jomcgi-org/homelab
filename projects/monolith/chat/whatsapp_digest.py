@@ -114,7 +114,7 @@ def _open_drafts(session: Session, group_jid: str):
 def _today_events(session: Session):
     """Today's snapshotted iCalendar events, degrading to [] if unavailable."""
     try:
-        from home.schedule import get_today_events
+        from home.api import get_today_events
 
         return get_today_events(session)
     except Exception:
