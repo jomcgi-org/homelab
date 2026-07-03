@@ -15,19 +15,23 @@ instructions: |
   Your ONLY job: produce ONE complete, self-contained HTML document at
   /tmp/artifact.html. BUILD IT INCREMENTALLY with the text editor, never as one
   giant write. Emitting tens of KB of HTML in a single tool call is the top cause
-  of a corrupted or half-written file: the argument truncates or mis-escapes and
-  the write silently fails. Instead:
+  of a corrupted or half-written file: the argument truncates (your output is
+  capped at ~16k tokens) or mis-escapes and the write silently fails. Instead:
     1. FIRST, write a small SKELETON with the editor: a valid HTML document with
        <head> (fonts, CDN <script>/<link> tags, your :root CSS variables and base
-       styles) and a <body> whose major sections are empty placeholders marked
-       with UNIQUE HTML comments, e.g. <!--SECTION:HEADER-->, <!--SECTION:CHART-->,
-       <!--SECTION:TABLE-->, plus a <!--SCRIPT:LOGIC--> marker inside the closing
-       <script>. Keep the skeleton small.
-    2. THEN fill each section ONE AT A TIME with a separate str_replace edit that
-       swaps a single marker comment for that section's real markup. Each edit is
-       small and self-contained, so a garbled one costs a cheap retry instead of
-       corrupting the whole file.
-    3. Finally replace <!--SCRIPT:LOGIC--> with your inline JS the same way.
+       styles) and a <body> whose major sections are empty placeholders. Mark each
+       empty spot with a comment containing the literal token NEEDS_FILL, e.g.
+       <!--NEEDS_FILL:header-->, <!--NEEDS_FILL:chart-->, <!--NEEDS_FILL:table-->,
+       and one /*NEEDS_FILL:logic*/ inside the closing <script>. Keep it small.
+    2. THEN replace each NEEDS_FILL marker, ONE AT A TIME, with a separate
+       str_replace edit that swaps that single marker for its real markup or JS.
+       Each edit is small and self-contained, so a garbled one costs a cheap retry
+       instead of corrupting the whole file.
+  YOU ARE NOT DONE UNTIL EVERY NEEDS_FILL MARKER IS GONE. The bare skeleton is a
+  FAILURE, not a deliverable: a page of empty placeholders is worse than useless,
+  and the harness will reject it and make you continue. After your last edit,
+  confirm none remain (e.g. `grep -c NEEDS_FILL /tmp/artifact.html` prints 0)
+  before you emit your result.
   Prefer the editor's targeted str_replace over shell heredocs for anything large:
   a heredoc buries the entire document inside one shell `command` argument, which
   IS the fragile giant write to avoid. Use the shell for small things (reading the
@@ -116,9 +120,10 @@ instructions: |
   ```
 prompt: |
   Build or update this artifact now. Start immediately with the editor: for a new
-  page write the small skeleton first, then fill each marked section with a
-  separate str_replace edit. Do not reply with a plan or a description first, and
-  do not dump the whole document in one giant write.
+  page write the small skeleton first, then replace every NEEDS_FILL marker with a
+  separate str_replace edit until none remain. Do not reply with a plan or a
+  description first, do not stop at the empty skeleton, and do not dump the whole
+  document in one giant write.
 
   What to build is in the file {{ task_file }}: read it first, for example
   `cat {{ task_file }}`.
@@ -152,6 +157,13 @@ settings:
 # than the harness publishing a broken page) if any static check fails. All checks
 # are cheap and static (no browser), and write their messages to
 # /tmp/artifact_error.txt for the retry to read:
+#   0. the page still has NEEDS_FILL placeholder markers: the incremental build
+#      wrote the skeleton but stopped before filling the sections (the model reads
+#      "write a skeleton" as the whole job and emits its result early). The static
+#      parse/color/directive checks all PASS on a bare skeleton, so without this
+#      gate the harness would publish an empty shell. Fails fast and makes goose
+#      continue the str_replace fills. Motivated by test session
+#      test-incremental-verify-1 (skeleton published as "ok", sections unfilled).
 #   1. /tmp/artifact.html is missing or empty (the occasional model whiff where it
 #      chats instead of writing; GOOSE_MAX_TOKENS already makes this rare).
 #   2. an inline <script> has a JavaScript SYNTAX ERROR. A single bad token makes
@@ -173,6 +185,10 @@ retry:
   checks:
     - type: shell
       command: |
+        if grep -q 'NEEDS_FILL' /tmp/artifact.html 2>/dev/null; then
+          printf '%s\n' "The page still contains NEEDS_FILL placeholder markers: you wrote the skeleton but never filled it in. Replace EVERY remaining NEEDS_FILL marker with its real content (one str_replace edit each) so grep -c NEEDS_FILL prints 0, then finish." | tee /tmp/artifact_error.txt >&2
+          exit 1
+        fi
         test -s /tmp/artifact.html && node -e '
         const fs=require("fs"),vm=require("vm");
         const html=fs.readFileSync("/tmp/artifact.html","utf8");
@@ -198,9 +214,11 @@ retry:
         if(errs.length){try{fs.writeFileSync("/tmp/artifact_error.txt",errs.join("\n"));}catch(_){}console.error(errs.join("\n"));process.exit(1);}
         '
   failure_prompt: |
-    Your /tmp/artifact.html is not publishable yet. It is missing/empty, or a
-    static check found a defect that makes the page look broken or half-styled:
-    an inline <script> with a JavaScript SYNTAX ERROR (kills every handler), an
+    Your /tmp/artifact.html is not publishable yet. It is missing/empty, it still
+    has unfilled NEEDS_FILL placeholder markers (you wrote the skeleton but did not
+    fill it in), or a static check found a defect that makes the page look broken
+    or half-styled: an inline <script> with a JavaScript SYNTAX ERROR (kills every
+    handler), an
     invalid Tailwind color class like slate-705 (renders as nothing), or an
     interactivity directive (Alpine/Vue x-data/@click/:class, Franken uk-*,
     data-lucide) whose runtime script is never loaded. If /tmp/artifact_error.txt
