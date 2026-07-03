@@ -17,11 +17,14 @@ from chat.goosecracker import force_idle_thread  # re-exported
 from chat.goosecracker import mark_inflight_running  # re-exported
 from chat.goosecracker import parent_channel_for_thread  # re-exported
 from chat.goosecracker import reclaim_orphaned_agent_sessions  # re-exported
+from chat.goosecracker import set_progress_message  # re-exported
+from chat.goosecracker import take_progress_message  # re-exported
 from chat.goosecracker_progress import (  # re-exported
     clear as reset_goosecracker_progress,
     mark_done as mark_goosecracker_progress_done,
     set_notice as set_goosecracker_progress_notice,
 )
+from chat.outbox import enqueue_edit  # re-exported
 from chat.outbox import enqueue_message  # re-exported
 from chat.summarizer import conversational_agent_reply  # re-exported
 from chat.summarizer import run_summary_generation  # re-exported
@@ -37,6 +40,9 @@ __all__ = [
     "mark_inflight_running",
     "parent_channel_for_thread",
     "reclaim_orphaned_agent_sessions",
+    "set_progress_message",
+    "take_progress_message",
+    "enqueue_edit",
     "enqueue_message",
     "mark_goosecracker_progress_done",
     "reset_goosecracker_progress",

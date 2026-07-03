@@ -1133,8 +1133,10 @@ class ChatBot(discord.Client):
 
         Polls the in-process progress buffer (fed by the guest's stdout stream)
         and re-renders on a fixed cadence, so Discord edits stay within rate
-        limits. The final ``Artifact ready: <url>`` link is posted separately by
-        the controller's Done -> outbox path (ADR 024 Task 5).
+        limits. This message is the run's SINGLE live message: on completion the
+        runner overwrites it in place with the final result via a durable outbox
+        edit (ADR 024), so the loop persists the message id up front and, once the
+        run is done, stops without a terminal render rather than racing that edit.
 
         ADR 035: once a run announces a stage plan, render_checklist takes over
         from the raw tail renderer and edits switch from "whenever the rendered
@@ -1142,6 +1144,17 @@ class ChatBot(discord.Client):
         a burst of marker updates coalesces into one Discord edit. Runs that
         never emit markers keep the original tail-renderer behaviour untouched.
         """
+        # Record this run's live message id so the off-loop runner can settle the
+        # final result into it (one message, not two). Best-effort: a failure just
+        # means the runner posts the result as a new message instead.
+        try:
+            await asyncio.to_thread(
+                goosecracker.set_progress_message, artifact_id, str(message.id)
+            )
+        except Exception:
+            logger.exception(
+                "goosecracker: failed to record live message id for %s", artifact_id
+            )
         gp = goosecracker_progress
         start = time.monotonic()
         last_body = message.content
@@ -1153,9 +1166,18 @@ class ChatBot(discord.Client):
             now = time.monotonic()
             snap = gp.get(artifact_id)
             elapsed = int(now - start)
-            checklist = render_checklist(snap)
-            edited_now = False
 
+            if snap is not None and snap.done:
+                # The run is over. The runner settles the final result into THIS
+                # same message via a durable outbox edit (ADR 024), so the loop
+                # must not render a terminal checklist here: a late checklist edit
+                # would race that outbox edit and could revert the message from
+                # the result back to a resolved checklist. Just stop; the outbox
+                # owns the terminal state.
+                gp.clear(artifact_id)
+                return
+
+            checklist = render_checklist(snap)
             if checklist is None:
                 body = _render_goosecracker_progress(snap, elapsed, kind)
                 if body != last_body:
@@ -1183,27 +1205,11 @@ class ChatBot(discord.Client):
                     last_edit_at = now
                     last_stages_version = snap.stages_version
                     last_done = snap.done
-                    edited_now = True
                 except discord.HTTPException:
                     logger.exception(
                         "goosecracker: progress edit failed for %s", artifact_id
                     )
 
-            if snap is not None and snap.done:
-                if checklist is not None and not edited_now:
-                    # The coalescing gate above may have swallowed the done
-                    # transition (or its edit failed); force it through so the
-                    # terminal checklist is never dropped. Skip when this poll
-                    # already edited the done checklist, to avoid a duplicate.
-                    try:
-                        await message.edit(content=checklist)
-                    except discord.HTTPException:
-                        logger.exception(
-                            "goosecracker: final progress edit failed for %s",
-                            artifact_id,
-                        )
-                gp.clear(artifact_id)
-                return
             if elapsed >= GOOSECRACKER_STREAM_TIMEOUT:
                 logger.warning(
                     "goosecracker: progress stream timed out for %s", artifact_id
@@ -1356,6 +1362,29 @@ class ChatBot(discord.Client):
             # Ambient/mention only makes sense in a text channel we can thread from.
             await asyncio.to_thread(self._complete_lock, str(message.id))
             return
+
+        # Persist the triggering message to the channel's history. The agent path
+        # (unlike _process_message) otherwise never saves it, so a channel whose
+        # only activity is agent triggers reads back empty and the run's injected
+        # context (ADR 040, built from the parent channel's recent messages) has
+        # nothing to show. Best-effort: a save failure must not block the run.
+        try:
+            with Session(get_engine()) as store_session:
+                store = MessageStore(
+                    session=store_session, embed_client=self.embed_client
+                )
+                await store.save_message(
+                    discord_message_id=str(message.id),
+                    channel_id=str(channel.id),
+                    user_id=str(message.author.id),
+                    username=message.author.display_name,
+                    content=message.content or _extract_embed_text(message),
+                    is_bot=message.author.bot,
+                )
+        except Exception:
+            logger.exception(
+                "goosecracker: failed to persist trigger message %s", message.id
+            )
 
         outcome = await self.start_agent_flow(
             channel, user, message.content, "", trigger_message=message

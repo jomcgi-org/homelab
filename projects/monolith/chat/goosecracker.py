@@ -172,6 +172,46 @@ def start_session(thread_id: str, prompt: str) -> dict:
     return result
 
 
+def set_progress_message(thread_id: str, message_id: str) -> None:
+    """Record the id of the run's single live message on the session row.
+
+    The bot posts one live message per turn (the "🤖 Planning…" reply it edits in
+    place with the checklist) and stamps its id here so the off-loop runner can
+    later overwrite that same message with the final result via a durable outbox
+    edit (one message, not two). A no-op when the thread has no session row (e.g.
+    an artifact run with no persisted session). Sync; call via asyncio.to_thread.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        if row is None:
+            return
+        row.progress_message_id = message_id
+        session.add(row)
+        session.commit()
+
+
+def take_progress_message(thread_id: str) -> str:
+    """Read AND clear the run's live message id for ``thread_id`` atomically.
+
+    Consume-on-read: the runner takes the id when it settles a turn's result into
+    the message, and clears it in the same transaction so the id is used at most
+    once. A later turn in the same run (the conversational drain reuses one
+    run_and_deliver call and posts no fresh live message) then reads '' and posts
+    its own result rather than overwriting the earlier turn's. Returns '' when
+    there is no row or no live message. Sync; call via asyncio.to_thread.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        if row is None:
+            return ""
+        message_id = row.progress_message_id
+        if message_id:
+            row.progress_message_id = ""
+            session.add(row)
+            session.commit()
+        return message_id
+
+
 def continue_session(
     thread_id: str,
     message: str,

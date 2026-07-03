@@ -10,7 +10,7 @@ from sqlmodel.pool import StaticPool
 
 import chat.outbox as outbox
 from chat.models import DiscordOutbox
-from chat.outbox import drain_once, enqueue_message, enqueue_reaction
+from chat.outbox import drain_once, enqueue_edit, enqueue_message, enqueue_reaction
 
 
 @pytest.fixture(name="engine")
@@ -207,6 +207,93 @@ async def test_drain_reaction_remove_swallows_missing():
         await drain_once(bot, engine=object())
 
     # A missing prior reaction is swallowed: the row counts as posted.
+    mark_posted.assert_called_once()
+    mark_failed.assert_not_called()
+
+
+def test_enqueue_edit_adds_row():
+    session = MagicMock()
+    enqueue_edit(session, "C1", "M9", "final result")
+    row = session.add.call_args.args[0]
+    assert row.channel_id == "C1"
+    assert row.target_message_id == "M9"
+    assert row.content == "final result"
+    assert row.reaction is None and row.embed_json is None
+
+
+def test_edit_row_satisfies_content_or_embed_check(engine):
+    """An edit row (content + target_message_id, no reaction) is a valid outbox
+    entry: content is non-NULL, so it passes the content-or-embed-or-reaction
+    CHECK, and the target_message_id makes the drain edit instead of post."""
+    with Session(engine) as session:
+        enqueue_edit(session, "chan", "msg", "final result")
+        session.commit()
+    with Session(engine) as session:
+        row = session.query(DiscordOutbox).one()
+    assert row.target_message_id == "msg" and row.content == "final result"
+    assert row.reaction is None
+
+
+@pytest.mark.asyncio
+async def test_drain_edits_message_in_place():
+    """An edit row overwrites the target message and never posts a new one."""
+    row = {
+        "id": 6,
+        "channel_id": "100",
+        "content": "Artifact ready: https://x",
+        "embed_json": None,
+        "level": "info",
+        "target_message_id": "777",
+        "reaction": None,
+        "reaction_remove": False,
+    }
+    message = MagicMock()
+    message.edit = AsyncMock()
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(return_value=message)
+    channel.send = AsyncMock()
+    bot = MagicMock()
+    bot.get_channel = MagicMock(return_value=channel)
+
+    with (
+        patch.object(outbox, "_claim_pending", return_value=[row]),
+        patch.object(outbox, "_mark_posted") as mark_posted,
+        patch.object(outbox, "_mark_failed") as mark_failed,
+    ):
+        await drain_once(bot, engine=object())
+
+    channel.fetch_message.assert_awaited_once_with(777)
+    message.edit.assert_awaited_once_with(content="Artifact ready: https://x")
+    channel.send.assert_not_called()
+    mark_posted.assert_called_once()
+    mark_failed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drain_edit_swallows_missing_message():
+    """Editing a deleted message resolves the row (nothing to settle), not fail."""
+    row = {
+        "id": 7,
+        "channel_id": "100",
+        "content": "final",
+        "embed_json": None,
+        "level": "info",
+        "target_message_id": "777",
+        "reaction": None,
+        "reaction_remove": False,
+    }
+    channel = MagicMock()
+    channel.fetch_message = AsyncMock(side_effect=discord.NotFound(MagicMock(), "gone"))
+    bot = MagicMock()
+    bot.get_channel = MagicMock(return_value=channel)
+
+    with (
+        patch.object(outbox, "_claim_pending", return_value=[row]),
+        patch.object(outbox, "_mark_posted") as mark_posted,
+        patch.object(outbox, "_mark_failed") as mark_failed,
+    ):
+        await drain_once(bot, engine=object())
+
     mark_posted.assert_called_once()
     mark_failed.assert_not_called()
 

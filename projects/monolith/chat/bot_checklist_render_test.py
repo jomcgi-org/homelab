@@ -253,8 +253,10 @@ class TestShouldEditChecklistGating:
 
 
 # ---------------------------------------------------------------------------
-# Full loop integration: the terminal checklist must never be dropped by the
-# 2s coalescing gate.
+# Full loop integration: the loop renders LIVE progress only. On done it stops
+# without a terminal render, because the runner settles the final result into
+# the same message via a durable outbox edit (one message, not two). A terminal
+# edit here would race that settle and could revert the result to a checklist.
 # ---------------------------------------------------------------------------
 
 
@@ -269,14 +271,39 @@ def _make_bot() -> ChatBot:
     return bot
 
 
-class TestStreamLoopFinalEditNeverDropped:
+class TestStreamLoopHandsTerminalToOutbox:
     @pytest.mark.asyncio
-    async def test_done_transition_within_gate_window_still_lands(self):
-        """A poll that flips done within the 2s gate is coalesced on the normal
-        edit path, but the unconditional final edit must still deliver it."""
+    async def test_records_live_message_id_up_front(self):
+        """The loop stamps the run's live message id so the off-loop runner can
+        settle the final result into that same message."""
         bot = _make_bot()
         message = MagicMock()
         message.content = ""
+        message.id = 99
+        message.edit = AsyncMock()
+
+        snap = _progress([_stage(0, "Plan", "done")], done=True)
+        snap.stages_version = 1
+
+        with (
+            patch("chat.bot.asyncio.sleep", new=AsyncMock()),
+            patch("chat.bot.goosecracker.set_progress_message") as mock_set,
+            patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0]),
+            patch("chat.bot.goosecracker_progress.get", side_effect=[snap]),
+            patch("chat.bot.goosecracker_progress.clear"),
+        ):
+            await bot._stream_goosecracker_progress("t-7", message, kind="agent")
+
+        mock_set.assert_called_once_with("t-7", "99")
+
+    @pytest.mark.asyncio
+    async def test_done_poll_stops_without_a_terminal_edit(self):
+        """The running poll edits the live checklist; the done poll stops without
+        editing, leaving the terminal settle to the runner's outbox edit."""
+        bot = _make_bot()
+        message = MagicMock()
+        message.content = ""
+        message.id = 1
         message.edit = AsyncMock()
 
         snap1 = _progress([_stage(0, "Plan", "running")])
@@ -286,6 +313,7 @@ class TestStreamLoopFinalEditNeverDropped:
 
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
+            patch("chat.bot.goosecracker.set_progress_message"),
             patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0, 100.5]),
             patch("chat.bot.goosecracker_progress.get", side_effect=[snap1, snap2]),
             patch("chat.bot.goosecracker_progress.clear") as mock_clear,
@@ -294,12 +322,9 @@ class TestStreamLoopFinalEditNeverDropped:
                 "artifact-1", message, kind="artifact"
             )
 
-        # poll 1: version -1 -> 1, far past the window -> edit
-        # poll 2: done flips False -> True only 0.5s later -> gate coalesces the
-        # normal edit, but the unconditional final edit still fires.
-        assert message.edit.call_count == 2
-        final_content = message.edit.call_args_list[-1].kwargs["content"]
-        assert "Done" in final_content
+        # poll 1 (running) edits the live checklist; poll 2 (done) returns without
+        # a terminal edit -> exactly one edit.
+        assert message.edit.call_count == 1
         mock_clear.assert_called_once_with("artifact-1")
 
     @pytest.mark.asyncio
@@ -307,30 +332,38 @@ class TestStreamLoopFinalEditNeverDropped:
         bot = _make_bot()
         message = MagicMock()
         message.content = ""
+        message.id = 7
         message.edit = AsyncMock(side_effect=discord.HTTPException(MagicMock(), "boom"))
 
-        snap = _progress([_stage(0, "Plan", "done")], done=True)
-        snap.stages_version = 1
+        snap1 = _progress([_stage(0, "Plan", "running")])
+        snap1.stages_version = 1
+        snap2 = _progress([_stage(0, "Plan", "done")], done=True)
+        snap2.stages_version = 1
 
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
-            patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0]),
-            patch("chat.bot.goosecracker_progress.get", side_effect=[snap]),
+            patch("chat.bot.goosecracker.set_progress_message"),
+            patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0, 100.5]),
+            patch("chat.bot.goosecracker_progress.get", side_effect=[snap1, snap2]),
             patch("chat.bot.goosecracker_progress.clear") as mock_clear,
         ):
             await bot._stream_goosecracker_progress(
                 "artifact-2", message, kind="artifact"
             )
 
+        # The running-poll edit raised; the loop swallowed it and still reached the
+        # done poll, which stops cleanly.
+        message.edit.assert_awaited_once()
         mock_clear.assert_called_once_with("artifact-2")
 
     @pytest.mark.asyncio
-    async def test_no_stages_path_unchanged_edits_on_every_body_change(self):
-        """Artifact recipes that never emit markers keep the original
-        edit-whenever-content-changes behaviour, byte-for-byte."""
+    async def test_no_stages_path_edits_live_body_then_stops_on_done(self):
+        """Artifact recipes that never emit markers keep the tail-renderer live
+        edits while running, and likewise stop on done without a terminal edit."""
         bot = _make_bot()
         message = MagicMock()
         message.content = ""
+        message.id = 3
         message.edit = AsyncMock()
 
         snap_thinking = gp.Progress(text="", done=False)
@@ -342,6 +375,7 @@ class TestStreamLoopFinalEditNeverDropped:
         # unbounded increasing clock and assert edit behaviour, not call counts.
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
+            patch("chat.bot.goosecracker.set_progress_message"),
             patch("chat.bot.time.monotonic", side_effect=itertools.count()),
             patch(
                 "chat.bot.goosecracker_progress.get",
@@ -353,5 +387,7 @@ class TestStreamLoopFinalEditNeverDropped:
                 "artifact-3", message, kind="artifact"
             )
 
-        assert message.edit.call_count == 2
+        # Only the running poll edits the live body; the done poll stops without a
+        # terminal edit (the outbox settle delivers "built it").
+        assert message.edit.call_count == 1
         mock_clear.assert_called_once_with("artifact-3")
