@@ -1356,6 +1356,7 @@ py_test(
         ":monolith_backend",
         "@pip//discord_py",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
