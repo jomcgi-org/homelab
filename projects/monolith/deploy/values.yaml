@@ -282,6 +282,19 @@ orchestrator:
       base_url: "http://inference.inference.svc.cluster.local:8080/v1"
       api_key_env: ""
 
+# WhatsApp channel gateway (ADR 039). Left disabled: Joe flips enabled to true in
+# a follow-up commit after pairing the throwaway bot number via the notify flow
+# (Phase 1 gate). botNumber, groupJids, and alertChannelId are filled in at that
+# point. The whatsmeow session reuses the monolith CNPG cluster under a dedicated
+# `whatsapp` schema.
+whatsapp:
+  enabled: false
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/whatsapp"
+  botNumber: ""
+  groupJids: ""
+  alertChannelId: ""
+
 agent:
   discord:
     defaultServerId: "1501965852042330302"

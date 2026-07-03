@@ -799,6 +799,39 @@ orchestrator:
   # budget than the initial compile.
   replanTimeoutSeconds: 120
 
+# WhatsApp channel gateway (ADR 039): a transport-only Go whatsmeow service in
+# its own single-replica Deployment. Disabled by default; Joe flips
+# whatsapp.enabled after pairing the throwaway bot number. The whatsmeow session
+# persists in the monolith CNPG Postgres under a dedicated `whatsapp` schema
+# (DB DSN reused from the monolith CNPG app secret). Non-secret bot config
+# (number, group allow-list, alert channel) is set here; the 1Password item named
+# by onepassword.itemPath carries the credentials later phases consume. The image
+# repository/tag are pinned at chart build time via helm_images_values (see the
+# chart BUILD images map); never hand-set a digest here.
+whatsapp:
+  enabled: false
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  onepassword:
+    itemPath: ""
+  # Bot's own WhatsApp number in E.164 (e.g. +447700900123).
+  botNumber: ""
+  # Comma-separated allow-list of group JIDs the gateway observes.
+  groupJids: ""
+  # Discord channel id ops alerts (pairing code, logout/ban) are posted to via
+  # the shared chat.discord_outbox drain.
+  alertChannelId: ""
+  # Small: this is a websocket pump. CPU request, no CPU limit; memory
+  # request=limit, per the repo resource-sizing convention.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 64Mi
+
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.
 # Reuses the existing 1Password "marine" vault item (shared with the legacy
 # standalone ships app) so the secret keeps materializing after that app is

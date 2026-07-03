@@ -1,0 +1,32 @@
+# Runtime image for the WhatsApp channel gateway (ADR 039). A Wolfi base with
+# ca-certificates (TLS to WhatsApp's servers and to Postgres) and busybox. The
+# whatsapp Go binary is layered on top per-arch (see BUILD) and is the
+# entrypoint. Runs non-root as uid 65532 per the repo convention.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - busybox
+
+archs:
+  - x86_64
+  - aarch64
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+entrypoint:
+  command: /usr/local/bin/whatsapp
