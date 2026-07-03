@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -448,6 +449,9 @@ class TestAttentionGate:
             patch("chat.bot.acl.feature_enabled", return_value=True),
             patch("chat.bot.acl.is_granted", return_value=True),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
+            patch(
+                "chat.bot.attention.needs_agent", AsyncMock(return_value=True)
+            ) as mock_needs_agent,
             patch.object(
                 bot, "start_agent_flow", AsyncMock(return_value=MagicMock())
             ) as mock_start_flow,
@@ -459,10 +463,54 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
+            mock_needs_agent.assert_called_once()
             mock_start_flow.assert_called_once()
             args, kwargs = mock_start_flow.call_args
             assert kwargs.get("trigger_message") is message
             mock_complete_lock.assert_called_once_with(str(message.id))
+
+    @pytest.mark.asyncio
+    async def test_ambient_engage_chat_replies_in_monolith(self):
+        """An ambient engage that the depth classify routes to chat (not
+        repo/build/deep-research) replies in-monolith via _process_message
+        with force_respond=True, and never touches the goose guest flow."""
+        bot = _make_bot()
+
+        message = _make_message(content="what's a good name for a boat?")
+        message.reference = None
+        message.guild = None
+        message.channel = MagicMock(spec=discord.TextChannel)
+        message.channel.id = 99
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value={"99"}),
+            patch("chat.bot.attention_log.log_decision", MagicMock()),
+            patch(
+                "chat.bot.attention.evaluate",
+                AsyncMock(return_value=SimpleNamespace(engage=True, confidence=0.9)),
+            ),
+            patch(
+                "chat.bot.attention.needs_agent", AsyncMock(return_value=False)
+            ) as mock_needs_agent,
+            patch.object(bot, "_engage_agent", AsyncMock()) as mock_engage_agent,
+            patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+            mock_needs_agent.assert_called_once()
+            mock_proc.assert_called_once_with(message, force_respond=True)
+            mock_engage_agent.assert_not_called()
+            mock_start_flow.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_mention_in_ambient_channel_without_grant_gets_refusal(self):
@@ -489,6 +537,7 @@ class TestAttentionGate:
             patch("chat.bot.acl.is_granted", return_value=False),
             patch("chat.bot.acl.allowed_scopes", return_value={"homelab"}),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
+            patch("chat.bot.attention.needs_agent", AsyncMock(return_value=True)),
             patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
             patch.object(bot, "_complete_lock", MagicMock()) as mock_complete_lock,
         ):

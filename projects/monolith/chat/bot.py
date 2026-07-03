@@ -683,8 +683,10 @@ class ChatBot(discord.Client):
         # ADR 035 attention gate (Phase 3 rollout: contained to opted-in
         # channels). Agent-triggering fires ONLY in ambient channels; mentions
         # and replies in non-ambient channels keep today's inline chat reply via
-        # _process_message. Once Phase 4's chat branch makes an agent-flow reply
-        # lightweight, the spec's "mentions always engage" can extend server-wide.
+        # _process_message. Phase 4 splits an ambient engage by depth: pure
+        # conversation stays in-monolith (see needs_agent below), so
+        # server-wide "mentions always engage" no longer needs a heavy guest
+        # run to be safe to extend.
         guild_id = message.guild.id if message.guild else None
         try:
             is_ambient = channel_id in await asyncio.to_thread(
@@ -710,7 +712,14 @@ class ChatBot(discord.Client):
                 0,
             )
             if result.engage:
-                await self._engage_agent(message)
+                # Depth split (in-monolith): pure conversation and basic web
+                # lookups are answered by the in-process chat agent (low latency,
+                # SearXNG built in); only repo/build/deep-research work escalates
+                # to the goose guest. See ADR 035 (amended: chat is in-monolith).
+                if await attention.needs_agent(message):
+                    await self._engage_agent(message)
+                else:
+                    await self._process_message(message, force_respond=True)
                 return
 
         await self._process_message(message)
@@ -1130,8 +1139,15 @@ class ChatBot(discord.Client):
             store = MessageStore(session=session, embed_client=self.embed_client)
             store.mark_completed(msg_id)
 
-    async def _process_message(self, message: discord.Message) -> None:
-        """Process a message that this pod has locked."""
+    async def _process_message(
+        self, message: discord.Message, force_respond: bool = False
+    ) -> None:
+        """Process a message that this pod has locked.
+
+        ``force_respond`` skips the ``should_respond`` gate so an ambient
+        engage that the depth classify routed to chat (ADR 035 Phase 4) still
+        gets a reply even though it's not a mention/reply.
+        """
         msg_id = str(message.id)
         channel_id = str(message.channel.id)
         attachments: list[dict] = []
@@ -1169,7 +1185,7 @@ class ChatBot(discord.Client):
                 store.release_lock(msg_id)
             return
 
-        if not should_respond(message, self.user):
+        if not force_respond and not should_respond(message, self.user):
             # Message stored successfully, mark lock done
             with Session(get_engine()) as session:
                 store = MessageStore(session=session, embed_client=self.embed_client)
