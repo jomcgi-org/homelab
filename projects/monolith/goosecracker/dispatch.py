@@ -71,6 +71,7 @@ def submit(
     git_ref: str = "",
     discord_thread: str = "",
     plan: "Plan | None" = None,
+    provider: str = "discord",
 ) -> dict:
     """Dispatch a goose run for ``session`` and return without waiting on it.
 
@@ -81,8 +82,12 @@ def submit(
     optional runtime
     :class:`~chat.orchestrator_plan.Plan` from the DeepSeek orchestrator (Task 6);
     when present the runner delivers a rendered router + plan file via
-    ``injectedContext`` instead of the baked ``recipe="agent"`` path. Returns
-    ``{session, thread_id, action}`` where ``action`` is "create" or "resume".
+    ``injectedContext`` instead of the baked ``recipe="agent"`` path.
+    ``provider`` tells the runner where to deliver: "discord" (default) posts to
+    the Discord thread/outbox, "whatsapp" routes the reaction lifecycle,
+    checklist, and result through ``chat.whatsapp_outbox`` (ADR 039 Phase 4).
+    Returns ``{session, thread_id, action}`` where ``action`` is "create" or
+    "resume".
     """
     result = threads.upsert_run(
         session,
@@ -113,6 +118,7 @@ def submit(
             discord_thread=discord_thread,
             plan=plan,
             traceparent=traceparent,
+            provider=provider,
         )
     )
     return {

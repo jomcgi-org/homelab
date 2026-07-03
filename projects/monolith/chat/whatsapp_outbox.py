@@ -40,6 +40,34 @@ def enqueue_message(
     )
 
 
+def enqueue_message_returning_id(
+    session: Session,
+    group_jid: str,
+    *,
+    content: str,
+    quoted_message_id: str | None = None,
+) -> int:
+    """Enqueue a message and return its outbox id (flushes to assign it).
+
+    Used by the WhatsApp checklist path, which must remember the id of the
+    checklist message so later ``edit`` rows can reference it (and so a fresh
+    repost after the edit window closes can repoint to the new id). Unlike
+    ``enqueue_message`` this flushes so ``row.id`` is populated before return;
+    the caller still commits.
+    """
+    if not content:
+        raise ValueError("enqueue_message_returning_id requires non-empty content")
+    row = WhatsappOutbox(
+        group_jid=group_jid,
+        kind="message",
+        content=content,
+        quoted_message_id=quoted_message_id,
+    )
+    session.add(row)
+    session.flush()
+    return row.id
+
+
 def enqueue_edit(
     session: Session,
     group_jid: str,

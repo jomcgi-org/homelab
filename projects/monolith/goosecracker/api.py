@@ -16,11 +16,13 @@ from goosecracker.router_render import (  # re-exported
     stage_title,
 )
 from goosecracker.threads import get_run, list_runs, serialize  # re-exported
+from goosecracker.tiers import features_for_tier, tier_allows  # re-exported
 
 __all__ = [
     "CATALOG",
     "describe_repos",
     "enabled_enum",
+    "features_for_tier",
     "get_run",
     "list_runs",
     "render_plan_file",
@@ -30,4 +32,5 @@ __all__ = [
     "stage_title",
     "status",
     "submit",
+    "tier_allows",
 ]
