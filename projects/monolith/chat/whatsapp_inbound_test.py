@@ -20,7 +20,13 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from chat import attention, attention_log, whatsapp_inbound, whatsapp_session
+from chat import (
+    attention,
+    attention_log,
+    whatsapp_capabilities,
+    whatsapp_inbound,
+    whatsapp_session,
+)
 from chat.attention import AttentionResult
 from chat.models import WhatsappGroup, WhatsappOutbox
 
@@ -60,6 +66,11 @@ def client(engine, monkeypatch):
     # the real steer_or_none (unpatched in the chat/deferred tests) sees no
     # session row and returns False rather than hitting a real DB.
     monkeypatch.setattr(whatsapp_session, "get_engine", lambda: engine)
+    # The household capability router (run before the depth split) opens its own
+    # sessions to check for a pending action; point it at the test engine so an
+    # engaged, keyword-free message resolves to "no capability" against SQLite
+    # rather than the real DB.
+    monkeypatch.setattr(whatsapp_capabilities, "get_engine", lambda: engine)
 
     fake_embed = AsyncMock()
     fake_embed.embed_batch.return_value = [[0.0] * 1024]
