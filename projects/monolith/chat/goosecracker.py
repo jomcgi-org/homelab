@@ -632,7 +632,12 @@ def _reclaim_one(thread_id: str, now: datetime) -> tuple[str, str, str, str] | N
 
 
 def start_agent_session(
-    thread_id: str, repo: str, prompt: str, parent_channel_id: str = ""
+    thread_id: str,
+    repo: str,
+    prompt: str,
+    parent_channel_id: str = "",
+    *,
+    task: str = "",
 ) -> dict:
     """Open a conversational agent session for a Discord thread.
 
@@ -645,9 +650,16 @@ def start_agent_session(
     thread's parent); stored on the row so the runner can fetch channel-scoped
     context for a conversational reply, since the new thread has no history.
 
+    ``task`` is what the guest actually executes for this first turn. It defaults
+    to ``prompt`` (today's behaviour). ADR 036 passes the compiled brief markdown
+    plus the raw prompt here, while ``transcript`` keeps the raw prompt so the
+    user's words stay the ground truth for follow-up turns. ``inflight_task``
+    tracks the submitted task so a reclaim re-dispatches the same work.
+
     Synchronous; call via asyncio.to_thread.
     """
     prompt = prompt.strip()
+    task = (task or prompt).strip()
     # Imported lazily for the same reason as start_session (circular import
     # guard: chat.bot -> chat.goosecracker -> goosecracker.runner -> chat.api).
     from goosecracker.api import submit
@@ -655,7 +667,7 @@ def start_agent_session(
     # Dispatch first: a failed submit leaves no session row, avoiding a stuck
     # thread where future replies queue forever with no runner to drain them.
     result = submit(
-        prompt,
+        task,
         session=thread_id,
         recipe=AGENT_RECIPE,
         tier=AGENT_TIER,
@@ -674,7 +686,7 @@ def start_agent_session(
                 running=True,
                 # Stamp the in-flight turn so a reply arriving during it queues
                 # (not "stale"), and a reclaim can rebuild it losslessly.
-                inflight_task=prompt,
+                inflight_task=task,
                 running_since=datetime.now(timezone.utc),
                 runner_instance=INSTANCE_TOKEN,
             )

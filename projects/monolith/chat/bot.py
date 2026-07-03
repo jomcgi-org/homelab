@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -36,6 +37,8 @@ from chat import attention_log
 from chat import directives
 from chat import goosecracker
 from chat import goosecracker_progress
+from chat import orchestrator
+from chat import summarizer
 from app.db import get_engine
 
 from sqlmodel import Session
@@ -152,6 +155,38 @@ _STAGE_EMOJI = {
 # collapse summary line itself never pushes the render over the hard cap.
 _CHECKLIST_COLLAPSE_AT = 1900
 GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL = 2.0  # coalesce checklist edits
+
+
+@dataclass
+class AgentFlowOutcome:
+    """Result of ``start_agent_flow`` after the ADR 036 orchestrator verdict.
+
+    Exactly one of the two fields is set on success:
+
+    - ``thread`` - a goose/failopen verdict opened a session thread (the caller
+      announces it). This is today's behaviour for the failopen path.
+    - ``chat_reply`` - a chat verdict produced a conversational reply for the
+      caller to post on its own surface (no thread, no session, no checklist).
+
+    Both are None when the flow could not start (thread creation / submit
+    failed), so a caller can still surface a failure.
+    """
+
+    thread: "discord.Thread | None" = None
+    chat_reply: str | None = None
+
+
+def _render_reply_guidance(verdict: "orchestrator.ChatVerdict") -> str:
+    """Render a chat verdict's reply guidance as a supplementary context block
+    for the local-Qwen concierge (ADR 036 chat-route amendment)."""
+    parts = []
+    if verdict.context:
+        parts.append(f"Context I found: {verdict.context}")
+    if verdict.direction:
+        parts.append(f"Suggested direction: {verdict.direction}")
+    if verdict.redirect:
+        parts.append(f"Possible redirect: {verdict.redirect}")
+    return "\n".join(parts)
 
 
 def render_checklist(progress) -> str | None:
@@ -896,13 +931,18 @@ class ChatBot(discord.Client):
             return
 
         await interaction.response.defer(thinking=True)
-        thread = await self.start_agent_flow(channel, interaction.user, prompt, repo)
-        if thread is None:
+        outcome = await self.start_agent_flow(channel, interaction.user, prompt, repo)
+        if outcome.chat_reply is not None:
+            # ADR 036: the orchestrator routed this to chat, so reply inline
+            # instead of opening a session thread.
+            await interaction.followup.send(outcome.chat_reply)
+            return
+        if outcome.thread is None:
             await interaction.followup.send(
                 "Couldn't start that one. Check the logs.", ephemeral=True
             )
             return
-        await interaction.followup.send(f"Running agent in {thread.mention}")
+        await interaction.followup.send(f"Running agent in {outcome.thread.mention}")
 
     async def start_agent_flow(
         self,
@@ -911,14 +951,37 @@ class ChatBot(discord.Client):
         prompt: str,
         repo: str,
         trigger_message: discord.Message | None = None,
-    ) -> discord.Thread | None:
+    ) -> AgentFlowOutcome:
         """Shared agent dispatch for the /agent slash command AND mention/ambient
-        triggers (ADR 035). Opens a thread (from ``trigger_message`` if given, so
-        a mention thread hangs off the mention; else from ``channel``), starts
-        the agent session, posts the immutable prompt echo, and starts the live
-        checklist stream. Does NOT do ACL checks or send origin-channel acks (the
-        caller owns those). Returns the thread, or None on failure.
+        triggers (ADR 035), routed through the ADR 036 orchestrator.
+
+        The orchestrator verdict selects the branch:
+
+        - ``chat`` - no thread, no session, no checklist: produce a
+          conversational reply (local Qwen) and return it for the caller to post.
+        - ``goose`` - open a session thread as today, but seed the guest with the
+          compiled brief (brief markdown + the raw prompt as ground truth) and
+          pre-render the checklist from the brief's stages.
+        - ``FailOpen`` (disabled, ungranted, unreachable, unparseable) - EXACT
+          pre-036 behaviour: open a thread and submit the raw prompt.
+
+        Does NOT do ACL checks or send origin-channel acks (the caller owns
+        those). Returns an :class:`AgentFlowOutcome`.
         """
+        guild_id = str(channel.guild.id) if channel.guild else ""
+        channel_id = str(channel.id)
+
+        verdict = await self._orchestrator_verdict(
+            guild_id, channel_id, user, prompt, repo
+        )
+
+        if isinstance(verdict, orchestrator.ChatVerdict):
+            reply = await self._orchestrator_chat_reply(channel_id, prompt, verdict)
+            return AgentFlowOutcome(chat_reply=reply)
+
+        # goose brief (if any) seeds the guest; FailOpen keeps today's raw path.
+        brief = verdict if isinstance(verdict, orchestrator.Brief) else None
+
         name = f"agent: {prompt}"[:90]
         try:
             if trigger_message is not None:
@@ -927,16 +990,27 @@ class ChatBot(discord.Client):
                 thread = await channel.create_thread(
                     name=name, type=discord.ChannelType.public_thread
                 )
+            # The guest executes the compiled task (brief markdown + raw prompt)
+            # for a goose verdict; for failopen it is exactly the raw prompt, so
+            # the failopen path is byte-for-byte today's behaviour.
+            task = prompt
+            if brief is not None:
+                task = (
+                    orchestrator.render_brief(brief)
+                    + "\n\n---\n\nUser request (ground truth):\n"
+                    + prompt
+                )
             await asyncio.to_thread(
                 goosecracker.start_agent_session,
                 str(thread.id),
                 repo,
                 prompt,
-                str(channel.id),
+                channel_id,
+                task=task,
             )
         except Exception:
             logger.exception("goosecracker: failed to start agent session")
-            return None
+            return AgentFlowOutcome()
 
         try:
             # Echo the full prompt into the thread: the thread title truncates it
@@ -947,14 +1021,90 @@ class ChatBot(discord.Client):
             logger.exception("goosecracker: failed to post agent prompt echo")
         try:
             # ADR 035: a bare "Planning..." placeholder, not a progress claim.
-            # render_checklist takes over once the run announces its stage
-            # plan; until then the tail renderer shows "Thinking", so this is
-            # only the very first beat.
-            intro = await thread.send("🤖 Planning...")
+            # For a goose verdict, pre-render the checklist from the brief's
+            # stages (ADR 036) so the owner sees the plan before the guest's own
+            # ::stages:: markers arrive; render_checklist then takes over.
+            intro_content = "🤖 Planning..."
+            if brief is not None and brief.stages:
+                synthetic = goosecracker_progress.Progress(
+                    stages=[
+                        goosecracker_progress.Stage(
+                            index=i, title=title, state="pending"
+                        )
+                        for i, title in enumerate(brief.stages)
+                    ]
+                )
+                rendered = render_checklist(synthetic)
+                if rendered:
+                    intro_content = rendered
+            intro = await thread.send(intro_content)
             self._start_goosecracker_stream(str(thread.id), intro, kind="agent")
         except Exception:
             logger.exception("goosecracker: failed to post agent thread intro")
-        return thread
+        return AgentFlowOutcome(thread=thread)
+
+    async def _orchestrator_verdict(
+        self,
+        guild_id: str,
+        channel_id: str,
+        user: discord.abc.User,
+        prompt: str,
+        repo: str,
+    ) -> "orchestrator.Verdict":
+        """Run the ADR 036 orchestrator for one escalation, failing open on any
+        error. Short-circuits to FailOpen when the tier is disabled so the
+        failopen path does no extra gathering (byte-for-byte today's behaviour).
+        """
+        if not orchestrator.enabled():
+            return orchestrator.FailOpen("orchestrator disabled")
+        try:
+            allowed = await asyncio.to_thread(
+                acl.allowed_scopes, guild_id, user.id, "agent"
+            )
+            directive = orchestrator.Directive(
+                version=await asyncio.to_thread(
+                    directives.get_active_version, channel_id
+                ),
+                text=await asyncio.to_thread(directives.get_active, channel_id),
+            )
+            channel_context = await asyncio.to_thread(
+                summarizer._fetch_agent_reply_context, channel_id
+            )
+            ctx = orchestrator.RequestContext(
+                request=prompt,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                invoker_scope=repo,
+                allowed_scopes=frozenset(allowed),
+                channel_context=channel_context,
+                directive=directive,
+            )
+            return await orchestrator.compile(ctx)
+        except Exception:
+            logger.exception("orchestrator: verdict failed; failing open")
+            return orchestrator.FailOpen("orchestrator raised")
+
+    async def _orchestrator_chat_reply(
+        self, channel_id: str, prompt: str, verdict: "orchestrator.ChatVerdict"
+    ) -> str | None:
+        """Author a conversational reply for a chat verdict via local Qwen.
+
+        The raw prompt stays ground truth; the orchestrator's reply guidance is
+        supplementary context. A ``redirect`` in the guidance shapes the reply
+        (e.g. "offer to escalate") but never itself submits a session. Returns
+        None on model failure so the caller can decide how to surface it.
+        """
+        details = _render_reply_guidance(verdict)
+        try:
+            return await summarizer.conversational_agent_reply(
+                channel_id,
+                summary=prompt,
+                details=details,
+                llm_call=summarizer.build_llm_caller(),
+            )
+        except Exception:
+            logger.exception("orchestrator: chat reply generation failed")
+            return None
 
     def _start_goosecracker_stream(
         self, artifact_id: str, message: discord.Message, kind: str = "artifact"
@@ -1207,10 +1357,17 @@ class ChatBot(discord.Client):
             await asyncio.to_thread(self._complete_lock, str(message.id))
             return
 
-        thread = await self.start_agent_flow(
+        outcome = await self.start_agent_flow(
             channel, user, message.content, "", trigger_message=message
         )
-        if thread is None and explicit:
+        if outcome.chat_reply is not None:
+            # ADR 036: routed to chat, so reply to the triggering message rather
+            # than opening a session thread.
+            try:
+                await message.reply(outcome.chat_reply)
+            except discord.HTTPException:
+                logger.exception("orchestrator: failed to send chat reply")
+        elif outcome.thread is None and explicit:
             try:
                 await message.reply("Couldn't start that one. Check the logs.")
             except discord.HTTPException:
