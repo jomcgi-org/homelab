@@ -1,7 +1,7 @@
 """Additional coverage for ChatBot -- on_message(), on_ready(), streaming response."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -501,16 +501,23 @@ class TestAttentionGate:
             patch(
                 "chat.bot.attention.needs_agent", AsyncMock(return_value=False)
             ) as mock_needs_agent,
+            patch.object(
+                bot, "_recently_tagged", MagicMock(return_value=True)
+            ) as mock_recently_tagged,
+            patch("chat.bot.attention.evaluate") as mock_evaluate,
             patch.object(bot, "_engage_agent", AsyncMock()) as mock_engage_agent,
             patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
             patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
+            mock_evaluate.return_value = SimpleNamespace(engage=True, confidence=0.9)
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
             )
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
+            mock_recently_tagged.assert_called_once_with("99", str(message.id))
+            assert mock_evaluate.call_args.kwargs.get("recently_tagged") is True
             mock_needs_agent.assert_called_once()
             mock_proc.assert_called_once_with(message, force_respond=True)
             mock_engage_agent.assert_not_called()
@@ -656,6 +663,80 @@ class TestAttentionGate:
 
             mock_evaluate.assert_not_called()
             mock_proc.assert_called_once_with(message)
+
+
+class TestRecentlyTagged:
+    """ChatBot._recently_tagged: recent-tag weighting for the attention gate."""
+
+    def _recent_message(self, content: str, minutes_ago: float, msg_id: str = "1"):
+        # SQLite created_at comes back tz-naive; mirror that here.
+        created = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        return SimpleNamespace(
+            discord_message_id=msg_id, content=content, created_at=created
+        )
+
+    def test_true_when_tag_within_window(self):
+        bot = _make_bot()
+        recent = [self._recent_message("<@999> can you check this", 2, msg_id="1")]
+        mock_store = MagicMock()
+        mock_store.get_recent = MagicMock(return_value=recent)
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session"),
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            assert bot._recently_tagged("99", "2") is True
+
+    def test_false_when_tag_older_than_window(self):
+        bot = _make_bot()
+        recent = [self._recent_message("<@999> old ping", 30, msg_id="1")]
+        mock_store = MagicMock()
+        mock_store.get_recent = MagicMock(return_value=recent)
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session"),
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            assert bot._recently_tagged("99", "2") is False
+
+    def test_false_when_no_tag_present(self):
+        bot = _make_bot()
+        recent = [self._recent_message("just chatting", 1, msg_id="1")]
+        mock_store = MagicMock()
+        mock_store.get_recent = MagicMock(return_value=recent)
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session"),
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            assert bot._recently_tagged("99", "2") is False
+
+    def test_excludes_the_current_message(self):
+        bot = _make_bot()
+        # The only tag present is the message being evaluated itself.
+        recent = [self._recent_message("<@999> hey", 1, msg_id="2")]
+        mock_store = MagicMock()
+        mock_store.get_recent = MagicMock(return_value=recent)
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session"),
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            assert bot._recently_tagged("99", "2") is False
+
+    def test_fails_closed_on_store_error(self):
+        bot = _make_bot()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session"),
+            patch("chat.bot.MessageStore", side_effect=RuntimeError("db down")),
+        ):
+            assert bot._recently_tagged("99", "2") is False
 
 
 # ---------------------------------------------------------------------------

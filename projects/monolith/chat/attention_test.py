@@ -90,6 +90,57 @@ class TestAmbientClassification:
         assert result.confidence == 0.95
 
 
+class TestRecentTagWeighting:
+    """ADR 035 engagement policy: recently_tagged lowers the engage threshold."""
+
+    @pytest.mark.asyncio
+    async def test_recently_tagged_engages_below_default_threshold(self):
+        message = _make_message(content="is that actually true though?")
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.6}')
+        result = await evaluate(
+            message,
+            "",
+            _BOT_USER,
+            is_ambient=True,
+            recently_tagged=True,
+            _caller=caller,
+        )
+        assert result.confidence == 0.6
+        assert result.confidence < ATTENTION_THRESHOLD
+        assert result.engage is True
+
+    @pytest.mark.asyncio
+    async def test_same_confidence_ignored_without_recent_tag(self):
+        message = _make_message(content="is that actually true though?")
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.6}')
+        result = await evaluate(
+            message,
+            "",
+            _BOT_USER,
+            is_ambient=True,
+            recently_tagged=False,
+            _caller=caller,
+        )
+        assert result.confidence == 0.6
+        assert result.engage is False
+
+    @pytest.mark.asyncio
+    async def test_mention_still_short_circuits_without_a_caller(self):
+        message = _make_message(mentions=[_BOT_USER])
+        caller = AsyncMock()
+        result = await evaluate(
+            message,
+            "",
+            _BOT_USER,
+            is_ambient=False,
+            recently_tagged=True,
+            _caller=caller,
+        )
+        assert result.engage is True
+        assert result.confidence == 1.0
+        caller.assert_not_called()
+
+
 class TestNeedsAgent:
     """ADR 035 Phase 4: the in-monolith depth classify (chat vs goose guest)."""
 
