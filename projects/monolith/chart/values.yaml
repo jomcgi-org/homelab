@@ -641,7 +641,13 @@ orchestrator:
   enabled: false
   model: "deepseek/deepseek-v4-flash"
   baseUrl: "https://openrouter.ai/api/v1"
-  timeoutSeconds: 10
+  # Initial-compile budget: covers BOTH the route-decision call and the
+  # submit_plan tool call (plan construction is real work, not a quick classify).
+  timeoutSeconds: 60
+  # Replan budget (the capped goose escape hatch): a replan runs after goose has
+  # opened the task and reported what it learned, so it gets a more generous
+  # budget than the initial compile.
+  replanTimeoutSeconds: 120
 
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.
 # Reuses the existing 1Password "marine" vault item (shared with the legacy

@@ -1451,6 +1451,17 @@ class ChatBot(discord.Client):
                 "goosecracker: failed to persist trigger message %s", message.id
             )
 
+        # Ack-first (Task 8): post the ⏳ queue reaction BEFORE start_agent_flow,
+        # which runs the ADR 036 orchestrator.compile (route + submit_plan, up to
+        # 60s). This hides that latency behind a visible ack so an engaged user
+        # sees immediate feedback; the runner then flips ⏳ -> 👀 -> ✅/❌ as the
+        # turn runs. Best-effort: a reaction failure must not block the run. (The
+        # /agent slash path is already ack-first via interaction.response.defer.)
+        try:
+            await message.add_reaction(goosecracker.REACTION_QUEUED)
+        except discord.HTTPException:
+            logger.exception("agent: failed to react queued on %s", message.id)
+
         outcome = await self.start_agent_flow(
             channel, user, message.content, "", trigger_message=message
         )

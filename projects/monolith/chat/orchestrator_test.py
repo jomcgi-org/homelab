@@ -514,7 +514,7 @@ class TestReplan:
             what_i_learned="l",
             suggested_focus="f",
         )
-        assert captured["timeout_s"] == orchestrator._REPLAN_TIMEOUT_S
+        assert captured["timeout_s"] == orchestrator._replan_timeout_s()
         # The user prompt carries the original request and the replan feedback.
         assert "orig" in captured["user"]
         assert "l" in captured["user"]
@@ -550,3 +550,19 @@ class TestReplan:
             suggested_focus="f",
         )
         assert plan is None
+
+
+class TestReplanTimeoutConfig:
+    """The env-driven replan-timeout resolution (Task 8)."""
+
+    def test_default_is_120_when_unset(self, monkeypatch):
+        monkeypatch.delenv("ORCHESTRATOR_REPLAN_TIMEOUT_S", raising=False)
+        assert orchestrator._replan_timeout_s() == 120.0
+
+    def test_respects_env_value(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_REPLAN_TIMEOUT_S", "200")
+        assert orchestrator._replan_timeout_s() == 200.0
+
+    def test_malformed_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_REPLAN_TIMEOUT_S", "not-a-number")
+        assert orchestrator._replan_timeout_s() == 120.0
