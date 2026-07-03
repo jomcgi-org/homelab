@@ -109,6 +109,14 @@ spec:
                   name: monolith-chat-secrets
                   key: GITHUB_TOKEN
             {{- end }}
+            {{- if .whatsapp }}
+            # The morning-digest job reads WHATSAPP_TZ for the household-local send
+            # time and quiet hours. Derive it from the same single source the
+            # backend uses (whatsapp.calendar.tz) so quiet-hours/send-time cannot
+            # silently diverge from the capabilities tz.
+            - name: WHATSAPP_TZ
+              value: {{ $.Values.whatsapp.calendar.tz | quote }}
+            {{- end }}
             {{- if .grimoire }}
             # Grimoire ingest jobs (spec #4.2/#4.3): the loader reads the shared
             # SeaweedFS S3 env + EMBEDDING_URL + GRIMOIRE_S3_BUCKET; extraction

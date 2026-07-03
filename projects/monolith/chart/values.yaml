@@ -628,8 +628,10 @@ jobs:
     # its digest that day; the job dedupes to one digest per local day and honours
     # per-group quiet hours from digest_config. DB-only (no bot, no external creds).
     # The cronworkflows template skips this entry unless whatsapp.enabled, so a
-    # deploy with the gateway off renders no digest CronWorkflow. WHATSAPP_TZ sets
-    # the household-local tz used for send time and quiet hours.
+    # deploy with the gateway off renders no digest CronWorkflow. The cronworkflows
+    # template injects WHATSAPP_TZ (household-local tz for send time and quiet
+    # hours) from whatsapp.calendar.tz, the same single source the backend reads,
+    # so this job cannot diverge from the capabilities tz.
     - name: whatsapp-morning-digest
       replaces: whatsapp.morning_digest
       args: ["whatsapp-morning-digest"]
@@ -638,8 +640,6 @@ jobs:
       activeDeadlineSeconds: 300
       suspend: false
       whatsapp: true
-      env:
-        WHATSAPP_TZ: "America/Vancouver"
       resources:
         requests:
           cpu: 100m
