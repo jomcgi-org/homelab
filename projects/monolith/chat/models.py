@@ -149,6 +149,57 @@ class DiscordOutbox(SQLModel, table=True):
     payload_json: str | None = Field(default=None)
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (posted_at/sent_message_id are intentionally NULL until the gateway sends the row)
+class WhatsappOutbox(SQLModel, table=True):
+    """Pending WhatsApp sends for the household gateway (ADR 039, spec section 3).
+
+    The single send path for all monolith-originated WhatsApp traffic: any
+    replica enqueues a row and the single-replica Go gateway drains it oldest-
+    first per group, sends via whatsmeow, and stamps posted_at + sent_message_id.
+    The gateway is the sender (unlike the Discord outbox, there is no Python drain
+    here).
+
+    kind is the verb: message (text, optionally quoting quoted_message_id), edit
+    (edit_of -> the original send's sent_message_id, with new content), reaction
+    (on target_message_id; whatsmeow's reaction build needs target_sender_jid, the
+    JID of that message's sender, which the row must carry). reaction_remove sends
+    an empty reaction to clear it.
+
+    The combined CHECK mirrors the DB constraint so the SQLite test fixtures
+    enforce the per-kind shape too (create_all does not see migration-only
+    constraints, which is how a malformed outbox row once slipped past tests into
+    prod on the Discord side).
+    """
+
+    __tablename__ = "whatsapp_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'message' AND content IS NOT NULL)"
+            " OR (kind = 'edit' AND content IS NOT NULL AND edit_of IS NOT NULL)"
+            " OR (kind = 'reaction' AND target_message_id IS NOT NULL"
+            " AND target_sender_jid IS NOT NULL AND reaction IS NOT NULL)",
+            name="whatsapp_outbox_kind_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    group_jid: str
+    kind: str
+    content: str | None = Field(default=None)
+    quoted_message_id: str | None = Field(default=None)
+    edit_of: int | None = Field(default=None)
+    target_message_id: str | None = Field(default=None)
+    target_sender_jid: str | None = Field(default=None)
+    reaction: str | None = Field(default=None)
+    reaction_remove: bool = Field(default=False)
+    sent_message_id: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    posted_at: datetime | None = Field(default=None)
+    attempts: int = Field(default=0)
+    last_error: str | None = Field(default=None)
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (running_since is intentionally NULL until a turn goes running)
 class GoosecrackerSession(SQLModel, table=True):
     """Per-Discord-thread curated transcript for the goosecracker agent (ADR 024).
