@@ -567,6 +567,39 @@ class TestAttentionGate:
         mock_evaluate.assert_not_called()
         bot._process_message.assert_called_once_with(message)
 
+    @pytest.mark.asyncio
+    async def test_ambient_lookup_failure_falls_through_to_chat(self):
+        """If the ambient grants read raises (e.g. a DB blip), on_message treats
+        the channel as non-ambient and falls through to _process_message rather
+        than dropping the message or raising."""
+        bot = _make_bot()
+
+        message = _make_message(content="hello", mentions=[])
+        message.reference = None
+        message.guild = None
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch(
+                "chat.bot.acl.ambient_channels",
+                side_effect=RuntimeError("db down"),
+            ),
+            patch("chat.bot.attention.evaluate", AsyncMock()) as mock_evaluate,
+            patch.object(bot, "_process_message", AsyncMock()),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        mock_evaluate.assert_not_called()
+        bot._process_message.assert_called_once_with(message)
+
 
 # ---------------------------------------------------------------------------
 # create_bot

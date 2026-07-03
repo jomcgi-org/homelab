@@ -686,9 +686,18 @@ class ChatBot(discord.Client):
         # _process_message. Once Phase 4's chat branch makes an agent-flow reply
         # lightweight, the spec's "mentions always engage" can extend server-wide.
         guild_id = message.guild.id if message.guild else None
-        is_ambient = channel_id in await asyncio.to_thread(
-            acl.ambient_channels, guild_id
-        )
+        try:
+            is_ambient = channel_id in await asyncio.to_thread(
+                acl.ambient_channels, guild_id
+            )
+        except Exception:
+            # Best-effort: if the grants read fails (DB blip), treat the channel
+            # as non-ambient and fall through to normal handling rather than
+            # dropping the message. Fail closed (no ambient engage on error).
+            logger.exception(
+                "attention: ambient lookup failed; treating as non-ambient"
+            )
+            is_ambient = False
         if is_ambient:
             directive = ""  # Phase 5 wires directives.get_active(channel)
             result = await attention.evaluate(message, directive, self.user, True)
