@@ -733,6 +733,46 @@ def artifact_id_for_thread(thread_id: str) -> str:
         return row.artifact_id
 
 
+def ensure_steering_token(thread_id: str) -> str:
+    """Return the thread's unguessable steering capability token, assigning one
+    on first use (ADR 035 Phase 2 hardening). Synchronous; call via
+    ``asyncio.to_thread``.
+
+    Mirrors ``artifact_id_for_thread``: random per thread, stored on the session
+    row so a re-dispatch reuses the same token, and idempotent (a second call
+    returns the existing value rather than rotating it). Returns "" when the
+    thread has no session row (nothing to bind a token to).
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        if row is None:
+            return ""
+        if not row.steering_token:
+            row.steering_token = secrets.token_urlsafe(24)
+            session.add(row)
+            session.commit()
+        return row.steering_token
+
+
+def thread_for_steering_token(token: str) -> str | None:
+    """Resolve a steering token back to its owning thread id, or None.
+
+    The steering endpoint is keyed on this token (not the guessable Discord
+    thread snowflake), so a compromised guest can only ever resolve its own
+    thread's steering. None on an empty or unknown token. Synchronous; call via
+    ``asyncio.to_thread``.
+    """
+    if not token:
+        return None
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(GoosecrackerSession).where(
+                GoosecrackerSession.steering_token == token
+            )
+        ).first()
+        return row.discord_thread if row else None
+
+
 def parent_channel_for_thread(thread_id: str) -> str:
     """Return the Discord parent channel id stored for an agent thread, or "".
 
