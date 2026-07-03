@@ -18,6 +18,7 @@ from grimoire.models import (
     Campaign,
     Entity,
     EntityCreature,
+    EntityNpc,
     KnowledgeGrant,
     PlayerCharacter,
     Relationship,
@@ -92,6 +93,9 @@ def seed_scenario(session: Session) -> Seed:
     session.add(npc)
     session.commit()
     session.refresh(npc)
+    # Detail row with all-default (None) fields: the single-entity endpoint
+    # hydrates it, so the projection carries the typed columns as None.
+    session.add(EntityNpc(entity_id=npc.id))
     seed.npc = npc
 
     location = Entity(entity_type="location", name="Castle Ravenloft", is_global=False)
