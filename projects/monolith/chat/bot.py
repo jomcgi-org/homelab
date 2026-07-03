@@ -172,14 +172,31 @@ def render_checklist(progress) -> str | None:
     if progress.notice and not progress.done:
         lines.append(progress.notice)
 
+    def _effective(state: str) -> str:
+        # Once the run is over no stage can still be pending or running. The
+        # recipe's terminal marker is best-effort (the local router model
+        # sometimes skips the trailing done printf), so resolve lingering
+        # stages deterministically at render time: running -> done (it was in
+        # flight when the run ended), pending -> skipped (it never started).
+        # A failed stage keeps its failed marker. This is what lets the final
+        # edit always show all stages resolved, per the ADR 035 spec.
+        if not progress.done:
+            return state
+        if state == "running":
+            return "done"
+        if state == "pending":
+            return "skipped"
+        return state
+
     stage_lines = [
-        f"{_STAGE_EMOJI.get(s.state, '⬜')} {s.title}" for s in progress.stages
+        f"{_STAGE_EMOJI.get(_effective(s.state), '⬜')} {s.title}"
+        for s in progress.stages
     ]
     body = "\n".join(lines + stage_lines)
 
     collapsed = 0
     while len(body) > _CHECKLIST_COLLAPSE_AT and collapsed < len(progress.stages):
-        if progress.stages[collapsed].state not in ("done", "skipped"):
+        if _effective(progress.stages[collapsed].state) not in ("done", "skipped"):
             break
         collapsed += 1
         summary = [f"✅ {collapsed} earlier stages"]
