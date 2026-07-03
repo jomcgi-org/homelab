@@ -20,6 +20,7 @@
 # gazelle:exclude dr_jobs
 # gazelle:exclude worldcup
 # gazelle:exclude campsites
+# gazelle:exclude grimoire
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
@@ -75,6 +76,7 @@ _BACKEND_SRCS = glob(
         "dr_jobs/**/*.py",
         "worldcup/**/*.py",
         "campsites/**/*.py",
+        "grimoire/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -223,6 +225,7 @@ py_library(
             "dr_jobs/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
+            "grimoire/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -2579,6 +2582,19 @@ py_test(
 py_test(
     name = "knowledge_models_test",
     srcs = ["knowledge/models_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_models_test",
+    srcs = ["grimoire/models_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
