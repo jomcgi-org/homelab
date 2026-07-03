@@ -242,6 +242,10 @@ spec:
               value: {{ .Values.grimoire.s3Bucket | quote }}
             - name: GRIMOIRE_EXTRACT_MODEL
               value: {{ .Values.grimoire.extractModel | quote }}
+            {{- if .Values.grimoire.extractBaseUrl }}
+            - name: GRIMOIRE_EXTRACT_BASE_URL
+              value: {{ .Values.grimoire.extractBaseUrl | quote }}
+            {{- end }}
             {{- if .Values.grimoire.extractLimit }}
             - name: GRIMOIRE_EXTRACT_LIMIT
               value: {{ .Values.grimoire.extractLimit | quote }}
