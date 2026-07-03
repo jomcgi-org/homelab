@@ -24,7 +24,7 @@ Make the Discord agent surface **thread-native, legible, and steerable**, in fou
 
 **1. Conversational acknowledgment.** Every trigger gets an immediate natural-language reply that acknowledges the request and says what the agent is about to do (reusing the concierge-reply path from #3096). This is the "responsiveness" layer: the user hears back in a second, in prose, before any heavy work starts.
 
-**2. Live task checklist.** For work that escalates into a goose session, the ack is followed by a checklist message that is **edited in place** as stages start and complete. The plan comes from the session's staged decomposition (the sub-recipe router already produces stages); the reconciler that today flips the done marker (#2928) becomes the writer that patches the checklist message at stage boundaries. The reaction lifecycle stays as the coarse at-a-glance signal; the checklist is the fine-grained one. The whole exchange is visible to the channel, which is what makes the surface multiplayer.
+**2. Live task checklist.** For work that escalates into a goose session, the ack is followed by a **separate** checklist message that is **edited in place** as stages start and complete. Two messages, not one: the ack stays immutable so Discord notifications show readable prose (notification content is captured at send time), while the checklist message underneath absorbs the churn. Updates land at stage boundaries only, not per token. The plan comes from the session's staged decomposition (the sub-recipe router already produces stages); the reconciler that today flips the done marker (#2928) becomes the writer that patches the checklist message at stage boundaries. The reaction lifecycle stays as the coarse at-a-glance signal; the checklist is the fine-grained one. The whole exchange is visible to the channel, which is what makes the surface multiplayer.
 
 **3. Thread-scoped shared sessions.** A session is keyed by Discord thread, not by invoker. Any message posted into an active session's thread is injected into the running session as steering input, processed in order, instead of being rejected or queued as a separate task. Anyone in the thread can redirect, add constraints, or cancel.
 
@@ -73,6 +73,7 @@ Discord constraints that shape the design: message edits are rate limited (rough
 
 - **Per-message ML relevance classifier over all channels.** Rejected: Claude Tag itself does not do this; mention-guaranteed plus opt-in ambient rules gives the same product with near-zero idle cost and no "bot butts in uninvited" failure mode.
 - **One message per stage instead of editing a checklist.** Rejected: floods the channel and buries the conversation; edits keep one canonical progress artifact.
+- **Single combined ack + checklist message (both edited).** Rejected: Discord notifications capture message content at send time, so editing the ack message makes the notification stale or unreadable; an immutable ack plus a separate edited checklist keeps both surfaces clean.
 - **Streaming token output into the thread.** Rejected: Discord edit rate limits make it janky, and stage-level granularity is what humans actually scan for.
 - **Keep sessions invoker-scoped and add a handoff command.** Rejected: multiplayer as a bolt-on command never gets used; thread scoping makes sharing the default.
 - **Router-before-turn (classify chat vs goose before responding).** Rejected: doubles latency to first response; the ack turn can make the routing decision itself with context in hand.
@@ -94,9 +95,8 @@ Baseline per `docs/security.md`. Ambient mode widens the input surface: the bot 
 ## Open Questions
 
 1. Where does the ambient standing instruction live in UX terms: grant-table-only (git/SQL managed) or also a `/agent ambient set ...` Discord command?
-2. Should the ack and the checklist be one message (ack text above, checklist below, both edited) or two messages (ack immutable, checklist edited)? One message is tidier; two keeps the conversational reply readable in notifications.
-3. Does a steering message that arrives between stages restart planning, or only append constraints to the next stage?
-4. Channel-data tools (thread summarization, decisions/open-questions extraction, metrics and charts into artifacts) are the fourth Claude Tag gap; they layer naturally on thread-scoped sessions but are out of scope here. Separate ADR when we get there.
+2. Does a steering message that arrives between stages restart planning, or only append constraints to the next stage?
+3. Channel-data tools (thread summarization, decisions/open-questions extraction, metrics and charts into artifacts) are the fourth Claude Tag gap; they layer naturally on thread-scoped sessions but are out of scope here. Separate ADR when we get there.
 
 ## References
 
