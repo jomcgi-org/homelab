@@ -32,7 +32,11 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-_DEFAULT_TIMEOUT_S = 10.0
+# Initial-compile budget (Task 8). Covers BOTH the route-decision ``call()`` and
+# the ``submit_plan`` ``call_tool()``, since plan construction is real work, not a
+# quick classification. Overridable via ``ORCHESTRATOR_TIMEOUT_S``. The separate
+# replan budget lives in ``orchestrator._replan_timeout_s`` (default 120s).
+_DEFAULT_TIMEOUT_S = 60.0
 
 
 class OrchestratorUnavailable(Exception):

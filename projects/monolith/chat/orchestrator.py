@@ -158,19 +158,26 @@ class RequestContext:
 
 Verdict = PlanVerdict | ChatVerdict | FailOpen
 
-# Timeout for the second (submit_plan) call on the goose route. The plan call
-# does real construction work, so it gets the initial-compile budget (60s), not
-# the old 10s route-call default. Task 8 formalizes ``ORCHESTRATOR_TIMEOUT_S``
-# (default 60) + a separate replan timeout; until then this module-level default
-# stands and Task 8 wires the env.
-_PLAN_TIMEOUT_S = 60.0
+# Default replan budget when ``ORCHESTRATOR_REPLAN_TIMEOUT_S`` is unset (Task 8).
+_REPLAN_TIMEOUT_DEFAULT_S = 120.0
 
-# Timeout for a replan call (the capped goose escape hatch, Task 7). A replan
-# runs after goose has actually opened the task and reported what it learned, so
-# it does more grounded construction work than the initial plan and gets a more
-# generous budget. Task 8 wires ``ORCHESTRATOR_REPLAN_TIMEOUT_S`` (default 120)
-# to override this; until then the module-level default stands.
-_REPLAN_TIMEOUT_S = 120.0
+
+def _replan_timeout_s() -> float:
+    """Timeout budget for a replan call (the capped goose escape hatch, Task 7).
+
+    Reads ``ORCHESTRATOR_REPLAN_TIMEOUT_S`` (default 120s). A replan runs after
+    goose has actually opened the task and reported what it learned, so it does
+    more grounded construction work than the initial plan and gets a more
+    generous budget than the initial-compile timeout (``ORCHESTRATOR_TIMEOUT_S``,
+    default 60s, applied by ``orchestrator_client``). A malformed env value falls
+    back to the default, matching ``orchestrator_client._read_config``'s
+    float-parse guard.
+    """
+    raw = os.environ.get("ORCHESTRATOR_REPLAN_TIMEOUT_S", "")
+    try:
+        return float(raw) if raw else _REPLAN_TIMEOUT_DEFAULT_S
+    except ValueError:
+        return _REPLAN_TIMEOUT_DEFAULT_S
 
 
 def enabled() -> bool:
@@ -584,11 +591,15 @@ async def compile(ctx: RequestContext) -> Verdict:
         # here fails open to today's baked recipe="agent" path, writing the one
         # telemetry row this compile is allowed (no separate plan-call row).
         try:
+            # timeout_s=None => call_tool falls back to the client's configured
+            # ORCHESTRATOR_TIMEOUT_S (default 60s). Single source of truth for the
+            # whole initial compile: the route call() and this plan call_tool()
+            # both draw the same budget from orchestrator_client._read_config.
             plan_args, plan_resp = await orchestrator_client.call_tool(
                 plan_system_prompt(),
                 user,
                 schema=orchestrator_plan.submit_plan_schema(),
-                timeout_s=_PLAN_TIMEOUT_S,
+                timeout_s=None,
             )
         except orchestrator_client.OrchestratorUnavailable as exc:
             reason = f"plan call unavailable: {exc}"
@@ -698,7 +709,7 @@ async def replan(
     reason: str,
     what_i_learned: str,
     suggested_focus: str,
-    timeout_s: float = _REPLAN_TIMEOUT_S,
+    timeout_s: float | None = None,
 ) -> Plan | None:
     """Produce a revised :class:`Plan` after goose reported the plan misfit.
 
@@ -716,9 +727,14 @@ async def replan(
     caller finalizes with the current goose result rather than looping. Returns
     the validated :class:`Plan` on success.
 
-    This is a separate call OUTSIDE ``compile``: it writes no telemetry row and
-    does not touch compile's exactly-one-row-per-compile accounting.
+    ``timeout_s`` defaults to :func:`_replan_timeout_s` (env
+    ``ORCHESTRATOR_REPLAN_TIMEOUT_S``, default 120s); an explicit value overrides
+    it (used by tests). This is a separate call OUTSIDE ``compile``: it writes no
+    telemetry row and does not touch compile's exactly-one-row-per-compile
+    accounting, so replan latency is surfaced only via a log line, never a
+    telemetry row (that would break compile's exactly-one-row tests).
     """
+    effective_timeout_s = timeout_s if timeout_s is not None else _replan_timeout_s()
     user = (
         "## Original request\n\n"
         + request.strip()
@@ -736,11 +752,11 @@ async def replan(
     )
 
     try:
-        plan_args, _plan_resp = await orchestrator_client.call_tool(
+        plan_args, plan_resp = await orchestrator_client.call_tool(
             plan_system_prompt(),
             user,
             schema=orchestrator_plan.submit_plan_schema(),
-            timeout_s=timeout_s,
+            timeout_s=effective_timeout_s,
         )
     except orchestrator_client.OrchestratorUnavailable as exc:
         logger.warning("orchestrator: replan unavailable, failing open: %s", exc)
@@ -756,4 +772,10 @@ async def replan(
     if errors:
         logger.warning("orchestrator: replan invalid, failing open: %s", errors)
         return None
+    logger.info(
+        "orchestrator: replan produced a valid plan in %dms (budget %.0fs, %d steps)",
+        plan_resp.latency_ms,
+        effective_timeout_s,
+        len(plan.steps),
+    )
     return plan

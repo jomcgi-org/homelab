@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from chat.orchestrator_client import OrchestratorUnavailable, call, call_tool
+from chat.orchestrator_client import (
+    OrchestratorUnavailable,
+    _read_config,
+    call,
+    call_tool,
+)
 
 
 def _mock_client(mock_response=None, post_side_effect=None):
@@ -170,6 +175,25 @@ _TOOL_SCHEMA = {
     "description": "Submit the delegation plan for this task.",
     "parameters": {"type": "object", "properties": {}},
 }
+
+
+class TestReadConfig:
+    def test_timeout_defaults_to_60_when_unset(self, monkeypatch):
+        """The initial-compile budget defaults to 60s (Task 8): it covers both the
+        route-decision call and the submit_plan tool call."""
+        monkeypatch.delenv("ORCHESTRATOR_TIMEOUT_S", raising=False)
+        _model, _base_url, _api_key, timeout_s = _read_config()
+        assert timeout_s == 60.0
+
+    def test_timeout_respects_env_value(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_TIMEOUT_S", "42")
+        _model, _base_url, _api_key, timeout_s = _read_config()
+        assert timeout_s == 42.0
+
+    def test_malformed_timeout_falls_back_to_60(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_TIMEOUT_S", "not-a-number")
+        _model, _base_url, _api_key, timeout_s = _read_config()
+        assert timeout_s == 60.0
 
 
 class TestCallTool:
