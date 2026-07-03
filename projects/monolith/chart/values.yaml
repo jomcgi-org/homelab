@@ -549,6 +549,9 @@ goosecracker:
     itemPath: ""
   tiers: {}
   progressUrl: ""
+  # The monolith's own in-cluster steering endpoint base the guest polls at
+  # stage boundaries (ADR 035 phase 2); empty disables steering.
+  steeringUrl: ""
 
 # Knowledge gardener: LLM-driven decomposition of raw vault notes into
 # typed knowledge artifacts via the claude Code CLI. Uses CLAUDE_CODE_OAUTH_TOKEN
