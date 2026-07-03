@@ -31,6 +31,9 @@ SourceType = Literal["extracted", "homebrew"]
 EmbeddableKind = Literal["entity", "chunk", "transcript"]
 SessionStatus = Literal["active", "paused", "ended"]
 GrantScope = Literal["full", "partial", "name_only"]
+# Mirror of the CHECK constraint in
+# chart/migrations/20260703120000_grimoire_chunk_extraction.sql - keep in sync.
+ExtractionStatus = Literal["ok", "empty"]
 
 # Postgres stores true UUIDs; SQLite (test fixtures) falls back to a plain
 # string column, matching the pattern in knowledge/models.py's _STRING_ARRAY
@@ -198,6 +201,39 @@ class ChunkEntityMention(SQLModel, table=True):
         ),
     )
     mention_text: str | None = None
+
+
+class ChunkExtraction(SQLModel, table=True):
+    """Processed-marker: one row per (chunk, model, prompt_hash) successfully
+    extracted. Presence means "this chunk is done under this exact model +
+    prompt"; absence means pending. We record status='empty' for zero-yield
+    chunks (so they aren't re-run forever) but write NOTHING on HTTP/parse
+    failure, so genuine failures are naturally re-selected next run. The key
+    deliberately excludes chunk content hash in v1 (in-place content edits are
+    out of scope; re-loading a changed chunk under a seen model+prompt will not
+    re-extract until content hashing is added)."""
+
+    __tablename__ = "chunk_extraction"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ok', 'empty')",
+            name="chunk_extraction_status_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    chunk_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.knowledge_chunk.id"
+        )
+    )
+    model: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
+    prompt_hash: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
+    status: ExtractionStatus = Field(sa_column=Column(String, nullable=False))
+    extracted_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class Relationship(SQLModel, table=True):

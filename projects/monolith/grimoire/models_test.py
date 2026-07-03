@@ -140,6 +140,51 @@ def test_knowledge_grant_rejects_bad_grant_scope(session: Session):
     session.rollback()
 
 
+def test_chunk_extraction_marker_roundtrip(session: Session):
+    from grimoire.models import ChunkExtraction
+
+    row = ChunkExtraction(
+        chunk_id="11111111-1111-1111-1111-111111111111",
+        model="qwen3.6-27b",
+        prompt_hash="abc123",
+        status="empty",
+    )
+    session.add(row)
+    session.commit()
+    got = session.get(
+        ChunkExtraction,
+        ("11111111-1111-1111-1111-111111111111", "qwen3.6-27b", "abc123"),
+    )
+    assert got is not None
+    assert got.status == "empty"
+    assert got.extracted_at is not None
+
+
+def test_chunk_extraction_status_check(session: Session):
+    """status is Literal-typed only; the SQL CHECK is what enforces at write
+    time. Insert a bogus value via raw SQL (SQLModel table models skip
+    validation, and raw SQL guarantees we reach the DB CHECK regardless),
+    same as test_knowledge_grant_rejects_bad_grant_scope above. extracted_at
+    is supplied so the only constraint that can fire is the status CHECK."""
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "INSERT INTO chunk_extraction "
+                "(chunk_id, model, prompt_hash, status, extracted_at) "
+                "VALUES (:cid, :m, :h, :s, :t)"
+            ),
+            {
+                "cid": "22222222-2222-2222-2222-222222222222",
+                "m": "m",
+                "h": "h",
+                "s": "bogus",
+                "t": "2026-07-03T00:00:00+00:00",
+            },
+        )
+        session.flush()
+    session.rollback()
+
+
 def test_knowledge_grant_unique_entity_player_character(session: Session):
     entity = Entity(entity_type="npc", name="Nott")
     campaign, pc = _make_campaign_and_pc(session)
