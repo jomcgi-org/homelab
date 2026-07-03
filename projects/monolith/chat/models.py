@@ -225,8 +225,92 @@ class WhatsappGroup(SQLModel, table=True):
     directive_seed: str | None = Field(default=None)
     digest_config: dict | None = Field(default=None, sa_column=Column(_JSONB))
     enabled: bool = Field(default=True)
+    # Timestamp of the last morning digest sent to this group (ADR 039 spec 5d).
+    # The digest job dedupes on it (at most one digest per local day) while
+    # honouring quiet hours; NULL until the first digest is sent.
+    last_digest_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WhatsappPendingAction(SQLModel, table=True):
+    """Transient per-group conversational state for the household capabilities
+    (ADR 039 spec section 5). One pending action per group (``group_jid`` PK).
+
+    ``kind`` is the awaited resolution: ``record`` is a knowledge capture awaiting
+    an affirmative confirmation (confirm-then-capture, the KG consent boundary),
+    ``calendar``/``reminder`` are intents awaiting one clarifying answer
+    (clarify-once). ``summary`` holds the record confirmation text; ``payload``
+    carries the original intent text so a clarifying follow-up can be combined with
+    it. The next engaged message resolves or abandons the row, so it is
+    short-lived. The CHECK mirrors the DB constraint so the SQLite test fixtures
+    reject an invalid kind too (create_all does not see migration-only CHECKs).
+    """
+
+    __tablename__ = "whatsapp_pending_action"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('record', 'calendar', 'reminder')",
+            name="whatsapp_pending_action_kind_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    group_jid: str = Field(primary_key=True)
+    kind: str
+    summary: str | None = Field(default=None)
+    payload: dict | None = Field(default=None, sa_column=Column(_JSONB))
+    created_by: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (delivered_at is intentionally NULL until the digest delivers the reminder)
+class WhatsappReminder(SQLModel, table=True):
+    """An ad-hoc reminder created in the household group (ADR 039 spec 5d).
+
+    Created conversationally ("remind us to X on Y"); the morning digest renders
+    open (undelivered, due) reminders and stamps ``delivered_at`` as it includes
+    them, so a reminder surfaces once. ``due_at`` is stored in UTC; ``created_by``
+    records the participant who set it.
+    """
+
+    __tablename__ = "whatsapp_reminder"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    group_jid: str
+    text: str
+    due_at: datetime
+    created_by: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    delivered_at: datetime | None = Field(default=None)
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (confirmed_at is intentionally NULL until the draft is confirmed by hand)
+class WhatsappCalendarDraft(SQLModel, table=True):
+    """A proposed calendar event awaiting manual confirmation (ADR 039 spec 5b
+    fallback).
+
+    When the cluster-side calendar credential is absent at runtime, a scheduling
+    intent is drafted here instead of created live, and the morning digest
+    surfaces open drafts (``confirmed_at`` IS NULL) so the group can add them by
+    hand. ``start_at``/``end_at`` are stored in UTC; ``attendees`` is a
+    human-readable comma-joined list (v1 does not resolve WhatsApp contacts to
+    calendar invitees).
+    """
+
+    __tablename__ = "whatsapp_calendar_draft"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    group_jid: str
+    title: str
+    start_at: datetime
+    end_at: datetime | None = Field(default=None)
+    attendees: str | None = Field(default=None)
+    created_by: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    confirmed_at: datetime | None = Field(default=None)
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (running_since is intentionally NULL until a turn goes running)
