@@ -102,6 +102,39 @@ class TestFeatureEnabledAndScopes:
             assert acl.allowed_scopes("g2", "u1", "agent") == set()
 
 
+class TestAmbientChannels:
+    def test_returns_channel_scopes(self, engine):
+        _seed(
+            engine,
+            [("g1", "", "ambient", "c1"), ("g1", "", "ambient", "c2")],
+        )
+        with patch("chat.acl.get_engine", return_value=engine):
+            assert acl.ambient_channels("g1") == {"c1", "c2"}
+
+    def test_ignores_other_features_and_guilds(self, engine):
+        _seed(
+            engine,
+            [
+                ("g1", "", "ambient", "c1"),
+                ("g1", "", "agent", "homelab"),
+                ("g2", "", "ambient", "c9"),
+            ],
+        )
+        with patch("chat.acl.get_engine", return_value=engine):
+            assert acl.ambient_channels("g1") == {"c1"}
+
+    def test_ignores_subject_specific_grant(self, engine):
+        # ambient is server-wide (subject_id ""); a per-user grant should not
+        # count, even though it happens to share the feature name.
+        _seed(engine, [("g1", "u1", "ambient", "c1")])
+        with patch("chat.acl.get_engine", return_value=engine):
+            assert acl.ambient_channels("g1") == set()
+
+    def test_empty_when_no_grants(self, engine):
+        with patch("chat.acl.get_engine", return_value=engine):
+            assert acl.ambient_channels("g1") == set()
+
+
 class TestBootstrapDefaults:
     def test_seeds_home_owner_and_loom(self, engine, monkeypatch):
         monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "home1")
