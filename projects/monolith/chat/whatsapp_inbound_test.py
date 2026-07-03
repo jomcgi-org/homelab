@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from chat import attention, attention_log, whatsapp_inbound
+from chat import attention, attention_log, whatsapp_inbound, whatsapp_session
 from chat.attention import AttentionResult
 from chat.models import WhatsappGroup, WhatsappOutbox
 
@@ -55,6 +55,11 @@ def client(engine, monkeypatch):
 
     # Both the handler and _lookup_enabled_group read get_engine from the module.
     monkeypatch.setattr(whatsapp_inbound, "get_engine", lambda: engine)
+    # The session-keyed helpers (steer_or_none, dispatch) open their own sessions
+    # via chat.whatsapp_session.get_engine; point it at the same test engine so
+    # the real steer_or_none (unpatched in the chat/deferred tests) sees no
+    # session row and returns False rather than hitting a real DB.
+    monkeypatch.setattr(whatsapp_session, "get_engine", lambda: engine)
 
     fake_embed = AsyncMock()
     fake_embed.embed_batch.return_value = [[0.0] * 1024]
@@ -184,3 +189,71 @@ class TestAttentionRouting:
         resp = _post(client, text="just the two of us talking", message_id="I1")
         assert resp.json()["status"] == "ignored"
         assert _outbox(engine) == []
+
+
+class TestAgentDispatch:
+    """Phase 4: engaged agent-shaped messages steer a live run or dispatch one."""
+
+    def test_running_session_steers_not_dispatches(self, client, engine, monkeypatch):
+        _seed_group(engine)
+        monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
+        # A live run swallows the message as steering (real dispatch never called).
+        monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: True)
+        called = []
+        monkeypatch.setattr(
+            whatsapp_session,
+            "dispatch_whatsapp_agent",
+            lambda *a, **k: called.append(k) or {"action": "dispatched"},
+        )
+        resp = _post(client, text="bosun tweak that", message_id="S1")
+        assert resp.json()["status"] == "steering"
+        assert called == []
+
+    def test_agent_dispatch_when_enabled(self, client, engine, monkeypatch):
+        _seed_group(engine)
+        monkeypatch.setattr(whatsapp_inbound, "_AGENT_ENABLED", True)
+        monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
+        monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: False)
+        seen = {}
+
+        def _fake_dispatch(
+            group_jid, prompt, *, trigger_message_id, trigger_sender_jid, repo=""
+        ):
+            seen.update(
+                group_jid=group_jid,
+                prompt=prompt,
+                message_id=trigger_message_id,
+                sender_jid=trigger_sender_jid,
+            )
+            return {"action": "dispatched"}
+
+        monkeypatch.setattr(whatsapp_session, "dispatch_whatsapp_agent", _fake_dispatch)
+        resp = _post(
+            client,
+            text="bosun build me a plan",
+            message_id="A2",
+            sender_jid="alice@s.whatsapp.net",
+        )
+        assert resp.json()["status"] == "dispatched"
+        assert seen["group_jid"] == _GROUP
+        assert seen["message_id"] == "A2"
+        assert seen["sender_jid"] == "alice@s.whatsapp.net"
+        assert seen["prompt"] == "bosun build me a plan"
+
+    def test_agent_disabled_gets_deferred_reply(self, client, engine, monkeypatch):
+        _seed_group(engine)
+        # Flag default-off: no dispatch, honest one-liner instead.
+        monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
+        monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: False)
+        called = []
+        monkeypatch.setattr(
+            whatsapp_session,
+            "dispatch_whatsapp_agent",
+            lambda *a, **k: called.append(k) or {"action": "dispatched"},
+        )
+        resp = _post(client, text="bosun ship the feature", message_id="A3")
+        assert resp.json()["status"] == "replied"
+        assert called == []
+        rows = _outbox(engine)
+        assert len(rows) == 1
+        assert rows[0].content == whatsapp_inbound._AGENT_DEFERRED_REPLY
