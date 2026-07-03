@@ -191,7 +191,7 @@ class TestShouldEditChecklistGating:
 
     def test_rapid_version_bumps_within_window_coalesce_to_one_edit(self):
         """Two version bumps arriving within 2s of each other, and of the last
-        edit, must not each trigger an edit — only the first (or a later poll
+        edit, must not each trigger an edit, only the first (or a later poll
         once the window has passed) does."""
         last_stages_version = -1
         last_done = False
