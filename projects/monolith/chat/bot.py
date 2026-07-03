@@ -14,6 +14,7 @@ from pydantic_ai import (
     AgentRunResultEvent,
     BinaryContent,
     FunctionToolCallEvent,
+    FunctionToolResultEvent,
     PartDeltaEvent,
     TextPartDelta,
     ThinkingPartDelta,
@@ -1437,10 +1438,23 @@ class ChatBot(discord.Client):
             # Streaming state
             sent: discord.Message | None = None
             thinking_parts: list[str] = []
-            tool_queries: list[str] = []
+            # Live search checklist. search_status is keyed by query string so a
+            # model-unavailable retry (which replays the same tool call under a
+            # fresh id) collapses to one row; id_to_query maps every seen
+            # tool_call_id back to its query so a result event can flip the
+            # marker from pending to done.
+            search_status: dict[str, bool] = {}  # query -> done
+            id_to_query: dict[str, str] = {}  # tool_call_id -> query
             response_text = ""
             last_edit_time = 0.0
             had_events = False
+
+            def _search_content() -> str:
+                lines = []
+                for q, done in search_status.items():
+                    marker = "✅" if done else "⏳"
+                    lines.append(f"{marker} {q}")
+                return "\U0001f50d Searching...\n" + "\n".join(lines)
 
             async def _ensure_sent(content: str) -> discord.Message:
                 nonlocal sent
@@ -1483,15 +1497,26 @@ class ChatBot(discord.Client):
                         query = args.get("query", str(args))
                     else:
                         query = str(args)
+                    call_id = event.part.tool_call_id
+                    if call_id:
+                        id_to_query[call_id] = query
                     # Dedupe: a model-unavailable retry replays the turn and
                     # re-emits the same tool call. Showing it once keeps the
-                    # progress list honest instead of spamming repeat bullets.
-                    if query not in tool_queries:
-                        tool_queries.append(query)
-                        bullets = "\n".join(f"\u2022 {q}" for q in tool_queries)
-                        content = f"\U0001f50d Searching...\n{bullets}"
+                    # checklist honest instead of spamming repeat rows; a later
+                    # result event for either id flips the shared row to done.
+                    if query not in search_status:
+                        search_status[query] = False
+                        content = _search_content()
                         await _ensure_sent(content)
                         await _edit_if_due(content, force=True)
+                elif isinstance(event, FunctionToolResultEvent):
+                    # A search returned: flip its row from \u23f3 to \u2705.
+                    done_query = id_to_query.get(event.tool_call_id)
+                    if done_query is not None and not search_status.get(
+                        done_query, True
+                    ):
+                        search_status[done_query] = True
+                        await _edit_if_due(_search_content(), force=True)
 
             # Fallback if no events arrived or no text was produced
             if not had_events or not response_text:
