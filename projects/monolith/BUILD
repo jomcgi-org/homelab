@@ -952,6 +952,20 @@ py_test(
 )
 
 py_test(
+    name = "chat_bot_checklist_render_test",
+    srcs = ["chat/bot_checklist_render_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//discord_py",
+        "@pip//pydantic_ai_slim",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_web_search_coverage_test",
     srcs = ["chat/web_search_coverage_test.py"],
     imports = ["."],
