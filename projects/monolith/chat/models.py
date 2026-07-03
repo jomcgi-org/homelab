@@ -260,3 +260,51 @@ class AttentionDecision(SQLModel, table=True):
     confidence: float = Field(default=0.0)
     directive_version: int = Field(default=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ChannelDirective(SQLModel, table=True):
+    """Living per-channel behavioural directive (ADR 035 phase 5).
+
+    Versioned with full history: every propose/confirm/reset inserts a new row
+    rather than mutating in place. Exactly one row per channel has active=True
+    (enforced by a partial unique index in the migration, not here, since
+    SQLite create_all does not support partial indexes and a plain
+    unique=True would wrongly reject the history rows in tests). A proposed
+    (not yet confirmed) row is inserted active=False and flipped by
+    directives.apply_proposal.
+    """
+
+    __tablename__ = "channel_directive"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str
+    directive: str
+    version: int = Field(default=1)
+    active: bool = Field(default=False)
+    seed_ref: str = Field(default="")
+    updated_by_user_id: str = Field(default="")
+    motivating_message_id: str = Field(default="")
+    proposal_message_id: str = Field(default="")
+    previous_version: int = Field(default=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class UserStylePref(SQLModel, table=True):
+    """Per-user style preference (ADR 035 phase 5).
+
+    Layered on top of the channel directive at reply time (never merged into
+    it). One active pref per user (partial unique index in the migration, same
+    reasoning as ChannelDirective above); history rows are kept.
+    """
+
+    __tablename__ = "user_style_pref"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str
+    pref: str
+    active: bool = Field(default=True)
+    updated_by_user_id: str = Field(default="")
+    motivating_message_id: str = Field(default="")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
