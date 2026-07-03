@@ -680,17 +680,18 @@ class ChatBot(discord.Client):
             if await self._maybe_handle_goosecracker_reply(message):
                 return
 
-        # ADR 035 attention gate: decide whether to engage. Mentions/replies
-        # always engage; ambient channels classify; everything else ignores and
-        # falls through to normal message storage unchanged.
+        # ADR 035 attention gate (Phase 3 rollout: contained to opted-in
+        # channels). Agent-triggering fires ONLY in ambient channels; mentions
+        # and replies in non-ambient channels keep today's inline chat reply via
+        # _process_message. Once Phase 4's chat branch makes an agent-flow reply
+        # lightweight, the spec's "mentions always engage" can extend server-wide.
         guild_id = message.guild.id if message.guild else None
         is_ambient = channel_id in await asyncio.to_thread(
             acl.ambient_channels, guild_id
         )
-        explicit = should_respond(message, self.user)
-        if is_ambient or explicit:
+        if is_ambient:
             directive = ""  # Phase 5 wires directives.get_active(channel)
-            result = await attention.evaluate(message, directive, self.user, is_ambient)
+            result = await attention.evaluate(message, directive, self.user, True)
             await asyncio.to_thread(
                 attention_log.log_decision,
                 channel_id,
@@ -1104,9 +1105,14 @@ class ChatBot(discord.Client):
             await asyncio.to_thread(self._complete_lock, str(message.id))
             return
 
-        await self.start_agent_flow(
+        thread = await self.start_agent_flow(
             channel, user, message.content, "", trigger_message=message
         )
+        if thread is None and explicit:
+            try:
+                await message.reply("Couldn't start that one. Check the logs.")
+            except discord.HTTPException:
+                logger.exception("agent: failed to send start-failure reply")
         await asyncio.to_thread(self._complete_lock, str(message.id))
 
     def _complete_lock(self, msg_id: str) -> None:

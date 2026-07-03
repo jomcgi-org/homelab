@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 from sqlmodel import Session, select
 
@@ -33,15 +34,35 @@ def _norm(value: object) -> str:
     return "" if value is None else str(value)
 
 
+# Phase 3: the attention gate calls ambient_channels on every message, which
+# otherwise means a live SELECT per message. Grants change rarely, so a short
+# TTL cache trades a small staleness window (a newly added/revoked grant
+# applies within the TTL) for keeping the hot path off the DB.
+_GRANTS_CACHE: dict[str, tuple[float, list[DiscordFeatureGrant]]] = {}
+_GRANTS_TTL_SECONDS = 30.0
+
+
+def _clear_grants_cache() -> None:
+    """Drop the cached grants (tests that mutate grants call this to force a
+    refresh; production code has no need to)."""
+    _GRANTS_CACHE.clear()
+
+
 def _grants_for_feature(feature: str) -> list[DiscordFeatureGrant]:
+    now = time.monotonic()
+    cached = _GRANTS_CACHE.get(feature)
+    if cached is not None and now - cached[0] < _GRANTS_TTL_SECONDS:
+        return cached[1]
     with Session(get_engine()) as session:
-        return list(
+        rows = list(
             session.exec(
                 select(DiscordFeatureGrant).where(
                     DiscordFeatureGrant.feature == feature
                 )
             ).all()
         )
+    _GRANTS_CACHE[feature] = (now, rows)
+    return rows
 
 
 def is_granted(
