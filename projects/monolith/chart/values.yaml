@@ -444,7 +444,13 @@ jobs:
       args: ["campsites-refresh"]
       schedule: "0 * * * *"
       concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 900
+      # 25m. A normal scrape of ~145 parks finishes in ~2-3 min, but an
+      # occasional WAF-throttled run pushes scattered parks onto the 2s-retry
+      # path and can exceed 15m (the old 900s), timing out and writing nothing
+      # (jobs.py commits only after the full fetch). 1500s gives a degraded run
+      # room to finish; a fully-blocked run still bails early via
+      # MAX_CONSECUTIVE_FAILURES. Safe under the hourly schedule + Forbid.
+      activeDeadlineSeconds: 1500
       suspend: false
       resources:
         requests:
