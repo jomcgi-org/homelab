@@ -360,7 +360,11 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         """Set the requesting user's personal reply style preference. Applies immediately, only to their own replies."""
         from chat import directives
 
-        await asyncio.to_thread(directives.set_style_pref, ctx.deps.author_id, pref)
+        try:
+            await asyncio.to_thread(directives.set_style_pref, ctx.deps.author_id, pref)
+        except Exception:
+            logger.exception("directives: set_my_style failed")
+            return "I couldn't save that preference right now, try again in a bit."
         return "Got it, I'll reply to you that way from now on."
 
     @agent.tool
@@ -372,9 +376,13 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         """Reset this channel's behavioural directive back to the default. Applies immediately."""
         from chat import directives
 
-        await asyncio.to_thread(
-            directives.reset, ctx.deps.channel_id, ctx.deps.author_id
-        )
+        try:
+            await asyncio.to_thread(
+                directives.reset, ctx.deps.channel_id, ctx.deps.author_id
+            )
+        except Exception:
+            logger.exception("directives: reset_channel_directive failed")
+            return "I couldn't reset the directive right now, try again in a bit."
         return "This channel's directive is back to the default."
 
     return agent
