@@ -458,6 +458,44 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # grimoire.load_chunks: list S3 chunk manifests (s3://grimoire/chunks/), upsert
+    # knowledge_chunk rows, and embed new/changed content. Idempotent (upsert by
+    # book_id+chunk_ref; only new content is re-embedded), so a daily run over an
+    # unchanged corpus is cheap. `grimoire: true` injects the SeaweedFS S3 env,
+    # GRIMOIRE_S3_BUCKET, and EMBEDDING_URL the loader reads. The cronworkflows
+    # template skips both grimoire entries unless grimoire.enabled (private tier).
+    - name: grimoire-load-chunks
+      args: ["grimoire-load-chunks"]
+      schedule: "0 2 * * *" # daily 02:00 UTC
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      grimoire: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    # grimoire.extract_entities: frontier-model extraction of entities/mentions/
+    # relationships from loaded chunks. Costs OpenRouter money per chunk, so it
+    # ships SUSPENDED (manual-only): submit by hand (argo submit --from
+    # cronworkflow/grimoire-extract-entities) when a fresh corpus needs
+    # extracting. The inert yearly schedule is belt-and-suspenders. 25m deadline
+    # covers a bounded run (GRIMOIRE_EXTRACT_LIMIT chunks, default 25).
+    - name: grimoire-extract-entities
+      args: ["grimoire-extract-entities"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1500
+      suspend: true
+      grimoire: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""

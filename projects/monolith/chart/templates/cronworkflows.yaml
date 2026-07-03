@@ -13,6 +13,11 @@ image guard elsewhere.
 */ -}}
 {{- if .Values.jobs.image }}
 {{- range .Values.jobs.cronWorkflows }}
+{{- if and .grimoire (not $.Values.grimoire.enabled) }}
+{{- /* grimoire jobs are private-tier only: skip them entirely unless the
+       grimoire module is enabled, so an unrelated (public) deploy never
+       renders a CronWorkflow referencing the openrouter secret. */ -}}
+{{- else }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -101,9 +106,42 @@ spec:
                   name: monolith-chat-secrets
                   key: GITHUB_TOKEN
             {{- end }}
+            {{- if .grimoire }}
+            # Grimoire ingest jobs (spec #4.2/#4.3): the loader reads the shared
+            # SeaweedFS S3 env + EMBEDDING_URL + GRIMOIRE_S3_BUCKET; extraction
+            # reads OPENROUTER_API_KEY + GRIMOIRE_EXTRACT_MODEL/LIMIT + EMBEDDING_URL.
+            # Both get the union (the loader ignores OPENROUTER_API_KEY, the
+            # extractor ignores the S3 env) so the grimoire concern is one env
+            # block, mirroring how the deployment injects it. OPENROUTER_API_KEY
+            # comes from the {{ include "monolith.fullname" $ }}-openrouter Secret,
+            # Kyverno-cloned into monolith-workflows (see the kyverno clone policy);
+            # the extract handler skips its run cleanly if the key is absent.
+            - name: SEAWEEDFS_S3_ENDPOINT
+              value: {{ $.Values.stars.seaweedfsS3Endpoint | quote }}
+            - name: S3_ACCESS_KEY_ID
+              value: {{ $.Values.stars.s3AccessKeyId | quote }}
+            - name: S3_SECRET_ACCESS_KEY
+              value: {{ $.Values.stars.s3SecretAccessKey | quote }}
+            - name: EMBEDDING_URL
+              value: {{ $.Values.chat.embeddingUrl | quote }}
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" $ }}-openrouter
+                  key: OPENROUTER_API_KEY
+            - name: GRIMOIRE_S3_BUCKET
+              value: {{ $.Values.grimoire.s3Bucket | quote }}
+            - name: GRIMOIRE_EXTRACT_MODEL
+              value: {{ $.Values.grimoire.extractModel | quote }}
+            {{- if $.Values.grimoire.extractLimit }}
+            - name: GRIMOIRE_EXTRACT_LIMIT
+              value: {{ $.Values.grimoire.extractLimit | quote }}
+            {{- end }}
+            {{- end }}
           {{- with .resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
