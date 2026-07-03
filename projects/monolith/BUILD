@@ -855,6 +855,16 @@ py_test(
 )
 
 py_test(
+    name = "chat_goosecracker_progress_stages_test",
+    srcs = ["chat/goosecracker_progress_stages_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "chat_web_search_test",
     srcs = ["chat/web_search_test.py"],
     imports = ["."],
