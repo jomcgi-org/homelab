@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.db import get_engine
-from chat import attention, attention_log, whatsapp_session
+from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
 from chat.models import Message, WhatsappGroup
 from chat.whatsapp_outbox import enqueue_message
 
@@ -272,6 +272,16 @@ async def inbound(
     )
     if steered:
         return {"status": "steering"}
+
+    # Household capabilities (spec section 5): a record/schedule/reminder intent,
+    # or a follow-up resolving a pending confirmation/clarification, is handled
+    # here in the monolith under the household tier, before the generic depth
+    # split. handle_capability returns a {status, reply} to enqueue, or None to
+    # fall through to the normal chat/agent path.
+    handled = await whatsapp_capabilities.handle_capability(body)
+    if handled is not None:
+        await _enqueue_bot_reply(embed_client, body, handled["reply"])
+        return {"status": handled["status"]}
 
     # Depth split, mirroring Discord. Agent (heavyweight session) work dispatches
     # a household group session when enabled; otherwise an honest one-liner.
