@@ -172,7 +172,13 @@ def start_session(thread_id: str, prompt: str) -> dict:
     return result
 
 
-def continue_session(thread_id: str, message: str, message_id: str = "") -> dict | None:
+def continue_session(
+    thread_id: str,
+    message: str,
+    message_id: str = "",
+    author_id: str = "",
+    tier: str = "",
+) -> dict | None:
     """Append an owner follow-up and re-dispatch or queue depending on recipe.
 
     Artifact sessions (recipe="artifact"): re-dispatch the full transcript (Model
@@ -180,9 +186,12 @@ def continue_session(thread_id: str, message: str, message_id: str = "") -> dict
     submit result dict.
 
     Agent sessions (recipe="agent"): conversational queuing. If a turn is already
-    running (and not stale), append the message to ``pending`` + its id to
-    ``pending_message_ids`` and return ``{"action": "queued"}`` so the bot can
-    acknowledge with a ⏳ reaction instead of a text reply. When idle (or the prior
+    running (and not stale), the reply becomes STEERING (ADR 035 Phase 2): an
+    undelivered ``GoosecrackerSteering`` row is inserted for the running guest to
+    consume mid-run, and ``{"action": "steering"}`` is returned so the bot can
+    acknowledge with a 👀 reaction instead of a text reply. ``author_id``/``tier``
+    are only used on this path (a steering row needs an attributed author; tier
+    falls back to the session's own tier when blank). When idle (or the prior
     turn is stale and reclaimed), build the next task from any backlog + this
     message, set running=True, dispatch, and return
     ``{"action": "dispatched", ...submit result}``.
@@ -208,24 +217,32 @@ def continue_session(thread_id: str, message: str, message_id: str = "") -> dict
         if row is None:
             return None
 
-        # Accumulate the turn in the curated transcript for all recipe types.
-        transcript = _join_transcript(row.transcript, message)
-        row.transcript = transcript
         now = datetime.now(timezone.utc)
         row.updated_at = now
 
         if row.recipe == AGENT_RECIPE:
             _is_agent = True
             if row.running and not _is_stale(row, now):
-                # A live turn is in flight: queue this reply for the next turn and
-                # record its id so the runner can react ⏳→👀→✅ on this message.
-                row.pending = _append_pending(row.pending, message)
-                row.pending_message_ids = _append_id(
-                    row.pending_message_ids, message_id
+                # A live turn is in flight: this reply steers it rather than
+                # queuing behind it (ADR 035 Phase 2). The steering insert and the
+                # running-check above must be atomic under the row lock, so a
+                # turn finishing concurrently can never be missed between the
+                # check and the write. Do NOT append to the transcript here:
+                # fetch_steering owns that write (with attribution) when the
+                # running guest consumes the row, so appending it here too would
+                # double it.
+                session.add(
+                    GoosecrackerSteering(
+                        thread_id=thread_id,
+                        message_id=message_id,
+                        author_id=author_id,
+                        tier=tier or row.tier,
+                        text=message,
+                        delivered=False,
+                    )
                 )
-                session.add(row)
                 session.commit()
-                return {"action": "queued"}
+                return {"action": "steering"}
             if row.running:
                 # Stale/foreign-owned turn: the owner died or wedged. Reclaim its
                 # in-flight work by folding it back into this dispatch so nothing
@@ -238,12 +255,15 @@ def continue_session(thread_id: str, message: str, message_id: str = "") -> dict
                     row.runner_instance or "?",
                     row.running_since,
                 )
-            # Idle (or reclaimed): consume the dead turn's task (if any), the
-            # backlog, and this message as a single task. Backlog + reclaimed
-            # message ids become this turn's ack set (they show the reaction
-            # lifecycle); the triggering message rides the live progress reply.
-            # Join non-empty parts only: an empty pending/inflight must not inject
-            # a blank line into the task.
+            # Idle (or reclaimed): the transcript gets this turn verbatim (the
+            # dispatch path is the record of what was asked, unlike steering).
+            row.transcript = _join_transcript(row.transcript, message)
+            # Consume the dead turn's task (if any), the backlog, and this
+            # message as a single task. Backlog + reclaimed message ids become
+            # this turn's ack set (they show the reaction lifecycle); the
+            # triggering message rides the live progress reply. Join non-empty
+            # parts only: an empty pending/inflight must not inject a blank line
+            # into the task.
             _task = "\n".join(p for p in (row.inflight_task, row.pending, message) if p)
             ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
             _stored_recipe = row.recipe
@@ -259,8 +279,10 @@ def continue_session(thread_id: str, message: str, message_id: str = "") -> dict
             session.add(row)
             session.commit()
         else:
-            # Artifact path: commit the transcript update, then do the S3 check.
-            _transcript = transcript
+            # Artifact path: append this turn to the transcript, commit, then do
+            # the S3 check.
+            row.transcript = _join_transcript(row.transcript, message)
+            _transcript = row.transcript
             session.add(row)
             session.commit()
 
@@ -676,6 +698,19 @@ def is_agent_thread(thread_id: str) -> bool:
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
         return row is not None and row.recipe == AGENT_RECIPE
+
+
+def session_scope(thread_id: str) -> str | None:
+    """Return the repo scope stored for a goosecracker thread, or None.
+
+    Used by the bot's ACL gate on agent-thread replies (ADR 035 Phase 2) to look
+    up which repo an ``is_granted`` check should be scoped to. None when the
+    thread has no session row; "" when it does but is a repo-less run.
+    Synchronous; call via ``asyncio.to_thread``.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        return row.repo if row else None
 
 
 def artifact_id_for_thread(thread_id: str) -> str:

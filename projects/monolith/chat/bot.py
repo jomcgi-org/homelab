@@ -926,12 +926,31 @@ class ChatBot(discord.Client):
         if message.author.bot:
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
-        # Agent threads are open to everyone (ADR 029). Artifact threads are open
-        # to whoever is granted /artifact in this server (ADR 024 amendment), so
-        # the person who built an artifact can iterate on it, not just the owner.
+        # Artifact threads are open to whoever is granted /artifact in this
+        # server (ADR 024 amendment), so the person who built an artifact can
+        # iterate on it, not just the owner. Agent threads are per-server ACL
+        # gated on the session's own repo scope (ADR 035 Phase 2): steering an
+        # in-flight agent turn needs the same grant that opened it.
         is_agent = await asyncio.to_thread(goosecracker.is_agent_thread, thread_id)
-        if not is_agent:
-            guild_id = message.guild.id if message.guild else None
+        guild_id = message.guild.id if message.guild else None
+        if is_agent:
+            repo = await asyncio.to_thread(goosecracker.session_scope, thread_id) or ""
+            if not await asyncio.to_thread(
+                acl.is_granted, guild_id, message.author.id, "agent", repo
+            ):
+                scopes = await asyncio.to_thread(
+                    acl.allowed_scopes, guild_id, message.author.id, "agent"
+                )
+                allowed = ", ".join(sorted(scopes)) or "none"
+                roast = await goosecracker.build_roast(message.content)
+                target = f"`{repo}`" if repo else "this"
+                await message.reply(
+                    f"{roast}\nYou'd need an `agent` grant for {target} in this "
+                    f"server to steer here. Allowed here: {allowed}."
+                )
+                await asyncio.to_thread(self._complete_lock, msg_id)
+                return True
+        else:
             allowed = goosecracker.is_owner(
                 message.author.id
             ) or await asyncio.to_thread(
@@ -945,7 +964,11 @@ class ChatBot(discord.Client):
 
         try:
             result = await asyncio.to_thread(
-                goosecracker.continue_session, thread_id, message.content, msg_id
+                goosecracker.continue_session,
+                thread_id,
+                message.content,
+                msg_id,
+                author_id=str(message.author.id),
             )
         except Exception:
             logger.exception("goosecracker: failed to continue session")
@@ -968,6 +991,18 @@ class ChatBot(discord.Client):
                 await message.add_reaction(goosecracker.REACTION_QUEUED)
             except discord.HTTPException:
                 logger.exception("goosecracker: failed to react queued on %s", msg_id)
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
+
+        if action == "steering":
+            # A turn is already running; the reply was enqueued as steering
+            # (ADR 035 Phase 2) rather than queued behind the turn. Acknowledge
+            # with 👀 directly (no ⏳ stage: it is not waiting for a slot, it will
+            # be picked up by the running guest at its next stage boundary).
+            try:
+                await message.add_reaction(goosecracker.REACTION_RUNNING)
+            except discord.HTTPException:
+                logger.exception("goosecracker: failed to react steering on %s", msg_id)
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
 
