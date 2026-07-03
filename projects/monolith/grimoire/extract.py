@@ -176,13 +176,23 @@ class OpenRouterClient:
     def __init__(
         self,
         *,
-        api_key: str,
+        api_key: str = "",
         model: str | None = None,
-        base_url: str = OPENROUTER_URL,
+        base_url: str | None = None,
     ):
         self.api_key = api_key
         self.model = model or os.environ.get("GRIMOIRE_EXTRACT_MODEL", DEFAULT_MODEL)
-        self.base_url = base_url
+        self.base_url = base_url or os.environ.get(
+            "GRIMOIRE_EXTRACT_BASE_URL", OPENROUTER_URL
+        )
+
+    def _headers(self) -> dict:
+        """Bearer auth header when an api_key is set, empty dict otherwise.
+
+        Keyless in-cluster endpoints (e.g. local Qwen via vLLM) do not need
+        or accept an Authorization header.
+        """
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     async def extract(self, chunk_text: str) -> dict:
         """Extract structured JSON from one chunk of text.
@@ -239,7 +249,7 @@ class OpenRouterClient:
             "messages": messages,
             "response_format": {"type": "json_object"},
         }
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = self._headers()
 
         last_exc: Exception | None = None
         for attempt in range(EXTRACT_MAX_RETRIES):

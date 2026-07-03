@@ -78,23 +78,30 @@ async def grimoire_load_chunks(session: Session) -> None:
 async def grimoire_extract_entities(session: Session) -> None:
     """Extract entities/mentions/relationships from pending chunks (spec #4.2.2).
 
-    Skips the run (logs a warning, does not raise) when OPENROUTER_API_KEY is
-    unset so a missing secret degrades this one job rather than crashing the
-    scheduler tick. Bounded per run by GRIMOIRE_EXTRACT_LIMIT (default 25) so a
-    run fits the job deadline. Returns None so the scheduler advances by the
-    configured interval.
+    Gates on the configured endpoint, not key presence: the default
+    (unset ``GRIMOIRE_EXTRACT_BASE_URL``) or an explicit openrouter.ai URL is
+    treated as OpenRouter, which needs OPENROUTER_API_KEY -- skips the run
+    (logs a warning, does not raise) if that's unset, so a missing secret
+    degrades this one job rather than crashing the scheduler tick. Any other
+    base_url (e.g. the in-cluster Qwen vLLM endpoint) runs keyless. Bounded
+    per run by GRIMOIRE_EXTRACT_LIMIT (default 25) so a run fits the job
+    deadline. Returns None so the scheduler advances by the configured
+    interval.
     """
     from grimoire.extract import OpenRouterClient, extract_chunks
 
+    base_url = os.environ.get("GRIMOIRE_EXTRACT_BASE_URL", "")
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
+    is_openrouter = (not base_url) or "openrouter.ai" in base_url
+    if is_openrouter and not api_key:
         logger.warning(
-            "grimoire_extract_entities: OPENROUTER_API_KEY unset, skipping run"
+            "grimoire_extract_entities: OpenRouter endpoint but "
+            "OPENROUTER_API_KEY unset, skipping run"
         )
         return None
 
     limit = _extract_limit()
-    or_client = OpenRouterClient(api_key=api_key)
+    or_client = OpenRouterClient(api_key=api_key)  # base_url/model read from env
     embed_client = _embedding_client()
     summary = await extract_chunks(session, or_client, embed_client, limit=limit)
     logger.info("grimoire_extract_entities done: %s", summary)

@@ -586,6 +586,64 @@ async def test_openrouter_client_extract_self_corrects_once_on_bad_json():
     assert "did not parse as JSON" in second_call_messages[3]["content"]
 
 
+def test_client_omits_auth_header_when_no_key():
+    client = OpenRouterClient(api_key="")
+    assert client._headers() == {}
+
+
+def test_client_includes_auth_header_when_key_set():
+    client = OpenRouterClient(api_key="test-key")
+    assert client._headers() == {"Authorization": "Bearer test-key"}
+
+
+def test_base_url_defaults_to_openrouter():
+    client = OpenRouterClient(api_key="test-key")
+    assert client.base_url == extract.OPENROUTER_URL
+
+
+def test_base_url_env_override(monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_BASE_URL", "http://local/v1/chat/completions")
+    client = OpenRouterClient(api_key="")
+    assert client.base_url == "http://local/v1/chat/completions"
+
+
+def test_base_url_explicit_arg_wins_over_env(monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_BASE_URL", "http://local/v1/chat/completions")
+    client = OpenRouterClient(api_key="", base_url="http://explicit/chat")
+    assert client.base_url == "http://explicit/chat"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_client_extract_omits_auth_header_when_keyless():
+    """A keyless client (local Qwen) posts with no Authorization header."""
+    client = OpenRouterClient(api_key="", base_url="http://fake/chat")
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {"entities": [], "mentions": [], "relationships": []}
+                    )
+                }
+            }
+        ]
+    }
+
+    with patch("grimoire.extract.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post.return_value = fake_response
+        mock_client_cls.return_value = mock_client
+
+        await client.extract("some chunk text")
+
+    call_args = mock_client.post.call_args
+    assert "Authorization" not in call_args[1]["headers"]
+
+
 @pytest.mark.asyncio
 async def test_openrouter_client_extract_raises_after_failed_correction():
     """Both the original and the correction response are unparseable -> raises."""
