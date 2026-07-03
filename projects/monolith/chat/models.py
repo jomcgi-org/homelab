@@ -189,6 +189,29 @@ class GoosecrackerSession(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class GoosecrackerSteering(SQLModel, table=True):
+    """Mid-run steering queue for goosecracker agent threads (ADR 035 Phase 2).
+
+    While a turn is running, thread participants' replies are enqueued here
+    (by the bot, ACL-gated) rather than into ``GoosecrackerSession.pending``
+    (which is drained between turns by the runner). The running guest recipe
+    polls the steering endpoint at stage boundaries and marks rows delivered
+    as it consumes them, so a re-poll never redelivers the same message.
+    """
+
+    __tablename__ = "goosecracker_steering"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    id: int | None = Field(default=None, primary_key=True)
+    thread_id: str = Field(index=True)
+    message_id: str = Field(default="")
+    author_id: str = Field(default="")
+    tier: str = Field(default="")
+    text: str = Field(default="")
+    delivered: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class DiscordFeatureGrant(SQLModel, table=True):
     """Generic per-server Discord bot feature ACL (ADR 029).
 
