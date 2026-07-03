@@ -82,6 +82,31 @@ class TestRenderChecklistStates:
         )
         assert "stale retry notice" not in body
 
+    def test_done_run_resolves_lingering_stages(self):
+        # The local router model sometimes skips the trailing done marker, so a
+        # completed run can still carry running/pending stages. On done the
+        # renderer resolves them (running -> done, pending -> skipped, failed
+        # kept) so the final edit shows every stage resolved, per the spec.
+        stages = [
+            _stage(0, "Fetch", "running"),
+            _stage(1, "Write", "pending"),
+            _stage(2, "Deploy (connection refused)", "failed"),
+        ]
+        body = render_checklist(_progress(stages, done=True))
+
+        assert "✅ Fetch" in body
+        assert "⏭️ Write" in body
+        assert "❌ Deploy (connection refused)" in body
+        assert "🔄" not in body  # nothing still spinning after the run ended
+
+    def test_live_run_keeps_running_and_pending(self):
+        # The coercion applies only once done: a live run shows real states.
+        body = render_checklist(
+            _progress([_stage(0, "Fetch", "running"), _stage(1, "Write", "pending")])
+        )
+        assert "🔄 Fetch" in body
+        assert "⬜ Write" in body
+
 
 class TestRenderChecklistIsTimeFree:
     def test_identical_progress_renders_identically(self):
