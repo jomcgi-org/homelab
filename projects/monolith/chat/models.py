@@ -185,6 +185,11 @@ class GoosecrackerSession(SQLModel, table=True):
     # live page hot-reloads at a stable but non-discoverable URL (never the
     # enumerable Discord thread id).
     artifact_id: str = Field(default="")
+    # Unguessable per-session capability token that keys the guest steering fetch
+    # URL (ADR 035 Phase 2 hardening), so a compromised guest cannot address
+    # another thread's steering by guessing its Discord thread id. Assigned
+    # lazily on first dispatch, same pattern as artifact_id.
+    steering_token: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -203,7 +208,7 @@ class GoosecrackerSteering(SQLModel, table=True):
     __table_args__ = {"schema": "chat", "extend_existing": True}
 
     id: int | None = Field(default=None, primary_key=True)
-    thread_id: str = Field(index=True)
+    thread_id: str = Field(default="")
     message_id: str = Field(default="")
     author_id: str = Field(default="")
     tier: str = Field(default="")

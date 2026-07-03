@@ -81,16 +81,18 @@ def _progress_url(session: str) -> str:
 
 
 # The monolith's own in-cluster steering endpoint base (ADR 035 phase 2). The
-# runner injects "<this>/<session>" into the guest env as
+# runner injects "<this>/<token>" into the guest env as
 # GOOSECRACKER_STEERING_URL so the recipe can poll it at stage boundaries for
-# mid-run adjustments posted to the thread.
+# mid-run adjustments posted to the thread. Keyed on the unguessable per-session
+# token (not the session/thread id) so a compromised guest cannot fetch another
+# thread's steering by guessing its Discord thread snowflake.
 STEERING_URL_BASE = os.environ.get("GOOSECRACKER_STEERING_URL", "")
 
 
-def _steering_url(session: str) -> str:
-    if not STEERING_URL_BASE:
+def _steering_url(token: str) -> str:
+    if not STEERING_URL_BASE or not token:
         return ""
-    return f"{STEERING_URL_BASE.rstrip('/')}/{session}"
+    return f"{STEERING_URL_BASE.rstrip('/')}/{token}"
 
 
 def _effective_mirror_ref(
@@ -500,9 +502,18 @@ async def _run_one_turn(
             raise RuntimeError("FC_INVOKE_URL is not configured")
 
         env = tiers.env_for_tier(tier)
-        # ADR 035 phase 2: inject the steering URL into a copy of the tier env so
-        # the recipe can poll it, without mutating the dict env_for_tier returned.
-        steering_url = _steering_url(session)
+        # ADR 035 phase 2 (hardening): inject a steering URL keyed on an
+        # unguessable per-session token, not the thread/session id, into a copy
+        # of the tier env so the recipe can poll it without mutating the dict
+        # env_for_tier returned. A compromised guest that reads this env only
+        # learns its own token, which can never resolve another thread's
+        # steering. Reached through chat.api's boundary the same as the other
+        # chat.* calls in this module (import_boundaries_test).
+        from chat.api import ensure_steering_token
+
+        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+        steering_token = await asyncio.to_thread(ensure_steering_token, session)
+        steering_url = _steering_url(steering_token) if steering_token else ""
         if steering_url:
             env = {**env, "GOOSECRACKER_STEERING_URL": steering_url}
         # ADR 026 Phase 2: restore the thread's persisted goose session so this run

@@ -11,6 +11,7 @@ from chat.changelog import run_changelog_for_config  # re-exported
 from chat.goosecracker import ack_inflight  # re-exported
 from chat.goosecracker import artifact_id_for_thread  # re-exported
 from chat.goosecracker import drain_agent_queue  # re-exported
+from chat.goosecracker import ensure_steering_token  # re-exported
 from chat.goosecracker import force_idle_thread  # re-exported
 from chat.goosecracker import mark_inflight_running  # re-exported
 from chat.goosecracker import parent_channel_for_thread  # re-exported
@@ -29,6 +30,7 @@ __all__ = [
     "artifact_id_for_thread",
     "conversational_agent_reply",
     "drain_agent_queue",
+    "ensure_steering_token",
     "force_idle_thread",
     "mark_inflight_running",
     "parent_channel_for_thread",

@@ -1,7 +1,9 @@
-"""Tests for chat.goosecracker mid-run steering (ADR 035 Phase 2 Task 2.1):
+"""Tests for chat.goosecracker mid-run steering (ADR 035 Phase 2):
 enqueue_steering, fetch_steering, and their transcript-attribution and
-delivered-flag semantics. DB-backed tests run against in-memory SQLite with
-the chat schema stripped, mirroring the fixture in goosecracker_test.py."""
+delivered-flag semantics (Task 2.1), plus the unguessable per-session steering
+token that keys the guest fetch endpoint (Phase 2 hardening). DB-backed tests
+run against in-memory SQLite with the chat schema stripped, mirroring the
+fixture in goosecracker_test.py."""
 
 from unittest.mock import patch
 
@@ -144,3 +146,72 @@ class TestFetchSteering:
             delivered = goosecracker.fetch_steering("t1")
 
         assert [d["text"] for d in delivered] == ["for t1"]
+
+
+class TestSteeringToken:
+    """ADR 035 Phase 2 hardening: the steering endpoint is keyed on an
+    unguessable per-session token, not the guessable Discord thread id."""
+
+    def test_assigns_and_persists_a_token(self, engine):
+        _make_session(engine, "t1")
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            token = goosecracker.ensure_steering_token("t1")
+
+        assert token
+        with Session(engine) as session:
+            row = session.get(GoosecrackerSession, "t1")
+        assert row.steering_token == token
+
+    def test_idempotent(self, engine):
+        _make_session(engine, "t1")
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            first = goosecracker.ensure_steering_token("t1")
+            second = goosecracker.ensure_steering_token("t1")
+
+        assert first == second
+
+    def test_unknown_thread_returns_empty(self, engine):
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            token = goosecracker.ensure_steering_token("no-such-thread")
+
+        assert token == ""
+
+    def test_resolves_token_to_its_thread(self, engine):
+        _make_session(engine, "t1")
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            token = goosecracker.ensure_steering_token("t1")
+
+            resolved = goosecracker.thread_for_steering_token(token)
+
+        assert resolved == "t1"
+
+    def test_unknown_token_returns_none(self, engine):
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            assert goosecracker.thread_for_steering_token("not-a-real-token") is None
+
+    def test_empty_token_returns_none(self, engine):
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            assert goosecracker.thread_for_steering_token("") is None
+
+    def test_cross_thread_isolation(self, engine):
+        """Two sessions get distinct tokens, and each token resolves only to
+        its own thread: guest A's token can never fetch guest B's steering."""
+        _make_session(engine, "t1")
+        _make_session(engine, "t2")
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            token_a = goosecracker.ensure_steering_token("t1")
+            token_b = goosecracker.ensure_steering_token("t2")
+
+            assert token_a != token_b
+            assert goosecracker.thread_for_steering_token(token_a) == "t1"
+            assert goosecracker.thread_for_steering_token(token_b) == "t2"
+
+            goosecracker.enqueue_steering("t1", "m1", "u1", "", "for t1 only")
+            goosecracker.enqueue_steering("t2", "m2", "u2", "", "for t2 only")
+
+            # The endpoint's actual flow: resolve the token to a thread, then
+            # fetch that thread's steering. Token A must never surface t2's rows.
+            thread_for_a = goosecracker.thread_for_steering_token(token_a)
+            delivered_for_a = goosecracker.fetch_steering(thread_for_a)
+
+        assert [d["text"] for d in delivered_for_a] == ["for t1 only"]
