@@ -194,6 +194,12 @@ def create_grant(
 ) -> KnowledgeGrant:
     _get_campaign_or_404(session, campaign_id)
     _get_character_in_campaign_or_404(session, campaign_id, body.player_character_id)
+    # Validate the entity exists before insert: knowledge_grant.entity_id is a
+    # FK, so on Postgres a missing entity raises IntegrityError and surfaces as
+    # an unhandled 500. (SQLite fixtures do not enforce FKs, so this guard is
+    # what makes the 404 behavior consistent across both backends.)
+    if session.get(Entity, body.entity_id) is None:
+        raise HTTPException(status_code=404, detail="entity not found")
 
     existing = session.exec(
         select(KnowledgeGrant).where(
