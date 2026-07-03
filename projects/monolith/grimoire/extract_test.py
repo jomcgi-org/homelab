@@ -384,8 +384,65 @@ def test_extract_chunks_name_dedup_reuses_and_does_not_overwrite_detail(
     assert len(entities) == 1
 
     detail = session.execute(select(EntityCreature)).scalars().one()
-    assert detail.ac == 13  # first extraction wins, not overwritten by 99
+    # Enrich never clobbers an already-set value: chunk2's ac=99/hp=1 lose to
+    # chunk1's on conflict (fill-only-when-NULL). See the disjoint-fields test
+    # below for the case where chunk2 *adds* fields chunk1 left empty.
+    assert detail.ac == 13
     assert detail.hp_avg == 59
+
+
+def test_extract_chunks_enriches_disjoint_detail_across_chunks(
+    session: Session,
+):
+    # A monster whose lore and stat block land in different chunks: chunk1 sets
+    # only cr + a partial actions blob, chunk2 adds ac/hp + more actions. The
+    # entity must end up whole (ADR 012 rev. enrich, not first-wins).
+    chunk1 = _make_chunk(session, "mm", "mm-001", "Aboleth lore, cr only.")
+    chunk2 = _make_chunk(session, "mm", "mm-002", "Aboleth stat block.")
+    responses = {
+        chunk1.content: {
+            "entities": [
+                {
+                    "entity_type": "creature",
+                    "name": "Aboleth",
+                    "summary": "Lore chunk.",
+                    "detail": {"cr": 10, "actions": {"Tentacle": "reach 10 ft."}},
+                }
+            ],
+            "mentions": [],
+            "relationships": [],
+        },
+        chunk2.content: {
+            "entities": [
+                {
+                    "entity_type": "creature",
+                    "name": "aboleth",  # case-insensitive reuse
+                    "summary": "Stat chunk.",
+                    "detail": {
+                        "ac": 17,
+                        "hp_avg": 135,
+                        "cr": 99,  # conflicts: chunk1's cr=10 must win
+                        "actions": {"Enslave": "DC 14 save"},
+                    },
+                }
+            ],
+            "mentions": [],
+            "relationships": [],
+        },
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    _run(extract_chunks(session, or_client, embed_client, limit=1))
+    _run(extract_chunks(session, or_client, embed_client, limit=1))
+
+    assert len(session.execute(select(Entity)).scalars().all()) == 1
+    detail = session.execute(select(EntityCreature)).scalars().one()
+    assert detail.ac == 17  # filled from chunk2 (was NULL)
+    assert detail.hp_avg == 135  # filled from chunk2 (was NULL)
+    assert detail.cr == pytest.approx(10.0)  # chunk1 wins the conflict
+    # JSONB key-merge: both actions present, existing key wins on conflict.
+    assert detail.actions == {"Tentacle": "reach 10 ft.", "Enslave": "DC 14 save"}
 
 
 def test_extract_chunks_malformed_extraction_counted_failed_and_retryable(

@@ -175,6 +175,11 @@ class KnowledgeChunk(SQLModel, table=True):
     chunk_ref: str
     content: str
     section_path: str | None = None
+    # Full s3:// URI of the source illustration for image-derived chunks (Marker
+    # Picture blocks); NULL for text chunks. Stored so the app can later render
+    # the image (via imgproxy) alongside the retrieved chunk. Mirror of the
+    # column added in 20260703130000_grimoire_chunk_image_ref.sql.
+    image_ref: str | None = None
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),

@@ -6,11 +6,13 @@ via OpenRouter for structured JSON extraction, and writes entities (spine +
 typed detail per ADR 011), ``chunk_entity_mention`` rows, and
 ``relationship`` rows.
 
-Dedup semantics (ADR 012): entities are deduped by ``(entity_type,
-lower(name))``. If an entity with that key already exists, extraction reuses
-it and never overwrites its existing detail row: the first extraction to
-create an entity's detail wins. This keeps the job idempotent and cheap to
-re-run without a reconciliation pass.
+Dedup semantics (ADR 012, rev.): entities are deduped by ``(entity_type,
+lower(name))``. If an entity with that key already exists, extraction reuses it
+and *enriches* its typed detail: scalar columns are filled only where still
+NULL and JSONB fields are key-merged with existing keys winning. So a monster
+split across chunks (lore in one, stat block in another) ends up whole, while a
+later chunk never clobbers a value an earlier one already set. This keeps the
+job idempotent (a re-run fills nothing new) and needs no reconciliation pass.
 
 Cache-key semantics: a chunk is considered processed for a given
 ``(model, prompt_hash)`` once a ``grimoire.chunk_extraction`` marker row
@@ -340,10 +342,10 @@ _DETAIL_FIELD_TYPES: dict[type, dict[str, type]] = {
 }
 
 
-def _create_detail_row(
-    session: Session, detail_model: type, entity_id: str, entity_name: str, detail: dict
-) -> None:
-    """Insert a typed detail row, coercing numerics and ignoring unknown/bad fields.
+def _coerce_detail_fields(
+    detail_model: type, entity_name: str, detail: dict
+) -> dict[str, Any]:
+    """Coerce a raw detail payload to typed field kwargs (no entity_id).
 
     Any key in ``detail`` not in the model's known field set is silently
     ignored (defensive against the model inventing extra fields); a known
@@ -351,7 +353,7 @@ def _create_detail_row(
     with a warning rather than failing the whole chunk.
     """
     field_types = _DETAIL_FIELD_TYPES[detail_model]
-    kwargs: dict[str, Any] = {"entity_id": entity_id}
+    coerced: dict[str, Any] = {}
     for field_name, expected_type in field_types.items():
         if field_name not in detail:
             continue
@@ -360,7 +362,7 @@ def _create_detail_row(
             continue
         if expected_type is dict:
             if isinstance(value, dict):
-                kwargs[field_name] = value
+                coerced[field_name] = value
             else:
                 logger.warning(
                     "grimoire extract: dropping non-object detail field %s.%s for %r",
@@ -370,11 +372,11 @@ def _create_detail_row(
                 )
             continue
         if expected_type is str:
-            kwargs[field_name] = value if isinstance(value, str) else str(value)
+            coerced[field_name] = value if isinstance(value, str) else str(value)
             continue
         # int / float
         try:
-            kwargs[field_name] = expected_type(value)
+            coerced[field_name] = expected_type(value)
         except (TypeError, ValueError):
             logger.warning(
                 "grimoire extract: dropping uncoercible detail field %s.%s=%r for %r",
@@ -383,7 +385,36 @@ def _create_detail_row(
                 value,
                 entity_name,
             )
-    session.add(detail_model(**kwargs))
+    return coerced
+
+
+def _create_or_enrich_detail(
+    session: Session, detail_model: type, entity_id: str, entity_name: str, detail: dict
+) -> None:
+    """Insert the typed detail row, or enrich an existing one (ADR 012 rev.).
+
+    Enrich, not overwrite: a scalar column is filled only when the stored value
+    is still NULL, and a JSONB dict column is key-merged with existing keys
+    winning. So a monster whose lore and stat block land in different chunks
+    ends up whole, while a later chunk never clobbers an earlier one's value.
+    """
+    coerced = _coerce_detail_fields(detail_model, entity_name, detail)
+    if not coerced:
+        return
+    existing = session.get(detail_model, entity_id)
+    if existing is None:
+        session.add(detail_model(entity_id=entity_id, **coerced))
+        return
+    field_types = _DETAIL_FIELD_TYPES[detail_model]
+    for field_name, value in coerced.items():
+        if field_types[field_name] is dict:
+            if value:
+                current = getattr(existing, field_name) or {}
+                # Reassign a fresh dict (not in-place) so SQLAlchemy flags the
+                # JSONB column dirty; existing keys win, new keys fill the gaps.
+                setattr(existing, field_name, {**value, **current})
+        elif getattr(existing, field_name) is None:
+            setattr(existing, field_name, value)
 
 
 def _get_or_create_entity(
@@ -415,26 +446,30 @@ def _get_or_create_entity(
         .first()
     )
     if existing is not None:
+        entity = existing
+        created = False
         local_by_name.setdefault(name_key, existing)
-        return existing, False
+    else:
+        entity = Entity(
+            entity_type=entity_type,
+            name=name,
+            source_type="extracted",
+            is_global=True,
+            source_book=chunk.book_id,
+        )
+        session.add(entity)
+        session.flush()
+        local_by_name[name_key] = entity
+        created = True
 
-    entity = Entity(
-        entity_type=entity_type,
-        name=name,
-        source_type="extracted",
-        is_global=True,
-        source_book=chunk.book_id,
-    )
-    session.add(entity)
-    session.flush()
-
+    # Both paths enrich detail: a new entity's row is created, an existing one
+    # is filled where NULL (so a monster split across chunks ends up whole).
     detail_model = ENTITY_DETAIL_MODELS.get(entity_type)
     detail = item.get("detail")
     if detail_model is not None and isinstance(detail, dict) and detail:
-        _create_detail_row(session, detail_model, entity.id, name, detail)
+        _create_or_enrich_detail(session, detail_model, entity.id, name, detail)
 
-    local_by_name[name_key] = entity
-    return entity, True
+    return entity, created
 
 
 def _resolve_entity_name(
