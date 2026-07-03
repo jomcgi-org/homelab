@@ -212,6 +212,7 @@ def continue_session(
     _stored_recipe = ""
     _stored_tier = ""
     _stored_repo = ""
+    _stored_provider = "discord"
 
     with Session(get_engine()) as session:
         # Lock the row for the whole read-modify-write so a concurrent
@@ -271,6 +272,7 @@ def continue_session(
         _stored_recipe = row.recipe
         _stored_tier = row.tier
         _stored_repo = row.repo
+        _stored_provider = row.provider
         row.pending = ""
         row.pending_message_ids = ""
         row.inflight_task = _task
@@ -292,6 +294,7 @@ def continue_session(
         tier=_stored_tier,
         repo=_stored_repo,
         discord_thread=thread_id,
+        provider=_stored_provider,
     )
     # Spread the submit result first, then set action: submit returns its own
     # "action" (create/resume) and a later key wins in a dict merge, so
