@@ -327,6 +327,17 @@
                 ["interpolate", ["linear"], ["get", "good_days"], 0, 20, 7, 28],
                 ["interpolate", ["linear"], ["get", "good_days"], 0, 13, 7, 21],
               ],
+              // Deep zoom (single park fills the screen, e.g. tracing a trail):
+              // keep growing so the pin never reads as a tiny dot against a
+              // massive path. Without this stop the radius held at its zoom-11
+              // value and looked like it "stopped scaling" past ~z11.
+              16,
+              [
+                "case",
+                ["==", ["get", "sel"], 1],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 34, 7, 44],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 24, 7, 34],
+              ],
             ],
             "circle-stroke-width": [
               "case",

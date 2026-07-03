@@ -155,6 +155,10 @@
   const VIZ_YELLOW = "#fbbf24";
   const VIZ_AMBER = "#f59e0b";
   const VIZ_GREY = "#9ca3af";
+  // Rain accent for the always-visible per-day precip figure (a wet day reads
+  // blue). Kept as a JS constant like the others so no literal hex lands in a
+  // style attribute (the hardcoded-color semgrep rule).
+  const VIZ_RAIN = "#2563eb";
 
   function dayCellBg(day) {
     if (!day.available) return "var(--rule)";
@@ -488,6 +492,19 @@
               {#if day.temp_max != null}
                 <span class="day-temp">{Math.round(day.temp_max)}&deg;</span>
               {/if}
+              {#if day.precip != null}
+                <!-- Rain promoted out of the hover title so touch users (no
+                     hover) can see it. Blue + mm on a wet day; a faint dot when
+                     dry keeps the row rhythm without shouting "0.0". -->
+                <span
+                  class="day-rain"
+                  class:day-rain-wet={day.precip > 0}
+                  style={day.precip > 0 ? `color: ${VIZ_RAIN}` : undefined}
+                  >{day.precip > 0
+                    ? `${day.precip.toFixed(1)}mm`
+                    : "·"}</span
+                >
+              {/if}
             </li>
           {/each}
         </ul>
@@ -495,7 +512,8 @@
 
       <p class="detail-legend">
         Check = sites bookable. Color: green (clear) to grey (cloudy or closed).
-        Hover a cell for cloud, rain and temp.
+        Each cell shows max temp (&deg;) and rain (mm, blue when wet). Hover for
+        cloud cover.
       </p>
     </section>
   {/if}
@@ -1167,6 +1185,19 @@
     font-weight: 600;
     color: var(--ink);
     letter-spacing: 0.01em;
+  }
+
+  /* Always-visible rain figure (mm). Dry days show a faint dot; wet days get
+     the blue accent via an inline color so they stand out when scanning on a
+     phone, where the old hover-only title was invisible. */
+  .day-rain {
+    font-family: var(--mono);
+    font-size: 8px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0;
+    color: var(--ink-3);
+    white-space: nowrap;
   }
 
   .day-cell:not(.day-open) .day-date,

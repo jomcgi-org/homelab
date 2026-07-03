@@ -154,14 +154,26 @@ def merge_availability(
     start_date: datetime.date,
     ndays: int = WINDOW_DAYS,
 ) -> list[DayAvail]:
-    """Aggregate per-loop availability flags into one DayAvail per date.
+    """Aggregate per-loop availability codes into one DayAvail per date.
 
     ``payload["mapLinkAvailabilities"]`` maps loop map IDs (str keys) to lists
-    of truthy/falsy flags, one per date starting at ``start_date``. A date has
-    availability if any loop has a truthy value at that index. loops_open is
-    the count of loops that have a truthy value at that index. Ragged arrays
-    are safe: a missing index is treated as 0 (closed). An empty or missing
-    payload produces ``ndays`` closed DayAvail rows.
+    of GoingToCamp availability status codes, one per date starting at
+    ``start_date``. The code is an enum, NOT a boolean:
+
+        0 = available (has bookable sites)
+        1 = unavailable / fully booked
+        2 = closed / not operating
+
+    So a loop is open on a date only when its code is exactly ``0``. (An earlier
+    version treated any truthy value as open, which inverted the meaning and
+    reported booked (1) and closed (2) loops as available: full parks showed as
+    "open". Confirmed against the live API, where Gordon Bay returned loops of
+    all-1 and all-2 that were being counted as bookable.)
+
+    A date has availability if any loop is ``0`` at that index. loops_open is
+    the count of loops that are ``0`` at that index. Ragged arrays are safe: a
+    missing index contributes nothing (treated as not available). An empty or
+    missing payload produces ``ndays`` closed DayAvail rows.
     """
     arrays = list((payload.get("mapLinkAvailabilities") or {}).values())
     result: list[DayAvail] = []
@@ -171,7 +183,7 @@ def merge_availability(
         for arr in arrays:
             if not arr or i >= len(arr):
                 continue
-            if arr[i]:
+            if arr[i] == 0:
                 has_avail = True
                 loops_open += 1
         result.append(
