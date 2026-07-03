@@ -35,7 +35,10 @@ from grimoire.models import (
     Relationship,
     SessionStatus,
 )
+from grimoire.search import search_campaign
 from grimoire.visibility import project_entity, visible_entities_query
+from knowledge.api import get_embedding_client
+from shared.embedding import EmbeddingClient
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire"])
 
@@ -459,6 +462,36 @@ def list_entity_relationships(
             }
         )
     return items
+
+
+# --- Vector search ---------------------------------------------------
+
+# The embedding client is injected through knowledge.api.get_embedding_client
+# (the sanctioned cross-domain import boundary, see knowledge/api.py's
+# docstring), rather than grimoire duplicating its own copy: knowledge
+# already owns this DI seam and grimoire has no reason to diverge from it.
+# Tests override it the same way knowledge's own tests do, via
+# ``app.dependency_overrides[get_embedding_client]``.
+
+
+@router.get("/campaigns/{campaign_id}/search")
+async def search_campaign_route(
+    campaign_id: str,
+    as_: str = Query(alias="as"),
+    q: str = Query(min_length=1),
+    k: int = Query(default=10, ge=1, le=50),
+    session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
+) -> list[dict[str, Any]]:
+    """kNN search over embedding, grant-filtered, mixed entity/chunk hits.
+
+    All visibility filtering happens in search.search_campaign, which builds
+    on the same visible_entities_query()/project_entity() helpers as the
+    entity read paths above.
+    """
+    _get_campaign_or_404(session, campaign_id)
+    viewer = _resolve_viewer(session, campaign_id, as_)
+    return await search_campaign(session, embed_client, campaign_id, viewer, q, k=k)
 
 
 # --- Game sessions ---------------------------------------------------
