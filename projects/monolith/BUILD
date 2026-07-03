@@ -2645,6 +2645,19 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_ingest_test",
+    srcs = ["grimoire/ingest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],
     imports = ["."],
