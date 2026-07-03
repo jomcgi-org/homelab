@@ -6,11 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic_ai import (
     AgentRunResultEvent,
     FunctionToolCallEvent,
+    FunctionToolResultEvent,
     PartDeltaEvent,
     TextPartDelta,
     ThinkingPartDelta,
 )
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
 from chat.bot import ChatBot, BotMessageView, STREAM_EDIT_INTERVAL
 
@@ -94,10 +95,21 @@ def _thinking_delta(content: str) -> PartDeltaEvent:
     return PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=content))
 
 
-def _tool_call_event(tool_name: str, args: dict) -> FunctionToolCallEvent:
+def _tool_call_event(
+    tool_name: str, args: dict, tool_call_id: str | None = None
+) -> FunctionToolCallEvent:
     """Create a FunctionToolCallEvent with dict args."""
-    part = ToolCallPart(tool_name=tool_name, args=args)
+    kwargs = {"tool_name": tool_name, "args": args}
+    if tool_call_id is not None:
+        kwargs["tool_call_id"] = tool_call_id
+    part = ToolCallPart(**kwargs)
     return FunctionToolCallEvent(part=part)
+
+
+def _tool_result_event(tool_name: str, tool_call_id: str) -> FunctionToolResultEvent:
+    """Create a FunctionToolResultEvent for a completed tool call."""
+    part = ToolReturnPart(tool_name=tool_name, content="ok", tool_call_id=tool_call_id)
+    return FunctionToolResultEvent(result=part)
 
 
 def _tool_call_event_str_args(tool_name: str, args_str: str) -> FunctionToolCallEvent:
@@ -302,9 +314,47 @@ class TestMultipleToolCalls:
         all_contents.extend(
             call.args[0] for call in message.reply.call_args_list if call.args
         )
-        # No rendered progress message may repeat the query bullet.
+        # No rendered progress message may repeat the query row.
         for content in all_contents:
-            assert content.count("• cafes New Westminster") <= 1
+            assert content.count("cafes New Westminster") <= 1
+
+    @pytest.mark.asyncio
+    async def test_tool_result_flips_search_to_done(self):
+        """A tool result event flips its search row from pending to done."""
+        bot = _make_bot()
+        bot_user = bot.user
+        message = _make_message(content="Hi", mentions=[bot_user])
+        mock_store = _make_store()
+
+        events = [
+            _tool_call_event("web_search", {"query": "trail cafes"}, tool_call_id="c1"),
+            _tool_result_event("web_search", tool_call_id="c1"),
+            _text_delta("Here are some cafes."),
+        ]
+
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        sent = message.reply.return_value
+        all_contents = [
+            call.kwargs.get("content", "") for call in sent.edit.call_args_list
+        ]
+        all_contents.extend(
+            call.args[0] for call in message.reply.call_args_list if call.args
+        )
+        # The pending marker appears while searching...
+        assert any("⏳ trail cafes" in c for c in all_contents)
+        # ...and the completed marker appears once the result arrives.
+        assert any("✅ trail cafes" in c for c in all_contents)
 
 
 class TestNoEventsFallback:
