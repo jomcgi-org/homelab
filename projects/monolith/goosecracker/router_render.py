@@ -23,11 +23,17 @@ not a novel recipe (Design invariant 4):
   (Task 7) parses that field to trigger a capped re-plan.
 
 YAML SAFETY: per-step ``context`` is untrusted, orchestrator-authored, and may
-be multi-line with colons or leading dashes. We NEVER string-concatenate it
-into the YAML. We build a Python dict and emit it with ``yaml.safe_dump``, so
-multi-line strings become proper block scalars and round-trip through
-``yaml.safe_load`` intact (``agent.yaml`` lines ~223-230 explain the
-block-scalar breakage that naive templating of multi-line values causes).
+contain arbitrary text, including ``{{ }}``/``{% %}`` template syntax (this
+repo is Helm/Go-template heavy, so braces show up often in ordinary Discord
+messages). goose renders a recipe's YAML through minijinja BEFORE parsing it
+(see ``agent.yaml``'s note on the ``indent`` filter dropped in v1.39.0), so
+any untrusted text embedded in the recipe would be interpreted as template
+syntax rather than treated as data. For that reason ``context`` NEVER appears
+in the rendered recipe at all: it lives in a separate plain-markdown plan
+file (``render_plan_file``, delivered to the guest at ``/injected-context/
+plan.md``) that goose only reads as a data file, never templates. The recipe
+itself carries only controlled strings the router authors: sub-recipe ids,
+step order, and stage titles from ``_stage_title``.
 """
 
 from __future__ import annotations
@@ -41,6 +47,12 @@ from chat.orchestrator_plan import Plan
 # tokens still exist in the checked-in agent.yaml.
 _RECIPE_VERSION = "1.7.2"
 _CONTEXT_FILE = "/tmp/goose/context.md"
+
+# The per-step plan file delivered via injectedContext (Task 6): plain
+# markdown, never templated, so untrusted step context is safe here even
+# when it contains `{{ }}` / `{% %}`. Distinct from /injected-context/
+# README.md, which is ADR-040 conversation context, not plan context.
+_PLAN_FILE = "/injected-context/plan.md"
 
 
 def _baked_path(recipe_id: str) -> str:
@@ -154,12 +166,21 @@ def _preamble_block(plan: Plan) -> str:
 
 
 def _steps_block(plan: Plan) -> str:
-    """Render the ordered step list. Each step's context is embedded here (as
-    part of the block-scalar instructions string, kept YAML-safe by safe_dump),
-    together with the delegate call and the per-stage progress markers."""
+    """Render the ordered step list. Step context is NEVER embedded here: it
+    lives in the injected plan file (``_PLAN_FILE``, built by
+    ``render_plan_file``) so untrusted text never reaches goose's template
+    engine. This block only contains controlled strings: sub-recipe ids,
+    order, and stage titles, plus the mechanics for reading each step's
+    context out of the plan file before delegating."""
     n = len(plan.steps)
     lines: list[str] = [
         f"THE PLAN ({n} step(s); execute in order):",
+        "",
+        f"Your per-step context lives in {_PLAN_FILE}, NOT in these instructions.",
+        f"That file holds one `## Step <i>: <sub_recipe>` section per step (the",
+        "caller's context for that step, verbatim). This is separate from",
+        "/injected-context/README.md, which (if present) is prior conversation",
+        "context (ADR 040), not plan context.",
         "",
         "Announce the checklist BEFORE step 1 by printing, in one printf:",
         f"  printf '::stages::{n}\\n"
@@ -170,9 +191,10 @@ def _steps_block(plan: Plan) -> str:
         + "'",
         "",
         "Then, for each step in order:",
-        f"  1. Append that step's context block (verbatim, below) to {_CONTEXT_FILE}",
-        "     so the worker sub-recipe sees it. The sub-recipe reads that file",
-        "     automatically; you do not pass context as a tool argument.",
+        f'  1. Read the step\'s own section ("## Step <i>: <sub_recipe>") from',
+        f"     {_PLAN_FILE} and append it to {_CONTEXT_FILE} so the worker",
+        "     sub-recipe sees it. The sub-recipe reads that file automatically;",
+        "     you do not pass context as a tool argument.",
         "  2. Check for steering per the STEERING section (one curl).",
         '  3. Call delegate(source: "<the step\'s sub_recipe>") and WAIT for its',
         "     result. Deciding to delegate is not delegating: if your last action",
@@ -189,20 +211,42 @@ def _steps_block(plan: Plan) -> str:
     for i, step in enumerate(plan.steps):
         lines.append(f'--- Step {i} of {n}: delegate(source: "{step.sub_recipe}") ---')
         lines.append(f"Stage title: {_stage_title(step)}")
-        lines.append("Context to append to " + _CONTEXT_FILE + " before delegating:")
-        # step.context may be multi-line / contain colons or leading dashes.
-        # It is embedded as ordinary text inside this instructions block scalar;
-        # safe_dump keeps the whole string safe. We fence it so the model can
-        # tell where the context begins and ends.
-        lines.append("<<<CONTEXT")
-        lines.append(step.context)
-        lines.append("CONTEXT")
+        lines.append(f'Context: see "## Step {i}: {step.sub_recipe}" in {_PLAN_FILE}.')
         lines.append("")
     lines.append(
         "When every step has returned, produce the structured result enforced by\n"
         "the response schema below from the sub-recipes' output."
     )
     return "\n".join(lines)
+
+
+def render_plan_file(plan: Plan) -> str:
+    """Render the plan's per-step context into a plain-markdown data file.
+
+    This file is delivered via ``injectedContext`` at ``_PLAN_FILE`` and is
+    NEVER templated by goose (unlike recipe YAML, which minijinja renders
+    before parsing). That makes it the safe home for untrusted, orchestrator-
+    authored step context: multi-line text, colons, leading dashes, quotes,
+    and literal ``{{ }}``/``{% %}`` template syntax all survive intact
+    because this string is never fed through a template engine, only read
+    as data by the worker.
+    """
+    n = len(plan.steps)
+    lines: list[str] = [
+        "# Plan context",
+        "",
+        "Per-step context for this run, one section per step. The router reads",
+        "the section matching the step it is about to delegate and appends it to",
+        f"{_CONTEXT_FILE} before calling `delegate`.",
+        "",
+    ]
+    for i, step in enumerate(plan.steps):
+        lines.append(f"## Step {i}: {step.sub_recipe}")
+        lines.append("")
+        lines.append(step.context)
+        if i < n - 1:
+            lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 def _stage_title(step) -> str:
@@ -353,9 +397,11 @@ def render_router(plan: Plan) -> str:
     optional ``replan`` escape hatch. All other scaffolding (progress markers,
     steering, ``recipe__final_output``, ``max_turns``) is preserved.
 
-    YAML is emitted via ``yaml.safe_dump`` from a Python dict, so untrusted
-    multi-line per-step context becomes a proper block scalar rather than
-    breaking the YAML.
+    YAML is emitted via ``yaml.safe_dump`` from a Python dict of controlled
+    strings only. Per-step ``context`` is untrusted and NEVER appears here:
+    see ``render_plan_file`` for where it goes and why (goose templates the
+    recipe before parsing it, so untrusted text must live in a separate,
+    never-templated plan file instead).
     """
     recipe = {
         "version": _RECIPE_VERSION,
