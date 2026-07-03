@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from app.db import get_engine
-from chat.models import GoosecrackerSession, GoosecrackerSteering
+from chat.models import GoosecrackerSession, GoosecrackerSteering, Message
 
 logger = logging.getLogger(__name__)
 
@@ -785,6 +785,68 @@ def parent_channel_for_thread(thread_id: str) -> str:
     with Session(get_engine()) as session:
         row = session.get(GoosecrackerSession, thread_id)
         return row.parent_channel_id if row else ""
+
+
+# Caller-provided context injection (ADR 040). Bounds on the transcript packed
+# into the guest: a message count cap (recent history, not the full channel
+# archive) and a per-message character cap (one runaway paste should not blow
+# the budget for the rest of the turn).
+_INJECTED_CONTEXT_MSG_LIMIT = 50
+_INJECTED_CONTEXT_PER_MSG_CHARS = 2000
+
+
+def build_injected_context(thread_id: str, tier: str = "") -> dict[str, str]:
+    """Build the caller-provided context bundle for an agent turn (ADR 040).
+
+    Returns a ``{filename: content}`` map staged into the guest's
+    ``/injected-context/``. Source-aware (Discord): resolves the thread's parent
+    channel and packs its recent messages as ``transcript.md`` plus a
+    self-describing ``README.md``. Empty map when the thread has no parent
+    channel or the channel has no messages, so callers can inject
+    unconditionally. Sync; call via ``asyncio.to_thread``. ``tier`` is accepted
+    for the trust-tier filter (ADR 040 Security); all current tiers may see the
+    invoking channel.
+    """
+    parent = parent_channel_for_thread(thread_id)
+    if not parent:
+        return {}
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(Message)
+            .where(Message.channel_id == parent)
+            .order_by(Message.created_at.desc())
+            .limit(_INJECTED_CONTEXT_MSG_LIMIT)
+        ).all()
+    if not rows:
+        return {}
+    rows = list(reversed(rows))  # oldest -> newest reads naturally
+    lines = []
+    truncated = 0
+    for m in rows:
+        body = m.content or ""
+        if len(body) > _INJECTED_CONTEXT_PER_MSG_CHARS:
+            body = body[:_INJECTED_CONTEXT_PER_MSG_CHARS] + " [truncated]"
+            truncated += 1
+        lines.append(f"{m.username}: {body}")
+    if truncated:
+        logger.info(
+            "build_injected_context: truncated %d/%d messages for channel %s",
+            truncated,
+            len(rows),
+            parent,
+        )
+    transcript = "\n".join(lines)
+    readme = (
+        "# Injected context\n\n"
+        "This directory holds context the caller staged for this task. You did "
+        "not gather it and it is not in the repo. Grep or read it when the user "
+        "refers to an earlier discussion.\n\n"
+        f"- Source: recent messages from Discord channel `{parent}` "
+        "(the parent of this agent thread).\n"
+        f"- `transcript.md`: the last {len(rows)} message(s), oldest first, "
+        "as of this turn. Rebuilt every turn, so it grows as the thread advances.\n"
+    )
+    return {"README.md": readme, "transcript.md": transcript}
 
 
 async def build_roast(attempt_text: str) -> str:
