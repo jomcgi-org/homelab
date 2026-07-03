@@ -28,6 +28,13 @@ logger = logging.getLogger("monolith.campsites")
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 FORECAST_DAYS = 14
 
+# Bail out of a refresh's weather phase after this many consecutive fetch
+# failures. During an Open-Meteo outage every request connect-times-out at the
+# client timeout (25s), so without an early break the phase grinds park-by-park
+# all the way to the job's activeDeadlineSeconds. Mirrors
+# client.MAX_CONSECUTIVE_FAILURES for the availability phase.
+MAX_CONSECUTIVE_FAILURES = 5
+
 # Weight applied to the clear-sky component (100 - cloud_cover%).
 CLEAR_WEIGHT = 1.0
 
@@ -212,17 +219,32 @@ async def fetch_all_weather(
     ``coords`` is a list of (resource_location_id, lat, lon, iana_tz). Parks
     whose fetch returns None are skipped (logged inside fetch_forecast). A
     small deterministic per-index sleep paces the requests without hammering
-    the free API.
+    the free API. After MAX_CONSECUTIVE_FAILURES fetches fail in a row (an
+    Open-Meteo outage), the phase stops early and returns what it has rather
+    than timing out against every remaining park to the job deadline; a parse
+    failure does not count (the network was fine, that one park is just skipped).
 
     Caller is expected to pass httpx.AsyncClient(timeout=25).
     """
     results: dict[int, list[WxDay]] = {}
+    consecutive_failures = 0
 
     for i, (rid, lat, lon, tz) in enumerate(coords):
         await asyncio.sleep(random.Random(i).uniform(0.1, 0.2))
         data = await fetch_forecast(client, lat, lon, tz)
         if data is None:
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    "campsites weather: %d consecutive fetch failures "
+                    "(Open-Meteo likely down); stopping the weather phase early "
+                    "with %d parks collected",
+                    consecutive_failures,
+                    len(results),
+                )
+                break
             continue
+        consecutive_failures = 0
         try:
             rows = parse_forecast(data.get("daily", {}))
         except Exception:
