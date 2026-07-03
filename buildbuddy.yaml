@@ -34,6 +34,12 @@ actions:
           # Validate grep-based generate scripts against bazel query
           ./bazel/images/validate-generate-scripts.sh
 
+          # Enforce linear, non-duplicated Atlas migration versions. A duplicate
+          # version or a migration added below the current head wedges the WHOLE
+          # migration pipeline at apply time; atlas migrate validate does not
+          # catch either, so guard it here (origin/main is fetched in CI).
+          ./bazel/tools/format/check-migration-ordering.sh
+
           # Reject non-ASCII characters in commit messages.
           # Wrangler Pages (Cloudflare) fails with error 8000111 when commits
           # in the deployed branch contain non-ASCII characters (smart quotes,

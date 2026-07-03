@@ -40,6 +40,13 @@ repos:
         files: 'migrations/.*\.sql$'
         pass_filenames: false
 
+      - id: check-migration-ordering
+        name: Check migration version ordering
+        entry: bazel/tools/format/check-migration-ordering.sh
+        language: script
+        files: 'migrations/.*\.sql$'
+        pass_filenames: false
+
       # Run format after rebase to catch formatting drift
       # Install with: pre-commit install --hook-type post-rewrite
       - id: post-rewrite-format
