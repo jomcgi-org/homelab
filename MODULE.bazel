@@ -250,7 +250,7 @@ go_deps.gazelle_override(
 
 # All *direct* Go dependencies of the module have to be listed explicitly.
 # Run 'bazel mod tidy' to update this
-use_repo(go_deps, "com_github_cloudflare_cloudflare_go", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_hay_kot_scaffold", "com_github_jackc_pgx_v5", "com_github_nats_io_nats_go", "com_github_nats_io_nats_server_v2", "com_github_oklog_ulid_v2", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_redis_go_redis_v9", "com_github_sony_gobreaker", "com_github_spf13_cobra", "com_github_stretchr_testify", "com_google_cloud_go_firestore", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_gateway_api", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_api", "org_golang_google_grpc", "org_golang_x_sync", "org_golang_x_sys", "org_golang_x_time")
+use_repo(go_deps, "com_github_cloudflare_cloudflare_go", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_hay_kot_scaffold", "com_github_jackc_pgx_v5", "com_github_nats_io_nats_go", "com_github_nats_io_nats_server_v2", "com_github_oklog_ulid_v2", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_redis_go_redis_v9", "com_github_sony_gobreaker", "com_github_spf13_cobra", "com_github_stretchr_testify", "com_google_cloud_go_firestore", "fi_mau_go_whatsmeow", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_gateway_api", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_api", "org_golang_google_grpc", "org_golang_x_sync", "org_golang_x_sys", "org_golang_x_time")
 
 #########################
 # JavaScript and pnpm package manager
@@ -480,7 +480,11 @@ apko.translate_lock(
     name = "git_mirror_lock",
     lock = "//projects/firecracker/git-mirror:apko.lock.json",
 )
-use_repo(apko, "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock")
+apko.translate_lock(
+    name = "whatsapp_lock",
+    lock = "//projects/monolith/whatsapp:apko.lock.json",
+)
+use_repo(apko, "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
