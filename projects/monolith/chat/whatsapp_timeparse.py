@@ -132,6 +132,10 @@ def parse_datetime(text: str, *, now: datetime, tz: ZoneInfo) -> ParsedWhen | No
 
     date_found = False
     target_date = today
+    # True when the date came from a weekday name that resolves to today (e.g.
+    # "Saturday" said on a Saturday). Such a match with a past time-of-day means
+    # next week, not today in the past; see the roll-forward below.
+    weekday_today = False
 
     if re.search(r"\btomorrow\b", lowered):
         target_date = today + timedelta(days=1)
@@ -145,6 +149,8 @@ def parse_datetime(text: str, *, now: datetime, tz: ZoneInfo) -> ParsedWhen | No
             ahead = (wd - today.weekday()) % 7
             if re.search(r"\bnext\b", lowered) and ahead == 0:
                 ahead = 7
+            elif ahead == 0:
+                weekday_today = True
             target_date = today + timedelta(days=ahead)
             date_found = True
 
@@ -173,5 +179,9 @@ def parse_datetime(text: str, *, now: datetime, tz: ZoneInfo) -> ParsedWhen | No
     # a day so "remind me at 7pm" said at 8pm means tomorrow, not the past.
     if not date_found and when <= now_local:
         when = when + timedelta(days=1)
+    # A weekday name resolving to today with a past time means next week ("dinner
+    # Sat 6pm" said Saturday evening is next Saturday), not today in the past.
+    elif weekday_today and when <= now_local:
+        when = when + timedelta(days=7)
 
     return ParsedWhen(when=when, had_time=had_time)

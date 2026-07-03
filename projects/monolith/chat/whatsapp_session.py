@@ -267,7 +267,10 @@ def emit_running_reaction(session: Session, row: GoosecrackerSession) -> None:
     """⏳ → 👀 on the trigger message (turn started)."""
     from chat.goosecracker import REACTION_QUEUED, REACTION_RUNNING
 
-    if not row.provider_trigger_message_id:
+    # Both fields are required to build a reaction (enqueue_reaction raises without
+    # the sender JID); a missing either means skip, so a partial trigger cannot
+    # wedge the run with running=True via an unguarded ValueError.
+    if not row.provider_trigger_message_id or not row.provider_trigger_sender_jid:
         return
     enqueue_reaction(
         session,
@@ -297,7 +300,8 @@ def emit_terminal_reaction(
         REACTION_RUNNING,
     )
 
-    if not row.provider_trigger_message_id:
+    # Both fields required (see emit_running_reaction): skip if either is missing.
+    if not row.provider_trigger_message_id or not row.provider_trigger_sender_jid:
         return
     terminal = REACTION_DONE if success else REACTION_FAILED
     for prior in (REACTION_QUEUED, REACTION_RUNNING):
