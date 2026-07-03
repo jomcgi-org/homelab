@@ -265,6 +265,47 @@ class TestMultipleToolCalls:
         assert "first query" in combined
         assert "second query" in combined
 
+    @pytest.mark.asyncio
+    async def test_retried_tool_call_shows_single_bullet(self):
+        """A model-unavailable retry re-emits the same tool call; the
+        progress message must show that query once, not once per retry."""
+        bot = _make_bot()
+        bot_user = bot.user
+        message = _make_message(content="Hi", mentions=[bot_user])
+        mock_store = _make_store()
+
+        # Same query emitted repeatedly, as PydanticAI does when it replays
+        # the turn after a transient model-unavailable error.
+        events = [
+            _tool_call_event("web_search", {"query": "cafes New Westminster"}),
+            _tool_call_event("web_search", {"query": "cafes New Westminster"}),
+            _tool_call_event("web_search", {"query": "cafes New Westminster"}),
+            _text_delta("Here are some cafes."),
+        ]
+
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        sent = message.reply.return_value
+        all_contents = [
+            call.kwargs.get("content", "") for call in sent.edit.call_args_list
+        ]
+        all_contents.extend(
+            call.args[0] for call in message.reply.call_args_list if call.args
+        )
+        # No rendered progress message may repeat the query bullet.
+        for content in all_contents:
+            assert content.count("• cafes New Westminster") <= 1
+
 
 class TestNoEventsFallback:
     @pytest.mark.asyncio
