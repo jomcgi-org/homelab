@@ -75,10 +75,17 @@ class FakeEmbedClient:
         return [[0.1] * 1024 for _ in texts]
 
 
-def _line(chunk_ref: str, content: str, section_path: str | None = None) -> str:
+def _line(
+    chunk_ref: str,
+    content: str,
+    section_path: str | None = None,
+    image_ref: str | None = None,
+) -> str:
     obj = {"chunk_ref": chunk_ref, "content": content}
     if section_path is not None:
         obj["section_path"] = section_path
+    if image_ref is not None:
+        obj["image_ref"] = image_ref
     return json.dumps(obj)
 
 
@@ -93,6 +100,12 @@ def test_parse_manifest_lines_valid_and_optional_fields():
     lines = [
         _line("phb-c3-014", "Wizards cast spells.", "Chapter 3 > Classes > Wizard"),
         _line("phb-c3-015", "Fighters fight."),
+        _line(
+            "mm-goblin-img",
+            "A small green goblin.",
+            "GOBLIN",
+            image_ref="s3://grimoire/books/mm/raw/img/abc.jpg",
+        ),
     ]
     valid, errors = ingest.parse_manifest_lines("phb", lines)
 
@@ -102,8 +115,20 @@ def test_parse_manifest_lines_valid_and_optional_fields():
             "chunk_ref": "phb-c3-014",
             "content": "Wizards cast spells.",
             "section_path": "Chapter 3 > Classes > Wizard",
+            "image_ref": None,
         },
-        {"chunk_ref": "phb-c3-015", "content": "Fighters fight.", "section_path": None},
+        {
+            "chunk_ref": "phb-c3-015",
+            "content": "Fighters fight.",
+            "section_path": None,
+            "image_ref": None,
+        },
+        {
+            "chunk_ref": "mm-goblin-img",
+            "content": "A small green goblin.",
+            "section_path": "GOBLIN",
+            "image_ref": "s3://grimoire/books/mm/raw/img/abc.jpg",
+        },
     ]
 
 
@@ -133,7 +158,7 @@ def test_load_chunks_fresh_load_creates_chunks_and_embeddings(session: Session):
             _line("c2", "content two", "Ch1"),
         ]
     )
-    s3 = FakeS3Client({"chunks/phb.ndjson": manifest})
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": manifest})
     embedder = FakeEmbedClient()
 
     summary = _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
@@ -154,9 +179,35 @@ def test_load_chunks_fresh_load_creates_chunks_and_embeddings(session: Session):
     assert {e.dim for e in embeddings} == {1024}
 
 
+def test_load_chunks_persists_image_ref_and_derives_book_id_from_path(
+    session: Session,
+):
+    manifest = "\n".join(
+        [
+            _line("txt", "A goblin lurks in the dark."),
+            _line(
+                "img",
+                "A small green goblin with a spear.",
+                "GOBLIN",
+                image_ref="s3://grimoire/books/mm/raw/img/goblin.jpg",
+            ),
+        ]
+    )
+    s3 = FakeS3Client({"books/mm/chunks/chunks.ndjson": manifest})
+    _run(ingest.load_chunks(session, s3, FakeEmbedClient(), bucket="grimoire"))
+
+    by_ref = {
+        c.chunk_ref: c for c in session.execute(select(KnowledgeChunk)).scalars().all()
+    }
+    # book_id comes from the path segment, not the filename.
+    assert by_ref["img"].book_id == "mm"
+    assert by_ref["img"].image_ref == "s3://grimoire/books/mm/raw/img/goblin.jpg"
+    assert by_ref["txt"].image_ref is None
+
+
 def test_load_chunks_idempotent_rerun_embeds_nothing(session: Session):
     manifest = "\n".join([_line("c1", "content one")])
-    s3 = FakeS3Client({"chunks/phb.ndjson": manifest})
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": manifest})
     embedder = FakeEmbedClient()
 
     _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
@@ -174,13 +225,13 @@ def test_load_chunks_idempotent_rerun_embeds_nothing(session: Session):
 
 
 def test_load_chunks_changed_content_updates_and_reembeds(session: Session):
-    s3 = FakeS3Client({"chunks/phb.ndjson": _line("c1", "content one")})
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": _line("c1", "content one")})
     embedder = FakeEmbedClient()
     _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
 
     original_embedding_id = session.execute(select(Embedding)).scalars().one().id
 
-    s3.manifests["chunks/phb.ndjson"] = _line("c1", "content one, revised")
+    s3.manifests["books/phb/chunks/chunks.ndjson"] = _line("c1", "content one, revised")
     summary = _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
 
     assert summary["chunks_upserted"] == 1
@@ -202,7 +253,7 @@ def test_load_chunks_bad_lines_counted_valid_lines_still_loaded(session: Session
             '{"chunk_ref": "c2"}',  # missing content
         ]
     )
-    s3 = FakeS3Client({"chunks/phb.ndjson": manifest})
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": manifest})
     embedder = FakeEmbedClient()
 
     summary = _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
@@ -216,8 +267,8 @@ def test_load_chunks_bad_lines_counted_valid_lines_still_loaded(session: Session
 def test_load_chunks_two_books_in_one_run(session: Session):
     s3 = FakeS3Client(
         {
-            "chunks/phb.ndjson": _line("c1", "phb content"),
-            "chunks/dmg.ndjson": _line("c1", "dmg content"),
+            "books/phb/chunks/chunks.ndjson": _line("c1", "phb content"),
+            "books/dmg/chunks/chunks.ndjson": _line("c1", "dmg content"),
         }
     )
     embedder = FakeEmbedClient()

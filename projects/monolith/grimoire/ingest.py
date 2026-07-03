@@ -1,11 +1,11 @@
 """S3 chunk loader: NDJSON manifests -> knowledge_chunk + embedding.
 
-Spec #4.1/#4.2 (docs/plans/2026-07-02-grimoire-pg-first-spec.md): an external
-chunking service drops per-book NDJSON manifests at
-``s3://<bucket>/<prefix><book_id>.ndjson``, one chunk object per line. This
-module lists those manifests, upserts rows into ``knowledge_chunk`` keyed on
-``(book_id, chunk_ref)``, and embeds new/changed content into the generic
-``embedding`` table (``embeddable_kind="chunk"``).
+Spec #4.1/#4.2 (docs/plans/2026-07-02-grimoire-pg-first-spec.md): each book's
+converted chunks land as NDJSON at ``s3://<bucket>/books/<book_id>/chunks/*.ndjson``
+(one chunk object per line), colocated with the verbatim third-party extraction
+under ``books/<book_id>/raw/``. This module lists those manifests, upserts rows
+into ``knowledge_chunk`` keyed on ``(book_id, chunk_ref)``, and embeds new/changed
+content into the generic ``embedding`` table (``embeddable_kind="chunk"``).
 
 The S3 client construction mirrors ``artifact.s3`` / ``trips.s3`` /
 ``stars.grid._s3_client`` (dummy creds, path-style addressing, scheme guard
@@ -38,8 +38,11 @@ from grimoire.models import Embedding, KnowledgeChunk
 
 logger = logging.getLogger("monolith.grimoire.ingest")
 
-DEFAULT_PREFIX = "chunks/"
+DEFAULT_PREFIX = "books/"
 _MANIFEST_SUFFIX = ".ndjson"
+# Manifests live under ``<prefix><book_id>/chunks/``; this segment both filters
+# chunk manifests from other book files and delimits the book id in the key.
+_CHUNKS_SEGMENT = "/chunks/"
 
 # Embeddings are sent in fixed-size batches rather than one call per book, so
 # a large manifest does not force one oversized HTTP request (mirrors the
@@ -85,13 +88,14 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
     """Parse NDJSON manifest lines for one book (spec #4.1 shape).
 
     Required: ``chunk_ref`` (non-empty str), ``content`` (non-empty str).
-    Optional: ``section_path`` (str, else dropped); ``meta`` and any other
-    field is ignored. A line that is invalid JSON, not an object, or missing
-    a valid required field is counted as an error and logged at warning
-    (never raised) so one bad line never fails the batch.
+    Optional: ``section_path`` (str, else dropped); ``image_ref`` (str s3:// URI
+    for image-derived chunks, else dropped); ``meta`` and any other field is
+    ignored. A line that is invalid JSON, not an object, or missing a valid
+    required field is counted as an error and logged at warning (never raised)
+    so one bad line never fails the batch.
 
     Returns ``(valid_chunks, error_count)`` where each valid chunk is
-    ``{"chunk_ref", "content", "section_path"}``.
+    ``{"chunk_ref", "content", "section_path", "image_ref"}``.
     """
     valid: list[dict] = []
     errors = 0
@@ -137,14 +141,28 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
         if not isinstance(section_path, str):
             section_path = None
 
+        image_ref = obj.get("image_ref")
+        if not isinstance(image_ref, str):
+            image_ref = None
+
         valid.append(
-            {"chunk_ref": chunk_ref, "content": content, "section_path": section_path}
+            {
+                "chunk_ref": chunk_ref,
+                "content": content,
+                "section_path": section_path,
+                "image_ref": image_ref,
+            }
         )
     return valid, errors
 
 
 def _list_manifest_keys(s3_client, bucket: str, prefix: str) -> list[str]:
-    """List NDJSON manifest keys under ``prefix``, following pagination."""
+    """List chunk NDJSON manifest keys under ``prefix``, following pagination.
+
+    Layout is ``<prefix><book_id>/chunks/*.ndjson`` (default prefix ``books/``),
+    so only ``.ndjson`` keys under a ``/chunks/`` segment are manifests; a stray
+    ``.ndjson`` elsewhere under a book (e.g. in ``raw/``) is ignored.
+    """
     keys: list[str] = []
     continuation_token: str | None = None
     while True:
@@ -154,7 +172,7 @@ def _list_manifest_keys(s3_client, bucket: str, prefix: str) -> list[str]:
         resp = s3_client.list_objects_v2(**kwargs)
         for obj in resp.get("Contents", []):
             key = obj["Key"]
-            if key.endswith(_MANIFEST_SUFFIX):
+            if key.endswith(_MANIFEST_SUFFIX) and _CHUNKS_SEGMENT in key:
                 keys.append(key)
         if resp.get("IsTruncated"):
             continuation_token = resp.get("NextContinuationToken")
@@ -164,8 +182,12 @@ def _list_manifest_keys(s3_client, bucket: str, prefix: str) -> list[str]:
 
 
 def _book_id_from_key(key: str, prefix: str) -> str:
-    name = key[len(prefix) :] if key.startswith(prefix) else key.rsplit("/", 1)[-1]
-    return name.removesuffix(_MANIFEST_SUFFIX)
+    """Book id is the path segment between ``prefix`` and ``/chunks/``.
+
+    e.g. ``books/monster-manual/chunks/chunks.ndjson`` -> ``monster-manual``.
+    """
+    rest = key[len(prefix) :] if key.startswith(prefix) else key
+    return rest.split(_CHUNKS_SEGMENT, 1)[0].split("/", 1)[0]
 
 
 def _upsert_book_chunks(
@@ -173,8 +195,8 @@ def _upsert_book_chunks(
 ) -> tuple[list[KnowledgeChunk], int]:
     """Sync upsert of one book's parsed chunks, keyed on (book_id, chunk_ref).
 
-    Inserts new chunks, updates changed content/section_path, and skips
-    unchanged chunks entirely (so a second run over identical data embeds
+    Inserts new chunks, updates changed content/section_path/image_ref, and
+    skips unchanged chunks entirely (so a second run over identical data embeds
     nothing). Each chunk gets its own savepoint so one bad row cannot roll
     back the rest of the batch. Returns the rows that need (re-)embedding
     and how many chunks were upserted (inserted or changed).
@@ -196,6 +218,7 @@ def _upsert_book_chunks(
                     chunk_ref=item["chunk_ref"],
                     content=item["content"],
                     section_path=item["section_path"],
+                    image_ref=item["image_ref"],
                 )
                 session.add(row)
                 session.flush()
@@ -204,6 +227,7 @@ def _upsert_book_chunks(
             elif existing.content != item["content"]:
                 existing.content = item["content"]
                 existing.section_path = item["section_path"]
+                existing.image_ref = item["image_ref"]
                 upserted += 1
                 pending_embed.append(existing)
             # else: unchanged, skip entirely (idempotent re-run).

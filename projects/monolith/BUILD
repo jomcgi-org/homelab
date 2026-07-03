@@ -2754,6 +2754,16 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_marker_test",
+    srcs = ["grimoire/marker_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "grimoire_jobs_test",
     srcs = ["grimoire/jobs_test.py"],
     imports = ["."],
