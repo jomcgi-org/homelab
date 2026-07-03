@@ -158,6 +158,10 @@ goosecracker:
   # there through the fc-invoke egress funnel, and the Discord bot polls the
   # in-memory buffer keyed by the session (== the Discord thread id).
   progressUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress"
+  # The monolith's own in-cluster steering endpoint base (ADR 035 phase 2). The
+  # runner hands the guest "<this>/<session>"; the recipe polls it at stage
+  # boundaries for mid-run adjustments posted to the thread.
+  steeringUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/steering"
   # The in-cluster git mirror base URL (WS2 hydration). The runner defaults
   # gitMirror to "<gitMirror>/homelab" when the caller does not specify one.
   # The mirror serves git:// on :9418 (ADR 026 + git-mirror service in

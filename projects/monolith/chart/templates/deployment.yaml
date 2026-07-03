@@ -98,6 +98,10 @@ spec:
             - name: GOOSECRACKER_PROGRESS_URL
               value: {{ .Values.goosecracker.progressUrl | quote }}
             {{- end }}
+            {{- if .Values.goosecracker.steeringUrl }}
+            - name: GOOSECRACKER_STEERING_URL
+              value: {{ .Values.goosecracker.steeringUrl | quote }}
+            {{- end }}
             {{- if .Values.goosecracker.gitMirror }}
             - name: GOOSECRACKER_GIT_MIRROR
               value: {{ .Values.goosecracker.gitMirror | quote }}

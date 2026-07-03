@@ -46,7 +46,8 @@ instructions: |
     result:
       1. `delegate(source: "artifact-build")` and WAIT. That subagent reads the
          task from /tmp/goose/task.md and writes the page to /tmp/artifact.html.
-      2. `delegate(source: "artifact-review")` and WAIT. That subagent reads
+      2. Before dispatching, check for steering per the STEERING section above.
+         `delegate(source: "artifact-review")` and WAIT. That subagent reads
          /tmp/artifact.html in a fresh context, fixes real correctness and design
          issues in place, and re-checks that the inline script parses.
       3. `recipe__final_output` with `mode: artifact` and an empty `url` (the
@@ -120,6 +121,29 @@ instructions: |
     If either step fails, run printf '::stage::<i>::failed::<short reason>\n'
     for the stage that failed instead of its done marker.
 
+  STEERING (mid-run adjustments from the thread). While your run is in flight,
+  people in the thread can post steering messages. Check for them at each stage
+  boundary: right before you dispatch a sub-recipe, and (for artifacts) between
+  the build and review delegations, run:
+      curl -s "${GOOSECRACKER_STEERING_URL}"
+  If GOOSECRACKER_STEERING_URL is empty or the call fails, just proceed (steering
+  is best-effort, never block the run on it). The response is JSON:
+    {"messages": [{"author_id": "...", "tier": "...", "text": "..."}, ...]}
+  Handle it as follows:
+    - No messages: proceed normally.
+    - A message whose text is exactly "stop" or "cancel" (case-insensitive,
+      trimmed): abort the run. Emit a skipped marker for every stage not yet done
+      (printf '::stage::<i>::skipped::<title>\n' for each remaining stage), then a
+      final done marker for the plan, then call recipe__final_output summarizing
+      that the run was cancelled by a participant, and STOP. Do not dispatch
+      further sub-recipes.
+    - Otherwise (real steering content): fold it into the work. Append each
+      message to /tmp/goose/context.md as a line "Steering from <author_id>:
+      <text>" (so the sub-recipe sees it), and if it changes the plan (adds or
+      reorders work) re-announce the plan with a fresh ::stages:: block and
+      per-stage markers (the checklist reflects the change). Then continue.
+  Keep the steering check to a single curl per boundary (do not poll in a loop).
+
   Dispatch the actual work; never run it in the router. Your context is
   shared across the whole thread, so a large tool output here (a full
   `git log`, a wide `grep`, a big file) can overflow it and trigger a
@@ -129,7 +153,8 @@ instructions: |
   you do read (pipe through `head`, count with `wc -l` first, sample) and
   never pull hundreds of log lines into your context.
 
-  Then call the matching sub-recipe tool and wait for its result, bracketed by
+  Before dispatching, check for steering per the STEERING section above. Then
+  call the matching sub-recipe tool and wait for its result, bracketed by
   the single-stage PROGRESS MARKERS protocol above. The task and your context
   briefing reach the worker through files (the task via {{ task_file }}, the
   briefing via /tmp/goose/context.md), pre-wired on each sub-recipe, so you do

@@ -80,6 +80,19 @@ def _progress_url(session: str) -> str:
     return f"{PROGRESS_URL_BASE.rstrip('/')}/{session}"
 
 
+# The monolith's own in-cluster steering endpoint base (ADR 035 phase 2). The
+# runner injects "<this>/<session>" into the guest env as
+# GOOSECRACKER_STEERING_URL so the recipe can poll it at stage boundaries for
+# mid-run adjustments posted to the thread.
+STEERING_URL_BASE = os.environ.get("GOOSECRACKER_STEERING_URL", "")
+
+
+def _steering_url(session: str) -> str:
+    if not STEERING_URL_BASE:
+        return ""
+    return f"{STEERING_URL_BASE.rstrip('/')}/{session}"
+
+
 def _effective_mirror_ref(
     git_mirror: str, git_ref: str, repo: str = ""
 ) -> tuple[str, str]:
@@ -487,6 +500,11 @@ async def _run_one_turn(
             raise RuntimeError("FC_INVOKE_URL is not configured")
 
         env = tiers.env_for_tier(tier)
+        # ADR 035 phase 2: inject the steering URL into a copy of the tier env so
+        # the recipe can poll it, without mutating the dict env_for_tier returned.
+        steering_url = _steering_url(session)
+        if steering_url:
+            env = {**env, "GOOSECRACKER_STEERING_URL": steering_url}
         # ADR 026 Phase 2: restore the thread's persisted goose session so this run
         # resumes the prior conversation (Model A) instead of cold-rebuilding
         # (Model B). Resume is derived from the blob's presence, not a stored flag:
