@@ -28,12 +28,22 @@ import logging
 import os
 import re
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 from sqlmodel import Session
 
 from app.db import get_engine
 from goosecracker import sessions, threads, tiers
+
+if TYPE_CHECKING:
+    # Type-only: chat.orchestrator_plan imports goosecracker.recipe_catalog, and
+    # this module is imported at goosecracker package init (via dispatch), so a
+    # runtime import here would risk a circular import. `render_router` /
+    # `render_plan_file` (goosecracker.router_render, which itself imports
+    # chat.orchestrator_plan.Plan) are imported lazily inside `_run_one_turn`
+    # instead, for the same reason.
+    from chat.orchestrator_plan import Plan
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +547,7 @@ async def _run_one_turn(
     git_mirror: str,
     git_ref: str,
     discord_thread: str,
+    plan: "Plan | None" = None,
 ) -> bool:
     """POST one goose turn to fc-invoke, then mark + deliver the result.
 
@@ -544,6 +555,14 @@ async def _run_one_turn(
     progress stream done (in a ``finally``) so the bot's stream loop ends whether
     the run succeeded, failed, or the daemon was unreachable. The conversational
     drain/next-turn loop lives in ``run_and_deliver``, which calls this per turn.
+
+    ``plan`` is the optional runtime :class:`~chat.orchestrator_plan.Plan` from
+    the DeepSeek orchestrator (Task 6). When present, the rendered router and
+    plan file are added to ``injectedContext`` (never replacing the ADR 040
+    per-turn context already built below) and the fc-invoke payload's
+    ``recipe`` is switched to the injected router path. When absent, behavior
+    is unchanged: ``recipe="agent"`` and no router/plan keys are injected
+    (Design invariant 2: fallback is always reachable).
     """
     ok = False
     # Reset the live-progress buffer for this session before the turn starts, so a
@@ -610,8 +629,26 @@ async def _run_one_turn(
         effective_mirror, effective_ref = _effective_mirror_ref(
             git_mirror, git_ref, repo
         )
+        # Task 6: a Plan present means the DeepSeek orchestrator constructed a
+        # runtime plan for this turn. Render the router + plan file and ADD them
+        # to injected_context (the ADR 040 per-turn context built above is
+        # preserved untouched), then point the guest at the injected router
+        # instead of the baked agent recipe. Basenames only (router.yaml,
+        # plan.md), as writeInjectedContext requires. Absent a plan, this is a
+        # no-op: recipe stays "agent" (or whatever the caller passed), exactly
+        # today's behavior.
+        effective_recipe = recipe
+        if plan is not None:
+            from goosecracker.router_render import render_plan_file, render_router
+
+            injected_context = {
+                **injected_context,
+                "router.yaml": render_router(plan),
+                "plan.md": render_plan_file(plan),
+            }
+            effective_recipe = "/injected-context/router.yaml"
         payload = {
-            "recipe": recipe,
+            "recipe": effective_recipe,
             "task": task,
             "session": session,
             "env": env,
@@ -687,8 +724,15 @@ async def run_and_deliver(
     git_mirror: str,
     git_ref: str,
     discord_thread: str,
+    plan: "Plan | None" = None,
 ) -> None:
     """Run a conversational agent thread to completion, one turn at a time.
+
+    ``plan`` (Task 6) is passed straight through to the first turn's
+    ``_run_one_turn`` call, unmodified across a drained-queue loop: a plan is
+    scoped to the turn the orchestrator compiled it for, so a later drained
+    reply in the same thread runs the baked ``recipe="agent"`` path (``plan``
+    is not re-applied) unless the caller re-submits with a fresh plan.
 
     Runs the given turn, then for agent threads drains any replies that arrived
     while it ran and runs them as the next turn, looping until the queue is empty.
@@ -705,6 +749,11 @@ async def run_and_deliver(
     """
     is_agent_thread = recipe == "agent" and bool(discord_thread)
     current_task = task
+    # The plan is scoped to the turn the orchestrator compiled it for (the
+    # request in `task`); a later drained reply in the same thread is a
+    # different, un-orchestrated request, so it must NOT silently re-run under
+    # the first turn's router. Apply `plan` only on this first iteration.
+    turn_plan = plan
     while True:
         if is_agent_thread:
             # The queue/reaction bookkeeping lives in the chat domain; reach it
@@ -724,7 +773,9 @@ async def run_and_deliver(
             git_mirror=git_mirror,
             git_ref=git_ref,
             discord_thread=discord_thread,
+            plan=turn_plan,
         )
+        turn_plan = None  # only the first (orchestrated) turn gets the plan
 
         if not is_agent_thread:
             return

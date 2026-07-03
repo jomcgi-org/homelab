@@ -959,11 +959,18 @@ class ChatBot(discord.Client):
 
         - ``chat`` - no thread, no session, no checklist: produce a
           conversational reply (local Qwen) and return it for the caller to post.
-        - ``goose`` - open a session thread as today, but seed the guest with the
-          compiled brief (brief markdown + the raw prompt as ground truth) and
-          pre-render the checklist from the brief's stages.
-        - ``FailOpen`` (disabled, ungranted, unreachable, unparseable) - EXACT
-          pre-036 behaviour: open a thread and submit the raw prompt.
+        - ``goose`` (a :class:`~chat.orchestrator.PlanVerdict`) - open a session
+          thread as today, but hand the guest the raw user prompt (the plan
+          supersedes the advisory brief, so it is never prepended) plus the
+          validated runtime :class:`~chat.orchestrator_plan.Plan`: the runner
+          delivers a rendered router + plan file via ``injectedContext``
+          instead of the baked ``recipe="agent"`` path (Task 6 of the
+          runtime-recipes plan). Pre-renders the checklist from the plan's
+          steps.
+        - ``FailOpen`` (disabled, ungranted, unreachable, unparseable, or an
+          unusable/invalid plan) - EXACT pre-036 behaviour: open a thread and
+          submit the raw prompt with no plan, i.e. the baked ``recipe="agent"``
+          path. This is the safety net (Design invariant 2).
 
         Does NOT do ACL checks or send origin-channel acks (the caller owns
         those). Returns an :class:`AgentFlowOutcome`.
@@ -979,8 +986,20 @@ class ChatBot(discord.Client):
             reply = await self._orchestrator_chat_reply(channel_id, prompt, verdict)
             return AgentFlowOutcome(chat_reply=reply)
 
-        # goose brief (if any) seeds the guest; FailOpen keeps today's raw path.
-        brief = verdict if isinstance(verdict, orchestrator.Brief) else None
+        # A PlanVerdict seeds the guest with a runtime plan; FailOpen (or any
+        # other non-plan verdict) keeps today's baked recipe="agent" raw path.
+        plan_verdict = (
+            verdict if isinstance(verdict, orchestrator.PlanVerdict) else None
+        )
+        # The plan already carries the ADR 029 out-of-scope repo replacement
+        # (orchestrator.compile substitutes the invoker's own scope when the
+        # model named a repo outside its grants); fall back to the invoker
+        # -supplied repo when the plan named none.
+        effective_repo = (
+            plan_verdict.repo
+            if plan_verdict is not None and plan_verdict.repo
+            else repo
+        )
 
         name = f"agent: {prompt}"[:90]
         try:
@@ -990,23 +1009,20 @@ class ChatBot(discord.Client):
                 thread = await channel.create_thread(
                     name=name, type=discord.ChannelType.public_thread
                 )
-            # The guest executes the compiled task (brief markdown + raw prompt)
-            # for a goose verdict; for failopen it is exactly the raw prompt, so
-            # the failopen path is byte-for-byte today's behaviour.
-            task = prompt
-            if brief is not None:
-                task = (
-                    orchestrator.render_brief(brief)
-                    + "\n\n---\n\nUser request (ground truth):\n"
-                    + prompt
-                )
+            # The plan supersedes the advisory brief: the task the guest
+            # executes is just the raw user prompt (ground truth), never
+            # brief-markdown-prefixed. The runtime router (built from the plan)
+            # is what actually drives the run, delivered via injectedContext.
+            # For failopen it is exactly the raw prompt too, so that path is
+            # byte-for-byte today's behaviour.
             await asyncio.to_thread(
                 goosecracker.start_agent_session,
                 str(thread.id),
-                repo,
+                effective_repo,
                 prompt,
                 channel_id,
-                task=task,
+                task=prompt,
+                plan=plan_verdict.plan if plan_verdict is not None else None,
             )
         except Exception:
             logger.exception("goosecracker: failed to start agent session")
@@ -1021,17 +1037,26 @@ class ChatBot(discord.Client):
             logger.exception("goosecracker: failed to post agent prompt echo")
         try:
             # ADR 035: a bare "Planning..." placeholder, not a progress claim.
-            # For a goose verdict, pre-render the checklist from the brief's
-            # stages (ADR 036) so the owner sees the plan before the guest's own
-            # ::stages:: markers arrive; render_checklist then takes over.
+            # For a PlanVerdict, pre-render the checklist from the plan's ordered
+            # steps (using the same stage-title mapping the rendered router's
+            # progress markers use, so the checklist matches) so the owner sees
+            # the plan before the guest's own ::stages:: markers arrive;
+            # render_checklist then takes over.
             intro_content = "🤖 Planning..."
-            if brief is not None and brief.stages:
+            if plan_verdict is not None and plan_verdict.plan.steps:
+                # Lazy import: goosecracker.router_render imports
+                # chat.orchestrator_plan.Plan, and this module (chat.bot)
+                # already imports chat.orchestrator at module load, so a
+                # top-level import here risks the same circular-import shape
+                # runner.py avoids by importing router_render lazily.
+                from goosecracker.router_render import _stage_title
+
                 synthetic = goosecracker_progress.Progress(
                     stages=[
                         goosecracker_progress.Stage(
-                            index=i, title=title, state="pending"
+                            index=i, title=_stage_title(step), state="pending"
                         )
-                        for i, title in enumerate(brief.stages)
+                        for i, step in enumerate(plan_verdict.plan.steps)
                     ]
                 )
                 rendered = render_checklist(synthetic)

@@ -19,11 +19,15 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from sqlmodel import Session, select
 
 from app.db import get_engine
 from chat.models import GoosecrackerSession, GoosecrackerSteering, Message
+
+if TYPE_CHECKING:
+    from chat import orchestrator_plan
 
 logger = logging.getLogger(__name__)
 
@@ -678,6 +682,7 @@ def start_agent_session(
     parent_channel_id: str = "",
     *,
     task: str = "",
+    plan: "orchestrator_plan.Plan | None" = None,
 ) -> dict:
     """Open a conversational agent session for a Discord thread.
 
@@ -696,6 +701,12 @@ def start_agent_session(
     user's words stay the ground truth for follow-up turns. ``inflight_task``
     tracks the submitted task so a reclaim re-dispatches the same work.
 
+    ``plan`` is the optional runtime :class:`~chat.orchestrator_plan.Plan` from
+    the DeepSeek orchestrator (runtime-recipes plan, Task 6): when set it is
+    threaded through to ``goosecracker.dispatch.submit`` so the first turn
+    delivers a rendered router + plan file via ``injectedContext`` instead of
+    the baked ``recipe="agent"`` path. Absent, behavior is unchanged.
+
     Synchronous; call via asyncio.to_thread.
     """
     prompt = prompt.strip()
@@ -713,6 +724,7 @@ def start_agent_session(
         tier=AGENT_TIER,
         repo=repo,
         discord_thread=thread_id,
+        plan=plan,
     )
     with Session(get_engine()) as session:
         session.add(

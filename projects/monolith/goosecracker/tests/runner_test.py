@@ -602,6 +602,86 @@ async def test_run_one_turn_ships_injected_context_in_payload(monkeypatch):
     assert captured_payload["injectedContext"] == {"transcript.md": "hi"}
 
 
+def _one_step_plan():
+    """A minimal Plan for the plan-delivery payload tests (Task 6)."""
+    from chat.orchestrator_plan import Plan, PlanStep
+
+    return Plan(
+        enabled_subrecipes=("query",),
+        steps=(PlanStep(sub_recipe="query", context="Answer the question."),),
+        done_criteria=("the question is answered",),
+    )
+
+
+async def _run_one_turn_with_captured_payload(monkeypatch, *, plan):
+    """Shared setup for the plan-delivery payload tests: stub every seam
+    _run_one_turn touches (mirrors test_run_one_turn_ships_injected_context_in_payload)
+    and return the captured fc-invoke payload."""
+    import chat.api
+
+    captured_payload = {}
+
+    async def fake_post(url, payload, on_retry):
+        captured_payload.update(payload)
+        return {"status": "ok", "result": "done", "sessionDb": ""}
+
+    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
+    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
+    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
+    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
+    monkeypatch.setattr(runner, "_deliver", AsyncMock())
+    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
+    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
+    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
+    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
+    monkeypatch.setattr(
+        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
+    )
+
+    ok = await runner._run_one_turn(
+        "sess-1",
+        task="q",
+        recipe="agent",
+        tier="",
+        git_mirror="",
+        git_ref="",
+        discord_thread="thr-1",
+        plan=plan,
+    )
+    assert ok is True
+    return captured_payload
+
+
+async def test_run_one_turn_with_plan_injects_router_and_plan_file(monkeypatch):
+    """Task 6: when a Plan is present, the fc-invoke payload points at the
+    injected router recipe and ships both router.yaml and plan.md alongside
+    (never replacing) the ADR 040 per-turn injectedContext already built."""
+    from goosecracker import router_render
+
+    plan = _one_step_plan()
+    payload = await _run_one_turn_with_captured_payload(monkeypatch, plan=plan)
+
+    assert payload["recipe"] == "/injected-context/router.yaml"
+    assert payload["injectedContext"]["router.yaml"] == router_render.render_router(
+        plan
+    )
+    assert payload["injectedContext"]["plan.md"] == router_render.render_plan_file(plan)
+    # The pre-existing ADR 040 context entry must still be present, not replaced.
+    assert payload["injectedContext"]["transcript.md"] == "hi"
+
+
+async def test_run_one_turn_without_plan_keeps_baked_agent_recipe(monkeypatch):
+    """Task 6 fallback (Design invariant 2): with no Plan, behavior is
+    unchanged: recipe stays "agent" and neither router.yaml nor plan.md is
+    injected."""
+    payload = await _run_one_turn_with_captured_payload(monkeypatch, plan=None)
+
+    assert payload["recipe"] == "agent"
+    assert "router.yaml" not in payload["injectedContext"]
+    assert "plan.md" not in payload["injectedContext"]
+    assert payload["injectedContext"]["transcript.md"] == "hi"
+
+
 # ---------------------------------------------------------------------------
 # Conversational reply (_agent_reply_message): rephrase the typed summary in the
 # bot's voice using channel context, fail-open to the deterministic summary.
