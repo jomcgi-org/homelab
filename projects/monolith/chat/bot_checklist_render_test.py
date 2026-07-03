@@ -1,5 +1,7 @@
 """Tests for the ADR 035 stage checklist renderer and edit-coalescing gate."""
 
+import itertools
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -309,9 +311,13 @@ class TestStreamLoopFinalEditNeverDropped:
         snap_thinking = gp.Progress(text="", done=False)
         snap_done = gp.Progress(text="built it", done=True)
 
+        # The no-stages path renders via _render_goosecracker_progress, which
+        # itself calls time.monotonic() (for the "flowing" window), so the count
+        # of clock reads per iteration is an implementation detail. Use an
+        # unbounded increasing clock and assert edit behaviour, not call counts.
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
-            patch("chat.bot.time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+            patch("chat.bot.time.monotonic", side_effect=itertools.count()),
             patch(
                 "chat.bot.goosecracker_progress.get",
                 side_effect=[snap_thinking, snap_done],
