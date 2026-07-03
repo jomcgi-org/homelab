@@ -121,6 +121,7 @@ func TestMain(m *testing.M) {
 	}
 	taskFilePath = filepath.Join(dir, "task.md")
 	contextFilePath = filepath.Join(dir, "context.md")
+	injectedContextDir = filepath.Join(dir, "injected-context")
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
@@ -563,6 +564,85 @@ func TestNoArtifactHTMLWhenAbsent(t *testing.T) {
 	}
 	if res := decodeResult(t, resp); res.ArtifactHTML != "" {
 		t.Errorf("ArtifactHTML = %q, want empty (no artifact written)", res.ArtifactHTML)
+	}
+}
+
+// TestInjectedContextWrittenToDir verifies that InjectedContext entries are
+// unpacked verbatim to injectedContextDir (ADR 040): the handler stays
+// context-agnostic and just writes what it was given.
+func TestInjectedContextWrittenToDir(t *testing.T) {
+	runner := &fakeRunner{out: "done"}
+	h := New(runner)
+
+	req := AgentRequest{
+		Recipe: "agent",
+		Task:   "t",
+		InjectedContext: map[string]string{
+			"README.md":     "readme content",
+			"transcript.md": "transcript content",
+		},
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res := decodeResult(t, resp); res.Status != "ok" {
+		t.Fatalf("status = %q, want ok (err=%q)", res.Status, res.Error)
+	}
+
+	for name, want := range req.InjectedContext {
+		got, err := os.ReadFile(filepath.Join(injectedContextDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestInjectedContextSkipsUnsafeKeys verifies that traversal, absolute, and
+// nested keys are skipped defensively rather than escaping injectedContextDir,
+// while a safe key alongside them is still written.
+func TestInjectedContextSkipsUnsafeKeys(t *testing.T) {
+	runner := &fakeRunner{out: "done"}
+	h := New(runner)
+
+	req := AgentRequest{
+		Recipe: "agent",
+		Task:   "t",
+		InjectedContext: map[string]string{
+			"../escape.md":      "should not escape",
+			"/abs.md":           "should not escape",
+			"sub/dir/nested.md": "should not escape",
+			"ok.md":             "safe content",
+		},
+	}
+	body, _ := json.Marshal(req)
+
+	resp, err := invoke(t, h, string(body))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res := decodeResult(t, resp); res.Status != "ok" {
+		t.Fatalf("status = %q, want ok (err=%q)", res.Status, res.Error)
+	}
+
+	got, err := os.ReadFile(filepath.Join(injectedContextDir, "ok.md"))
+	if err != nil || string(got) != "safe content" {
+		t.Errorf("ok.md = %q (err %v), want %q", got, err, "safe content")
+	}
+
+	if _, err := os.Stat(filepath.Join(filepath.Dir(injectedContextDir), "escape.md")); !os.IsNotExist(err) {
+		t.Errorf("escape.md must not exist outside injectedContextDir (err=%v)", err)
+	}
+	if _, err := os.Stat("/abs.md"); !os.IsNotExist(err) {
+		t.Errorf("/abs.md must not have been written (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(injectedContextDir, "sub")); !os.IsNotExist(err) {
+		t.Errorf("nested sub dir must not have been created under injectedContextDir (err=%v)", err)
 	}
 }
 

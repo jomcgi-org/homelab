@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/firecracker/goosecracker/guest-init/internal/harness"
@@ -51,6 +52,11 @@ type AgentRequest struct {
 	GitRef      string            `json:"gitRef"`      // optional: checkout ref after clone
 	Resume      bool              `json:"resume"`      // resume the prior session instead of a cold recipe run
 	SessionDb   string            `json:"sessionDb"`   // optional: base64 prior sessions.db to hydrate before resume
+	// InjectedContext is an opaque map of filename to text content the caller
+	// staged for this run (ADR 040). The handler unpacks it verbatim to
+	// injectedContextDir; it never interprets the source (Discord, etc.). Keys
+	// are basenames; traversal/absolute/nested keys are skipped defensively.
+	InjectedContext map[string]string `json:"injectedContext"`
 }
 
 // AgentResult is the JSON body of a successful /invoke response. Status is "ok"
@@ -166,6 +172,7 @@ func New(runner Runner, opts ...Option) shim.Handler {
 			slog.Error("handler: task file write failed", "err", err)
 			return jsonResult(AgentResult{Status: "error", Error: err.Error()})
 		}
+		writeInjectedContext(req.InjectedContext)
 
 		argv := harness.GooseCommand(harness.Config{
 			Recipe:      req.Recipe,
@@ -251,6 +258,11 @@ var artifactPath = "/tmp/artifact.html"
 var (
 	taskFilePath    = "/tmp/goose/task.md"
 	contextFilePath = "/tmp/goose/context.md"
+	// injectedContextDir is where the caller-provided context bundle (ADR 040)
+	// is unpacked, one file per InjectedContext entry, so the agent can grep it
+	// like any other on-disk source. Package var so tests can point it at a
+	// temp dir.
+	injectedContextDir = "/injected-context"
 )
 
 // writeTaskFile writes the task to taskFilePath and truncates contextFilePath to
@@ -271,6 +283,35 @@ func writeTaskFile(task string) error {
 			"path", contextFilePath, "err", err)
 	}
 	return nil
+}
+
+// writeInjectedContext unpacks files verbatim into injectedContextDir (ADR
+// 040). It is deliberately context-agnostic: it never interprets where a
+// filename or its content came from, it just writes what it was given. Every
+// failure is soft (logged and skipped): injected context is best-effort
+// caller-side staging, and must never fail the run. Names are constrained to
+// their basename; a key that is absolute, traversal, or nested under a
+// subdirectory is skipped rather than allowed to escape injectedContextDir.
+func writeInjectedContext(files map[string]string) {
+	if len(files) == 0 {
+		return
+	}
+	if err := os.MkdirAll(injectedContextDir, 0o755); err != nil {
+		slog.Warn("handler: create injected context dir failed; skipping injected context",
+			"dir", injectedContextDir, "err", err)
+		return
+	}
+	for name, content := range files {
+		base := filepath.Base(name)
+		if base != name || base == "." || base == ".." || strings.ContainsRune(name, filepath.Separator) {
+			slog.Warn("handler: skipping unsafe injected context key", "name", name)
+			continue
+		}
+		path := filepath.Join(injectedContextDir, base)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			slog.Warn("handler: write injected context file failed", "name", name, "err", err)
+		}
+	}
 }
 
 // readArtifact returns the built artifact HTML, or nil when the run produced
