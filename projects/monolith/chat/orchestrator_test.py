@@ -23,11 +23,13 @@ from chat.orchestrator import (
     ChatVerdict,
     Directive,
     FailOpen,
+    PlanVerdict,
     RequestContext,
     assemble_prompt,
     parse_brief,
 )
 from chat.orchestrator_client import OrchestratorResponse
+from chat.orchestrator_plan import Plan
 
 
 @pytest.fixture(name="engine")
@@ -236,6 +238,38 @@ def _response(content: str) -> OrchestratorResponse:
     )
 
 
+# A valid submit_plan tool-call arguments object (passes validate_plan): every
+# stepped sub-recipe is a catalog id and appears in enabled_subrecipes.
+_PLAN_ARGS = {
+    "enabled_subrecipes": ["query", "implement"],
+    "steps": [
+        {"sub_recipe": "query", "context": "read start_agent_flow in bot.py"},
+        {"sub_recipe": "implement", "context": "wire the verdict through, open a PR"},
+    ],
+    "done_criteria": ["CI green", "PR opened"],
+}
+
+
+def _tool_response() -> OrchestratorResponse:
+    """The plan (second) call's response. Distinct latency so the goose row's
+    ``plan_latency_ms`` is provably sourced from the plan call, not the route
+    call (which is 42ms above)."""
+    return OrchestratorResponse(
+        content=json.dumps(_PLAN_ARGS),
+        prompt_tokens=200,
+        completion_tokens=30,
+        cached_tokens=150,
+        latency_ms=33,
+    )
+
+
+def _plan_call(args: dict | None = None) -> AsyncMock:
+    """Mock ``orchestrator_client.call_tool`` returning ``(args, response)``."""
+    return AsyncMock(
+        return_value=(args if args is not None else _PLAN_ARGS, _tool_response())
+    )
+
+
 class TestCompile:
     @pytest.mark.asyncio
     async def test_ungranted_no_call_no_row(self, engine, monkeypatch):
@@ -264,24 +298,94 @@ class TestCompile:
         assert _rows(engine) == []
 
     @pytest.mark.asyncio
-    async def test_happy_goose_writes_goose_row(self, engine, monkeypatch):
+    async def test_happy_goose_returns_plan_verdict_writes_one_row(
+        self, engine, monkeypatch
+    ):
+        # Goose route: the route call decides goose, the second submit_plan call
+        # yields the plan. compile returns a PlanVerdict and writes EXACTLY ONE
+        # telemetry row (the plan call does not write its own row).
         monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
         monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
         monkeypatch.setattr(
             orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
         )
+        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call())
         monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
 
         verdict = await orchestrator.compile(_ctx())
-        assert isinstance(verdict, Brief)
+        assert isinstance(verdict, PlanVerdict)
+        # The plan is the parsed, validated typed Plan.
+        assert isinstance(verdict.plan, Plan)
+        assert [s.sub_recipe for s in verdict.plan.steps] == ["query", "implement"]
+        # Repo scope carried from the route-decision Brief (invoker holds it).
+        assert verdict.repo == "jomcgi/homelab"
+        assert verdict.repo_paths == ["projects/monolith/chat/bot.py"]
+        assert verdict.repo_replaced is False
+
         rows = _rows(engine)
         assert len(rows) == 1
         assert rows[0].route == "goose"
         assert rows[0].model == "test/model"
         assert rows[0].thread_id == "t1"
+        # Route-call token/latency accounting stays in the dedicated columns.
         assert rows[0].cached_tokens == 80
+        assert rows[0].latency_ms == 42
         assert rows[0].error is None
-        assert rows[0].brief_json["recipe"] == "implement"
+        # Plan fields ride in the existing brief_json column (no new DB column).
+        assert rows[0].brief_json["plan_step_count"] == 2
+        assert rows[0].brief_json["plan_latency_ms"] == 33
+        assert rows[0].brief_json["plan"]["steps"][0]["sub_recipe"] == "query"
+        assert rows[0].brief_json["repo"] == "jomcgi/homelab"
+
+    @pytest.mark.asyncio
+    async def test_plan_call_unavailable_fails_open_one_row(self, engine, monkeypatch):
+        # Route call succeeds (goose), but the second submit_plan call is
+        # unavailable: compile fails open to today's baked recipe path, writing
+        # exactly one failopen row.
+        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
+        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
+        monkeypatch.setattr(
+            orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
+        )
+        monkeypatch.setattr(
+            orchestrator_client,
+            "call_tool",
+            AsyncMock(
+                side_effect=orchestrator_client.OrchestratorUnavailable(
+                    "plan timed out"
+                )
+            ),
+        )
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+
+        verdict = await orchestrator.compile(_ctx())
+        assert isinstance(verdict, FailOpen)
+        rows = _rows(engine)
+        assert len(rows) == 1
+        assert rows[0].route == "failopen"
+        assert rows[0].brief_json is None
+        assert "plan timed out" in rows[0].error
+
+    @pytest.mark.asyncio
+    async def test_invalid_plan_fails_open_one_row(self, engine, monkeypatch):
+        # Route call succeeds (goose), but the plan is semantically invalid
+        # (empty steps): validate_plan errors force a fail-open, one failopen row.
+        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
+        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
+        monkeypatch.setattr(
+            orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
+        )
+        empty = {"enabled_subrecipes": [], "steps": [], "done_criteria": []}
+        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call(empty))
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+
+        verdict = await orchestrator.compile(_ctx())
+        assert isinstance(verdict, FailOpen)
+        rows = _rows(engine)
+        assert len(rows) == 1
+        assert rows[0].route == "failopen"
+        assert rows[0].brief_json is None
+        assert "invalid plan" in rows[0].error
 
     @pytest.mark.asyncio
     async def test_happy_chat_writes_chat_row(self, engine, monkeypatch):
@@ -346,6 +450,7 @@ class TestCompile:
         monkeypatch.setattr(
             orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
         )
+        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call())
         monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
 
         # Invoker holds only loom, but the brief named jomcgi/homelab.
@@ -354,6 +459,8 @@ class TestCompile:
             allowed_scopes=frozenset({"weave-hand/loom"}),
         )
         verdict = await orchestrator.compile(ctx)
-        assert isinstance(verdict, Brief)
+        assert isinstance(verdict, PlanVerdict)
+        # The out-of-scope repo replacement carries through to the PlanVerdict.
         assert verdict.repo == "weave-hand/loom"
+        assert verdict.repo_replaced is True
         assert _rows(engine)[0].brief_json["repo_replaced"] is True
