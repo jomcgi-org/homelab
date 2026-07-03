@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -36,6 +37,11 @@ const (
 // returns the sent message id (empty for edits/reactions, which do not mint a
 // new addressable id the outbox needs to keep).
 type sender interface {
+	// Ready reports whether the underlying socket is live (connected and logged
+	// in) and can actually send. The gateway state machine tracks a coarse
+	// StateConnected that a transient reconnect does not flip, so the drain checks
+	// the live client here to avoid burning rows against a momentarily-dead socket.
+	Ready() bool
 	// SendText sends content to groupJID; when quotedMessageID is set it is sent
 	// as a reply to that message. Returns the new message id.
 	SendText(ctx context.Context, groupJID, content, quotedMessageID string) (string, error)
@@ -142,6 +148,14 @@ func (d *OutboxDrain) Run(ctx context.Context) {
 // but never stalls another group). A parked row (attempts >= max) is excluded by
 // claimPending, which unblocks its group on the next tick.
 func (d *OutboxDrain) drainOnce(ctx context.Context) error {
+	// Gate on the live socket, not just the coarse gateway state: a transient
+	// reconnect leaves StateConnected set (handleEvent does not track
+	// Disconnected/StreamReplaced), so without this check every row would take a
+	// not-connected error each tick and eventually park. Skip the tick until the
+	// client is genuinely connected and logged in; the rows stay pending.
+	if !d.sender.Ready() {
+		return nil
+	}
 	rows, err := d.store.claimPending(ctx)
 	if err != nil {
 		return err
@@ -167,10 +181,22 @@ func (d *OutboxDrain) processRow(ctx context.Context, row outboxRow) bool {
 	case "message":
 		id, err := d.sender.SendText(ctx, row.groupJID, row.content.String, row.quotedMessageID.String)
 		if err != nil {
+			if transient(err) {
+				// Connection-class failure: leave the row pending (attempts
+				// unchanged) and block the group for this tick so it retries in order
+				// once the socket returns. Only genuine rejections burn the budget.
+				d.log.Warn("whatsapp send deferred; socket not ready", "id", row.id, "err", err)
+				return true
+			}
 			d.fail(ctx, row.id, err)
 			return true
 		}
-		d.post(ctx, row.id, id)
+		if d.post(ctx, row.id, id) {
+			// The send succeeded but the posted stamp did not land; block the group
+			// so a later row cannot be sent before this one is marked posted (which
+			// would break the per-group ordering guarantee). Retried next tick.
+			return true
+		}
 		return false
 
 	case "edit":
@@ -190,6 +216,12 @@ func (d *OutboxDrain) processRow(ctx context.Context, row outboxRow) bool {
 			return true
 		}
 		if err := d.sender.SendEdit(ctx, row.groupJID, orig, row.content.String); err != nil {
+			if transient(err) {
+				// Socket down mid-flight: do not consume the edit as window-expired;
+				// leave it pending and block the group so it retries when connected.
+				d.log.Warn("whatsapp edit deferred; socket not ready", "id", row.id, "err", err)
+				return true
+			}
 			// whatsmeow does not surface a distinct "edit window expired" error
 			// (the server silently ignores a late edit), so a send error cannot be
 			// cleanly attributed. Per the plan we treat any edit failure as window
@@ -212,6 +244,10 @@ func (d *OutboxDrain) processRow(ctx context.Context, row outboxRow) bool {
 			reaction = ""
 		}
 		if err := d.sender.SendReaction(ctx, row.groupJID, row.targetMessageID.String, row.targetSenderJID.String, reaction); err != nil {
+			if transient(err) {
+				d.log.Warn("whatsapp reaction deferred; socket not ready", "id", row.id, "err", err)
+				return true
+			}
 			d.fail(ctx, row.id, err)
 			return true
 		}
@@ -225,10 +261,23 @@ func (d *OutboxDrain) processRow(ctx context.Context, row outboxRow) bool {
 	}
 }
 
-func (d *OutboxDrain) post(ctx context.Context, id int64, sentMessageID string) {
+// post stamps the row posted. It returns true when the stamp failed, so the
+// caller can decide whether to hold the group (a message must be marked posted
+// before a later same-group row is sent).
+func (d *OutboxDrain) post(ctx context.Context, id int64, sentMessageID string) bool {
 	if err := d.store.markPosted(ctx, id, sentMessageID); err != nil {
 		d.log.Error("mark posted failed", "id", id, "err", err)
+		return true
 	}
+	return false
+}
+
+// transient reports whether a send error is a connection-class failure that must
+// NOT consume the row's attempt budget: the socket is down or the device logged
+// out mid-flight, so the row stays pending to retry when connectivity returns.
+// Only genuine send rejections burn attempts and eventually park the row.
+func transient(err error) bool {
+	return errors.Is(err, whatsmeow.ErrNotConnected) || errors.Is(err, whatsmeow.ErrNotLoggedIn)
 }
 
 func (d *OutboxDrain) fail(ctx context.Context, id int64, cause error) {
@@ -326,6 +375,11 @@ func (s *whatsmeowSession) waClient() *whatsmeow.Client { return s.client }
 // whatsmeowSender sends outbox rows over a live whatsmeow client.
 type whatsmeowSender struct {
 	client *whatsmeow.Client
+}
+
+// Ready reports whether the live socket can send: connected and logged in.
+func (w *whatsmeowSender) Ready() bool {
+	return w.client.IsConnected() && w.client.IsLoggedIn()
 }
 
 func (w *whatsmeowSender) SendText(ctx context.Context, groupJID, content, quotedMessageID string) (string, error) {

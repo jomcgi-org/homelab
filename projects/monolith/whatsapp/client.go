@@ -55,6 +55,11 @@ type Gateway struct {
 	forwarder Forwarder
 	state     *stateHolder
 
+	// baseCtx is the process context captured in Start. The event goroutine (which
+	// receives no ctx of its own) derives bounded notify contexts from it so an
+	// unbounded Postgres INSERT cannot wedge the whatsmeow event loop.
+	baseCtx context.Context
+
 	// allow is the set of group JIDs whose messages are forwarded; everything
 	// else is dropped without forwarding.
 	allow map[string]bool
@@ -93,6 +98,7 @@ func (g *Gateway) State() State { return g.state.get() }
 // via the notifier exactly once. It does not block: the connection lifecycle is
 // then driven by events into handleEvent.
 func (g *Gateway) Start(ctx context.Context) error {
+	g.baseCtx = ctx
 	g.session.AddEventHandler(g.handleEvent)
 
 	if g.session.IsLoggedIn() {
@@ -138,9 +144,11 @@ func (g *Gateway) handleEvent(evt any) {
 		g.log.Info("whatsapp connected")
 	case *events.PairSuccess:
 		g.log.Info("whatsapp pairing succeeded", "device_jid", e.ID.String())
-		if err := g.notifier.Notify(context.Background(), "info", "WhatsApp pairing succeeded; the gateway is connecting."); err != nil {
+		nctx, cancel := g.notifyCtx()
+		if err := g.notifier.Notify(nctx, "info", "WhatsApp pairing succeeded; the gateway is connecting."); err != nil {
 			g.log.Warn("failed to deliver pairing-success notice", "err", err)
 		}
+		cancel()
 	case *events.LoggedOut:
 		g.park(fmt.Sprintf("logged out (on_connect=%v reason=%v)", e.OnConnect, e.Reason))
 	case *events.TemporaryBan:
@@ -196,6 +204,18 @@ func quotedMessageID(e *events.Message) string {
 	return ci.GetStanzaID()
 }
 
+// notifyCtx returns a 10s-bounded context derived from the captured process
+// context (falling back to Background if Start has not run) so a notify INSERT
+// on the event goroutine cannot block the whatsmeow event loop indefinitely.
+// The caller must invoke the returned cancel.
+func (g *Gateway) notifyCtx() (context.Context, context.CancelFunc) {
+	base := g.baseCtx
+	if base == nil {
+		base = context.Background()
+	}
+	return context.WithTimeout(base, 10*time.Second)
+}
+
 // park moves the gateway to the parked state: it stops work, fires exactly one
 // error alert naming the cause, and disconnects. It does not crash-loop or retry
 // registration; re-pairing is an operator runbook.
@@ -203,9 +223,11 @@ func (g *Gateway) park(cause string) {
 	g.parkOnce.Do(func() {
 		g.state.set(StateParked)
 		g.log.Error("whatsapp gateway parked", "cause", cause)
-		if err := g.notifier.Notify(context.Background(), "error", "WhatsApp gateway parked: "+cause+". Re-pairing is required (runbook)."); err != nil {
+		nctx, cancel := g.notifyCtx()
+		if err := g.notifier.Notify(nctx, "error", "WhatsApp gateway parked: "+cause+". Re-pairing is required (runbook)."); err != nil {
 			g.log.Error("failed to deliver parked alert", "err", err, "cause", cause)
 		}
+		cancel()
 		g.session.Disconnect()
 	})
 }
