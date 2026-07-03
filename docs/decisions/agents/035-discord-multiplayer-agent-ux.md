@@ -122,3 +122,14 @@ Living directives add a second injection surface: channel content can now influe
 | PR #3034                                                                        | Sub-recipe router: gains the "just chat" branch                                        |
 | PR #3085 / #3089                                                                | Reaction lifecycle and queue: retained as coarse signal                                |
 | PR #3096                                                                        | Concierge reply: becomes the conversational ack                                        |
+
+## Amendment (Phase 4): the "chat" depth branch is handled in-monolith, not in the guest recipe
+
+The original decision placed the chat-vs-escalate depth split inside the guest recipe router (a "chat" sub-recipe alongside query/plan/implement/research). Implementation review rejected this: a pure conversational reply is just an LLM call, and routing it through goose means cold-booting a Firecracker microVM and running a recipe to make one call and return text (roughly 5 to 10 seconds of overhead for something the monolith answers in 1 to 2). It also contradicted this ADR's own "chat answers inline, no session" intent (a guest run is a session), and it would have re-implemented capability the monolith already has: the in-process chat agent (`_stream_response`, with channel context and a SearXNG web-search tool) that already replies to mentions.
+
+Revised decision: the depth split runs in the monolith. On an engaged message, a cheap in-monolith classify (`attention.needs_agent`) decides:
+
+- **chat** (conversation, general knowledge, or a simple factual question answerable with a basic web search): replied inline by the existing chat agent (`_process_message(force_respond=True)` -> `_stream_response`). No thread, no session, no guest. Low latency, reuses existing plumbing.
+- **agent** (needs to read/analyze/change this repo, build an artifact, or do thorough multi-source research): escalates to the guest via `start_agent_flow`, where the recipe router does the fine-grained query/implement/artifact/research classification.
+
+The classify fails closed to chat, so a miss degrades to a fast in-monolith reply rather than a surprise heavy guest run. Goose is reserved for what genuinely needs it: a repo checkout, tools, or deep research. There is no guest "chat" recipe.
