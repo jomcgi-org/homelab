@@ -622,6 +622,30 @@ jobs:
         # with a 4Gi ceiling.
         limits:
           memory: 4Gi
+    # whatsapp.morning_digest: render today's calendar + open reminders into one
+    # whatsapp_outbox message per enabled household group (ADR 039 spec 5d). Runs
+    # hourly so a group whose send time or quiet hours have just lifted still gets
+    # its digest that day; the job dedupes to one digest per local day and honours
+    # per-group quiet hours from digest_config. DB-only (no bot, no external creds).
+    # The cronworkflows template skips this entry unless whatsapp.enabled, so a
+    # deploy with the gateway off renders no digest CronWorkflow. WHATSAPP_TZ sets
+    # the household-local tz used for send time and quiet hours.
+    - name: whatsapp-morning-digest
+      replaces: whatsapp.morning_digest
+      args: ["whatsapp-morning-digest"]
+      schedule: "0 * * * *" # hourly; per-group send time + quiet hours gate it
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      whatsapp: true
+      env:
+        WHATSAPP_TZ: "America/Vancouver"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
 
 frontend:
   otelCollectorUrl: ""
@@ -827,6 +851,17 @@ whatsapp:
   # group messages to (ADR 039 spec section 2). Set in deploy values; never
   # hardcoded in Go (a release rename changes the service name prefix).
   monolithInboundUrl: ""
+  # Household calendar scheduling (ADR 039 spec 5b, OQ1). The create-event path
+  # uses an OAuth user credential (client id/secret + refresh token) carried in
+  # the whatsapp 1Password item as the GOOGLE_CALENDAR_CLIENT_ID /
+  # GOOGLE_CALENDAR_CLIENT_SECRET / GOOGLE_CALENDAR_REFRESH_TOKEN fields; they are
+  # injected into the monolith backend as OPTIONAL secret env (absence is fine:
+  # the code falls back to drafting events into the morning digest). calendarId
+  # and tz are non-secret and set here. Leave calendarId "primary" to write to the
+  # credential owner's primary calendar.
+  calendar:
+    calendarId: "primary"
+    tz: "America/Vancouver"
   # Small: this is a websocket pump. CPU request, no CPU limit; memory
   # request=limit, per the repo resource-sizing convention.
   resources:

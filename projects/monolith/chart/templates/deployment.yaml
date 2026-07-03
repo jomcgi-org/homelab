@@ -160,6 +160,32 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-whatsapp
                   key: WHATSAPP_INBOUND_TOKEN
+            # Household calendar scheduling (ADR 039 spec 5b). The OAuth credential
+            # for live create-event lives in the same whatsapp 1Password Secret;
+            # marked optional so the pod is not blocked when the fields are absent
+            # (the capability then drafts events into the morning digest instead).
+            - name: GOOGLE_CALENDAR_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-whatsapp
+                  key: GOOGLE_CALENDAR_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CALENDAR_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-whatsapp
+                  key: GOOGLE_CALENDAR_CLIENT_SECRET
+                  optional: true
+            - name: GOOGLE_CALENDAR_REFRESH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-whatsapp
+                  key: GOOGLE_CALENDAR_REFRESH_TOKEN
+                  optional: true
+            - name: GOOGLE_CALENDAR_ID
+              value: {{ .Values.whatsapp.calendar.calendarId | quote }}
+            - name: WHATSAPP_TZ
+              value: {{ .Values.whatsapp.calendar.tz | quote }}
             {{- end }}
             {{- if .Values.knowledge.enabled }}
             {{- if .Values.knowledge.gaps.rewriteDiscardable }}
