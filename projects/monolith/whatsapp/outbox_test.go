@@ -24,6 +24,7 @@ type sendCall struct {
 type fakeSender struct {
 	calls       []sendCall
 	textErr     error
+	failGroup   string // when set, textErr applies only to this group JID
 	editErr     error
 	reactionErr error
 	sentID      string
@@ -31,7 +32,7 @@ type fakeSender struct {
 
 func (f *fakeSender) SendText(_ context.Context, groupJID, content, quotedMessageID string) (string, error) {
 	f.calls = append(f.calls, sendCall{"text", groupJID, content, quotedMessageID, ""})
-	if f.textErr != nil {
+	if f.textErr != nil && (f.failGroup == "" || f.failGroup == groupJID) {
 		return "", f.textErr
 	}
 	id := f.sentID
@@ -270,8 +271,8 @@ func TestDrainParkedRowDoesNotBlockOtherGroup(t *testing.T) {
 		{id: 1, groupJID: "a@wa", kind: "message", content: "fails", createdAt: time.Unix(1, 0)},
 		{id: 2, groupJID: "b@wa", kind: "message", content: "ok", createdAt: time.Unix(1, 0)},
 	}}
-	// SendText always fails: row 1 can never post. Row 2 is in another group.
-	snd := &fakeSender{textErr: errors.New("boom")}
+	// SendText fails only for group a: row 1 can never post; row 2 (group b) can.
+	snd := &fakeSender{textErr: errors.New("boom"), failGroup: "a@wa"}
 	d := testDrain(st, snd)
 	_ = d.drainOnce(context.Background())
 	// Row 2 (group b) posts on the first tick even though row 1 (group a, ordered

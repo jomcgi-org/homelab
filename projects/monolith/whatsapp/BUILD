@@ -11,6 +11,7 @@ go_library(
     srcs = [
         "client.go",
         "config.go",
+        "forward.go",
         "health.go",
         "outbox.go",
     ],
@@ -32,6 +33,7 @@ go_test(
     srcs = [
         "client_test.go",
         "config_test.go",
+        "forward_test.go",
         "outbox_test.go",
     ],
     embed = [":whatsapp"],

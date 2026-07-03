@@ -31,6 +31,7 @@ async def evaluate(
     is_ambient: bool,
     *,
     recently_tagged: bool = False,
+    directed: bool = False,
     _caller=None,
 ) -> AttentionResult:
     """Decide whether to engage. See module docstring.
@@ -38,12 +39,27 @@ async def evaluate(
     ``directive`` is the channel directive text; it refines the base
     engagement policy rather than gating it. ``recently_tagged`` means the bot
     was @mentioned in this channel/thread within a short recent window, which
-    lowers the effective engage threshold. ``_caller`` is an injectable
-    llm-caller for tests; defaults to ``build_llm_caller()``.
+    lowers the effective engage threshold. ``directed`` is a channel-agnostic
+    "this message is aimed at the bot" signal that a non-Discord caller (e.g.
+    the WhatsApp gateway: a reply to a bot message or a trigger-name match)
+    computes itself and passes in to engage without the Discord mention check.
+    Discord callers never pass ``directed``, so their path is unchanged.
+    ``_caller`` is an injectable llm-caller for tests; defaults to
+    ``build_llm_caller()``.
     """
+    # A caller-supplied directedness signal engages immediately, before (and
+    # instead of) the Discord-specific mention/reply check. This is the seam
+    # non-Discord channels use; it keeps should_respond off the hot path when
+    # bot_user is None (WhatsApp has no Discord user object).
+    if directed:
+        return AttentionResult(True, 1.0)
+
     from chat.bot import should_respond  # mention/reply detection (lazy to avoid cycle)
 
-    if should_respond(message, bot_user):
+    # bot_user is None only for non-Discord channels, which never reach here
+    # engaged (they set directed instead); guard the Discord-only check so a
+    # WhatsApp adapter never hits should_respond's <@id> mention parsing.
+    if bot_user is not None and should_respond(message, bot_user):
         return AttentionResult(True, 1.0)
     if not is_ambient:
         return AttentionResult(False, 0.0)

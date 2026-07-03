@@ -57,7 +57,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	gw := whatsapp.NewGateway(cfg, logger, session, notifier)
+	// The forwarder POSTs allow-listed group messages to the monolith inbound
+	// endpoint with the shared bearer token, one ordered worker per group. It is
+	// bound to ctx so its retry loops stop on shutdown.
+	forwarder := whatsapp.NewHTTPForwarder(ctx, cfg.MonolithInboundURL, cfg.InboundToken, nil, logger)
+
+	gw := whatsapp.NewGateway(cfg, logger, session, notifier, forwarder)
 	if err := gw.Start(ctx); err != nil {
 		return err
 	}

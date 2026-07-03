@@ -219,3 +219,42 @@ class TestNeedsAgent:
         # the channel-stats capability is surfaced so the model knows the data
         # is reachable without the heavy guest
         assert "per-user or per-day breakdowns" in prompt
+
+
+class TestDirectedSeam:
+    """The non-Discord `directed` seam (ADR 039): a caller-supplied directedness
+    signal engages without the Discord mention check, and a None bot_user (a
+    non-Discord channel) never reaches should_respond."""
+
+    @pytest.mark.asyncio
+    async def test_directed_engages_without_caller_or_bot_user(self):
+        message = _make_message(content="hey bosun")
+        caller = AsyncMock()
+        result = await evaluate(
+            message, "", None, is_ambient=False, directed=True, _caller=caller
+        )
+        assert result.engage is True
+        assert result.confidence == 1.0
+        caller.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_none_bot_user_non_directed_non_ambient_ignores(self):
+        # A non-Discord message that is neither directed nor ambient is ignored
+        # without touching should_respond (which would fail on a non-Discord shape).
+        message = _make_message(content="just the two of us")
+        caller = AsyncMock()
+        result = await evaluate(
+            message, "", None, is_ambient=False, directed=False, _caller=caller
+        )
+        assert result.engage is False
+        caller.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_none_bot_user_ambient_still_classifies(self):
+        message = _make_message(content="anyone around?")
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.9}')
+        result = await evaluate(
+            message, "household", None, is_ambient=True, directed=False, _caller=caller
+        )
+        assert result.engage is True
+        caller.assert_called_once()
