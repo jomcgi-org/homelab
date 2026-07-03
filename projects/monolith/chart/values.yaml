@@ -568,6 +568,25 @@ gardener:
   onepassword:
     itemPath: ""
 
+# Grimoire: D&D campaign manager ingest pipeline (private tier only; spec
+# docs/plans/2026-07-02-grimoire-pg-first-spec.md). Two daily scheduled jobs
+# load S3 chunk manifests and extract entities via OpenRouter. Disabled by
+# default (the private deploy values enable it). OPENROUTER_API_KEY is synced
+# from the 1Password item named by onepassword.itemPath (item "openrouter",
+# field "OPENROUTER_API_KEY") into the {fullname}-openrouter Secret; the extract
+# job skips cleanly if the key is absent. S3 endpoint/creds reuse the shared
+# SeaweedFS block emitted alongside stars.
+grimoire:
+  enabled: false
+  onepassword:
+    itemPath: ""
+  s3Bucket: "grimoire"
+  extractModel: "anthropic/claude-sonnet-4.5"
+  # extractLimit: optional per-run cap on chunks the extraction job processes.
+  # Unset here so the code default (25) applies; set to tune without a code
+  # change.
+  extractLimit: ""
+
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.
 # Reuses the existing 1Password "marine" vault item (shared with the legacy
 # standalone ships app) so the secret keeps materializing after that app is
