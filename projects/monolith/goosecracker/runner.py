@@ -236,21 +236,59 @@ def _enqueue_sync(channel_id: str, content: str) -> None:
         session.commit()
 
 
-async def _deliver(discord_thread: str, content: str) -> None:
-    """Post a result/error into the run's Discord thread, if it fronts one.
+def _enqueue_whatsapp_sync(session_key: str, content: str) -> None:
+    """Resolve the run's group JID and enqueue a whatsapp_outbox message (sync).
 
-    Long content is paged into several messages (Discord caps a message at 2000
-    chars) rather than truncated, so the full answer reaches the thread.
+    The WhatsApp counterpart to ``_enqueue_sync``: the runner delivers by group
+    JID (stored on the session row, since the sanitized session key cannot be
+    reversed to a JID), so it resolves the JID then enqueues. A run whose row is
+    gone (no JID) is skipped."""
+    from chat.api import enqueue_whatsapp_message, whatsapp_group_jid_for_session
+
+    group_jid = whatsapp_group_jid_for_session(session_key)
+    if not group_jid:
+        return
+    enqueue_whatsapp_message(group_jid, content)
+
+
+async def _deliver(
+    discord_thread: str, content: str, provider: str = "discord"
+) -> None:
+    """Post a result/error into the run's channel, if it fronts one.
+
+    ``provider`` selects the sink: "discord" (default) pages into the Discord
+    thread's outbox; "whatsapp" enqueues to chat.whatsapp_outbox (the Go gateway
+    sends). Long content is paged into several messages (Discord caps a message at
+    2000 chars) rather than truncated, so the full answer reaches the channel.
     """
     if not discord_thread:
         return
     for page in _split_message(content):
         try:
-            await asyncio.to_thread(_enqueue_sync, discord_thread, page)
+            if provider == "whatsapp":
+                await asyncio.to_thread(_enqueue_whatsapp_sync, discord_thread, page)
+            else:
+                await asyncio.to_thread(_enqueue_sync, discord_thread, page)
         except Exception:
             logger.exception(
                 "goosecracker: failed to enqueue result for %s", discord_thread
             )
+
+
+async def _settle_result(
+    discord_thread: str, content: str, provider: str = "discord"
+) -> None:
+    """Deliver a run's terminal content to the right sink for its channel.
+
+    Discord settles in place, overwriting the run's single live progress message
+    (ADR 024). WhatsApp has no in-place edit for the result: its checklist is
+    settled separately (``whatsapp_checklist_final``), so the result is a fresh
+    paged send into chat.whatsapp_outbox.
+    """
+    if provider == "whatsapp":
+        await _deliver(discord_thread, content, "whatsapp")
+    else:
+        await _settle(discord_thread, content)
 
 
 def _enqueue_edit_sync(channel_id: str, message_id: str, content: str) -> None:
@@ -803,15 +841,19 @@ async def _invoke_turn(
     return await _post_agent_run(url, payload, _notify_retry, traceparent=traceparent)
 
 
-async def _deliver_result(session: str, discord_thread: str, data: dict) -> bool:
-    """Mark the ledger and settle a run's terminal result into its Discord thread.
+async def _deliver_result(
+    session: str, discord_thread: str, data: dict, provider: str = "discord"
+) -> bool:
+    """Mark the ledger and settle a run's terminal result into its channel.
 
     This is the delivery half split out of the old ``_run_one_turn`` (Task 7): it
     runs ONCE, on the final result the replan loop settled on, so an interim
     replan-request result is never delivered. Behavior is byte-identical to the
     old inline delivery block: on ``status == "ok"`` it persists the session db,
     marks completed, and settles the composed delivery message; otherwise it marks
-    failed and settles a "Run failed" message. Returns True on success.
+    failed and settles a "Run failed" message. ``provider`` routes the settle to
+    the Discord thread (in-place) or the WhatsApp outbox (ADR 039). Returns True
+    on success.
     """
     status = data.get("status")
     if status == "ok":
@@ -822,12 +864,14 @@ async def _deliver_result(session: str, discord_thread: str, data: dict) -> bool
         await _persist_session_db(session, data.get("sessionDb"))
         # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
         await asyncio.to_thread(threads.mark_completed, session, result)
-        await _settle(discord_thread, await _delivery_message(session, data))
+        await _settle_result(
+            discord_thread, await _delivery_message(session, data), provider
+        )
         return True
     err = data.get("error", "") or "goose run failed with no detail"
     # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
     await asyncio.to_thread(threads.mark_failed, session, err)
-    await _settle(discord_thread, f"Run failed: {err}")
+    await _settle_result(discord_thread, f"Run failed: {err}", provider)
     return False
 
 
@@ -872,6 +916,7 @@ async def _run_one_turn(
     discord_thread: str,
     plan: "Plan | None" = None,
     traceparent: str = "",
+    provider: str = "discord",
 ) -> bool:
     """Run one goose turn (with the capped replan escape hatch) and deliver it.
 
@@ -947,7 +992,7 @@ async def _run_one_turn(
                     )
             # No replan requested, replan budget exhausted, orchestrator
             # fail-open, or a non-plan turn: this result is final. Deliver it.
-            ok = await _deliver_result(session, discord_thread, data)
+            ok = await _deliver_result(session, discord_thread, data, provider)
             break
     except Exception as exc:  # noqa: BLE001 - any failure must mark + deliver
         logger.exception("goosecracker: run_and_deliver failed for %s", session)
@@ -956,9 +1001,22 @@ async def _run_one_turn(
             await asyncio.to_thread(threads.mark_failed, session, str(exc))
         except Exception:
             logger.exception("goosecracker: failed to mark run failed for %s", session)
-        await _settle(discord_thread, f"Run failed: {exc}")
+        await _settle_result(discord_thread, f"Run failed: {exc}", provider)
     finally:
         _mark_progress_done(session)
+        if provider == "whatsapp":
+            # The runner marks the progress buffer done in-process (not via the
+            # HTTP sink that drives live checklist edits), so force the terminal
+            # checklist edit here. Best-effort: a failure must not fail the run.
+            try:
+                from chat.api import whatsapp_checklist_final
+
+                # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+                await asyncio.to_thread(whatsapp_checklist_final, session)
+            except Exception:
+                logger.exception(
+                    "goosecracker: final checklist edit failed for %s", session
+                )
     return ok
 
 
@@ -974,6 +1032,7 @@ async def run_and_deliver(
     discord_thread: str,
     plan: "Plan | None" = None,
     traceparent: str = "",
+    provider: str = "discord",
 ) -> None:
     """Run a conversational agent thread to completion, one turn at a time.
 
@@ -1024,6 +1083,7 @@ async def run_and_deliver(
             discord_thread=discord_thread,
             plan=turn_plan,
             traceparent=traceparent,
+            provider=provider,
         )
         turn_plan = None  # only the first (orchestrated) turn gets the plan
 

@@ -251,6 +251,21 @@ class GoosecrackerSession(SQLModel, table=True):
     recipe: str = Field(default="agent")
     tier: str = Field(default="")
     repo: str = Field(default="")
+    # Provider discriminator (ADR 039 Phase 4). "discord" is the original path;
+    # "whatsapp" routes reactions, the checklist, and the final result through
+    # chat.whatsapp_outbox instead of the Discord outbox. The PK (discord_thread)
+    # holds a sanitized wa-<group_jid> key for a WhatsApp session, so
+    # provider_group_jid carries the raw JID the outbox writers target.
+    # provider_trigger_message_id / provider_trigger_sender_jid are the triggering
+    # WhatsApp message + its sender JID, so the reaction lifecycle can build
+    # reactions on it. checklist_outbox_id is the outbox id of the live checklist
+    # message the run edits; it is repointed when the ~15-minute edit window
+    # closes mid-run and a fresh checklist message is posted.
+    provider: str = Field(default="discord")
+    provider_group_jid: str = Field(default="")
+    provider_trigger_message_id: str = Field(default="")
+    provider_trigger_sender_jid: str = Field(default="")
+    checklist_outbox_id: int | None = Field(default=None)
     # Discord parent channel the /agent thread was opened from. The thread itself
     # has no history, so the runner reads this to fetch channel-scoped context
     # (recent messages, rolling summaries) for a conversational reply. Empty for a
@@ -314,6 +329,10 @@ class GoosecrackerSteering(SQLModel, table=True):
     thread_id: str = Field(default="")
     message_id: str = Field(default="")
     author_id: str = Field(default="")
+    # Readable author name for attribution (ADR 039 Phase 4). WhatsApp carries a
+    # sender push name alongside the JID (which lives in author_id); Discord rows
+    # leave this "" and attribute by the user id in author_id.
+    author_name: str = Field(default="")
     tier: str = Field(default="")
     text: str = Field(default="")
     delivered: bool = Field(default=False)
