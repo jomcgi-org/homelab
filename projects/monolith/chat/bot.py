@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 import discord
 from pydantic_ai import (
@@ -655,6 +656,43 @@ class ChatBot(discord.Client):
         except Exception:
             logger.exception("Failed to re-register BotMessageViews on ready")
 
+    # How far back to look for a recent bot tag when deciding to lean into an
+    # ambient reply (ADR 035 engagement policy). A thread the bot was tagged
+    # in, or a channel tagged within this window, gets a lower engage
+    # threshold.
+    _RECENT_TAG_MESSAGES = 10
+    _RECENT_TAG_WINDOW = timedelta(minutes=10)
+
+    def _recently_tagged(self, channel_id: str, exclude_message_id: str) -> bool:
+        """True if the bot was @mentioned in this channel/thread within the
+        last ``_RECENT_TAG_MESSAGES`` messages and ``_RECENT_TAG_WINDOW``.
+        Threads are channels in Discord, so this one query covers both "a
+        thread I've tagged in" and "a window around a channel tag". Sync;
+        call via asyncio.to_thread. Fails closed to False.
+        """
+        try:
+            with Session(get_engine()) as session:
+                store = MessageStore(session=session, embed_client=self.embed_client)
+                recent = store.get_recent(channel_id, limit=self._RECENT_TAG_MESSAGES)
+        except Exception:
+            logger.exception("attention: recent-tag lookup failed")
+            return False
+        needles = (f"<@{self.user.id}>", f"<@!{self.user.id}>")
+        now = datetime.now(timezone.utc)
+        for m in recent:
+            if m.discord_message_id == exclude_message_id:
+                continue
+            created = (
+                m.created_at
+                if m.created_at.tzinfo
+                else m.created_at.replace(tzinfo=timezone.utc)
+            )
+            if now - created > self._RECENT_TAG_WINDOW:
+                continue
+            if m.content and any(n in m.content for n in needles):
+                return True
+        return False
+
     async def on_message(self, message: discord.Message):
         # Skip own messages — bot responses are stored explicitly after sending
         if message.author.id == self.user.id:
@@ -703,7 +741,12 @@ class ChatBot(discord.Client):
             is_ambient = False
         if is_ambient:
             directive = await asyncio.to_thread(directives.get_active, channel_id)
-            result = await attention.evaluate(message, directive, self.user, True)
+            recently_tagged = await asyncio.to_thread(
+                self._recently_tagged, channel_id, msg_id
+            )
+            result = await attention.evaluate(
+                message, directive, self.user, True, recently_tagged=recently_tagged
+            )
             directive_version = await asyncio.to_thread(
                 directives.get_active_version, channel_id
             )
