@@ -165,6 +165,14 @@ async def post_progress_by_id(run_id: str, body: ProgressChunkIn) -> Response:
         gp.append(run_id, body.chunk + "\n")
     if body.done:
         gp.mark_done(run_id)
+    # WhatsApp runs have no live Discord message editor; the checklist is a bot
+    # message edited through the outbox. Drive a coalesced edit off each progress
+    # chunk for a wa- session (cheap: it renders + gates in-memory before any DB
+    # write). Discord sessions keep the bot's own stream loop (ADR 039 Phase 4).
+    from chat import whatsapp_session
+
+    if whatsapp_session.is_whatsapp_session_key(run_id):
+        await asyncio.to_thread(whatsapp_session.checklist_on_progress, run_id)
     return Response(status_code=204)
 
 

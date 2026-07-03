@@ -36,6 +36,11 @@ from chat.outbox import enqueue_edit  # re-exported
 from chat.outbox import enqueue_message  # re-exported
 from chat.summarizer import conversational_agent_reply  # re-exported
 from chat.summarizer import run_summary_generation  # re-exported
+from chat.whatsapp_session import checklist_final as whatsapp_checklist_final
+from chat.whatsapp_session import enqueue_message_sync as enqueue_whatsapp_message
+from chat.whatsapp_session import (
+    group_jid_for_session as whatsapp_group_jid_for_session,
+)
 
 __all__ = [
     "Plan",
@@ -55,6 +60,7 @@ __all__ = [
     "take_progress_message",
     "enqueue_edit",
     "enqueue_message",
+    "enqueue_whatsapp_message",
     "mark_goosecracker_progress_done",
     "reset_goosecracker_progress",
     "set_goosecracker_progress_notice",
@@ -66,4 +72,6 @@ __all__ = [
     "set_directive",
     "pin_directive",
     "revert_directive",
+    "whatsapp_checklist_final",
+    "whatsapp_group_jid_for_session",
 ]
