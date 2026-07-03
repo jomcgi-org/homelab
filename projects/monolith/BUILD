@@ -4394,6 +4394,9 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+        # Task 6: _run_one_turn imports goosecracker.router_render (yaml.safe_dump)
+        # when a Plan is present; router_render_test already declares this same dep.
+        "@pip//pyyaml",
     ],
 )
 

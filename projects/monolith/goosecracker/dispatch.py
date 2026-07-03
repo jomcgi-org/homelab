@@ -14,9 +14,16 @@ import asyncio
 import logging
 import threading
 from collections.abc import Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from goosecracker import runner, threads
+
+if TYPE_CHECKING:
+    # Type-only: chat.orchestrator_plan imports goosecracker.recipe_catalog, so a
+    # runtime import here (this module loads at goosecracker package init) would
+    # risk a circular import. `from __future__ import annotations` above makes
+    # this annotation a string, never evaluated, so TYPE_CHECKING-only is safe.
+    from chat.orchestrator_plan import Plan
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +67,7 @@ def submit(
     git_mirror: str = "",
     git_ref: str = "",
     discord_thread: str = "",
+    plan: "Plan | None" = None,
 ) -> dict:
     """Dispatch a goose run for ``session`` and return without waiting on it.
 
@@ -67,8 +75,11 @@ def submit(
     + result delivery as a detached task. ``session`` is the stable run id (the
     Discord thread id for /artifact, or a caller-generated id for MCP). ``tier``
     selects the guest model env (default -> in-cluster Qwen; "artifact" ->
-    OpenRouter, pending egress secret-swap). Returns ``{session, thread_id,
-    action}`` where ``action`` is "create" or "resume".
+    OpenRouter, pending egress secret-swap). ``plan`` is the optional runtime
+    :class:`~chat.orchestrator_plan.Plan` from the DeepSeek orchestrator (Task 6);
+    when present the runner delivers a rendered router + plan file via
+    ``injectedContext`` instead of the baked ``recipe="agent"`` path. Returns
+    ``{session, thread_id, action}`` where ``action`` is "create" or "resume".
     """
     result = threads.upsert_run(
         session,
@@ -87,6 +98,7 @@ def submit(
             git_mirror=git_mirror,
             git_ref=git_ref,
             discord_thread=discord_thread,
+            plan=plan,
         )
     )
     return {
