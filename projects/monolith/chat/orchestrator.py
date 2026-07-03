@@ -165,6 +165,13 @@ Verdict = PlanVerdict | ChatVerdict | FailOpen
 # stands and Task 8 wires the env.
 _PLAN_TIMEOUT_S = 60.0
 
+# Timeout for a replan call (the capped goose escape hatch, Task 7). A replan
+# runs after goose has actually opened the task and reported what it learned, so
+# it does more grounded construction work than the initial plan and gets a more
+# generous budget. Task 8 wires ``ORCHESTRATOR_REPLAN_TIMEOUT_S`` (default 120)
+# to override this; until then the module-level default stands.
+_REPLAN_TIMEOUT_S = 120.0
+
 
 def enabled() -> bool:
     """True when the orchestrator tier is configured (spec section 6).
@@ -657,3 +664,96 @@ async def compile(ctx: RequestContext) -> Verdict:
         None,
     )
     return verdict
+
+
+def _render_prior_plan(plan: Plan) -> str:
+    """Compact, deterministic rendering of a plan for the replan user prompt.
+
+    Lists the enabled sub-recipes, the ordered steps (id + its context), and the
+    done criteria, so the model can see what it already tried before revising it.
+    """
+    lines = [
+        "Enabled sub-recipes: " + (", ".join(plan.enabled_subrecipes) or "(none)"),
+        "",
+        "Steps (in order):",
+    ]
+    if plan.steps:
+        lines.extend(
+            f"{i + 1}. {step.sub_recipe}: {step.context}"
+            for i, step in enumerate(plan.steps)
+        )
+    else:
+        lines.append("(none)")
+    if plan.done_criteria:
+        lines.append("")
+        lines.append("Done criteria:")
+        lines.extend(f"- {c}" for c in plan.done_criteria)
+    return "\n".join(lines)
+
+
+async def replan(
+    request: str,
+    prior_plan: Plan,
+    *,
+    reason: str,
+    what_i_learned: str,
+    suggested_focus: str,
+    timeout_s: float = _REPLAN_TIMEOUT_S,
+) -> Plan | None:
+    """Produce a revised :class:`Plan` after goose reported the plan misfit.
+
+    The capped host-side replan loop (``goosecracker.runner``) calls this when
+    goose emits a populated ``replan`` escape-hatch object. It re-invokes the
+    ``submit_plan`` tool call with the ORIGINAL request, a compact rendering of
+    the prior plan, and goose's replan feedback (reason / what_i_learned /
+    suggested_focus, passed as plain strings so this module never imports
+    ``goosecracker.replan``), instructing the model to produce a REVISED minimal
+    plan that addresses what was learned.
+
+    Fail-open (Design invariant 2): returns ``None`` on
+    :class:`~chat.orchestrator_client.OrchestratorUnavailable`, an unusable tool
+    result, or a plan that fails :func:`orchestrator_plan.validate_plan`, so the
+    caller finalizes with the current goose result rather than looping. Returns
+    the validated :class:`Plan` on success.
+
+    This is a separate call OUTSIDE ``compile``: it writes no telemetry row and
+    does not touch compile's exactly-one-row-per-compile accounting.
+    """
+    user = (
+        "## Original request\n\n"
+        + request.strip()
+        + "\n\n## The plan you produced (goose could not complete it as decided)\n\n"
+        + _render_prior_plan(prior_plan)
+        + "\n\n## What goose reported when it hit the escape hatch\n\n"
+        + f"Reason it stopped: {reason.strip() or '(none given)'}\n"
+        + f"What it learned: {what_i_learned.strip() or '(none given)'}\n"
+        + f"Where a revised plan should focus: {suggested_focus.strip() or '(none given)'}\n"
+        + "\n## Your task\n\n"
+        + "Produce a REVISED minimal plan that addresses what goose learned. Keep "
+        + "it minimal: only the steps the task now needs, in execution order, each "
+        + "with grounded, non-empty context. Do not repeat a sequence goose already "
+        + "reported as unworkable. Submit it with the submit_plan tool."
+    )
+
+    try:
+        plan_args, _plan_resp = await orchestrator_client.call_tool(
+            plan_system_prompt(),
+            user,
+            schema=orchestrator_plan.submit_plan_schema(),
+            timeout_s=timeout_s,
+        )
+    except orchestrator_client.OrchestratorUnavailable as exc:
+        logger.warning("orchestrator: replan unavailable, failing open: %s", exc)
+        return None
+
+    try:
+        plan = orchestrator_plan.plan_from_dict(plan_args)
+    except (AttributeError, TypeError) as exc:
+        logger.warning("orchestrator: replan returned an unusable object: %s", exc)
+        return None
+
+    errors = orchestrator_plan.validate_plan(plan)
+    if errors:
+        logger.warning("orchestrator: replan invalid, failing open: %s", errors)
+        return None
+    return plan

@@ -4401,6 +4401,22 @@ py_test(
 )
 
 py_test(
+    name = "goosecracker_replan_test",
+    srcs = ["goosecracker/tests/replan_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        # replan_test imports goosecracker.runner (httpx at module top) and, via
+        # the loop tests, chat.orchestrator_plan; the router_render module is
+        # transitively reachable (yaml) so declare pyyaml like runner_test does.
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "goosecracker_recipe_catalog_test",
     srcs = ["goosecracker/tests/recipe_catalog_test.py"],
     # The drift-guard test reads the real, checked-in guest recipe YAMLs at

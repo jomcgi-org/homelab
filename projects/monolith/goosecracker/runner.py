@@ -34,15 +34,16 @@ import httpx
 from sqlmodel import Session
 
 from app.db import get_engine
-from goosecracker import sessions, threads, tiers
+from goosecracker import replan, sessions, threads, tiers
 
 if TYPE_CHECKING:
     # Type-only: chat.orchestrator_plan imports goosecracker.recipe_catalog, and
     # this module is imported at goosecracker package init (via dispatch), so a
     # runtime import here would risk a circular import. `render_router` /
     # `render_plan_file` (goosecracker.router_render, which itself imports
-    # chat.orchestrator_plan.Plan) are imported lazily inside `_run_one_turn`
-    # instead, for the same reason.
+    # chat.orchestrator_plan.Plan) are imported lazily inside `_invoke_turn`
+    # instead, for the same reason; `chat.orchestrator.replan` (Task 7) is
+    # likewise imported lazily inside `_request_replan`.
     from chat.orchestrator_plan import Plan
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,13 @@ _RETRY_MAX_SLEEP = 20.0  # cap on any single backoff sleep
 
 # Discord's hard message limit is 2000 chars; leave room for the prefix.
 _MAX_DISCORD = 1800
+
+# Capped replan escape hatch (Task 7). A plan-driven turn whose goose result
+# carries a populated `replan` object triggers a host-side re-plan (a fresh
+# router from the DeepSeek orchestrator) and a re-run of the same turn, bounded
+# to this many replans. The cap is enforced deterministically here, never
+# trusting a recipe-side counter; at the cap the current result is finalized.
+_MAX_REPLANS = 3
 
 
 def _progress_url(session: str) -> str:
@@ -537,6 +545,207 @@ async def _post_agent_run(url: str, payload: dict, on_retry) -> dict:
         await asyncio.sleep(wait)
 
 
+async def _invoke_turn(
+    session: str,
+    *,
+    task: str,
+    recipe: str,
+    tier: str,
+    repo: str,
+    git_mirror: str,
+    git_ref: str,
+    discord_thread: str,
+    plan: "Plan | None",
+) -> dict:
+    """POST one goose invocation to fc-invoke and return the raw AgentResult dict.
+
+    Resets the live-progress buffer for the session, builds the fc-invoke payload
+    (injecting the rendered router + plan file when a ``plan`` is present, per
+    Task 6), POSTs with the transient-failure retry, and returns the parsed JSON
+    body verbatim (``{"status": "ok"|..., "result"|"error": ...}``).
+
+    Delivery, ledger writes, and progress-done are intentionally NOT done here:
+    the caller (:func:`_run_one_turn`) owns them so its replan loop can inspect
+    the result (parse a ``replan`` request) BEFORE anything is delivered to the
+    user. Raising on a missing config or a terminal transport failure is
+    intentional: the caller turns it into the mark-failed + settle path.
+    """
+    # Reset the live-progress buffer for this session before the turn starts, so a
+    # stale done=True left by a prior turn cannot poison this one. A runner-driven
+    # turn (a reclaimed or drained await-loop turn) marks the buffer done with no
+    # bot stream to consume+clear it, and the next bot-streamed turn would then
+    # read that stale done and render "Done in 0:01" instead of live progress. The
+    # bot's stream sleeps before its first poll, so clearing at dispatch wins the
+    # race. Reached through chat.api so goosecracker never imports chat internals.
+    from chat.api import reset_goosecracker_progress
+
+    reset_goosecracker_progress(session)
+
+    if not FC_INVOKE_URL:
+        raise RuntimeError("FC_INVOKE_URL is not configured")
+
+    env = tiers.env_for_tier(tier)
+    # ADR 035 phase 2 (hardening): inject a steering URL keyed on an
+    # unguessable per-session token, not the thread/session id, into a copy
+    # of the tier env so the recipe can poll it without mutating the dict
+    # env_for_tier returned. A compromised guest that reads this env only
+    # learns its own token, which can never resolve another thread's
+    # steering. Reached through chat.api's boundary the same as the other
+    # chat.* calls in this module (import_boundaries_test).
+    from chat.api import ensure_steering_token
+
+    # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+    steering_token = await asyncio.to_thread(ensure_steering_token, session)
+    steering_url = _steering_url(steering_token) if steering_token else ""
+    if steering_url:
+        env = {**env, "GOOSECRACKER_STEERING_URL": steering_url}
+    # ADR 026 Phase 2: restore the thread's persisted goose session so this run
+    # resumes the prior conversation (Model A) instead of cold-rebuilding
+    # (Model B). Resume is derived from the blob's presence, not a stored flag:
+    # a stored db means resume, its absence (first run) means cold. The guest
+    # falls back to cold if the db fails to hydrate/resume.
+    # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+    session_db = await asyncio.to_thread(sessions.load, session)
+    # ADR 040: stage caller-provided context for this turn. Reached through
+    # chat.api like the other chat.* calls in this module
+    # (import_boundaries_test); rebuilt every turn so /injected-context/
+    # persists and accumulates across turns on the guest's ephemeral tmpfs.
+    # Best-effort: a build failure must not fail the run, the agent just runs
+    # without the extra context.
+    injected_context: dict[str, str] = {}
+    if discord_thread:
+        from chat.api import build_injected_context
+
+        try:
+            # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+            injected_context = await asyncio.to_thread(
+                build_injected_context, discord_thread, tier
+            )
+        except Exception:
+            logger.exception(
+                "goosecracker: build_injected_context failed for %s; "
+                "continuing without it",
+                session,
+            )
+    # WS2 - Hydration: default the mirror and ref when the caller did not
+    # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
+    # via Helm values. An empty effective_mirror means no clone (no mirror
+    # configured in this environment).
+    effective_mirror, effective_ref = _effective_mirror_ref(git_mirror, git_ref, repo)
+    # Task 6: a Plan present means the DeepSeek orchestrator constructed a
+    # runtime plan for this turn. Render the router + plan file and ADD them
+    # to injected_context (the ADR 040 per-turn context built above is
+    # preserved untouched), then point the guest at the injected router
+    # instead of the baked agent recipe. Basenames only (router.yaml,
+    # plan.md), as writeInjectedContext requires. Absent a plan, this is a
+    # no-op: recipe stays "agent" (or whatever the caller passed), exactly
+    # today's behavior. On a Task 7 replan re-run, this is called again with a
+    # revised plan, so the router/plan file reflect the new plan each time.
+    effective_recipe = recipe
+    if plan is not None:
+        from goosecracker.router_render import render_plan_file, render_router
+
+        injected_context = {
+            **injected_context,
+            "router.yaml": render_router(plan),
+            "plan.md": render_plan_file(plan),
+        }
+        effective_recipe = "/injected-context/router.yaml"
+    payload = {
+        "recipe": effective_recipe,
+        "task": task,
+        "session": session,
+        "env": env,
+        "progressUrl": _progress_url(session),
+        "gitMirror": effective_mirror,
+        "gitRef": effective_ref,
+        "resume": session_db is not None,
+        "sessionDb": base64.b64encode(session_db).decode() if session_db else "",
+        "injectedContext": injected_context,
+    }
+    url = f"{FC_INVOKE_URL}/invoke/agent/{session}"
+
+    def _notify_retry(attempt: int, wait: float, reason: str) -> None:
+        # Surface the retry on the live-progress message the bot is already
+        # editing (a fast in-memory buffer write, no DB), so the owner sees
+        # the run is waiting on fc-invoke rather than a bare "Thinking".
+        from chat.api import set_goosecracker_progress_notice
+
+        logger.info(
+            "goosecracker: transient fc-invoke failure for %s (%s); retry %d in %.0fs",
+            session,
+            reason,
+            attempt,
+            wait,
+        )
+        set_goosecracker_progress_notice(
+            session,
+            f"⏳ fc-invoke busy ({reason}); retrying "
+            f"(attempt {attempt}, waiting {wait:.0f}s)…",
+        )
+
+    return await _post_agent_run(url, payload, _notify_retry)
+
+
+async def _deliver_result(
+    session: str, recipe: str, discord_thread: str, data: dict
+) -> bool:
+    """Mark the ledger and settle a run's terminal result into its Discord thread.
+
+    This is the delivery half split out of the old ``_run_one_turn`` (Task 7): it
+    runs ONCE, on the final result the replan loop settled on, so an interim
+    replan-request result is never delivered. Behavior is byte-identical to the
+    old inline delivery block: on ``status == "ok"`` it persists the session db,
+    marks completed, and settles the composed delivery message; otherwise it marks
+    failed and settles a "Run failed" message. Returns True on success.
+    """
+    status = data.get("status")
+    if status == "ok":
+        result = data.get("result", "") or "(no output)"
+        # Persist the updated goose session so the next reply resumes it
+        # (ADR 026 Phase 2). Best-effort: a persist failure must not fail the
+        # run (the next reply just cold-rebuilds).
+        await _persist_session_db(session, data.get("sessionDb"))
+        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+        await asyncio.to_thread(threads.mark_completed, session, result)
+        await _settle(discord_thread, await _delivery_message(session, recipe, data))
+        return True
+    err = data.get("error", "") or "goose run failed with no detail"
+    # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+    await asyncio.to_thread(threads.mark_failed, session, err)
+    await _settle(discord_thread, f"Run failed: {err}")
+    return False
+
+
+async def _request_replan(
+    task: str, current_plan: "Plan", request: replan.ReplanRequest
+) -> "Plan | None":
+    """Ask the DeepSeek orchestrator for a revised plan; None on any failure.
+
+    Lazily imports ``chat.orchestrator.replan`` (the same lazy-chat-import
+    discipline the rest of this module follows for ``chat.api``) and passes the
+    replan feedback as plain strings, so ``chat.orchestrator`` never imports
+    ``goosecracker.replan`` (no layering cycle). Fail-open (Design invariant 2):
+    any error, or ``orchestrator.replan`` returning None, yields None so the
+    caller finalizes with the current goose result instead of looping.
+    """
+    try:
+        from chat.orchestrator import replan as orchestrator_replan
+
+        return await orchestrator_replan(
+            task,
+            current_plan,
+            reason=request.reason,
+            what_i_learned=request.what_i_learned,
+            suggested_focus=request.suggested_focus,
+        )
+    except Exception:
+        logger.exception(
+            "goosecracker: replan call failed; finalizing with current result"
+        )
+        return None
+
+
 async def _run_one_turn(
     session: str,
     *,
@@ -549,7 +758,7 @@ async def _run_one_turn(
     discord_thread: str,
     plan: "Plan | None" = None,
 ) -> bool:
-    """POST one goose turn to fc-invoke, then mark + deliver the result.
+    """Run one goose turn (with the capped replan escape hatch) and deliver it.
 
     Returns True when the run succeeded, False on any failure. Always marks the
     progress stream done (in a ``finally``) so the bot's stream loop ends whether
@@ -557,150 +766,73 @@ async def _run_one_turn(
     drain/next-turn loop lives in ``run_and_deliver``, which calls this per turn.
 
     ``plan`` is the optional runtime :class:`~chat.orchestrator_plan.Plan` from
-    the DeepSeek orchestrator (Task 6). When present, the rendered router and
-    plan file are added to ``injectedContext`` (never replacing the ADR 040
-    per-turn context already built below) and the fc-invoke payload's
-    ``recipe`` is switched to the injected router path. When absent, behavior
-    is unchanged: ``recipe="agent"`` and no router/plan keys are injected
-    (Design invariant 2: fallback is always reachable).
+    the DeepSeek orchestrator. When present, :func:`_invoke_turn` renders the
+    router + plan file into ``injectedContext`` and points the guest at the
+    injected router path; when absent, behavior is unchanged (baked
+    ``recipe="agent"``, no replan, Design invariant 2).
+
+    Replan escape hatch (Task 7): the run is split into an INNER replan loop
+    (this function) wrapped by the OUTER queue-drain loop in
+    ``run_and_deliver``. On a plan-driven turn whose goose result carries a
+    populated ``replan`` object, the host asks the orchestrator for a revised
+    plan and RE-RUNS this same turn with the new router, bounded to
+    ``_MAX_REPLANS`` replans (enforced deterministically here, never trusting a
+    recipe-side counter). Only the FINAL result (a clean result, a
+    budget-exhausted result, or an orchestrator-failed fail-open) is delivered
+    to Discord: an interim replan-request result is inspected but never settled.
+    The fallback/baked path (``plan is None``) is never inspected for a replan
+    and behaves exactly as before.
     """
     ok = False
-    # Reset the live-progress buffer for this session before the turn starts, so a
-    # stale done=True left by a prior turn cannot poison this one. A runner-driven
-    # turn (a reclaimed or drained await-loop turn) marks the buffer done with no
-    # bot stream to consume+clear it, and the next bot-streamed turn would then
-    # read that stale done and render "Done in 0:01" instead of live progress. The
-    # bot's stream sleeps before its first poll, so clearing at dispatch wins the
-    # race. Reached through chat.api so goosecracker never imports chat internals.
-    from chat.api import reset_goosecracker_progress
-
-    reset_goosecracker_progress(session)
     try:
-        if not FC_INVOKE_URL:
-            raise RuntimeError("FC_INVOKE_URL is not configured")
-
-        env = tiers.env_for_tier(tier)
-        # ADR 035 phase 2 (hardening): inject a steering URL keyed on an
-        # unguessable per-session token, not the thread/session id, into a copy
-        # of the tier env so the recipe can poll it without mutating the dict
-        # env_for_tier returned. A compromised guest that reads this env only
-        # learns its own token, which can never resolve another thread's
-        # steering. Reached through chat.api's boundary the same as the other
-        # chat.* calls in this module (import_boundaries_test).
-        from chat.api import ensure_steering_token
-
-        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
-        steering_token = await asyncio.to_thread(ensure_steering_token, session)
-        steering_url = _steering_url(steering_token) if steering_token else ""
-        if steering_url:
-            env = {**env, "GOOSECRACKER_STEERING_URL": steering_url}
-        # ADR 026 Phase 2: restore the thread's persisted goose session so this run
-        # resumes the prior conversation (Model A) instead of cold-rebuilding
-        # (Model B). Resume is derived from the blob's presence, not a stored flag:
-        # a stored db means resume, its absence (first run) means cold. The guest
-        # falls back to cold if the db fails to hydrate/resume.
-        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
-        session_db = await asyncio.to_thread(sessions.load, session)
-        # ADR 040: stage caller-provided context for this turn. Reached through
-        # chat.api like the other chat.* calls in this module
-        # (import_boundaries_test); rebuilt every turn so /injected-context/
-        # persists and accumulates across turns on the guest's ephemeral tmpfs.
-        # Best-effort: a build failure must not fail the run, the agent just runs
-        # without the extra context.
-        injected_context: dict[str, str] = {}
-        if discord_thread:
-            from chat.api import build_injected_context
-
-            try:
-                # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
-                injected_context = await asyncio.to_thread(
-                    build_injected_context, discord_thread, tier
-                )
-            except Exception:
-                logger.exception(
-                    "goosecracker: build_injected_context failed for %s; "
-                    "continuing without it",
-                    session,
-                )
-        # WS2 - Hydration: default the mirror and ref when the caller did not
-        # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
-        # via Helm values. An empty effective_mirror means no clone (no mirror
-        # configured in this environment).
-        effective_mirror, effective_ref = _effective_mirror_ref(
-            git_mirror, git_ref, repo
-        )
-        # Task 6: a Plan present means the DeepSeek orchestrator constructed a
-        # runtime plan for this turn. Render the router + plan file and ADD them
-        # to injected_context (the ADR 040 per-turn context built above is
-        # preserved untouched), then point the guest at the injected router
-        # instead of the baked agent recipe. Basenames only (router.yaml,
-        # plan.md), as writeInjectedContext requires. Absent a plan, this is a
-        # no-op: recipe stays "agent" (or whatever the caller passed), exactly
-        # today's behavior.
-        effective_recipe = recipe
-        if plan is not None:
-            from goosecracker.router_render import render_plan_file, render_router
-
-            injected_context = {
-                **injected_context,
-                "router.yaml": render_router(plan),
-                "plan.md": render_plan_file(plan),
-            }
-            effective_recipe = "/injected-context/router.yaml"
-        payload = {
-            "recipe": effective_recipe,
-            "task": task,
-            "session": session,
-            "env": env,
-            "progressUrl": _progress_url(session),
-            "gitMirror": effective_mirror,
-            "gitRef": effective_ref,
-            "resume": session_db is not None,
-            "sessionDb": base64.b64encode(session_db).decode() if session_db else "",
-            "injectedContext": injected_context,
-        }
-        url = f"{FC_INVOKE_URL}/invoke/agent/{session}"
-
-        def _notify_retry(attempt: int, wait: float, reason: str) -> None:
-            # Surface the retry on the live-progress message the bot is already
-            # editing (a fast in-memory buffer write, no DB), so the owner sees
-            # the run is waiting on fc-invoke rather than a bare "Thinking".
-            from chat.api import set_goosecracker_progress_notice
-
-            logger.info(
-                "goosecracker: transient fc-invoke failure for %s (%s); "
-                "retry %d in %.0fs",
+        current_plan = plan
+        replan_count = 0
+        while True:
+            data = await _invoke_turn(
                 session,
-                reason,
-                attempt,
-                wait,
+                task=task,
+                recipe=recipe,
+                tier=tier,
+                repo=repo,
+                git_mirror=git_mirror,
+                git_ref=git_ref,
+                discord_thread=discord_thread,
+                plan=current_plan,
             )
-            set_goosecracker_progress_notice(
-                session,
-                f"⏳ fc-invoke busy ({reason}); retrying "
-                f"(attempt {attempt}, waiting {wait:.0f}s)…",
-            )
-
-        data = await _post_agent_run(url, payload, _notify_retry)
-
-        status = data.get("status")
-        if status == "ok":
-            result = data.get("result", "") or "(no output)"
-            # Persist the updated goose session so the next reply resumes it
-            # (ADR 026 Phase 2). Best-effort: a persist failure must not fail the
-            # run (the next reply just cold-rebuilds).
-            await _persist_session_db(session, data.get("sessionDb"))
-            # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
-            await asyncio.to_thread(threads.mark_completed, session, result)
-            await _settle(
-                discord_thread, await _delivery_message(session, recipe, data)
-            )
-            ok = True
-        else:
-            err = data.get("error", "") or "goose run failed with no detail"
-            # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
-            await asyncio.to_thread(threads.mark_failed, session, err)
-            await _settle(discord_thread, f"Run failed: {err}")
+            # Replan only on a plan-driven turn whose run actually produced a
+            # result, and only while under the cap. The baked/fallback path
+            # (current_plan is None) is never inspected, so it behaves exactly
+            # as before.
+            if (
+                current_plan is not None
+                and replan_count < _MAX_REPLANS
+                and data.get("status") == "ok"
+            ):
+                request = replan.parse_replan(data.get("result", "") or "")
+                if request is not None:
+                    new_plan = await _request_replan(task, current_plan, request)
+                    if new_plan is not None:
+                        replan_count += 1
+                        logger.info(
+                            "goosecracker: replan %d/%d for %s (%s)",
+                            replan_count,
+                            _MAX_REPLANS,
+                            session,
+                            request.reason,
+                        )
+                        current_plan = new_plan
+                        continue  # re-run the same turn with the revised router
+                    # Fail-open: the orchestrator gave us no usable revised plan,
+                    # so stop replanning and finalize with the current result.
+                    logger.info(
+                        "goosecracker: replan requested for %s but no revised "
+                        "plan available; finalizing with current result",
+                        session,
+                    )
+            # No replan requested, replan budget exhausted, orchestrator
+            # fail-open, or a non-plan turn: this result is final. Deliver it.
+            ok = await _deliver_result(session, recipe, discord_thread, data)
+            break
     except Exception as exc:  # noqa: BLE001 - any failure must mark + deliver
         logger.exception("goosecracker: run_and_deliver failed for %s", session)
         try:
