@@ -1,0 +1,90 @@
+"""Tests for chat.attention: the attention gate (ADR 035 phase 3).
+
+Mentions/replies engage without touching the classifier; ambient channels
+classify via an injected fast-model caller; the classifier fails closed on
+any error and tolerates stray text around its JSON reply.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from chat.attention import ATTENTION_THRESHOLD, evaluate
+
+
+def _make_message(content: str = "hey", mentions=None, reference=None):
+    return SimpleNamespace(
+        content=content,
+        mentions=mentions if mentions is not None else [],
+        reference=reference,
+        author=SimpleNamespace(bot=False, id=1),
+    )
+
+
+_BOT_USER = SimpleNamespace(id=999)
+
+
+class TestExplicitTrigger:
+    @pytest.mark.asyncio
+    async def test_mention_engages_without_calling_the_classifier(self):
+        message = _make_message(mentions=[_BOT_USER])
+        caller = AsyncMock()
+        result = await evaluate(
+            message, "", _BOT_USER, is_ambient=False, _caller=caller
+        )
+        assert result.engage is True
+        assert result.confidence == 1.0
+        caller.assert_not_called()
+
+
+class TestNonAmbientNonMention:
+    @pytest.mark.asyncio
+    async def test_ignored_without_calling_the_classifier(self):
+        message = _make_message()
+        caller = AsyncMock()
+        result = await evaluate(
+            message, "", _BOT_USER, is_ambient=False, _caller=caller
+        )
+        assert result.engage is False
+        assert result.confidence == 0.0
+        caller.assert_not_called()
+
+
+class TestAmbientClassification:
+    @pytest.mark.asyncio
+    async def test_engages_above_threshold(self):
+        message = _make_message(content="hey can you help with this")
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.9}')
+        result = await evaluate(
+            message, "help with code", _BOT_USER, is_ambient=True, _caller=caller
+        )
+        assert result.engage is True
+        assert result.confidence == 0.9
+        caller.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ignores_below_threshold(self):
+        message = _make_message(content="maybe you could help")
+        caller = AsyncMock(return_value='{"engage": true, "confidence": 0.5}')
+        result = await evaluate(
+            message, "help with code", _BOT_USER, is_ambient=True, _caller=caller
+        )
+        assert result.confidence < ATTENTION_THRESHOLD
+        assert result.engage is False
+
+    @pytest.mark.asyncio
+    async def test_fails_closed_on_caller_error(self):
+        message = _make_message(content="anything")
+        caller = AsyncMock(side_effect=RuntimeError("model unreachable"))
+        result = await evaluate(message, "", _BOT_USER, is_ambient=True, _caller=caller)
+        assert result.engage is False
+        assert result.confidence == 0.0
+
+    @pytest.mark.asyncio
+    async def test_extracts_json_from_surrounding_prose(self):
+        message = _make_message(content="anything")
+        caller = AsyncMock(return_value='sure! {"engage": true, "confidence": 0.95} ok')
+        result = await evaluate(message, "", _BOT_USER, is_ambient=True, _caller=caller)
+        assert result.engage is True
+        assert result.confidence == 0.95
