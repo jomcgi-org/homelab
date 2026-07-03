@@ -28,6 +28,7 @@ def engine_fixture():
             original_schemas[table.name] = table.schema
             table.schema = None
     SQLModel.metadata.create_all(engine)
+    acl._clear_grants_cache()
     yield engine
     for table in SQLModel.metadata.tables.values():
         if table.name in original_schemas:
