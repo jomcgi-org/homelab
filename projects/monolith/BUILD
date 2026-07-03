@@ -1312,6 +1312,30 @@ py_test(
 )
 
 py_test(
+    name = "chat_summarizer_agent_reply_test",
+    srcs = ["chat/summarizer_agent_reply_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_bot_agent_prompt_echo_test",
+    srcs = ["chat/bot_agent_prompt_echo_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//discord_py",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "chat_summarizer_channel_test",
     srcs = ["chat/summarizer_channel_test.py"],
     imports = ["."],
