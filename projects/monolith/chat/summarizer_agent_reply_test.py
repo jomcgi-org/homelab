@@ -16,7 +16,9 @@ from chat.models import ChannelSummary, Message, UserChannelSummary
 from chat.summarizer import (
     _agent_reply_context,
     _build_agent_reply_prompt,
+    _build_chat_reply_prompt,
     conversational_agent_reply,
+    conversational_chat_reply,
 )
 
 
@@ -166,4 +168,52 @@ class TestConversationalAgentReply:
         assert out == "  All wrapped up.  "  # caller trims; this returns raw
         (prompt,), _ = mock_llm.call_args
         assert "Opened a PR." in prompt
+        assert "About this channel: ops." in prompt
+
+
+class TestBuildChatReplyPrompt:
+    """The ADR 036 chat-route reply prompt: answers the member directly and does
+    NOT narrate an agent run (the mis-framing the goose-reply prompt would cause)."""
+
+    def test_frames_as_answer_not_agent_recap(self):
+        prompt = _build_chat_reply_prompt("what time is it?", "", "ctx")
+        assert "what time is it?" in prompt
+        # It must not tell the model to relay a coding-agent run.
+        assert "coding" not in prompt.lower()
+        assert "do not narrate" in prompt.lower() or "not claim" in prompt.lower()
+
+    def test_includes_guidance_when_present(self):
+        prompt = _build_chat_reply_prompt(
+            "is stars broken?", "Context I found: /app/stars is up.", "ctx"
+        )
+        assert "/app/stars is up." in prompt
+
+    def test_omits_guidance_block_when_empty(self):
+        prompt = _build_chat_reply_prompt("hi", "", "ctx")
+        assert "Background to help you answer" not in prompt
+
+    def test_tolerates_empty_context(self):
+        prompt = _build_chat_reply_prompt("hi", "", "")
+        assert "no channel context available" in prompt
+
+
+class TestConversationalChatReply:
+    async def test_calls_llm_with_chat_prompt(self, monkeypatch):
+        import chat.summarizer as summarizer
+
+        monkeypatch.setattr(
+            summarizer,
+            "_fetch_agent_reply_context",
+            lambda channel_id: "About this channel: ops.",
+        )
+        mock_llm = AsyncMock(return_value="It's up as far as I know.")
+
+        out = await conversational_chat_reply(
+            "ch1", "is stars broken?", "Context I found: it is up.", llm_call=mock_llm
+        )
+
+        assert out == "It's up as far as I know."
+        (prompt,), _ = mock_llm.call_args
+        assert "is stars broken?" in prompt
+        assert "Context I found: it is up." in prompt
         assert "About this channel: ops." in prompt

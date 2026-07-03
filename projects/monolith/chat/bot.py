@@ -1094,12 +1094,12 @@ class ChatBot(discord.Client):
         (e.g. "offer to escalate") but never itself submits a session. Returns
         None on model failure so the caller can decide how to surface it.
         """
-        details = _render_reply_guidance(verdict)
+        guidance = _render_reply_guidance(verdict)
         try:
-            return await summarizer.conversational_agent_reply(
+            return await summarizer.conversational_chat_reply(
                 channel_id,
-                summary=prompt,
-                details=details,
+                question=prompt,
+                guidance=guidance,
                 llm_call=summarizer.build_llm_caller(),
             )
         except Exception:

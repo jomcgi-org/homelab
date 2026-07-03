@@ -406,6 +406,60 @@ async def conversational_agent_reply(
     return await llm_call(prompt)
 
 
+def _build_chat_reply_prompt(question: str, guidance: str, context: str) -> str:
+    """Prompt the concierge model to answer a member's message conversationally.
+
+    This is the ADR 036 chat-route counterpart to ``_build_agent_reply_prompt``:
+    no agent ran, so the framing is "answer this question", not "relay what the
+    agent did". ``guidance`` is the orchestrator's optional retrieved context and
+    suggested direction (may be empty); the member's ``question`` stays ground
+    truth and is never overridden by the guidance."""
+    ctx = context.strip() or "(no channel context available)"
+    parts = [
+        "You are the friendly assistant bot for this Discord channel. A member "
+        "just messaged you. Answer them directly in your own voice: natural, "
+        "warm, and specific, the way you would in chat. Keep it to 2 to 4 "
+        "sentences. No agent run happened here, so do not narrate one or claim "
+        "you did any work. Do not invent links, PR numbers, or file "
+        "names. No markdown headers or bullet lists, no preamble.",
+        f"What the member said:\n{question.strip()}",
+    ]
+    if guidance.strip():
+        parts.append(
+            "Background to help you answer (retrieved context and an optional "
+            "suggested direction; use it to inform your reply, do not quote it "
+            "verbatim, and only offer to escalate or take on work if it clearly "
+            "fits, without claiming to have started anything):\n"
+            f"{guidance.strip()}"
+        )
+    parts.append(
+        f"Channel context, for tone and who is around (do not quote it back):\n{ctx}"
+    )
+    return "\n\n".join(parts)
+
+
+async def conversational_chat_reply(
+    channel_id: str,
+    question: str,
+    guidance: str = "",
+    *,
+    llm_call: Callable[[str], Awaitable[str]] | None = None,
+) -> str:
+    """Author a conversational reply to a member's message (ADR 036 chat route),
+    grounded in channel-scoped context and the orchestrator's reply guidance.
+
+    Unlike ``conversational_agent_reply`` this does not assume an agent ran: the
+    prompt answers the question directly. Reuses the shared inference seam
+    (``build_llm_caller`` -> Qwen) and raises on model failure so the caller can
+    fail open.
+    """
+    context = await asyncio.to_thread(_fetch_agent_reply_context, channel_id)
+    if llm_call is None:
+        llm_call = build_llm_caller()
+    prompt = _build_chat_reply_prompt(question, guidance, context)
+    return await llm_call(prompt)
+
+
 _RETRYABLE_STATUS_CODES = {502, 503, 504}
 
 
