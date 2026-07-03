@@ -41,7 +41,9 @@ instructions: |
     run BOTH steps as delegated subagents, using the `delegate` tool, so that the
     design bar, the JavaScript parse gate and the fresh-eyes review actually run.
     If you write the HTML yourself instead, ALL THREE are skipped and a broken
-    page ships. The steps, in order, each waiting for the result:
+    page ships. Each delegate call is bracketed by the PROGRESS MARKERS protocol
+    below (two stages: build, review). The steps, in order, each waiting for the
+    result:
       1. `delegate(source: "artifact-build")` and WAIT. That subagent reads the
          task from /tmp/goose/task.md and writes the page to /tmp/artifact.html.
       2. `delegate(source: "artifact-review")` and WAIT. That subagent reads
@@ -89,6 +91,35 @@ instructions: |
   it short; if you have nothing useful to add, leave the file untouched. Do not
   do the task yourself and do not deep-dive; the worker re-reads what it needs.
 
+  PROGRESS MARKERS (required, not optional). The owner watches a live
+  checklist built from marker lines you print to stdout. Emit them with the
+  developer extension as shell `printf` commands, exactly in the forms below,
+  one printf per step. A marker line is `::stage::<index>::<state>::<title>`;
+  states are pending, running, done, failed, skipped; titles are short human
+  phrases and must not contain `::`. If you skip these the owner sees no
+  progress, so treat them as mandatory steps of the run, not decoration.
+  Never write markers as prose in your reply; only ever via printf.
+
+  For a single-route task (query, research, plan, implement) the plan is ONE
+  stage. Pick a Title for the route: query -> "Answering", research ->
+  "Researching", plan -> "Planning", implement -> "Implementing".
+    1. Immediately before you call the sub-recipe tool, run:
+         printf '::stages::1\n::stage::0::running::<Title>\n'
+    2. As soon as the sub-recipe returns successfully, run:
+         printf '::stage::0::done::<Title>\n'
+    3. If it fails or you must abort, run instead:
+         printf '::stage::0::failed::<short reason, one line, no ::>\n'
+
+  For an artifact task the plan is TWO stages (build, then review):
+    1. Before delegate(source: "artifact-build"), run:
+         printf '::stages::2\n::stage::0::running::Building the page\n::stage::1::pending::Reviewing the page\n'
+    2. After artifact-build returns, before delegate(source: "artifact-review"), run:
+         printf '::stage::0::done::Building the page\n::stage::1::running::Reviewing the page\n'
+    3. After artifact-review returns, run:
+         printf '::stage::1::done::Reviewing the page\n'
+    If either step fails, run printf '::stage::<i>::failed::<short reason>\n'
+    for the stage that failed instead of its done marker.
+
   Dispatch the actual work; never run it in the router. Your context is
   shared across the whole thread, so a large tool output here (a full
   `git log`, a wide `grep`, a big file) can overflow it and trigger a
@@ -98,10 +129,11 @@ instructions: |
   you do read (pipe through `head`, count with `wc -l` first, sample) and
   never pull hundreds of log lines into your context.
 
-  Then call the matching sub-recipe tool and wait for its result. The task and
-  your context briefing reach the worker through files (the task via
-  {{ task_file }}, the briefing via /tmp/goose/context.md), pre-wired on each
-  sub-recipe, so you do not pass them as tool arguments.
+  Then call the matching sub-recipe tool and wait for its result, bracketed by
+  the single-stage PROGRESS MARKERS protocol above. The task and your context
+  briefing reach the worker through files (the task via {{ task_file }}, the
+  briefing via /tmp/goose/context.md), pre-wired on each sub-recipe, so you do
+  not pass them as tool arguments.
 
   When it returns, produce the structured result enforced by the response
   schema below, from the sub-recipe's output: a short `summary` of the
