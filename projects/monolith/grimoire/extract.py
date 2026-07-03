@@ -12,18 +12,21 @@ it and never overwrites its existing detail row: the first extraction to
 create an entity's detail wins. This keeps the job idempotent and cheap to
 re-run without a reconciliation pass.
 
-Failure semantics: a chunk that fails extraction (HTTP error after retries,
-malformed JSON, or a shape that does not match the expected schema) gets no
-mention rows, so it is naturally re-selected and retried on the next run. A
-chunk that genuinely contains no entities is *also* left with no mention
-rows and is therefore re-selected forever; this is the deliberately simple
-v1 behavior (re-extracting an empty chunk is cheap) rather than writing a
-sentinel "processed, found nothing" marker.
+Cache-key semantics: a chunk is considered processed for a given
+``(model, prompt_hash)`` once a ``grimoire.chunk_extraction`` marker row
+exists for that key (see ``models.ChunkExtraction``). Failure semantics: a
+chunk that fails extraction (HTTP error after retries, malformed JSON, or a
+shape that does not match the expected schema) gets no marker row, so it is
+naturally re-selected and retried on the next run under the same key. A
+chunk that genuinely contains no entities gets a marker with
+``status="empty"`` so it is not re-run forever; changing the model or the
+prompt (which changes ``prompt_hash``) makes every chunk pending again.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -37,6 +40,7 @@ from grimoire.ingest import upsert_embedding_batch
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     ChunkEntityMention,
+    ChunkExtraction,
     Entity,
     EntityCreature,
     EntityLocation,
@@ -418,27 +422,38 @@ def _insert_relationship(
     return True
 
 
-def _select_pending_chunks(session: Session, limit: int) -> list[KnowledgeChunk]:
-    """Sync select of up to ``limit`` chunks with no mentions yet, oldest first.
+def _prompt_hash() -> str:
+    """Stable cache-key component for the current EXTRACTION_PROMPT text."""
+    return hashlib.sha256(EXTRACTION_PROMPT.encode("utf-8")).hexdigest()
 
-    Ordered by created_at so ``limit`` is a deterministic FIFO cutoff, not
-    whatever order the DB happens to return unprocessed rows in.
+
+def _select_pending_chunks(
+    session: Session, model: str, prompt_hash: str, limit: int
+) -> list[KnowledgeChunk]:
+    """Sync select of up to ``limit`` chunks with no marker yet, oldest first.
+
+    A chunk is pending if there is no ``chunk_extraction`` row for THIS
+    exact ``(model, prompt_hash)`` key; a different model or prompt makes
+    every chunk pending again. Optional ``GRIMOIRE_EXTRACT_BOOK`` scopes
+    selection to one ``book_id`` for staged eval runs. Ordered by
+    created_at so ``limit`` is a deterministic FIFO cutoff, not whatever
+    order the DB happens to return unprocessed rows in.
     """
-    mention_exists = (
-        select(ChunkEntityMention.chunk_id)
-        .where(ChunkEntityMention.chunk_id == KnowledgeChunk.id)
+    marker_exists = (
+        select(ChunkExtraction.chunk_id)
+        .where(
+            ChunkExtraction.chunk_id == KnowledgeChunk.id,
+            ChunkExtraction.model == model,
+            ChunkExtraction.prompt_hash == prompt_hash,
+        )
         .exists()
     )
-    return list(
-        session.execute(
-            select(KnowledgeChunk)
-            .where(~mention_exists)
-            .order_by(KnowledgeChunk.created_at)
-            .limit(limit)
-        )
-        .scalars()
-        .all()
-    )
+    query = select(KnowledgeChunk).where(~marker_exists)
+    book = os.environ.get("GRIMOIRE_EXTRACT_BOOK")
+    if book:
+        query = query.where(KnowledgeChunk.book_id == book)
+    query = query.order_by(KnowledgeChunk.created_at).limit(limit)
+    return list(session.execute(query).scalars().all())
 
 
 def _apply_extraction(
@@ -541,9 +556,8 @@ async def extract_chunks(
 ) -> dict:
     """Extract entities/mentions/relationships from up to ``limit`` unprocessed chunks.
 
-    A chunk is "unprocessed" if it has no chunk_entity_mention rows yet
-    (NOT EXISTS, so a chunk that legitimately extracted zero entities is not
-    distinguishable from one never attempted -- see module docstring). All
+    A chunk is "unprocessed" if it has no ``chunk_extraction`` marker row
+    for this ``(model, prompt_hash)`` key yet (see module docstring). All
     Session I/O lives in the sync helpers above, called (not awaited)
     directly from this function's body, mirroring ``ingest.load_chunks``;
     the ``await`` calls here are only ``or_client.extract`` and
@@ -556,7 +570,9 @@ async def extract_chunks(
     "entities_reused", "mentions_created", "relationships_created",
     "entities_embedded"}``.
     """
-    chunks = _select_pending_chunks(session, limit)
+    model = or_client.model
+    prompt_hash = _prompt_hash()
+    chunks = _select_pending_chunks(session, model, prompt_hash, limit)
 
     summary = {
         "chunks_processed": 0,
@@ -609,6 +625,23 @@ async def extract_chunks(
         for key, value in counts.items():
             summary[key] += value
         summary["chunks_processed"] += 1
+
+        status = (
+            "ok"
+            if counts["entities_created"]
+            or counts["entities_reused"]
+            or counts["mentions_created"]
+            else "empty"
+        )
+        with session.begin_nested():
+            session.add(
+                ChunkExtraction(
+                    chunk_id=chunk.id,
+                    model=model,
+                    prompt_hash=prompt_hash,
+                    status=status,
+                )
+            )
 
     _commit(session)
 
