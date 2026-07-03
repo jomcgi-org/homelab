@@ -371,3 +371,13 @@ class KnowledgeGrant(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
     )
+
+
+# Entity types with no row here (faction, deity, item) are spine-only per
+# ADR 011: extraction can emit them but no typed detail table exists yet.
+ENTITY_DETAIL_MODELS: dict[str, type[SQLModel]] = {
+    "creature": EntityCreature,
+    "spell": EntitySpell,
+    "location": EntityLocation,
+    "npc": EntityNpc,
+}

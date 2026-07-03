@@ -1,31 +1,41 @@
-"""Grimoire campaign CRUD HTTP API (private tier only).
+"""Grimoire campaign CRUD + grant-filtered entity read HTTP API (private tier).
 
 Covers campaigns, player characters, knowledge grants (the DM's visibility
-overlay), and game sessions. Entity lookup, relationships, and vector search
-live in later modules (search.py); this router is deliberately just the
-campaign-management surface the /app/grimoire demo needs to set up a game.
+overlay), game sessions, and the grant-filtered entity/relationship read
+paths. Vector search lives in a later module (search.py).
 
-Every handler returns a Pydantic response model, never a SQLModel table
-object (ADR 010: keep the DB row shape off the wire).
+CRUD handlers return a Pydantic response model, never a SQLModel table
+object (ADR 010: keep the DB row shape off the wire). The entity read paths
+are the exception: their projected shape is scope-dependent (full spine,
+partial identity + revealed_details, or a DM view with grant annotations),
+so they return plain dicts, matching the heterogeneous-payload pattern
+already used elsewhere (e.g. knowledge/router.py's `-> dict` handlers).
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from app.db import get_session
 from grimoire.models import (
     Campaign,
+    ENTITY_DETAIL_MODELS,
+    Entity,
+    EntityType,
     GameSession,
     GrantScope,
     KnowledgeGrant,
     PlayerCharacter,
+    Relationship,
     SessionStatus,
 )
+from grimoire.visibility import project_entity, visible_entities_query
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire"])
 
@@ -244,6 +254,211 @@ def update_grant(
     session.commit()
     session.refresh(grant)
     return grant
+
+
+# --- Entities (grant-filtered read paths) --------------------------------
+
+# All read paths below build on visible_entities_query()/project_entity()
+# from visibility.py rather than reimplementing the grant predicate.
+
+
+def _resolve_viewer(session: Session, campaign_id: str, viewer_param: str) -> str:
+    """Validates the ``as`` query param and returns a visibility.Viewer.
+
+    "dm" passes straight through; anything else must be a player_character_id
+    that belongs to this campaign (404 otherwise, same as any other
+    campaign-scoped lookup).
+    """
+    if viewer_param == "dm":
+        return "dm"
+    _get_character_in_campaign_or_404(session, campaign_id, viewer_param)
+    return viewer_param
+
+
+def _aggregate_dm_rows(
+    rows: list[tuple[Entity, KnowledgeGrant | None]],
+    *,
+    detail=None,
+    context: str = "lookup",
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Collapses the DM view's one-row-per-grant rows to one item per entity.
+
+    visible_entities_query() for the DM viewer joins on campaign only (not a
+    single player_character_id), so an entity with N grants comes back as N
+    row tuples sharing the same Entity. This folds those into a single
+    projected dict per entity with a "grants" list, preserving first-seen
+    order.
+    """
+    aggregated: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for entity, grant in rows:
+        projected = project_entity(entity, detail, grant, "dm", context=context)
+        grant_dict = projected.pop("grant")
+        existing = aggregated.get(entity.id)
+        if existing is None:
+            projected["grants"] = [grant_dict] if grant_dict else []
+            aggregated[entity.id] = projected
+            order.append(entity.id)
+        elif grant_dict:
+            existing["grants"].append(grant_dict)
+    return aggregated, order
+
+
+def _project_neighbor(
+    session: Session, campaign_id: str, viewer: str, neighbor_id: str
+) -> dict[str, Any] | None:
+    """Projects a relationship neighbor in "relationship" context.
+
+    Returns None when the neighbor is not visible to the viewer at all
+    (ungranted and not global), so the caller can drop the edge entirely.
+    A name_only grant still yields a recognition stub (not None) because
+    context="relationship" tells project_entity() this is neighbor listing,
+    not direct lookup. Never loads typed detail: neighbor listings stay
+    spine-level like the list endpoint.
+    """
+    rows = session.exec(
+        visible_entities_query(campaign_id, viewer).where(Entity.id == neighbor_id)
+    ).all()
+    if not rows:
+        return None
+    if viewer == "dm":
+        aggregated, order = _aggregate_dm_rows(rows, context="relationship")
+        return aggregated[order[0]]
+    entity, grant = rows[0]
+    return project_entity(entity, None, grant, viewer, context="relationship")
+
+
+@router.get("/campaigns/{campaign_id}/entities")
+def list_entities(
+    campaign_id: str,
+    as_: str = Query(alias="as"),
+    entity_type: EntityType | None = Query(default=None, alias="type"),
+    q: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Grant-filtered entity list, spine-level only (no typed detail rows).
+
+    Returned dict shape is scope-dependent (full spine, partial identity +
+    revealed_details, or a full spine + grants annotation for the DM), so
+    this returns list[dict] rather than a fixed response_model, matching the
+    heterogeneous-payload pattern used by knowledge/router.py.
+    """
+    _get_campaign_or_404(session, campaign_id)
+    viewer = _resolve_viewer(session, campaign_id, as_)
+
+    query = visible_entities_query(campaign_id, viewer).order_by(Entity.name)
+    if entity_type is not None:
+        query = query.where(Entity.entity_type == entity_type)
+    if q:
+        query = query.where(func.lower(Entity.name).contains(q.lower()))
+
+    rows = session.exec(query).all()
+
+    if viewer == "dm":
+        aggregated, order = _aggregate_dm_rows(rows, context="lookup")
+        return [aggregated[entity_id] for entity_id in order]
+
+    items: list[dict[str, Any]] = []
+    for entity, grant in rows:
+        projected = project_entity(entity, None, grant, viewer, context="lookup")
+        if projected is not None:
+            items.append(projected)
+    return items
+
+
+@router.get("/campaigns/{campaign_id}/entities/{entity_id}")
+def get_entity(
+    campaign_id: str,
+    entity_id: str,
+    as_: str = Query(alias="as"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Single entity, scope-projected, with typed detail hydrated.
+
+    Existence must not leak past the grant predicate: both a non-visible
+    entity and a name_only grant return a plain 404 (project_entity()
+    returns None for name_only in lookup context, so both cases collapse to
+    the same check below).
+    """
+    _get_campaign_or_404(session, campaign_id)
+    viewer = _resolve_viewer(session, campaign_id, as_)
+
+    rows = session.exec(
+        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="entity not found")
+
+    entity = rows[0][0]
+    detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
+    detail = session.get(detail_model, entity_id) if detail_model else None
+
+    if viewer == "dm":
+        aggregated, order = _aggregate_dm_rows(rows, detail=detail, context="lookup")
+        return aggregated[order[0]]
+
+    grant = rows[0][1]
+    projected = project_entity(entity, detail, grant, viewer, context="lookup")
+    if projected is None:
+        raise HTTPException(status_code=404, detail="entity not found")
+    return projected
+
+
+@router.get("/campaigns/{campaign_id}/entities/{entity_id}/relationships")
+def list_entity_relationships(
+    campaign_id: str,
+    entity_id: str,
+    as_: str = Query(alias="as"),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """1-hop relationship edges from/to entity_id, grant-filtered per neighbor.
+
+    The center entity must itself be visible to the viewer in lookup context
+    (same 404-or-not check as get_entity, existence must not leak). Each
+    neighbor is then projected independently in "relationship" context so a
+    name_only neighbor becomes a recognition stub instead of vanishing, while
+    a wholly invisible neighbor (ungranted, non-global) drops its edge.
+    """
+    _get_campaign_or_404(session, campaign_id)
+    viewer = _resolve_viewer(session, campaign_id, as_)
+
+    center_rows = session.exec(
+        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
+    ).all()
+    if not center_rows:
+        raise HTTPException(status_code=404, detail="entity not found")
+    if viewer != "dm":
+        center_entity, center_grant = center_rows[0]
+        center_projected = project_entity(
+            center_entity, None, center_grant, viewer, context="lookup"
+        )
+        if center_projected is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+
+    outgoing = session.exec(
+        select(Relationship).where(Relationship.from_entity_id == entity_id)
+    ).all()
+    incoming = session.exec(
+        select(Relationship).where(Relationship.to_entity_id == entity_id)
+    ).all()
+    edges = [(rel, "out", rel.to_entity_id) for rel in outgoing] + [
+        (rel, "in", rel.from_entity_id) for rel in incoming
+    ]
+
+    items: list[dict[str, Any]] = []
+    for rel, direction, neighbor_id in edges:
+        neighbor = _project_neighbor(session, campaign_id, viewer, neighbor_id)
+        if neighbor is None:
+            continue
+        items.append(
+            {
+                "rel_type": rel.rel_type,
+                "direction": direction,
+                "properties": rel.properties,
+                "entity": neighbor,
+            }
+        )
+    return items
 
 
 # --- Game sessions ---------------------------------------------------
