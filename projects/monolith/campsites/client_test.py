@@ -116,45 +116,61 @@ def test_read_catalog_json_shape():
 # ---------------------------------------------------------------------------
 
 
-def test_merge_availability_or():
-    """OR logic: day open if any loop has 1; loops_open counts active loops."""
+def test_merge_availability_enum():
+    """GoingToCamp enum: only code 0 is available; 1 (booked) and 2 (closed)
+    are NOT. A day is open if any loop is 0; loops_open counts the 0-loops."""
     payload = {
         "mapLinkAvailabilities": {
-            "-1": [0, 1, 0],
-            "-2": [1, 1, 0],
+            "-1": [0, 1, 2],  # available, booked, closed
+            "-2": [1, 0, 2],  # booked, available, closed
         }
     }
     result = merge_availability(payload, _START, ndays=3)
     assert len(result) == 3
 
-    # Day 0: loop -2 is open (1), loop -1 is closed (0): has_availability=True, loops_open=1
+    # Day 0: loop -1 is available (0), loop -2 is booked (1): open, 1 loop.
     assert result[0].date == _START
     assert result[0].has_availability is True
     assert result[0].loops_open == 1
 
-    # Day 1: both loops open: has_availability=True, loops_open=2
+    # Day 1: loop -2 is available (0), loop -1 is booked (1): open, 1 loop.
     assert result[1].date == _START + datetime.timedelta(days=1)
     assert result[1].has_availability is True
-    assert result[1].loops_open == 2
+    assert result[1].loops_open == 1
 
-    # Day 2: both loops closed: has_availability=False, loops_open=0
+    # Day 2: both loops closed (2): NOT open, 0 loops. This is the regression
+    # the old truthy test got wrong (it counted 2 as available).
     assert result[2].date == _START + datetime.timedelta(days=2)
     assert result[2].has_availability is False
     assert result[2].loops_open == 0
+
+
+def test_merge_availability_nonzero_codes_are_not_open():
+    """A loop that is all-booked (1) or all-closed (2) never reads as available,
+    even though those values are truthy in Python."""
+    payload = {
+        "mapLinkAvailabilities": {
+            "-1": [1, 1, 1],  # fully booked every day
+            "-2": [2, 2, 2],  # closed every day
+        }
+    }
+    result = merge_availability(payload, _START, ndays=3)
+    assert all(not d.has_availability for d in result)
+    assert all(d.loops_open == 0 for d in result)
 
 
 def test_merge_availability_ragged():
     """Ragged arrays (shorter than ndays) and empty arrays do not crash."""
     payload = {
         "mapLinkAvailabilities": {
-            "-10": [1],  # only one entry; index 1+ treated as 0
-            "-11": [],  # empty; all indices treated as 0
+            "-10": [0],  # only one entry (available); index 1+ is missing
+            "-11": [],  # empty; every index missing
         }
     }
     result = merge_availability(payload, _START, ndays=3)
     assert len(result) == 3
 
-    # Day 0: array -10 has 1 at index 0.
+    # Day 0: array -10 is 0 (available) at index 0.
     assert result[0].has_availability is True
     assert result[0].loops_open == 1
 
