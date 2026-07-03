@@ -94,7 +94,7 @@ class TestCallHappyPath:
 
         instance.post.assert_called_once()
         args, kwargs = instance.post.call_args
-        assert args[0] == "https://openrouter.ai/api/v1/v1/chat/completions"
+        assert args[0] == "https://openrouter.ai/api/v1/chat/completions"
         assert kwargs["headers"]["Authorization"] == "Bearer secret-key"
         payload_sent = kwargs["json"]
         assert payload_sent["model"] == "deepseek/deepseek-chat-v4-flash"

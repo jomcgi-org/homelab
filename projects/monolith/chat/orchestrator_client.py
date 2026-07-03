@@ -81,7 +81,7 @@ async def call(system: str, user: str) -> OrchestratorResponse:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
             resp = await client.post(
-                f"{base_url}/v1/chat/completions",
+                f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
                     "model": model,
