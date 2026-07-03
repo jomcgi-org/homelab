@@ -21,14 +21,19 @@ Reuse seams:
 - Reply text: the in-monolith chat agent (``chat.agent.create_agent``) run
   non-streamed; ``result.output`` is the full text.
 
-Deferred to Phase 4: agent (heavyweight session) dispatch, and enforcement of the
-household tier's tool subset at dispatch time (``goosecracker.tiers.tier_allows``
-is the mapping the dispatch check will consult). The in-monolith chat reply here
-runs with the shared chat agent's full toolset.
+Phase 4 wires the agent path for real (behind ``WHATSAPP_AGENT_ENABLED``): an
+engaged message for a group with a live session steers it (``whatsapp_session.
+steer_or_none``, attributed per author); otherwise an agent-shaped message
+dispatches a household group session (``whatsapp_session.dispatch_whatsapp_agent``),
+which enforces the household tool subset at dispatch (a repo action is refused).
+The reaction lifecycle, live checklist, and result are driven by the runner and
+the progress sink through ``chat.whatsapp_outbox`` (see ``chat.whatsapp_session``).
+The in-monolith chat reply still runs with the shared chat agent's full toolset.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
@@ -38,7 +43,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.db import get_engine
-from chat import attention, attention_log
+from chat import attention, attention_log, whatsapp_session
 from chat.models import Message, WhatsappGroup
 from chat.whatsapp_outbox import enqueue_message
 
@@ -204,10 +209,15 @@ async def inbound(
         # unknown group is dropped without processing.
         return {"status": "dropped"}
 
+    embed_client = _embed_client()
+
+    # Read-side: dedupe, store for context, and gate attention in one session,
+    # then close it. The session-keyed agent helpers below open their own
+    # sessions (steering, dispatch, checklist), so they must not nest inside an
+    # open one (SQLite StaticPool in tests shares a single connection).
     with Session(get_engine()) as session:
         from chat.store import MessageStore
 
-        embed_client = _embed_client()
         store = MessageStore(session=session, embed_client=embed_client)
 
         # Dedupe on (group_jid, message_id): the gateway delivers at-least-once.
@@ -245,29 +255,69 @@ async def inbound(
         )
         if not result.engage:
             return {"status": "ignored"}
+        is_agent = await attention.needs_agent(adapter)
 
-        # Depth split, mirroring Discord. Agent (heavyweight session) work is
-        # Phase 4; until then it gets an honest one-line reply behind the flag.
-        if await attention.needs_agent(adapter):
-            if _AGENT_ENABLED:
-                # Phase 4 dispatch seam: goosecracker.dispatch.submit() for a
-                # wa:<group_jid> session under the household tier. Until it lands,
-                # answer honestly rather than silently dropping.
-                logger.info(
-                    "whatsapp: agent-shaped message in %s; dispatch deferred to Phase 4",
-                    body.group_jid,
-                )
-            reply_text = _AGENT_DEFERRED_REPLY
-        else:
-            reply_text = await _generate_reply(
-                session, embed_client, body.group_jid, body.sender_name, body.text
-            )
-            if not reply_text:
-                reply_text = (
-                    "Sorry, I'm having trouble formulating a response right now. "
-                    "Please try again in a moment."
-                )
+    session_key = whatsapp_session.wa_session_key(body.group_jid)
 
+    # A live group run: an engaged message steers it rather than starting a new
+    # task (spec 4c), attributed to the WhatsApp author (JID + push name). The
+    # running check and steering insert are atomic under the row lock.
+    steered = await asyncio.to_thread(
+        whatsapp_session.steer_or_none,
+        session_key,
+        message_id=body.message_id,
+        sender_jid=body.sender_jid,
+        sender_name=body.sender_name,
+        text=body.text,
+    )
+    if steered:
+        return {"status": "steering"}
+
+    # Depth split, mirroring Discord. Agent (heavyweight session) work dispatches
+    # a household group session when enabled; otherwise an honest one-liner.
+    if is_agent:
+        if not _AGENT_ENABLED:
+            await _enqueue_bot_reply(embed_client, body, _AGENT_DEFERRED_REPLY)
+            return {"status": "replied"}
+        outcome = await asyncio.to_thread(
+            whatsapp_session.dispatch_whatsapp_agent,
+            body.group_jid,
+            body.text,
+            trigger_message_id=body.message_id,
+            trigger_sender_jid=body.sender_jid,
+        )
+        # dispatch: reactions + checklist are enqueued by the dispatch/runner.
+        # refused: a one-line explanation was already enqueued (household ACL).
+        return {"status": outcome.get("action", "dispatched")}
+
+    # Chat path: a full conversational reply, enqueued as a single outbox message.
+    with Session(get_engine()) as session:
+        reply_text = await _generate_reply(
+            session, embed_client, body.group_jid, body.sender_name, body.text
+        )
+    if not reply_text:
+        reply_text = (
+            "Sorry, I'm having trouble formulating a response right now. "
+            "Please try again in a moment."
+        )
+    await _enqueue_bot_reply(embed_client, body, reply_text)
+    return {"status": "replied"}
+
+
+async def _enqueue_bot_reply(
+    embed_client, body: InboundMessage, reply_text: str
+) -> None:
+    """Enqueue a bot reply to the group and store it for context.
+
+    Opens its own session (the caller no longer holds one). The reply quotes the
+    triggering message. The stored copy is a reply target for later directedness
+    (a WhatsApp reply to it engages); it has no WhatsApp message id yet (the
+    gateway stamps sent_message_id on send), so it is stored under a synthetic
+    bot-reply id keyed to the trigger.
+    """
+    from chat.store import MessageStore
+
+    with Session(get_engine()) as session:
         enqueue_message(
             session,
             body.group_jid,
@@ -275,11 +325,7 @@ async def inbound(
             quoted_message_id=body.message_id,
         )
         session.commit()
-
-        # Store the bot reply so it is available as context and as a reply target
-        # for later directedness (a WhatsApp reply to it engages). It has no
-        # WhatsApp message id yet (the gateway stamps sent_message_id on send), so
-        # it is stored under a synthetic bot-reply id keyed to the trigger.
+        store = MessageStore(session=session, embed_client=embed_client)
         await store.save_message(
             discord_message_id=f"wa-bot:{body.message_id}",
             channel_id=body.group_jid,
@@ -288,8 +334,6 @@ async def inbound(
             content=reply_text,
             is_bot=True,
         )
-
-    return {"status": "replied"}
 
 
 class _MessageAdapter:
