@@ -9,9 +9,18 @@ load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
 load("@npm//:prettier/package_json.bzl", prettier = "bin")
 load("@rules_multirun//:defs.bzl", "multirun")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # gazelle:exclude
 package(default_visibility = ["//:__subpackages__"])
+
+# Hermetic tests for the migration-ordering guard (no git; base versions are
+# overridden via MIGRATION_BASE_VERSIONS inside the test).
+sh_test(
+    name = "check_migration_ordering_test",
+    srcs = ["check-migration-ordering_test.sh"],
+    data = ["check-migration-ordering.sh"],
+)
 
 js_library(
     name = "prettierrc",
