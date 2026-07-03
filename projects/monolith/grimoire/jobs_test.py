@@ -77,12 +77,59 @@ class TestExtractEntitiesHandler:
 
         monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_BASE_URL", raising=False)
 
         # Must not raise, and must not touch the orchestrator or clients.
         result = _run(jobs.grimoire_extract_entities(session=None))
 
         assert result is None
         assert called["extract"] is False
+
+    def test_skips_when_openrouter_base_url_explicit_and_key_unset(
+        self, monkeypatch, stub_clients
+    ):
+        called = {"extract": False}
+
+        async def spy_extract_chunks(session, or_client, embed_client, limit):
+            called["extract"] = True
+            return {}
+
+        monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "GRIMOIRE_EXTRACT_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"
+        )
+
+        result = _run(jobs.grimoire_extract_entities(session=None))
+
+        assert result is None
+        assert called["extract"] is False
+
+    def test_runs_keyless_against_local_qwen_base_url(self, monkeypatch, stub_clients):
+        captured: dict = {}
+
+        async def spy_extract_chunks(session, or_client, embed_client, limit):
+            captured["ran"] = True
+            captured["api_key"] = or_client.api_key
+            captured["base_url"] = or_client.base_url
+            return {}
+
+        monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "GRIMOIRE_EXTRACT_BASE_URL",
+            "http://inference.inference.svc.cluster.local:8080/v1/chat/completions",
+        )
+
+        result = _run(jobs.grimoire_extract_entities(session=None))
+
+        assert result is None
+        assert captured["ran"] is True
+        assert captured["api_key"] == ""
+        assert (
+            captured["base_url"]
+            == "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
+        )
 
     def test_passes_limit_env_and_builds_client_from_key(
         self, monkeypatch, stub_clients
