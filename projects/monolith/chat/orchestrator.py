@@ -4,20 +4,28 @@ and fail-open telemetry.
 This is the host-side tier that runs on an escalation candidate before any
 Firecracker microVM boots. It assembles a deterministic, cache-friendly prompt
 (baked bundle + versioned channel directive as ``system``; the volatile context
-as ``user``), calls the OpenRouter client once, and turns the reply into one of:
+as ``user``), calls the OpenRouter client, and turns the reply into one of:
 
-- ``Brief``       - a grounded goose task brief (recipe, paths, hints,
-                    constraints, done criteria, stage plan).
+- ``PlanVerdict`` - the request needs a real agent session. The route call
+                    yields the repo scope (with ADR 029 out-of-scope
+                    replacement); a second ``submit_plan`` tool call then yields
+                    a validated typed :class:`Plan` (ordered sub-recipe steps
+                    with per-step context). Supersedes ``Brief`` on the goose
+                    route (runtime-recipe orchestrator, Task 5).
 - ``ChatVerdict`` - the request is conversational; carries the model's reply
                     guidance (context, direction, optional redirect) for the
                     local-Qwen concierge to author the actual reply.
 - ``FailOpen``    - degrade to today's direct-submit path (disabled, ungranted,
-                    unreachable, or unparseable).
+                    unreachable, unparseable, or an unusable/invalid plan).
 
-Every path that actually calls the model writes exactly one
-``chat.orchestrator_brief`` telemetry row. The disabled/ungranted path writes no
-row and reads no key: per spec section 1, an ungranted channel produces no
-OpenRouter traffic at all.
+Two calls on the goose route, one on the chat route. The first call is the
+unchanged route decision (chat vs goose, yielding the goose ``Brief`` used only
+for its repo scope); on the goose route a second ``call_tool`` produces the
+plan. Every compile that actually calls the model writes exactly one
+``chat.orchestrator_brief`` telemetry row (the plan call does NOT write a second
+row; the single goose row is augmented with plan fields in ``brief_json``). The
+disabled/ungranted path writes no row and reads no key: per spec section 1, an
+ungranted channel produces no OpenRouter traffic at all.
 """
 
 from __future__ import annotations
@@ -32,8 +40,10 @@ from pathlib import Path
 from sqlmodel import Session
 
 from app.db import get_engine
-from chat import acl, orchestrator_client
+from chat import acl, orchestrator_client, orchestrator_plan
 from chat.models import OrchestratorBrief
+from chat.orchestrator_plan import Plan
+from goosecracker import recipe_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +97,24 @@ class Brief:
 
 
 @dataclass
+class PlanVerdict:
+    """A compiled runtime-plan verdict for the goose route (Task 5).
+
+    Supersedes :class:`Brief` on the goose route. The route-decision call still
+    yields the repo scope (with ADR 029 out-of-scope replacement carried here as
+    ``repo`` / ``repo_replaced``), but the recipe / hints / stages are replaced
+    by ``plan``: a validated typed :class:`Plan` produced by a second
+    ``submit_plan`` tool call. The plan (ordered sub-recipe steps with per-step
+    context) is what the downstream router renderer specializes; the Brief's own
+    recipe/hints/stages are intentionally not carried forward."""
+
+    plan: Plan
+    repo: str
+    repo_paths: list[str]
+    repo_replaced: bool = False
+
+
+@dataclass
 class ChatVerdict:
     """A conversational verdict carrying the model's reply guidance (ADR 036
     chat-route amendment). The local-Qwen concierge authors the reply using this
@@ -128,7 +156,14 @@ class RequestContext:
     directive: Directive = field(default_factory=Directive)
 
 
-Verdict = Brief | ChatVerdict | FailOpen
+Verdict = PlanVerdict | ChatVerdict | FailOpen
+
+# Timeout for the second (submit_plan) call on the goose route. The plan call
+# does real construction work, so it gets the initial-compile budget (60s), not
+# the old 10s route-call default. Task 8 formalizes ``ORCHESTRATOR_TIMEOUT_S``
+# (default 60) + a separate replan timeout; until then this module-level default
+# stands and Task 8 wires the env.
+_PLAN_TIMEOUT_S = 60.0
 
 
 def enabled() -> bool:
@@ -182,6 +217,46 @@ def assemble_prompt(
         + "\n"
     )
     return system, user
+
+
+def plan_system_prompt() -> str:
+    """Build the ``submit_plan`` (second, goose-route) call's system message.
+
+    This is the plan-construction framing, distinct from the route-decision
+    bundle (which stays byte-identical so its provider prefix cache keeps
+    hitting). It is validated in spirit against ``scratchpad/probe_submit_plan.py``
+    (12/12) and its sub-recipe menu is sourced verbatim from
+    ``recipe_catalog.CATALOG`` so the prose and the tool-schema enum can never
+    drift. Byte-deterministic: derived only from the ordered catalog, no
+    timestamps/ids, so identical catalogs give identical bytes and this call's
+    own prefix stays cache-friendly too.
+    """
+    lines = [
+        "You are the delegation orchestrator in front of a coding agent "
+        "(goose/Qwen). The routing tier has already decided this request needs a "
+        "real agent session; your only job now is to construct the PLAN for it.",
+        "",
+        "You never write code yourself, you never invent sub-recipe names, and "
+        "you never author recipe YAML. You select an allow-set of sub-recipes and "
+        "order them into steps, each step naming exactly one sub-recipe plus the "
+        "context that step needs. You may only use these sub-recipes:",
+        "",
+    ]
+    lines.extend(
+        f"- {entry.id} = {entry.description}"
+        for entry in recipe_catalog.CATALOG.values()
+    )
+    lines.extend(
+        [
+            "",
+            "Submit the plan by calling the submit_plan tool. Keep plans minimal: "
+            "include only the steps the task actually needs, in execution order. "
+            "Every step's context must be non-empty and grounded in the request. "
+            "Every sub-recipe named by a step must also appear in "
+            "enabled_subrecipes.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _strip_fences(content: str) -> str:
@@ -325,6 +400,30 @@ def _brief_to_json(brief: Brief) -> dict:
     }
 
 
+def _plan_to_json(verdict: Brief, plan: Plan, plan_latency_ms: int) -> dict:
+    """Serialize a goose PlanVerdict for the single telemetry ``brief_json`` row.
+
+    Reuses the existing JSONB column (no new DB column / migration): the repo
+    scope carried from the route-decision Brief plus the validated plan and its
+    call metrics (step count, plan-call latency). The route call's own token /
+    latency accounting stays in the row's dedicated columns.
+    """
+    return {
+        "repo": verdict.repo,
+        "repo_paths": verdict.repo_paths,
+        "repo_replaced": verdict.repo_replaced,
+        "plan": {
+            "enabled_subrecipes": list(plan.enabled_subrecipes),
+            "steps": [
+                {"sub_recipe": s.sub_recipe, "context": s.context} for s in plan.steps
+            ],
+            "done_criteria": list(plan.done_criteria),
+        },
+        "plan_step_count": len(plan.steps),
+        "plan_latency_ms": plan_latency_ms,
+    }
+
+
 def _guidance_to_json(verdict: ChatVerdict) -> dict:
     """Serialize chat reply guidance for the telemetry ``brief_json`` column."""
     return {
@@ -407,11 +506,17 @@ async def compile(ctx: RequestContext) -> Verdict:
     1. If the tier is disabled OR the channel lacks the ADR 029 consent grant,
        return :class:`FailOpen` WITHOUT calling the client and WITHOUT writing a
        row (no OpenRouter traffic, no key read on that path).
-    2. Otherwise assemble the prompt and call the client once. A timeout / HTTP
-       error / unparseable output all fail open, each writing one ``failopen``
-       telemetry row.
-    3. A valid verdict writes one ``goose``/``chat`` row and is returned. An
-       out-of-scope brief repo is replaced by the invoker's own scope.
+    2. Otherwise assemble the prompt and make the route-decision call. A timeout
+       / HTTP error / unparseable output all fail open, each writing one
+       ``failopen`` telemetry row.
+    3. On the chat route, write one ``chat`` row and return the
+       :class:`ChatVerdict`.
+    4. On the goose route, apply the ADR 029 out-of-scope repo replacement, then
+       make a SECOND call (``submit_plan`` tool) to construct the plan. A plan
+       call that is unavailable, returns nothing usable, or fails
+       :func:`orchestrator_plan.validate_plan` fails open (one ``failopen`` row).
+       A valid plan writes one ``goose`` row (augmented with plan fields, never a
+       second row) and returns a :class:`PlanVerdict`.
     """
     if not enabled():
         return FailOpen("orchestrator disabled")
@@ -467,19 +572,77 @@ async def compile(ctx: RequestContext) -> Verdict:
                 ctx.invoker_scope,
             )
             verdict.repo = ctx.invoker_scope
+
+        # Second call (goose route only): construct the typed plan. Any failure
+        # here fails open to today's baked recipe="agent" path, writing the one
+        # telemetry row this compile is allowed (no separate plan-call row).
+        try:
+            plan_args, plan_resp = await orchestrator_client.call_tool(
+                plan_system_prompt(),
+                user,
+                schema=orchestrator_plan.submit_plan_schema(),
+                timeout_s=_PLAN_TIMEOUT_S,
+            )
+        except orchestrator_client.OrchestratorUnavailable as exc:
+            reason = f"plan call unavailable: {exc}"
+            logger.warning("orchestrator: failing open, %s", reason)
+            await asyncio.to_thread(
+                _record,
+                ctx,
+                "failopen",
+                model,
+                None,
+                resp.latency_ms,
+                resp.prompt_tokens,
+                resp.completion_tokens,
+                resp.cached_tokens,
+                reason,
+            )
+            return FailOpen(reason)
+
+        try:
+            plan = orchestrator_plan.plan_from_dict(plan_args)
+        except (AttributeError, TypeError) as exc:
+            plan = None
+            plan_error = f"plan tool returned an unusable object: {exc}"
+        else:
+            errors = orchestrator_plan.validate_plan(plan)
+            plan_error = f"invalid plan: {errors}" if errors else ""
+
+        if plan is None or plan_error:
+            logger.warning("orchestrator: failing open, %s", plan_error)
+            await asyncio.to_thread(
+                _record,
+                ctx,
+                "failopen",
+                model,
+                None,
+                resp.latency_ms,
+                resp.prompt_tokens,
+                resp.completion_tokens,
+                resp.cached_tokens,
+                plan_error,
+            )
+            return FailOpen(plan_error)
+
         await asyncio.to_thread(
             _record,
             ctx,
             "goose",
             model,
-            _brief_to_json(verdict),
+            _plan_to_json(verdict, plan, plan_resp.latency_ms),
             resp.latency_ms,
             resp.prompt_tokens,
             resp.completion_tokens,
             resp.cached_tokens,
             None,
         )
-        return verdict
+        return PlanVerdict(
+            plan=plan,
+            repo=verdict.repo,
+            repo_paths=verdict.repo_paths,
+            repo_replaced=verdict.repo_replaced,
+        )
 
     await asyncio.to_thread(
         _record,
