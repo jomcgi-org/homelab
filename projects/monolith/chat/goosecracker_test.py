@@ -12,7 +12,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from chat import goosecracker
-from chat.models import DiscordOutbox, GoosecrackerSession, GoosecrackerSteering
+from chat.models import (
+    DiscordOutbox,
+    GoosecrackerSession,
+    GoosecrackerSteering,
+    Message,
+)
 
 # Sentinel so _make_agent_session can distinguish "caller passed None" from
 # "caller passed nothing" for the running_since / runner_instance overrides.
@@ -246,6 +251,57 @@ def test_start_agent_session_round_trips_parent_channel(engine, fake_api):
     assert row.running_since is not None
     assert row.inflight_task == "fix the bug"
     assert not goosecracker._is_stale(row, datetime.now(timezone.utc))
+
+
+# ---------------------------------------------------------------------------
+# Caller-provided context injection (ADR 040)
+# ---------------------------------------------------------------------------
+
+
+def _msg(session, channel_id, username, content, msg_id):
+    session.add(
+        Message(
+            id=msg_id,
+            discord_message_id=str(msg_id),
+            channel_id=channel_id,
+            user_id=username,
+            username=username,
+            content=content,
+            embedding=[0.0] * 1024,
+        )
+    )
+    session.commit()
+
+
+class TestBuildInjectedContext:
+    def test_bundles_parent_channel_transcript_and_readme(self, engine, fake_api):
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-1",
+                    recipe="agent",
+                    tier="",
+                    repo="homelab",
+                    parent_channel_id="chan-1",
+                )
+            )
+            session.commit()
+            _msg(session, "chan-1", "alice", "hello", 1)
+            _msg(session, "chan-1", "bob", "world", 2)
+
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            bundle = goosecracker.build_injected_context("thr-1", tier="")
+
+        assert set(bundle) == {"README.md", "transcript.md"}
+        assert "hello" in bundle["transcript.md"]
+        assert "world" in bundle["transcript.md"]
+        assert "chan-1" in bundle["README.md"]
+        assert "injected-context" in bundle["README.md"].lower()
+
+    def test_unknown_thread_returns_empty_bundle(self, engine, fake_api):
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            bundle = goosecracker.build_injected_context("unknown-thread", tier="")
+        assert bundle == {}
 
 
 # ---------------------------------------------------------------------------

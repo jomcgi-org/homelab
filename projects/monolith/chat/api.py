@@ -10,6 +10,7 @@ from chat.bot import send_message  # re-exported
 from chat.changelog import run_changelog_for_config  # re-exported
 from chat.goosecracker import ack_inflight  # re-exported
 from chat.goosecracker import artifact_id_for_thread  # re-exported
+from chat.goosecracker import build_injected_context  # re-exported
 from chat.goosecracker import drain_agent_queue  # re-exported
 from chat.goosecracker import ensure_steering_token  # re-exported
 from chat.goosecracker import force_idle_thread  # re-exported
@@ -28,6 +29,7 @@ from chat.summarizer import run_summary_generation  # re-exported
 __all__ = [
     "ack_inflight",
     "artifact_id_for_thread",
+    "build_injected_context",
     "conversational_agent_reply",
     "drain_agent_queue",
     "ensure_steering_token",
