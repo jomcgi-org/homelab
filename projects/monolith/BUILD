@@ -4415,6 +4415,23 @@ py_test(
 )
 
 py_test(
+    name = "goosecracker_router_render_test",
+    srcs = ["goosecracker/tests/router_render_test.py"],
+    # The parse + drift-guard tests read the real, checked-in guest recipe
+    # YAMLs at projects/firecracker/goosecracker/guest/recipes/*.yaml via
+    # Path(__file__).parents[3] (same idiom as goosecracker_recipe_catalog_test),
+    # so ship them as data (the guest package's recipe_yamls filegroup) to land
+    # in the same runfiles tree the parents-relative path walk resolves against.
+    data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "agent_checks_firing_alerts_test",
     srcs = ["agent/checks_firing_alerts_test.py"],
     imports = ["."],
