@@ -39,6 +39,17 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
+    # Grimoire API — pass through to backend without rewriting. Without this
+    # rule /api/grimoire/* falls through to the catch-all below and lands on
+    # the SvelteKit port, which 404s it (the private-tier equivalent of the
+    # public ALLOWED_PREFIXES gap).
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/grimoire
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.service.apiPort | int }}
     # Chat interface — SvelteKit SSR calls LLM backend, needs long timeout
     - matches:
         - path:
