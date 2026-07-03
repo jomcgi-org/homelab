@@ -4,7 +4,7 @@
 
 **Goal:** Implement ADR 036: a host-side brief compiler in the monolith chat harness that routes chat vs goose before microVM boot and compiles a grounded, cache-friendly task brief for escalations, via OpenRouter.
 
-**Architecture:** A new `chat/orchestrator.py` module sits between the ADR 035 shared agent flow and `goosecracker.api.submit()`. It calls OpenRouter through an httpx client shaped like `summarizer.build_llm_caller` (summarizer.py:412), with a deterministic prompt: committed baked bundle + versioned directive as `system`, volatile context as `user`. Output is a strict-JSON brief or a chat verdict; every call logs to `chat.orchestrator_brief`. Everything fails open to today's direct-submit path.
+**Architecture:** A new `chat/orchestrator.py` module sits between the ADR 035 shared agent flow and `goosecracker.api.submit()`. It calls OpenRouter through an httpx client shaped like `summarizer.build_llm_caller` (summarizer.py:412), with a deterministic prompt: committed baked bundle + versioned directive as `system`, volatile context as `user`. Output is a strict-JSON brief (goose route) or a chat verdict carrying reply guidance the local Qwen concierge uses to write the reply (chat route); every call logs to `chat.orchestrator_brief`. Everything fails open to today's direct-submit path.
 
 **Tech Stack:** Python (monolith chat module), httpx, OpenRouter (OpenAI-compatible `/v1/chat/completions`), Postgres via Atlas migrations, 1Password Operator for the key, goose recipes on fc-invoke.
 
@@ -102,7 +102,7 @@
 **Steps:**
 
 1. Write failing tests for `assemble_prompt(bundle, directive, kg_results, channel_context, request) -> (system, user)`: stability order per spec section 4; identical inputs give identical bytes; directive rendered with version tag; volatile content only in `user`.
-2. Write failing tests for `parse_brief(content) -> Brief | ChatVerdict`: strict JSON schema from spec section 3; unknown keys tolerated, missing required keys = parse failure; `repo` outside invoker scopes replaced by invoker scope (function takes the allowed-scopes set) with a flag set for logging.
+2. Write failing tests for `parse_brief(content) -> Brief | ChatVerdict`: strict JSON schema from spec section 3, route-partitioned (goose route validates the brief fields, chat route validates the `reply_guidance` block; the non-matching block may be null/absent); a `ChatVerdict` carries the parsed `reply_guidance` (context, optional redirect, direction); unknown keys tolerated, missing required keys for the active route = parse failure; `repo` outside invoker scopes replaced by invoker scope (function takes the allowed-scopes set) with a flag set for logging.
 3. Write failing tests for `compile(request_ctx) -> Verdict`: consent grant (`acl.is_granted(guild, "", "orchestrator", channel)`) and `orchestrator.enabled` checked first (no client call otherwise); client errors, timeout, and parse failures return `FailOpen(reason)`; every path writes exactly one `chat.orchestrator_brief` row with the right `route`.
 4. Implement.
 5. Commit: `feat(chat): orchestrator brief compiler with consent gate and fail-open`
@@ -116,8 +116,8 @@
 
 **Steps:**
 
-1. Write failing tests: `chat` verdict → conversational reply path, no session, no checklist; `goose` verdict → checklist message pre-rendered from `brief.stages`, submit called with the brief-rendered task input (brief markdown + raw prompt); `FailOpen` → exact pre-036 behaviour.
-2. Implement; the checklist pre-render reuses the 035 `render_checklist` on a synthetic all-pending stage list.
+1. Write failing tests: `chat` verdict → conversational reply path, no session, no checklist, with `reply_guidance` passed to the concierge as supplementary context (the concierge/local-Qwen call is the reply author; assert the guidance reaches its prompt and that a `redirect` does not by itself submit a session); `goose` verdict → checklist message pre-rendered from `brief.stages`, submit called with the brief-rendered task input (brief markdown + raw prompt); `FailOpen` → exact pre-036 behaviour.
+2. Implement; the checklist pre-render reuses the 035 `render_checklist` on a synthetic all-pending stage list. The chat path threads `reply_guidance` into the existing concierge reply call as an extra system-context block (raw prompt stays the user message; guidance never replaces it).
 3. Commit: `feat(chat): route escalations through the orchestrator`
 
 **Phase 3 gate:** PR, CI, review, merge, chart bump with `orchestrator.enabled: true` for the home server plus the 1Password item path. Live check: granted channel gets brief-driven sessions; revoking the grant restores direct submit.
