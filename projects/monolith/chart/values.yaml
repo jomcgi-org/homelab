@@ -620,6 +620,10 @@ grimoire:
     itemPath: ""
   s3Bucket: "grimoire"
   extractModel: "anthropic/claude-sonnet-4.5"
+  # extractBaseUrl: OpenAI-compatible chat/completions endpoint for extraction.
+  # Empty here so the code falls back to OpenRouter; deploy/values.yaml points
+  # it at the in-cluster Qwen vLLM (free, keyless) to avoid OpenRouter spend.
+  extractBaseUrl: ""
   # extractLimit: optional per-run cap on chunks the extraction job processes.
   # Unset here so the code default (25) applies; set to tune without a code
   # change.

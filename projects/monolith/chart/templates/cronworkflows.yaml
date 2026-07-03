@@ -137,6 +137,14 @@ spec:
               value: {{ $.Values.grimoire.s3Bucket | quote }}
             - name: GRIMOIRE_EXTRACT_MODEL
               value: {{ $.Values.grimoire.extractModel | quote }}
+            {{- if $.Values.grimoire.extractBaseUrl }}
+            # Points extraction at an OpenAI-compatible chat/completions
+            # endpoint. Set to the in-cluster Qwen vLLM (free, no API key) so
+            # extraction does not spend OpenRouter money; left empty in the
+            # chart default so the code falls back to OpenRouter.
+            - name: GRIMOIRE_EXTRACT_BASE_URL
+              value: {{ $.Values.grimoire.extractBaseUrl | quote }}
+            {{- end }}
             {{- if $.Values.grimoire.extractLimit }}
             - name: GRIMOIRE_EXTRACT_LIMIT
               value: {{ $.Values.grimoire.extractLimit | quote }}

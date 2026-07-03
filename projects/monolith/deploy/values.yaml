@@ -255,15 +255,19 @@ gardener:
 
 # Grimoire D&D ingest pipeline (private tier only; spec
 # docs/plans/2026-07-02-grimoire-pg-first-spec.md). Enabled here so the two
-# daily jobs register and OPENROUTER_API_KEY materializes. Create a 1Password
-# item "openrouter" in the k8s-homelab vault with a field labelled
-# "OPENROUTER_API_KEY" holding the API key.
+# daily jobs register. Extraction runs on the in-cluster Qwen vLLM (free,
+# keyless) via extractBaseUrl, so OPENROUTER_API_KEY is not required for it;
+# the openrouter 1Password item stays wired as an optional fallback path.
 grimoire:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/openrouter"
   s3Bucket: "grimoire"
-  extractModel: "anthropic/claude-sonnet-4.5"
+  # In-cluster Qwen (OpenAI-compatible vLLM): free, no API key. Entity
+  # grounding is not reasoning-hard, so a local model is the right default;
+  # flip extractModel/extractBaseUrl to route to OpenRouter for a frontier pass.
+  extractModel: "qwen3.6-27b"
+  extractBaseUrl: "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
 
 agent:
   discord:
