@@ -213,6 +213,19 @@ def reset(channel_id: str, user_id: str, motivating_message_id: str = "") -> Non
         session.commit()
 
 
+def is_proposal(proposal_message_id: str) -> bool:
+    """True if a channel_directive row was staged with this proposal message
+    id (active or not -- an already-applied or discarded proposal is still a
+    proposal). Lets the reaction handler ignore 👍/👎 on unrelated messages."""
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(ChannelDirective).where(
+                ChannelDirective.proposal_message_id == proposal_message_id
+            )
+        ).first()
+        return row is not None
+
+
 def get_style_pref(user_id: str) -> str:
     """The user's active style preference text, "" if none is set."""
     with Session(get_engine()) as session:
