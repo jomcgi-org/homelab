@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from chat.attention import ATTENTION_THRESHOLD, evaluate
+from chat.attention import ATTENTION_THRESHOLD, evaluate, needs_agent
 
 
 def _make_message(content: str = "hey", mentions=None, reference=None):
@@ -88,3 +88,36 @@ class TestAmbientClassification:
         result = await evaluate(message, "", _BOT_USER, is_ambient=True, _caller=caller)
         assert result.engage is True
         assert result.confidence == 0.95
+
+
+class TestNeedsAgent:
+    """ADR 035 Phase 4: the in-monolith depth classify (chat vs goose guest)."""
+
+    @pytest.mark.asyncio
+    async def test_repo_work_routes_to_agent(self):
+        message = _make_message(content="can you fix the bug in bot.py and push a PR")
+        caller = AsyncMock(return_value='{"needs_agent": true}')
+        result = await needs_agent(message, _caller=caller)
+        assert result is True
+        caller.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_conversation_routes_to_chat(self):
+        message = _make_message(content="what's a good name for a boat?")
+        caller = AsyncMock(return_value='{"needs_agent": false}')
+        result = await needs_agent(message, _caller=caller)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_fails_closed_to_chat_on_caller_error(self):
+        message = _make_message(content="anything")
+        caller = AsyncMock(side_effect=RuntimeError("model unreachable"))
+        result = await needs_agent(message, _caller=caller)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_extracts_json_from_surrounding_prose(self):
+        message = _make_message(content="anything")
+        caller = AsyncMock(return_value='sure! {"needs_agent": true} ok')
+        result = await needs_agent(message, _caller=caller)
+        assert result is True

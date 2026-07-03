@@ -64,6 +64,42 @@ async def evaluate(
         return AttentionResult(False, 0.0)
 
 
+async def needs_agent(message, *, _caller=None) -> bool:
+    """Cheap depth classify: does this engaged message need the goose agent?
+
+    True for repo work, artifact/build requests, or thorough multi-source
+    research; False for conversation, general knowledge, or a simple factual
+    question (a basic web lookup is fine in chat). Fails closed to False so a
+    classify failure degrades to a fast in-monolith reply, never a surprise
+    heavy guest run. ``_caller`` is an injectable llm-caller for tests.
+    """
+    try:
+        caller = _caller
+        if caller is None:
+            from chat.summarizer import build_llm_caller
+
+            caller = build_llm_caller()
+        text = (message.content or "")[:500]
+        prompt = (
+            "You decide whether a chat message needs the heavyweight coding "
+            'agent or can be answered directly. Answer "agent" ONLY if it '
+            "needs to read, analyze, or change THIS repository/codebase, "
+            "build or generate an artifact/page, or do thorough multi-source "
+            'research. Answer "chat" for conversation, general knowledge, '
+            "or a simple factual question (a basic web lookup is fine in "
+            "chat). Reply with ONLY a JSON object: "
+            '{"needs_agent": true|false}. Message: ' + text
+        )
+        raw = await caller(prompt)
+        data = json.loads(_extract_json(raw))
+        return bool(data.get("needs_agent", False))
+    except Exception:
+        logger.exception(
+            "attention: needs_agent classify failed; failing closed (chat)"
+        )
+        return False
+
+
 def _extract_json(raw: str) -> str:
     """Pull the first {...} object out of a model reply (tolerates stray text)."""
     s = raw.find("{")
