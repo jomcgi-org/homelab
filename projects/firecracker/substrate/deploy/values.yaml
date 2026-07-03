@@ -1,17 +1,17 @@
-# Cluster overrides for fc-invoke. The daemon runs on node-4 and dispatches HTTP
-# invocations to a pool of warm-base Firecracker microVMs across named workloads,
-# serving POST /invoke/{workload} + GET /healthz in-cluster.
+# Cluster overrides for fc-invoke. The daemon runs on the FC-labeled node
+# (homelab.io/firecracker=true) and dispatches HTTP invocations to a pool of
+# warm-base Firecracker microVMs across named workloads, serving
+# POST /invoke/{workload} + GET /healthz in-cluster. Node + arch are inferred
+# (downward API / runtime.GOARCH), not set here.
 #
 # firecracker.enabled is TRUE: the daemon drives real microVMs. It runs
-# privileged (runAsUser 0) with /dev/kvm + the kata binary/kernel + the nvme dir
-# host-mounted. Per workload it builds one warm snapshot at startup, then
+# privileged (runAsUser 0) with /dev/kvm + the nvme dir host-mounted (the
+# firecracker binary + guest kernel are baked into the image at /opt/fc, ADR
+# agents/037). Per workload it builds one warm snapshot at startup, then
 # restores a fresh microVM from it per invoke (~tens of ms) and discards it; the
 # shared base rootfs is booted read-only so no per-invoke rootfs copy is needed.
 # Privileged is required for the per-instance vsock mount namespaces
 # (CAP_SYS_ADMIN). Cold boot is the fallback if the base fails.
-node: node-4
-arch: amd64
-
 firecracker:
   enabled: true
 

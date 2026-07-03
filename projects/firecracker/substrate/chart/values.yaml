@@ -66,13 +66,19 @@ podAnnotations: {}
 drain:
   timeoutSeconds: 600
 
-# node + arch the daemon runs on. Firecracker guests are node/arch-affine, so
-# the daemon is pinned to its node.
-node: node-4
-arch: amd64
+# FC guests are node/arch-affine. Node self-identifies via the downward API
+# (spec.nodeName) and arch defaults to the daemon's runtime.GOARCH (the image is
+# per-arch), so neither is hardcoded here. Add `arch: <goarch>` only to override.
 
+# FC nodes are selected by label, not hostname (ADR agents/037), so enrolling or
+# replacing the node is `kubectl label node <n> homelab.io/firecracker=true`
+# rather than a chart edit. INVARIANT: exactly one node carries this label until
+# ADR-031 cross-node placement lands. This is a replicas:1 Deployment whose daemon
+# owns node-local scratch + warm-base snapshots, so a second labeled node would
+# let the single pod flap between nodes and lose that state. Labeling a second
+# node is the trigger to do the DaemonSet + placement work, not a supported state.
 nodeSelector:
-  kubernetes.io/hostname: node-4
+  homelab.io/firecracker: "true"
 
 # Disposable scanner tier (ADR platform/010): microVM workloads must die before
 # inference or the database under memory pressure, so the pod takes the lowest
@@ -152,9 +158,9 @@ firecracker:
   enabled: false
   # firecracker binary + guest kernel are baked into the image at /opt/fc (see
   # @kata_firecracker in MODULE.bazel), so no node-level /opt/kata install is
-  # needed. A node only has to provide /dev/kvm and the nvme scratch dir.
-  binPath: /opt/fc/firecracker
-  kernelImagePath: /opt/fc/vmlinux.container
+  # needed and the daemon's built-in /opt/fc defaults govern. A node only has to
+  # provide /dev/kvm and the nvme scratch dir. Set binPath/kernelImagePath here
+  # only to override the baked paths.
   # The shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
   # guest path is a tmpfs, so one read-only rootfs file safely backs every microVM.
   kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
@@ -163,18 +169,12 @@ firecracker:
   # PR2's single semgrep workload this is the semgrep guest's shim init. (A
   # per-workload init is a future enhancement when a second guest image lands.)
   harnessInit: /usr/local/bin/semgrep-guest-init
-  # The whole nvme dir is host-mounted so per-workload rootfs images
-  # (workloads.*.rootfsPath), FC bundle snapshots (snapshotRoot) and vsock
-  # sockets (canonicalVsockDir) are all reachable.
+  # The single scratch-disk knob: the whole nvme dir is host-mounted so
+  # per-workload rootfs images (workloads.*.rootfsPath) plus the derived FC
+  # snapshot dir (<nvmeRoot>/fc-invoke/snapshots) and vsock dir
+  # (<nvmeRoot>/fc-invoke-vsock) are all reachable. The snapshot + vsock dirs
+  # derive from this in the Deployment, so this is the only path to set per node.
   nvmeRoot: /disks/nvme-02
-  # Directory holding per-invoke FC bundle snapshots (FC_INVOKE_SNAPSHOT_ROOT).
-  # A subdir of the mounted nvme disk.
-  snapshotRoot: /disks/nvme-02/fc-invoke/snapshots
-  # Fixed directory whose vsock.sock the base snapshot embeds; the launcher
-  # bind-mounts each microVM's bundle dir over it per instance so concurrent
-  # restores each get their own host socket (a sibling of snapshotRoot so it is
-  # never globbed as a bundle).
-  canonicalVsockDir: /disks/nvme-02/fc-invoke-vsock
   # Bias the kernel to kill a guest child, never the daemon, under memory
   # pressure (the disposable-victim intent of ADR platform/010 applied to
   # processes, since guests are not pods). 1000 strictly prefers guests.
