@@ -12,8 +12,9 @@
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
 #   - home-cluster kustomization, the push-all BUILD list, monolith routes,
-#     and the two doc-index manifests
-#     (repo_docs_manifest.ndjson + the public docs-manifest.json).
+#     the two doc-index manifests
+#     (repo_docs_manifest.ndjson + the public docs-manifest.json), and the
+#     ADR 036 orchestrator context bundle (orchestrator_bundle.md).
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;
@@ -38,6 +39,7 @@ run ./bazel/images/generate-push-all.sh
 run ./projects/monolith/generate-routes.sh
 run python3 ./projects/monolith/knowledge/tools/gen_repo_docs_manifest.py
 run python3 ./projects/monolith/knowledge/tools/gen_docs_manifest.py
+run python3 ./projects/monolith/knowledge/tools/gen_orchestrator_bundle.py
 
 fails=0
 for p in "${pids[@]}"; do
