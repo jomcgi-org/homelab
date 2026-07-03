@@ -233,3 +233,30 @@ class DiscordFeatureGrant(SQLModel, table=True):
     subject_id: str = Field(default="", primary_key=True)
     feature: str = Field(primary_key=True)
     scope: str = Field(default="", primary_key=True)
+
+
+class AttentionDecision(SQLModel, table=True):
+    """Log of attention-gate decisions on ambient-channel messages (ADR 035).
+
+    Every engage is logged; ignores are sampled (ATTENTION_IGNORE_SAMPLE_RATE,
+    default 0.1) to bound volume. Used later to tune the classifier and to audit
+    what the bot chose to engage with. directive_version records which channel
+    directive version the decision ran under (0 until Phase 5 wires directives).
+    """
+
+    __tablename__ = "attention_decision"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('engage', 'ignore')",
+            name="attention_decision_decision_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str = Field(default="")
+    message_id: str = Field(default="")
+    decision: str = Field(default="ignore")
+    confidence: float = Field(default=0.0)
+    directive_version: int = Field(default=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

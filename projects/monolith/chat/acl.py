@@ -85,6 +85,21 @@ def allowed_scopes(guild_id: object, subject_id: object, feature: str) -> set[st
     }
 
 
+def ambient_channels(guild_id: object) -> set[str]:
+    """Channel ids with ambient mode enabled in this guild (ADR 035).
+
+    Ambient mode is a DiscordFeatureGrant with feature="ambient", subject_id=""
+    (server-wide), scope=<channel_id>. Returns the set of channel ids so the
+    attention gate can cheaply check whether a channel is opted in.
+    """
+    gid = _norm(guild_id)
+    return {
+        row.scope
+        for row in _grants_for_feature("ambient")
+        if row.guild_id in ("", gid) and row.subject_id == "" and row.scope
+    }
+
+
 def bootstrap_defaults() -> None:
     """Idempotently seed the baked-in default grants (ADR 029).
 

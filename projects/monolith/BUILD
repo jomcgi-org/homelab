@@ -857,6 +857,18 @@ py_test(
 )
 
 py_test(
+    name = "chat_attention_log_test",
+    srcs = ["chat/attention_log_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_goosecracker_progress_test",
     srcs = ["chat/goosecracker_progress_test.py"],
     imports = ["."],
