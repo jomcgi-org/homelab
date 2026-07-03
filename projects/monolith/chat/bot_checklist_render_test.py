@@ -285,10 +285,13 @@ class TestStreamLoopHandsTerminalToOutbox:
         snap = _progress([_stage(0, "Plan", "done")], done=True)
         snap.stages_version = 1
 
+        # A global time.monotonic patch is shared with the event loop, which the
+        # up-front asyncio.to_thread(set_progress_message) drives; use an unbounded
+        # clock and assert behaviour, not clock-read counts.
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
             patch("chat.bot.goosecracker.set_progress_message") as mock_set,
-            patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0]),
+            patch("chat.bot.time.monotonic", side_effect=itertools.count(100.0)),
             patch("chat.bot.goosecracker_progress.get", side_effect=[snap]),
             patch("chat.bot.goosecracker_progress.clear"),
         ):
@@ -314,7 +317,7 @@ class TestStreamLoopHandsTerminalToOutbox:
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
             patch("chat.bot.goosecracker.set_progress_message"),
-            patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0, 100.5]),
+            patch("chat.bot.time.monotonic", side_effect=itertools.count(100.0)),
             patch("chat.bot.goosecracker_progress.get", side_effect=[snap1, snap2]),
             patch("chat.bot.goosecracker_progress.clear") as mock_clear,
         ):
@@ -343,7 +346,7 @@ class TestStreamLoopHandsTerminalToOutbox:
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
             patch("chat.bot.goosecracker.set_progress_message"),
-            patch("chat.bot.time.monotonic", side_effect=[0.0, 100.0, 100.5]),
+            patch("chat.bot.time.monotonic", side_effect=itertools.count(100.0)),
             patch("chat.bot.goosecracker_progress.get", side_effect=[snap1, snap2]),
             patch("chat.bot.goosecracker_progress.clear") as mock_clear,
         ):
@@ -376,7 +379,7 @@ class TestStreamLoopHandsTerminalToOutbox:
         with (
             patch("chat.bot.asyncio.sleep", new=AsyncMock()),
             patch("chat.bot.goosecracker.set_progress_message"),
-            patch("chat.bot.time.monotonic", side_effect=itertools.count()),
+            patch("chat.bot.time.monotonic", side_effect=itertools.count(100.0)),
             patch(
                 "chat.bot.goosecracker_progress.get",
                 side_effect=[snap_thinking, snap_done],
