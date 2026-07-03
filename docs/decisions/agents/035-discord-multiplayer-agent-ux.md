@@ -1,7 +1,7 @@
 # ADR 035: Discord Multiplayer Agent UX (Ambient Classifier, Thread Sessions, Live Task Checklist)
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-02
 
 ---
