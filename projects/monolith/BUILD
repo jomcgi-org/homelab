@@ -111,6 +111,11 @@ py_venv_binary(
         # via Path(__file__).parent / "directive_seed.md" (ADR 035 phase 5); the
         # "chat/**/*.py" glob does not capture the .md, so ship it explicitly.
         "chat/directive_seed.md",
+        # orchestrator.load_bundle reads this committed baked context bundle at
+        # runtime via Path(__file__).with_name("orchestrator_bundle.md") (ADR
+        # 036); the "chat/**/*.py" glob does not capture the .md, so ship it
+        # explicitly or every escalation fails open with FileNotFoundError.
+        "chat/orchestrator_bundle.md",
         "knowledge/repo_docs_manifest.ndjson",
         ":frontend_dist",
     ],
