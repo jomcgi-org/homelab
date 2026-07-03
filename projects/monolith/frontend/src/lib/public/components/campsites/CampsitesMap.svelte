@@ -296,12 +296,37 @@
           source: SOURCE_ID,
           paint: {
             "circle-color": SCORE_COLOR,
-            // Radius grows with good_days; selected pin is larger.
+            // Radius grows with good_days (more clear days = bigger pin), with
+            // the selected pin larger still. The outer interpolation is on
+            // ["zoom"], so pins also grow as you zoom in (they used to stay a
+            // fixed pixel size at every zoom, which read as "tiny" on a phone).
+            // Zoom-and-property form: the ["zoom"] interpolate is outermost and
+            // its stop outputs are per-feature expressions (allowed by the GL
+            // spec precisely because the inner expressions never read zoom).
+            // Bumped baselines too so the smallest pin is a realistic touch
+            // target rather than a 5px dot.
             "circle-radius": [
-              "case",
-              ["==", ["get", "sel"], 1],
-              ["interpolate", ["linear"], ["get", "good_days"], 0, 9, 7, 16],
-              ["interpolate", ["linear"], ["get", "good_days"], 0, 5, 7, 11],
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              // Zoomed out: bigger than before so pins stay tappable in the
+              // full-BC view.
+              5,
+              [
+                "case",
+                ["==", ["get", "sel"], 1],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 11, 7, 17],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 7, 7, 12],
+              ],
+              // Zoomed in: pins swell so a selected park is unmistakable and
+              // easy to hit with a fingertip.
+              11,
+              [
+                "case",
+                ["==", ["get", "sel"], 1],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 20, 7, 28],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 13, 7, 21],
+              ],
             ],
             "circle-stroke-width": [
               "case",
@@ -322,12 +347,32 @@
 
         // Click a pin to select it (drives the bindable + the parent detail
         // panel); click the background to deselect.
+        //
+        // Hit-test a padded BOX around the tap, not the exact pixel: pins are
+        // only a handful of pixels wide, and on a touch screen a fingertip
+        // never lands dead-center, so an exact-point query almost always missed
+        // and silently deselected (Anna's "buttons don't bring up info"). The
+        // box gives a forgiving ~TAP_PAD-px tolerance in every direction; when
+        // several pins fall inside it we pick the one nearest the tap.
+        const TAP_PAD = 14; // px of slop around the tap point
         map.on("click", (e) => {
-          const feats = map.queryRenderedFeatures(e.point, {
+          const box = [
+            [e.point.x - TAP_PAD, e.point.y - TAP_PAD],
+            [e.point.x + TAP_PAD, e.point.y + TAP_PAD],
+          ];
+          const feats = map.queryRenderedFeatures(box, {
             layers: [PIN_LAYER],
           });
           if (feats.length) {
-            const f = feats[0];
+            // Nearest pin to the actual tap wins, so a box that catches two
+            // neighbours still selects the one the finger was closest to.
+            const f = feats.reduce((best, cand) => {
+              const bp = map.project(best.geometry.coordinates);
+              const cp = map.project(cand.geometry.coordinates);
+              const bd = (bp.x - e.point.x) ** 2 + (bp.y - e.point.y) ** 2;
+              const cd = (cp.x - e.point.x) ** 2 + (cp.y - e.point.y) ** 2;
+              return cd < bd ? cand : best;
+            });
             selectedId = f.properties.id;
             const { name, best_score, good_days } = f.properties;
             popup
