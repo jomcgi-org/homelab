@@ -704,7 +704,8 @@ class ChatBot(discord.Client):
 
         await interaction.followup.send(f"Building your artifact in {thread.mention}")
         try:
-            intro = await thread.send("🛠 On it. Building your artifact now...")
+            # ADR 035: see the matching comment in _handle_agent_command.
+            intro = await thread.send("🛠 Planning...")
             self._start_goosecracker_stream(str(thread.id), intro)
         except Exception:
             logger.exception("goosecracker: failed to post thread intro")
@@ -778,7 +779,11 @@ class ChatBot(discord.Client):
         except Exception:
             logger.exception("goosecracker: failed to post agent prompt echo")
         try:
-            intro = await thread.send("🤖 On it. Running the agent now...")
+            # ADR 035: a bare "Planning..." placeholder, not a progress claim.
+            # render_checklist takes over once the run announces its stage
+            # plan; until then the tail renderer shows "Thinking", so this is
+            # only the very first beat.
+            intro = await thread.send("🤖 Planning...")
             self._start_goosecracker_stream(str(thread.id), intro, kind="agent")
         except Exception:
             logger.exception("goosecracker: failed to post agent thread intro")
@@ -945,16 +950,16 @@ class ChatBot(discord.Client):
 
         if action == "dispatched":
             # Agent thread: a new turn was dispatched (session was idle).
-            progress_msg = await message.reply("🤖 On it. Running the agent now...")
+            # ADR 035: see the matching comment in _handle_agent_command.
+            progress_msg = await message.reply("🤖 Planning...")
             self._start_goosecracker_stream(thread_id, progress_msg, kind="agent")
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
 
         # Artifact path: continue_session returned the raw submit result dict
         # (action is "create" or "resume" from threads.upsert_run).
-        progress_msg = await message.reply(
-            "🛠 On it. Rebuilding your artifact; the link above will hot-reload..."
-        )
+        # ADR 035: see the matching comment in _handle_agent_command.
+        progress_msg = await message.reply("🛠 Planning...")
         self._start_goosecracker_stream(thread_id, progress_msg)
         await asyncio.to_thread(self._complete_lock, msg_id)
         return True
