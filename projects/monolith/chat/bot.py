@@ -836,6 +836,7 @@ class ChatBot(discord.Client):
             snap = gp.get(artifact_id)
             elapsed = int(now - start)
             checklist = render_checklist(snap)
+            edited_now = False
 
             if checklist is None:
                 body = _render_goosecracker_progress(snap, elapsed, kind)
@@ -857,20 +858,25 @@ class ChatBot(discord.Client):
             ):
                 try:
                     await message.edit(content=checklist)
+                    # Advance the delivered markers only after a successful
+                    # edit, so a transient HTTPException retries on the next
+                    # poll instead of marking this version delivered unseen.
                     last_body = checklist
                     last_edit_at = now
+                    last_stages_version = snap.stages_version
+                    last_done = snap.done
+                    edited_now = True
                 except discord.HTTPException:
                     logger.exception(
                         "goosecracker: progress edit failed for %s", artifact_id
                     )
-                last_stages_version = snap.stages_version
-                last_done = snap.done
 
             if snap is not None and snap.done:
-                if checklist is not None:
-                    # The coalescing gate above may have just swallowed the
-                    # done transition; force it through so the terminal
-                    # checklist is never dropped.
+                if checklist is not None and not edited_now:
+                    # The coalescing gate above may have swallowed the done
+                    # transition (or its edit failed); force it through so the
+                    # terminal checklist is never dropped. Skip when this poll
+                    # already edited the done checklist, to avoid a duplicate.
                     try:
                         await message.edit(content=checklist)
                     except discord.HTTPException:
