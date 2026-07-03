@@ -105,6 +105,10 @@ py_venv_binary(
         # "campsites/**/*.py" glob does not capture the .json, so ship it into
         # runfiles explicitly (mirrors the worldcup Elo snapshot above).
         "campsites/catalog.json",
+        # directives.get_active reads this committed base directive at runtime
+        # via Path(__file__).parent / "directive_seed.md" (ADR 035 phase 5); the
+        # "chat/**/*.py" glob does not capture the .md, so ship it explicitly.
+        "chat/directive_seed.md",
         "knowledge/repo_docs_manifest.ndjson",
         ":frontend_dist",
     ],
@@ -859,6 +863,22 @@ py_test(
 py_test(
     name = "chat_attention_log_test",
     srcs = ["chat/attention_log_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_directives_test",
+    srcs = ["chat/directives_test.py"],
+    # directives.get_active reads the committed seed from runfiles via
+    # Path(__file__).parent / "directive_seed.md", so ship it as test data
+    # (mirrors campsites_client_test's catalog.json).
+    data = ["chat/directive_seed.md"],
     imports = ["."],
     deps = [
         ":monolith_backend",
