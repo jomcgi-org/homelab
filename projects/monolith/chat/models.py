@@ -200,6 +200,35 @@ class WhatsappOutbox(SQLModel, table=True):
     last_error: str | None = Field(default=None)
 
 
+class WhatsappGroup(SQLModel, table=True):
+    """Allow-list registry for the WhatsApp household gateway (ADR 039, spec 6).
+
+    Only groups with an enabled row here produce inbound traffic: the gateway
+    filters on its startup config and the monolith inbound endpoint re-checks
+    this table (defense in depth). ``tier`` maps the group to a capability/tool
+    subset (ADR 034); ``household`` grants knowledge, calendar, and reminders but
+    not repo/cluster/artifact tools. ``ambient`` toggles the attention gate's
+    ambient classify. ``directive_seed`` seeds the group directive (an empty seed
+    falls back to a built-in household default in the inbound handler).
+    ``digest_config`` holds the morning-digest cadence and quiet hours (Phase 5)
+    as a JSON dict. ``enabled`` is a kill switch that stops all traffic without
+    dropping config or unpairing.
+    """
+
+    __tablename__ = "whatsapp_group"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    group_jid: str = Field(primary_key=True)
+    display_name: str | None = Field(default=None)
+    tier: str = Field(default="household")
+    ambient: bool = Field(default=True)
+    directive_seed: str | None = Field(default=None)
+    digest_config: dict | None = Field(default=None, sa_column=Column(_JSONB))
+    enabled: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (running_since is intentionally NULL until a turn goes running)
 class GoosecrackerSession(SQLModel, table=True):
     """Per-Discord-thread curated transcript for the goosecracker agent (ADR 024).

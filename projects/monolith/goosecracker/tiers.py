@@ -31,6 +31,50 @@ _ENV_VAR = "GOOSECRACKER_TIERS"
 _DEFAULT_TIER = "default"
 
 
+# --- Per-tier capability (tool) subset (ADR 034, ADR 039 household) ---------
+#
+# A tier is the credential trust boundary; it also bounds which capability
+# families a principal on that tier may use. This is the authoritative
+# tier -> allowed-feature mapping the dispatch-time check consults. ADR 034's
+# enforced guest-facing MCP endpoint (bearer -> toolset) is not built yet, so
+# nothing calls this at guest-MCP dispatch time today: Phase 4 wires the
+# session-dispatch check to it. The household tier (ADR 039) is deliberately
+# restricted to knowledge, calendar, and reminders and is denied repo, cluster,
+# and artifact tools.
+_HOUSEHOLD_FEATURES = frozenset({"knowledge", "calendar", "reminders"})
+
+# The full capability set. Any tier not named in _TIER_FEATURES (default,
+# artifact) is unrestricted: it gets everything. Named here so a household-tier
+# denial is a positive check against a known universe rather than an open set.
+_FULL_FEATURES = frozenset(
+    {"knowledge", "calendar", "reminders", "repo", "cluster", "artifact"}
+)
+
+# Only tiers that are narrower than the full set need an entry. Everything else
+# falls back to _FULL_FEATURES.
+_TIER_FEATURES: dict[str, frozenset[str]] = {
+    "household": _HOUSEHOLD_FEATURES,
+}
+
+
+def features_for_tier(tier: str) -> frozenset[str]:
+    """The capability families a principal on ``tier`` may use.
+
+    A tier without a restricted entry (default, artifact, unknown) gets the full
+    set; the household tier gets the knowledge/calendar/reminders subset.
+    """
+    return _TIER_FEATURES.get(tier or _DEFAULT_TIER, _FULL_FEATURES)
+
+
+def tier_allows(tier: str, feature: str) -> bool:
+    """Whether ``tier`` is permitted to use the ``feature`` capability family.
+
+    Deny is the household tier refusing repo/cluster/artifact; allow is any of
+    its three granted families or any feature on an unrestricted tier.
+    """
+    return feature in features_for_tier(tier)
+
+
 def _load_tiers() -> dict[str, dict[str, str]]:
     """Parse the GOOSECRACKER_TIERS JSON env into a {tier: {key: value}} map.
 
