@@ -14,11 +14,16 @@ EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "")
 EMBED_MAX_RETRIES = 12
 EMBED_RETRY_BASE_DELAY = 2.0  # seconds
 EMBED_RETRY_MAX_DELAY = 30.0  # cap per-retry wait
-EMBED_RETRY_TIMEOUT = 300.0  # 5 min total deadline
+# Total deadline; env-overridable so a bulk backfill (e.g. grimoire loading a
+# whole sourcebook) can allow more retry headroom than the interactive default.
+EMBED_RETRY_TIMEOUT = float(os.environ.get("EMBED_RETRY_TIMEOUT", "300"))
 
 EMBED_CONNECT_TIMEOUT = 5.0
 EMBED_READ_TIMEOUT = 30.0
-EMBED_BATCH_READ_TIMEOUT = 60.0
+# Per-request read timeout for a batch. Env-overridable: throughput is token-
+# bound, so a caller that deliberately sends large batches (bulk ingest) can
+# raise this without affecting the interactive default.
+EMBED_BATCH_READ_TIMEOUT = float(os.environ.get("EMBED_BATCH_READ_TIMEOUT", "60"))
 
 
 def _is_retryable(exc: Exception) -> bool:

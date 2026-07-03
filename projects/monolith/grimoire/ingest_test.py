@@ -286,3 +286,37 @@ def test_load_chunks_two_books_in_one_run(session: Session):
         ("phb", "c1"),
         ("dmg", "c1"),
     }
+
+
+# --- embed batching + self-heal ------------------------------------------
+
+
+def test_embed_batches_bounds_by_size_and_count():
+    from types import SimpleNamespace as NS
+
+    rows = [NS(content="a" * 10) for _ in range(5)]
+    # char_budget 25 -> at most 2 rows/batch (a 3rd would be 30 > 25).
+    assert [len(b) for b in ingest._embed_batches(rows, 25, 64)] == [2, 2, 1]
+    # max_count caps a batch even when the size budget is huge.
+    assert [len(b) for b in ingest._embed_batches(rows, 10_000, 2)] == [2, 2, 1]
+    # a single over-budget row is yielded alone, never dropped.
+    big = [NS(content="x" * 100), NS(content="y" * 5)]
+    assert [len(b) for b in ingest._embed_batches(big, 25, 64)] == [1, 1]
+
+
+def test_load_chunks_reembeds_chunks_missing_embedding(session: Session):
+    # A prior run loaded the chunk but its embed step failed, leaving a chunk
+    # with no vector. A plain re-run over unchanged data must self-heal it.
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": _line("c1", "content one")})
+    embedder = FakeEmbedClient()
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+    assert len(session.execute(select(Embedding)).scalars().all()) == 1
+
+    for e in session.execute(select(Embedding)).scalars().all():
+        session.delete(e)
+    session.commit()
+
+    # Content is unchanged, so the upsert queues nothing; self-heal must re-embed.
+    summary = _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+    assert summary["chunks_embedded"] == 1
+    assert len(session.execute(select(Embedding)).scalars().all()) == 1
