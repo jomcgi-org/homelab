@@ -7,10 +7,21 @@ the local Qwen executor. Per the fail-open philosophy (ADR 036 Architecture:
 raises ``OrchestratorUnavailable`` so the caller can fall back to direct
 submit. There is no retry loop here (contrast with build_llm_caller's 3
 retries), because escalations must degrade quickly, not stall on a paid call.
+
+``call_tool`` is the typed sibling used for the runtime ``submit_plan``
+plan (ADR 036 amendment, docs/plans/2026-07-03-deepseek-runtime-recipes.md):
+it forces a tool call against a caller-supplied JSON Schema instead of
+parsing free-text content. The probe at
+``scratchpad/probe_submit_plan.py`` validated a forced tool call
+(``tools`` + ``tool_choice``) at 12/12 across trials; OpenRouter's
+``response_format: {"type": "json_schema", "json_schema": {...}}`` (also
+12/12 in the probe) is the documented drop-in fallback mechanism should
+tool-calling ever regress for the pinned model.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -116,3 +127,87 @@ async def call(system: str, user: str) -> OrchestratorResponse:
         cached_tokens=cached_tokens,
         latency_ms=latency_ms,
     )
+
+
+async def call_tool(
+    system: str,
+    user: str,
+    *,
+    schema: dict,
+    tool_name: str = "submit_plan",
+    timeout_s: float | None = None,
+) -> tuple[dict, OrchestratorResponse]:
+    """Force a tool call against ``schema`` and parse its arguments.
+
+    Sends ``tools=[{"type": "function", "function": schema}]`` with
+    ``tool_choice`` pinned to ``tool_name``, then parses
+    ``choices[0].message.tool_calls[0].function.arguments`` (a JSON string)
+    into a dict. Returns ``(args, response)`` where ``response`` mirrors
+    ``call()``'s usage/latency accounting (``response.content`` holds the
+    raw arguments JSON string).
+
+    Raises ``OrchestratorUnavailable`` on any timeout, HTTP error, missing
+    ``tool_calls``, or JSON parse error. Single attempt, no retry loop, same
+    fail-open contract as ``call()``. Uses ``timeout_s`` if given, else the
+    configured default (see ``_read_config``).
+    """
+    model, base_url, api_key, default_timeout_s = _read_config()
+    effective_timeout_s = timeout_s if timeout_s is not None else default_timeout_s
+
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(effective_timeout_s)
+        ) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "tools": [{"type": "function", "function": schema}],
+                    "tool_choice": {
+                        "type": "function",
+                        "function": {"name": tool_name},
+                    },
+                },
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+    except httpx.TimeoutException as exc:
+        raise OrchestratorUnavailable(
+            f"orchestrator tool call timed out: {exc}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise OrchestratorUnavailable(f"orchestrator tool call failed: {exc}") from exc
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+
+    try:
+        tool_call = payload["choices"][0]["message"]["tool_calls"][0]
+        arguments_raw = tool_call["function"]["arguments"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise OrchestratorUnavailable(
+            f"unexpected orchestrator tool-call response shape: {exc}"
+        ) from exc
+
+    try:
+        args = json.loads(arguments_raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise OrchestratorUnavailable(
+            f"orchestrator tool-call arguments were not valid JSON: {exc}"
+        ) from exc
+
+    prompt_tokens, completion_tokens, cached_tokens = _extract_usage(payload)
+
+    response = OrchestratorResponse(
+        content=arguments_raw,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+        latency_ms=latency_ms,
+    )
+    return args, response

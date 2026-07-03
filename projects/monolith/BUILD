@@ -1438,6 +1438,16 @@ py_test(
 )
 
 py_test(
+    name = "chat_orchestrator_plan_test",
+    srcs = ["chat/orchestrator_plan_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "chat_orchestrator_test",
     srcs = ["chat/orchestrator_test.py"],
     # compile() reads the committed bundle from runfiles (Path(__file__).parent),
