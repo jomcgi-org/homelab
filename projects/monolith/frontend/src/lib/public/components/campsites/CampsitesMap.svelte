@@ -297,46 +297,48 @@
           paint: {
             "circle-color": SCORE_COLOR,
             // Radius grows with good_days (more clear days = bigger pin), with
-            // the selected pin larger still. The outer interpolation is on
-            // ["zoom"], so pins also grow as you zoom in (they used to stay a
-            // fixed pixel size at every zoom, which read as "tiny" on a phone).
-            // Zoom-and-property form: the ["zoom"] interpolate is outermost and
-            // its stop outputs are per-feature expressions (allowed by the GL
-            // spec precisely because the inner expressions never read zoom).
-            // Bumped baselines too so the smallest pin is a realistic touch
-            // target rather than a 5px dot.
+            // the selected pin larger still, and the outer ["zoom"] interpolate
+            // makes pins also grow as you zoom in. Zoom-and-property form: the
+            // ["zoom"] interpolate is outermost and its stop outputs are
+            // per-feature expressions (valid because the inner expressions never
+            // read zoom).
+            //
+            // MINIMUM SIZE FLOOR: the smallest a pin ever renders is the zoomed
+            // -out, zero-clear-days, unselected case = radius 12 (24px diameter).
+            // interpolate clamps to the first stop below zoom 5, so this floor
+            // also holds at the initial full-BC view (~z4.4). 24px visual + the
+            // 14px queryRenderedFeatures tap box on each side gives a ~52px
+            // effective touch target, comfortably finger-pressable on a phone
+            // without the ~145 province-wide pins merging into blobs.
             "circle-radius": [
               "interpolate",
               ["linear"],
               ["zoom"],
-              // Zoomed out: bigger than before so pins stay tappable in the
-              // full-BC view.
+              // Zoomed out (province view): finger-friendly floor.
               5,
               [
                 "case",
                 ["==", ["get", "sel"], 1],
-                ["interpolate", ["linear"], ["get", "good_days"], 0, 11, 7, 17],
-                ["interpolate", ["linear"], ["get", "good_days"], 0, 7, 7, 12],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 15, 7, 20],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 12, 7, 16],
               ],
-              // Zoomed in: pins swell so a selected park is unmistakable and
-              // easy to hit with a fingertip.
+              // Zoomed in: pins swell so a selected park is unmistakable.
               11,
               [
                 "case",
                 ["==", ["get", "sel"], 1],
-                ["interpolate", ["linear"], ["get", "good_days"], 0, 20, 7, 28],
-                ["interpolate", ["linear"], ["get", "good_days"], 0, 13, 7, 21],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 22, 7, 30],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 18, 7, 24],
               ],
               // Deep zoom (single park fills the screen, e.g. tracing a trail):
               // keep growing so the pin never reads as a tiny dot against a
-              // massive path. Without this stop the radius held at its zoom-11
-              // value and looked like it "stopped scaling" past ~z11.
+              // massive path.
               16,
               [
                 "case",
                 ["==", ["get", "sel"], 1],
                 ["interpolate", ["linear"], ["get", "good_days"], 0, 34, 7, 44],
-                ["interpolate", ["linear"], ["get", "good_days"], 0, 24, 7, 34],
+                ["interpolate", ["linear"], ["get", "good_days"], 0, 28, 7, 38],
               ],
             ],
             "circle-stroke-width": [
