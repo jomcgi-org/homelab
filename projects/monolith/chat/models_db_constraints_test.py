@@ -219,7 +219,7 @@ class TestChannelSummaryDBConstraints:
 
 
 # ---------------------------------------------------------------------------
-# DB-level enforcement tests — OrchestratorBrief route CHECK (SQLite)
+# DB-level enforcement tests: OrchestratorBrief route CHECK (SQLite)
 # ---------------------------------------------------------------------------
 
 
