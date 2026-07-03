@@ -1075,6 +1075,62 @@ py_test(
 )
 
 py_test(
+    name = "chat_whatsapp_timeparse_test",
+    srcs = ["chat/whatsapp_timeparse_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_whatsapp_intents_test",
+    srcs = ["chat/whatsapp_intents_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_whatsapp_calendar_test",
+    srcs = ["chat/whatsapp_calendar_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "chat_whatsapp_capabilities_test",
+    srcs = ["chat/whatsapp_capabilities_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_whatsapp_digest_test",
+    srcs = ["chat/whatsapp_digest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_goosecracker_test",
     srcs = ["chat/goosecracker_test.py"],
     imports = ["."],
