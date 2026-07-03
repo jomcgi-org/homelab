@@ -16,9 +16,15 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from grimoire import extract
-from grimoire.extract import OpenRouterClient, OpenRouterError, extract_chunks
+from grimoire.extract import (
+    OpenRouterClient,
+    OpenRouterError,
+    _prompt_hash,
+    extract_chunks,
+)
 from grimoire.models import (
     ChunkEntityMention,
+    ChunkExtraction,
     Embedding,
     Entity,
     EntityCreature,
@@ -188,7 +194,7 @@ def test_extract_chunks_happy_path(session: Session):
     assert {e.model for e in embeddings} == {"voyage-4-nano"}
 
 
-def test_extract_chunks_rerun_skips_already_mentioned_chunks(session: Session):
+def test_extract_chunks_rerun_skips_already_marked_chunks(session: Session):
     chunk = _make_chunk(session, "mm", "mm-001", "A goblin ambushes the party.")
     responses = {
         chunk.content: {
@@ -216,6 +222,121 @@ def test_extract_chunks_rerun_skips_already_mentioned_chunks(session: Session):
         "entities_embedded": 0,
     }
     assert len(or_client.calls) == calls_before
+
+    markers = session.execute(select(ChunkExtraction)).scalars().all()
+    assert len(markers) == 1
+    assert markers[0].chunk_id == chunk.id
+    assert markers[0].model == FakeOpenRouterClient.model
+    assert markers[0].prompt_hash == _prompt_hash()
+    assert markers[0].status == "ok"
+
+
+def test_processed_marker_reextracts_on_model_change(session: Session):
+    chunk = _make_chunk(session, "mm", "mm-001", "A goblin ambushes the party.")
+    session.add(
+        ChunkExtraction(
+            chunk_id=chunk.id,
+            model="some-other-model",
+            prompt_hash=_prompt_hash(),
+            status="ok",
+        )
+    )
+    session.commit()
+
+    responses = {
+        chunk.content: {
+            "entities": [
+                {"entity_type": "creature", "name": "Goblin", "summary": "Small."}
+            ],
+            "mentions": [],
+            "relationships": [],
+        }
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    summary = _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    assert summary["chunks_processed"] == 1
+    markers = session.execute(select(ChunkExtraction)).scalars().all()
+    assert {m.model for m in markers} == {
+        "some-other-model",
+        FakeOpenRouterClient.model,
+    }
+
+
+def test_processed_marker_reextracts_on_prompt_change(session: Session):
+    chunk = _make_chunk(session, "mm", "mm-001", "A goblin ambushes the party.")
+    session.add(
+        ChunkExtraction(
+            chunk_id=chunk.id,
+            model=FakeOpenRouterClient.model,
+            prompt_hash="stale-hash-from-an-old-prompt",
+            status="ok",
+        )
+    )
+    session.commit()
+
+    responses = {
+        chunk.content: {
+            "entities": [
+                {"entity_type": "creature", "name": "Goblin", "summary": "Small."}
+            ],
+            "mentions": [],
+            "relationships": [],
+        }
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    summary = _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    assert summary["chunks_processed"] == 1
+    markers = session.execute(select(ChunkExtraction)).scalars().all()
+    assert {m.prompt_hash for m in markers} == {
+        "stale-hash-from-an-old-prompt",
+        _prompt_hash(),
+    }
+
+
+def test_empty_yield_records_empty_marker(session: Session):
+    chunk = _make_chunk(session, "mm", "mm-001", "Nothing extractable here.")
+    or_client = FakeOpenRouterClient({})  # falls back to empty extraction
+    embed_client = FakeEmbedClient()
+
+    summary = _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    assert summary["chunks_processed"] == 1
+    marker = session.execute(select(ChunkExtraction)).scalars().one()
+    assert marker.chunk_id == chunk.id
+    assert marker.status == "empty"
+
+
+def test_book_filter_scopes_selection(session: Session, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_BOOK", "book-eval")
+    eval_chunk = _make_chunk(session, "book-eval", "eval-001", "Eval book chunk.")
+    _make_chunk(session, "book-other", "other-001", "Other book chunk.")
+
+    or_client = FakeOpenRouterClient({})
+    embed_client = FakeEmbedClient()
+
+    summary = _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    assert summary["chunks_processed"] == 1
+    marker = session.execute(select(ChunkExtraction)).scalars().one()
+    assert marker.chunk_id == eval_chunk.id
+
+
+def test_failed_extraction_leaves_no_marker(session: Session):
+    bad_chunk = _make_chunk(session, "mm", "mm-001", "Garbled text.")
+    responses = {bad_chunk.content: ValueError("malformed JSON")}
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    summary = _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    assert summary["chunks_failed"] == 1
+    assert session.execute(select(ChunkExtraction)).scalars().all() == []
 
 
 def test_extract_chunks_name_dedup_reuses_and_does_not_overwrite_detail(
@@ -296,19 +417,9 @@ def test_extract_chunks_malformed_extraction_counted_failed_and_retryable(
     mentions = session.execute(select(ChunkEntityMention)).scalars().all()
     assert {m.chunk_id for m in mentions} == {good_chunk.id}
 
-    # bad_chunk still has no mentions, so it is selectable again next run.
-    remaining = (
-        session.execute(
-            select(KnowledgeChunk).where(
-                ~select(ChunkEntityMention.chunk_id)
-                .where(ChunkEntityMention.chunk_id == KnowledgeChunk.id)
-                .exists()
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert [c.id for c in remaining] == [bad_chunk.id]
+    # bad_chunk got no marker (extraction raised), so it is selectable again.
+    markers = session.execute(select(ChunkExtraction)).scalars().all()
+    assert [m.chunk_id for m in markers] == [good_chunk.id]
 
 
 def test_extract_chunks_unresolvable_relationship_skipped_without_error(
@@ -343,20 +454,11 @@ def test_extract_chunks_limit_respected(session: Session):
     summary = _run(extract_chunks(session, or_client, embed_client, limit=2))
 
     assert summary["chunks_processed"] == 2
-    remaining = (
-        session.execute(
-            select(KnowledgeChunk).where(
-                ~select(ChunkEntityMention.chunk_id)
-                .where(ChunkEntityMention.chunk_id == KnowledgeChunk.id)
-                .exists()
-            )
-        )
-        .scalars()
-        .all()
-    )
-    # extraction of an empty payload writes no mention rows, so the two
-    # "processed" chunks remain selectable too -- only the limit is asserted.
-    assert len(remaining) == 3
+    # exactly the 2 processed chunks got a marker (status="empty"); the
+    # third, never attempted, stays pending -- confirming the limit cutoff.
+    markers = session.execute(select(ChunkExtraction)).scalars().all()
+    assert len(markers) == 2
+    assert all(m.status == "empty" for m in markers)
 
 
 # --- OpenRouterClient -------------------------------------------------------
