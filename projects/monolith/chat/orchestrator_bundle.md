@@ -73,7 +73,6 @@ fill every required field.
 ## Repo structure
 
 Top-level projects/ directories:
-
 - advent_of_code
 - firecracker
 - grimoire
@@ -89,7 +88,6 @@ Top-level projects/ directories:
 - shared
 
 docs/decisions/ categories:
-
 - agents
 - docs
 - networking
