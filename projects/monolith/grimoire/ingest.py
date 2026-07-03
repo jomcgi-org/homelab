@@ -44,11 +44,17 @@ _MANIFEST_SUFFIX = ".ndjson"
 # chunk manifests from other book files and delimits the book id in the key.
 _CHUNKS_SEGMENT = "/chunks/"
 
-# Embeddings are sent in fixed-size batches rather than one call per book, so
-# a large manifest does not force one oversized HTTP request (mirrors the
-# spirit of knowledge.indexing, which batches per note; here the natural
-# batch is per-run rather than per-book).
-EMBED_BATCH_SIZE = 64
+# Embeddings are grouped by a content-size budget, not a fixed item count. The
+# embedding server's latency is token-bound: 64 small front-matter chunks embed
+# in ~4s, but 64 stat-block chunks (~32k tokens) took ~78s and blew the client's
+# 60s read timeout, so the loader retried forever and left the book unembedded.
+# Capping each batch by summed content chars (~4 chars/token) keeps every request
+# well under the timeout regardless of chunk sizes; the item cap stops a flood of
+# tiny chunks from building an oversized request array.
+EMBED_CHAR_BUDGET = (
+    60000  # ~15k tokens, ~36s server-side, safe even under the default 60s read timeout
+)
+EMBED_MAX_BATCH = 64
 
 
 class _Embedder(Protocol):
@@ -154,6 +160,55 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
             }
         )
     return valid, errors
+
+
+def _embed_batches(rows: list, char_budget: int, max_count: int):
+    """Yield sub-lists of ``rows`` bounded by both summed content length and item
+    count, so each embedding request finishes within the client read timeout
+    regardless of how large individual chunks are. A single row whose content
+    already exceeds ``char_budget`` is yielded alone rather than dropped.
+    """
+    batch: list = []
+    size = 0
+    for row in rows:
+        clen = len(row.content or "")
+        if batch and (size + clen > char_budget or len(batch) >= max_count):
+            yield batch
+            batch, size = [], 0
+        batch.append(row)
+        size += clen
+    if batch:
+        yield batch
+
+
+def _chunks_missing_embedding(session: Session, book_ids, model: str) -> list:
+    """Chunks in ``book_ids`` with no embedding row for ``model`` yet.
+
+    Self-heal for a prior partial embed failure: such chunks are unchanged on a
+    re-run so ``_upsert_book_chunks`` never re-queues them, yet they still have no
+    vector. Selecting them here lets a plain re-run finish an interrupted embed.
+    """
+    if not book_ids:
+        return []
+    embedding_exists = (
+        select(Embedding.embeddable_id)
+        .where(
+            Embedding.embeddable_kind == "chunk",
+            Embedding.embeddable_id == KnowledgeChunk.id,
+            Embedding.model == model,
+        )
+        .exists()
+    )
+    return list(
+        session.execute(
+            select(KnowledgeChunk).where(
+                KnowledgeChunk.book_id.in_(list(book_ids)),
+                ~embedding_exists,
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 def _list_manifest_keys(s3_client, bucket: str, prefix: str) -> list[str]:
@@ -311,6 +366,7 @@ async def load_chunks(
     chunks_embedded = 0
     errors = 0
     pending_embed: list[KnowledgeChunk] = []
+    book_ids: set[str] = set()
 
     for key in keys:
         book_id = _book_id_from_key(key, prefix)
@@ -320,13 +376,25 @@ async def load_chunks(
         parsed, err_count = parse_manifest_lines(book_id, body.splitlines())
         errors += err_count
         books += 1
+        book_ids.add(book_id)
 
         book_pending, book_upserted = _upsert_book_chunks(session, book_id, parsed)
         chunks_upserted += book_upserted
         pending_embed.extend(book_pending)
 
-    for start in range(0, len(pending_embed), EMBED_BATCH_SIZE):
-        batch = pending_embed[start : start + EMBED_BATCH_SIZE]
+    # Also (re-)embed chunks that exist but have no vector for this model, e.g.
+    # left behind when a prior run's embed step failed partway. Dedupe against
+    # the rows already queued from this run's upserts.
+    queued = {row.id for row in pending_embed}
+    for row in _chunks_missing_embedding(session, book_ids, embed_client.model):
+        if row.id not in queued:
+            pending_embed.append(row)
+            queued.add(row.id)
+
+    # Each batch commits its own embeddings (see upsert_embedding_batch), so an
+    # interrupted run leaves durable partial progress and the next run's
+    # self-heal finishes the rest.
+    for batch in _embed_batches(pending_embed, EMBED_CHAR_BUDGET, EMBED_MAX_BATCH):
         vectors = await embed_client.embed_batch([row.content for row in batch])
         chunks_embedded += upsert_embedding_batch(
             session, embed_client.model, "chunk", batch, vectors

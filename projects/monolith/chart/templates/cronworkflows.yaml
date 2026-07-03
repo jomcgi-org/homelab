@@ -124,6 +124,15 @@ spec:
               value: {{ $.Values.stars.s3SecretAccessKey | quote }}
             - name: EMBEDDING_URL
               value: {{ $.Values.chat.embeddingUrl | quote }}
+            # Bulk sourcebook loads embed thousands of chunks; the embedding
+            # server is token-throughput-bound, so a batch of large stat-block
+            # chunks can take well over the interactive 60s default. Give the
+            # loader generous per-request and total retry headroom (batches are
+            # still size-bounded in code, so this is margin, not unbounded waits).
+            - name: EMBED_BATCH_READ_TIMEOUT
+              value: "300"
+            - name: EMBED_RETRY_TIMEOUT
+              value: "900"
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
