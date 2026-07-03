@@ -139,6 +139,13 @@ def bootstrap_defaults() -> None:
     if home:
         # jomcgi/homelab is public: anyone in the home server may run /agent on it.
         defaults.append((home, "", "agent", "jomcgi/homelab"))
+        # ADR 036: enable the orchestrator brief-compiler tier for the whole home
+        # server (scope "" = all channels, subject "" = server-wide). Escalations
+        # in the home server route through the paid OpenRouter brief compiler;
+        # every other server stays on the fail-open direct-submit path until it
+        # is granted this feature. Revoking this row returns the home server to
+        # the fail-open path with no code change.
+        defaults.append((home, "", "orchestrator", ""))
         if owner:
             # loom is private: from the home server only the owner gets it, so a
             # home-server member cannot drive the private repo. Loom-server

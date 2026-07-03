@@ -254,17 +254,20 @@ spec:
             {{- if .Values.orchestrator.enabled }}
             # ADR 036 orchestrator brief compiler (host-side only; the guest
             # egress boundary in ADR 023 never carries this key). OPENROUTER_API_KEY
-            # is synced from the "openrouter" 1Password item into the
-            # {{ include "monolith.fullname" . }}-orchestrator Secret, matching
-            # the field name convention grimoire's OPENROUTER_API_KEY uses.
+            # is sourced from the same "goosecracker" 1Password item that already
+            # syncs into the "goosecracker" Secret for the artifact egress
+            # sidecar (see onepassworditem-goosecracker.yaml). We reuse that
+            # Secret rather than sync the item twice; the field name matches the
+            # OPENROUTER_API_KEY convention the goosecracker item exposes. Note
+            # the Secret is named "goosecracker" (not fullname-prefixed).
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-orchestrator
+                  name: goosecracker
                   key: OPENROUTER_API_KEY
-                  # Optional: the Secret only exists once the 1Password item
-                  # is created; the client fails open (OrchestratorUnavailable)
-                  # when the key is absent.
+                  # Optional: the Secret only exists once the goosecracker
+                  # 1Password item is created; the client fails open
+                  # (OrchestratorUnavailable) when the key is absent.
                   optional: true
             - name: ORCHESTRATOR_MODEL
               value: {{ .Values.orchestrator.model | quote }}
