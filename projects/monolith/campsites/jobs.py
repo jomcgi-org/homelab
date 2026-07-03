@@ -190,7 +190,21 @@ async def refresh_handler(session) -> datetime.datetime | None:
     except Exception:
         logger.error("campsites refresh: availability phase failed", exc_info=True)
 
-    # 3. Weather (Open-Meteo is not WAF-protected; plain httpx).
+    # Commit availability NOW, before touching weather. Availability (BC Parks)
+    # and weather (Open-Meteo) are independent sources joined per-date by the
+    # snapshot API from separate tables, so there is no reason to couple their
+    # commits. Committing here means a later weather-phase failure, or the pod
+    # being killed at activeDeadlineSeconds while weather grinds through a slow
+    # Open-Meteo, can no longer discard a good availability fetch. This is its
+    # own committed transaction (to_thread + fresh session), so a SIGKILL after
+    # it does not roll it back. _upsert_availability prunes elapsed rows even on
+    # an empty dict, and merge never deletes in-window rows, so an empty avail
+    # (WAF block) keeps existing data (stale beats blank).
+    avail_written = await asyncio.to_thread(_upsert_availability, avail, prune_floor)
+
+    # 3. Weather (Open-Meteo is not WAF-protected; plain httpx). fetch_all_weather
+    # bails early after a run of consecutive failures (e.g. an Open-Meteo outage)
+    # rather than timing out park-by-park to the deadline.
     wx: dict[int, list[weather.WxDay]] = {}
     try:
         coords = [
@@ -201,18 +215,8 @@ async def refresh_handler(session) -> datetime.datetime | None:
     except Exception:
         logger.error("campsites refresh: weather phase failed", exc_info=True)
 
-    # 4. Never wipe tables on a total failure: if both sources came back empty,
-    # keep the existing rows (stale data beats a blank page) and return.
-    if not avail and not wx:
-        logger.error(
-            "campsites refresh: availability AND weather both empty; "
-            "keeping existing rows, writing nothing"
-        )
-        return None
-
-    # Commit whatever succeeded. Each helper still prunes elapsed rows even when
-    # its own source was empty, so the rolling window stays clean.
-    avail_written = await asyncio.to_thread(_upsert_availability, avail, prune_floor)
+    # Commit weather independently. Its own prune runs even on an empty dict, so
+    # an Open-Meteo outage keeps the existing (stale) forecast rather than a gap.
     wx_written = await asyncio.to_thread(_upsert_weather, wx, prune_floor)
     logger.info(
         "campsites refresh: wrote %d availability rows (%d parks), "
