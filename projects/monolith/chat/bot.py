@@ -131,6 +131,82 @@ def _render_goosecracker_progress(snap, elapsed: int, kind: str = "artifact") ->
     return "\n".join(lines)[:DISCORD_MESSAGE_LIMIT]
 
 
+# ADR 035: stage-marker checklist renderer, an alternative to the raw-tail
+# renderer above for recipes that announce a structured plan. Edits gated on
+# this path use stages_version/done rather than body diffing (see
+# _should_edit_checklist), so render_checklist must stay pure and time-free:
+# identical stage state has to produce byte-identical output.
+_STAGE_EMOJI = {
+    "pending": "⬜",
+    "running": "🔄",
+    "done": "✅",
+    "failed": "❌",
+    "skipped": "⏭️",
+}
+# Leave headroom under DISCORD_MESSAGE_LIMIT before collapsing, so the
+# collapse summary line itself never pushes the render over the hard cap.
+_CHECKLIST_COLLAPSE_AT = 1900
+GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL = 2.0  # coalesce checklist edits
+
+
+def render_checklist(progress) -> str | None:
+    """Render a stage checklist from a progress snapshot, or None to fall back.
+
+    ``progress`` is a chat.goosecracker_progress.Progress or None. Returns
+    None when there is no stage plan to show (no snapshot yet, or a recipe
+    that never emits stage markers), which tells the caller to use the
+    original tail renderer (_render_goosecracker_progress) instead.
+
+    One line per stage, emoji by state. A failed stage's title already carries
+    its one-line reason (the marker producer puts it there), so it is rendered
+    as-is. When the full render would exceed _CHECKLIST_COLLAPSE_AT chars, the
+    oldest contiguous run of already-completed stages (done/skipped) is folded
+    into a single "N earlier stages" line; running/pending/failed stages are
+    never collapsed, since those are what the owner needs to see.
+    """
+    if progress is None or not progress.stages:
+        return None
+
+    header = "✅ **Done**" if progress.done else "🤖 **Working**"
+    lines = [header]
+    if progress.notice and not progress.done:
+        lines.append(progress.notice)
+
+    stage_lines = [
+        f"{_STAGE_EMOJI.get(s.state, '⬜')} {s.title}" for s in progress.stages
+    ]
+    body = "\n".join(lines + stage_lines)
+
+    collapsed = 0
+    while len(body) > _CHECKLIST_COLLAPSE_AT and collapsed < len(progress.stages):
+        if progress.stages[collapsed].state not in ("done", "skipped"):
+            break
+        collapsed += 1
+        summary = [f"✅ {collapsed} earlier stages"]
+        body = "\n".join(lines + summary + stage_lines[collapsed:])
+
+    return body[:DISCORD_MESSAGE_LIMIT]
+
+
+def _should_edit_checklist(
+    stages_version: int,
+    last_stages_version: int,
+    done: bool,
+    last_done: bool,
+    now: float,
+    last_edit_at: float,
+) -> bool:
+    """True when the checklist stream loop should edit the Discord message now.
+
+    Gates on stages_version/done changing (render_checklist is time-free by
+    design, so body diffing would defeat the point) and coalesces to at most
+    once per GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL seconds, so a burst of
+    marker updates collapses into one edit instead of one per poll.
+    """
+    changed = stages_version != last_stages_version or done != last_done
+    return changed and (now - last_edit_at) >= GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL
+
+
 _fact_check_agent = None
 
 
@@ -736,24 +812,67 @@ class ChatBot(discord.Client):
         and re-renders on a fixed cadence, so Discord edits stay within rate
         limits. The final ``Artifact ready: <url>`` link is posted separately by
         the controller's Done -> outbox path (ADR 024 Task 5).
+
+        ADR 035: once a run announces a stage plan, render_checklist takes over
+        from the raw tail renderer and edits switch from "whenever the rendered
+        body changes" to stages_version/done gating (_should_edit_checklist), so
+        a burst of marker updates coalesces into one Discord edit. Runs that
+        never emit markers keep the original tail-renderer behaviour untouched.
         """
         gp = goosecracker_progress
         start = time.monotonic()
         last_body = message.content
+        last_stages_version = -1
+        last_done = False
+        last_edit_at = 0.0
         while True:
             await asyncio.sleep(GOOSECRACKER_STREAM_INTERVAL)
+            now = time.monotonic()
             snap = gp.get(artifact_id)
-            elapsed = int(time.monotonic() - start)
-            body = _render_goosecracker_progress(snap, elapsed, kind)
-            if body != last_body:
+            elapsed = int(now - start)
+            checklist = render_checklist(snap)
+
+            if checklist is None:
+                body = _render_goosecracker_progress(snap, elapsed, kind)
+                if body != last_body:
+                    try:
+                        await message.edit(content=body)
+                        last_body = body
+                    except discord.HTTPException:
+                        logger.exception(
+                            "goosecracker: progress edit failed for %s", artifact_id
+                        )
+            elif _should_edit_checklist(
+                snap.stages_version,
+                last_stages_version,
+                snap.done,
+                last_done,
+                now,
+                last_edit_at,
+            ):
                 try:
-                    await message.edit(content=body)
-                    last_body = body
+                    await message.edit(content=checklist)
+                    last_body = checklist
+                    last_edit_at = now
                 except discord.HTTPException:
                     logger.exception(
                         "goosecracker: progress edit failed for %s", artifact_id
                     )
+                last_stages_version = snap.stages_version
+                last_done = snap.done
+
             if snap is not None and snap.done:
+                if checklist is not None:
+                    # The coalescing gate above may have just swallowed the
+                    # done transition; force it through so the terminal
+                    # checklist is never dropped.
+                    try:
+                        await message.edit(content=checklist)
+                    except discord.HTTPException:
+                        logger.exception(
+                            "goosecracker: final progress edit failed for %s",
+                            artifact_id,
+                        )
                 gp.clear(artifact_id)
                 return
             if elapsed >= GOOSECRACKER_STREAM_TIMEOUT:
