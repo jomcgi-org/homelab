@@ -9,7 +9,10 @@ from sqlmodel import Session
 
 
 def register(app: FastAPI) -> None:
-    """Register grimoire routers with the app. No-op until the router lands."""
+    """Register the grimoire router with the app (private tier only)."""
+    from grimoire.router import router
+
+    app.include_router(router)
 
 
 def on_startup_jobs(session: Session) -> None:
