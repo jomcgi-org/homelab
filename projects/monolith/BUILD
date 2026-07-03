@@ -1034,6 +1034,19 @@ py_test(
 )
 
 py_test(
+    name = "chat_whatsapp_group_test",
+    srcs = ["chat/whatsapp_group_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_goosecracker_test",
     srcs = ["chat/goosecracker_test.py"],
     imports = ["."],

@@ -58,3 +58,40 @@ def test_explicit_tier_ca_wins_over_process_env(monkeypatch):
 
     env = tiers.env_for_tier("default")
     assert env["EGRESS_CA_CERT"] == "tier-pem"
+
+
+# --- Per-tier capability (tool) subset (ADR 034, ADR 039 household) ---------
+
+
+def test_household_tier_grants_only_household_features():
+    granted = tiers.features_for_tier("household")
+    assert granted == {"knowledge", "calendar", "reminders"}
+
+
+def test_household_tier_allows_its_three_families():
+    for feature in ("knowledge", "calendar", "reminders"):
+        assert tiers.tier_allows("household", feature) is True
+
+
+def test_household_tier_denies_repo_cluster_artifact():
+    for feature in ("repo", "cluster", "artifact"):
+        assert tiers.tier_allows("household", feature) is False
+
+
+def test_default_tier_is_unrestricted():
+    # A tier without a restricted entry gets the full capability set, so the
+    # household denial is a positive check, not an accidental open set.
+    for feature in (
+        "knowledge",
+        "calendar",
+        "reminders",
+        "repo",
+        "cluster",
+        "artifact",
+    ):
+        assert tiers.tier_allows("default", feature) is True
+
+
+def test_unknown_and_empty_tier_are_unrestricted():
+    assert tiers.tier_allows("nope", "repo") is True
+    assert tiers.tier_allows("", "repo") is True
