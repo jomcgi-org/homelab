@@ -1070,6 +1070,9 @@ class ChatBot(discord.Client):
             channel_context = await asyncio.to_thread(
                 summarizer._fetch_agent_reply_context, channel_id
             )
+            similar_messages = await self._orchestrator_similar_messages(
+                channel_id, prompt
+            )
             ctx = orchestrator.RequestContext(
                 request=prompt,
                 guild_id=guild_id,
@@ -1077,12 +1080,49 @@ class ChatBot(discord.Client):
                 invoker_scope=repo,
                 allowed_scopes=frozenset(allowed),
                 channel_context=channel_context,
+                similar_messages=similar_messages,
                 directive=directive,
             )
             return await orchestrator.compile(ctx)
         except Exception:
             logger.exception("orchestrator: verdict failed; failing open")
             return orchestrator.FailOpen("orchestrator raised")
+
+    async def _orchestrator_similar_messages(
+        self, channel_id: str, prompt: str
+    ) -> list[str]:
+        """Contextually similar past messages from THIS channel, via pgvector
+        similarity, for orchestrator grounding (ADR 036).
+
+        Channel-scoped, preserving the chat provenance guarantee: nothing
+        authored outside the channel enters the context. Returns [] on any
+        failure so a retrieval miss degrades the brief's grounding without
+        failing the whole orchestrator open.
+        """
+        try:
+            query_embedding = await self.embed_client.embed(prompt)
+
+            def _search() -> list[str]:
+                with Session(get_engine()) as session:
+                    store = MessageStore(
+                        session=session, embed_client=self.embed_client
+                    )
+                    results = store.search_similar(
+                        channel_id=channel_id,
+                        query_embedding=query_embedding,
+                        limit=5,
+                    )
+                if not results:
+                    return []
+                block = format_context_messages(results)
+                return [line for line in block.split("\n") if line.strip()]
+
+            return await asyncio.to_thread(_search)
+        except Exception:
+            logger.warning(
+                "orchestrator: similar-message retrieval failed", exc_info=True
+            )
+            return []
 
     async def _orchestrator_chat_reply(
         self, channel_id: str, prompt: str, verdict: "orchestrator.ChatVerdict"

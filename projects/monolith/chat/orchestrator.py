@@ -112,8 +112,9 @@ class RequestContext:
 
     ``allowed_scopes`` are the invoker's ADR 029 repo grants; ``invoker_scope``
     is the repo the command was invoked with (used to replace an out-of-scope
-    brief repo). ``kg_results`` and ``channel_context`` are volatile grounding
-    placed in the ``user`` message only.
+    brief repo). ``similar_messages`` (contextually similar past messages from
+    this channel, retrieved by pgvector similarity) and ``channel_context`` are
+    volatile grounding placed in the ``user`` message only.
     """
 
     request: str
@@ -123,7 +124,7 @@ class RequestContext:
     invoker_scope: str = ""
     allowed_scopes: frozenset[str] = frozenset()
     channel_context: str = ""
-    kg_results: list[str] = field(default_factory=list)
+    similar_messages: list[str] = field(default_factory=list)
     directive: Directive = field(default_factory=Directive)
 
 
@@ -148,7 +149,7 @@ def load_bundle() -> str:
 def assemble_prompt(
     bundle: str,
     directive: Directive,
-    kg_results: list[str],
+    similar_messages: list[str],
     channel_context: str,
     request: str,
 ) -> tuple[str, str]:
@@ -158,9 +159,9 @@ def assemble_prompt(
     ``system`` = baked bundle + the versioned channel directive; it contains no
     timestamps, ids, or unsorted collections, so two consecutive escalations in
     the same channel produce byte-identical ``system`` messages and the
-    provider's prefix cache hits. All volatile content (KG results, channel
-    context, the request) goes in ``user``. Byte-deterministic: identical inputs
-    give identical bytes.
+    provider's prefix cache hits. All volatile content (contextually similar
+    past messages, channel context, the request) goes in ``user``.
+    Byte-deterministic: identical inputs give identical bytes.
     """
     system = (
         bundle.rstrip("\n")
@@ -168,10 +169,12 @@ def assemble_prompt(
         + (directive.text.strip() or "(no channel directive set)")
         + "\n"
     )
-    kg_block = "\n".join(f"- {r}" for r in kg_results) if kg_results else "(none)"
+    similar_block = (
+        "\n".join(f"- {r}" for r in similar_messages) if similar_messages else "(none)"
+    )
     user = (
-        "## Knowledge graph results\n\n"
-        + kg_block
+        "## Contextually similar past messages in this channel\n\n"
+        + similar_block
         + "\n\n## Channel context\n\n"
         + (channel_context.strip() or "(none)")
         + "\n\n## Request\n\n"
@@ -422,7 +425,7 @@ async def compile(ctx: RequestContext) -> Verdict:
     system, user = assemble_prompt(
         load_bundle(),
         ctx.directive,
-        ctx.kg_results,
+        ctx.similar_messages,
         ctx.channel_context,
         ctx.request,
     )

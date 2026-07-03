@@ -131,6 +131,19 @@ class TestAssemblePrompt:
         assert "(no channel directive set)" in system
         assert "(none)" in user
 
+    def test_similar_messages_render_under_labeled_block(self):
+        _system, user = assemble_prompt(
+            "BUNDLE",
+            Directive(),
+            ["[2026-07-03 10:00] alice: is stars broken?"],
+            "chan ctx",
+            "do it",
+        )
+        assert "## Contextually similar past messages in this channel" in user
+        assert "- [2026-07-03 10:00] alice: is stars broken?" in user
+        # The channel context stays a separate, distinct block.
+        assert "## Channel context" in user
+
 
 # ---------------------------------------------------------------------------
 # parse_brief
