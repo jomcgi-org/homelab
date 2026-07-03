@@ -169,6 +169,20 @@ class TestReset:
         assert active_rows[0].directive == directives._seed_text()
 
 
+class TestIsProposal:
+    def test_true_for_a_proposed_row(self, engine):
+        with patch("chat.directives.get_engine", return_value=engine):
+            directives.get_active("c1")  # seed v1
+            directives.propose_update("c1", "Be more playful.", "u1", "m1", "p1")
+            assert directives.is_proposal("p1") is True
+
+    def test_false_for_a_non_proposal_message(self, engine):
+        with patch("chat.directives.get_engine", return_value=engine):
+            directives.get_active("c1")  # seed v1
+            directives.propose_update("c1", "Be more playful.", "u1", "m1", "p1")
+            assert directives.is_proposal("some-other-message-id") is False
+
+
 class TestStylePrefs:
     def test_set_then_get(self, engine):
         with patch("chat.directives.get_engine", return_value=engine):

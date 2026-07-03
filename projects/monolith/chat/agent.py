@@ -1,8 +1,9 @@
 """PydanticAI agent -- assembles context and runs Qwen with tool calling."""
 
+import asyncio
 import logging
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -96,6 +97,13 @@ class ChatDeps:
     channel_id: str
     store: MessageStore
     embed_client: EmbeddingClient
+    # The requester's Discord user ID, used to layer their personal style
+    # preference on top of the channel directive (ADR 035 Phase 5).
+    author_id: str = ""
+    # Directive-change proposals recorded by propose_directive_update during
+    # this run. The tool can't post to Discord itself; _stream_response posts
+    # the confirm summary + reactions for each entry once the run completes.
+    pending_proposal: list[dict] = field(default_factory=list)
 
 
 def build_system_prompt() -> str:
@@ -207,6 +215,29 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
     def _temporal_grounding() -> str:
         return temporal_grounding_prompt()
 
+    @agent.system_prompt
+    async def _channel_directive(ctx: RunContext[ChatDeps]) -> str:
+        from chat import directives
+
+        parts: list[str] = []
+        try:
+            directive = await asyncio.to_thread(
+                directives.get_active, ctx.deps.channel_id
+            )
+            if directive:
+                parts.append(
+                    "CHANNEL DIRECTIVE (how to behave in this channel): " + directive
+                )
+            if ctx.deps.author_id:
+                pref = await asyncio.to_thread(
+                    directives.get_style_pref, ctx.deps.author_id
+                )
+                if pref:
+                    parts.append("This user's style preference: " + pref)
+        except Exception:
+            logger.exception("directives: failed to load for system prompt")
+        return "\n\n".join(parts)
+
     @agent.tool_plain
     @signposted(
         "Default to searching. The only time you should skip search is for "
@@ -300,6 +331,51 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
             f"(updated {summary.updated_at.strftime('%Y-%m-%d')}):\n"
             f"{summary.summary}"
         )
+
+    @agent.tool
+    @signposted(
+        "ONLY when someone explicitly asks you to change how you behave in "
+        "THIS channel -- your tone, reply length, formality, or how eagerly "
+        "you jump into conversation. Never for a normal question, and never "
+        "to grant tools, permissions, or repo access (those aren't directives)."
+    )
+    async def propose_directive_update(
+        ctx: RunContext[ChatDeps], new_directive: str
+    ) -> str:
+        """Propose a change to this channel's behavioural directive. Requires human 👍/👎 confirmation before it takes effect."""
+        from chat import directives
+
+        ok, reason = await asyncio.to_thread(directives.guard, new_directive)
+        if not ok:
+            return f"Can't propose that: {reason}"
+        ctx.deps.pending_proposal.append({"directive": new_directive})
+        return "Proposal recorded; I'll post it for a 👍/👎 confirm."
+
+    @agent.tool
+    @signposted(
+        "When someone asks you to change how YOU reply to THEM specifically "
+        "(their own personal preference), not the whole channel's behaviour."
+    )
+    async def set_my_style(ctx: RunContext[ChatDeps], pref: str) -> str:
+        """Set the requesting user's personal reply style preference. Applies immediately, only to their own replies."""
+        from chat import directives
+
+        await asyncio.to_thread(directives.set_style_pref, ctx.deps.author_id, pref)
+        return "Got it, I'll reply to you that way from now on."
+
+    @agent.tool
+    @signposted(
+        "When someone asks you to reset, undo, or clear this channel's "
+        "custom behaviour directive back to the default."
+    )
+    async def reset_channel_directive(ctx: RunContext[ChatDeps]) -> str:
+        """Reset this channel's behavioural directive back to the default. Applies immediately."""
+        from chat import directives
+
+        await asyncio.to_thread(
+            directives.reset, ctx.deps.channel_id, ctx.deps.author_id
+        )
+        return "This channel's directive is back to the default."
 
     return agent
 

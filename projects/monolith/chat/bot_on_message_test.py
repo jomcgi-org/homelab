@@ -653,6 +653,117 @@ class TestAttentionGate:
 
 
 # ---------------------------------------------------------------------------
+# ChatBot.on_raw_reaction_add -- directive propose-then-confirm (ADR 035
+# Phase 5)
+# ---------------------------------------------------------------------------
+
+
+def _make_payload(
+    emoji: str = "\U0001f44d",  # 👍
+    user_id: int = 42,
+    message_id: int = 555,
+    channel_id: int = 99,
+) -> MagicMock:
+    payload = MagicMock()
+    payload.emoji = emoji
+    payload.user_id = user_id
+    payload.message_id = message_id
+    payload.channel_id = channel_id
+    return payload
+
+
+class TestDirectiveReactionHandler:
+    @pytest.mark.asyncio
+    async def test_human_thumbs_up_applies_and_swaps_to_check(self):
+        """A human 👍 on a proposal message applies it and swaps the seed
+        reactions for ✅."""
+        bot = _make_bot()
+
+        summary = MagicMock()
+        summary.clear_reaction = AsyncMock()
+        summary.add_reaction = AsyncMock()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=summary)
+        bot.get_channel = MagicMock(return_value=channel)
+
+        payload = _make_payload(emoji="\U0001f44d", user_id=42)
+
+        with (
+            patch("chat.bot.directives.is_proposal", return_value=True),
+            patch(
+                "chat.bot.directives.apply_proposal", return_value=True
+            ) as mock_apply,
+        ):
+            await bot.on_raw_reaction_add(payload)
+            mock_apply.assert_called_once_with(str(payload.message_id))
+
+        summary.clear_reaction.assert_any_call("\U0001f44d")
+        summary.clear_reaction.assert_any_call("\U0001f44e")
+        summary.add_reaction.assert_called_once_with("✅")
+
+    @pytest.mark.asyncio
+    async def test_human_thumbs_down_discards_and_swaps_to_cross(self):
+        """A human 👎 on a proposal message never calls apply_proposal and
+        swaps the seed reactions for ❌."""
+        bot = _make_bot()
+
+        summary = MagicMock()
+        summary.clear_reaction = AsyncMock()
+        summary.add_reaction = AsyncMock()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=summary)
+        bot.get_channel = MagicMock(return_value=channel)
+
+        payload = _make_payload(emoji="\U0001f44e", user_id=42)
+
+        with (
+            patch("chat.bot.directives.is_proposal", return_value=True),
+            patch("chat.bot.directives.apply_proposal") as mock_apply,
+        ):
+            await bot.on_raw_reaction_add(payload)
+            mock_apply.assert_not_called()
+
+        summary.add_reaction.assert_called_once_with("❌")
+
+    @pytest.mark.asyncio
+    async def test_bots_own_reaction_is_ignored(self):
+        """The bot's own seed 👍/👎 reaction (payload.user_id == bot id) is
+        ignored entirely -- no channel/message fetch, no DB call."""
+        bot = _make_bot()
+        bot.get_channel = MagicMock()
+
+        payload = _make_payload(emoji="\U0001f44d", user_id=bot.user.id)
+
+        with (
+            patch("chat.bot.directives.is_proposal") as mock_is_proposal,
+            patch("chat.bot.directives.apply_proposal") as mock_apply,
+        ):
+            await bot.on_raw_reaction_add(payload)
+            mock_is_proposal.assert_not_called()
+            mock_apply.assert_not_called()
+
+        bot.get_channel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_non_proposal_message_does_nothing(self):
+        """A human 👍 on a message that isn't a directive proposal (is_proposal
+        False) does nothing -- no apply_proposal call, no channel fetch."""
+        bot = _make_bot()
+        bot.get_channel = MagicMock()
+
+        payload = _make_payload(emoji="\U0001f44d", user_id=42)
+
+        with (
+            patch("chat.bot.directives.is_proposal", return_value=False),
+            patch("chat.bot.directives.apply_proposal") as mock_apply,
+        ):
+            await bot.on_raw_reaction_add(payload)
+            mock_apply.assert_not_called()
+
+        bot.get_channel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # create_bot
 # ---------------------------------------------------------------------------
 

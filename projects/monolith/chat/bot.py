@@ -31,6 +31,7 @@ from chat.web_search import search_web
 from chat import acl
 from chat import attention
 from chat import attention_log
+from chat import directives
 from chat import goosecracker
 from chat import goosecracker_progress
 from app.db import get_engine
@@ -701,15 +702,18 @@ class ChatBot(discord.Client):
             )
             is_ambient = False
         if is_ambient:
-            directive = ""  # Phase 5 wires directives.get_active(channel)
+            directive = await asyncio.to_thread(directives.get_active, channel_id)
             result = await attention.evaluate(message, directive, self.user, True)
+            directive_version = await asyncio.to_thread(
+                directives.get_active_version, channel_id
+            )
             await asyncio.to_thread(
                 attention_log.log_decision,
                 channel_id,
                 msg_id,
                 "engage" if result.engage else "ignore",
                 result.confidence,
-                0,
+                directive_version,
             )
             if result.engage:
                 # Depth split (in-monolith): pure conversation and basic web
@@ -723,6 +727,42 @@ class ChatBot(discord.Client):
                 return
 
         await self._process_message(message)
+
+    async def on_raw_reaction_add(
+        self, payload: discord.RawReactionActionEvent
+    ) -> None:
+        """The confirm/discard half of the propose-then-confirm directive flow
+        (ADR 035 Phase 5). Ignores the bot's own seed reactions -- only a
+        HUMAN 👍/👎 on a proposal message acts. 👍 applies (subject to
+        ``apply_proposal``'s freshness check); 👎 discards (no DB mutation
+        needed, the proposed row just stays inactive). Either way the seed
+        reactions are swapped for a terminal ✅/❌ on the summary message."""
+        if payload.user_id == self.user.id:
+            return
+        emoji = str(payload.emoji)
+        if emoji not in ("👍", "👎"):
+            return
+        pid = str(payload.message_id)
+        if not await asyncio.to_thread(directives.is_proposal, pid):
+            return
+
+        applied = False
+        if emoji == "👍":
+            applied = await asyncio.to_thread(directives.apply_proposal, pid)
+
+        channel = self.get_channel(payload.channel_id)
+        if channel is None:
+            return
+        try:
+            summary = await channel.fetch_message(payload.message_id)
+        except discord.HTTPException:
+            return
+        try:
+            await summary.clear_reaction("👍")
+            await summary.clear_reaction("👎")
+            await summary.add_reaction("✅" if applied else "❌")
+        except discord.HTTPException:
+            logger.exception("directives: failed to finalize proposal reactions")
 
     async def _handle_goosecracker_command(
         self, interaction: discord.Interaction, prompt: str
@@ -1255,6 +1295,7 @@ class ChatBot(discord.Client):
                 channel_id=str(message.channel.id),
                 store=store,
                 embed_client=self.embed_client,
+                author_id=str(message.author.id),
             )
 
             # Load attachments for recent messages
@@ -1426,6 +1467,36 @@ class ChatBot(discord.Client):
             await sent.edit(
                 content=response_text, view=BotMessageView(response_text, thinking_text)
             )
+
+            # A directive change proposed this run needs a human 👍/👎 confirm
+            # before it applies (ADR 035 Phase 5): post the summary, seed the
+            # reactions, and link the row to the summary message id. Guard runs
+            # again inside propose_update as a defense-in-depth backstop.
+            for prop in deps.pending_proposal:
+                try:
+                    summary = await message.reply(
+                        "Proposed directive for this channel:\n> "
+                        + prop["directive"].replace("\n", "\n> ")
+                        + "\n\nReact 👍 to apply or 👎 to discard."
+                    )
+                    ok, _ = await asyncio.to_thread(
+                        directives.propose_update,
+                        str(message.channel.id),
+                        prop["directive"],
+                        str(message.author.id),
+                        str(message.id),
+                        str(summary.id),
+                    )
+                    if ok:
+                        await summary.add_reaction("👍")
+                        await summary.add_reaction("👎")
+                    else:
+                        await summary.edit(
+                            content="That change was rejected (it tried to alter "
+                            "tools, permissions, or access)."
+                        )
+                except Exception:
+                    logger.exception("directives: failed to post proposal summary")
 
             return sent, response_text, thinking_text
 
