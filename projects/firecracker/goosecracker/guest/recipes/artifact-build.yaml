@@ -1,4 +1,4 @@
-version: "1.4.0"
+version: "1.5.0"
 title: "Artifact"
 description: "Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024)."
 instructions: |
@@ -87,7 +87,9 @@ instructions: |
     readable.
   - Layout: vary spacing to build rhythm instead of identical padding everywhere.
     Prefer left-aligned text and asymmetric composition over centering everything.
-    Do not wrap every element in a card, and never nest cards inside cards.
+    Do not wrap every element in a card, and never nest cards inside cards. Stay
+    usable at a 390px phone width: let grids collapse instead of hardcoding
+    minmax() floors wider than the screen, and let text wrap.
   - Motion: animate transform and opacity only, with ease-out easing. One
     well-orchestrated page load beats scattered micro-twitches. No bounce or
     elastic easing.
@@ -178,6 +180,21 @@ settings:
 #      bindings without an Alpine/Vue script, uk-*/Franken without UIkit/Franken,
 #      or data-lucide icons without a lucide.createIcons() call. Each leaves a
 #      dead, unstyled element while the page still renders.
+#   5. every font-family is a system-default stack and no web font is loaded,
+#      despite the DESIGN BAR requiring a distinctive CDN pairing. The prose alone
+#      was ignored by both artifacts in the 2026-07-02 design-eval window
+#      (Y9Stvkx9Y3uK: -apple-system/Segoe/Roboto; UzztVfdBf2fx: Segoe UI/system-ui).
+#      Only fires when NO @font-face/font CDN <link> exists AND every declared
+#      family resolves to the system set, so a deliberate named-font choice never
+#      false-positives.
+#   6. interactive controls exist but the string "focus" never appears: no
+#      :focus/:focus-visible rule and no Tailwind focus: utility, so keyboard
+#      users get no visible focus state. Both 2026-07-02 window artifacts had
+#      hover styles but zero focus styles.
+#   7. a grid minmax() floor wider than 390px with no @media fallback anywhere,
+#      which forces horizontal scrolling on phones. Motivated by artifact
+#      UzztVfdBf2fx (minmax(420px,1fr) charts-row, page rendered 444px wide at a
+#      390px viewport).
 # A dynamic "does the button work when clicked" check needs a headless browser in
 # the guest and is deliberately out of scope here (tracked as a follow-up).
 retry:
@@ -211,17 +228,32 @@ retry:
         if(/(\sx-data=|\s@click=|\s:class=|\sv-if=|\sv-for=)/.test(html)&&!/<script[^>]+src=[^>]*(alpine|vue)/i.test(html))errs.push("Alpine/Vue directives (x-data / @click / :class) are used but no Alpine or Vue <script src> is loaded, so nothing will be interactive.");
         if(/\s(?:data-)?uk-[a-z]/.test(html)&&!/<script[^>]+src=[^>]*(uikit|franken)/i.test(html))errs.push("Franken UI / uk-* attributes are used but no UIkit/Franken UI <script src> is loaded, so those components will not initialize.");
         if(/data-lucide=/.test(html)&&!/lucide\s*\.\s*createIcons\s*\(/.test(html))errs.push("data-lucide icons are used but lucide.createIcons() is never called, so no icons will render.");
+        const hasWebFont=/@font-face/i.test(html)||/<link[^>]+href=[^>]*(fonts\.googleapis\.com|fonts\.bunny\.net|fontshare\.com|cdnfonts\.com|typekit\.net)/i.test(html);
+        if(!hasWebFont){
+          const SYS=new Set(["-apple-system","blinkmacsystemfont","segoe ui","roboto","arial","helvetica","helvetica neue","inter","open sans","system-ui","ui-sans-serif","ui-serif","ui-monospace","ui-rounded","sans-serif","serif","monospace","cursive","apple color emoji","segoe ui emoji","segoe ui symbol","noto color emoji"]);
+          const fre=/font-family\s*:\s*([^;}]+)/gi;let fm;const fams=[];
+          while((fm=fre.exec(html))){fams.push(fm[1]);}
+          if(fams.length&&fams.every(f=>f.split(",").every(t=>SYS.has(t.trim().replace(/["\x27]/g,"").toLowerCase()))))errs.push("Every font-family is a system-default stack (Segoe UI/Roboto/Arial/system-ui) and no web font is loaded; the design bar requires a distinctive display+body pairing. Add a font CDN <link> (e.g. fonts.googleapis.com or fonts.bunny.net) in <head> and reference those families in your font-family rules.");
+        }
+        if(/(<button|<input|<select|<textarea|<a\s|onclick=)/i.test(html)&&!/focus/i.test(html))errs.push("The page has interactive controls but no focus style at all (the string \x27focus\x27 never appears). Give every control a visible focus state, e.g. a :focus-visible outline or a box-shadow ring using your --ring token.");
+        const mre=/minmax\(\s*(\d+(?:\.\d+)?)px/gi;let mm;const wide=new Set();
+        while((mm=mre.exec(html))){if(parseFloat(mm[1])>390)wide.add(mm[1]+"px");}
+        if(wide.size&&!/@media/i.test(html))errs.push("Grid minmax() floor(s) wider than a phone screen ("+[...wide].join(", ")+") with no @media fallback force horizontal scrolling at 390px width. Use minmax(min(100%,Npx),1fr), lower the floor, or add a mobile @media rule.");
         if(errs.length){try{fs.writeFileSync("/tmp/artifact_error.txt",errs.join("\n"));}catch(_){}console.error(errs.join("\n"));process.exit(1);}
         '
   failure_prompt: |
     Your /tmp/artifact.html is not publishable yet. It is missing/empty, it still
     has unfilled NEEDS_FILL placeholder markers (you wrote the skeleton but did not
-    fill it in), or a static check found a defect that makes the page look broken
-    or half-styled: an inline <script> with a JavaScript SYNTAX ERROR (kills every
-    handler), an
-    invalid Tailwind color class like slate-705 (renders as nothing), or an
+    fill it in), or a static check found a defect that makes the page look broken,
+    half-styled, or below the design bar: an inline <script> with a JavaScript
+    SYNTAX ERROR (kills every handler), an
+    invalid Tailwind color class like slate-705 (renders as nothing), an
     interactivity directive (Alpine/Vue x-data/@click/:class, Franken uk-*,
-    data-lucide) whose runtime script is never loaded. If /tmp/artifact_error.txt
+    data-lucide) whose runtime script is never loaded, a system-default font stack
+    with no web font loaded (add a font CDN <link> and use it), interactive
+    controls with no focus style anywhere (add :focus-visible states), or a grid
+    minmax() floor wider than 390px with no @media fallback (breaks phones with
+    horizontal scrolling). If /tmp/artifact_error.txt
     exists, read it first: it lists the exact problems. Fix them with targeted
     str_replace edits to /tmp/artifact.html (or, if the file is missing/empty,
     write the small skeleton and fill it section by section as before). Do not
