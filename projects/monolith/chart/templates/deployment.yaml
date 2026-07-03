@@ -151,6 +151,16 @@ spec:
                   name: {{ include "monolith.fullname" . }}-gardener
                   key: CLAUDE_AUTH_TOKEN
             {{- end }}
+            {{- if .Values.whatsapp.enabled }}
+            # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith
+            # validates the gateway's forwarded requests against it; the same
+            # 1Password-managed Secret injects it into the gateway (the caller).
+            - name: WHATSAPP_INBOUND_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-whatsapp
+                  key: WHATSAPP_INBOUND_TOKEN
+            {{- end }}
             {{- if .Values.knowledge.enabled }}
             {{- if .Values.knowledge.gaps.rewriteDiscardable }}
             - name: KNOWLEDGE_GAPS_REWRITE_DISCARDABLE

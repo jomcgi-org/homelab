@@ -342,6 +342,10 @@ whatsapp:
   botNumber: ""
   groupJids: ""
   alertChannelId: ""
+  # Monolith backend inbound endpoint (release "monolith", service "monolith").
+  # The WHATSAPP_INBOUND_TOKEN field of the 1Password "whatsapp" item authorizes
+  # the forward; populate it before enabling the gateway.
+  monolithInboundUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/whatsapp/inbound"
 
 agent:
   discord:

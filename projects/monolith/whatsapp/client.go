@@ -48,14 +48,15 @@ type Notifier interface {
 // no business logic: it pairs or resumes, tracks connection state, logs
 // allow-listed group messages, and parks on logout or ban.
 type Gateway struct {
-	cfg      Config
-	log      *slog.Logger
-	session  Session
-	notifier Notifier
-	state    *stateHolder
+	cfg       Config
+	log       *slog.Logger
+	session   Session
+	notifier  Notifier
+	forwarder Forwarder
+	state     *stateHolder
 
-	// allow is the set of group JIDs whose messages are logged; everything else
-	// is dropped without forwarding.
+	// allow is the set of group JIDs whose messages are forwarded; everything
+	// else is dropped without forwarding.
 	allow map[string]bool
 
 	// parkOnce guards the parked-state transition so the alert fires exactly once
@@ -63,20 +64,23 @@ type Gateway struct {
 	parkOnce sync.Once
 }
 
-// NewGateway builds a gateway over the given session and notifier. It starts in
-// the pairing state; Start drives the transition to connected (or parked).
-func NewGateway(cfg Config, log *slog.Logger, session Session, notifier Notifier) *Gateway {
+// NewGateway builds a gateway over the given session, notifier, and forwarder. It
+// starts in the pairing state; Start drives the transition to connected (or
+// parked). A nil forwarder disables forwarding (the message is only logged), used
+// by tests that do not exercise the inbound path.
+func NewGateway(cfg Config, log *slog.Logger, session Session, notifier Notifier, forwarder Forwarder) *Gateway {
 	allow := make(map[string]bool, len(cfg.GroupJIDs))
 	for _, jid := range cfg.GroupJIDs {
 		allow[jid] = true
 	}
 	return &Gateway{
-		cfg:      cfg,
-		log:      log,
-		session:  session,
-		notifier: notifier,
-		state:    newStateHolder(StatePairing),
-		allow:    allow,
+		cfg:       cfg,
+		log:       log,
+		session:   session,
+		notifier:  notifier,
+		forwarder: forwarder,
+		state:     newStateHolder(StatePairing),
+		allow:     allow,
 	}
 }
 
@@ -146,9 +150,11 @@ func (g *Gateway) handleEvent(evt any) {
 	}
 }
 
-// onMessage logs a message from an allow-listed group. Phase 1 is log-only:
-// there is no forwarding to the monolith yet. Messages from any other chat (a
-// DM to the bot number, an unknown group) are dropped silently.
+// onMessage forwards a message from an allow-listed group to the monolith
+// inbound endpoint (ADR 039 spec section 2), preserving per-group order via the
+// forwarder. Messages from any other chat (a DM to the bot number, an unknown
+// group) are dropped silently. A nil forwarder (tests, or forwarding not
+// configured) falls back to log-only.
 func (g *Gateway) onMessage(e *events.Message) {
 	if !e.Info.IsGroup {
 		return
@@ -162,8 +168,32 @@ func (g *Gateway) onMessage(e *events.Message) {
 		"sender_jid", e.Info.Sender.String(),
 		"sender_name", e.Info.PushName,
 		"message_id", e.Info.ID,
-		"text", messageText(e),
 	)
+	if g.forwarder == nil {
+		return
+	}
+	g.forwarder.Forward(InboundPayload{
+		GroupJID:        groupJID,
+		SenderJID:       e.Info.Sender.String(),
+		SenderName:      e.Info.PushName,
+		MessageID:       e.Info.ID,
+		Text:            messageText(e),
+		QuotedMessageID: quotedMessageID(e),
+		Timestamp:       e.Info.Timestamp.UTC().Format(time.RFC3339),
+	})
+}
+
+// quotedMessageID returns the id of the message this one replies to, or "" when
+// it is not a reply. WhatsApp carries it in the ExtendedTextMessage ContextInfo.
+func quotedMessageID(e *events.Message) string {
+	if e.Message == nil {
+		return ""
+	}
+	ci := e.Message.GetExtendedTextMessage().GetContextInfo()
+	if ci == nil {
+		return ""
+	}
+	return ci.GetStanzaID()
 }
 
 // park moves the gateway to the parked state: it stops work, fires exactly one

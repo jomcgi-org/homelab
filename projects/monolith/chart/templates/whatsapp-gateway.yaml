@@ -55,6 +55,18 @@ spec:
               value: {{ .Values.whatsapp.groupJids | quote }}
             - name: WHATSAPP_ALERT_CHANNEL_ID
               value: {{ .Values.whatsapp.alertChannelId | quote }}
+            # The gateway forwards allow-listed group messages to the monolith
+            # inbound endpoint (ADR 039 spec section 2). The URL is a value (never
+            # hardcoded in Go: a release rename changes the service name); the
+            # bearer token is 1Password-managed and shared with the monolith
+            # validator via the same Secret.
+            - name: MONOLITH_INBOUND_URL
+              value: {{ .Values.whatsapp.monolithInboundUrl | quote }}
+            - name: WHATSAPP_INBOUND_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-whatsapp
+                  key: WHATSAPP_INBOUND_TOKEN
             - name: WHATSAPP_HEALTH_ADDR
               value: ":8080"
           livenessProbe:

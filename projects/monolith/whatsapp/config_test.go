@@ -18,6 +18,8 @@ func TestLoadConfigValidation(t *testing.T) {
 				"WHATSAPP_DB_DSN":           "postgres://u:p@h:5432/db",
 				"WHATSAPP_BOT_NUMBER":       "+447700900123",
 				"WHATSAPP_ALERT_CHANNEL_ID": "123",
+				"MONOLITH_INBOUND_URL":      "http://monolith:8000/internal/whatsapp/inbound",
+				"WHATSAPP_INBOUND_TOKEN":    "tok",
 			},
 			wantErr: false,
 		},
@@ -39,7 +41,7 @@ func TestLoadConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, k := range []string{"WHATSAPP_DB_DSN", "WHATSAPP_BOT_NUMBER", "WHATSAPP_GROUP_JIDS", "WHATSAPP_ALERT_CHANNEL_ID", "WHATSAPP_HEALTH_ADDR"} {
+			for _, k := range []string{"WHATSAPP_DB_DSN", "WHATSAPP_BOT_NUMBER", "WHATSAPP_GROUP_JIDS", "WHATSAPP_ALERT_CHANNEL_ID", "MONOLITH_INBOUND_URL", "WHATSAPP_INBOUND_TOKEN", "WHATSAPP_HEALTH_ADDR"} {
 				t.Setenv(k, "")
 			}
 			for k, v := range tt.env {
@@ -68,7 +70,7 @@ func TestLoadConfigValidation(t *testing.T) {
 }
 
 func TestGroupJIDsParsing(t *testing.T) {
-	for _, k := range []string{"WHATSAPP_DB_DSN", "WHATSAPP_BOT_NUMBER", "WHATSAPP_ALERT_CHANNEL_ID"} {
+	for _, k := range []string{"WHATSAPP_DB_DSN", "WHATSAPP_BOT_NUMBER", "WHATSAPP_ALERT_CHANNEL_ID", "MONOLITH_INBOUND_URL", "WHATSAPP_INBOUND_TOKEN"} {
 		t.Setenv(k, "x")
 	}
 	t.Setenv("WHATSAPP_GROUP_JIDS", " a@g.us , b@g.us ,, c@g.us ")

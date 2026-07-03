@@ -29,6 +29,14 @@ type Config struct {
 	// AlertChannelID is the Discord channel id ops alerts are delivered to (the
 	// pairing code and the logout/ban alert), via the shared chat.discord_outbox.
 	AlertChannelID string
+	// MonolithInboundURL is the in-cluster URL of the monolith backend inbound
+	// endpoint the gateway POSTs allow-listed group messages to (spec section 2).
+	// Injected from values (never hardcoded: a release rename changes the service
+	// name prefix).
+	MonolithInboundURL string
+	// InboundToken is the bearer the gateway presents on the inbound POST; the
+	// monolith validates it against the same 1Password-managed value.
+	InboundToken string
 	// HealthAddr is the listen address for the /healthz endpoint.
 	HealthAddr string
 }
@@ -38,11 +46,13 @@ type Config struct {
 // every missing field so a misconfigured Deployment fails fast and legibly.
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		DBDSN:          os.Getenv("WHATSAPP_DB_DSN"),
-		BotNumber:      os.Getenv("WHATSAPP_BOT_NUMBER"),
-		GroupJIDs:      splitAndTrim(os.Getenv("WHATSAPP_GROUP_JIDS")),
-		AlertChannelID: os.Getenv("WHATSAPP_ALERT_CHANNEL_ID"),
-		HealthAddr:     os.Getenv("WHATSAPP_HEALTH_ADDR"),
+		DBDSN:              os.Getenv("WHATSAPP_DB_DSN"),
+		BotNumber:          os.Getenv("WHATSAPP_BOT_NUMBER"),
+		GroupJIDs:          splitAndTrim(os.Getenv("WHATSAPP_GROUP_JIDS")),
+		AlertChannelID:     os.Getenv("WHATSAPP_ALERT_CHANNEL_ID"),
+		MonolithInboundURL: os.Getenv("MONOLITH_INBOUND_URL"),
+		InboundToken:       os.Getenv("WHATSAPP_INBOUND_TOKEN"),
+		HealthAddr:         os.Getenv("WHATSAPP_HEALTH_ADDR"),
 	}
 	if cfg.HealthAddr == "" {
 		cfg.HealthAddr = ":8080"
@@ -63,6 +73,15 @@ func (c Config) validate() error {
 	}
 	if c.AlertChannelID == "" {
 		missing = append(missing, "WHATSAPP_ALERT_CHANNEL_ID")
+	}
+	// Forwarding is Phase 3's whole purpose: without a destination and a bearer
+	// the gateway cannot deliver a message, so fail fast rather than silently
+	// dropping every inbound.
+	if c.MonolithInboundURL == "" {
+		missing = append(missing, "MONOLITH_INBOUND_URL")
+	}
+	if c.InboundToken == "" {
+		missing = append(missing, "WHATSAPP_INBOUND_TOKEN")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("whatsapp: missing required config: %s", strings.Join(missing, ", "))

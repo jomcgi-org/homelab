@@ -823,6 +823,10 @@ whatsapp:
   # Discord channel id ops alerts (pairing code, logout/ban) are posted to via
   # the shared chat.discord_outbox drain.
   alertChannelId: ""
+  # In-cluster URL of the monolith backend inbound endpoint the gateway forwards
+  # group messages to (ADR 039 spec section 2). Set in deploy values; never
+  # hardcoded in Go (a release rename changes the service name prefix).
+  monolithInboundUrl: ""
   # Small: this is a websocket pump. CPU request, no CPU limit; memory
   # request=limit, per the repo resource-sizing convention.
   resources:
