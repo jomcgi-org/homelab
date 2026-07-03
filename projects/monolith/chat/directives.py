@@ -16,6 +16,7 @@ All functions are synchronous (open their own session); call via
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,9 +29,12 @@ from chat.models import ChannelDirective, UserStylePref
 SEED_PATH = Path(__file__).parent / "directive_seed.md"
 
 # A proposal older than this is expired; apply_proposal refuses to activate
-# it. The Task 5.2 reaction handler enforces the same window on its side
-# (and checks the confirmer is authorized); this is the storage-layer
-# backstop so a stale confirmation can never sneak through.
+# it. The Task 5.2 reaction handler enforces the same window on its side; this
+# is the storage-layer backstop so a stale confirmation can never sneak
+# through. By owner decision, anyone with access to the channel can confirm or
+# discard a proposal (no per-confirmer authorization check): a directive is
+# guarded (tone-only, see guard()) and only rubber-stamps text the agent
+# already drafted, so the blast radius is bounded.
 PROPOSAL_TTL = timedelta(minutes=10)
 
 # Keyword screen for propose_update: a directive shapes tone/attention/
@@ -49,8 +53,6 @@ _GUARD_KEYWORDS = (
     "repo",
     "push to",
     "admin",
-    "enable",
-    "disable",
 )
 
 
@@ -113,10 +115,18 @@ def get_active_version(channel_id: str) -> int:
 def guard(text: str) -> tuple[bool, str]:
     """Reject a proposed directive that tries to change tools/ACLs/
     permissions/ambient/repos. Directives shape tone and interaction style
-    only. Returns (False, reason) on reject, (True, "") on ok."""
+    only. Returns (False, reason) on reject, (True, "") on ok.
+
+    This is a best-effort keyword screen, NOT a security boundary: a directive
+    is only prepended system-prompt text and cannot grant a tool or capability
+    regardless of its content (the chat agent's tools are fixed). It guards
+    against a directive that reads as if it changes access; the residual
+    prompt-injection risk of attacker-influenced system-prompt text is inherent
+    and bounded to tone. Matches on whole words so "report"/"repository" do not
+    trip the "repo" keyword."""
     lowered = text.lower()
     for keyword in _GUARD_KEYWORDS:
-        if keyword in lowered:
+        if re.search(r"\b" + re.escape(keyword) + r"\b", lowered):
             return (
                 False,
                 f"directives can only shape tone and interaction style, "
@@ -187,7 +197,14 @@ def apply_proposal(proposal_message_id: str) -> bool:
             current.active = False
         proposal.active = True
         proposal.version = (current.version if current is not None else 0) + 1
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            # A concurrent apply/reset activated another row for this channel
+            # first; the partial unique index (one active row) rejects this
+            # commit. Treat as not-applied rather than raising.
+            session.rollback()
+            return False
     return True
 
 
@@ -210,7 +227,12 @@ def reset(channel_id: str, user_id: str, motivating_message_id: str = "") -> Non
                 previous_version=current.version if current is not None else 0,
             )
         )
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent reset/apply for this channel; the
+            # other writer's active row stands. No-op rather than raise.
+            session.rollback()
 
 
 def is_proposal(proposal_message_id: str) -> bool:
@@ -258,4 +280,9 @@ def set_style_pref(user_id: str, pref: str, motivating_message_id: str = "") -> 
                 motivating_message_id=motivating_message_id,
             )
         )
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent style-pref write for this user; the
+            # other writer's active pref stands. No-op rather than raise.
+            session.rollback()

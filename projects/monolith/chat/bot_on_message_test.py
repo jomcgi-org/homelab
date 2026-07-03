@@ -702,6 +702,32 @@ class TestDirectiveReactionHandler:
         summary.add_reaction.assert_called_once_with("✅")
 
     @pytest.mark.asyncio
+    async def test_human_thumbs_up_on_expired_proposal_swaps_to_cross(self):
+        """A 👍 on a proposal apply_proposal refuses (expired/stale) lands ❌,
+        not ✅ - ✅ only when the apply actually succeeded."""
+        bot = _make_bot()
+
+        summary = MagicMock()
+        summary.clear_reaction = AsyncMock()
+        summary.add_reaction = AsyncMock()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=summary)
+        bot.get_channel = MagicMock(return_value=channel)
+
+        payload = _make_payload(emoji="\U0001f44d", user_id=42)
+
+        with (
+            patch("chat.bot.directives.is_proposal", return_value=True),
+            patch(
+                "chat.bot.directives.apply_proposal", return_value=False
+            ) as mock_apply,
+        ):
+            await bot.on_raw_reaction_add(payload)
+            mock_apply.assert_called_once_with(str(payload.message_id))
+
+        summary.add_reaction.assert_called_once_with("❌")
+
+    @pytest.mark.asyncio
     async def test_human_thumbs_down_discards_and_swaps_to_cross(self):
         """A human 👎 on a proposal message never calls apply_proposal and
         swaps the seed reactions for ❌."""

@@ -150,6 +150,19 @@ class TestGuard:
         assert ok is True
         assert reason == ""
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Give a report-style summary of the discussion.",
+            "Reply in the style of a repository maintainer's changelog.",
+        ],
+    )
+    def test_accepts_words_that_merely_contain_a_keyword(self, text):
+        # Whole-word matching: "report"/"repository" must not trip "repo".
+        ok, reason = directives.guard(text)
+        assert ok is True
+        assert reason == ""
+
 
 class TestReset:
     def test_reset_creates_fresh_active_seed_and_keeps_history(self, engine):
