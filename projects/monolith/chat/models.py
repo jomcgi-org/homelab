@@ -156,6 +156,11 @@ class GoosecrackerSession(SQLModel, table=True):
     recipe: str = Field(default="artifact")
     tier: str = Field(default="")
     repo: str = Field(default="")
+    # Discord parent channel the /agent thread was opened from. The thread itself
+    # has no history, so the runner reads this to fetch channel-scoped context
+    # (recent messages, rolling summaries) for a conversational reply. Empty for a
+    # non-Discord (MCP) session or an artifact thread; empty means no context.
+    parent_channel_id: str = Field(default="")
     # Conversational queue state (agent sessions only).
     # running: a turn is currently in flight.
     # pending: newline-joined replies queued while running=True; consumed on drain.

@@ -276,6 +276,37 @@ def _agent_narrative(result: str) -> str:
     return body or "(no output)"
 
 
+async def _agent_reply_message(session: str, summary: str, details: str) -> str:
+    """Compose the conversational reply for a coding-agent run.
+
+    Rephrases goose's typed ``summary`` (+ optional ``details``) in the bot's own
+    voice, grounded in the parent channel's context (recent messages + rolling
+    summaries), so the reply reads like the bot talking to the channel rather than
+    a raw tool dump. The result URL is appended by the caller, never by the model.
+
+    Fail-open: the reply must always go out, so any missing channel id, model
+    outage, or error yields the deterministic ``summary``/``details`` composition
+    (exactly what this path posted before the concierge existed). Reaches the chat
+    domain only through ``chat.api`` (import_boundaries_test).
+    """
+    deterministic = summary + (f"\n\n{details}" if details else "")
+    try:
+        from chat.api import conversational_agent_reply, parent_channel_for_thread
+
+        # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
+        parent = await asyncio.to_thread(parent_channel_for_thread, session)
+        if not parent:
+            return deterministic
+        reply = (await conversational_agent_reply(parent, summary, details)).strip()
+        return reply or deterministic
+    except Exception:
+        logger.exception(
+            "goosecracker: conversational reply failed for %s; using raw summary",
+            session,
+        )
+        return deterministic
+
+
 async def _delivery_message(session: str, recipe: str, data: dict) -> str:
     """Build the Discord message for a successful run.
 
@@ -318,10 +349,11 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
         result = data.get("result", "") or ""
         structured = _parse_structured_result(result)
         if structured and str(structured.get("summary", "")).strip():
-            msg = str(structured["summary"]).strip()
+            summary = str(structured["summary"]).strip()
             details = str(structured.get("details", "") or "").strip()
-            if details:
-                msg += f"\n\n{details}"
+            # Rephrase the typed summary conversationally (channel-scoped context),
+            # then append the URL deterministically so it can never be mangled.
+            msg = await _agent_reply_message(session, summary, details)
             url = str(structured.get("url", "") or "").strip()
             if url.startswith("http"):
                 msg += f"\n{url}"

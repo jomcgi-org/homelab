@@ -560,3 +560,82 @@ async def test_run_one_turn_resets_progress_buffer_at_start(monkeypatch):
 
     assert ok is False  # fail-fast path (no FC_INVOKE_URL)
     reset_spy.assert_called_once_with("sess-x")  # buffer reset before the turn ran
+
+
+# ---------------------------------------------------------------------------
+# Conversational reply (_agent_reply_message): rephrase the typed summary in the
+# bot's voice using channel context, fail-open to the deterministic summary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _default_no_parent_channel(monkeypatch):
+    """Keep the coding-agent delivery tests hermetic.
+
+    _agent_reply_message calls chat.api.parent_channel_for_thread; with no parent
+    it returns the deterministic summary and never touches the DB or the model.
+    Default it to "" so every existing agent-delivery test exercises that path
+    without a stray Postgres connect; the concierge tests below override it.
+    """
+    import chat.api
+
+    monkeypatch.setattr(chat.api, "parent_channel_for_thread", lambda _t: "")
+
+
+async def test_agent_reply_message_uses_conversational_when_parent(monkeypatch):
+    import chat.api
+
+    monkeypatch.setattr(chat.api, "parent_channel_for_thread", lambda _t: "chan-1")
+
+    async def fake_reply(channel_id, summary, details="", **_kw):
+        assert channel_id == "chan-1"
+        assert summary == "Added a null check in parse()."
+        return "Hey, I slipped in that null check you asked for."
+
+    monkeypatch.setattr(chat.api, "conversational_agent_reply", fake_reply)
+
+    msg = await runner._agent_reply_message("s-1", "Added a null check in parse().", "")
+    assert msg == "Hey, I slipped in that null check you asked for."
+
+
+async def test_agent_reply_message_falls_back_without_parent():
+    # autouse fixture forces parent="" -> deterministic summary + details.
+    msg = await runner._agent_reply_message("s-1", "Fixed it.", "Added a guard.")
+    assert msg == "Fixed it.\n\nAdded a guard."
+
+
+async def test_agent_reply_message_fails_open_on_model_error(monkeypatch):
+    import chat.api
+
+    monkeypatch.setattr(chat.api, "parent_channel_for_thread", lambda _t: "chan-1")
+
+    async def boom(*_a, **_kw):
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(chat.api, "conversational_agent_reply", boom)
+
+    msg = await runner._agent_reply_message("s-1", "Fixed it.", "Added a guard.")
+    assert msg == "Fixed it.\n\nAdded a guard."
+
+
+async def test_delivery_message_agent_appends_url_after_conversational(monkeypatch):
+    # The conversational reply replaces the raw summary/details, but the URL is
+    # still appended deterministically (never routed through the model).
+    import chat.api
+
+    monkeypatch.setattr(chat.api, "parent_channel_for_thread", lambda _t: "chan-1")
+
+    async def fake_reply(channel_id, summary, details="", **_kw):
+        return "All done, opened a PR for you."
+
+    monkeypatch.setattr(chat.api, "conversational_agent_reply", fake_reply)
+
+    result = (
+        '{"type": "pr", "summary": "Fixed the parser.", '
+        '"details": "guard + test", '
+        '"url": "https://github.com/jomcgi/homelab/pull/99"}'
+    )
+    msg = await runner._delivery_message("s-10", "agent", {"result": result})
+    assert msg.startswith("All done, opened a PR for you.")
+    assert "https://github.com/jomcgi/homelab/pull/99" in msg
+    assert "guard + test" not in msg  # raw details replaced by the conversational reply
