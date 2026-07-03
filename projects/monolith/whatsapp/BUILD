@@ -37,7 +37,10 @@ go_test(
         "outbox_test.go",
     ],
     embed = [":whatsapp"],
-    deps = ["@fi_mau_go_whatsmeow//types/events"],
+    deps = [
+        "@fi_mau_go_whatsmeow//:whatsmeow",
+        "@fi_mau_go_whatsmeow//types/events",
+    ],
 )
 
 # WhatsApp channel gateway container image (ADR 039). Built as an apko image
