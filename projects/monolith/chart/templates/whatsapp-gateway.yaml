@@ -1,0 +1,79 @@
+{{- if .Values.whatsapp.enabled }}
+# WhatsApp channel gateway (ADR 039): a transport-only Go whatsmeow service in
+# its own single-replica Deployment (whatsmeow allows one live socket per device
+# session, so this is intentionally not autoscaled). It pairs or resumes the bot
+# number, logs allow-listed group messages, and parks on logout/ban. Its
+# whatsmeow session persists in the monolith CNPG Postgres under a dedicated
+# `whatsapp` schema, so the pod is stateless and reschedulable without
+# re-pairing. No LLM access, no MCP tools.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "monolith.fullname" . }}-whatsapp
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: whatsapp
+spec:
+  # Hardcoded to 1: a single WhatsApp socket per device session. Never wire an
+  # HPA here.
+  replicas: 1
+  # Recreate (not RollingUpdate): two pods must never hold the same session
+  # socket at once, or WhatsApp emits StreamReplaced and drops the connection.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "monolith.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: whatsapp
+  template:
+    metadata:
+      labels:
+        {{- include "monolith.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: whatsapp
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: whatsapp
+          image: "{{ .Values.whatsapp.image.repository }}:{{ .Values.whatsapp.image.tag }}"
+          imagePullPolicy: {{ .Values.whatsapp.image.pullPolicy }}
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # The whatsmeow sqlstore reuses the monolith CNPG app database; the Go
+            # gateway appends search_path=whatsapp so it owns only its own schema.
+            - name: WHATSAPP_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-pg-app
+                  key: uri
+            - name: WHATSAPP_BOT_NUMBER
+              value: {{ .Values.whatsapp.botNumber | quote }}
+            - name: WHATSAPP_GROUP_JIDS
+              value: {{ .Values.whatsapp.groupJids | quote }}
+            - name: WHATSAPP_ALERT_CHANNEL_ID
+              value: {{ .Values.whatsapp.alertChannelId | quote }}
+            - name: WHATSAPP_HEALTH_ADDR
+              value: ":8080"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.whatsapp.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+{{- end }}
