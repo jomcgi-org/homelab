@@ -14,6 +14,7 @@ import artifact
 import campsites
 import chat
 import dr_jobs
+import grimoire
 import hikes
 import home
 import knowledge
@@ -262,6 +263,7 @@ chat.register(app)
 knowledge.register(app)
 scheduler.register(app)
 ships.register(app)
+grimoire.register(app)
 hikes.register(app)
 stars.register(app)
 trips.register(app)
