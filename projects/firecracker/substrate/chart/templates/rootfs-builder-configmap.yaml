@@ -34,7 +34,15 @@ data:
     echo "building base rootfs from $GUEST_IMAGE"
     rm -rf /work/root "$BASE_ROOTFS_PATH.tmp"
     mkdir -p /work/root
-    crane export --platform linux/amd64 "$GUEST_IMAGE" - | tar -x -C /work/root
+    # Pull the guest filesystem for THIS node's architecture (the builder image
+    # is multi-arch, so uname reflects the node), so an arm64 node gets arm64
+    # guest binaries. Guest images are published multi-arch.
+    case "$(uname -m)" in
+      x86_64) platform=linux/amd64 ;;
+      aarch64 | arm64) platform=linux/arm64 ;;
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+    esac
+    crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
     mkfs.ext4 -q -F -L fcinvokebase -d /work/root "$BASE_ROOTFS_PATH.tmp" "$size"
     mv -f "$BASE_ROOTFS_PATH.tmp" "$BASE_ROOTFS_PATH"
     echo "$GUEST_IMAGE" > "$marker"
