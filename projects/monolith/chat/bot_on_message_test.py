@@ -448,8 +448,10 @@ class TestAttentionGate:
             patch("chat.bot.acl.feature_enabled", return_value=True),
             patch("chat.bot.acl.is_granted", return_value=True),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
-            patch.object(bot, "start_agent_flow", AsyncMock(return_value=MagicMock())),
-            patch.object(bot, "_complete_lock", MagicMock()),
+            patch.object(
+                bot, "start_agent_flow", AsyncMock(return_value=MagicMock())
+            ) as mock_start_flow,
+            patch.object(bot, "_complete_lock", MagicMock()) as mock_complete_lock,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
@@ -457,10 +459,10 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-        bot.start_agent_flow.assert_called_once()
-        args, kwargs = bot.start_agent_flow.call_args
-        assert kwargs.get("trigger_message") is message
-        bot._complete_lock.assert_called_once_with(str(message.id))
+            mock_start_flow.assert_called_once()
+            args, kwargs = mock_start_flow.call_args
+            assert kwargs.get("trigger_message") is message
+            mock_complete_lock.assert_called_once_with(str(message.id))
 
     @pytest.mark.asyncio
     async def test_mention_in_ambient_channel_without_grant_gets_refusal(self):
@@ -487,8 +489,8 @@ class TestAttentionGate:
             patch("chat.bot.acl.is_granted", return_value=False),
             patch("chat.bot.acl.allowed_scopes", return_value={"homelab"}),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
-            patch.object(bot, "start_agent_flow", AsyncMock()),
-            patch.object(bot, "_complete_lock", MagicMock()),
+            patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
+            patch.object(bot, "_complete_lock", MagicMock()) as mock_complete_lock,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
@@ -496,11 +498,11 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-        bot.start_agent_flow.assert_not_called()
-        message.reply.assert_called_once()
-        refusal = message.reply.call_args[0][0]
-        assert "homelab" in refusal
-        bot._complete_lock.assert_called_once_with(str(message.id))
+            mock_start_flow.assert_not_called()
+            message.reply.assert_called_once()
+            refusal = message.reply.call_args[0][0]
+            assert "homelab" in refusal
+            mock_complete_lock.assert_called_once_with(str(message.id))
 
     @pytest.mark.asyncio
     async def test_mention_in_non_ambient_channel_falls_through_to_chat(self):
@@ -524,8 +526,8 @@ class TestAttentionGate:
             patch("chat.bot.MessageStore", return_value=mock_store),
             patch("chat.bot.acl.ambient_channels", return_value=set()),
             patch("chat.bot.attention.evaluate", AsyncMock()) as mock_evaluate,
-            patch.object(bot, "start_agent_flow", AsyncMock()),
-            patch.object(bot, "_process_message", AsyncMock()),
+            patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
@@ -533,9 +535,9 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-        mock_evaluate.assert_not_called()
-        bot.start_agent_flow.assert_not_called()
-        bot._process_message.assert_called_once_with(message)
+            mock_evaluate.assert_not_called()
+            mock_start_flow.assert_not_called()
+            mock_proc.assert_called_once_with(message)
 
     @pytest.mark.asyncio
     async def test_plain_message_skips_the_gate_entirely(self):
@@ -556,7 +558,7 @@ class TestAttentionGate:
             patch("chat.bot.MessageStore", return_value=mock_store),
             patch("chat.bot.acl.ambient_channels", return_value=set()),
             patch("chat.bot.attention.evaluate", AsyncMock()) as mock_evaluate,
-            patch.object(bot, "_process_message", AsyncMock()),
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
@@ -564,8 +566,8 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-        mock_evaluate.assert_not_called()
-        bot._process_message.assert_called_once_with(message)
+            mock_evaluate.assert_not_called()
+            mock_proc.assert_called_once_with(message)
 
     @pytest.mark.asyncio
     async def test_ambient_lookup_failure_falls_through_to_chat(self):
@@ -589,7 +591,7 @@ class TestAttentionGate:
                 side_effect=RuntimeError("db down"),
             ),
             patch("chat.bot.attention.evaluate", AsyncMock()) as mock_evaluate,
-            patch.object(bot, "_process_message", AsyncMock()),
+            patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
@@ -597,8 +599,8 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-        mock_evaluate.assert_not_called()
-        bot._process_message.assert_called_once_with(message)
+            mock_evaluate.assert_not_called()
+            mock_proc.assert_called_once_with(message)
 
 
 # ---------------------------------------------------------------------------
