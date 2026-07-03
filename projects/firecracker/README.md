@@ -14,12 +14,17 @@ Two headline paths, measured on node-4. Both keep Kubernetes out of the per-requ
 hot path (no apiserver, no scheduler, no CRD reconcile): a caller's HTTP request lands
 directly on the long-lived fc-invoke daemon, which restores or boots a micro-VM itself.
 
-**Semgrep (warm, snapshot-restore).** A synchronous MCP scan is ~0.72 s end-to-end,
-and almost all of that is the scan itself (~1,609 rules plus taint). The micro-VM is
-ready in a **~22 ms** in-memory snapshot restore, versus a ~6.7 s cold boot it
-replaces on every call:
+**Semgrep (warm, snapshot-restore).** From a request hitting the daemon to the guest
+actively scanning is **~25 ms** (a few ms of network plus a ~22 ms in-memory snapshot
+restore), with no apiserver, scheduler, or reconcile loop in the path:
 
-![semgrep warm path, ~0.72 s end-to-end (~22 ms restore)](semgrep/docs/latency-warm-path.svg)
+![semgrep request to scan start, ~25 ms](semgrep/docs/latency-request-to-scan-start.svg)
+
+The full synchronous call is ~0.72 s, but that tail is almost entirely the scan
+itself (~1,609 rules plus taint); the substrate's whole contribution is the ~25 ms
+above, and the restore replaces a ~6.7 s cold boot on every call:
+
+![semgrep warm path, ~0.72 s end-to-end](semgrep/docs/latency-warm-path.svg)
 
 **Goose agent (cold, fresh-brain).** A fresh VM per run is the point, so there is no
 snapshot to restore; even so it is **~144 ms** from trigger to the agent's first LLM
@@ -28,8 +33,8 @@ call, of which the Firecracker cold start (CoW rootfs + boot + guest init) is 84
 ![goose trigger to first LLM RPC, ~144 ms](goosecracker/docs/latency-trigger-to-first-llm-rpc.svg)
 
 Deeper breakdowns live with each guest: the semgrep
-[request-to-scan-start](semgrep/README.md#latency) and
-[why-snapshot](semgrep/README.md#latency) charts, and the goose
+[why-snapshot](semgrep/README.md#latency) chart (warm restore vs the ~6.7 s cold-boot
+fallback vs the ~14.3 s base build), and the goose
 [cold-start breakdown](goosecracker/README.md#latency). Raw Firecracker restore is
 ~28 ms cold / 6 ms warm (ADR 022); the numbers above are end-to-end from the caller.
 
