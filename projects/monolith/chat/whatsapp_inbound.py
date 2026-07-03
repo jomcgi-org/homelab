@@ -44,7 +44,7 @@ from sqlmodel import Session, select
 
 from app.db import get_engine
 from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
-from chat.models import Message, WhatsappGroup
+from chat.models import Message, WhatsappGroup, WhatsappOutbox
 from chat.whatsapp_outbox import enqueue_message
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,26 @@ def _is_bot_message(session: Session, group_jid: str, message_id: str) -> bool:
     return row is not None
 
 
+def _is_bot_sent_message(session: Session, group_jid: str, message_id: str) -> bool:
+    """Whether ``message_id`` is a message the bot actually sent to this group.
+
+    The gateway stamps the real WhatsApp id it sent a row under on that
+    ``chat.whatsapp_outbox`` row's ``sent_message_id``. A real WhatsApp reply to a
+    bot message quotes that real id, which never lands in the messages table (bot
+    replies are stored there under a synthetic ``wa-bot:`` id), so the outbox is
+    the authoritative record of what the bot sent and the only place the quoted id
+    can match. Only message/edit rows mint an addressable id worth quoting.
+    """
+    row = session.exec(
+        select(WhatsappOutbox).where(
+            WhatsappOutbox.group_jid == group_jid,
+            WhatsappOutbox.sent_message_id == message_id,
+            WhatsappOutbox.kind.in_(("message", "edit")),  # type: ignore[attr-defined]
+        )
+    ).first()
+    return row is not None
+
+
 async def _generate_reply(
     session: Session, embed_client, group_jid: str, sender_name: str, text: str
 ) -> str:
@@ -171,7 +191,12 @@ def _compute_directed(
     the trigger word."""
     if _TRIGGER_NAME and _TRIGGER_NAME in (text or "").lower():
         return True
-    if quoted_message_id and _is_bot_message(session, group_jid, quoted_message_id):
+    if quoted_message_id and (
+        # The authoritative check: a reply to the real id the bot sent under.
+        _is_bot_sent_message(session, group_jid, quoted_message_id)
+        # Fallback: a bot message stored in the messages table (synthetic id).
+        or _is_bot_message(session, group_jid, quoted_message_id)
+    ):
         return True
     return False
 
@@ -221,7 +246,10 @@ async def inbound(
         store = MessageStore(session=session, embed_client=embed_client)
 
         # Dedupe on (group_jid, message_id): the gateway delivers at-least-once.
-        if not store.acquire_lock(body.message_id, body.group_jid):
+        # acquire_lock is a sync DB call; offload it so it does not block the loop.
+        if not await asyncio.to_thread(
+            store.acquire_lock, body.message_id, body.group_jid
+        ):
             return {"status": "duplicate"}
         session.commit()
 
@@ -247,15 +275,23 @@ async def inbound(
             is_ambient=group.ambient,
             directed=directed,
         )
-        attention_log.log_decision(
-            body.group_jid,
-            body.message_id,
-            "engage" if result.engage else "ignore",
-            result.confidence,
-        )
-        if not result.engage:
-            return {"status": "ignored"}
-        is_agent = await attention.needs_agent(adapter)
+        engage = result.engage
+        confidence = result.confidence
+        is_agent = await attention.needs_agent(adapter) if engage else False
+
+    # Log the attention decision off the loop and in its own session scope. It runs
+    # after the outer session above has closed (not nested inside it): log_decision
+    # opens its own Session, and on SQLite's shared connection a nested open session
+    # inside the outer transaction would deadlock. Mirrors the Discord path.
+    await asyncio.to_thread(
+        attention_log.log_decision,
+        body.group_jid,
+        body.message_id,
+        "engage" if engage else "ignore",
+        confidence,
+    )
+    if not engage:
+        return {"status": "ignored"}
 
     session_key = whatsapp_session.wa_session_key(body.group_jid)
 

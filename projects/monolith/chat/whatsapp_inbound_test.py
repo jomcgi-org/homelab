@@ -192,6 +192,43 @@ class TestAttentionRouting:
         assert rows[0].content == whatsapp_inbound._AGENT_DEFERRED_REPLY
         gen.assert_not_called()
 
+    def test_reply_to_bot_sent_id_engages_in_non_ambient_group(
+        self, client, engine, monkeypatch
+    ):
+        # A non-ambient group: only a directed message engages. The bot's real
+        # sent id lives on the outbox row (sent_message_id), never in the messages
+        # table, so a reply quoting it must be resolved against the outbox.
+        _seed_group(engine, ambient=False)
+        with Session(engine) as session:
+            session.add(
+                WhatsappOutbox(
+                    group_jid=_GROUP,
+                    kind="message",
+                    content="earlier bot reply",
+                    sent_message_id="wamid.BOTSENT",
+                )
+            )
+            session.commit()
+        monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=False))
+        monkeypatch.setattr(
+            whatsapp_inbound,
+            "_generate_reply",
+            AsyncMock(return_value="you asked about the ferry"),
+        )
+        # No trigger word; directedness comes solely from quoting the bot's send.
+        resp = _post(
+            client,
+            text="and what time does it get back?",
+            message_id="R1",
+            quoted_message_id="wamid.BOTSENT",
+        )
+        assert resp.json()["status"] == "replied"
+        replies = [
+            r for r in _outbox(engine) if r.content == "you asked about the ferry"
+        ]
+        assert len(replies) == 1
+        assert replies[0].quoted_message_id == "R1"
+
     def test_ambient_ignore_enqueues_nothing(self, client, engine, monkeypatch):
         _seed_group(engine)
         monkeypatch.setattr(

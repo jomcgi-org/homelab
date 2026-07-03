@@ -57,6 +57,24 @@ def test_bare_time_rolls_forward_when_past():
     assert p.when.hour == 8
 
 
+def test_weekday_equals_today_past_time_rolls_a_week():
+    # now is a Wednesday, 11:00 local. "Wednesday 8am" is earlier today, so it
+    # means next Wednesday, not today in the past.
+    p = _parse("dinner Wednesday 8am")
+    assert p is not None
+    assert p.when.weekday() == 2  # Wednesday
+    assert p.when.date() == datetime(2026, 7, 8).date()  # next Wednesday
+    assert p.when.hour == 8
+
+
+def test_weekday_equals_today_future_time_stays_today():
+    # 14:00 local is after 11:00 (now), so "Wednesday 2pm" stays today.
+    p = _parse("lunch Wednesday 2pm")
+    assert p is not None
+    assert p.when.date() == datetime(2026, 7, 1).date()
+    assert p.when.hour == 14
+
+
 def test_named_time_counts_as_time():
     p = _parse("dinner tomorrow evening")
     assert p is not None
