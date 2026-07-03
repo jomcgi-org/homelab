@@ -86,12 +86,13 @@ ADRs document significant architectural decisions and their context.
 
 ## Services
 
-| ADR                                                                                    | Decision                                                                                |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| [001 - Discord History Backfill](services/001-discord-history-backfill.md)             | One-time backfill of Discord channel history into pgvector                              |
-| [002 - Discord Chat Automation](services/002-discord-chat-automation.md)               | Scheduling, triggers, and proactive posting for the Discord bot                         |
-| [010 - FastMonolith Modular Framework](services/010-fastmonolith-modular-framework.md) | Privilege-typed, data-isolated domain modules composed into per-tier binaries           |
-| [011 - Grimoire Hot-Tier Schema](services/011-grimoire-hot-tier-schema.md)             | Typed CTI schema + grant-overlay visibility on monolith Postgres, checked out from Loom |
+| ADR                                                                                               | Decision                                                                                   |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [001 - Discord History Backfill](services/001-discord-history-backfill.md)                        | One-time backfill of Discord channel history into pgvector                                 |
+| [002 - Discord Chat Automation](services/002-discord-chat-automation.md)                          | Scheduling, triggers, and proactive posting for the Discord bot                            |
+| [010 - FastMonolith Modular Framework](services/010-fastmonolith-modular-framework.md)            | Privilege-typed, data-isolated domain modules composed into per-tier binaries              |
+| [011 - Grimoire Hot-Tier Schema](services/011-grimoire-hot-tier-schema.md)                        | Typed CTI schema + grant-overlay visibility on monolith Postgres, checked out from Loom    |
+| [012 - Grimoire Postgres-First, Loom-Shaped](services/012-grimoire-postgres-first-loom-shaped.md) | Build Grimoire entirely in monolith Postgres with Loom-compatible shapes; Iceberg deferred |
 
 ## Tooling
 
