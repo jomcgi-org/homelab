@@ -11,8 +11,8 @@ Covers gaps not addressed by existing test files:
 - build_system_prompt: exact tool descriptions, conciseness guidance, tool usage prompt
 - build_system_prompt (DO/DON'T): persona ('friend hanging out'), DO:/DON'T: section
   headers and ordering, DO section phrases ('Answer directly', 'Match the vibe',
-  proactive tool usage, 'one or two sentences'), DON'T section phrases
-  ('contextually, they are referring to', essay/report style, filler starters
+  proactive tool usage, short casual replies), DON'T section phrases
+  ('contextually, they are referring to', padding small talk into an essay, filler starters
   'Sure!'/'Of course!'/'Great question!', announcing tool usage, 'as an AI')
 - format_context_messages: timestamp format, bot "Assistant" label, multiple messages,
   multiple attachments per message, missing message id in attachment map
@@ -1010,10 +1010,10 @@ class TestBuildSystemPromptDoSection:
         prompt = build_system_prompt()
         assert "When in doubt, search" in prompt
 
-    def test_instructs_one_or_two_sentences(self):
-        """DO section advises keeping responses to one or two sentences."""
+    def test_instructs_short_casual_replies(self):
+        """READ THE ROOM section keeps casual chatter short (a sentence or two)."""
         prompt = build_system_prompt()
-        assert "one or two sentences" in prompt.lower()
+        assert "a sentence or two" in prompt.lower()
 
 
 class TestBuildSystemPromptDontSection:
@@ -1022,12 +1022,10 @@ class TestBuildSystemPromptDontSection:
         prompt = build_system_prompt()
         assert "contextually, they are referring to" in prompt
 
-    def test_prohibits_essay_or_report_style(self):
-        """DON'T section forbids writing like an essay or report."""
+    def test_prohibits_padding_small_talk_into_essay(self):
+        """DON'T section forbids padding casual chat into an essay."""
         prompt = build_system_prompt()
-        # both "essay" and "report" must appear in the prohibition
         assert "essay" in prompt
-        assert "report" in prompt
 
     def test_prohibits_sure_filler_starter(self):
         """DON'T section lists 'Sure!' as a prohibited filler starter."""
