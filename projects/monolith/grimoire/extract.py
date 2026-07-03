@@ -30,6 +30,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from typing import Any, Protocol
 
 import httpx
@@ -126,6 +127,29 @@ class OpenRouterError(Exception):
     """Raised when an OpenRouter call fails after exhausting retries."""
 
 
+class _ContentParseError(ValueError):
+    """Malformed or unexpected chat-completion content.
+
+    A ValueError subclass (so ``except ValueError`` still catches it) that
+    also carries the raw response text -- empty if the failure happened
+    before any content could be extracted -- so ``extract`` can echo the
+    bad output back to the model in a self-correction turn.
+    """
+
+    def __init__(self, message: str, raw_content: str = ""):
+        super().__init__(message)
+        self.raw_content = raw_content
+
+
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+
+
+def _strip_fences(text: str) -> str:
+    """Best-effort removal of a leading/trailing markdown code fence that
+    cheaper models sometimes wrap JSON in. Leaves clean JSON untouched."""
+    return _FENCE_RE.sub("", text.strip())
+
+
 def _is_retryable(exc: Exception) -> bool:
     """Return True for transient errors worth retrying."""
     if isinstance(
@@ -163,19 +187,56 @@ class OpenRouterClient:
     async def extract(self, chunk_text: str) -> dict:
         """Extract structured JSON from one chunk of text.
 
-        Retries with exponential backoff on transient HTTP errors (connection
-        failures, timeouts, 5xx). Raises OpenRouterError once retries are
-        exhausted or on a non-retryable HTTP error. Raises ValueError if the
-        response's message content is not valid JSON (this is never
-        retried: a malformed completion will not fix itself on retry).
+        Retries with exponential backoff on transient HTTP errors inside
+        ``_post_and_parse`` (connection failures, timeouts, 5xx); raises
+        OpenRouterError once those are exhausted or on a non-retryable HTTP
+        error. On a JSON parse failure (which is never retried at the HTTP
+        layer, since a malformed completion will not fix itself), this
+        makes exactly ONE follow-on self-correction call: the bad output
+        and the parse error are echoed back to the model, asking for clean
+        JSON only. If that second attempt also fails to parse, the failure
+        propagates and the chunk is left pending for the next run. Local
+        Qwen (vLLM guided JSON) rarely triggers this path; it earns its
+        keep on hosted models that sometimes wrap JSON in prose or
+        markdown fences.
+        """
+        messages = [
+            {"role": "system", "content": EXTRACTION_PROMPT},
+            {"role": "user", "content": chunk_text},
+        ]
+        try:
+            _content, parsed = await self._post_and_parse(messages)
+            return parsed
+        except ValueError as first_err:
+            bad_content = getattr(first_err, "raw_content", "")
+            correction = messages + [
+                {"role": "assistant", "content": bad_content},
+                {
+                    "role": "user",
+                    "content": (
+                        f"That did not parse as JSON ({first_err}). "
+                        "Return only the JSON object, no prose or markdown."
+                    ),
+                },
+            ]
+            _content, parsed = await self._post_and_parse(correction)
+            return parsed
+
+    async def _post_and_parse(self, messages: list[dict]) -> tuple[str, dict]:
+        """POST one chat-completion request built from ``messages`` and parse it.
+
+        Retries with exponential backoff on transient HTTP errors
+        (connection failures, timeouts, 5xx); raises OpenRouterError once
+        retries are exhausted or on a non-retryable HTTP error. Raises
+        ``_ContentParseError`` (a ValueError) if the response shape is
+        unexpected or its message content is not valid JSON after
+        stripping a markdown code fence; that carries the raw content so
+        ``extract`` can echo it back in a self-correction turn.
         """
         timeout = httpx.Timeout(EXTRACT_READ_TIMEOUT, connect=EXTRACT_CONNECT_TIMEOUT)
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": EXTRACTION_PROMPT},
-                {"role": "user", "content": chunk_text},
-            ],
+            "messages": messages,
             "response_format": {"type": "json_object"},
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -212,18 +273,31 @@ class OpenRouterClient:
         raise OpenRouterError("OpenRouter call failed: exhausted retries") from last_exc
 
     @staticmethod
-    def _parse_content(body: dict) -> dict:
+    def _parse_content(body: dict) -> tuple[str, dict]:
+        """Extract and parse the message content from a chat-completion body.
+
+        Applies ``_strip_fences`` before ``json.loads`` so a markdown-fenced
+        JSON blob (common on hosted models) parses without needing a
+        correction round-trip.
+        """
         try:
             content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
-            raise ValueError(f"unexpected OpenRouter response shape: {e}") from e
+            raise _ContentParseError(
+                f"unexpected OpenRouter response shape: {e}"
+            ) from e
+        cleaned = _strip_fences(content)
         try:
-            parsed = json.loads(content)
+            parsed = json.loads(cleaned)
         except (json.JSONDecodeError, TypeError) as e:
-            raise ValueError(f"OpenRouter content is not valid JSON: {e}") from e
+            raise _ContentParseError(
+                f"OpenRouter content is not valid JSON: {e}", raw_content=content
+            ) from e
         if not isinstance(parsed, dict):
-            raise ValueError("OpenRouter content JSON is not an object")
-        return parsed
+            raise _ContentParseError(
+                "OpenRouter content JSON is not an object", raw_content=content
+            )
+        return content, parsed
 
 
 # Detail field -> expected Python type, keyed by detail model. Mirrors

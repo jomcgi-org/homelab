@@ -522,13 +522,14 @@ async def test_openrouter_client_extract_retries_then_raises_openrouter_error():
 
 
 @pytest.mark.asyncio
-async def test_openrouter_client_extract_malformed_content_raises_value_error():
+async def test_openrouter_client_extract_strips_markdown_fence():
+    """A ```json ... ``` fenced body parses without a second (correction) POST."""
     client = OpenRouterClient(api_key="test-key", base_url="http://fake/chat")
+    clean = json.dumps({"entities": [], "mentions": [], "relationships": []})
+    fenced = f"```json\n{clean}\n```"
     fake_response = MagicMock()
     fake_response.status_code = 200
-    fake_response.json.return_value = {
-        "choices": [{"message": {"content": "not json"}}]
-    }
+    fake_response.json.return_value = {"choices": [{"message": {"content": fenced}}]}
 
     with patch("grimoire.extract.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
@@ -537,8 +538,75 @@ async def test_openrouter_client_extract_malformed_content_raises_value_error():
         mock_client.post.return_value = fake_response
         mock_client_cls.return_value = mock_client
 
+        result = await client.extract("chunk text")
+
+    assert result == {"entities": [], "mentions": [], "relationships": []}
+    mock_client.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_openrouter_client_extract_self_corrects_once_on_bad_json():
+    """First response is unparseable; the correction turn's valid JSON is returned."""
+    client = OpenRouterClient(api_key="test-key", base_url="http://fake/chat")
+    bad_response = MagicMock()
+    bad_response.status_code = 200
+    bad_response.json.return_value = {"choices": [{"message": {"content": "not json"}}]}
+    good_response = MagicMock()
+    good_response.status_code = 200
+    good_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {"entities": [], "mentions": [], "relationships": []}
+                    )
+                }
+            }
+        ]
+    }
+
+    with patch("grimoire.extract.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=[bad_response, good_response])
+        mock_client_cls.return_value = mock_client
+
+        result = await client.extract("chunk text")
+
+    assert result == {"entities": [], "mentions": [], "relationships": []}
+    assert mock_client.post.call_count == 2
+
+    second_call_messages = mock_client.post.call_args_list[1][1]["json"]["messages"]
+    assert second_call_messages[0]["content"] == extract.EXTRACTION_PROMPT
+    assert second_call_messages[1]["content"] == "chunk text"
+    assert second_call_messages[2]["role"] == "assistant"
+    assert second_call_messages[2]["content"] == "not json"
+    assert second_call_messages[3]["role"] == "user"
+    assert "did not parse as JSON" in second_call_messages[3]["content"]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_client_extract_raises_after_failed_correction():
+    """Both the original and the correction response are unparseable -> raises."""
+    client = OpenRouterClient(api_key="test-key", base_url="http://fake/chat")
+    bad_response = MagicMock()
+    bad_response.status_code = 200
+    bad_response.json.return_value = {"choices": [{"message": {"content": "not json"}}]}
+    still_bad_response = MagicMock()
+    still_bad_response.status_code = 200
+    still_bad_response.json.return_value = {
+        "choices": [{"message": {"content": "still not json"}}]
+    }
+
+    with patch("grimoire.extract.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=[bad_response, still_bad_response])
+        mock_client_cls.return_value = mock_client
+
         with pytest.raises(ValueError):
             await client.extract("chunk text")
 
-    # not retried: malformed JSON in the content will not fix itself.
-    mock_client.post.assert_called_once()
+    assert mock_client.post.call_count == 2
