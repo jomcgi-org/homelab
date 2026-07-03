@@ -1,6 +1,7 @@
 """Additional coverage for ChatBot -- on_message(), on_ready(), streaming response."""
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -296,8 +297,6 @@ class TestStreamResponseContext:
     @pytest.mark.asyncio
     async def test_includes_recent_messages_in_prompt(self):
         """Streaming response calls agent.run_stream_events with recent conversation context."""
-        from datetime import datetime, timezone
-
         from chat.models import Message
 
         bot = _make_bot()
@@ -339,6 +338,82 @@ class TestStreamResponseContext:
         assert "recent message" in prompt_arg
         # Verify deps were passed
         assert "deps" in bot.agent.run_stream_events.call_args[1]
+
+
+# ---------------------------------------------------------------------------
+# ChatBot._maybe_handle_goosecracker_reply -- agent-thread ACL gate + steering
+# (ADR 035 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _make_goosecracker_mock(**overrides) -> MagicMock:
+    """A chat.bot.goosecracker stand-in for an agent thread mid-turn."""
+    mock = MagicMock()
+    mock.is_goosecracker_thread = MagicMock(return_value=True)
+    mock.is_agent_thread = MagicMock(return_value=True)
+    mock.session_scope = MagicMock(return_value="homelab")
+    mock.is_owner = MagicMock(return_value=False)
+    mock.build_roast = AsyncMock(return_value="Nice try.")
+    mock.continue_session = MagicMock(return_value={"action": "steering"})
+    mock.REACTION_RUNNING = "\U0001f440"
+    mock.REACTION_QUEUED = "⏳"
+    for key, value in overrides.items():
+        setattr(mock, key, value)
+    return mock
+
+
+class TestGoosecrackerReplySteering:
+    @pytest.mark.asyncio
+    async def test_permitted_user_steering_gets_running_reaction(self):
+        """A user holding the agent grant for the thread's repo steers a running
+        turn: 👀 reaction, no text reply, continue_session is called."""
+        bot = _make_bot()
+        message = _make_message(content="also add tests", channel_id=555, msg_id=7)
+        message.add_reaction = AsyncMock()
+
+        mock_gc = _make_goosecracker_mock()
+        mock_acl = MagicMock()
+        mock_acl.is_granted = MagicMock(return_value=True)
+
+        with (
+            patch("chat.bot.goosecracker", mock_gc),
+            patch("chat.bot.acl", mock_acl),
+            patch.object(bot, "_complete_lock", MagicMock()),
+        ):
+            handled = await bot._maybe_handle_goosecracker_reply(message)
+
+        assert handled is True
+        mock_gc.continue_session.assert_called_once()
+        message.add_reaction.assert_called_once_with(mock_gc.REACTION_RUNNING)
+        message.reply.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unpermitted_user_gets_refusal_and_nothing_enqueued(self):
+        """A user without the agent grant for the thread's repo gets a refusal
+        reply naming the missing grant; continue_session is never called."""
+        bot = _make_bot()
+        message = _make_message(content="also add tests", channel_id=555, msg_id=7)
+        message.add_reaction = AsyncMock()
+
+        mock_gc = _make_goosecracker_mock()
+        mock_acl = MagicMock()
+        mock_acl.is_granted = MagicMock(return_value=False)
+        mock_acl.allowed_scopes = MagicMock(return_value={"otherrepo"})
+
+        with (
+            patch("chat.bot.goosecracker", mock_gc),
+            patch("chat.bot.acl", mock_acl),
+            patch.object(bot, "_complete_lock", MagicMock()),
+        ):
+            handled = await bot._maybe_handle_goosecracker_reply(message)
+
+        assert handled is True
+        mock_gc.continue_session.assert_not_called()
+        message.reply.assert_called_once()
+        refusal = message.reply.call_args[0][0]
+        assert "homelab" in refusal
+        assert "otherrepo" in refusal
+        message.add_reaction.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

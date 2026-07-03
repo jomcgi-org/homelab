@@ -8,11 +8,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from chat import goosecracker
-from chat.models import DiscordOutbox, GoosecrackerSession
+from chat.models import DiscordOutbox, GoosecrackerSession, GoosecrackerSteering
 
 # Sentinel so _make_agent_session can distinguish "caller passed None" from
 # "caller passed nothing" for the running_since / runner_instance overrides.
@@ -313,43 +313,69 @@ def test_continue_agent_session_dispatches_when_idle(engine, fake_api):
     assert call.kwargs["repo"] == "homelab"
     assert call.kwargs["discord_thread"] == "agent-t1"
 
-    # running should be True (set before dispatch)
+    # running should be True (set before dispatch), and the dispatch path
+    # appends the turn to the transcript (unlike the steering path).
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "agent-t1")
     assert row.running
     assert row.pending == ""
+    assert row.transcript == "initial task\n\nnow do this"
 
 
-def test_continue_agent_session_queues_when_running(engine, fake_api):
-    """When recipe=agent and running=True, continue_session appends to pending and
-    returns action='queued' without dispatching."""
+def test_continue_agent_session_steers_when_running(engine, fake_api):
+    """When recipe=agent and running=True, continue_session enqueues steering
+    (ADR 035 Phase 2) and returns action='steering' without dispatching or
+    touching pending. The transcript is untouched: fetch_steering owns that
+    write (with attribution) when the running guest consumes the row, so
+    continue_session must not double it."""
     with patch("chat.goosecracker.get_engine", return_value=engine):
         _make_agent_session(engine, "agent-t2", running=True)
         result = goosecracker.continue_session(
-            "agent-t2", "extra instruction", "msg-99"
+            "agent-t2", "extra instruction", "msg-99", author_id="U1"
         )
 
-    assert result == {"action": "queued"}
+    assert result == {"action": "steering"}
     fake_api.submit.assert_not_called()
 
     with Session(engine) as session:
         row = session.get(GoosecrackerSession, "agent-t2")
+        steering = session.exec(select(GoosecrackerSteering)).all()
     assert row.running
-    assert row.pending == "extra instruction"
-    # The queued message's id is recorded so the runner can react on it.
-    assert row.pending_message_ids == "msg-99"
+    assert row.pending == ""
+    assert row.transcript == "initial task"  # unchanged by this call
+    assert len(steering) == 1
+    assert steering[0].thread_id == "agent-t2"
+    assert steering[0].message_id == "msg-99"
+    assert steering[0].author_id == "U1"
+    assert steering[0].text == "extra instruction"
+    assert steering[0].delivered is False
 
 
-def test_continue_agent_session_queues_multiple_appends_to_pending(engine, fake_api):
-    """Multiple queued replies are newline-joined in pending."""
+def test_continue_agent_session_steering_falls_back_to_session_tier(engine, fake_api):
+    """A blank tier argument falls back to the session's own tier."""
     with patch("chat.goosecracker.get_engine", return_value=engine):
-        _make_agent_session(engine, "agent-t3", running=True, pending="first reply")
-        result = goosecracker.continue_session("agent-t3", "second reply")
+        _make_agent_session(engine, "agent-t2b", running=True)
+        goosecracker.continue_session("agent-t2b", "steer this", author_id="U1")
 
-    assert result == {"action": "queued"}
     with Session(engine) as session:
-        row = session.get(GoosecrackerSession, "agent-t3")
-    assert row.pending == "first reply\nsecond reply"
+        steering = session.exec(select(GoosecrackerSteering)).all()
+    assert steering[0].tier == ""  # _make_agent_session defaults tier to ""
+
+
+def test_continue_agent_session_multiple_steers_insert_separate_rows(engine, fake_api):
+    """Multiple steering replies each become their own row, not a joined string
+    (unlike the legacy pending queue)."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        _make_agent_session(engine, "agent-t3", running=True)
+        goosecracker.continue_session("agent-t3", "first reply", author_id="U1")
+        goosecracker.continue_session("agent-t3", "second reply", author_id="U2")
+
+    with Session(engine) as session:
+        steering = session.exec(
+            select(GoosecrackerSteering).order_by(GoosecrackerSteering.id)
+        ).all()
+    assert [s.text for s in steering] == ["first reply", "second reply"]
+    assert [s.author_id for s in steering] == ["U1", "U2"]
 
 
 def test_continue_agent_session_consumes_pending_on_dispatch(engine, fake_api):
