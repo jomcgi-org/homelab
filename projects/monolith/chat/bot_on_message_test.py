@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
 import pytest
 from pydantic_ai import (
     PartDeltaEvent,
@@ -414,6 +415,117 @@ class TestGoosecrackerReplySteering:
         assert "homelab" in refusal
         assert "otherrepo" in refusal
         message.add_reaction.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# ChatBot.on_message -- attention gate (ADR 035 phase 3)
+# ---------------------------------------------------------------------------
+
+
+class TestAttentionGate:
+    @pytest.mark.asyncio
+    async def test_mention_with_grant_starts_agent_flow(self):
+        """A mention in a channel where the author holds the agent grant runs
+        the shared agent flow off the trigger message, and completes the lock."""
+        bot = _make_bot()
+        bot_user = bot.user
+
+        message = _make_message(content="hey bot help", mentions=[bot_user])
+        message.reference = None
+        message.guild = None
+        message.channel = MagicMock(spec=discord.TextChannel)
+        message.channel.id = 99
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.acl.feature_enabled", return_value=True),
+            patch("chat.bot.acl.is_granted", return_value=True),
+            patch("chat.bot.attention_log.log_decision", MagicMock()),
+            patch.object(bot, "start_agent_flow", AsyncMock(return_value=MagicMock())),
+            patch.object(bot, "_complete_lock", MagicMock()),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        bot.start_agent_flow.assert_called_once()
+        args, kwargs = bot.start_agent_flow.call_args
+        assert kwargs.get("trigger_message") is message
+        bot._complete_lock.assert_called_once_with(str(message.id))
+
+    @pytest.mark.asyncio
+    async def test_mention_without_grant_gets_refusal(self):
+        """A mention from a user lacking the agent grant gets a refusal reply
+        naming the allowed scopes; start_agent_flow is never called."""
+        bot = _make_bot()
+        bot_user = bot.user
+
+        message = _make_message(content="hey bot help", mentions=[bot_user])
+        message.reference = None
+        message.guild = None
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.acl.feature_enabled", return_value=True),
+            patch("chat.bot.acl.is_granted", return_value=False),
+            patch("chat.bot.acl.allowed_scopes", return_value={"homelab"}),
+            patch("chat.bot.attention_log.log_decision", MagicMock()),
+            patch.object(bot, "start_agent_flow", AsyncMock()),
+            patch.object(bot, "_complete_lock", MagicMock()),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        bot.start_agent_flow.assert_not_called()
+        message.reply.assert_called_once()
+        refusal = message.reply.call_args[0][0]
+        assert "homelab" in refusal
+        bot._complete_lock.assert_called_once_with(str(message.id))
+
+    @pytest.mark.asyncio
+    async def test_plain_message_skips_the_gate_entirely(self):
+        """A plain, non-ambient, non-mention message never touches the
+        attention classifier and falls straight through to _process_message,
+        unchanged from pre-ADR-035 behavior."""
+        bot = _make_bot()
+
+        message = _make_message(content="just chatting", mentions=[])
+        message.reference = None
+        message.guild = None
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.attention.evaluate", AsyncMock()) as mock_evaluate,
+            patch.object(bot, "_process_message", AsyncMock()),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+        mock_evaluate.assert_not_called()
+        bot._process_message.assert_called_once_with(message)
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,8 @@ from chat.store import MessageStore
 from chat.vision import VisionClient
 from chat.web_search import search_web
 from chat import acl
+from chat import attention
+from chat import attention_log
 from chat import goosecracker
 from chat import goosecracker_progress
 from app.db import get_engine
@@ -678,6 +680,29 @@ class ChatBot(discord.Client):
             if await self._maybe_handle_goosecracker_reply(message):
                 return
 
+        # ADR 035 attention gate: decide whether to engage. Mentions/replies
+        # always engage; ambient channels classify; everything else ignores and
+        # falls through to normal message storage unchanged.
+        guild_id = message.guild.id if message.guild else None
+        is_ambient = channel_id in await asyncio.to_thread(
+            acl.ambient_channels, guild_id
+        )
+        explicit = should_respond(message, self.user)
+        if is_ambient or explicit:
+            directive = ""  # Phase 5 wires directives.get_active(channel)
+            result = await attention.evaluate(message, directive, self.user, is_ambient)
+            await asyncio.to_thread(
+                attention_log.log_decision,
+                channel_id,
+                msg_id,
+                "engage" if result.engage else "ignore",
+                result.confidence,
+                0,
+            )
+            if result.engage:
+                await self._engage_agent(message)
+                return
+
         await self._process_message(message)
 
     async def _handle_goosecracker_command(
@@ -768,11 +793,37 @@ class ChatBot(discord.Client):
             return
 
         await interaction.response.defer(thinking=True)
-        try:
-            name = f"agent: {prompt}"[:90]
-            thread = await channel.create_thread(
-                name=name, type=discord.ChannelType.public_thread
+        thread = await self.start_agent_flow(channel, interaction.user, prompt, repo)
+        if thread is None:
+            await interaction.followup.send(
+                "Couldn't start that one. Check the logs.", ephemeral=True
             )
+            return
+        await interaction.followup.send(f"Running agent in {thread.mention}")
+
+    async def start_agent_flow(
+        self,
+        channel: discord.TextChannel,
+        user: discord.abc.User,
+        prompt: str,
+        repo: str,
+        trigger_message: discord.Message | None = None,
+    ) -> discord.Thread | None:
+        """Shared agent dispatch for the /agent slash command AND mention/ambient
+        triggers (ADR 035). Opens a thread (from ``trigger_message`` if given, so
+        a mention thread hangs off the mention; else from ``channel``), starts
+        the agent session, posts the immutable prompt echo, and starts the live
+        checklist stream. Does NOT do ACL checks or send origin-channel acks (the
+        caller owns those). Returns the thread, or None on failure.
+        """
+        name = f"agent: {prompt}"[:90]
+        try:
+            if trigger_message is not None:
+                thread = await trigger_message.create_thread(name=name)
+            else:
+                thread = await channel.create_thread(
+                    name=name, type=discord.ChannelType.public_thread
+                )
             await asyncio.to_thread(
                 goosecracker.start_agent_session,
                 str(thread.id),
@@ -782,17 +833,13 @@ class ChatBot(discord.Client):
             )
         except Exception:
             logger.exception("goosecracker: failed to start agent session")
-            await interaction.followup.send(
-                "Couldn't start that one. Check the logs.", ephemeral=True
-            )
-            return
+            return None
 
-        await interaction.followup.send(f"Running agent in {thread.mention}")
         try:
             # Echo the full prompt into the thread: the thread title truncates it
             # to ~90 chars, so a long prompt is otherwise lost. Its own message,
             # not the intro (which the progress stream live-edits and would clobber).
-            await thread.send(_format_agent_prompt_echo(interaction.user, prompt))
+            await thread.send(_format_agent_prompt_echo(user, prompt))
         except Exception:
             logger.exception("goosecracker: failed to post agent prompt echo")
         try:
@@ -804,6 +851,7 @@ class ChatBot(discord.Client):
             self._start_goosecracker_stream(str(thread.id), intro, kind="agent")
         except Exception:
             logger.exception("goosecracker: failed to post agent thread intro")
+        return thread
 
     def _start_goosecracker_stream(
         self, artifact_id: str, message: discord.Message, kind: str = "artifact"
@@ -1021,6 +1069,45 @@ class ChatBot(discord.Client):
         self._start_goosecracker_stream(thread_id, progress_msg)
         await asyncio.to_thread(self._complete_lock, msg_id)
         return True
+
+    async def _engage_agent(self, message: discord.Message) -> None:
+        """A mention/reply/ambient engage: run the /agent flow (repo-less) off
+        this message, applying the same agent ACL check as ``/agent``. On a
+        missing grant, an EXPLICIT trigger (mention/reply) gets a short
+        refusal; an ambient engage stays silent (no spam in a channel nobody
+        asked the bot into). Marks the message lock completed either way.
+        """
+        guild_id = message.guild.id if message.guild else None
+        user = message.author
+        granted = await asyncio.to_thread(
+            acl.feature_enabled, guild_id, "agent"
+        ) and await asyncio.to_thread(acl.is_granted, guild_id, user.id, "agent", "")
+        explicit = should_respond(message, self.user)
+        if not granted:
+            if explicit:
+                scopes = await asyncio.to_thread(
+                    acl.allowed_scopes, guild_id, user.id, "agent"
+                )
+                allowed = ", ".join(sorted(scopes)) or "none"
+                try:
+                    await message.reply(
+                        f"I can't run the agent for you here. Allowed: {allowed}."
+                    )
+                except discord.HTTPException:
+                    logger.exception("agent: failed to send refusal")
+            await asyncio.to_thread(self._complete_lock, str(message.id))
+            return
+
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            # Ambient/mention only makes sense in a text channel we can thread from.
+            await asyncio.to_thread(self._complete_lock, str(message.id))
+            return
+
+        await self.start_agent_flow(
+            channel, user, message.content, "", trigger_message=message
+        )
+        await asyncio.to_thread(self._complete_lock, str(message.id))
 
     def _complete_lock(self, msg_id: str) -> None:
         """Mark a message lock completed (sync; call via asyncio.to_thread)."""
