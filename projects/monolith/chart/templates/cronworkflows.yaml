@@ -17,6 +17,9 @@ image guard elsewhere.
 {{- /* grimoire jobs are private-tier only: skip them entirely unless the
        grimoire module is enabled, so an unrelated (public) deploy never
        renders a CronWorkflow referencing the openrouter secret. */ -}}
+{{- else if and .whatsapp (not $.Values.whatsapp.enabled) }}
+{{- /* the whatsapp morning-digest job only exists when the gateway is enabled;
+       a deploy with whatsapp off renders no digest CronWorkflow. */ -}}
 {{- else }}
 ---
 apiVersion: argoproj.io/v1alpha1
