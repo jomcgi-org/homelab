@@ -62,6 +62,16 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// Drain chat.whatsapp_outbox and send via whatsmeow. The drain reuses the
+	// notifier's base-DSN db handle (its queries fully-qualify chat.whatsapp_outbox
+	// so the session's search_path=whatsapp does not matter) and only sends while
+	// the gateway is connected. It respects ctx, so it stops on shutdown.
+	drain, err := whatsapp.NewOutboxDrain(db, session, gw.State, logger)
+	if err != nil {
+		return err
+	}
+	go drain.Run(ctx)
+
 	srv := &http.Server{
 		Addr:              cfg.HealthAddr,
 		Handler:           gw.HealthHandler(),
