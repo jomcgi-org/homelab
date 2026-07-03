@@ -158,3 +158,17 @@ async def post_progress_by_id(run_id: str, body: ProgressChunkIn) -> Response:
     if body.done:
         gp.mark_done(run_id)
     return Response(status_code=204)
+
+
+@internal_router.get("/steering/{thread_id}")
+async def get_steering(thread_id: str, after_id: int = 0) -> dict:
+    """Return undelivered steering messages for a running agent session and
+    mark them delivered. The guest recipe polls this at stage boundaries.
+    In-cluster only (reached by the guest via the egress funnel), like the
+    progress sink; the bot ACL-gates what gets enqueued (Task 2.3)."""
+    from chat import goosecracker
+
+    if not _ID_RE.match(thread_id):
+        raise HTTPException(400, "invalid id")
+    messages = await asyncio.to_thread(goosecracker.fetch_steering, thread_id, after_id)
+    return {"messages": messages}

@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from app.db import get_engine
-from chat.models import GoosecrackerSession
+from chat.models import GoosecrackerSession, GoosecrackerSteering
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +302,85 @@ def continue_session(thread_id: str, message: str, message_id: str = "") -> dict
         tier=ARTIFACT_TIER,
         discord_thread=thread_id,
     )
+
+
+def enqueue_steering(
+    thread_id: str, message_id: str, author_id: str, tier: str, text: str
+) -> None:
+    """Record a mid-run steering message for a running agent turn (ADR 035
+    Phase 2). Inserted undelivered; the running guest recipe fetches and
+    marks it delivered at its next stage boundary via ``fetch_steering``.
+
+    A no-op on blank text so an empty reply never leaves a dangling row for
+    the guest to chew on. Synchronous; call via ``asyncio.to_thread``.
+    """
+    text = text.strip()
+    if not text:
+        return
+    with Session(get_engine()) as session:
+        session.add(
+            GoosecrackerSteering(
+                thread_id=thread_id,
+                message_id=message_id,
+                author_id=author_id,
+                tier=tier,
+                text=text,
+            )
+        )
+        session.commit()
+
+
+def fetch_steering(thread_id: str, after_id: int = 0) -> list[dict]:
+    """Deliver undelivered steering messages for a running agent turn.
+
+    Locks and marks each undelivered row (``id > after_id``, ordered
+    ascending) as delivered in a single read-modify-write, mirroring the
+    ``with_for_update`` pattern in ``continue_session`` so a concurrent
+    enqueue can never race a fetch into double-delivering (or losing) a row.
+    Also appends each steered message to the session's curated transcript
+    (with attribution) so the steerer's input survives in the record the same
+    way an owner turn does; a missing session row (e.g. steering arrived after
+    the thread was cleaned up) still delivers the rows, it just skips the
+    transcript append rather than raising. Synchronous; call via
+    ``asyncio.to_thread``.
+    """
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(GoosecrackerSteering)
+            .where(GoosecrackerSteering.thread_id == thread_id)
+            .where(GoosecrackerSteering.delivered == False)  # noqa: E712 - SQL boolean
+            .where(GoosecrackerSteering.id > after_id)
+            .order_by(GoosecrackerSteering.id)
+            .with_for_update()
+        ).all()
+        if not rows:
+            return []
+
+        session_row = session.get(GoosecrackerSession, thread_id, with_for_update=True)
+        delivered: list[dict] = []
+        for row in rows:
+            # rows come from this session's own query, so they are already
+            # attached; mutating attributes marks them dirty and commit()
+            # flushes the update. No session.add() needed (and adding inside
+            # a loop trips session-add-in-loop, which is for freshly
+            # constructed rows, not already-tracked ones).
+            row.delivered = True
+            if session_row is not None:
+                session_row.transcript = _join_transcript(
+                    session_row.transcript,
+                    f"[steering from {row.author_id}]: {row.text}",
+                )
+            delivered.append(
+                {
+                    "id": row.id,
+                    "message_id": row.message_id,
+                    "author_id": row.author_id,
+                    "tier": row.tier,
+                    "text": row.text,
+                }
+            )
+        session.commit()
+        return delivered
 
 
 def drain_agent_queue(thread_id: str) -> tuple[str, list[str]] | None:
