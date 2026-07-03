@@ -4777,3 +4777,16 @@ semgrep_target_test(
     sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
     target = ":jobs",
 )
+
+semgrep_target_test(
+    name = "gen_orchestrator_bundle_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":gen_orchestrator_bundle",
+)
