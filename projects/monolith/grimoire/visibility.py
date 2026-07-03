@@ -88,7 +88,15 @@ def visible_entities_query(campaign_id: str, viewer: Viewer):
 def _flatten_detail(detail: SQLModel | None) -> dict[str, Any]:
     if detail is None:
         return {}
-    return detail.model_dump(exclude={"entity_id"})
+    # Flatten via SQLAlchemy column introspection (a getattr per column), not
+    # detail.model_dump(). model_dump reads the instance __dict__ directly, so
+    # it silently omits any attribute SQLAlchemy has expired (which it does for
+    # every column after a commit, e.g. the seeding fixtures), yielding a dict
+    # missing every typed detail field. getattr goes through the ORM descriptor
+    # and triggers a refresh, so it returns the real value even post-expiry -
+    # the same reason the spine fields (read via getattr above) always survived.
+    columns = detail.__table__.columns.keys()
+    return {name: getattr(detail, name) for name in columns if name != "entity_id"}
 
 
 def project_entity(
