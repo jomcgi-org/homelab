@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from chat.models import ChannelSummary, Message, MessageLock
+from chat.models import ChannelSummary, Message, MessageLock, OrchestratorBrief
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,11 @@ def session_fixture():
         poolclass=StaticPool,
     )
     # Temporarily strip PostgreSQL schemas so SQLite can parse the DDL.
-    tables_to_create = [MessageLock.__table__, ChannelSummary.__table__]
+    tables_to_create = [
+        MessageLock.__table__,
+        ChannelSummary.__table__,
+        OrchestratorBrief.__table__,
+    ]
     saved = {}
     for tbl in tables_to_create:
         if tbl.schema is not None:
@@ -210,5 +214,36 @@ class TestChannelSummaryDBConstraints:
         session.commit()
 
         session.add(ChannelSummary(channel_id="ch-z", summary="s2", last_message_id=2))
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+# ---------------------------------------------------------------------------
+# DB-level enforcement tests — OrchestratorBrief route CHECK (SQLite)
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorBriefDBConstraints:
+    """SQLite enforcement of the OrchestratorBrief route CHECK (ADR 036).
+
+    The CHECK is declared only in the migration SQL; the SQLModel mirrors it in
+    __table_args__ so the create_all-built SQLite fixture enforces it too. This
+    guards against the constraint silently dropping off the model, which would
+    let an unexpected route string ('goose_v2', a typo) reach prod telemetry.
+    """
+
+    def test_valid_routes_insert(self, session):
+        """The three allowed routes all insert without error."""
+        session.add_all(
+            [
+                OrchestratorBrief(route=route, model="m")
+                for route in ("chat", "goose", "failopen")
+            ]
+        )
+        session.commit()  # must not raise
+
+    def test_invalid_route_raises_integrity_error(self, session):
+        """A route outside the allowed set violates the CHECK."""
+        session.add(OrchestratorBrief(route="bogus", model="m"))
         with pytest.raises(IntegrityError):
             session.commit()
