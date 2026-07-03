@@ -27,6 +27,16 @@ pkg_tar(
     package_dir = "/home/goose-agent/recipes",
 )
 
+# Expose the recipe YAMLs (read-only) to the monolith's recipe_catalog
+# drift-guard test, which asserts the monolith's sub-recipe id manifest
+# matches this checked-in set. Same source glob as recipes_tar above; this
+# just adds a public label so a cross-package py_test can take it as data.
+filegroup(
+    name = "recipe_yamls",
+    srcs = glob(["recipes/*.yaml"]),
+    visibility = ["//projects/monolith:__subpackages__"],
+)
+
 # Bake impeccable's frontend-design reference docs at /opt/impeccable/. The
 # artifact-build / artifact-review recipes consult these on demand for depth on
 # a specific dimension. Vendored unmodified (Apache-2.0); NOTICE.md ships with

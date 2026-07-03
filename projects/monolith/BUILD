@@ -4388,6 +4388,23 @@ py_test(
 )
 
 py_test(
+    name = "goosecracker_recipe_catalog_test",
+    srcs = ["goosecracker/tests/recipe_catalog_test.py"],
+    # The drift-guard test reads the real, checked-in guest recipe YAMLs at
+    # projects/firecracker/goosecracker/guest/recipes/*.yaml via
+    # Path(__file__).parents[3], to assert the monolith manifest's id set
+    # matches them. Ship them as data (via the guest package's public
+    # recipe_yamls filegroup) so they land in the same runfiles tree the
+    # test's own parents-relative path walk resolves against.
+    data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "agent_checks_firing_alerts_test",
     srcs = ["agent/checks_firing_alerts_test.py"],
     imports = ["."],
