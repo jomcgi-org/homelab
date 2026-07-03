@@ -136,12 +136,13 @@ Render a `Plan` into a router recipe: the `agent.yaml` scaffolding with a parame
 **Step 1: Failing tests** — `render_router(plan) -> str` returns valid YAML (parseable by `yaml.safe_load`) where:
 
 - `sub_recipes` contains exactly `plan.enabled_subrecipes`, each with `path == /home/goose-agent/recipes/<id>.yaml` and the standard `values` (`task_file`, `context_file`).
-- The instructions contain the ordered steps in sequence, each with its `context` text, and instruct the model to `delegate(source: <id>)` per step rather than classify.
+- The instructions contain the ordered steps in sequence (sub-recipe id, stage title) and instruct the model to `delegate(source: <id>)` per step rather than classify. Per-step `context` is NOT embedded in the instructions; the model is told to read it from the injected plan file instead.
 - `response.json_schema.properties` includes an optional `replan` object (`reason`, `what_i_learned`, `suggested_focus`) and retains `summary`/`mode`.
 - `settings.max_turns` and the progress-marker/steering instructions are preserved.
 - A disabled sub-recipe id never appears anywhere in the output.
+- `render_plan_file(plan) -> str` returns plain markdown, never templated, with one `## Step <i>: <sub_recipe>` section per step holding that step's `context` verbatim, braces and all.
 
-**Step 2: Implement** — keep a monolith-side router **scaffold template** (the shared, non-routing instruction blocks: injected-context handling, progress markers, steering, final_output conventions, brevity) as a module constant derived from `agent.yaml`. Build `sub_recipes` and the step section programmatically from the `Plan`. Emit YAML via `yaml.safe_dump` (or an explicit builder) — never string-concatenate user context into YAML without dumping, to avoid the block-scalar/newline breakage `agent.yaml:223-230` warns about.
+**Step 2: Implement** — keep a monolith-side router **scaffold template** (the shared, non-routing instruction blocks: injected-context handling, progress markers, steering, final_output conventions, brevity) as a module constant derived from `agent.yaml`. Build `sub_recipes` and the step section programmatically from the `Plan`, using only controlled strings (ids, order, titles). Emit YAML via `yaml.safe_dump` (or an explicit builder). Per-step `context` is untrusted and orchestrator-authored (derived from user Discord messages), and goose templates the whole recipe through minijinja BEFORE parsing (`agent.yaml:223-230`), so any `{{ }}`/`{% %}` in that context would be interpreted rather than treated as data if it were embedded in the recipe, never mind the block-scalar/newline breakage. So `context` is never string-concatenated (or safe_dump'd) into the recipe at all: `render_plan_file(plan)` instead renders it into a separate plain-markdown file delivered to the guest at `/injected-context/plan.md` (Task 6), which goose only reads as data, never templates. The recipe instructs the model to read each step's section out of that file and append it to `/tmp/goose/context.md` before delegating.
 
 **Step 3: Drift guard test** — assert the scaffold template's preserved invariants (progress-marker forms, `recipe__final_output` tool name, steering URL var) still appear verbatim in the checked-in `agent.yaml`, so guest convention changes fail this test loudly. **Step 4: BUILD + Commit.**
 
@@ -180,9 +181,9 @@ git commit -m "feat(chat): orchestrator emits a validated runtime plan verdict"
 - Modify: `projects/monolith/goosecracker/tests/sessions_test.py` or a new `dispatch_test.py`
 - Modify: `projects/monolith/chat/bot.py:1086` area (pass the `PlanVerdict` through)
 
-**Step 1: Failing tests** — when a `Plan` is present, the fc-invoke payload sets `recipe == "/injected-context/router.yaml"` and `injectedContext["router.yaml"] == render_router(plan)`; when absent (fallback), `recipe == "agent"` and no `router.yaml` key is injected. Per-step context files (if any) are injected under basename keys only (no traversal).
+**Step 1: Failing tests** — when a `Plan` is present, the fc-invoke payload sets `recipe == "/injected-context/router.yaml"` and BOTH `injectedContext["router.yaml"] == render_router(plan)` AND `injectedContext["plan.md"] == render_plan_file(plan)`; when absent (fallback), `recipe == "agent"` and neither key is injected. Per-step context files (if any) are injected under basename keys only (no traversal).
 
-**Step 2: Implement** — thread an optional `plan: Plan | None` from `bot.py`'s `compile` result into `dispatch.submit` → `runner`. In `_run_one_turn`, if `plan` is set, render the router, add it to `injected_context` under `"router.yaml"`, and set `recipe="/injected-context/router.yaml"`; else keep today's `recipe="agent"`. Preserve all existing injectedContext (ADR 040 per-turn context) — the router is one more key. **Step 3: Commit.**
+**Step 2: Implement** — thread an optional `plan: Plan | None` from `bot.py`'s `compile` result into `dispatch.submit` → `runner`. In `_run_one_turn`, if `plan` is set, render both the router and the plan file, add them to `injected_context` under `"router.yaml"` and `"plan.md"` respectively (the guest sees them at `/injected-context/router.yaml` and `/injected-context/plan.md`), and set `recipe="/injected-context/router.yaml"`; else keep today's `recipe="agent"`. Preserve all existing injectedContext (ADR 040 per-turn context) — the router and plan file are two more keys. **Step 3: Commit.**
 
 ```bash
 git commit -m "feat(goosecracker): inject runtime router via injectedContext, fallback to baked agent"

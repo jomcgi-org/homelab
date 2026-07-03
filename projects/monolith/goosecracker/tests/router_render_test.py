@@ -3,9 +3,12 @@
 These assert the generated recipe is valid YAML, is a faithful specialization
 of the guest agent.yaml (only enabled sub-recipes, ordered plan, preserved
 scaffolding, optional replan escape hatch), and that untrusted per-step
-context round-trips YAML-safely. A drift guard reads the checked-in guest
-agent.yaml and asserts the scaffold tokens we copied still exist there, so a
-guest convention change fails this test loudly.
+context NEVER reaches the recipe: it lives only in the separate plan file
+produced by ``render_plan_file``, which is never templated by goose so it is
+safe for arbitrary text including literal `{{ }}`/`{% %}`. A drift guard
+reads the checked-in guest agent.yaml and asserts the scaffold tokens we
+copied still exist there, so a guest convention change fails this test
+loudly.
 
 Under Bazel the guest recipe dir is shipped as test `data` (see the BUILD
 entry for goosecracker_router_render_test); outside Bazel it resolves against
@@ -154,33 +157,75 @@ def test_settings_and_scaffolding_preserved() -> None:
     assert "delegate(source:" in instr
 
 
-def test_steps_context_present_and_in_order() -> None:
+def test_steps_reference_plan_file_in_order() -> None:
+    # The recipe instructions reference each step's sub_recipe and the plan
+    # file, in order, but never the step's own context text (that text is
+    # template-unsafe and lives only in render_plan_file's output).
     plan = _two_step_plan()
     doc = _loaded(router_render.render_router(plan))
     instr = doc["instructions"]
-    first = instr.index(plan.steps[0].context)
-    second = instr.index(plan.steps[1].context)
-    assert first != -1 and second != -1
+    assert router_render._PLAN_FILE in instr
+    first = instr.index(plan.steps[0].sub_recipe)
+    second = instr.rindex(plan.steps[1].sub_recipe)
     assert first < second  # steps appear in order
 
 
-def test_awkward_context_round_trips_safely() -> None:
-    # YAML-injection safety regression: a multi-line context with colons, a
-    # leading dash, and a quote must survive safe_dump -> safe_load intact.
+def test_recipe_never_contains_step_context() -> None:
+    # Template-safety regression (the whole point of this design): untrusted
+    # per-step context, including literal `{{ }}` / `{% %}`, must never reach
+    # the recipe YAML that goose renders through minijinja before parsing.
     nasty = (
         "- not a list item\n"
         'key: value with a "quote"\n'
         "line two: still text\n"
         "  indented: deeper\n"
-        "trailing colon:"
+        "trailing colon:\n"
+        "{{ some.jinja }} and {% a tag %}"
     )
     plan = Plan(
         enabled_subrecipes=("query",),
         steps=(PlanStep(sub_recipe="query", context=nasty),),
         done_criteria=(),
     )
-    doc = _loaded(router_render.render_router(plan))
-    assert nasty in doc["instructions"]
+    rendered = router_render.render_router(plan)
+    assert nasty not in rendered
+    assert "{{ some.jinja }}" not in rendered
+    doc = _loaded(rendered)
+    assert router_render._PLAN_FILE in doc["instructions"]
+
+
+def test_render_plan_file_has_one_section_per_step_in_order_with_braces_intact() -> (
+    None
+):
+    # render_plan_file is the safe home for untrusted context: it is plain
+    # markdown, never templated, so braces/colons/dashes/quotes survive
+    # verbatim. One "## Step <i>: <sub_recipe>" section per step, in order,
+    # each followed by that step's context verbatim.
+    nasty = (
+        "- not a list item\n"
+        'key: value with a "quote"\n'
+        "line two: still text\n"
+        "  indented: deeper\n"
+        "trailing colon:\n"
+        "{{ some.jinja }} and {% a tag %}"
+    )
+    plan = Plan(
+        enabled_subrecipes=("research", "artifact-build"),
+        steps=(
+            PlanStep(sub_recipe="research", context=nasty),
+            PlanStep(sub_recipe="artifact-build", context="Build the chart."),
+        ),
+        done_criteria=(),
+    )
+    plan_md = router_render.render_plan_file(plan)
+    assert "## Step 0: research" in plan_md
+    assert "## Step 1: artifact-build" in plan_md
+    assert plan_md.index("## Step 0: research") < plan_md.index(
+        "## Step 1: artifact-build"
+    )
+    assert nasty in plan_md
+    assert "Build the chart." in plan_md
+    assert plan_md.index(nasty) < plan_md.index("Build the chart.")
 
 
 def test_drift_guard_scaffold_tokens_exist_in_guest_agent_yaml() -> None:
