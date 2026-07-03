@@ -269,6 +269,14 @@ grimoire:
   extractModel: "qwen3.6-27b"
   extractBaseUrl: "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
 
+# ADR 036 orchestrator brief compiler. Phase 1 only wires the secret and
+# config; enabled stays false until Phase 3 flips the rollout on. Reuses the
+# same "openrouter" 1Password item grimoire uses.
+orchestrator:
+  enabled: false
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/openrouter"
+
 agent:
   discord:
     defaultServerId: "1501965852042330302"

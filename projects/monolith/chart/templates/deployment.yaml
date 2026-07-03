@@ -251,6 +251,28 @@ spec:
               value: {{ .Values.grimoire.extractLimit | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.orchestrator.enabled }}
+            # ADR 036 orchestrator brief compiler (host-side only; the guest
+            # egress boundary in ADR 023 never carries this key). OPENROUTER_API_KEY
+            # is synced from the "openrouter" 1Password item into the
+            # {{ include "monolith.fullname" . }}-orchestrator Secret, matching
+            # the field name convention grimoire's OPENROUTER_API_KEY uses.
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-orchestrator
+                  key: OPENROUTER_API_KEY
+                  # Optional: the Secret only exists once the 1Password item
+                  # is created; the client fails open (OrchestratorUnavailable)
+                  # when the key is absent.
+                  optional: true
+            - name: ORCHESTRATOR_MODEL
+              value: {{ .Values.orchestrator.model | quote }}
+            - name: ORCHESTRATOR_BASE_URL
+              value: {{ .Values.orchestrator.baseUrl | quote }}
+            - name: ORCHESTRATOR_TIMEOUT_S
+              value: {{ .Values.orchestrator.timeoutSeconds | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
