@@ -2632,6 +2632,19 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_entities_test",
+    srcs = ["grimoire/entities_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],
     imports = ["."],
