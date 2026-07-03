@@ -162,6 +162,15 @@ class TestBootstrapDefaults:
             )
             # loom server can build artifacts (safe: capability URLs + qwen)
             assert acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "artifact") is True
+            # ADR 036: the orchestrator tier is granted server-wide on the home
+            # server (any channel), and nowhere else by default.
+            assert (
+                acl.is_granted("home1", "anyone", "orchestrator", "any-channel") is True
+            )
+            assert (
+                acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "orchestrator", "c")
+                is False
+            )
 
     def test_idempotent(self, engine, monkeypatch):
         monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "home1")
@@ -171,8 +180,9 @@ class TestBootstrapDefaults:
             acl.bootstrap_defaults()
             with Session(engine) as session:
                 rows = session.exec(select(DiscordFeatureGrant)).all()
-            # home: 2 agent + 1 artifact, loom: 1 agent + 1 artifact = 5, not doubled
-            assert len(rows) == 5
+            # home: 2 agent + 1 artifact + 1 orchestrator, loom: 1 agent + 1
+            # artifact = 6, not doubled
+            assert len(rows) == 6
 
     def test_no_home_env_still_seeds_loom(self, engine, monkeypatch):
         monkeypatch.delenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", raising=False)
