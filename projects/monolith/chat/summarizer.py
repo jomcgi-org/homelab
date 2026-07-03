@@ -296,6 +296,116 @@ def on_startup(
             )
 
 
+def _agent_reply_context(
+    session: Session,
+    channel_id: str,
+    *,
+    recent_limit: int = 15,
+    max_users: int = 8,
+) -> str:
+    """Assemble a compact, channel-scoped context blurb for the agent concierge
+    reply.
+
+    Pulls the channel's rolling summary, the rolling per-user summaries of the
+    people around, and the last few messages. Every query filters on
+    ``channel_id``, so nothing authored outside this channel can enter the
+    context: the scope is provenance (where content was written), matching what
+    the requesting user can already read here. Returns "" when the channel has no
+    stored context yet (the caller then falls back to the deterministic summary).
+    """
+    parts: list[str] = []
+
+    channel_summary = session.exec(
+        select(ChannelSummary).where(ChannelSummary.channel_id == channel_id)
+    ).first()
+    if channel_summary and channel_summary.summary.strip():
+        parts.append(f"About this channel: {channel_summary.summary.strip()}")
+
+    user_summaries = session.exec(
+        select(UserChannelSummary)
+        .where(UserChannelSummary.channel_id == channel_id)
+        .order_by(UserChannelSummary.updated_at.desc())
+        .limit(max_users)
+    ).all()
+    people = "\n".join(
+        f"- {u.username}: {u.summary.strip()}"
+        for u in user_summaries
+        if u.summary.strip()
+    )
+    if people:
+        parts.append("People here:\n" + people)
+
+    recent = list(
+        session.exec(
+            select(Message)
+            .where(Message.channel_id == channel_id)
+            .order_by(Message.created_at.desc())
+            .limit(recent_limit)
+        ).all()
+    )
+    recent.reverse()  # oldest-first, chronological
+    convo = "\n".join(
+        f"{m.username}: {m.content.strip()}"
+        for m in recent
+        if m.content and m.content.strip()
+    )
+    if convo:
+        parts.append("Recent conversation:\n" + convo)
+
+    return "\n\n".join(parts)
+
+
+def _fetch_agent_reply_context(channel_id: str) -> str:
+    """Open a fresh session and build the concierge context (sync; via to_thread)."""
+    from app.db import get_engine
+
+    with Session(get_engine()) as session:
+        return _agent_reply_context(session, channel_id)
+
+
+def _build_agent_reply_prompt(summary: str, details: str, context: str) -> str:
+    """Prompt the concierge model to rephrase an agent run's typed result as a
+    natural channel reply. The URL is NOT part of this prompt: it is appended
+    deterministically by the caller so the model can never invent or mangle it."""
+    reported = f"Summary: {summary}"
+    if details:
+        reported += f"\nDetails: {details}"
+    ctx = context.strip() or "(no channel context available)"
+    return (
+        "You are the friendly assistant bot for this Discord channel. The coding "
+        "agent a member asked to run has just finished. Relay what it did to the "
+        "channel in your own voice: natural, warm, and specific, the way you would "
+        "in chat. Keep it to 2 to 4 sentences. Do not invent links, PR numbers, "
+        "file names, or any detail that is not in the agent's report below (any "
+        "link is posted separately). No markdown headers or bullet lists, no "
+        "preamble.\n\n"
+        f"What the agent reported:\n{reported}\n\n"
+        "Channel context, for tone and who is around (do not quote it back):\n"
+        f"{ctx}"
+    )
+
+
+async def conversational_agent_reply(
+    channel_id: str,
+    summary: str,
+    details: str = "",
+    *,
+    llm_call: Callable[[str], Awaitable[str]] | None = None,
+) -> str:
+    """Rephrase an agent run's typed summary as a conversational channel reply,
+    grounded in channel-scoped context.
+
+    Reuses the shared inference seam (``build_llm_caller`` -> Qwen). Raises on a
+    model failure so the caller can fall back to the deterministic summary; the
+    caller (the goose runner's ``_delivery_message``) is fail-open around this.
+    """
+    context = await asyncio.to_thread(_fetch_agent_reply_context, channel_id)
+    if llm_call is None:
+        llm_call = build_llm_caller()
+    prompt = _build_agent_reply_prompt(summary, details, context)
+    return await llm_call(prompt)
+
+
 _RETRYABLE_STATUS_CODES = {502, 503, 504}
 
 

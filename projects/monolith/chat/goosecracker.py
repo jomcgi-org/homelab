@@ -530,13 +530,19 @@ def _reclaim_one(thread_id: str, now: datetime) -> tuple[str, str, str, str] | N
         return task, recipe, tier, repo
 
 
-def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
+def start_agent_session(
+    thread_id: str, repo: str, prompt: str, parent_channel_id: str = ""
+) -> dict:
     """Open a conversational agent session for a Discord thread.
 
     Dispatches the first turn and writes a GoosecrackerSession row so that
     follow-up replies in the thread are routed through ``continue_session``
     (agent path) with queuing support. The row is written AFTER dispatch so
     that a failed submit leaves no row (mirroring ``start_session``).
+
+    ``parent_channel_id`` is the channel the /agent command was run from (the
+    thread's parent); stored on the row so the runner can fetch channel-scoped
+    context for a conversational reply, since the new thread has no history.
 
     Synchronous; call via asyncio.to_thread.
     """
@@ -559,6 +565,7 @@ def start_agent_session(thread_id: str, repo: str, prompt: str) -> dict:
         session.add(
             GoosecrackerSession(
                 discord_thread=thread_id,
+                parent_channel_id=parent_channel_id,
                 recipe=AGENT_RECIPE,
                 tier=AGENT_TIER,
                 repo=repo,
@@ -610,6 +617,20 @@ def artifact_id_for_thread(thread_id: str) -> str:
             session.add(row)
             session.commit()
         return row.artifact_id
+
+
+def parent_channel_for_thread(thread_id: str) -> str:
+    """Return the Discord parent channel id stored for an agent thread, or "".
+
+    The runner reads this at delivery time to fetch channel-scoped context for a
+    conversational reply. Empty when the thread has no session row (an
+    MCP-dispatched run with no Discord front) or none was recorded (an older
+    thread predating this column, or an artifact thread). Sync; call via
+    ``asyncio.to_thread``.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        return row.parent_channel_id if row else ""
 
 
 async def build_roast(attempt_text: str) -> str:

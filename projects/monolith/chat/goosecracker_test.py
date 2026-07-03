@@ -220,6 +220,26 @@ def test_start_agent_session_writes_session_row(engine, fake_api):
     assert row.transcript == "fix the bug"
     assert row.running
     assert row.pending == ""
+    # No parent channel supplied -> empty (runner then skips the concierge).
+    assert row.parent_channel_id == ""
+
+
+def test_start_agent_session_round_trips_parent_channel(engine, fake_api):
+    """The parent channel id round-trips: start_agent_session stores it on the
+    row and parent_channel_for_thread reads it back. This is the runner's only
+    path to the channel-scoped context for a conversational reply, so a break
+    here would silently drop every reply to the deterministic fallback."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_agent_session(
+            "thread-pc", "homelab", "fix the bug", "parent-chan-9"
+        )
+        with Session(engine) as session:
+            row = session.get(GoosecrackerSession, "thread-pc")
+        assert row.parent_channel_id == "parent-chan-9"
+        # Read back through the getter the runner actually calls.
+        assert goosecracker.parent_channel_for_thread("thread-pc") == "parent-chan-9"
+        # Unknown thread -> "" so the runner falls back to the deterministic summary.
+        assert goosecracker.parent_channel_for_thread("nope") == ""
     # The first turn is stamped live (owned by this process, timestamped) so a
     # reply arriving during it queues rather than being reclaimed as "stale".
     assert row.runner_instance == goosecracker.INSTANCE_TOKEN

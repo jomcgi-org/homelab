@@ -438,6 +438,29 @@ def _extract_embed_text(message: discord.Message) -> str:
     return "\n".join(parts)
 
 
+# Overhead of the code fence and header formatting in _format_agent_prompt_echo,
+# reserved out of Discord's 2000-char message cap so the echo never overflows.
+_PROMPT_ECHO_MAX = 2000
+
+
+def _format_agent_prompt_echo(user: discord.abc.User, prompt: str) -> str:
+    """Render the ``/agent`` prompt as a fenced, attributed echo message.
+
+    The prompt otherwise survives only in the thread title, which Discord
+    truncates to ~90 chars, so a long prompt is lost. Any code fence in the
+    user-controlled prompt is neutralized (a zero-width space is woven through
+    the backticks) so it cannot break out of the block, and the whole message is
+    capped to fit one Discord message (2000 chars).
+    """
+    zwsp = chr(0x200B)  # zero-width space woven through backticks to defuse fences
+    safe = prompt.replace("```", f"`{zwsp}`{zwsp}`")
+    header = f"Prompt from {user.mention}:\n"
+    budget = _PROMPT_ECHO_MAX - len(header) - len("```\n\n```")
+    if len(safe) > budget:
+        safe = safe[: budget - 1].rstrip() + "…"
+    return f"{header}```\n{safe}\n```"
+
+
 class ChatBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -657,7 +680,11 @@ class ChatBot(discord.Client):
                 name=name, type=discord.ChannelType.public_thread
             )
             await asyncio.to_thread(
-                goosecracker.start_agent_session, str(thread.id), repo, prompt
+                goosecracker.start_agent_session,
+                str(thread.id),
+                repo,
+                prompt,
+                str(channel.id),
             )
         except Exception:
             logger.exception("goosecracker: failed to start agent session")
@@ -667,6 +694,13 @@ class ChatBot(discord.Client):
             return
 
         await interaction.followup.send(f"Running agent in {thread.mention}")
+        try:
+            # Echo the full prompt into the thread: the thread title truncates it
+            # to ~90 chars, so a long prompt is otherwise lost. Its own message,
+            # not the intro (which the progress stream live-edits and would clobber).
+            await thread.send(_format_agent_prompt_echo(interaction.user, prompt))
+        except Exception:
+            logger.exception("goosecracker: failed to post agent prompt echo")
         try:
             intro = await thread.send("🤖 On it. Running the agent now...")
             self._start_goosecracker_stream(str(thread.id), intro, kind="agent")
