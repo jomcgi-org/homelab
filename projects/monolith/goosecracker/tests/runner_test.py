@@ -722,22 +722,33 @@ async def test_settle_falls_back_to_post_without_live_message(monkeypatch):
     deliver.assert_awaited_once_with("T", "hi")
 
 
-async def test_settle_falls_back_to_post_when_content_too_long(monkeypatch):
-    """A result too long for one Discord message posts (paged) instead of editing,
-    so the full answer reaches the thread."""
+async def test_settle_long_content_edits_first_page_and_posts_overflow(monkeypatch):
+    """A result too long for one Discord message settles the live message to its
+    first page and posts the overflow as follow-ups, so the live message ends on
+    the result (not a stranded checklist) and no content is dropped."""
     fake_api = MagicMock()
     fake_api.take_progress_message = MagicMock(return_value="777")
-    edit = MagicMock()
-    monkeypatch.setattr(runner, "_enqueue_edit_sync", edit)
+    edits = []
+    posts = []
+    monkeypatch.setattr(
+        runner,
+        "_enqueue_edit_sync",
+        lambda chan, msg, content: edits.append((chan, msg, content)),
+    )
+    monkeypatch.setattr(
+        runner, "_enqueue_sync", lambda chan, content: posts.append((chan, content))
+    )
     deliver = AsyncMock()
     monkeypatch.setattr(runner, "_deliver", deliver)
-    long = "x" * (runner._DISCORD_MESSAGE_LIMIT + 1)
+    long = "line\n" * 2000  # forces several Discord-sized pages
 
     with patch.dict(sys.modules, {"chat.api": fake_api}):
         await runner._settle("T", long)
 
-    edit.assert_not_called()
-    deliver.assert_awaited_once_with("T", long)
+    # First page edits the live message; the remaining pages post as follow-ups.
+    assert len(edits) == 1 and edits[0][0] == "T" and edits[0][1] == "777"
+    assert len(posts) >= 1
+    deliver.assert_not_awaited()
 
 
 async def test_settle_no_discord_thread_is_noop(monkeypatch):
