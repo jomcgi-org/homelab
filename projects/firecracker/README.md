@@ -6,8 +6,32 @@ directly (FC-direct, no Kubernetes runtime class) by a single daemon: **fc-invok
 
 The pitch: every request gets a fresh micro-VM with a read-only rootfs, a vsock-only
 network boundary, and no real secrets inside the guest. Snapshot restore makes this
-cheap enough for synchronous calls (~22 ms warm restore for semgrep, ~144 ms from
-trigger to first LLM call for the goose agent).
+cheap enough for synchronous calls: see [Performance](#performance) for the numbers.
+
+## Performance
+
+Two headline paths, measured on node-4. Both keep Kubernetes out of the per-request
+hot path (no apiserver, no scheduler, no CRD reconcile): a caller's HTTP request lands
+directly on the long-lived fc-invoke daemon, which restores or boots a micro-VM itself.
+
+**Semgrep (warm, snapshot-restore).** A synchronous MCP scan is ~0.72 s end-to-end,
+and almost all of that is the scan itself (~1,609 rules plus taint). The micro-VM is
+ready in a **~22 ms** in-memory snapshot restore, versus a ~6.7 s cold boot it
+replaces on every call:
+
+![semgrep warm path, ~0.72 s end-to-end (~22 ms restore)](semgrep/docs/latency-warm-path.svg)
+
+**Goose agent (cold, fresh-brain).** A fresh VM per run is the point, so there is no
+snapshot to restore; even so it is **~144 ms** from trigger to the agent's first LLM
+call, of which the Firecracker cold start (CoW rootfs + boot + guest init) is 84 ms:
+
+![goose trigger to first LLM RPC, ~144 ms](goosecracker/docs/latency-trigger-to-first-llm-rpc.svg)
+
+Deeper breakdowns live with each guest: the semgrep
+[request-to-scan-start](semgrep/README.md#latency) and
+[why-snapshot](semgrep/README.md#latency) charts, and the goose
+[cold-start breakdown](goosecracker/README.md#latency). Raw Firecracker restore is
+~28 ms cold / 6 ms warm (ADR 022); the numbers above are end-to-end from the caller.
 
 ## Layout
 
