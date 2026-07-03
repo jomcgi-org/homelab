@@ -5,8 +5,13 @@ from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
 from pydantic import field_validator
-from sqlalchemy import CheckConstraint, Column, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, Column, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+# Postgres uses JSONB (matching the migration); SQLite (test fixtures) falls
+# back to the generic JSON type so create_all builds the table cleanly.
+_JSONB = JSONB().with_variant(JSON(), "sqlite")
 
 
 class Message(SQLModel, table=True):
@@ -288,6 +293,41 @@ class ChannelDirective(SQLModel, table=True):
     proposal_message_id: str = Field(default="")
     previous_version: int = Field(default=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class OrchestratorBrief(SQLModel, table=True):
+    """ADR 036 orchestrator brief-compiler telemetry (spec section 5).
+
+    One row per orchestrator call: chat and goose verdicts and every fail-open
+    degradation. ``thread_id`` links a goose verdict to its
+    ``goosecracker_sessions`` run (null for chat/failopen routes with no
+    thread). ``brief_json`` holds the compiled Brief (goose) or the chat reply
+    guidance, null on failopen. The route CHECK mirrors the migration so the
+    SQLite test fixtures enforce it too (create_all does not see migration-only
+    constraints). Token columns come from the provider response when present.
+    """
+
+    __tablename__ = "orchestrator_brief"
+    __table_args__ = (
+        CheckConstraint(
+            "route IN ('chat', 'goose', 'failopen')",
+            name="orchestrator_brief_route_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    thread_id: str | None = Field(default=None)
+    model: str = Field(default="")
+    route: str = Field(default="failopen")
+    brief_json: dict | None = Field(default=None, sa_column=Column(_JSONB))
+    directive_version: int = Field(default=0)
+    latency_ms: int = Field(default=0)
+    prompt_tokens: int | None = Field(default=None)
+    completion_tokens: int | None = Field(default=None)
+    cached_tokens: int | None = Field(default=None)
+    error: str | None = Field(default=None)
 
 
 class UserStylePref(SQLModel, table=True):
