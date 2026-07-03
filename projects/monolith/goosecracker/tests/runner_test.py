@@ -679,3 +679,70 @@ async def test_delivery_message_agent_appends_url_after_conversational(monkeypat
     assert msg.startswith("All done, opened a PR for you.")
     assert "https://github.com/jomcgi/homelab/pull/99" in msg
     assert "guard + test" not in msg  # raw details replaced by the conversational reply
+
+
+# ---------------------------------------------------------------------------
+# _settle: fold the terminal result into the run's single live message (ADR 024)
+# ---------------------------------------------------------------------------
+
+
+async def test_settle_edits_live_message_when_present(monkeypatch):
+    """When the run has a live message id and the result fits one message, settle
+    edits that message in place (one message) rather than posting a second."""
+    fake_api = MagicMock()
+    fake_api.take_progress_message = MagicMock(return_value="777")
+    edits = []
+    monkeypatch.setattr(
+        runner,
+        "_enqueue_edit_sync",
+        lambda chan, msg, content: edits.append((chan, msg, content)),
+    )
+    deliver = AsyncMock()
+    monkeypatch.setattr(runner, "_deliver", deliver)
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        await runner._settle("T", "Artifact ready: https://x")
+
+    assert edits == [("T", "777", "Artifact ready: https://x")]
+    deliver.assert_not_awaited()
+
+
+async def test_settle_falls_back_to_post_without_live_message(monkeypatch):
+    """No live message id (MCP session, or a lost row) -> post the result as a
+    new message so it is never dropped."""
+    fake_api = MagicMock()
+    fake_api.take_progress_message = MagicMock(return_value="")
+    monkeypatch.setattr(runner, "_enqueue_edit_sync", MagicMock())
+    deliver = AsyncMock()
+    monkeypatch.setattr(runner, "_deliver", deliver)
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        await runner._settle("T", "hi")
+
+    deliver.assert_awaited_once_with("T", "hi")
+
+
+async def test_settle_falls_back_to_post_when_content_too_long(monkeypatch):
+    """A result too long for one Discord message posts (paged) instead of editing,
+    so the full answer reaches the thread."""
+    fake_api = MagicMock()
+    fake_api.take_progress_message = MagicMock(return_value="777")
+    edit = MagicMock()
+    monkeypatch.setattr(runner, "_enqueue_edit_sync", edit)
+    deliver = AsyncMock()
+    monkeypatch.setattr(runner, "_deliver", deliver)
+    long = "x" * (runner._DISCORD_MESSAGE_LIMIT + 1)
+
+    with patch.dict(sys.modules, {"chat.api": fake_api}):
+        await runner._settle("T", long)
+
+    edit.assert_not_called()
+    deliver.assert_awaited_once_with("T", long)
+
+
+async def test_settle_no_discord_thread_is_noop(monkeypatch):
+    """A run with no Discord thread (pure MCP) settles nothing."""
+    deliver = AsyncMock()
+    monkeypatch.setattr(runner, "_deliver", deliver)
+    await runner._settle("", "hi")
+    deliver.assert_not_awaited()

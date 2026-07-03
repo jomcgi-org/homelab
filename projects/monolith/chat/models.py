@@ -195,6 +195,14 @@ class GoosecrackerSession(SQLModel, table=True):
     # another thread's steering by guessing its Discord thread id. Assigned
     # lazily on first dispatch, same pattern as artifact_id.
     steering_token: str = Field(default="")
+    # Discord id of the run's single live message (the "🤖 Planning…" reply the
+    # bot posts and edits in place with the stage checklist). On completion the
+    # runner overwrites this SAME message with the final result via a durable
+    # outbox edit, instead of posting a separate second message. Stored on the row
+    # so the off-loop runner (possibly another replica) can address it durably;
+    # empty means no live message (MCP session, or a race), and the runner falls
+    # back to posting the result as a new message. Rewritten per turn.
+    progress_message_id: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

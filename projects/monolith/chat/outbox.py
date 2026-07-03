@@ -79,6 +79,30 @@ def enqueue_reaction(
     )
 
 
+def enqueue_edit(
+    session: Session,
+    channel_id: str,
+    message_id: str,
+    content: str,
+) -> None:
+    """Enqueue an in-place edit of ``message_id`` in ``channel_id`` to ``content``.
+
+    An edit row carries a target_message_id AND content but no reaction; that
+    tuple is otherwise unused (a post row never sets target_message_id, a reaction
+    row never sets content), so the drain distinguishes it without a discriminator
+    column. Used off-loop by the goose runner to settle a run's single live
+    message to its final result, so the checklist message and the result are one
+    message rather than two. Caller commits the session.
+    """
+    session.add(
+        DiscordOutbox(
+            channel_id=channel_id,
+            target_message_id=message_id,
+            content=content,
+        )
+    )
+
+
 def _claim_pending(engine) -> list[dict]:
     """Read the oldest unposted, not-exhausted rows. Returns plain dicts so the
     async drain never holds an ORM row across an await."""
@@ -140,6 +164,8 @@ async def _post_row(bot, row: dict) -> None:
         channel = await bot.fetch_channel(int(row["channel_id"]))
     if row.get("reaction") is not None:
         await _apply_reaction(bot, channel, row)
+    elif row.get("target_message_id") is not None and row["content"] is not None:
+        await _apply_edit(bot, channel, row)
     elif row["embed_json"] is not None:
         embed = discord.Embed.from_dict(json.loads(row["embed_json"]))
         await channel.send(embed=embed)
@@ -174,6 +200,22 @@ async def _apply_reaction(bot, channel, row: dict) -> None:
             logger.debug("outbox: reaction remove no-op (%s): %s", emoji, exc)
     else:
         await message.add_reaction(emoji)
+
+
+async def _apply_edit(bot, channel, row: dict) -> None:
+    """Overwrite a target message's content in place.
+
+    A missing *message* resolves the row (nothing to edit) rather than burning the
+    retry budget: the run's single live message was deleted, so there is nothing
+    to settle. An edit failure propagates so the drain retries it."""
+    import discord
+
+    try:
+        message = await channel.fetch_message(int(row["target_message_id"]))
+    except discord.NotFound:
+        logger.debug("outbox: edit target %s gone; skipping", row["target_message_id"])
+        return
+    await message.edit(content=row["content"])
 
 
 async def drain_once(bot, engine) -> int:

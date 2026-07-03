@@ -170,6 +170,12 @@ def _enqueue_sync(channel_id: str, content: str) -> None:
         session.commit()
 
 
+# Discord caps a single message at 2000 chars. A terminal result that fits is
+# settled into the run's one live message (edit in place); a longer one falls
+# back to a fresh paged post so the full answer still reaches the thread.
+_DISCORD_MESSAGE_LIMIT = 2000
+
+
 async def _deliver(discord_thread: str, content: str) -> None:
     """Post a result/error into the run's Discord thread, if it fronts one.
 
@@ -185,6 +191,55 @@ async def _deliver(discord_thread: str, content: str) -> None:
             logger.exception(
                 "goosecracker: failed to enqueue result for %s", discord_thread
             )
+
+
+def _enqueue_edit_sync(channel_id: str, message_id: str, content: str) -> None:
+    """Open a session, enqueue a Discord outbox edit row, commit. Sync so the
+    async runner hands it to a worker thread (a sync Session must not run on the
+    event loop - semgrep no-sync-session-in-async-def)."""
+    from chat.api import enqueue_edit
+
+    with Session(get_engine()) as session:
+        enqueue_edit(session, channel_id, message_id, content)
+        session.commit()
+
+
+async def _settle(discord_thread: str, content: str) -> None:
+    """Deliver a run's terminal content into its single live message (ADR 024).
+
+    Overwrites the run's live progress message in place via the durable,
+    leader-safe outbox edit, so the checklist message becomes the result: one
+    message, not a separate second post. Falls back to a fresh paged post when
+    there is no live message id (an MCP session, or a lost row) or the content is
+    too long for one Discord message, so the result is never dropped.
+
+    The live message id is consumed (read-and-cleared) so it is settled at most
+    once: a later turn in the same run (the conversational drain posts no fresh
+    live message) falls back to posting its own result rather than overwriting
+    this turn's.
+    """
+    if not discord_thread:
+        return
+    msg_id = ""
+    try:
+        from chat.api import take_progress_message
+
+        # nosemgrep: no-session-in-to-thread  # discord_thread is a str id, not a SQLAlchemy Session
+        msg_id = await asyncio.to_thread(take_progress_message, discord_thread)
+    except Exception:
+        logger.exception(
+            "goosecracker: failed to read live message id for %s", discord_thread
+        )
+    if msg_id and len(content) <= _DISCORD_MESSAGE_LIMIT:
+        try:
+            await asyncio.to_thread(_enqueue_edit_sync, discord_thread, msg_id, content)
+            return
+        except Exception:
+            logger.exception(
+                "goosecracker: failed to enqueue edit for %s; posting instead",
+                discord_thread,
+            )
+    await _deliver(discord_thread, content)
 
 
 def _mark_progress_done(session: str) -> None:
@@ -596,7 +651,7 @@ async def _run_one_turn(
             await _persist_session_db(session, data.get("sessionDb"))
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
             await asyncio.to_thread(threads.mark_completed, session, result)
-            await _deliver(
+            await _settle(
                 discord_thread, await _delivery_message(session, recipe, data)
             )
             ok = True
@@ -604,7 +659,7 @@ async def _run_one_turn(
             err = data.get("error", "") or "goose run failed with no detail"
             # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
             await asyncio.to_thread(threads.mark_failed, session, err)
-            await _deliver(discord_thread, f"Run failed: {err}")
+            await _settle(discord_thread, f"Run failed: {err}")
     except Exception as exc:  # noqa: BLE001 - any failure must mark + deliver
         logger.exception("goosecracker: run_and_deliver failed for %s", session)
         try:
@@ -612,7 +667,7 @@ async def _run_one_turn(
             await asyncio.to_thread(threads.mark_failed, session, str(exc))
         except Exception:
             logger.exception("goosecracker: failed to mark run failed for %s", session)
-        await _deliver(discord_thread, f"Run failed: {exc}")
+        await _settle(discord_thread, f"Run failed: {exc}")
     finally:
         _mark_progress_done(session)
     return ok

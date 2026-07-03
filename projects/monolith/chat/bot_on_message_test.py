@@ -471,6 +471,16 @@ class TestAttentionGate:
             assert kwargs.get("trigger_message") is message
             mock_complete_lock.assert_called_once_with(str(message.id))
 
+            # The agent path persists the triggering message (unlike the older
+            # behaviour where only _process_message saved), so a channel whose
+            # activity is agent triggers is not empty when the run builds its
+            # injected context (ADR 040) from the parent channel history.
+            mock_store.save_message.assert_awaited_once()
+            saved = mock_store.save_message.call_args.kwargs
+            assert saved["discord_message_id"] == str(message.id)
+            assert saved["channel_id"] == "99"
+            assert saved["content"] == "hey bot help"
+
     @pytest.mark.asyncio
     async def test_ambient_engage_chat_replies_in_monolith(self):
         """An ambient engage that the depth classify routes to chat (not

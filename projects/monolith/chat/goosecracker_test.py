@@ -97,6 +97,29 @@ def fake_api_fixture():
         yield fake
 
 
+def test_set_then_take_progress_message_consumes_once(engine):
+    """set records the live message id; take reads AND clears it, so a second
+    take returns '' (consume-on-read: the id is settled at most once)."""
+    with Session(engine) as session:
+        session.add(GoosecrackerSession(discord_thread="t-99"))
+        session.commit()
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        assert goosecracker.take_progress_message("t-99") == ""
+        goosecracker.set_progress_message("t-99", "555")
+        assert goosecracker.take_progress_message("t-99") == "555"
+        # Consumed: a later turn in the same run reads empty and posts its own.
+        assert goosecracker.take_progress_message("t-99") == ""
+
+
+def test_progress_message_helpers_noop_without_row(engine):
+    """No session row (an artifact run with no persisted session): set is a no-op
+    and take returns '' so the runner falls back to posting the result as a new
+    message rather than editing a message that does not exist."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.set_progress_message("missing", "555")  # no raise
+        assert goosecracker.take_progress_message("missing") == ""
+
+
 def test_start_session_records_transcript_and_dispatches(engine, fake_api):
     with patch("chat.goosecracker.get_engine", return_value=engine):
         goosecracker.start_session("thread-1", "  build a clock  ")
