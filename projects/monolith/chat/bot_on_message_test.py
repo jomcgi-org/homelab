@@ -890,3 +890,129 @@ class TestCreateBot:
         ):
             bot = create_bot()
         assert isinstance(bot, ChatBot)
+
+
+# ---------------------------------------------------------------------------
+# start_agent_flow: ADR 036 orchestrator verdict branching
+# ---------------------------------------------------------------------------
+
+
+def _flow_channel() -> MagicMock:
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 99
+    channel.guild = None
+    return channel
+
+
+class TestStartAgentFlowOrchestrator:
+    @pytest.mark.asyncio
+    async def test_chat_verdict_replies_without_thread_or_session(self):
+        """A chat verdict produces a reply and opens no thread or session."""
+        from chat import orchestrator
+
+        bot = _make_bot()
+        channel = _flow_channel()
+        channel.create_thread = AsyncMock()
+        user = MagicMock()
+
+        verdict = orchestrator.ChatVerdict(context="c", direction="d")
+        with (
+            patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=verdict)),
+            patch.object(
+                bot,
+                "_orchestrator_chat_reply",
+                AsyncMock(return_value="here is a friendly answer"),
+            ),
+            patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
+        ):
+            outcome = await bot.start_agent_flow(channel, user, "name my boat", "")
+
+        assert outcome.chat_reply == "here is a friendly answer"
+        assert outcome.thread is None
+        channel.create_thread.assert_not_called()
+        mock_start_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_goose_verdict_submits_brief_task_and_prerenders_checklist(self):
+        """A goose verdict opens a thread, submits the brief markdown + the raw
+        prompt as the task, and pre-renders the checklist from brief stages."""
+        from chat import orchestrator
+
+        bot = _make_bot()
+        channel = _flow_channel()
+        thread = MagicMock()
+        thread.id = 555
+        thread.send = AsyncMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+        user = MagicMock()
+
+        brief = orchestrator.Brief(
+            recipe="implement",
+            repo="jomcgi/homelab",
+            repo_paths=["projects/monolith/chat/bot.py"],
+            hints="hint text",
+            constraints="do not break",
+            done_criteria=["CI green"],
+            stages=["First stage", "Second stage"],
+        )
+        with (
+            patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=brief)),
+            patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
+            patch.object(bot, "_start_goosecracker_stream") as mock_stream,
+        ):
+            outcome = await bot.start_agent_flow(channel, user, "raw prompt", "")
+
+        assert outcome.thread is thread
+        # The submitted task carries the brief AND the raw prompt (ground truth).
+        task = mock_start_session.call_args.kwargs["task"]
+        assert "Task brief" in task
+        assert "First stage" in task
+        assert "raw prompt" in task
+        # The checklist is pre-rendered from the brief stages on one of the sends.
+        sent_bodies = [c.args[0] for c in thread.send.call_args_list]
+        assert any("First stage" in b and "Second stage" in b for b in sent_bodies)
+        mock_stream.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_failopen_preserves_raw_prompt_submit(self):
+        """A FailOpen verdict is byte-for-byte today's behaviour: the raw prompt
+        is the task and the intro is the bare Planning placeholder."""
+        from chat import orchestrator
+
+        bot = _make_bot()
+        channel = _flow_channel()
+        thread = MagicMock()
+        thread.id = 777
+        thread.send = AsyncMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+        user = MagicMock()
+
+        verdict = orchestrator.FailOpen("orchestrator disabled")
+        with (
+            patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=verdict)),
+            patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
+            patch.object(bot, "_start_goosecracker_stream"),
+        ):
+            outcome = await bot.start_agent_flow(channel, user, "raw prompt", "")
+
+        assert outcome.thread is thread
+        assert mock_start_session.call_args.kwargs["task"] == "raw prompt"
+        sent_bodies = [c.args[0] for c in thread.send.call_args_list]
+        assert "🤖 Planning..." in sent_bodies
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_verdict_short_circuits_when_disabled(self):
+        """_orchestrator_verdict returns FailOpen without calling compile when
+        the tier is disabled, so the failopen path does no extra gathering."""
+        from chat import orchestrator
+
+        bot = _make_bot()
+        user = MagicMock()
+        with (
+            patch("chat.bot.orchestrator.enabled", return_value=False),
+            patch("chat.bot.orchestrator.compile", AsyncMock()) as mock_compile,
+        ):
+            verdict = await bot._orchestrator_verdict("g", "c", user, "p", "")
+
+        assert isinstance(verdict, orchestrator.FailOpen)
+        mock_compile.assert_not_called()
