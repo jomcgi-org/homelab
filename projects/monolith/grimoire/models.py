@@ -180,19 +180,22 @@ class KnowledgeChunk(SQLModel, table=True):
 
 class ChunkEntityMention(SQLModel, table=True):
     __tablename__ = "chunk_entity_mention"
-    __table_args__ = (
-        UniqueConstraint(
-            "chunk_id", "entity_id", name="chunk_entity_mention_chunk_id_entity_id_key"
-        ),
-        {"schema": "grimoire", "extend_existing": True},
-    )
+    # Pure association table: the (chunk_id, entity_id) pair is the natural key,
+    # so it is the composite PRIMARY KEY (matching the migration) rather than a
+    # surrogate id column. A separate id would be the only non-UUID surrogate PK
+    # in the schema, and it was never read for its value (only as an existence
+    # probe), so dropping it keeps model and migration in lockstep.
+    __table_args__ = {"schema": "grimoire", "extend_existing": True}
 
-    id: int | None = Field(default=None, primary_key=True)
     chunk_id: str = Field(
-        sa_column=_uuid_column(nullable=False, fk="grimoire.knowledge_chunk.id"),
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.knowledge_chunk.id"
+        ),
     )
     entity_id: str = Field(
-        sa_column=_uuid_column(nullable=False, fk="grimoire.entity.id"),
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.entity.id"
+        ),
     )
     mention_text: str | None = None
 

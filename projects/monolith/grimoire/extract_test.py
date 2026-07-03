@@ -300,7 +300,7 @@ def test_extract_chunks_malformed_extraction_counted_failed_and_retryable(
     remaining = (
         session.execute(
             select(KnowledgeChunk).where(
-                ~select(ChunkEntityMention.id)
+                ~select(ChunkEntityMention.chunk_id)
                 .where(ChunkEntityMention.chunk_id == KnowledgeChunk.id)
                 .exists()
             )
@@ -346,7 +346,7 @@ def test_extract_chunks_limit_respected(session: Session):
     remaining = (
         session.execute(
             select(KnowledgeChunk).where(
-                ~select(ChunkEntityMention.id)
+                ~select(ChunkEntityMention.chunk_id)
                 .where(ChunkEntityMention.chunk_id == KnowledgeChunk.id)
                 .exists()
             )
