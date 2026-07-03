@@ -9,6 +9,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"go.mau.fi/whatsmeow"
 )
 
 // --- fakes -----------------------------------------------------------------
@@ -28,7 +30,10 @@ type fakeSender struct {
 	editErr     error
 	reactionErr error
 	sentID      string
+	notReady    bool // when true, Ready() reports the socket is down
 }
+
+func (f *fakeSender) Ready() bool { return !f.notReady }
 
 func (f *fakeSender) SendText(_ context.Context, groupJID, content, quotedMessageID string) (string, error) {
 	f.calls = append(f.calls, sendCall{"text", groupJID, content, quotedMessageID, ""})
@@ -72,6 +77,11 @@ type fakeRow struct {
 
 type fakeStore struct {
 	rows []*fakeRow
+	// postFailID / postFailN make markPosted return an error for the given row id
+	// the next postFailN times (then succeed), so the group-block-on-post-failure
+	// path can be exercised.
+	postFailID int64
+	postFailN  int
 }
 
 func nullStr(s string) sql.NullString {
@@ -132,6 +142,10 @@ func (s *fakeStore) sentMessageID(_ context.Context, id int64) (string, error) {
 }
 
 func (s *fakeStore) markPosted(_ context.Context, id int64, sentMessageID string) error {
+	if s.postFailN > 0 && id == s.postFailID {
+		s.postFailN--
+		return errors.New("posted stamp failed")
+	}
 	r := s.find(id)
 	if r == nil {
 		return errors.New("no such row")
@@ -297,6 +311,83 @@ func TestDrainParkedRowDoesNotBlockOtherGroup(t *testing.T) {
 		if p.id == 1 {
 			t.Fatalf("parked row 1 still claimed")
 		}
+	}
+}
+
+func TestDrainNotConnectedLeavesRowPendingThenSends(t *testing.T) {
+	st := &fakeStore{rows: []*fakeRow{
+		{id: 1, groupJID: "g@wa", kind: "message", content: "hello", createdAt: time.Unix(1, 0)},
+	}}
+	// A not-connected error is transient: it must NOT burn the attempt budget nor
+	// stamp a terminal state; the row stays pending to retry later.
+	snd := &fakeSender{textErr: whatsmeow.ErrNotConnected}
+	d := testDrain(st, snd)
+	_ = d.drainOnce(context.Background())
+	r := st.find(1)
+	if r.posted {
+		t.Fatalf("row should not post on a not-connected error")
+	}
+	if r.attempts != 0 {
+		t.Fatalf("not-connected error must not increment attempts, got %d", r.attempts)
+	}
+	// Connectivity returns: the same row now sends and posts.
+	snd.textErr = nil
+	_ = d.drainOnce(context.Background())
+	if !st.find(1).posted {
+		t.Fatalf("row should send and post once connectivity returns")
+	}
+}
+
+func TestDrainSkipsTickWhenSocketNotReady(t *testing.T) {
+	st := &fakeStore{rows: []*fakeRow{
+		{id: 1, groupJID: "g@wa", kind: "message", content: "hello", createdAt: time.Unix(1, 0)},
+	}}
+	snd := &fakeSender{notReady: true}
+	d := testDrain(st, snd)
+	_ = d.drainOnce(context.Background())
+	if len(snd.calls) != 0 {
+		t.Fatalf("drain must not send while the socket is not ready, got %+v", snd.calls)
+	}
+	if st.find(1).attempts != 0 {
+		t.Fatalf("a not-ready tick must not touch attempts, got %d", st.find(1).attempts)
+	}
+	// Once ready, the row drains normally.
+	snd.notReady = false
+	_ = d.drainOnce(context.Background())
+	if !st.find(1).posted {
+		t.Fatalf("row should post once the socket is ready")
+	}
+}
+
+func TestDrainPostFailureHoldsGroup(t *testing.T) {
+	st := &fakeStore{
+		rows: []*fakeRow{
+			{id: 1, groupJID: "g@wa", kind: "message", content: "first", createdAt: time.Unix(1, 0)},
+			{id: 2, groupJID: "g@wa", kind: "message", content: "second", createdAt: time.Unix(2, 0)},
+		},
+		postFailID: 1,
+		postFailN:  1,
+	}
+	snd := &fakeSender{}
+	d := testDrain(st, snd)
+	_ = d.drainOnce(context.Background())
+	// Row 1 sent but its posted stamp failed: the group is blocked so row 2 must
+	// not be sent this tick (per-group ordering: 2 cannot precede 1's posting).
+	if len(snd.calls) != 1 || snd.calls[0].arg1 != "first" {
+		t.Fatalf("post failure should block the group; got calls %+v", snd.calls)
+	}
+	if st.find(2).posted {
+		t.Fatalf("later same-group row must not post before the earlier row is stamped")
+	}
+	// Next tick: row 1 (still unposted) re-sends and this time its stamp lands,
+	// then row 2 follows. The re-send is the accepted at-least-once cost of the
+	// stamp failure; what matters is that row 2 never preceded row 1's posting.
+	_ = d.drainOnce(context.Background())
+	if !st.find(1).posted || !st.find(2).posted {
+		t.Fatalf("group should drain in order once the stamp succeeds")
+	}
+	if last := snd.calls[len(snd.calls)-1]; last.arg1 != "second" {
+		t.Fatalf("row 2 should send only after row 1 is posted, got %+v", snd.calls)
 	}
 }
 
