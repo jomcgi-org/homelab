@@ -2673,6 +2673,20 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_jobs_test",
+    srcs = ["grimoire/jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],
     imports = ["."],
