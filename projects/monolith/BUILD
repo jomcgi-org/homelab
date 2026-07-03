@@ -2658,6 +2658,21 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_extract_test",
+    srcs = ["grimoire/extract_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],
     imports = ["."],

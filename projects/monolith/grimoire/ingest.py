@@ -211,14 +211,18 @@ def _upsert_book_chunks(
     return pending_embed, upserted
 
 
-def _upsert_embedding_batch(
+def upsert_embedding_batch(
     session: Session,
     model: str,
-    rows: list[KnowledgeChunk],
+    embeddable_kind: str,
+    rows: list,
     vectors: list[list[float]],
 ) -> int:
     """Sync upsert of one batch's embedding rows. Returns the count embedded.
 
+    Public (not module-private) because it is shared across every
+    embeddable kind: chunks here, entities in ``extract.py``. ``rows`` only
+    needs an ``.id`` attribute, so it accepts any embeddable row type.
     ``model``/``dim`` are recorded from the embed call itself (``model`` is
     the client's own model name, ``dim`` is ``len(vector)``), not a separate
     hardcoded constant. Each row gets its own savepoint, mirroring
@@ -229,7 +233,7 @@ def _upsert_embedding_batch(
         with session.begin_nested():
             existing = session.execute(
                 select(Embedding).where(
-                    Embedding.embeddable_kind == "chunk",
+                    Embedding.embeddable_kind == embeddable_kind,
                     Embedding.embeddable_id == row.id,
                     Embedding.model == model,
                 )
@@ -237,7 +241,7 @@ def _upsert_embedding_batch(
             if existing is None:
                 session.add(
                     Embedding(
-                        embeddable_kind="chunk",
+                        embeddable_kind=embeddable_kind,
                         embeddable_id=row.id,
                         model=model,
                         dim=len(vector),
@@ -291,8 +295,8 @@ async def load_chunks(
     for start in range(0, len(pending_embed), EMBED_BATCH_SIZE):
         batch = pending_embed[start : start + EMBED_BATCH_SIZE]
         vectors = await embed_client.embed_batch([row.content for row in batch])
-        chunks_embedded += _upsert_embedding_batch(
-            session, embed_client.model, batch, vectors
+        chunks_embedded += upsert_embedding_batch(
+            session, embed_client.model, "chunk", batch, vectors
         )
 
     summary = {
