@@ -1483,11 +1483,15 @@ class ChatBot(discord.Client):
                         query = args.get("query", str(args))
                     else:
                         query = str(args)
-                    tool_queries.append(query)
-                    bullets = "\n".join(f"\u2022 {q}" for q in tool_queries)
-                    content = f"\U0001f50d Searching...\n{bullets}"
-                    await _ensure_sent(content)
-                    await _edit_if_due(content, force=True)
+                    # Dedupe: a model-unavailable retry replays the turn and
+                    # re-emits the same tool call. Showing it once keeps the
+                    # progress list honest instead of spamming repeat bullets.
+                    if query not in tool_queries:
+                        tool_queries.append(query)
+                        bullets = "\n".join(f"\u2022 {q}" for q in tool_queries)
+                        content = f"\U0001f50d Searching...\n{bullets}"
+                        await _ensure_sent(content)
+                        await _edit_if_due(content, force=True)
 
             # Fallback if no events arrived or no text was produced
             if not had_events or not response_text:
