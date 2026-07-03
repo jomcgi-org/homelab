@@ -9,13 +9,15 @@ and ``extract.py``:
     with a warning when OPENROUTER_API_KEY is unset, never crashing the
     scheduler) + embedding client, then run ``extract.extract_chunks``.
 
-Both are registered via ``on_startup_jobs`` (grimoire/__init__.py) and are
-manually triggerable through the existing scheduler tooling; there are no
-bespoke ingest routes. Each is an ``async def`` matching the scheduler Handler
-contract (``scheduler.api.Handler``: receives a Session, returns an optional
-next-run override) and is awaited directly by the dispatcher, so the
-orchestrators run on the scheduler's own Session rather than needing their own.
-This module is excluded from the public binary (grimoire is private-tier only).
+Both run off-pod as Argo CronWorkflows: ``app/jobs_main.py`` exposes the
+``grimoire-load-chunks`` and ``grimoire-extract-entities`` subcommands (via the
+shared ``_run_job`` helper), and the ``jobs.cronWorkflows`` registry in
+chart/values.yaml schedules them (loader daily; extraction suspended /
+manual-only, since it costs OpenRouter money). Each is an ``async def`` keeping
+the scheduler Handler contract (``scheduler.api.Handler``: receives a Session,
+returns an optional next-run override), so ``_run_job`` opens a Session and
+awaits it directly. This module is excluded from the public binary (grimoire is
+private-tier only).
 """
 
 from __future__ import annotations

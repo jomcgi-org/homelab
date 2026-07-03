@@ -215,6 +215,27 @@ def campsites_refresh() -> None:
     _run_job("campsites-refresh", "campsites.jobs", "refresh_handler")
 
 
+@app.command("grimoire-load-chunks")
+def grimoire_load_chunks() -> None:
+    """Load S3 chunk manifests into knowledge_chunk + embedding (spec #4.2.1).
+
+    One-shot of the grimoire chunk loader. Needs the SeaweedFS S3 env (endpoint +
+    creds), GRIMOIRE_S3_BUCKET, and EMBEDDING_URL; all are injected into the
+    workflows pod by the cronWorkflows `grimoire: true` flag."""
+    _run_job("grimoire-load-chunks", "grimoire.jobs", "grimoire_load_chunks")
+
+
+@app.command("grimoire-extract-entities")
+def grimoire_extract_entities() -> None:
+    """Extract entities/mentions/relationships from pending chunks (spec #4.2.2).
+
+    One-shot of the grimoire extraction pass. Costs OpenRouter money, so its
+    CronWorkflow ships suspended (manual-only). Skips cleanly if
+    OPENROUTER_API_KEY is unset; also reads GRIMOIRE_EXTRACT_MODEL /
+    GRIMOIRE_EXTRACT_LIMIT and EMBEDDING_URL from the workflows pod env."""
+    _run_job("grimoire-extract-entities", "grimoire.jobs", "grimoire_extract_entities")
+
+
 @app.command("stars-load-grid")
 def stars_load_grid() -> None:
     """Reload the stars site grid from S3 (one-shot of stars.load_grid)."""
