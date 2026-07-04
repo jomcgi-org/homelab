@@ -333,6 +333,23 @@ def chat_drain_reminders() -> None:
     _run_job("chat-drain-reminders", "chat.jobs", "drain_reminders_handler")
 
 
+@app.command("chat-observe-directives")
+def chat_observe_directives() -> None:
+    """Propose channel directive updates from repeated style corrections.
+
+    One-shot of chat.observer_job.observe_directives_handler. Observes only
+    ambient-granted channels (ADR 029), classifies recent bot-directed messages
+    for recurring style friction via Qwen (needs LLAMA_CPP_URL), and enqueues at
+    most one directive-proposal outbox row per channel; the leader's outbox drain
+    posts it and wires the propose-then-confirm flow. Sensitivity is env config:
+    OBSERVER_MIN_EVIDENCE (default 3), OBSERVER_COOLDOWN_DAYS (default 14)."""
+    _run_job(
+        "chat-observe-directives",
+        "chat.observer_job",
+        "observe_directives_handler",
+    )
+
+
 @app.command("evict-artifact-sessions")
 def evict_artifact_sessions() -> None:
     """Evict goose session DBs older than the TTL (ADR 026 Phase 2 Task 2.5).
