@@ -9,11 +9,7 @@ spec:
     # Chart from OCI registry (pushed by CI via Bazel helm_push)
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
-<<<<<<< HEAD
       targetRevision: 0.279.0
-=======
-      targetRevision: 0.277.0
->>>>>>> 9a350ef0f (chore(monolith): bump chart to 0.277.0 for the docs site restructure)
       helm:
         releaseName: monolith
         valueFiles:
