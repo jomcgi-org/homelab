@@ -63,3 +63,12 @@ postgres:
 
 objectStore:
   size: 5Gi
+
+# The cluster's Kyverno policy annotates every namespace linkerd.io/inject:
+# enabled, so loom pods are meshed. The chart's default-deny NetworkPolicy
+# blocks the linkerd-proxy's control-plane egress (linkerd-await times out,
+# PostStartHookError). Homelab convention: never combine K8s NetworkPolicies
+# with Linkerd-meshed namespaces; mTLS + Linkerd policy is the enforcement
+# layer here instead.
+networkPolicy:
+  enabled: false
