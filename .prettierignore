@@ -32,3 +32,19 @@
 # kept byte-identical to upstream so the vendored copy stays verifiable. Baked
 # into the goosecracker guest image at /opt/impeccable/.
 **/vendor/impeccable/**
+
+# Prose (Markdown) and YAML: Prettier owns CODE, not prose. The CI formatter
+# (//bazel/tools/format:format_code) wires prettier to the `javascript` language
+# slot ONLY, so CI never reformats .md or .yaml. The local fast-format.sh runs a
+# bare `prettier --write .`, which DOES cover prettier's default extensions incl.
+# Markdown and YAML, so a whole-repo local run reflowed hundreds of hand-written
+# ADRs/docs/READMEs and rule YAMLs that CI leaves untouched forever (emphasis
+# `*x*` -> `_x_`, blank-line-before-list, etc.), producing spurious churn a
+# contributor then has to hand-revert. Ignoring these here scopes local prettier
+# to match CI: prose is hand-written (see the repo's no-em-dash / minimal-churn
+# rules) and no CI check enforces its formatting. The specific generated .md/.json
+# entries above are kept as documentation of why those particular files are
+# generator-owned, even though this blanket rule now also covers the .md ones.
+**/*.md
+**/*.yaml
+**/*.yml
