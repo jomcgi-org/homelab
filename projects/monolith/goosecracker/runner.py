@@ -655,6 +655,23 @@ async def _invoke_turn(
             "plan.md": render_plan_file(plan),
         }
         effective_recipe = "/injected-context/router.yaml"
+    elif recipe == "agent":
+        # Plan-less agent path: inject the CURRENT agent.yaml as the router rather
+        # than passing bare recipe="agent". ADR 022 snapshot-resumed threads boot a
+        # frozen rootfs whose baked agent.yaml can predate later recipe changes (the
+        # sub_recipes block that exposes the `delegate` tool was added 2026-07-01),
+        # so the bare-name path silently runs a stale recipe with no delegate tool
+        # and the router improvises inline. render_fallback_router() is a
+        # drift-guarded verbatim copy of agent.yaml, injected fresh every turn, so
+        # both fresh and resumed threads run current recipe text. Same mechanism as
+        # the plan branch above; only the recipe body differs.
+        from goosecracker.router_render import render_fallback_router
+
+        injected_context = {
+            **injected_context,
+            "router.yaml": render_fallback_router(),
+        }
+        effective_recipe = "/injected-context/router.yaml"
     payload = {
         "recipe": effective_recipe,
         "task": task,

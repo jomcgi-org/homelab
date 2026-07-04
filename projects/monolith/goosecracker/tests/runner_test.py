@@ -599,7 +599,11 @@ async def test_run_one_turn_ships_injected_context_in_payload(monkeypatch):
     )
 
     assert ok is True
-    assert captured_payload["injectedContext"] == {"transcript.md": "hi"}
+    # The ADR 040 per-turn context is shipped. On the agent path the payload also
+    # carries the injected fallback router (see
+    # test_run_one_turn_without_plan_injects_fallback_router); here we only assert
+    # the ADR 040 entry survives alongside it.
+    assert captured_payload["injectedContext"]["transcript.md"] == "hi"
 
 
 def _one_step_plan():
@@ -670,14 +674,22 @@ async def test_run_one_turn_with_plan_injects_router_and_plan_file(monkeypatch):
     assert payload["injectedContext"]["transcript.md"] == "hi"
 
 
-async def test_run_one_turn_without_plan_keeps_baked_agent_recipe(monkeypatch):
-    """Task 6 fallback (Design invariant 2): with no Plan, behavior is
-    unchanged: recipe stays "agent" and neither router.yaml nor plan.md is
-    injected."""
+async def test_run_one_turn_without_plan_injects_fallback_router(monkeypatch):
+    """Plan-less agent path: with no Plan the runner injects the CURRENT
+    agent.yaml as the router (render_fallback_router) and points the recipe at
+    the injected copy, so a snapshot-resumed thread runs current recipe text
+    with the delegate tool instead of its frozen baked agent.yaml. No plan.md is
+    injected (there is no ordered plan), and the ADR 040 per-turn context is
+    preserved."""
+    from goosecracker import router_render
+
     payload = await _run_one_turn_with_captured_payload(monkeypatch, plan=None)
 
-    assert payload["recipe"] == "agent"
-    assert "router.yaml" not in payload["injectedContext"]
+    assert payload["recipe"] == "/injected-context/router.yaml"
+    assert (
+        payload["injectedContext"]["router.yaml"]
+        == router_render.render_fallback_router()
+    )
     assert "plan.md" not in payload["injectedContext"]
     assert payload["injectedContext"]["transcript.md"] == "hi"
 

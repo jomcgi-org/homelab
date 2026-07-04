@@ -235,3 +235,48 @@ def test_drift_guard_scaffold_tokens_exist_in_guest_agent_yaml() -> None:
     assert "::stage::" in text
     assert "recipe__final_output" in text
     assert "GOOSECRACKER_STEERING_URL" in text
+
+
+def test_fallback_router_parses_equal_to_guest_agent_yaml() -> None:
+    # The plan-less fallback router (injected for snapshot-resumed threads so
+    # they run current recipe text with the `delegate` tool) is a VERBATIM pin
+    # of the guest agent.yaml. Full parse-equality is the drift guard: any edit
+    # to the guest agent.yaml fails this test until the pinned constants in
+    # router_render.py are regenerated, which is exactly what keeps a resumed
+    # thread's injected recipe current instead of frozen at snapshot time.
+    rendered = _loaded(router_render.render_fallback_router())
+    agent = yaml.safe_load(_AGENT_YAML.read_text())
+    assert rendered == agent
+
+
+def test_fallback_router_lists_all_sub_recipes_for_delegate() -> None:
+    # The defect this fixes: a resumed snapshot ran a baked agent.yaml with NO
+    # sub_recipes block, so goose never registered the `delegate` tool and the
+    # router improvised inline. The injected fallback must carry every catalog
+    # sub-recipe (that block is what registers delegate), each at its baked path.
+    doc = _loaded(router_render.render_fallback_router())
+    names = [s["name"] for s in doc["sub_recipes"]]
+    assert tuple(names) == _ALL_IDS
+    for sub in doc["sub_recipes"]:
+        assert sub["path"] == f"/home/goose-agent/recipes/{sub['name']}.yaml"
+        assert sub["values"]["task_file"] == "{{ task_file }}"
+        assert sub["values"]["context_file"] == "/tmp/goose/context.md"
+    impl = next(s for s in doc["sub_recipes"] if s["name"] == "implement")
+    assert impl["sequential_when_repeated"] is True
+
+
+def test_fallback_router_is_classifier_not_ordered_plan() -> None:
+    # Unlike render_router (a pre-decided ordered plan with a replan escape
+    # hatch), the fallback is the full classify-and-route agent: its mode enum
+    # spans all routes and it carries no replan field.
+    doc = _loaded(router_render.render_fallback_router())
+    schema = doc["response"]["json_schema"]
+    assert schema["required"] == ["summary"]
+    assert "replan" not in schema["properties"]
+    assert set(schema["properties"]["mode"]["enum"]) == {
+        "query",
+        "plan",
+        "implement",
+        "artifact",
+        "research",
+    }
