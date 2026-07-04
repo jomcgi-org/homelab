@@ -165,6 +165,53 @@ def test_to_chunks_prepends_section_name_when_absent_from_body():
     assert header_chunk["content"].startswith("THE UNDERDARK")
 
 
+def test_to_chunks_new_header_with_stale_hierarchy_does_not_bleed():
+    """A heading that opens a new section but whose section_hierarchy still
+    points at the *previous* header (real Marker output: the new header's own
+    entry is not yet on the running stack) must start its own chunk, not append
+    its title to the prior section's body."""
+    doc = {
+        "children": [
+            _page(
+                0,
+                [
+                    {
+                        "id": "/page/0/SectionHeader/0",
+                        "block_type": "SectionHeader",
+                        "html": "<h1>HOW TO USE THIS BOOK</h1>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        "id": "/page/0/Text/0",
+                        "block_type": "Text",
+                        "html": "<p>Pick up the Starter Set.</p>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        # The next section's heading, but Marker still reports the
+                        # PREVIOUS header at its deepest level, not itself.
+                        "id": "/page/0/SectionHeader/1",
+                        "block_type": "SectionHeader",
+                        "html": "<h1>WHAT IS A MONSTER?</h1>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                ],
+            )
+        ],
+        "metadata": {},
+    }
+    chunks = marker.to_chunks(doc, image_key_prefix="p/")
+    text = [c for c in chunks if "image_ref" not in c]
+    assert len(text) == 2
+    intro = [c for c in text if c["section_path"] == "HOW TO USE THIS BOOK"][0]
+    monster = [c for c in text if c["section_path"] == "WHAT IS A MONSTER?"][0]
+    # The next heading must NOT bleed into the previous section's body.
+    assert "WHAT IS A MONSTER?" not in intro["content"]
+    assert "Pick up the Starter Set." in intro["content"]
+    assert monster["content"].startswith("WHAT IS A MONSTER?")
+    assert monster["chunk_ref"] == "/page/0/SectionHeader/1"
+
+
 def test_to_chunks_drops_empty_content():
     doc = {
         "children": [
