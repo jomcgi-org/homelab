@@ -1,12 +1,31 @@
 <script>
   import { goto } from "$app/navigation";
   import { apiFetch, asQuery, entityHref, chunkHref } from "$lib/grimoire/api.js";
+  import { renderChunk } from "$lib/grimoire/renderChunk.js";
 
   let { campaignId, bookId, chunkId, viewpoint } = $props();
 
   let chunk = $state(null);
   let loading = $state(true);
   let error = $state("");
+  // Measured pager height, fed back as bottom padding so the sticky pager never
+  // slices through the last lines of the reading column.
+  let pagerH = $state(0);
+
+  // Structural blocks (headings / bullet lists / paragraphs) for text chunks.
+  const blocks = $derived(chunk?.content ? renderChunk(chunk.content) : []);
+
+  // First non-blank line of the content, used to suppress a section label that
+  // merely repeats the chunk's own opening heading (the triple-DUNGEONS case).
+  const firstContentLine = $derived(
+    (chunk?.content ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .find(Boolean) ?? "",
+  );
+  const showSection = $derived(
+    !!chunk?.section_path && chunk.section_path.trim() !== firstContentLine,
+  );
 
   $effect(() => {
     load(campaignId, chunkId, viewpoint);
@@ -43,13 +62,12 @@
   {:else if error}
     <p class="status status--error">{error}</p>
   {:else if chunk}
-    <div class="reader-body grim-paper">
-      {#if chunk.section_path}
-        <p class="section grim-smallcaps">{chunk.section_path}</p>
-      {/if}
-
+    <div class="reader-body grim-paper" style:--pager-h={`${pagerH}px`}>
       {#if chunk.image_url}
         <figure class="figure">
+          {#if showSection}
+            <p class="section grim-smallcaps">{chunk.section_path}</p>
+          {/if}
           <img class="image" src={chunk.image_url} alt={chunk.content} />
           {#if chunk.content}
             <figcaption class="caption">{chunk.content}</figcaption>
@@ -57,8 +75,21 @@
         </figure>
       {:else}
         <div class="prose">
-          {#each chunk.content.split(/\n\n+/) as para, i (i)}
-            <p>{para}</p>
+          {#if showSection}
+            <p class="section grim-smallcaps">{chunk.section_path}</p>
+          {/if}
+          {#each blocks as block, i (i)}
+            {#if block.type === "heading"}
+              <h3 class="prose-head grim-smallcaps">{block.text}</h3>
+            {:else if block.type === "list"}
+              <ul class="prose-list">
+                {#each block.items as item, j (j)}
+                  <li>{item}</li>
+                {/each}
+              </ul>
+            {:else}
+              <p>{block.text}</p>
+            {/if}
           {/each}
         </div>
       {/if}
@@ -81,7 +112,7 @@
       {/if}
     </div>
 
-    <nav class="pager" aria-label="Reading navigation">
+    <nav class="pager" aria-label="Reading navigation" bind:clientHeight={pagerH}>
       <button
         class="page-btn"
         disabled={!chunk.prev_id}
@@ -89,7 +120,15 @@
       >
         ← Prev
       </button>
-      <span class="seq">#{chunk.seq ?? "—"}</span>
+      <span class="seq">
+        {#if chunk.chunk_count && chunk.seq != null}
+          {chunk.seq + 1} / {chunk.chunk_count}
+        {:else if chunk.section_path}
+          {chunk.section_path}
+        {:else}
+          #{chunk.seq ?? "?"}
+        {/if}
+      </span>
       <button
         class="page-btn"
         disabled={!chunk.next_id}
@@ -111,6 +150,9 @@
   .reader-body {
     flex: 1;
     padding: clamp(1.25rem, 5vw, 3rem) clamp(1rem, 5vw, 2rem);
+    /* Clear the sticky pager: pad the bottom by its measured height so the last
+     * lines are never hidden under it. Falls back before measurement lands. */
+    padding-bottom: calc(var(--pager-h, 4.5rem) + 1.5rem);
   }
 
   .section {
@@ -128,8 +170,30 @@
     color: var(--grim-ink);
   }
 
-  .prose :global(p) {
+  .prose p {
     margin-bottom: 0.85rem;
+  }
+
+  /* Inline ALL-CAPS headings from the extracted text (e.g. THE UNDERDARK). */
+  .prose-head {
+    font-size: 0.92rem;
+    color: var(--grim-accent);
+    margin: 1.4rem 0 0.6rem;
+  }
+
+  .prose-head:first-child {
+    margin-top: 0;
+  }
+
+  .prose-list {
+    margin: 0 0 0.85rem 1.2rem;
+    padding: 0;
+    list-style: disc;
+  }
+
+  .prose-list li {
+    margin-bottom: 0.35rem;
+    padding-left: 0.2rem;
   }
 
   .figure {
