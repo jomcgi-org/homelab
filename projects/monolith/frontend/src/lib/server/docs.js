@@ -56,13 +56,17 @@ const EXTERNAL = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
 const DECISIONS_DIR_PREFIX = "docs/";
 
 // Map every doc's repo path -> its /docs slug, plus a directory alias for index
-// docs so a link to `decisions/` (the folder) resolves to the index page.
+// and README docs so a link to `decisions/` or `projects/firecracker/` (the
+// folder) resolves to the index/README page.
 export function buildPathIndex(manifest) {
   const slugByPath = new Map();
   for (const e of manifest) {
     slugByPath.set(e.path, e.slug);
     if (e.path.endsWith("/index.md")) {
       slugByPath.set(e.path.slice(0, -"/index.md".length), e.slug);
+    }
+    if (e.path.endsWith("/README.md")) {
+      slugByPath.set(e.path.slice(0, -"/README.md".length), e.slug);
     }
   }
   return slugByPath;
@@ -165,25 +169,46 @@ export function renderDoc(entry, slugByPath) {
   return { html, toc };
 }
 
+const PROJECTS_PREFIX = "projects/";
+const DECISIONS_PREFIX = "decisions/";
+
 // Left-sidebar tree derived purely from the manifest (NOT from any VitePress
-// adr-sidebar.json): reference docs, then the decisions index and ADRs grouped
-// by category. Carries titles/slugs only (no bodies), so it is safe to serialise
-// to the client.
+// adr-sidebar.json): project READMEs nested by path, then the decisions index
+// and ADRs grouped by category. Carries titles/slugs only (no bodies), so it
+// is safe to serialise to the client.
 export function buildSidebar(manifest) {
   const sorted = [...manifest].sort((a, b) => a.order - b.order);
-  const reference = [];
+  const projects = [];
+  const projectNodeByPath = new Map();
   let decisionsIndex = null;
   const catMap = new Map();
   for (const e of sorted) {
-    if (e.section !== "Decisions") {
-      reference.push({ slug: e.slug, title: e.title });
+    if (e.section === "Projects") {
+      const rel = e.slug.slice(PROJECTS_PREFIX.length);
+      const parts = rel.split("/");
+      let siblings = projects;
+      let nodePath = "";
+      for (let i = 0; i < parts.length; i++) {
+        nodePath = nodePath ? `${nodePath}/${parts[i]}` : parts[i];
+        let node = projectNodeByPath.get(nodePath);
+        if (!node) {
+          node = { name: parts[i], title: parts[i], slug: null, children: [] };
+          projectNodeByPath.set(nodePath, node);
+          siblings.push(node);
+        }
+        if (i === parts.length - 1) {
+          node.title = e.title;
+          node.slug = e.slug;
+        }
+        siblings = node.children;
+      }
       continue;
     }
     if (e.slug === "decisions") {
       decisionsIndex = { slug: e.slug, title: e.title };
       continue;
     }
-    const rest = e.slug.slice("decisions/".length);
+    const rest = e.slug.slice(DECISIONS_PREFIX.length);
     const cat = rest.includes("/") ? rest.slice(0, rest.indexOf("/")) : rest;
     if (!catMap.has(cat)) catMap.set(cat, []);
     catMap.get(cat).push({ slug: e.slug, title: e.title });
@@ -192,7 +217,7 @@ export function buildSidebar(manifest) {
     name,
     items,
   }));
-  return { reference, decisions: { index: decisionsIndex, categories } };
+  return { projects, decisions: { index: decisionsIndex, categories } };
 }
 
 // SEO meta for a doc page: title + a description from the first prose paragraph.

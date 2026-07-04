@@ -3,8 +3,9 @@
   import DocsSearch from "./DocsSearch.svelte";
 
   /**
+   * @typedef {{name:string, title:string, slug:string|null, children:ProjectNode[]}} ProjectNode
    * @type {{
-   *   sidebar: { reference: {slug:string,title:string}[], decisions: { index: {slug:string,title:string}|null, categories: {name:string, items:{slug:string,title:string}[]}[] } },
+   *   sidebar: { projects: ProjectNode[], decisions: { index: {slug:string,title:string}|null, categories: {name:string, items:{slug:string,title:string}[]}[] } },
    *   toc?: { depth:number, text:string, id:string }[],
    *   activeSlug?: string,
    *   children: import('svelte').Snippet,
@@ -14,20 +15,28 @@
 
   const hasToc = $derived(Array.isArray(toc) && toc.length > 0);
 
-  // Top-nav active state, mirroring the old VitePress nav: ADRs lights up on any
-  // decisions page, Architecture on any other (reference) doc. The /docs index
-  // (empty slug) leaves both inactive.
+  // Top-nav active state, mirroring the old VitePress nav: ADRs lights up on
+  // any decisions page, Projects on any other doc. The /docs index (empty
+  // slug) leaves both inactive.
   const onDecisions = $derived(activeSlug.startsWith("decisions"));
-  const onReference = $derived(activeSlug !== "" && !onDecisions);
+  const onProjects = $derived(activeSlug !== "" && !onDecisions);
+
+  /** @param {ProjectNode[]} nodes @param {string|null} topName @returns {{slug:string,title:string,group:string}[]} */
+  function flattenProjects(nodes, topName) {
+    const out = [];
+    for (const node of nodes) {
+      const top = topName ?? node.name;
+      if (node.slug) out.push({ slug: node.slug, title: node.title, group: top });
+      if (node.children.length) out.push(...flattenProjects(node.children, top));
+    }
+    return out;
+  }
 
   // Flat doc list for search: titles/slugs only (already client-safe), tagged
-  // with their sidebar group so results can show where each doc lives.
+  // with their sidebar group so results can show where each doc lives. Project
+  // docs are tagged with their top-level project name (e.g. "firecracker").
   const allDocs = $derived([
-    ...sidebar.reference.map((d) => ({
-      slug: d.slug,
-      title: d.title,
-      group: "Reference",
-    })),
+    ...flattenProjects(sidebar.projects, null),
     ...(sidebar.decisions.index
       ? [
           {
@@ -55,7 +64,85 @@
   function toggleCat(name) {
     openCats = { ...openCats, [name]: !openCats[name] };
   }
+
+  // Same accordion idea for the nested project tree, but keyed by the full
+  // dotted path (e.g. "firecracker/goosecracker") since groups can nest to
+  // arbitrary depth. Every ancestor of the active doc starts expanded.
+  const PROJECTS_PREFIX = "projects/";
+  /** @type {Record<string, boolean>} */
+  const initialOpenProjects = {};
+  if (activeSlug.startsWith(PROJECTS_PREFIX)) {
+    const parts = activeSlug.slice(PROJECTS_PREFIX.length).split("/");
+    let acc = "";
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      initialOpenProjects[acc] = true;
+    }
+  }
+  let openProjects = $state(initialOpenProjects);
+
+  /** @param {string} path */
+  function toggleProject(path) {
+    openProjects = { ...openProjects, [path]: !openProjects[path] };
+  }
 </script>
+
+{#snippet projectTree(nodes, path)}
+  <ul class="side-list">
+    {#each nodes as node}
+      {@const nodePath = path ? `${path}/${node.name}` : node.name}
+      {#if node.children.length}
+        <li class="side-group">
+          <div class="side-group-row">
+            <button
+              type="button"
+              class="side-group-toggle"
+              aria-expanded={!!openProjects[nodePath]}
+              onclick={() => toggleProject(nodePath)}
+            >
+              <svg
+                class="side-cat-chevron"
+                class:open={openProjects[nodePath]}
+                width="9"
+                height="9"
+                viewBox="0 0 10 10"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 1 L7 5 L3 9"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="square"
+                />
+              </svg>
+            </button>
+            {#if node.slug}
+              <a
+                class="side-group-link"
+                class:active={activeSlug === node.slug}
+                href={`/docs/${node.slug}`}>{node.title}</a
+              >
+            {:else}
+              <span class="side-group-name">{node.title}</span>
+            {/if}
+          </div>
+          {#if openProjects[nodePath]}
+            {@render projectTree(node.children, nodePath)}
+          {/if}
+        </li>
+      {:else}
+        <li>
+          <a
+            class="side-link"
+            class:active={activeSlug === node.slug}
+            href={`/docs/${node.slug}`}>{node.title}</a
+          >
+        </li>
+      {/if}
+    {/each}
+  </ul>
+{/snippet}
 
 <header class="docs-topbar">
   <div class="docs-topbar-inner">
@@ -68,10 +155,8 @@
       <DocsSearch docs={allDocs} />
 
       <nav class="docs-topnav" aria-label="Documentation sections">
-        <a
-          class="docs-topnav-link"
-          class:active={onReference}
-          href="/docs/services">Architecture</a
+        <a class="docs-topnav-link" class:active={onProjects} href="/docs"
+          >Projects</a
         >
         <a
           class="docs-topnav-link"
@@ -92,18 +177,8 @@
 <div class="docs-layout" class:has-toc={hasToc}>
   <aside class="docs-side">
     <nav class="side-nav mono" aria-label="Documentation">
-      <p class="side-head">Reference</p>
-      <ul class="side-list">
-        {#each sidebar.reference as item}
-          <li>
-            <a
-              class="side-link"
-              class:active={activeSlug === item.slug}
-              href={`/docs/${item.slug}`}>{item.title}</a
-            >
-          </li>
-        {/each}
-      </ul>
+      <p class="side-head">Projects</p>
+      {@render projectTree(sidebar.projects, "")}
 
       <p class="side-head">Decisions</p>
       <ul class="side-list">
@@ -436,6 +511,69 @@
     border-color: var(--ink);
     background: var(--accent);
     font-weight: 600;
+  }
+
+  /* ── Collapsible project group (nests to arbitrary depth) ── */
+  .side-group-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 6px 0 2px;
+  }
+
+  .side-group-toggle {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    padding: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--ink-3);
+    transition: color 120ms ease;
+  }
+
+  .side-group-toggle:hover {
+    color: var(--ink);
+  }
+
+  .side-group-link,
+  .side-group-name {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  .side-group-name {
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+  }
+
+  .side-group-link {
+    color: var(--ink-2);
+    text-decoration: none;
+    padding: 3px 6px;
+    border: 2px solid transparent;
+    transition:
+      border-color 120ms ease,
+      background 120ms ease;
+  }
+
+  .side-group-link:hover {
+    border-color: var(--ink);
+    background: var(--bg-elev);
+  }
+
+  .side-group-link.active {
+    border-color: var(--ink);
+    background: var(--accent);
+  }
+
+  .side-group .side-list {
+    padding-left: 14px;
   }
 
   /* ── Main content card ───────────────────────────────────── */

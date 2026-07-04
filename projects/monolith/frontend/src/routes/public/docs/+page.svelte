@@ -12,19 +12,24 @@
     <p class="eyebrow">Homelab</p>
     <h1>Documentation</h1>
     <p class="lede">
-      Reference docs and architecture decision records for the secure Kubernetes
-      homelab: how the platform is built, why the decisions were made, and how
-      the services fit together. Rendered straight from the repository.
+      Project READMEs and architecture decision records for the secure
+      Kubernetes homelab: how the platform is built, why the decisions were
+      made, and how the services fit together. Rendered straight from the
+      repository.
     </p>
   </header>
 
   <section class="docs-overview">
     <div class="ov-group">
-      <h2>Reference</h2>
+      <h2>Projects</h2>
       <ul class="ov-grid">
-        {#each data.sidebar.reference as item}
+        {#each data.sidebar.projects as node}
           <li>
-            <a class="ov-card" href={`/docs/${item.slug}`}>{item.title}</a>
+            {#if node.slug}
+              <a class="ov-card" href={`/docs/${node.slug}`}>{node.title}</a>
+            {:else}
+              <span class="ov-card ov-card-group">{node.title}</span>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -119,6 +124,14 @@
     transform: translate(-2px, -2px);
     box-shadow: var(--shadow-hard);
     background: var(--accent);
+  }
+
+  /* A group directory with no README of its own: not a link, so no hover
+     lift, and a dashed border marks it as a pure grouping node. */
+  .ov-card-group {
+    border-style: dashed;
+    box-shadow: none;
+    color: var(--ink-2);
   }
 
   .ov-note {

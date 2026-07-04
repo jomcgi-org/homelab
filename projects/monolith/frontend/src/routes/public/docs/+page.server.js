@@ -8,7 +8,7 @@ export function load({ setHeaders }) {
     meta: {
       title: "Documentation",
       description:
-        "Reference documentation and architecture decision records for the homelab platform.",
+        "Project READMEs and architecture decision records for the homelab platform.",
     },
   };
 }
