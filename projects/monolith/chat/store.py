@@ -205,6 +205,40 @@ class MessageStore:
         messages.reverse()
         return messages
 
+    def fetch_window(
+        self,
+        channel_id: str,
+        *,
+        max_messages: int = 300,
+        max_chars: int = 30_000,
+    ) -> list[Message]:
+        """Return a bounded chronological (oldest first) window for one channel.
+
+        Feeds summarization tools that need honest caps: walks newest-first,
+        stopping at whichever cap (message count or cumulative content chars)
+        is hit first, then reverses to chronological order. The newest message
+        is always kept even if its content alone exceeds max_chars, so a
+        non-empty channel never yields an empty window.
+        """
+        stmt = (
+            select(Message)
+            .where(Message.channel_id == channel_id)
+            .order_by(Message.created_at.desc())
+            .limit(max_messages)
+        )
+        newest_first = list(self.session.exec(stmt).all())
+
+        window: list[Message] = []
+        total_chars = 0
+        for msg in newest_first:
+            total_chars += len(msg.content)
+            if total_chars > max_chars and window:
+                break
+            window.append(msg)
+
+        window.reverse()
+        return window
+
     def search_similar(
         self,
         channel_id: str,
