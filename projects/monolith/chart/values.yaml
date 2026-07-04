@@ -628,6 +628,12 @@ grimoire:
   # Unset here so the code default (25) applies; set to tune without a code
   # change.
   extractLimit: ""
+  # extractConcurrency: optional cap on concurrent extract calls to the vLLM
+  # server (lets it continuous-batch instead of running batch size 1). Unset
+  # here so the code default (6) applies; keep it below vLLM --max-num-seqs (8)
+  # so this bulk job leaves decode-slot headroom for trusted interactive
+  # callers. Set to tune without a code change.
+  extractConcurrency: ""
 
 # ADR 036 orchestrator brief compiler: a host-side OpenRouter call that routes
 # chat vs goose and compiles a grounded task brief for escalations. Disabled

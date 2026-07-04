@@ -104,6 +104,75 @@ def _run(coro):
 # --- extract_chunks --------------------------------------------------------
 
 
+def test_extract_chunks_multiple_groups_all_marked(session: Session):
+    """concurrency < chunk count runs several groups; every chunk is marked."""
+    contents = [f"Chunk {i}: a goblin lurks." for i in range(5)]
+    chunks = [
+        _make_chunk(session, "mm", f"mm-{i:03d}", content)
+        for i, content in enumerate(contents)
+    ]
+    responses = {
+        content: {
+            "entities": [
+                {"entity_type": "creature", "name": f"Goblin {i}", "summary": "Small."}
+            ],
+            "mentions": [],
+            "relationships": [],
+        }
+        for i, content in enumerate(contents)
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    # 5 chunks at concurrency=2 -> groups [2, 2, 1].
+    summary = _run(
+        extract_chunks(session, or_client, embed_client, limit=25, concurrency=2)
+    )
+
+    assert summary["chunks_processed"] == 5
+    assert summary["chunks_failed"] == 0
+    assert summary["entities_created"] == 5
+    assert summary["entities_embedded"] == 5
+    # Every chunk got a marker (so a rerun would skip all of them).
+    markers = session.execute(select(ChunkExtraction)).scalars().all()
+    assert {m.chunk_id for m in markers} == {c.id for c in chunks}
+    assert len(or_client.calls) == 5
+
+
+def test_extract_chunks_earlier_groups_commit_before_a_later_failure(
+    session: Session,
+):
+    """A hard failure in a later group leaves earlier groups' work committed.
+
+    This is the incremental-commit contract: a run killed/aborted partway
+    through never rolls back the groups it already finished, so reruns resume
+    instead of redoing everything.
+    """
+    good = [_make_chunk(session, "mm", f"mm-{i:03d}", f"Good {i}") for i in range(2)]
+    boom = _make_chunk(session, "mm", "mm-100", "Boom")
+    responses = {
+        "Good 0": {"entities": [], "mentions": [], "relationships": []},
+        "Good 1": {"entities": [], "mentions": [], "relationships": []},
+        # A non-extract-client error (not OpenRouterError/ValueError) must
+        # propagate rather than be swallowed as a failed chunk.
+        "Boom": RuntimeError("unexpected"),
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    # concurrency=1 -> groups [Good 0], [Good 1], [Boom]; the third raises.
+    with pytest.raises(RuntimeError, match="unexpected"):
+        _run(extract_chunks(session, or_client, embed_client, limit=25, concurrency=1))
+
+    # The two good chunks committed before the failing group ran.
+    session.rollback()  # drop the aborted (uncommitted) third group
+    marked = {
+        m.chunk_id for m in session.execute(select(ChunkExtraction)).scalars().all()
+    }
+    assert marked == {good[0].id, good[1].id}
+    assert boom.id not in marked
+
+
 def test_extract_chunks_happy_path(session: Session):
     chunk = _make_chunk(
         session, "mm", "mm-001", "An owlbear stalks the Zhentarim camp."

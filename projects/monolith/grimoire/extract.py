@@ -67,6 +67,15 @@ EXTRACT_CONNECT_TIMEOUT = 5.0
 EXTRACT_READ_TIMEOUT = 120.0  # frontier-model completions are slower than embeds
 
 DEFAULT_LIMIT = 25
+# Concurrent in-flight extract calls. The per-chunk work is GPU inference on
+# the shared vLLM server, and a sequential (one-at-a-time) client starves
+# vLLM's continuous batcher, so the GPU runs at batch size 1 (its worst case).
+# Firing several requests concurrently lets vLLM batch them. Kept BELOW the
+# server's --max-num-seqs (8) so this bulk job leaves decode-slot headroom for
+# latency-sensitive trusted callers (public chat is separately hard-capped at 2
+# by chat_public.limits; Discord / private chat / agents share the rest). It
+# also bounds the group size for the incremental per-group commit below.
+DEFAULT_CONCURRENCY = 6
 ENTITY_TYPES = {"creature", "spell", "location", "npc", "faction", "deity", "item"}
 
 # Mirrors ingest._Embedder: a per-module Protocol so extract.py does not
@@ -681,22 +690,54 @@ def _commit(session: Session) -> None:
     session.commit()
 
 
+async def _embed_new_entities(
+    session: Session,
+    embed_client: _Embedder,
+    newly_created: list[tuple[Entity, str]],
+) -> int:
+    """Embed (name + summary) the entities created in one group, in batches.
+
+    ``upsert_embedding_batch`` commits internally, so calling this while the
+    group's entities/mentions/markers are still pending in the session
+    persists them together with their embeddings in one transaction -- an
+    entity and its vector are never split across a crash.
+    """
+    embedded = 0
+    for start in range(0, len(newly_created), EMBED_BATCH_SIZE):
+        batch = newly_created[start : start + EMBED_BATCH_SIZE]
+        texts = [f"{entity.name}: {summary_text}" for entity, summary_text in batch]
+        vectors = await embed_client.embed_batch(texts)
+        entities_only = [entity for entity, _ in batch]
+        embedded += upsert_embedding_batch(
+            session, embed_client.model, "entity", entities_only, vectors
+        )
+    return embedded
+
+
 async def extract_chunks(
     session: Session,
     or_client: OpenRouterClient,
     embed_client: _Embedder,
     limit: int = DEFAULT_LIMIT,
+    concurrency: int = DEFAULT_CONCURRENCY,
 ) -> dict:
     """Extract entities/mentions/relationships from up to ``limit`` unprocessed chunks.
 
     A chunk is "unprocessed" if it has no ``chunk_extraction`` marker row
-    for this ``(model, prompt_hash)`` key yet (see module docstring). All
-    Session I/O lives in the sync helpers above, called (not awaited)
-    directly from this function's body, mirroring ``ingest.load_chunks``;
-    the ``await`` calls here are only ``or_client.extract`` and
-    ``embed_client.embed_batch``. Newly created entities are embedded (name
-    + summary) in batches after the write loop, reusing
-    ``ingest.upsert_embedding_batch``.
+    for this ``(model, prompt_hash)`` key yet (see module docstring).
+
+    Chunks are processed in groups of ``concurrency``. Within a group the
+    GPU-bound ``or_client.extract`` calls are issued **concurrently**
+    (``asyncio.gather``) so the vLLM server continuous-batches them instead
+    of running at batch size 1; the network fan-out is the only concurrent
+    step. All Session I/O then runs **serially** over the group's results
+    (the sync helpers here are not safe to share across tasks, and entity
+    name-dedup reads-then-writes), then the group is committed. This
+    per-group commit is incremental durability: a job killed at its deadline
+    loses at most the in-flight group, not the whole run (every completed
+    group already committed and is skipped on the next run). Each group's new
+    entities are embedded before its commit so entity + vector persist
+    together.
 
     Returns
     ``{"chunks_processed", "chunks_failed", "entities_created",
@@ -706,6 +747,7 @@ async def extract_chunks(
     model = or_client.model
     prompt_hash = _prompt_hash()
     chunks = _select_pending_chunks(session, model, prompt_hash, limit)
+    group_size = max(1, concurrency)
 
     summary = {
         "chunks_processed": 0,
@@ -716,76 +758,89 @@ async def extract_chunks(
         "relationships_created": 0,
         "entities_embedded": 0,
     }
-    # (entity, embed_text) for entities created this run; captured here
-    # rather than read back from Entity (which has no summary column) since
-    # the summary only exists transiently in the extraction payload.
-    newly_created: list[tuple[Entity, str]] = []
 
-    for chunk in chunks:
-        try:
-            extraction = await or_client.extract(chunk.content)
-        except (OpenRouterError, ValueError) as exc:
-            logger.warning(
-                "grimoire extract: chunk %s failed extraction: %s", chunk.id, exc
-            )
-            summary["chunks_failed"] += 1
-            continue
-
-        entities = extraction.get("entities")
-        mentions = extraction.get("mentions")
-        relationships = extraction.get("relationships")
-        if (
-            not isinstance(entities, list)
-            or not isinstance(mentions, list)
-            or not isinstance(relationships, list)
-        ):
-            logger.warning(
-                "grimoire extract: chunk %s extraction shape invalid", chunk.id
-            )
-            summary["chunks_failed"] += 1
-            continue
-
-        counts = _apply_extraction(
-            session,
-            chunk,
-            {
-                "entities": entities,
-                "mentions": mentions,
-                "relationships": relationships,
-            },
-            newly_created,
+    for group_start in range(0, len(chunks), group_size):
+        group = chunks[group_start : group_start + group_size]
+        # Concurrent network fan-out: overlap the extract calls so vLLM
+        # batches them. No Session is touched here. return_exceptions keeps
+        # one chunk's failure from cancelling its siblings' in-flight calls.
+        extractions = await asyncio.gather(
+            *(or_client.extract(chunk.content) for chunk in group),
+            return_exceptions=True,
         )
-        for key, value in counts.items():
-            summary[key] += value
-        summary["chunks_processed"] += 1
 
-        status = (
-            "ok"
-            if counts["entities_created"]
-            or counts["entities_reused"]
-            or counts["mentions_created"]
-            else "empty"
-        )
-        with session.begin_nested():
-            session.add(
-                ChunkExtraction(
-                    chunk_id=chunk.id,
-                    model=model,
-                    prompt_hash=prompt_hash,
-                    status=status,
+        # (entity, embed_text) for entities created in THIS group; captured
+        # here rather than read back from Entity (which has no summary
+        # column) since the summary only exists transiently in the payload.
+        newly_created: list[tuple[Entity, str]] = []
+
+        for chunk, extraction in zip(group, extractions):
+            if isinstance(extraction, Exception):
+                if isinstance(extraction, (OpenRouterError, ValueError)):
+                    logger.warning(
+                        "grimoire extract: chunk %s failed extraction: %s",
+                        chunk.id,
+                        extraction,
+                    )
+                    summary["chunks_failed"] += 1
+                    continue
+                # Unexpected error (not the extract client's own failure
+                # modes): surface it rather than silently marking the chunk
+                # failed. Prior groups are already committed.
+                raise extraction
+
+            entities = extraction.get("entities")
+            mentions = extraction.get("mentions")
+            relationships = extraction.get("relationships")
+            if (
+                not isinstance(entities, list)
+                or not isinstance(mentions, list)
+                or not isinstance(relationships, list)
+            ):
+                logger.warning(
+                    "grimoire extract: chunk %s extraction shape invalid", chunk.id
                 )
+                summary["chunks_failed"] += 1
+                continue
+
+            counts = _apply_extraction(
+                session,
+                chunk,
+                {
+                    "entities": entities,
+                    "mentions": mentions,
+                    "relationships": relationships,
+                },
+                newly_created,
             )
+            for key, value in counts.items():
+                summary[key] += value
+            summary["chunks_processed"] += 1
 
-    _commit(session)
+            status = (
+                "ok"
+                if counts["entities_created"]
+                or counts["entities_reused"]
+                or counts["mentions_created"]
+                else "empty"
+            )
+            with session.begin_nested():
+                session.add(
+                    ChunkExtraction(
+                        chunk_id=chunk.id,
+                        model=model,
+                        prompt_hash=prompt_hash,
+                        status=status,
+                    )
+                )
 
-    for start in range(0, len(newly_created), EMBED_BATCH_SIZE):
-        batch = newly_created[start : start + EMBED_BATCH_SIZE]
-        texts = [f"{entity.name}: {summary_text}" for entity, summary_text in batch]
-        vectors = await embed_client.embed_batch(texts)
-        entities_only = [entity for entity, _ in batch]
-        summary["entities_embedded"] += upsert_embedding_batch(
-            session, embed_client.model, "entity", entities_only, vectors
+        # Embed this group's new entities (commits entities + vectors
+        # together), then a final commit ensures the group's markers/mentions
+        # are durable even when it created no new entities.
+        summary["entities_embedded"] += await _embed_new_entities(
+            session, embed_client, newly_created
         )
+        _commit(session)
 
     logger.info("grimoire extract: %s", summary)
     return summary

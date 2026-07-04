@@ -93,8 +93,9 @@ chatPublic:
   sessionTtlSeconds: 1800
   # CLUSTER-WIDE ceiling: max in-flight public inference calls at once across ALL
   # replicas (ADR 005 layer 2+3). Enforced via Postgres advisory locks, not a
-  # per-pod counter, so it holds as the backend scales out. vLLM max_num_seqs=3,
-  # reserve 1 slot for trusted callers, so public = 2. Mirrored as
+  # per-pod counter, so it holds as the backend scales out. vLLM max_num_seqs=8,
+  # public is capped here at 2, leaving the rest for trusted callers (grimoire
+  # extraction, Discord, private chat, agents). Mirrored as
   # CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT on web.env below.
   globalMaxConcurrent: 2
   # Turnstile siteverify HTTP timeout (seconds): keep short so a slow/unreachable
@@ -233,8 +234,8 @@ web:
       value: "1800"
     # CLUSTER-WIDE cap on concurrent public inference calls (not per-pod): the
     # limiter is enforced via Postgres advisory locks, so this is the aggregate
-    # ceiling across ALL replicas. vLLM max_num_seqs=3, reserve 1 slot for
-    # trusted callers (Discord / private chat / agents), so public = 2.
+    # ceiling across ALL replicas. vLLM max_num_seqs=8; public is capped at 2,
+    # leaving the rest for trusted callers (grimoire, Discord, private, agents).
     - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
       value: "2"
     # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / Phase 3).

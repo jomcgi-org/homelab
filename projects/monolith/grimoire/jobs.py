@@ -31,6 +31,10 @@ logger = logging.getLogger("monolith.grimoire.jobs")
 
 DEFAULT_BUCKET = "grimoire"
 DEFAULT_EXTRACT_LIMIT = 25
+# Concurrent extract calls; kept below vLLM --max-num-seqs (8) so this bulk job
+# leaves decode-slot headroom for trusted interactive callers. See
+# grimoire.extract.DEFAULT_CONCURRENCY.
+DEFAULT_EXTRACT_CONCURRENCY = 6
 
 
 def _embedding_client():
@@ -56,6 +60,30 @@ def _extract_limit() -> int:
             DEFAULT_EXTRACT_LIMIT,
         )
         return DEFAULT_EXTRACT_LIMIT
+
+
+def _extract_concurrency() -> int:
+    """Read GRIMOIRE_EXTRACT_CONCURRENCY (concurrent vLLM extract calls).
+
+    Falls back to the default on a bad or non-positive value; keep it <= the
+    vLLM server's --max-num-seqs so requests batch rather than queue.
+    """
+    raw = os.environ.get(
+        "GRIMOIRE_EXTRACT_CONCURRENCY", str(DEFAULT_EXTRACT_CONCURRENCY)
+    )
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        logger.warning(
+            "grimoire_extract_entities: invalid GRIMOIRE_EXTRACT_CONCURRENCY %r, "
+            "using %d",
+            raw,
+            DEFAULT_EXTRACT_CONCURRENCY,
+        )
+        return DEFAULT_EXTRACT_CONCURRENCY
+    return value
 
 
 async def grimoire_load_chunks(session: Session) -> None:
@@ -101,8 +129,11 @@ async def grimoire_extract_entities(session: Session) -> None:
         return None
 
     limit = _extract_limit()
+    concurrency = _extract_concurrency()
     or_client = OpenRouterClient(api_key=api_key)  # base_url/model read from env
     embed_client = _embedding_client()
-    summary = await extract_chunks(session, or_client, embed_client, limit=limit)
+    summary = await extract_chunks(
+        session, or_client, embed_client, limit=limit, concurrency=concurrency
+    )
     logger.info("grimoire_extract_entities done: %s", summary)
     return None
