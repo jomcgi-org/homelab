@@ -26,7 +26,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <section class="stack" id="homelab" aria-label="What this homelab runs">
-  <p class="eyebrow">The stack, top to bottom. Click a project.</p>
+  <p class="eyebrow">The stack, top to bottom. Click a system.</p>
   <h2>WHAT RUNS HERE</h2>
 
   <div class="strata">
@@ -39,7 +39,8 @@
               <StackProjectCard
                 {project}
                 expanded={selected === project.id}
-                onselect={() => setSelected(selected === project.id ? null : project.id)}
+                onselect={() =>
+                  setSelected(selected === project.id ? null : project.id)}
               />
             {/each}
           </div>
@@ -48,7 +49,7 @@
             {#each layer.items as item}
               <li>
                 {#if item.href}
-                  <a href={item.href} target="_blank" rel="noopener">{item.name}</a>
+                  <a href={item.href}>{item.name}</a>
                 {:else}
                   <span>{item.name}</span>
                 {/if}
@@ -75,12 +76,10 @@
   }
   .strata {
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard);
     background: var(--paper);
   }
   .layer {
-    position: relative;
-    padding: 28px 24px 20px;
+    padding: 20px 24px;
     border-top: 2px dashed var(--rule-2);
   }
   .layer:first-child {
@@ -89,39 +88,29 @@
   .layer.alt {
     background: var(--cream);
   }
-  .layer-label {
-    position: absolute;
-    top: -1px;
-    left: 16px;
-    transform: translateY(-50%);
-    font-family: var(--mono);
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    background: var(--paper);
-    border: 1px dashed var(--rule-2);
-    padding: 2px 8px;
+  .layer[data-kind="projects"] {
+    padding: 20px 24px 28px;
   }
-  .layer:first-child .layer-label {
-    top: 0;
-    transform: none;
-    border: none;
-    padding-left: 0;
-    position: static;
+  .layer-label {
     display: block;
-    margin-bottom: 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 14px;
   }
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: 16px;
     align-items: start;
   }
   .strip {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px 12px;
+    gap: 8px 10px;
     list-style: none;
     margin: 0;
     padding: 0;
@@ -132,15 +121,27 @@
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--ink-2);
     text-decoration: none;
-    border: 1px solid var(--rule);
-    background: var(--paper);
-    padding: 4px 10px;
+    padding: 5px 12px;
     display: inline-block;
   }
-  .strip li a:hover {
+  .strip li span {
+    color: var(--ink-2);
+    border: 1px solid var(--rule);
+    background: var(--paper);
+  }
+  .strip li a {
+    font-weight: 700;
     color: var(--ink);
-    border-color: var(--ink);
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    transition:
+      transform 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .strip li a:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: var(--shadow-hard-sm);
+    background: var(--accent);
   }
 </style>

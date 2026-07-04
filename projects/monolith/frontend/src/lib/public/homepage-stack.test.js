@@ -1,40 +1,57 @@
 import { describe, it, expect } from "vitest";
-import { stack } from "./homepage-stack.js";
+import { stack, LINK_LABELS } from "./homepage-stack.js";
 
-const projects = stack
+const systems = stack
   .filter((l) => l.kind === "projects")
   .flatMap((l) => l.items);
 
 describe("homepage stack config", () => {
-  it("has the four strata in order", () => {
+  it("has the five strata in order", () => {
     expect(stack.map((l) => l.id)).toEqual([
       "apps",
+      "systems",
       "platform",
       "compute",
       "metal",
     ]);
   });
 
-  it("has unique project ids", () => {
-    const ids = projects.map((p) => p.id);
+  it("has unique system ids", () => {
+    const ids = systems.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("every project has the required story fields", () => {
-    for (const p of projects) {
-      expect(p.name, p.id).toBeTruthy();
-      expect(p.blurb, p.id).toBeTruthy();
-      expect(p.engineering, p.id).toBeTruthy();
-      expect(p.tags?.length, p.id).toBeGreaterThan(0);
-      expect(p.links?.readme, p.id).toMatch(
-        /^https:\/\/github\.com\/jomcgi\/homelab\/tree\/main\//,
-      );
+  it("every system has the required story fields and at least one link", () => {
+    const linkKeys = LINK_LABELS.map(([key]) => key);
+    for (const s of systems) {
+      expect(s.name, s.id).toBeTruthy();
+      expect(s.blurb, s.id).toBeTruthy();
+      expect(s.engineering, s.id).toBeTruthy();
+      expect(s.tags?.length, s.id).toBeGreaterThan(0);
+      const keys = Object.keys(s.links ?? {});
+      expect(keys.length, s.id).toBeGreaterThan(0);
+      for (const k of keys) expect(linkKeys, `${s.id}.${k}`).toContain(k);
     }
   });
 
-  it("live links are same-origin paths", () => {
-    for (const p of projects) {
-      if (p.links.live) expect(p.links.live, p.id).toMatch(/^\//);
+  it("live and docs links are same-origin paths, code links point at the repo", () => {
+    for (const s of systems) {
+      if (s.links.live) expect(s.links.live, s.id).toMatch(/^\//);
+      if (s.links.docs) expect(s.links.docs, s.id).toMatch(/^\/docs/);
+      if (s.links.code) {
+        expect(s.links.code, s.id).toMatch(
+          /^https:\/\/github\.com\/jomcgi\/homelab(\/tree\/main\/.+)?$/,
+        );
+      }
+    }
+  });
+
+  it("apps strip items are all live same-origin links", () => {
+    const apps = stack.find((l) => l.id === "apps");
+    expect(apps.kind).toBe("strip");
+    for (const item of apps.items) {
+      expect(item.name, "apps").toBeTruthy();
+      expect(item.href, item.name).toMatch(/^\//);
     }
   });
 
