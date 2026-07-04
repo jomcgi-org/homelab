@@ -7,7 +7,7 @@
 
 ingest:
   image:
-    tag: sha-139e5c1
+    tag: sha-2acba02
     digest: ""
     pullPolicy: IfNotPresent
   resources:
@@ -19,7 +19,7 @@ ingest:
 
 queryApi:
   image:
-    tag: sha-139e5c1
+    tag: sha-2acba02
     digest: ""
     pullPolicy: IfNotPresent
   resources:
@@ -32,7 +32,7 @@ queryApi:
 # DataFusion serving engine (sidecar in the query-api pod).
 engine:
   image:
-    tag: sha-139e5c1
+    tag: sha-2acba02
     digest: ""
     pullPolicy: IfNotPresent
   resources:
@@ -63,6 +63,12 @@ postgres:
 
 objectStore:
   size: 5Gi
+
+# The UI rides private.jomcgi.dev/app/loom (httproute.yaml strips the prefix
+# before query-api); the SPA needs the prefix on its API calls, mounted as a
+# config.js override by the chart.
+ui:
+  apiBase: /app/loom
 
 # The cluster's Kyverno policy annotates every namespace linkerd.io/inject:
 # enabled, so loom pods are meshed. The chart's default-deny NetworkPolicy
