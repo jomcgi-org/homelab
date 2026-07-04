@@ -19,19 +19,30 @@ def test_derive_title_falls_back_to_basename():
     assert derive_title("no heading", "docs/decisions/agents/001-x.md") == "001-x"
 
 
+def test_derive_title_readme_falls_back_to_parent_dir():
+    assert (
+        derive_title("no heading", "projects/firecracker/goosecracker/README.md")
+        == "goosecracker"
+    )
+
+
 def test_should_index_allowlist():
-    # Included: top-level reference docs and the whole ADR tree (incl. index).
-    assert _should_index("docs/security.md")
-    assert _should_index("docs/event-bus.md")
+    # Included: project READMEs (any depth) and the whole ADR tree (incl. index).
+    assert _should_index("projects/firecracker/README.md")
+    assert _should_index("projects/firecracker/goosecracker/README.md")
     assert _should_index("docs/decisions/index.md")
     assert _should_index("docs/decisions/agents/001-background-agents.md")
     assert _should_index("docs/decisions/docs/002-x.md")
-    # Excluded: plans, nested non-ADR docs, non-docs paths, wrong extension,
-    # the personal blocklist, and the manifest itself.
+    # Excluded: hand-written top-level reference docs, plans, nested non-ADR
+    # docs, non-README project files, vendored README subtrees, wrong
+    # extension, non-docs paths, and the manifest itself.
+    assert not _should_index("docs/security.md")
     assert not _should_index("docs/plans/2026-06-19-x.md")
-    assert not _should_index("docs/WORKING-WITH-JOE.md")
     assert not _should_index("docs/security.txt")
-    assert not _should_index("projects/monolith/README.md")
+    assert not _should_index("projects/monolith/chart/values.yaml")
+    assert not _should_index(
+        "projects/platform/linkerd/charts/linkerd-control-plane/README.md"
+    )
     assert not _should_index("README.md")
     assert not _should_index(
         "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
@@ -39,26 +50,32 @@ def test_should_index_allowlist():
 
 
 def test_make_slug():
-    assert make_slug("docs/security.md") == "security"
     assert make_slug("docs/decisions/index.md") == "decisions"
     assert (
         make_slug("docs/decisions/agents/001-background-agents.md")
         == "decisions/agents/001-background-agents"
     )
+    assert make_slug("projects/firecracker/README.md") == "projects/firecracker"
+    assert (
+        make_slug("projects/firecracker/goosecracker/README.md")
+        == "projects/firecracker/goosecracker"
+    )
 
 
 def test_section_and_category():
-    assert section_for("docs/security.md") == "Reference"
+    assert section_for("projects/firecracker/README.md") == "Projects"
     assert section_for("docs/decisions/agents/001-x.md") == "Decisions"
     assert category_for("docs/decisions/agents/001-x.md") == "agents"
     assert category_for("docs/decisions/index.md") == ""
-    assert category_for("docs/security.md") == ""
+    assert category_for("projects/firecracker/README.md") == ""
 
 
 def test_build_manifest_ordering_and_shape(tmp_path: Path):
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "services.md").write_text("# Services\n\nbody")
-    (tmp_path / "docs" / "agents.md").write_text("# Agents\n\nbody")
+    proj = tmp_path / "projects"
+    (proj / "services").mkdir(parents=True)
+    (proj / "agents").mkdir(parents=True)
+    (proj / "services" / "README.md").write_text("# Services\n\nbody")
+    (proj / "agents" / "README.md").write_text("# Agents\n\nbody")
     dec = tmp_path / "docs" / "decisions"
     (dec / "agents").mkdir(parents=True)
     (dec / "platform").mkdir(parents=True)
@@ -68,8 +85,8 @@ def test_build_manifest_ordering_and_shape(tmp_path: Path):
     (dec / "platform" / "001-p.md").write_text("# P\n\np")
 
     paths = [
-        "docs/services.md",
-        "docs/agents.md",
+        "projects/services/README.md",
+        "projects/agents/README.md",
         "docs/decisions/index.md",
         "docs/decisions/agents/002-b.md",
         "docs/decisions/agents/001-a.md",
@@ -77,11 +94,11 @@ def test_build_manifest_ordering_and_shape(tmp_path: Path):
     ]
     entries = build_manifest(tmp_path, paths)
 
-    # Reference docs (alphabetical) first, then the decisions index, then ADRs
-    # grouped by category (alpha) and ordered by numeric prefix.
+    # Projects (alphabetical by path) first, then the decisions index, then
+    # ADRs grouped by category (alpha) and ordered by numeric prefix.
     assert [e["slug"] for e in entries] == [
-        "agents",
-        "services",
+        "projects/agents",
+        "projects/services",
         "decisions",
         "decisions/agents/001-a",
         "decisions/agents/002-b",
@@ -90,7 +107,7 @@ def test_build_manifest_ordering_and_shape(tmp_path: Path):
     # order is the stable entry index.
     assert [e["order"] for e in entries] == [0, 1, 2, 3, 4, 5]
     # Shape + section grouping.
-    assert entries[0]["section"] == "Reference"
+    assert entries[0]["section"] == "Projects"
     assert entries[2]["section"] == "Decisions"
     assert entries[0]["title"] == "Agents"
     assert entries[0]["content"] == "# Agents\n\nbody"

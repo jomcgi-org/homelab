@@ -1,8 +1,8 @@
 """Generate the public docs manifest baked into the monolith-public frontend.
 
-Globs the public-allowlisted repository docs (top-level ``docs/*.md`` plus the
-ADR tree ``docs/decisions/**/*.md``) via ``git ls-files`` and writes a committed
-JSON manifest with full bodies inline to
+Globs the public-allowlisted repository docs (project READMEs, ``projects/**/
+README.md``, plus the ADR tree ``docs/decisions/**/*.md``) via ``git ls-files``
+and writes a committed JSON manifest with full bodies inline to
 ``projects/monolith/frontend/src/lib/public/docs/docs-manifest.json``. The
 SvelteKit ``/docs`` route imports that manifest SERVER-SIDE (never in a client
 bundle) and renders each doc with ``marked``.
@@ -12,10 +12,15 @@ platforms and Python versions and never picks up untracked files or build
 artifacts under symlinked ``bazel-out/`` dirs.
 
 Security (ADR docs/001): the public docs surface is built from an EXPLICIT
-allowlist, never the RAG ingest (which indexes internal docs). Excluded:
-``docs/plans/**``, anything outside ``docs/``, and a per-file blocklist of
-personal / non-homelab docs. Be conservative: if unsure whether a doc is public,
-it stays off the allowlist.
+allowlist, never the RAG ingest (which indexes internal docs). Both tiers are
+self-maintaining: ADRs are append-only decisions, and READMEs are colocated
+with the code they describe so they get updated by proximity pressure. Hand-
+written top-level ``docs/*.md`` reference docs are no longer published (they
+rot far from the code they describe); they remain internal-only. Excluded:
+``docs/plans/**``, vendored README subtrees (a prefix blocklist, e.g. the
+vendored ``linkerd`` charts), and a per-file blocklist for any README that
+should stay off the public surface. Be conservative: if unsure whether a doc is
+public, it stays off the allowlist.
 
 Regeneration is automatic: the "Format check" CI action (buildbuddy.yaml) runs
 this generator on every push and auto-commits any change to the manifest on PR
@@ -37,15 +42,17 @@ MANIFEST_REL = "projects/monolith/frontend/src/lib/public/docs/docs-manifest.jso
 
 DOCS_PREFIX = "docs/"
 DECISIONS_PREFIX = "docs/decisions/"
+PROJECTS_PREFIX = "projects/"
+README_SUFFIX = "/README.md"
 
-# Per-file blocklist: docs that live under docs/ but must NOT appear on the
-# public docs site. WORKING-WITH-JOE.md is a personal "how to work with me"
-# profile, not homelab reference material, so it is kept off the public surface.
-_BLOCKLIST = frozenset(
-    {
-        "docs/WORKING-WITH-JOE.md",
-    }
-)
+# Vendored subtree prefix blocklist: third-party charts/code we vendor in but
+# did not author, so their READMEs should not appear on the public docs site.
+# Add future vendored trees here.
+_VENDORED_PREFIXES = ("projects/platform/linkerd/charts/",)
+
+# Per-file blocklist: individual README paths that must NOT appear on the
+# public docs site even though they match the allowlist glob.
+_BLOCKLIST: frozenset[str] = frozenset()
 
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _NUM = re.compile(r"^(\d+)")
@@ -56,11 +63,18 @@ def _basename(rel_path: str) -> str:
 
 
 def derive_title(content: str, rel_path: str) -> str:
-    """First H1, falling back to the filename (without the .md suffix)."""
+    """First H1, falling back to the filename (without the .md suffix).
+
+    A README with no H1 falls back to its parent directory name instead of
+    the literal "README", since "README" alone carries no information about
+    which project it is.
+    """
     m = _H1.search(content)
     if m:
         return m.group(1).strip()
     name = _basename(rel_path)
+    if name == "README.md":
+        return rel_path.rsplit("/", 2)[-2]
     return name[:-3] if name.endswith(".md") else name
 
 
@@ -68,10 +82,12 @@ def _should_index(rel_path: str) -> bool:
     """True if a repo-relative path belongs on the public docs site.
 
     Allowlist (conservative):
-      - docs/decisions/**/*.md  (the ADR tree, incl. index.md, any depth)
-      - docs/<name>.md          (top-level reference docs, exactly one level)
-    Everything else (docs/plans/**, nested non-ADR docs, non-docs paths, the
-    per-file blocklist, the manifest itself) is excluded.
+      - docs/decisions/**/*.md   (the ADR tree, incl. index.md, any depth)
+      - projects/**/README.md    (project READMEs, any depth), excluding
+                                  vendored subtrees in _VENDORED_PREFIXES
+    Everything else (docs/plans/**, hand-written docs/*.md reference docs,
+    non-README project files, vendored README subtrees, the per-file
+    blocklist, the manifest itself) is excluded.
     """
     if not rel_path.endswith(".md"):
         return False
@@ -79,31 +95,30 @@ def _should_index(rel_path: str) -> bool:
         return False
     if rel_path.startswith(DECISIONS_PREFIX):
         return True
-    if rel_path.startswith(DOCS_PREFIX):
-        rest = rel_path[len(DOCS_PREFIX) :]
-        # Top-level only: a further slash means a subtree (docs/plans/...) we
-        # do not publish beyond the explicitly-handled decisions/ tree above.
-        return "/" not in rest
+    if rel_path.startswith(PROJECTS_PREFIX) and rel_path.endswith(README_SUFFIX):
+        return not any(rel_path.startswith(p) for p in _VENDORED_PREFIXES)
     return False
 
 
 def make_slug(rel_path: str) -> str:
     """URL path under /docs/ for a repo doc path.
 
-    docs/security.md               -> security
     docs/decisions/agents/001-x.md -> decisions/agents/001-x
-    docs/decisions/index.md        -> decisions   (index collapses to its dir)
+    docs/decisions/index.md        -> decisions            (index collapses)
+    projects/firecracker/README.md -> projects/firecracker  (README collapses)
     """
     s = rel_path[len(DOCS_PREFIX) :] if rel_path.startswith(DOCS_PREFIX) else rel_path
     if s.endswith(".md"):
         s = s[:-3]
     if s.endswith("/index"):
         s = s[: -len("/index")]
+    elif s.endswith("/README"):
+        s = s[: -len("/README")]
     return s
 
 
 def section_for(rel_path: str) -> str:
-    return "Decisions" if rel_path.startswith(DECISIONS_PREFIX) else "Reference"
+    return "Decisions" if rel_path.startswith(DECISIONS_PREFIX) else "Projects"
 
 
 def category_for(rel_path: str) -> str:
@@ -124,10 +139,11 @@ def _numeric_prefix(rel_path: str) -> int:
 def _sort_key(rel_path: str):
     """Deterministic sidebar ordering.
 
-    Reference docs first (alphabetical), then the ADR tree: the decisions index,
-    then each category alphabetically with its ADRs by numeric prefix.
+    Projects (READMEs) first, alphabetical by path, then the ADR tree: the
+    decisions index, then each category alphabetically with its ADRs by
+    numeric prefix.
     """
-    if section_for(rel_path) == "Reference":
+    if section_for(rel_path) == "Projects":
         return (0, "", 0, rel_path)
     cat = category_for(rel_path)
     if cat == "":
