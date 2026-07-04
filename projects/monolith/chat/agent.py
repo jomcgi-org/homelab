@@ -73,6 +73,71 @@ def signposted(text: str):
     return decorator
 
 
+def _parse_due_at(due_at_iso: Any) -> datetime | None:
+    """Parse a tool-supplied ISO 8601 datetime, accepting a trailing "Z" and
+    treating a naive parse as UTC. Returns None instead of raising -- this
+    reads LLM-supplied text (and, in e2e tests, pydantic-ai's TestModel's
+    schema-generated garbage strings), so an unparseable value is an expected
+    input, not a bug."""
+    if not isinstance(due_at_iso, str) or not due_at_iso.strip():
+        return None
+    text = due_at_iso.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _create_reminder_sync(
+    channel_id: str, author_id: str, content: str, due_at: datetime
+) -> tuple[int, datetime] | str:
+    """Open a session, create the reminder, and extract the (id, due_at) the
+    caller needs before the session closes and the ORM instance expires. Runs
+    off the event loop via asyncio.to_thread."""
+    from app.db import get_engine
+    from chat import reminders
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        result = reminders.create_reminder(
+            session, channel_id, author_id, content, due_at
+        )
+        if isinstance(result, str):
+            return result
+        session.commit()
+        return (result.id, result.due_at)
+
+
+def _list_pending_sync(author_id: str) -> list[tuple[int, datetime, str]]:
+    """Open a session, list the author's pending reminders, and extract the
+    fields the caller needs before the session closes."""
+    from app.db import get_engine
+    from chat import reminders
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        rows = reminders.list_pending(session, author_id)
+        return [(row.id, row.due_at, row.content) for row in rows]
+
+
+def _cancel_reminder_sync(author_id: str, reminder_id: int) -> bool:
+    """Open a session and cancel the reminder, committing only on success."""
+    from app.db import get_engine
+    from chat import reminders
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        ok = reminders.cancel_reminder(session, author_id, reminder_id)
+        if ok:
+            session.commit()
+        return ok
+
+
 def _coerce_username(value: Any) -> str | None:
     """Coerce a username value to a string.
 
@@ -146,6 +211,8 @@ def build_system_prompt() -> str:
         "when asked.\n"
         "- Catch someone up on this channel, or pull out the decisions and "
         "action items from it, when asked.\n"
+        "- Set a one-shot reminder for someone in this channel, list what "
+        "they've got pending, or cancel one.\n"
         "- Kick off an agent thread for heavier work, which runs in an "
         "isolated sandbox and reports back in the thread. It can investigate a "
         "repo or the cluster and answer questions about it, turn a request "
@@ -163,6 +230,16 @@ def build_system_prompt() -> str:
         "- Both tools lead with a coverage line stating how many messages "
         "they covered and how far back -- always fold that into your reply "
         "so nobody thinks you saw more of the conversation than you did.\n\n"
+        "REMINDERS:\n"
+        "- When someone asks to be reminded of something, convert what they "
+        "said into an absolute ISO 8601 UTC timestamp (using today's date "
+        "and any timezone clues they gave) and call set_reminder with it.\n"
+        "- Always confirm back the resolved absolute date and time so they "
+        "can catch a misread, and mention it lands in this channel within a "
+        "couple of minutes of falling due.\n"
+        "- Reminders are one-shot, not recurring. Use list_my_reminders when "
+        "someone asks what's queued, and cancel_reminder when they want one "
+        "removed.\n\n"
         "DO:\n"
         "- Answer directly. Lead with the useful answer, not preamble.\n"
         "- Match the vibe of the conversation. Be chill, funny, or serious "
@@ -468,6 +545,86 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
             logger.exception("directives: reset_channel_directive failed")
             return "I couldn't reset the directive right now, try again in a bit."
         return "This channel's directive is back to the default."
+
+    @agent.tool
+    @signposted(
+        "When someone asks you to remind them about something at a specific "
+        "time, or to set or schedule a reminder."
+    )
+    async def set_reminder(
+        ctx: RunContext[ChatDeps], due_at_iso: str, text: str
+    ) -> str:
+        """Schedule a one-shot reminder for the requesting user, delivered to this channel when it comes due. due_at_iso must be an absolute ISO 8601 UTC timestamp, e.g. '2026-07-05T09:00:00Z'."""
+        if not ctx.deps.author_id:
+            return "I can't manage reminders here."
+        due_at = _parse_due_at(due_at_iso)
+        if due_at is None:
+            return (
+                "I couldn't understand that time -- give me an absolute "
+                "date and time, like '2026-07-05T09:00:00Z'."
+            )
+        try:
+            result = await asyncio.to_thread(
+                _create_reminder_sync,
+                ctx.deps.channel_id,
+                ctx.deps.author_id,
+                text,
+                due_at,
+            )
+        except Exception:
+            logger.exception("set_reminder: create_reminder failed")
+            return "I couldn't set that reminder right now, try again in a bit."
+        if isinstance(result, str):
+            return result
+        reminder_id, resolved_due_at = result
+        return (
+            f"Reminder #{reminder_id} set for "
+            f"{resolved_due_at.strftime('%Y-%m-%d %H:%M')} UTC."
+        )
+
+    @agent.tool
+    @signposted(
+        "When someone asks what reminders they have pending, or wants to "
+        "check what's still queued up for them."
+    )
+    async def list_my_reminders(ctx: RunContext[ChatDeps]) -> str:
+        """List the requesting user's pending reminders."""
+        if not ctx.deps.author_id:
+            return "I can't manage reminders here."
+        try:
+            rows = await asyncio.to_thread(_list_pending_sync, ctx.deps.author_id)
+        except Exception:
+            logger.exception("list_my_reminders: list_pending failed")
+            return "I couldn't check your reminders right now, try again in a bit."
+        if not rows:
+            return "You have no pending reminders."
+        lines = ["Your pending reminders:"]
+        for reminder_id, due_at, content in rows:
+            lines.append(
+                f"- #{reminder_id} {due_at.strftime('%Y-%m-%d %H:%M')} UTC: {content}"
+            )
+        return "\n".join(lines)
+
+    @agent.tool
+    @signposted(
+        "When someone wants to cancel, remove, or delete a reminder they set earlier."
+    )
+    async def cancel_reminder(ctx: RunContext[ChatDeps], reminder_id: int) -> str:
+        """Cancel one of the requesting user's still-pending reminders by id."""
+        if not ctx.deps.author_id:
+            return "I can't manage reminders here."
+        try:
+            rid = int(reminder_id)
+        except (TypeError, ValueError):
+            return "That doesn't look like a valid reminder id."
+        try:
+            ok = await asyncio.to_thread(_cancel_reminder_sync, ctx.deps.author_id, rid)
+        except Exception:
+            logger.exception("cancel_reminder: cancel_reminder failed")
+            return "I couldn't cancel that reminder right now, try again in a bit."
+        if not ok:
+            return f"No pending reminder #{rid} found for you."
+        return f"Reminder #{rid} cancelled."
 
     return agent
 
