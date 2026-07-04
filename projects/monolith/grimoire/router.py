@@ -268,6 +268,24 @@ def update_grant(
     return grant
 
 
+@router.delete("/campaigns/{campaign_id}/grants/{grant_id}", status_code=204)
+def delete_grant(
+    campaign_id: str,
+    grant_id: str,
+    session: Session = Depends(get_session),
+) -> None:
+    """Revoke a grant (the grant editor's "none" scope). Idempotent-ish: a
+    missing grant is a 404, matching update_grant's not-found semantics. Removing
+    a grant on a non-global entity returns it to invisible for that character;
+    on a global entity it drops the character back to the default full view."""
+    _get_campaign_or_404(session, campaign_id)
+    grant = session.get(KnowledgeGrant, grant_id)
+    if grant is None or grant.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="grant not found")
+    session.delete(grant)
+    session.commit()
+
+
 # --- Entities (grant-filtered read paths) --------------------------------
 
 # All read paths below build on visible_entities_query()/project_entity()

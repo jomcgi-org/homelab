@@ -1,0 +1,106 @@
+/* Grimoire visual identity, layered over the shared monolith tokens and scoped
+ * to the .grimoire route tree (never forks the token system). An arcane ledger,
+ * not a terminal: keep --font-mono for chrome (labels, nav, badges), add a
+ * serif display face for names and titles, swap the blue accent for oxblood,
+ * and tint the reading pane like paper.
+ *
+ * The display face is a system serif stack (Iowan / Palatino / Georgia) rather
+ * than a self-hosted woff2: it ships no binary, needs no font-loading gotcha,
+ * and every listed family supports the small-caps + old-style figures the stat
+ * blocks want. Swapping in a licensed self-hosted serif later is a drop-in
+ * change to --grim-serif.
+ */
+
+.grimoire {
+  /* Oxblood / madder red, inherited from the Monster Manual stat-block heritage.
+   * Overriding --accent here recolors every descendant that reads it (links,
+   * active states) without touching the global token. */
+  --grim-accent: #7c2b2b;
+  --grim-accent-strong: #5c1d1d;
+  --accent: var(--grim-accent);
+
+  --grim-serif:
+    "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
+    "Times New Roman", serif;
+
+  /* Paper: a warm near-white for reading surfaces only (the reader + stat
+   * block), never the whole chrome. */
+  --grim-paper: #faf6ee;
+  --grim-paper-line: #e6ddca;
+  --grim-ink: #241c15;
+  --grim-ink-soft: #5b4f42;
+}
+
+body.dark .grimoire {
+  --grim-accent: #c56d6d;
+  --grim-accent-strong: #d98a8a;
+  --grim-paper: #17130f;
+  --grim-paper-line: #322920;
+  --grim-ink: #ece3d4;
+  --grim-ink-soft: #b3a793;
+}
+
+/* ── Display type ─────────────────────────────────────────── */
+
+.grim-title {
+  font-family: var(--grim-serif);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+}
+
+.grim-smallcaps {
+  font-family: var(--grim-serif);
+  font-variant: small-caps;
+  letter-spacing: 0.06em;
+}
+
+/* ── Tapered rule divider (stat-block flourish) ───────────── */
+
+.grim-rule {
+  height: 3px;
+  border: 0;
+  margin: 0.5rem 0;
+  background: var(--grim-accent);
+  /* Taper the ends so it reads as an engraved rule, not a plain border. */
+  clip-path: polygon(0 45%, 100% 0, 100% 100%, 0 55%);
+}
+
+/* ── Paper reading surface ────────────────────────────────── */
+
+.grim-paper {
+  background: var(--grim-paper);
+  color: var(--grim-ink);
+}
+
+/* ── Motion: transform/opacity only, and only when motion is allowed ─── */
+
+@media (prefers-reduced-motion: no-preference) {
+  .grim-stagger > * {
+    opacity: 0;
+    transform: translateY(4px);
+    animation: grim-rise 0.32s ease-out forwards;
+  }
+  .grim-stagger > *:nth-child(1) {
+    animation-delay: 0.02s;
+  }
+  .grim-stagger > *:nth-child(2) {
+    animation-delay: 0.06s;
+  }
+  .grim-stagger > *:nth-child(3) {
+    animation-delay: 0.1s;
+  }
+  .grim-stagger > *:nth-child(4) {
+    animation-delay: 0.14s;
+  }
+  .grim-stagger > *:nth-child(n + 5) {
+    animation-delay: 0.18s;
+  }
+}
+
+@keyframes grim-rise {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
