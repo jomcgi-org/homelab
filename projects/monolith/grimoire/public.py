@@ -4,11 +4,18 @@ The private read paths (router.py, library.py) all take a campaign + viewer
 and route every visibility decision through visibility.visible_entities_query()
 / project_entity(), because a campaign's DM can scope a non-global entity down
 to "partial" or "name_only" per player character. The public tier has no
-campaign, no viewer, and no grants at all: every entity and every chunk is a
-single global view, so these functions skip the grant join entirely rather
-than calling visible_entities_query() with a synthetic "everything is global"
-viewer. This module is the only place that assumption lives, so a future
-private-tier visibility change cannot silently leak into (or break) the
+campaign, no viewer, and no grants at all, so these functions skip the grant
+join entirely rather than calling visible_entities_query() with a synthetic
+"everything is global" viewer.
+
+Skipping grants is NOT the same as exposing everything: the entity table mixes
+the shared corpus (is_global = true) with campaign-private entities (is_global
+= false, created in a session). The private tier gates those with
+``is_global OR a grant exists``; the public tier has no grants, so every entity
+query here filters to ``is_global`` and never returns a campaign-private
+entity. Chunks, mentions, and relationships are likewise projected only through
+is_global entities. This module is the only place that assumption lives, so a
+future private-tier visibility change cannot silently leak into (or break) the
 public surface.
 
 Every function here is a plain sync helper over a Session (no FastAPI, no
@@ -20,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from grimoire.library import _iso, _PREVIEW_LEN
@@ -40,6 +47,25 @@ from grimoire.visibility import _flatten_detail, _SPINE_FIELDS
 # entity list's bounds (router.list_entities's Query(..., ge=1, le=500)).
 DEFAULT_ENTITY_PAGE = 100
 MAX_ENTITY_PAGE = 500
+
+# Public entity spine: the full spine minus created_in_session, a private
+# game-session UUID that must never reach a public payload (the corpus is public,
+# the session that created a homebrew entity is not).
+_PUBLIC_SPINE_FIELDS = tuple(f for f in _SPINE_FIELDS if f != "created_in_session")
+
+# Keyset cursor packs (name, id) so a page boundary landing inside a run of
+# duplicate names (common in a D&D corpus) does not skip the remaining
+# same-named rows. The unit separator never appears in a name or a uuid.
+_CURSOR_SEP = "\x1f"
+
+
+def _encode_cursor(entity: Entity) -> str:
+    return f"{entity.name}{_CURSOR_SEP}{entity.id}"
+
+
+def _decode_cursor(cursor: str) -> tuple[str, str]:
+    name, _, ident = cursor.partition(_CURSOR_SEP)
+    return name, ident
 
 
 def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
@@ -82,7 +108,7 @@ def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
             Entity.id, Entity.name, Entity.entity_type, ChunkEntityMention.mention_text
         )
         .join(ChunkEntityMention, ChunkEntityMention.entity_id == Entity.id)
-        .where(ChunkEntityMention.chunk_id == chunk_id)
+        .where(ChunkEntityMention.chunk_id == chunk_id, Entity.is_global)
         .order_by(Entity.name)
     ).all()
     entities = [
@@ -145,20 +171,28 @@ def list_entities_public(
     Keyset-paginated on name (unlike the private list's in-Python
     offset slice over the grant-projected set): there is no grant
     projection to materialise first here, so a straightforward
-    ``ORDER BY name LIMIT`` keyset page is both simpler and cheaper at
-    corpus scale. ``cursor`` is the last name returned on the previous
-    page. Left-joins the typed detail table per entity_type (creature,
+    ``ORDER BY (name, id) LIMIT`` keyset page is both simpler and cheaper
+    at corpus scale. ``cursor`` packs the (name, id) of the last row on the
+    previous page. Left-joins the typed detail table per entity_type (creature,
     spell) to add the secondary line the private list omits (it stays
     spine-only); location/npc have no secondary fields to add.
     """
     limit = max(1, min(limit, MAX_ENTITY_PAGE))
-    query = select(Entity).order_by(Entity.name, Entity.id)
+    # is_global: only the shared corpus is public; campaign-private entities
+    # (is_global false) are never listed.
+    query = select(Entity).where(Entity.is_global).order_by(Entity.name, Entity.id)
     if entity_type is not None:
         query = query.where(Entity.entity_type == entity_type)
     if q:
         query = query.where(func.lower(Entity.name).contains(q.lower()))
     if cursor is not None:
-        query = query.where(Entity.name > cursor)
+        cur_name, cur_id = _decode_cursor(cursor)
+        query = query.where(
+            or_(
+                Entity.name > cur_name,
+                and_(Entity.name == cur_name, Entity.id > cur_id),
+            )
+        )
     # limit + 1 to detect whether another page follows without a second query.
     query = query.limit(limit + 1)
     rows = session.exec(query).all()
@@ -201,14 +235,14 @@ def list_entities_public(
             }
         )
 
-    count_query = select(func.count()).select_from(Entity)
+    count_query = select(func.count()).select_from(Entity).where(Entity.is_global)
     if entity_type is not None:
         count_query = count_query.where(Entity.entity_type == entity_type)
     if q:
         count_query = count_query.where(func.lower(Entity.name).contains(q.lower()))
     total = session.exec(count_query).one()
 
-    next_cursor = rows[-1].name if has_more and rows else None
+    next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
     return {"items": items, "total": total, "next_cursor": next_cursor}
 
 
@@ -220,18 +254,27 @@ def get_entity_public(session: Session, entity_id: str) -> dict[str, Any] | None
     post-commit attribute expiry) lives in exactly one place.
     """
     entity = session.get(Entity, entity_id)
-    if entity is None:
+    # A campaign-private entity (is_global false) is not public: treat it as
+    # missing so a guessed id cannot fetch it.
+    if entity is None or not entity.is_global:
         return None
     detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
     detail = session.get(detail_model, entity_id) if detail_model else None
-    spine = {field: getattr(entity, field) for field in _SPINE_FIELDS}
+    spine = {field: getattr(entity, field) for field in _PUBLIC_SPINE_FIELDS}
     return {**spine, **_flatten_detail(detail)}
 
 
 def list_relationships_public(session: Session, entity_id: str) -> list[dict[str, Any]]:
     """Both directions of every relationship edge touching entity_id, no
     recognition dimming: every neighbor is a full spine (id, name, entity_type).
+
+    Both the source entity and every neighbor must be is_global: a call for a
+    campaign-private id returns nothing (so a guessed private id cannot reveal
+    its edges), and any private neighbor is dropped from a public entity's list.
     """
+    source = session.get(Entity, entity_id)
+    if source is None or not source.is_global:
+        return []
     outgoing = session.exec(
         select(Relationship).where(Relationship.from_entity_id == entity_id)
     ).all()
@@ -247,7 +290,7 @@ def list_relationships_public(session: Session, entity_id: str) -> list[dict[str
         {
             e.id: e
             for e in session.exec(
-                select(Entity).where(Entity.id.in_(neighbor_ids))
+                select(Entity).where(Entity.id.in_(neighbor_ids), Entity.is_global)
             ).all()
         }
         if neighbor_ids
@@ -293,7 +336,7 @@ def search_public(session: Session, q: str) -> dict[str, Any]:
 
     entity_rows = session.exec(
         select(Entity)
-        .where(func.lower(Entity.name).contains(needle))
+        .where(func.lower(Entity.name).contains(needle), Entity.is_global)
         .order_by(Entity.name)
         .limit(_MAX_HITS)
     ).all()
