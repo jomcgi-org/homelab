@@ -210,9 +210,16 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
     run. Empty-content chunks are dropped (the loader requires non-empty content).
     """
     headers = build_header_text(doc)
-    text_chunks: list[dict] = []
-    image_chunks: list[dict] = []
-    run: dict | None = None  # {key, chunk_ref, section_path, parts}
+    # (document_order, chunk) pairs: the reader reconstructs the printed book
+    # from manifest line order (the loader assigns seq from it), so image
+    # chunks must interleave where their Picture block sits, not append after
+    # every text chunk. Order key is the emitting block's index in document
+    # order (a run keys on its FIRST block, so a picture inside or after a run
+    # sorts between that run and the next). Text chunking itself is untouched:
+    # runs never break at pictures, so chunk_refs and content stay identical
+    # and a reload rewrites seq without re-embedding.
+    ordered: list[tuple[int, dict]] = []
+    run: dict | None = None  # {key, chunk_ref, section_path, parts, order}
 
     def flush() -> None:
         if not run or not run["parts"]:
@@ -226,11 +233,14 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
         # named reliably. Prepend it as a title line unless already leading.
         if sp and not body.upper().startswith(sp.upper()):
             body = f"{sp}\n\n{body}"
-        text_chunks.append(
-            {"chunk_ref": run["chunk_ref"], "content": body, "section_path": sp}
+        ordered.append(
+            (
+                run["order"],
+                {"chunk_ref": run["chunk_ref"], "content": body, "section_path": sp},
+            )
         )
 
-    for block in iter_blocks(doc):
+    for idx, block in enumerate(iter_blocks(doc)):
         btype = block.get("block_type")
         if btype in _NON_CONTENT:
             continue
@@ -240,13 +250,16 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
             content = _image_content(alt, caption)
             if content:
                 img_sid = effective_section_id(block, headers)
-                image_chunks.append(
-                    {
-                        "chunk_ref": block.get("id", ""),
-                        "content": content,
-                        "section_path": (headers.get(img_sid) if img_sid else None),
-                        "image_ref": (image_key_prefix + src) if src else None,
-                    }
+                ordered.append(
+                    (
+                        idx,
+                        {
+                            "chunk_ref": block.get("id", ""),
+                            "content": content,
+                            "section_path": (headers.get(img_sid) if img_sid else None),
+                            "image_ref": (image_key_prefix + src) if src else None,
+                        },
+                    )
                 )
             continue
 
@@ -272,11 +285,15 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
                 "chunk_ref": block.get("id") or _page_of(block),
                 "section_path": section_path or None,
                 "parts": [],
+                "order": idx,
             }
         run["parts"].append(text)
     flush()
 
-    return text_chunks + image_chunks
+    # Stable sort: an image emitted at idx between two runs' first-block
+    # indices lands between them, reconstructing print order.
+    ordered.sort(key=lambda pair: pair[0])
+    return [chunk for _order, chunk in ordered]
 
 
 def write_ndjson(chunks: list[dict], out) -> int:

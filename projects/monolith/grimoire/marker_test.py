@@ -134,6 +134,58 @@ def test_to_chunks_emits_image_chunk_with_s3_ref():
     assert img["section_path"] == "GOBLIN"
 
 
+def test_to_chunks_interleaves_images_in_document_order():
+    doc = {
+        "children": [
+            _page(
+                0,
+                [
+                    {
+                        "id": "/page/0/SectionHeader/0",
+                        "block_type": "SectionHeader",
+                        "html": "<h1>ABOLETH</h1>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        "id": "/page/0/Text/1",
+                        "block_type": "Text",
+                        "html": "<p>Ancient aberration lore.</p>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        "id": "/page/0/Picture/2",
+                        "block_type": "Picture",
+                        "html": '<img src="ab_img.jpg" alt="an aboleth lurking">',
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        "id": "/page/0/SectionHeader/3",
+                        "block_type": "SectionHeader",
+                        "html": "<h1>BEHOLDER</h1>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/3"},
+                    },
+                    {
+                        "id": "/page/0/Text/4",
+                        "block_type": "Text",
+                        "html": "<p>Floating tyrant lore.</p>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/3"},
+                    },
+                ],
+            )
+        ],
+        "metadata": {},
+    }
+    chunks = marker.to_chunks(doc, image_key_prefix="pfx/")
+    kinds = ["image" if "image_ref" in c else "text" for c in chunks]
+    # The plate sits between the two sections, exactly where it appears in the
+    # book (the loader assigns seq from line order, and the reader trusts seq
+    # to reconstruct print order), not appended after all text chunks.
+    assert kinds == ["text", "image", "text"]
+    assert chunks[0]["section_path"] == "ABOLETH"
+    assert chunks[1]["image_ref"] == "pfx/ab_img.jpg"
+    assert chunks[2]["section_path"] == "BEHOLDER"
+
+
 def test_to_chunks_prepends_section_name_when_absent_from_body():
     doc = {
         "children": [
