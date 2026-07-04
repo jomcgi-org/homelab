@@ -874,7 +874,12 @@ class ChatBot(discord.Client):
             thread = await channel.create_thread(
                 name=name, type=discord.ChannelType.public_thread
             )
-            await asyncio.to_thread(goosecracker.start_session, str(thread.id), prompt)
+            await asyncio.to_thread(
+                goosecracker.start_session,
+                str(thread.id),
+                prompt,
+                str(channel.id),
+            )
         except Exception:
             logger.exception("goosecracker: failed to start session")
             await interaction.followup.send(

@@ -3,6 +3,7 @@ session dispatch (ADR 024 Task 4). DB-backed tests run against in-memory SQLite
 with the chat schema stripped. goosecracker.api is injected as a fake module so
 the test does not pull the real executor (and so no run is dispatched)."""
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -135,6 +136,28 @@ def test_start_session_records_transcript_and_dispatches(engine, fake_api):
         row = session.get(GoosecrackerSession, "thread-1")
         assert row is not None
         assert row.transcript == "build a clock"
+
+
+def test_start_session_records_parent_channel_id(engine, fake_api):
+    """The /artifact command's parent channel is recorded on the row, mirroring
+    start_agent_session, so parent_channel_for_thread resolves it later."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_session("thread-1", "build a clock", "channel-1")
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "thread-1")
+        assert row is not None
+        assert row.parent_channel_id == "channel-1"
+
+
+def test_start_session_defaults_parent_channel_id_to_empty(engine, fake_api):
+    """Callers that omit parent_channel_id (e.g. an older call site) still work:
+    the row gets the field's empty default rather than an error."""
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        goosecracker.start_session("thread-1", "build a clock")
+    with Session(engine) as session:
+        row = session.get(GoosecrackerSession, "thread-1")
+        assert row is not None
+        assert row.parent_channel_id == ""
 
 
 def test_continue_session_appends_and_resubmits_full_transcript(engine, fake_api):
@@ -392,6 +415,131 @@ class TestBuildInjectedContext:
         with patch("chat.goosecracker.get_engine", return_value=engine):
             bundle = goosecracker.build_injected_context("thr-first", tier="")
         assert bundle == {}
+
+
+class _FakeDatasetCaller:
+    """Records the prompt it was called with; returns a canned reply."""
+
+    def __init__(self, response: str):
+        self.prompts: list[str] = []
+        self._response = response
+
+    async def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self._response
+
+
+class TestBuildChannelDataset:
+    """chat.summarizer.build_llm_caller is the established seam to patch (same
+    as TestBuildRoast further down); extract_dataset itself is exercised in
+    chat/channel_data_test.py, so these tests focus on the wiring: window
+    resolution and fail-open behavior."""
+
+    @pytest.mark.asyncio
+    async def test_no_parent_channel_returns_none_without_calling_caller(
+        self, engine, fake_api
+    ):
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-art",
+                    recipe="artifact",
+                    tier="artifact",
+                    parent_channel_id="",
+                )
+            )
+            session.commit()
+
+        caller = _FakeDatasetCaller("{}")
+        with (
+            patch("chat.goosecracker.get_engine", return_value=engine),
+            patch("chat.summarizer.build_llm_caller", return_value=caller),
+        ):
+            result = await goosecracker.build_channel_dataset("thr-art", "count bugs")
+
+        assert result is None
+        assert caller.prompts == []
+
+    @pytest.mark.asyncio
+    async def test_parent_channel_with_no_messages_returns_none(self, engine, fake_api):
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-art",
+                    recipe="artifact",
+                    tier="artifact",
+                    parent_channel_id="chan-empty",
+                )
+            )
+            session.commit()
+
+        caller = _FakeDatasetCaller("{}")
+        with (
+            patch("chat.goosecracker.get_engine", return_value=engine),
+            patch("chat.summarizer.build_llm_caller", return_value=caller),
+        ):
+            result = await goosecracker.build_channel_dataset("thr-art", "count bugs")
+
+        assert result is None
+        assert caller.prompts == []
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_extract_dataset_with_channel_window(
+        self, engine, fake_api
+    ):
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-art",
+                    recipe="artifact",
+                    tier="artifact",
+                    parent_channel_id="chan-1",
+                )
+            )
+            session.commit()
+            _msg(session, "chan-1", "alice", "we shipped 3 features", 1)
+            _msg(session, "chan-1", "bob", "and fixed 2 bugs", 2)
+
+        reply = json.dumps({"title": "t", "columns": ["a"], "rows": [["1"]]})
+        caller = _FakeDatasetCaller(reply)
+        with (
+            patch("chat.goosecracker.get_engine", return_value=engine),
+            patch("chat.summarizer.build_llm_caller", return_value=caller),
+        ):
+            result = await goosecracker.build_channel_dataset(
+                "thr-art", "count features per person"
+            )
+
+        assert result is not None
+        assert json.loads(result)["title"] == "t"
+        assert len(caller.prompts) == 1
+        assert "we shipped 3 features" in caller.prompts[0]
+        assert "count features per person" in caller.prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_caller_exception_returns_none_not_raise(self, engine, fake_api):
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-art",
+                    recipe="artifact",
+                    tier="artifact",
+                    parent_channel_id="chan-1",
+                )
+            )
+            session.commit()
+            _msg(session, "chan-1", "alice", "hello", 1)
+
+        def _raise():
+            raise RuntimeError("no model configured")
+
+        with (
+            patch("chat.goosecracker.get_engine", return_value=engine),
+            patch("chat.summarizer.build_llm_caller", side_effect=_raise),
+        ):
+            result = await goosecracker.build_channel_dataset("thr-art", "count bugs")
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

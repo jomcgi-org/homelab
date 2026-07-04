@@ -36,6 +36,9 @@ _EXTRACT_PROMPT = (
     "Every row must have exactly one value per column, in the same order as "
     "columns. Keep it to at most {max_rows} rows; if there are more "
     "candidates, pick the {max_rows} most relevant.\n\n"
+    "If the user's request does not actually ask for data, a chart, or a "
+    "visualization drawn from this conversation, reply with exactly "
+    '{{"none": true}} instead.\n\n'
     'User request: "{request}"\n\n'
     "Messages:\n{messages}"
 )
@@ -98,7 +101,10 @@ async def extract_dataset(
     messages, never trusted from the model reply. Returns None if messages is
     empty (without calling caller), if the reply fails to parse or validate,
     or if caller raises: this is a fail-open contract, so a caller can treat
-    None as "no dataset, dispatch proceeds without one".
+    None as "no dataset, dispatch proceeds without one". The prompt also asks
+    the model to reply ``{"none": true}`` when the request is not actually
+    asking for a dataset; that shape fails validation (no "title") the same as
+    any other malformed reply, so it needs no separate handling here.
     """
     if not messages:
         return None

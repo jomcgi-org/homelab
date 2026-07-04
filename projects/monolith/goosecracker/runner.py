@@ -631,6 +631,29 @@ async def _invoke_turn(
                 "continuing without it",
                 session,
             )
+        # Task 3.2: attach an extracted dataset for an artifact dispatch only
+        # (the agent-route gap is a documented follow-up, out of scope here).
+        # build_channel_dataset is already fail-open internally (a Qwen outage
+        # must not block the dispatch), but it is wrapped again here so a
+        # surprise exception in the chat.api boundary itself cannot fail the
+        # run either.
+        if recipe == "artifact":
+            from chat.api import build_channel_dataset
+
+            try:
+                dataset = await build_channel_dataset(discord_thread, task)
+            except Exception:
+                logger.exception(
+                    "goosecracker: build_channel_dataset failed for %s; "
+                    "continuing without it",
+                    session,
+                )
+                dataset = None
+            if dataset is not None:
+                injected_context = {
+                    **injected_context,
+                    "channel-data.json": dataset,
+                }
     # WS2 - Hydration: default the mirror and ref when the caller did not
     # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
     # via Helm values. An empty effective_mirror means no clone (no mirror
