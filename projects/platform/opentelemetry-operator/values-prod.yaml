@@ -14,9 +14,4 @@ instrumentation:
   # the app permanently OutOfSync (the CR can never be created).
   namespaces:
     # Production
-    - trips
-    - api-gateway
-    - cluster-agents
     - monolith
-    # Development
-    - stargazer

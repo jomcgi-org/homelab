@@ -51,9 +51,6 @@ requireResources:
   includeNamespaces:
     - monolith
     - monolith-public
-    - trips
-    - agent-platform
-    - api-gateway
 
 kyverno:
   # Admission controller configuration

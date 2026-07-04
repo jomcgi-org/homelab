@@ -133,13 +133,13 @@ def wrangler_pages(name, dist, project_name, wrangler, branch = "", visibility =
         wrangler_bin.wrangler_binary(name = "wrangler")
 
         wrangler_pages(
-            name = "trips",
+            name = "mysite",
             dist = ":build_dist",
-            project_name = "trips-jomcgi-dev",
+            project_name = "mysite-jomcgi-dev",
             wrangler = ":wrangler",
         )
 
-        # Deploy with: bazel run //projects/trips/frontend:trips.push
+        # Deploy with: bazel run //projects/<service>/frontend:mysite.push
     """
     wrangler_pages_push(
         name = name + ".push",
