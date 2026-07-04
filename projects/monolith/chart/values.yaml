@@ -647,12 +647,18 @@ orchestrator:
   enabled: false
   model: "deepseek/deepseek-v4-flash"
   baseUrl: "https://openrouter.ai/api/v1"
-  # Fallback provider: tried once when the primary raises OrchestratorUnavailable
-  # (timeout, 5xx, or an unusable/absent tool call), before the flow fails open to
-  # direct submit. Empty fallbackModel means no fallback (single-attempt contract).
-  # The fallback key reuses OPENROUTER_API_KEY from the "goosecracker" Secret.
-  fallbackModel: ""
-  fallbackBaseUrl: "https://openrouter.ai/api/v1"
+  # Field in the "goosecracker" Secret that drives the PRIMARY provider's key
+  # (ORCHESTRATOR_API_KEY). Cluster values point this at the primary of the day
+  # (e.g. NVIDIA_API_KEY for Nemotron); the client falls back to OPENROUTER_API_KEY
+  # if the named field is absent.
+  apiKeySecretKey: "OPENROUTER_API_KEY"
+  # Ordered fallback chain, tried in turn when the primary raises
+  # OrchestratorUnavailable (timeout, 5xx/429, or an unusable/absent tool call),
+  # before the flow fails open to direct submit. Each entry (snake_case, passed
+  # verbatim to the client as JSON): model, base_url, and api_key_env (the env var
+  # holding that provider's key; empty = no auth, e.g. in-cluster Qwen). Empty
+  # list = no fallback (single-attempt contract).
+  fallbacks: []
   # Initial-compile budget: covers BOTH the route-decision call and the
   # submit_plan tool call (plan construction is real work, not a quick classify).
   timeoutSeconds: 60

@@ -9,7 +9,7 @@ import pytest
 from chat.orchestrator_client import (
     OrchestratorUnavailable,
     _read_config,
-    _read_fallback_config,
+    _read_fallback_chain,
     call,
     call_tool,
 )
@@ -179,11 +179,40 @@ _TOOL_SCHEMA = {
 
 
 _FALLBACK_ENV = {
-    "ORCHESTRATOR_MODEL": "zai-glm-4.7",
-    "ORCHESTRATOR_BASE_URL": "https://api.cerebras.ai/v1",
-    "ORCHESTRATOR_API_KEY": "cerebras-key",
-    "ORCHESTRATOR_FALLBACK_MODEL": "deepseek/deepseek-v4-flash",
-    "ORCHESTRATOR_FALLBACK_BASE_URL": "https://openrouter.ai/api/v1",
+    "ORCHESTRATOR_MODEL": "nvidia/nemotron-3-ultra-550b-a55b",
+    "ORCHESTRATOR_BASE_URL": "https://integrate.api.nvidia.com/v1",
+    "ORCHESTRATOR_API_KEY": "nvidia-key",
+    "ORCHESTRATOR_FALLBACKS": json.dumps(
+        [
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            }
+        ]
+    ),
+    "OPENROUTER_API_KEY": "openrouter-key",
+}
+
+# A three-tier chain: NVIDIA primary -> DeepSeek -> in-cluster Qwen (no auth).
+_CHAIN_ENV = {
+    "ORCHESTRATOR_MODEL": "nvidia/nemotron-3-ultra-550b-a55b",
+    "ORCHESTRATOR_BASE_URL": "https://integrate.api.nvidia.com/v1",
+    "ORCHESTRATOR_API_KEY": "nvidia-key",
+    "ORCHESTRATOR_FALLBACKS": json.dumps(
+        [
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            },
+            {
+                "model": "qwen3.6-27b",
+                "base_url": "http://inference.inference.svc.cluster.local:8080/v1",
+                "api_key_env": "",
+            },
+        ]
+    ),
     "OPENROUTER_API_KEY": "openrouter-key",
 }
 
@@ -191,8 +220,8 @@ _FALLBACK_ENV = {
 class TestCallFallback:
     @pytest.mark.asyncio
     async def test_falls_back_to_secondary_on_primary_failure(self):
-        """A primary transport failure retries once on the fallback provider,
-        which supplies the result (its model/base URL/key)."""
+        """A primary transport failure retries on the next chain provider, which
+        supplies the result (its model/base URL/key)."""
         payload = {"choices": [{"message": {"content": "fallback brief"}}]}
         instance = _mock_client(
             post_side_effect=[
@@ -208,9 +237,9 @@ class TestCallFallback:
 
         assert result.content == "fallback brief"
         assert instance.post.call_count == 2
-        # The primary attempt targeted Cerebras/GLM...
+        # The primary attempt targeted NVIDIA/Nemotron...
         first_args, _ = instance.post.call_args_list[0]
-        assert first_args[0] == "https://api.cerebras.ai/v1/chat/completions"
+        assert first_args[0] == "https://integrate.api.nvidia.com/v1/chat/completions"
         # ...and the fallback attempt targeted DeepSeek/OpenRouter with its key.
         second_args, second_kwargs = instance.post.call_args_list[1]
         assert second_args[0] == "https://openrouter.ai/api/v1/chat/completions"
@@ -218,26 +247,56 @@ class TestCallFallback:
         assert second_kwargs["json"]["model"] == "deepseek/deepseek-v4-flash"
 
     @pytest.mark.asyncio
-    async def test_raises_when_both_primary_and_fallback_fail(self):
+    async def test_walks_full_chain_to_last_provider(self):
+        """Primary and first fallback both fail; the third tier (Qwen, no auth)
+        succeeds. Confirms an ordered N-tier walk, not a single fallback."""
+        payload = {"choices": [{"message": {"content": "qwen brief"}}]}
         instance = _mock_client(
             post_side_effect=[
-                httpx.ConnectError("primary refused"),
-                httpx.ConnectError("fallback refused"),
+                httpx.ConnectError("nvidia 429"),
+                httpx.ConnectError("openrouter 500"),
+                _ok_response(payload),
             ]
         )
         with (
             patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
-            patch.dict("os.environ", _FALLBACK_ENV, clear=False),
+            patch.dict("os.environ", _CHAIN_ENV, clear=False),
+        ):
+            result = await call("system", "user")
+
+        assert result.content == "qwen brief"
+        assert instance.post.call_count == 3
+        third_args, third_kwargs = instance.post.call_args_list[2]
+        assert (
+            third_args[0]
+            == "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
+        )
+        # Empty api_key_env => no-auth Bearer (in-cluster Qwen).
+        assert third_kwargs["headers"]["Authorization"] == "Bearer "
+        assert third_kwargs["json"]["model"] == "qwen3.6-27b"
+
+    @pytest.mark.asyncio
+    async def test_raises_when_entire_chain_fails(self):
+        instance = _mock_client(
+            post_side_effect=[
+                httpx.ConnectError("nvidia refused"),
+                httpx.ConnectError("openrouter refused"),
+                httpx.ConnectError("qwen refused"),
+            ]
+        )
+        with (
+            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
+            patch.dict("os.environ", _CHAIN_ENV, clear=False),
         ):
             with pytest.raises(OrchestratorUnavailable):
                 await call("system", "user")
 
-        assert instance.post.call_count == 2
+        assert instance.post.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_no_fallback_configured_is_single_attempt(self, monkeypatch):
-        """With no ORCHESTRATOR_FALLBACK_MODEL the single-attempt contract holds."""
-        monkeypatch.delenv("ORCHESTRATOR_FALLBACK_MODEL", raising=False)
+    async def test_no_chain_configured_is_single_attempt(self, monkeypatch):
+        """With no ORCHESTRATOR_FALLBACKS the single-attempt contract holds."""
+        monkeypatch.delenv("ORCHESTRATOR_FALLBACKS", raising=False)
         instance = _mock_client(post_side_effect=httpx.ConnectError("refused"))
         env = {"ORCHESTRATOR_MODEL": "m", "OPENROUTER_API_KEY": "k"}
         with (
@@ -292,22 +351,55 @@ class TestCallToolFallback:
         assert second_kwargs["json"]["model"] == "deepseek/deepseek-v4-flash"
 
 
-class TestReadFallbackConfig:
-    def test_none_when_model_unset(self, monkeypatch):
-        monkeypatch.delenv("ORCHESTRATOR_FALLBACK_MODEL", raising=False)
-        assert _read_fallback_config() is None
+class TestReadFallbackChain:
+    def test_empty_when_unset(self, monkeypatch):
+        monkeypatch.delenv("ORCHESTRATOR_FALLBACKS", raising=False)
+        assert _read_fallback_chain() == []
 
-    def test_reads_model_base_url_and_key(self, monkeypatch):
-        monkeypatch.setenv("ORCHESTRATOR_FALLBACK_MODEL", "deepseek/deepseek-v4-flash")
+    def test_empty_when_unparseable(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_FALLBACKS", "{not json")
+        assert _read_fallback_chain() == []
+
+    def test_parses_ordered_chain_and_resolves_keys(self, monkeypatch):
         monkeypatch.setenv(
-            "ORCHESTRATOR_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1"
+            "ORCHESTRATOR_FALLBACKS",
+            json.dumps(
+                [
+                    {
+                        "model": "deepseek/deepseek-v4-flash",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "api_key_env": "OPENROUTER_API_KEY",
+                    },
+                    {
+                        "model": "qwen3.6-27b",
+                        "base_url": "http://inference.inference.svc.cluster.local:8080/v1",
+                        "api_key_env": "",
+                    },
+                ]
+            ),
         )
-        monkeypatch.delenv("ORCHESTRATOR_FALLBACK_API_KEY", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
-        model, base_url, api_key = _read_fallback_config()
-        assert model == "deepseek/deepseek-v4-flash"
-        assert base_url == "https://openrouter.ai/api/v1"
-        assert api_key == "openrouter-key"
+        chain = _read_fallback_chain()
+        assert chain == [
+            (
+                "deepseek/deepseek-v4-flash",
+                "https://openrouter.ai/api/v1",
+                "openrouter-key",
+            ),
+            (
+                "qwen3.6-27b",
+                "http://inference.inference.svc.cluster.local:8080/v1",
+                "",
+            ),
+        ]
+
+    def test_skips_entries_without_a_model(self, monkeypatch):
+        monkeypatch.setenv(
+            "ORCHESTRATOR_FALLBACKS",
+            json.dumps([{"base_url": "https://x/v1"}, {"model": "keep/me"}]),
+        )
+        chain = _read_fallback_chain()
+        assert [m for m, _b, _k in chain] == ["keep/me"]
 
 
 class TestReadConfig:

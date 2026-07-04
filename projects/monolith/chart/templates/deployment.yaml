@@ -267,17 +267,19 @@ spec:
             # Secret rather than sync the item twice; the field names match the
             # conventions the goosecracker item exposes. Note the Secret is named
             # "goosecracker" (not fullname-prefixed).
-            # ORCHESTRATOR_API_KEY drives the primary provider (Cerebras); the
-            # client falls back to OPENROUTER_API_KEY if this is absent.
+            # ORCHESTRATOR_API_KEY drives the PRIMARY provider; the Secret field it
+            # reads is set by orchestrator.apiKeySecretKey (e.g. NVIDIA_API_KEY for
+            # Nemotron). The client falls back to OPENROUTER_API_KEY if absent.
             - name: ORCHESTRATOR_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: goosecracker
-                  key: CEREBRAS_API_KEY
-                  # Optional: the client fails over to the fallback provider (and
-                  # ultimately fails open) when the key is absent.
+                  key: {{ .Values.orchestrator.apiKeySecretKey | quote }}
+                  # Optional: the client walks the fallback chain (and ultimately
+                  # fails open) when the key is absent.
                   optional: true
-            # OPENROUTER_API_KEY drives the DeepSeek fallback provider.
+            # OPENROUTER_API_KEY drives the DeepSeek fallback tier (referenced by
+            # apiKeyEnv in the ORCHESTRATOR_FALLBACKS chain).
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -291,11 +293,11 @@ spec:
               value: {{ .Values.orchestrator.model | quote }}
             - name: ORCHESTRATOR_BASE_URL
               value: {{ .Values.orchestrator.baseUrl | quote }}
-            {{- if .Values.orchestrator.fallbackModel }}
-            - name: ORCHESTRATOR_FALLBACK_MODEL
-              value: {{ .Values.orchestrator.fallbackModel | quote }}
-            - name: ORCHESTRATOR_FALLBACK_BASE_URL
-              value: {{ .Values.orchestrator.fallbackBaseUrl | quote }}
+            {{- if .Values.orchestrator.fallbacks }}
+            # Ordered fallback chain (JSON): each entry is {model, base_url,
+            # api_key_env}. The client tries the primary, then these in order.
+            - name: ORCHESTRATOR_FALLBACKS
+              value: {{ .Values.orchestrator.fallbacks | toJson | quote }}
             {{- end }}
             - name: ORCHESTRATOR_TIMEOUT_S
               value: {{ .Values.orchestrator.timeoutSeconds | quote }}
