@@ -335,13 +335,16 @@ embeddings:
     linkerd.io/inject: disabled
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  # 7-day SigNoz RSS is ~5.5Gi and almost entirely anonymous (working_set == RSS:
-  # llama.cpp holds the GGUF weights in host RAM, n-gpu-layers 0), so the 4Gi
-  # request under-reserved what it actually needs. Raised 4 -> 6 to reserve the
-  # real footprint; the 8Gi limit keeps headroom for ubatch spikes.
+  # 7-day SigNoz RSS is ~5.5Gi (llama.cpp holds the GGUF weights in host RAM,
+  # n-gpu-layers 0), and the grimoire bulk sourcebook load (2026-07-04, ~40k
+  # chunks at 60k-char batches against 8192-token ubatch) OOMKilled the pod at
+  # the old 8Gi limit and crash-looped it: each restart got slammed by retry
+  # backlog while still allocating model + slot memory. 12Gi covers steady
+  # state plus max-batch spikes; requests == limits per the sizing convention
+  # so the reservation is honest. Node-4 sits at ~38% memory requested.
   resources:
     requests:
       cpu: 2
-      memory: "6Gi"
+      memory: "12Gi"
     limits:
-      memory: "8Gi"
+      memory: "12Gi"
