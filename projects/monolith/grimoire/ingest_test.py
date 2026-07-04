@@ -69,9 +69,11 @@ class FakeEmbedClient:
 
     def __init__(self):
         self.calls = 0
+        self.texts_seen: list[str] = []
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
+        self.texts_seen.extend(texts)
         return [[0.1] * 1024 for _ in texts]
 
 
@@ -177,6 +179,24 @@ def test_load_chunks_fresh_load_creates_chunks_and_embeddings(session: Session):
     assert {e.embeddable_kind for e in embeddings} == {"chunk"}
     assert {e.model for e in embeddings} == {"voyage-4-nano"}
     assert {e.dim for e in embeddings} == {1024}
+
+
+def test_load_chunks_truncates_oversized_embed_input(session: Session):
+    """A chunk longer than EMBED_INPUT_MAX_CHARS embeds a truncated input (the
+    llama.cpp server 500s past its token window) while the stored chunk keeps
+    its full content for retrieval."""
+    giant = "spell table row " * 3000  # 48k chars, like the PHB'24 spell lists
+    manifest = _line("c-giant", giant)
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": manifest})
+    embedder = FakeEmbedClient()
+
+    summary = _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+
+    assert summary["chunks_embedded"] == 1
+    assert len(embedder.texts_seen) == 1
+    assert len(embedder.texts_seen[0]) == ingest.EMBED_INPUT_MAX_CHARS
+    chunk = session.execute(select(KnowledgeChunk)).scalars().one()
+    assert len(chunk.content) == len(giant)
 
 
 def test_load_chunks_persists_image_ref_and_derives_book_id_from_path(

@@ -63,6 +63,14 @@ EMBED_CHAR_BUDGET = (
     60000  # ~15k tokens, ~36s server-side, safe even under the default 60s read timeout
 )
 EMBED_MAX_BATCH = 64
+# Hard cap on a SINGLE text sent for embedding. The llama.cpp embedding server
+# rejects (HTTP 500) any input longer than its 8192-token slot, and dense table
+# chunks tokenize at roughly 2.5-3 chars/token, so 12000 chars keeps the worst
+# case comfortably inside the window. Applies to the embed INPUT only: the
+# stored chunk keeps its full content for retrieval. Seen live 2026-07-04:
+# 20k-47k char merged-table chunks (DMG'24 magic items, PHB'24 spell lists)
+# failed every grimoire-load-chunks run until capped.
+EMBED_INPUT_MAX_CHARS = 12000
 
 
 class _Embedder(Protocol):
@@ -435,7 +443,9 @@ async def load_chunks(
     # interrupted run leaves durable partial progress and the next run's
     # self-heal finishes the rest.
     for batch in _embed_batches(pending_embed, EMBED_CHAR_BUDGET, EMBED_MAX_BATCH):
-        vectors = await embed_client.embed_batch([row.content for row in batch])
+        vectors = await embed_client.embed_batch(
+            [(row.content or "")[:EMBED_INPUT_MAX_CHARS] for row in batch]
+        )
         chunks_embedded += upsert_embedding_batch(
             session, embed_client.model, "chunk", batch, vectors
         )
