@@ -54,7 +54,7 @@ type AgentRequest struct {
 	SessionDb   string            `json:"sessionDb"`   // optional: base64 prior sessions.db to hydrate before resume
 	// InjectedContext is an opaque map of filename to text content the caller
 	// staged for this run (ADR 040). The handler unpacks it verbatim to
-	// injectedContextDir; it never interprets the source (Discord, etc.). Keys
+	// InjectedContextDir; it never interprets the source (Discord, etc.). Keys
 	// are basenames; traversal/absolute/nested keys are skipped defensively.
 	InjectedContext map[string]string `json:"injectedContext"`
 }
@@ -258,11 +258,12 @@ var artifactPath = "/tmp/artifact.html"
 var (
 	taskFilePath    = "/tmp/goose/task.md"
 	contextFilePath = "/tmp/goose/context.md"
-	// injectedContextDir is where the caller-provided context bundle (ADR 040)
+	// InjectedContextDir is where the caller-provided context bundle (ADR 040)
 	// is unpacked, one file per InjectedContext entry, so the agent can grep it
-	// like any other on-disk source. Package var so tests can point it at a
-	// temp dir.
-	injectedContextDir = "/injected-context"
+	// like any other on-disk source. Exported so guest-init mounts a tmpfs over
+	// the same path this handler writes to (the rootfs is read-only). Package var
+	// so tests can point it at a temp dir.
+	InjectedContextDir = "/injected-context"
 )
 
 // writeTaskFile writes the task to taskFilePath and truncates contextFilePath to
@@ -285,20 +286,20 @@ func writeTaskFile(task string) error {
 	return nil
 }
 
-// writeInjectedContext unpacks files verbatim into injectedContextDir (ADR
+// writeInjectedContext unpacks files verbatim into InjectedContextDir (ADR
 // 040). It is deliberately context-agnostic: it never interprets where a
 // filename or its content came from, it just writes what it was given. Every
 // failure is soft (logged and skipped): injected context is best-effort
 // caller-side staging, and must never fail the run. Names are constrained to
 // their basename; a key that is absolute, traversal, or nested under a
-// subdirectory is skipped rather than allowed to escape injectedContextDir.
+// subdirectory is skipped rather than allowed to escape InjectedContextDir.
 func writeInjectedContext(files map[string]string) {
 	if len(files) == 0 {
 		return
 	}
-	if err := os.MkdirAll(injectedContextDir, 0o755); err != nil {
+	if err := os.MkdirAll(InjectedContextDir, 0o755); err != nil {
 		slog.Warn("handler: create injected context dir failed; skipping injected context",
-			"dir", injectedContextDir, "err", err)
+			"dir", InjectedContextDir, "err", err)
 		return
 	}
 	for name, content := range files {
@@ -307,7 +308,7 @@ func writeInjectedContext(files map[string]string) {
 			slog.Warn("handler: skipping unsafe injected context key", "name", name)
 			continue
 		}
-		path := filepath.Join(injectedContextDir, base)
+		path := filepath.Join(InjectedContextDir, base)
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			slog.Warn("handler: write injected context file failed", "name", name, "err", err)
 		}
