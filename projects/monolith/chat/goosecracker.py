@@ -894,12 +894,26 @@ def build_injected_context(thread_id: str, tier: str = "") -> dict[str, str]:
     # a correction turn.
     own = _own_thread_transcript(thread_id)
     if own:
-        logger.warning(
-            "build_injected_context: parent-channel context empty for thread "
-            "%s; falling back to the thread's own transcript (%d chars)",
-            thread_id,
-            len(own),
-        )
+        if parent:
+            # A parent channel WAS recorded but resolved no messages: the primary
+            # context path failed unexpectedly, so warn to make it visible.
+            logger.warning(
+                "build_injected_context: parent channel %s for thread %s had no "
+                "messages; falling back to the thread's own transcript (%d chars)",
+                parent,
+                thread_id,
+                len(own),
+            )
+        else:
+            # No parent channel recorded (an MCP-dispatched thread, or an older
+            # thread predating the column): the own-transcript fallback is the
+            # normal path here, not an anomaly, so log at info.
+            logger.info(
+                "build_injected_context: no parent channel for thread %s; using "
+                "the thread's own transcript (%d chars)",
+                thread_id,
+                len(own),
+            )
         return _context_from_own_transcript(own)
     # Truly nothing to inject: a brand-new thread with no prior turns. Expected
     # on a first turn, so nothing to warn about.
