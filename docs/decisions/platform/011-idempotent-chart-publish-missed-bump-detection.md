@@ -74,10 +74,14 @@ images` action with a message naming the chart, both versions, and the
 
 ## Consequences
 
-- A bumpless merge that needed a bump now blocks the `Push images` action
-  (including pushes for sibling charts later in the multirun) until a bump PR
-  lands. This is intentional: the blocking window is minutes, visible, and
-  actionable; the previous behavior was silent and unbounded.
+- A bumpless merge that needed a bump now fails the `Push images` action until
+  a bump PR lands (sibling chart and image pushes still run: the multirun is
+  parallel, only the overall action goes red). This is intentional: the
+  failure window is minutes, visible, and actionable; the previous behavior
+  was silent and unbounded.
+- Order sensitivity: a PR carrying its bump commit followed by later
+  releasable commits keeps the detector red until the next bump, which is the
+  correct signal (the published version predates those commits).
 - Chart versions in the registry are now immutable in practice as well as in
   intent; ArgoCD's cache behavior can no longer disagree with a re-pull.
 - Bump-only PRs still exist (by design, git remains the source of truth for

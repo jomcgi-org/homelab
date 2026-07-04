@@ -91,7 +91,7 @@ while [ "$elapsed" -lt "$READY_TIMEOUT_SECS" ]; do
 		ready=1
 		break
 	fi
-	sleep 0.5
+	sleep 1
 	elapsed=$((elapsed + 1))
 done
 
