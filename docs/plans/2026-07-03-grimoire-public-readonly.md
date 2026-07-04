@@ -47,7 +47,7 @@ All under `/api/grimoire`. No `campaign`/`as` params anywhere. Reuses the privat
 
 ## Tasks
 
-### Task 1 — Backend: `public_reader` GRANT migration
+### Task 1 - Backend: `public_reader` GRANT migration
 
 - New `chart/migrations/20260704000000_grimoire_public_reader_grant.sql` (head is `20260703250000`; confirm with the `Check migration version ordering` hook before finalizing):
   ```sql
@@ -62,7 +62,7 @@ All under `/api/grimoire`. No `campaign`/`as` params anywhere. Reuses the privat
 - Do NOT grant campaign/player_character/game_session/knowledge_grant (stay private).
 - Keep it small (out of the 256 KiB last-applied-config cap; it is tiny). No test (migration).
 
-### Task 2 — Backend: public read module + router
+### Task 2 - Backend: public read module + router
 
 - New `grimoire/public.py`: pure read functions, no campaign/viewer/grant args.
   - `get_chunk_public(session, chunk_id)` -> mirror `library.get_chunk` but list ALL `chunk_entity_mention` rows as `{id, name, entity_type, mention_text}` with no projection; include `chunk_count`, `prev_id`, `next_id`, `image_url`.
@@ -81,32 +81,32 @@ All under `/api/grimoire`. No `campaign`/`as` params anywhere. Reuses the privat
 - Tests: `grimoire/public_test.py` (unit, SQLite `create_all` fixtures) + `grimoire/router_public_test.py` (endpoint shapes, no campaign/as needed, 404 on missing). Assert entity list secondary fields and that private tables are never queried. Hand-add both `py_test` targets in `projects/monolith/BUILD` (repo memory: new `*_test.py` need hand-added rules; prefer extending patterns already there).
 - Follow the async/session rules in `projects/monolith/CLAUDE.md` (all Session I/O sync; endpoints use `Depends(get_session)`).
 
-### Task 3 — Frontend: public route skeleton + API client + gated layout
+### Task 3 - Frontend: public route skeleton + API client + gated layout
 
 - New `frontend/src/lib/public/grimoire/api.js`: `apiFetch(path)` -> `fetch(\`/api/grimoire${path}\`)`(public paths, no campaign/as); route href builders;`renderChunk.js` ported from the private lib (structural block parser) + its vitest.
 - New `frontend/src/routes/public/app/grimoire/+layout.svelte` + `+layout.js` (`ssr=false`): `Nav`, `Seo` (with `noindex`), `TurnstileGate` gate (only render children / fetch after `onAdmitted`), `Footer`. Import `design-system.css` via the public tier's existing global (confirm how other public apps load it; likely already global). `<meta name="robots" content="noindex">`.
 - Client-fetch AFTER admission so the Turnstile gate is real (no corpus in SSR HTML). Matches grimoire's existing `ssr=false` client-fetch pattern.
 - Route files: `+page.svelte` (Library), `book/[book]/+page.svelte`, `book/[book]/c/[chunk]/+page.svelte`, `entities/+page.svelte`, `entity/[id]/+page.svelte`.
 
-### Task 4 — Frontend: Library + section tree + chunk reader (design system)
+### Task 4 - Frontend: Library + section tree + chunk reader (design system)
 
 - Library: `.card-hard` book rows, coverage as a chunky bordered bar, stat chips, `Marquee` corpus ticker (`<BOOK> · N CHUNKS · N IMAGES · N ENTITIES · KG SYNCED`), `Sticker`/`.hl-yellow` for NEW. `.display` headings, `.eyebrow` labels, `.btn-primary` READ.
 - Section tree + chunk reader: reader uses `.wrap-narrow` (880px) measure, `renderChunk` structural rendering (bullets/headings/paragraphs), section label deduped vs first line, prev/next as `.btn` blocks, `{seq+1} / {chunk_count}` position, image chunks via the streaming endpoint, "on this page" entity chips linking to entity detail.
 - Responsive: two-pane (list + reader) at >=880px is optional; simplest is single-column with back nav. Match the composition of the v5 mockup (left-clustered rows, full-height READ) but expressed in design-system classes.
 
-### Task 5 — Frontend: entities index + stat blocks (design system)
+### Task 5 - Frontend: entities index + stat blocks (design system)
 
 - Entities index: `.card-hard` grid or dense list, `BrutalistSelect` (or chip row) type filter, secondary line (creature size/CR, spell level/school) from the list payload, search box feeding `/search`.
 - Entity detail: dispatcher on `entity_type` -> Creature / Spell / Generic renderers. Stat block = classic content in a `.card-hard` brutalist frame: name (`.display`), size/type/alignment strap, AC/HP/speed row, ability-score grid, traits/actions prose, tapered-rule dividers. Sources (mentions -> reader) and relationships sections. Restyle the existing private `statblock/*` structure to design-system tokens; JSONB overflow renders as labeled prose, never raw JSON.
 
-### Task 6 — Rollout: dual chart bump + values/creds
+### Task 6 - Rollout: dual chart bump + values/creds
 
 - Bump `projects/monolith/chart/Chart.yaml` `0.277.0 -> 0.278.0` and `deploy/application.yaml` targetRevision to match.
 - Bump `projects/monolith-public/chart/Chart.yaml` `0.84.0 -> 0.85.0` and `deploy/application.yaml` targetRevision to match.
 - Verify the `monolith-public` pod can stream image chunks: check whether it has the SeaweedFS/S3 secret the image endpoint needs; if not, mirror it (Kyverno clone pattern) or degrade gracefully (reader hides images that 500). Confirm before merge.
 - Confirm the public SvelteKit build serves `/public/app/grimoire/*` with no extra values gating (the frontend is the same built app across tiers).
 
-### Task 7 — Review, CI, merge, verify
+### Task 7 - Review, CI, merge, verify
 
 - One comprehensive end-of-PR Opus review against this plan (repo policy).
 - `format`, push, watch `gh pr checks`, fix via BuildBuddy logs.
@@ -124,7 +124,7 @@ All under `/api/grimoire`. No `campaign`/`as` params anywhere. Reuses the privat
 
 ## Risks
 
-- **S3 creds on `monolith-public`** (Task 6) — images may 500 until the secret is mirrored; reader must degrade gracefully.
-- **Turnstile on a data app** — the gate is only meaningful because we client-fetch after admission; do not add a `+page.server.js` that SSR-embeds the corpus.
-- **Copyright** — noindex + Turnstile is the agreed mitigation; do not add the route to `sitemap.xml` or `robots.txt` allow.
-- **Search embedding path** — `search_public` must reach the same embedding/vector path the private search uses; verify the public tier can compute/query embeddings (or restrict public search to name-only if the embed client is private-tier only).
+- **S3 creds on `monolith-public`** (Task 6) - images may 500 until the secret is mirrored; reader must degrade gracefully.
+- **Turnstile on a data app** - the gate is only meaningful because we client-fetch after admission; do not add a `+page.server.js` that SSR-embeds the corpus.
+- **Copyright** - noindex + Turnstile is the agreed mitigation; do not add the route to `sitemap.xml` or `robots.txt` allow.
+- **Search embedding path** - `search_public` must reach the same embedding/vector path the private search uses; verify the public tier can compute/query embeddings (or restrict public search to name-only if the embed client is private-tier only).

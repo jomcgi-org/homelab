@@ -28,6 +28,3 @@ GRANT SELECT ON
     grimoire.relationship,
     grimoire.embedding
     TO public_reader;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA grimoire
-    GRANT SELECT ON TABLES TO public_reader;

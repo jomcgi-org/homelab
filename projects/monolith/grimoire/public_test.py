@@ -98,8 +98,13 @@ def seed_corpus(session):
 
     aboleth = Entity(id="e-aboleth", entity_type="creature", name="Aboleth")
     fireball = Entity(id="e-fireball", entity_type="spell", name="Fireball")
+    # A global npc with no relationships, for the npc-secondary and
+    # no-relationships cases.
+    volo = Entity(id="e-volo", entity_type="npc", name="Volo")
+    # A campaign-private entity: is_global=False. The public tier must never
+    # expose it (list, detail, search, chunk mentions, relationships).
     strahd = Entity(id="e-strahd", entity_type="npc", name="Strahd", is_global=False)
-    session.add_all([aboleth, fireball, strahd])
+    session.add_all([aboleth, fireball, volo, strahd])
     session.commit()
 
     session.add(EntityCreature(entity_id="e-aboleth", size="Large", cr=7.0))
@@ -118,14 +123,31 @@ def seed_corpus(session):
             ),
         ]
     )
-    session.add(
-        Relationship(
-            from_entity_id="e-strahd", to_entity_id="e-aboleth", rel_type="allied_with"
-        )
+    session.add_all(
+        [
+            # global -> global: the visible edge the direction test asserts.
+            Relationship(
+                from_entity_id="e-aboleth",
+                to_entity_id="e-fireball",
+                rel_type="summons",
+            ),
+            # non-global source -> global: must be filtered out of the public view.
+            Relationship(
+                from_entity_id="e-strahd",
+                to_entity_id="e-aboleth",
+                rel_type="allied_with",
+            ),
+        ]
     )
     session.commit()
     return SimpleNamespace(
-        c0=c0, c1=c1, c2=c2, aboleth=aboleth, fireball=fireball, strahd=strahd
+        c0=c0,
+        c1=c1,
+        c2=c2,
+        aboleth=aboleth,
+        fireball=fireball,
+        volo=volo,
+        strahd=strahd,
     )
 
 
@@ -152,9 +174,9 @@ class TestGetChunkPublic:
         seed_corpus(session)
         assert public.get_chunk_public(session, "nope") is None
 
-    def test_no_grant_gating_all_entities_visible(self, session):
-        """A non-global, ungranted entity (strahd) still appears if it is
-        mentioned on a chunk: the public tier has no grant concept."""
+    def test_non_global_mention_excluded(self, session):
+        """A campaign-private entity (strahd, is_global=False) mentioned on a
+        chunk must NOT appear in the public on-page chips."""
         seed = seed_corpus(session)
         session.add(
             ChunkEntityMention(
@@ -163,18 +185,19 @@ class TestGetChunkPublic:
         )
         session.commit()
         chunk = public.get_chunk_public(session, seed.c0.id)
-        assert {e["name"] for e in chunk["entities"]} == {"Aboleth", "Strahd"}
+        assert {e["name"] for e in chunk["entities"]} == {"Aboleth"}
 
 
 class TestListEntitiesPublic:
     def test_all_entities_no_type_filter(self, session):
         seed_corpus(session)
         body = public.list_entities_public(session)
+        # Three global entities; strahd (is_global=False) is excluded.
         assert body["total"] == 3
         assert {item["name"] for item in body["items"]} == {
             "Aboleth",
             "Fireball",
-            "Strahd",
+            "Volo",
         }
         assert body["next_cursor"] is None
 
@@ -194,14 +217,16 @@ class TestListEntitiesPublic:
     def test_npc_has_no_secondary_fields(self, session):
         seed_corpus(session)
         body = public.list_entities_public(session, entity_type="npc")
-        strahd = body["items"][0]
-        assert set(strahd.keys()) == {"id", "name", "entity_type"}
+        # Only the global npc (Volo); the non-global Strahd is excluded.
+        assert {item["name"] for item in body["items"]} == {"Volo"}
+        assert set(body["items"][0].keys()) == {"id", "name", "entity_type"}
 
-    def test_includes_non_global_entities(self, session):
-        """No grant filtering: strahd (is_global=False) still shows up."""
+    def test_excludes_non_global_entities(self, session):
+        """A campaign-private entity (strahd, is_global=False) is never listed."""
         seed_corpus(session)
         body = public.list_entities_public(session, q="strahd")
-        assert body["total"] == 1
+        assert body["total"] == 0
+        assert body["items"] == []
 
     def test_pagination(self, session):
         seed_corpus(session)
@@ -224,11 +249,17 @@ class TestGetEntityPublic:
         assert entity["size"] == "Large"
         assert entity["cr"] == 7.0
 
-    def test_non_global_entity_still_visible(self, session):
+    def test_created_in_session_not_in_payload(self, session):
+        """The private game-session id must never ship in a public payload."""
         seed_corpus(session)
-        entity = public.get_entity_public(session, "e-strahd")
-        assert entity is not None
-        assert entity["race"] == "human"
+        entity = public.get_entity_public(session, "e-aboleth")
+        assert "created_in_session" not in entity
+
+    def test_non_global_entity_hidden(self, session):
+        """A campaign-private entity (is_global=False) 404s: a guessed id cannot
+        fetch it."""
+        seed_corpus(session)
+        assert public.get_entity_public(session, "e-strahd") is None
 
     def test_missing_entity_returns_none(self, session):
         seed_corpus(session)
@@ -238,19 +269,37 @@ class TestGetEntityPublic:
 class TestListRelationshipsPublic:
     def test_both_directions_no_dimming(self, session):
         seed_corpus(session)
+        # Aboleth: outgoing summons -> Fireball is visible; the incoming edge from
+        # the non-global Strahd is filtered out.
         rels = public.list_relationships_public(session, "e-aboleth")
         assert len(rels) == 1
-        assert rels[0]["direction"] == "in"
-        assert rels[0]["rel_type"] == "allied_with"
-        assert rels[0]["entity"]["name"] == "Strahd"
-
-        rels = public.list_relationships_public(session, "e-strahd")
         assert rels[0]["direction"] == "out"
+        assert rels[0]["rel_type"] == "summons"
+        assert rels[0]["entity"]["name"] == "Fireball"
+
+        # Fireball sees the same edge from the other side.
+        rels = public.list_relationships_public(session, "e-fireball")
+        assert len(rels) == 1
+        assert rels[0]["direction"] == "in"
         assert rels[0]["entity"]["name"] == "Aboleth"
+
+    def test_non_global_neighbor_filtered(self, session):
+        """A public entity does not surface an edge to a campaign-private
+        neighbor (Aboleth's incoming edge from the non-global Strahd)."""
+        seed_corpus(session)
+        rels = public.list_relationships_public(session, "e-aboleth")
+        assert all(r["entity"]["name"] != "Strahd" for r in rels)
+
+    def test_non_global_source_returns_empty(self, session):
+        """Relationships for a campaign-private id return nothing, so a guessed
+        id cannot reveal its edges."""
+        seed_corpus(session)
+        assert public.list_relationships_public(session, "e-strahd") == []
 
     def test_no_relationships_returns_empty(self, session):
         seed_corpus(session)
-        assert public.list_relationships_public(session, "e-fireball") == []
+        # Volo is a global entity with no edges.
+        assert public.list_relationships_public(session, "e-volo") == []
 
 
 class TestSearchPublic:
@@ -258,6 +307,12 @@ class TestSearchPublic:
         seed_corpus(session)
         body = public.search_public(session, "abol")
         assert {e["name"] for e in body["entities"]} == {"Aboleth"}
+
+    def test_search_excludes_non_global(self, session):
+        """Name search never returns a campaign-private entity."""
+        seed_corpus(session)
+        body = public.search_public(session, "strahd")
+        assert body["entities"] == []
 
     def test_lore_content_hit(self, session):
         seed_corpus(session)

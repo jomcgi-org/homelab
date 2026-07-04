@@ -1,4 +1,4 @@
-h1:Lhq/SwPJRldb3/j8mr3YyXWDfx76y/WX9f0+Jg9Cjok=
+h1:WEqN6qnieNddA0kHMmqLwc4Gan/jxhJWf4gq02TjBR8=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -94,4 +94,4 @@ h1:Lhq/SwPJRldb3/j8mr3YyXWDfx76y/WX9f0+Jg9Cjok=
 20260703230000_goosecracker_progress_message.sql h1:AQHwWDeJm8urU4Vd5VHpgC09Xk/rE5tmKrMTnV5qY7w=
 20260703240000_grimoire_chunk_image_ref.sql h1:SJh3mta2uHO3SFXTHV3LEQdde4a5fPJCVSfDpZDyFDs=
 20260703250000_grimoire_chunk_seq_and_book.sql h1:5CGypr1+w41FLGdqrdYj9djiz1go2OdS3ai+Nb07At8=
-20260704000000_grimoire_public_reader_grant.sql h1:6Mkm9npgpPi7YRDzUHHWx8iGb8raz5uF69PPfFu/hpg=
+20260704000000_grimoire_public_reader_grant.sql h1:ZRY8zkuHoX0vtFNbJvP+hBaZp0BdyJ3k0Y5I4U1dx6U=
