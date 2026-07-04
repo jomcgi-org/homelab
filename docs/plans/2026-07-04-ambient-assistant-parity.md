@@ -204,9 +204,9 @@ The fiddly phase: it touches the escalation path and the guest boundary. Read AD
 
 ---
 
-## Phase 4: Directive evolution observer (Feature D, optional)
+## Phase 4: Directive evolution observer (Feature D)
 
-Drop this phase if Joe deprioritizes it; nothing earlier depends on it.
+Greenlit by Joe (2026-07-04) on two conditions the tasks below must honor: the observer runs only in ambient-granted channels, and its sensitivity knobs are `values.yaml` configuration (env vars plumbed through the monolith chart): minimum evidence count (default 3), per-channel cooldown days (default 14), run cadence.
 
 ### Task 4.1: Friction classifier (pure, caller-injected)
 
@@ -229,7 +229,7 @@ Drop this phase if Joe deprioritizes it; nothing earlier depends on it.
 
 **Steps:**
 
-1. Write failing tests for the sync core: iterates ambient-granted channels only; skips a channel with an open proposal or one resolved within 14 days; on friction, stages via `propose_update` and produces exactly one proposal post (with evidence links) per run per channel.
+1. Write failing tests for the sync core: iterates ambient-granted channels only; skips a channel with an open proposal or one resolved within the configured cooldown; on friction, stages via `propose_update` and produces exactly one proposal post (with evidence links) per run per channel. The knobs (min evidence, cooldown days, cadence) read from env vars with the defaults above; add them to the monolith chart `values.yaml` in this task.
 2. Implement the weekly job. The proposal-message posting is the fiddly bit: the agent-tool path posts from bot context and records `proposal_message_id` for the reaction handler; the job path must end up with the same linkage. If the outbox cannot return the posted message id, route the job's proposal through the bot-side drain that CAN (document the choice in the module docstring).
 3. Register the test target. Commit: `feat(chat): weekly observer proposes directive updates from repeated corrections`
 
@@ -242,6 +242,6 @@ Drop this phase if Joe deprioritizes it; nothing earlier depends on it.
 1. Phase 1 ships first: read-only, chat-route, biggest perceived win.
 2. Phase 2 second: first proactive write path, all on existing durable primitives.
 3. Phase 3 third: guest-boundary work, needs the Phase 1 window fetch.
-4. Phase 4 last and optional.
+4. Phase 4 last (greenlit, tunable-by-values).
 
 Each phase is independently valuable and independently revertible (revert = revert the PR and chart bump; Phase 2/4 tables are additive and inert once their jobs are deregistered).

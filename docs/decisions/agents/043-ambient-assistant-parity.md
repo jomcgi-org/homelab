@@ -1,7 +1,7 @@
 # ADR 043: Ambient Assistant Parity (Channel-Data Tools, Reminders, Directive Evolution)
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-04
 **Builds on:** [035 - Discord Multiplayer Agent UX](035-discord-multiplayer-agent-ux.md) (attention gate, thread sessions, depth routing, channel directives), [036 - Orchestrator Brief Compiler](036-orchestrator-brief-compiler-tier.md) (host-side routing and brief compilation), [040 - Caller-Provided Context Injection](040-caller-provided-context-injection.md) (the seam that carries channel data into a guest)
 
@@ -27,7 +27,7 @@ Four decisions, in priority order.
 
 **3. Charts and channel-data artifacts go to the guest, with data injected, not fetched.** "Chart X from this thread" already classifies as an artifact escalation. The monolith extracts a compact dataset from the channel window at dispatch time and ships it to the guest as an `/injected-context/` file (ADR 040), so the artifact recipe renders data it was handed. The guest gains no channel read capability, keeping the ADR 034 tier boundary intact.
 
-**4. Directive evolution becomes observed-but-confirmed.** A scheduled observer classifies recent bot-involved exchanges in ambient-granted channels for recurring style friction and, when confident, stages a directive proposal through the existing `propose_update` machinery. The propose-then-confirm gate from ADR 035 is unchanged: the observer can only propose; a human in the channel confirms with the existing reaction flow. Rate-limited to at most one open proposal per channel.
+**4. Directive evolution becomes observed-but-confirmed.** A scheduled observer classifies recent bot-involved exchanges in ambient-granted channels for recurring style friction and, when confident, stages a directive proposal through the existing `propose_update` machinery. The propose-then-confirm gate from ADR 035 is unchanged: the observer can only propose; a human in the channel confirms with the existing reaction flow. Rate-limited to at most one open proposal per channel. Owner decision (2026-07-04): observer noise is acceptable given two conditions, both binding on the implementation: it runs only in channels with an ambient grant (enabled servers opt in via ADR 029), and its sensitivity knobs (minimum evidence count, per-channel cooldown, run cadence) are deploy-time configuration in `values.yaml`, so noise is tuned down with a values edit rather than a code change.
 
 ## Alternatives Considered
 

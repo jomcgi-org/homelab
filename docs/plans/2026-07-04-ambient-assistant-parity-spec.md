@@ -76,7 +76,8 @@ Missing for "helpful ambient assistant":
 
 **Behaviour.** A weekly scheduler job scans ambient-granted channels for recurring style friction directed at the bot (repeated "shorter", "stop replying to memes", "use threads"). When it finds a consistent pattern, it stages a directive proposal via the existing `propose_update` flow and posts the standard propose-then-confirm message. Humans confirm or discard with the existing reactions; nothing changes without confirmation.
 
-- At most one open proposal per channel; the observer skips channels with a pending proposal or one resolved within 14 days.
+- At most one open proposal per channel; the observer skips channels with a pending proposal or one resolved within the cooldown window.
+- Sensitivity is deploy-time configuration in `values.yaml` (minimum evidence count, per-channel cooldown days, run cadence), so noise is tuned with a values edit, not a code change. The observer never runs outside ambient-granted channels.
 - The proposal message quotes the motivating evidence (message links) so confirmers can judge it.
 - All ADR 035 directive guardrails hold: style-only screen, provenance, git-seed reset.
 
