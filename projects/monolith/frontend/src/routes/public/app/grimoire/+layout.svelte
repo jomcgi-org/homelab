@@ -1,19 +1,27 @@
 <script>
-  // Public Grimoire app shell: Nav, a Turnstile gate around the app content
-  // (Library/sections/reader/entities), then Footer. The gate is a real
-  // admission boundary, not decoration: children (and therefore every
+  // Public Grimoire app shell: a slim app-own topbar (wordmark + Library /
+  // Entities nav) and a Turnstile gate around the app content. The gate is a
+  // real admission boundary, not decoration: children (and therefore every
   // /api/grimoire fetch) only mount after onAdmitted fires, so the WotC-
-  // copyrighted corpus never reaches an unsolved visitor or a crawler. Nav and
-  // Footer render unconditionally (bracketing the app, matching the public
-  // site's chrome), noindex keeps this out of search entirely (Task 3 /
-  // copyright mitigation) regardless of admission state.
-  import Nav from "$lib/public/components/Nav.svelte";
-  import Footer from "$lib/public/components/Footer.svelte";
+  // copyrighted corpus never reaches an unsolved visitor or a crawler. No
+  // site Nav/Footer: this is a standalone shareable app, not a page of the
+  // portfolio site. noindex keeps it out of search entirely (copyright
+  // mitigation) regardless of admission state.
+  import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
+  import { libraryHref, entitiesHref } from "$lib/public/grimoire/api.js";
 
   let { data, children } = $props();
 
   let admitted = $state(false);
+
+  // Highlight the active topbar link: the entities index and entity detail
+  // pages both count as "entities"; everything else is the library flow.
+  const section = $derived.by(() => {
+    const id = $page.route.id ?? "";
+    if (id.includes("/entities") || id.includes("/entity/")) return "entities";
+    return "library";
+  });
 </script>
 
 <svelte:head>
@@ -28,9 +36,24 @@
   <meta name="robots" content="noindex, nofollow" />
 </svelte:head>
 
-<Nav route="grimoire" />
+<div class="grimoire-app">
+  <header class="topbar">
+    <a class="mono wordmark" href={libraryHref()}>GRIMOIRE</a>
+    <nav class="topbar-nav" aria-label="Grimoire sections">
+      <a
+        class="mono topbar-link"
+        class:active={section === "library"}
+        href={libraryHref()}>LIBRARY</a
+      >
+      <a
+        class="mono topbar-link"
+        class:active={section === "entities"}
+        href={entitiesHref()}>ENTITIES</a
+      >
+    </nav>
+  </header>
 
-<main class="grimoire-shell">
+  <main class="grimoire-shell">
   {#if !admitted}
     <div class="wrap-narrow gate">
       <p class="eyebrow">GRIMOIRE ACCESS</p>
@@ -49,15 +72,76 @@
   {:else}
     {@render children()}
   {/if}
-</main>
-
-<Footer />
+  </main>
+</div>
 
 <style>
-  /* Structural shell only: vertical breathing room between Nav and the app
-     content / Footer. The gate copy reuses .wrap-narrow + .display/.eyebrow/
-     .hl-yellow verbatim, so this is the only custom CSS the shell needs. */
+  /* App-own chrome: a slim topbar plus hard-edge overrides. Setting the
+     radius custom properties to 0 on the app root squares off every
+     .card-hard / button / select inside via inheritance, without touching
+     the rest of the public site. */
+  .grimoire-app {
+    --radius: 0px;
+    --radius-lg: 0px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* The design system's :focus-visible ring is rounded (6px); square it to
+     match the hard-edge language inside the app. */
+  .grimoire-app :global(:focus-visible) {
+    border-radius: 0;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 32px;
+    border-bottom: 2px solid var(--ink);
+    background: var(--bg);
+  }
+
+  .wordmark {
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  .topbar-nav {
+    display: flex;
+    gap: 6px;
+  }
+
+  .topbar-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+    text-decoration: none;
+  }
+
+  /* High-contrast state change, no lift: ink fill on hover/active. */
+  .topbar-link:hover {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .topbar-link.active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
   .grimoire-shell {
+    flex: 1;
     min-height: 60vh;
   }
 

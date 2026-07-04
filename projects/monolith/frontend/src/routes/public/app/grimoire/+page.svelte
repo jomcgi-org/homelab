@@ -1,10 +1,9 @@
 <script>
-  // Public Grimoire Library: every loaded book, corpus coverage, and a
-  // scrolling status ticker. Fetches AFTER the layout's TurnstileGate admits
+  // Public Grimoire Library: every loaded book plus a static corpus stats
+  // strip at the top. Fetches AFTER the layout's TurnstileGate admits
   // (this component only mounts once `admitted` is true), so there is no
   // corpus fetch before the challenge is solved.
   import { onMount } from "svelte";
-  import Marquee from "$lib/public/components/Marquee.svelte";
   import Sticker from "$lib/public/components/Sticker.svelte";
   import { apiFetch, bookHref } from "$lib/public/grimoire/api.js";
 
@@ -24,11 +23,6 @@
     } finally {
       loading = false;
     }
-  }
-
-  function coverage(book) {
-    if (!book.chunk_count) return 0;
-    return Math.round((book.extracted_count / book.chunk_count) * 100);
   }
 
   function timeAgo(iso) {
@@ -61,26 +55,44 @@
     return Date.now() - then < NEW_WINDOW_MS;
   }
 
-  // One ticker line per book: "<BOOK> · N CHUNKS · N IMAGES · N ENTITIES · KG
-  // SYNCED <ago>". Marquee tiles the array x3 and separates items with its own
-  // dot, so a single joined string per book is the whole line.
-  const tickerItems = $derived(
-    books.map(
-      (b) =>
-        `${b.display_name.toUpperCase()} · ${b.chunk_count} CHUNKS · ${b.image_count} IMAGES · ${b.entity_count} ENTITIES · KG SYNCED ${timeAgo(b.latest_chunk_at)}`,
-    ),
-  );
+  // Static corpus totals for the strip at the top: aggregate across every
+  // loaded book, with the most recent sync time. Static and readable, not a
+  // scrolling marquee.
+  const totals = $derived.by(() => {
+    const sum = (key) => books.reduce((acc, b) => acc + (b[key] ?? 0), 0);
+    const latest = books
+      .map((b) => b.latest_chunk_at)
+      .filter(Boolean)
+      .sort()
+      .at(-1);
+    return {
+      books: books.length,
+      chunks: sum("chunk_count"),
+      images: sum("image_count"),
+      entities: sum("entity_count"),
+      synced: timeAgo(latest),
+    };
+  });
 </script>
 
-<div class="wrap library-page page">
-  <p class="eyebrow">THE GRIMOIRE</p>
-  <h1 class="display lib-title">Library</h1>
-
+<div class="library-page page">
   {#if !loading && !error && books.length > 0}
-    <div class="ticker-slot">
-      <Marquee items={tickerItems} />
+    <div class="stats-strip mono" role="status">
+      <span>{totals.books} {totals.books === 1 ? "BOOK" : "BOOKS"}</span>
+      <span class="strip-dot" aria-hidden="true">●</span>
+      <span>{totals.chunks} CHUNKS</span>
+      <span class="strip-dot" aria-hidden="true">●</span>
+      <span>{totals.images} IMAGES</span>
+      <span class="strip-dot" aria-hidden="true">●</span>
+      <span>{totals.entities} ENTITIES</span>
+      <span class="strip-dot" aria-hidden="true">●</span>
+      <span>SYNCED {totals.synced}</span>
     </div>
   {/if}
+
+  <div class="wrap">
+    <p class="eyebrow">THE GRIMOIRE</p>
+    <h1 class="display lib-title">Library</h1>
 
   {#if loading}
     <div class="skeletons">
@@ -108,25 +120,12 @@
             </div>
 
             <div class="book-stats">
-              <span class="chip mono">
-                {book.extracted_count}/{book.chunk_count} EXTRACTED
-              </span>
+              <span class="chip mono">{book.chunk_count} CHUNKS</span>
               <span class="chip mono">{book.image_count} IMAGES</span>
               <span class="chip mono">{book.entity_count} ENTITIES</span>
               <span class="chip mono chip-muted"
                 >SYNCED {timeAgo(book.latest_chunk_at)}</span
               >
-            </div>
-
-            <div
-              class="coverage-bar"
-              role="progressbar"
-              aria-valuenow={coverage(book)}
-              aria-valuemin="0"
-              aria-valuemax="100"
-              aria-label="{book.display_name} coverage"
-            >
-              <div class="coverage-fill" style="width:{coverage(book)}%"></div>
             </div>
           </div>
 
@@ -137,6 +136,7 @@
       {/each}
     </ul>
   {/if}
+  </div>
 </div>
 
 <style>
@@ -146,7 +146,29 @@
      design system doesn't ship (stat chip pills, a coverage bar) built from
      its own tokens rather than new colors. */
   .library-page {
-    padding: 48px 32px 96px;
+    padding-bottom: 96px;
+  }
+
+  /* Static full-bleed stats strip: the ticker's useful numbers without the
+     scroll. Accent ground, hard rule below, wraps on small screens. */
+  .stats-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    column-gap: 14px;
+    row-gap: 4px;
+    padding: 10px 16px;
+    background: var(--accent);
+    border-bottom: 2px solid var(--ink);
+    color: var(--ink);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .strip-dot {
+    font-size: 8px;
   }
 
   .lib-title {
@@ -154,8 +176,8 @@
     margin: 4px 0 28px;
   }
 
-  .ticker-slot {
-    margin: 0 -32px 40px;
+  .library-page .wrap {
+    padding-top: 40px;
   }
 
   .book-list {
@@ -214,19 +236,6 @@
     border-color: var(--rule-2);
   }
 
-  .coverage-bar {
-    height: 10px;
-    border: 2px solid var(--ink);
-    background: var(--bg-elev);
-    overflow: hidden;
-  }
-
-  .coverage-fill {
-    height: 100%;
-    background: var(--blue);
-    transition: width 300ms ease;
-  }
-
   .book-read {
     flex: none;
     min-height: 44px;
@@ -280,10 +289,10 @@
 
   @media (max-width: 640px) {
     .library-page {
-      padding: 32px 16px 72px;
+      padding-bottom: 72px;
     }
-    .ticker-slot {
-      margin: 0 -16px 32px;
+    .library-page .wrap {
+      padding-top: 28px;
     }
     .book-row {
       flex-direction: column;
@@ -297,9 +306,6 @@
   @media (prefers-reduced-motion: reduce) {
     .skeleton-row {
       animation: none;
-    }
-    .coverage-fill {
-      transition: none;
     }
   }
 </style>

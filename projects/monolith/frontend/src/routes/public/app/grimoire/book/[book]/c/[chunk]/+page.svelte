@@ -193,20 +193,24 @@
     margin-bottom: 16px;
   }
 
+  /* Body text is the workhorse sans, NOT the display serif: Instrument Serif
+     is a high-contrast display face whose hairline thins all but disappear at
+     body sizes, which reads as low contrast even at full ink. Hanken Grotesk
+     carries long-form reading. */
   .prose {
-    font-family: var(--serif);
-    font-size: 19px;
-    line-height: 1.65;
+    font-family: var(--sans);
+    font-size: 18px;
+    line-height: 1.7;
     color: var(--ink);
   }
 
   .prose p {
-    margin-bottom: 16px;
+    margin-bottom: 18px;
   }
 
   .prose-heading {
     margin: 28px 0 12px;
-    color: var(--ink-2);
+    color: var(--ink);
   }
 
   .prose-heading:first-child {
@@ -242,10 +246,10 @@
 
   .caption {
     margin-top: 12px;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-style: italic;
     font-size: 15px;
-    color: var(--ink-3);
+    color: var(--ink-2);
     text-align: center;
   }
 
