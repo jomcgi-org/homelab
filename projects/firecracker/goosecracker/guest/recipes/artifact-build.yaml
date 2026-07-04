@@ -138,6 +138,13 @@ prompt: |
 
   Router context may be in the file {{ context_file }} (it may be empty or
   missing): read it if it is a non-empty file.
+
+  A structured dataset the caller already extracted for this request may be
+  staged at /injected-context/channel-data.json (a title, columns, rows, and a
+  source_window describing the conversation window it came from). If it
+  exists, build the artifact from that data instead of inventing numbers, and
+  cite the source window somewhere on the page, for example a caption or
+  footnote. If it does not exist, build from {{ task_file }} alone as usual.
 parameters:
   - key: task_file
     description: "Path to a file describing what to build"
