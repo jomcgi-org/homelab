@@ -34,6 +34,14 @@ argo-cd:
         jsonPointers:
           - /spec/template/metadata/annotations/otel.injected-by
           - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
+          # HPA-managed replicas. App-level spec.ignoreDifferences is not
+          # applied by the controller (observed on v3.1.6: the monolith app's
+          # /spec/replicas entry was inert while these global rules worked, so
+          # the HPA-set replicas kept the Deployment permanently OutOfSync
+          # against a chart that deliberately omits replicas). Only HPAs mutate
+          # replicas in this cluster (kubectl scale is forbidden by convention),
+          # so a fleet-wide ignore is safe.
+          - /spec/replicas
     rbac:
       policy.csv: |
         p, mcp-agent, applications, *, */*, allow
