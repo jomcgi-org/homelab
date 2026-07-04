@@ -31,42 +31,8 @@ if [[ -z "$SCRIPT" ]]; then
 	exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Install a jq stub covering the one expression validate-hooks-executable.sh
-# issues:
-#   .hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty
-# ---------------------------------------------------------------------------
-mkdir -p "${TEST_TMPDIR}/bin"
-cat >"${TEST_TMPDIR}/bin/jq" <<'JQ_STUB'
-#!/usr/bin/env python3
-"""jq stub covering the single expression used by validate-hooks-executable.sh."""
-import json, sys
-
-args = sys.argv[1:]
-if args and args[0] == "-r":
-    args = args[1:]
-expr = args[0] if args else "."
-
-with open(args[-1]) as f:
-    data = json.load(f)
-
-EXPECTED = ".hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty"
-if expr != EXPECTED:
-    print(f"jq stub: unhandled expression: {expr}", file=sys.stderr)
-    sys.exit(1)
-
-hooks = data.get("hooks") or {}
-for matchers in hooks.values():
-    if not isinstance(matchers, list):
-        continue
-    for matcher_entry in matchers:
-        for h in (matcher_entry.get("hooks") or []):
-            cmd = h.get("command")
-            if cmd:
-                print(cmd)
-JQ_STUB
-chmod +x "${TEST_TMPDIR}/bin/jq"
-export PATH="${TEST_TMPDIR}/bin:${PATH}"
+# The validator parses settings.json with python3 stdlib (no jq), so no
+# command stubs are needed in the hermetic sandbox.
 
 # ---------------------------------------------------------------------------
 # Test helpers

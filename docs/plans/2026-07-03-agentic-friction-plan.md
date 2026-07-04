@@ -19,7 +19,7 @@ spec pattern it addresses.
    "merged code silently never deploys" (6+ occurrences) into a loud main-CI
    failure minutes after merge.
 4. If the existence check itself errors (registry flake), log a warning and fall
-   through to today's behavior (push) — no new hard dependency on registry reads.
+   through to the previous behavior (push): no new hard dependency on registry reads.
 
 PR-branch behavior (dev-tag republish, bot bump) unchanged.
 
@@ -27,7 +27,7 @@ PR-branch behavior (dev-tag republish, bot bump) unchanged.
 
 New `bazel/tools/git/bump-chart.sh <projects/<svc>>`:
 fetch `origin/main`; read the chart version at the main tip (not the local
-checkout — kills the version-race class); compute next patch (or `--minor` /
+checkout, killing the version-race class); compute next patch (or `--minor` /
 explicit version); write `chart/Chart.yaml` + `deploy/application.yaml`
 `targetRevision` in sync; print what changed. Add to CLAUDE.md Essential
 Commands. This makes each of the 20-per-window bump events a one-command,
@@ -99,8 +99,8 @@ phantom-OutOfSync class (#3158) at PR time instead of after a 2-hour prod saga.
 
 `docs/decisions/platform/`: rationale for skip-if-exists + loud missed-bump
 detection (Accepted, implemented by Task 1). Records the rejected alternatives
-(content-digest comparison — impossible under stamped tags; post-merge
-auto-bump bot and semver-range targetRevision tracking — left open, Joe's call).
+(content-digest comparison, impossible under stamped tags; post-merge
+auto-bump bot and semver-range targetRevision tracking, left open for Joe).
 
 ## Task 11: Docs/memory truth-up (F1)
 
@@ -115,4 +115,7 @@ Single PR from `feat/agentic-friction-fixes`. Implementation fan-out: Sonnet
 implementers on disjoint file sets (Tasks 1+2, 3, 4, 5+6 docs, 8, 9); CLAUDE.md
 integration and Task 10 by the main session. One comprehensive Opus-tier review
 of the full diff before push; CI on the pushed branch is the test gate; merge
-on green (rebase). No chart bumps required (no service chart content touched).
+on green (rebase). This PR itself needs monolith and monolith-public chart
+bumps: the regenerated docs manifests are inside the monolith image closure
+(the docs pages serve them), so the new docs must roll out like any content
+change.

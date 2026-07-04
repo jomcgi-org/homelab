@@ -170,6 +170,13 @@ mv "${CHART_YAML}.tmp" "$CHART_YAML"
 sed "s/targetRevision: ${OLD_TR}\$/targetRevision: ${NEW_VERSION}/" "$APP_YAML" >"${APP_YAML}.tmp"
 mv "${APP_YAML}.tmp" "$APP_YAML"
 
+# The count-grep above tolerates quoting/whitespace variants the sed rewrite
+# does not; verify the rewrite actually landed rather than half-bumping.
+if ! grep -qF "targetRevision: ${NEW_VERSION}" "$APP_YAML"; then
+	echo "ERROR: failed to rewrite targetRevision in ${APP_YAML} (unusual formatting?); edit manually." >&2
+	exit 1
+fi
+
 echo "Bumped ${CHART_NAME}: ${LOCAL_VERSION} -> ${NEW_VERSION} (base ${BASE_VERSION}, main ${MAIN_VERSION})"
 echo "  ${CHART_YAML}"
 echo "  ${APP_YAML}"

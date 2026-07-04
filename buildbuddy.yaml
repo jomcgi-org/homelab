@@ -209,7 +209,10 @@ actions:
           bazel run //bazel/images:push_all --config=ci --stamp
 
   # Manifest diff — renders Helm manifests from main and PR, posts diff as PR comment
-  # Runs in parallel with other actions (no depends_on), non-blocking (informational only)
+  # Runs in parallel with other actions (no depends_on). Mostly informational,
+  # but hard-fails on newly introduced duplicate env var names within a
+  # container (the phantom-OutOfSync class: the API server collapses
+  # duplicates on apply, so the ArgoCD diff never converges).
   - name: "Manifest diff"
     container_image: "ubuntu-24.04"
     max_retries: 1

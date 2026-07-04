@@ -90,7 +90,13 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         if [[ "$CAN_VERSION" == "true" ]]; then
           NEEDED_VERSION=$(cd "$WORKSPACE" && "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package") || NEEDED_VERSION=""
           if [[ -n "$NEEDED_VERSION" ]] && [[ "$NEEDED_VERSION" != "$CHART_VERSION" ]]; then
-            PROJECT_DIR=$(dirname "$CHART_DIR")
+            # bump-chart.sh takes the project dir for the deploy/ convention,
+            # or the chart dir itself when application.yaml is colocated.
+            if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
+              PROJECT_DIR="$CHART_DIR"
+            else
+              PROJECT_DIR=$(dirname "$CHART_DIR")
+            fi
             {
               echo "ERROR: ${CHART_NAME} ${CHART_VERSION} is already published, but commits since"
               echo "that version touch this chart's dependency closure (computed next"
