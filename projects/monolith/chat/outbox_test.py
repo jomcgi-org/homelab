@@ -1,5 +1,6 @@
 """Tests for chat.outbox: enqueue validation and the drain posting logic."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -8,9 +9,42 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
+import chat.directives as directives
 import chat.outbox as outbox
 from chat.models import DiscordOutbox
 from chat.outbox import drain_once, enqueue_edit, enqueue_message, enqueue_reaction
+
+
+def _directive_proposal_row(row_id: int = 8) -> dict:
+    """A pending directive-proposal outbox row as _claim_pending would hand it
+    to the drain (a plain content post carrying kind/payload_json)."""
+    return {
+        "id": row_id,
+        "channel_id": "100",
+        "content": "Proposed directive for this channel:\n> reply concisely",
+        "embed_json": None,
+        "level": "info",
+        "target_message_id": None,
+        "reaction": None,
+        "reaction_remove": False,
+        "kind": "directive_proposal",
+        "payload_json": json.dumps(
+            {
+                "channel_id": "100",
+                "directive_change": "reply concisely",
+                "evidence_message_ids": ["1", "2", "3"],
+                "motivating_message_id": "1",
+            }
+        ),
+    }
+
+
+def _posted_message() -> MagicMock:
+    message = MagicMock()
+    message.id = 999
+    message.add_reaction = AsyncMock()
+    message.edit = AsyncMock()
+    return message
 
 
 @pytest.fixture(name="engine")
@@ -296,6 +330,104 @@ async def test_drain_edit_swallows_missing_message():
 
     mark_posted.assert_called_once()
     mark_failed.assert_not_called()
+
+
+def test_enqueue_message_kind_and_payload_round_trip(engine):
+    """A directive-proposal row persists kind and its JSON-serialised payload;
+    a plain post leaves both at their empty defaults."""
+    payload = {"channel_id": "100", "directive_change": "reply concisely"}
+    with Session(engine) as session:
+        enqueue_message(
+            session,
+            "100",
+            content="proposal",
+            kind="directive_proposal",
+            payload=payload,
+        )
+        enqueue_message(session, "100", content="plain")
+        session.commit()
+    with Session(engine) as session:
+        rows = session.query(DiscordOutbox).order_by(DiscordOutbox.id).all()
+    tagged, plain = rows
+    assert tagged.kind == "directive_proposal"
+    assert json.loads(tagged.payload_json) == payload
+    assert plain.kind == "" and plain.payload_json is None
+
+
+@pytest.mark.asyncio
+async def test_drain_directive_proposal_stages_and_reacts():
+    """A posted directive-proposal row stages the proposal keyed on the posted
+    message id (user_id 'observer') and seeds 👍/👎 when the guard accepts it."""
+    row = _directive_proposal_row()
+    message = _posted_message()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=message)
+    bot = MagicMock()
+    bot.get_channel = MagicMock(return_value=channel)
+
+    with (
+        patch.object(outbox, "_claim_pending", return_value=[row]),
+        patch.object(outbox, "_mark_posted") as mark_posted,
+        patch.object(outbox, "_mark_failed") as mark_failed,
+        patch.object(directives, "propose_update", return_value=(True, "")) as prop,
+    ):
+        posted = await drain_once(bot, engine=object())
+
+    prop.assert_called_once_with("100", "reply concisely", "observer", "1", "999")
+    message.add_reaction.assert_any_await("👍")
+    message.add_reaction.assert_any_await("👎")
+    message.edit.assert_not_awaited()
+    mark_posted.assert_called_once()
+    mark_failed.assert_not_called()
+    assert posted == 1
+
+
+@pytest.mark.asyncio
+async def test_drain_directive_proposal_guard_rejected_edits():
+    """A guard-rejected proposal edits the posted message to the rejection copy
+    and adds no reactions; the row still counts as posted."""
+    row = _directive_proposal_row()
+    message = _posted_message()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=message)
+    bot = MagicMock()
+    bot.get_channel = MagicMock(return_value=channel)
+
+    with (
+        patch.object(outbox, "_claim_pending", return_value=[row]),
+        patch.object(outbox, "_mark_posted") as mark_posted,
+        patch.object(outbox, "_mark_failed"),
+        patch.object(directives, "propose_update", return_value=(False, "blocked")),
+    ):
+        await drain_once(bot, engine=object())
+
+    message.edit.assert_awaited_once_with(content=outbox._DIRECTIVE_REJECTED)
+    message.add_reaction.assert_not_awaited()
+    mark_posted.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_directive_proposal_hook_failure_does_not_wedge_drain():
+    """A raising hook (bad payload, Discord hiccup) is swallowed: the row is
+    still marked posted and the drain reports it, never stalling on it."""
+    row = _directive_proposal_row()
+    message = _posted_message()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=message)
+    bot = MagicMock()
+    bot.get_channel = MagicMock(return_value=channel)
+
+    with (
+        patch.object(outbox, "_claim_pending", return_value=[row]),
+        patch.object(outbox, "_mark_posted") as mark_posted,
+        patch.object(outbox, "_mark_failed") as mark_failed,
+        patch.object(directives, "propose_update", side_effect=RuntimeError("boom")),
+    ):
+        posted = await drain_once(bot, engine=object())
+
+    mark_posted.assert_called_once()
+    mark_failed.assert_not_called()
+    assert posted == 1
 
 
 @pytest.mark.asyncio

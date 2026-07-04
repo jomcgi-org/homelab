@@ -37,11 +37,18 @@ def enqueue_message(
     content: str | None = None,
     embed: dict | None = None,
     level: str = "info",
+    kind: str = "",
+    payload: dict | None = None,
 ) -> None:
     """Enqueue a Discord post. Exactly one of content/embed must be set.
 
     Caller is responsible for committing the session (matches the rest of the
     chat write API). The leader's drain loop posts the row asynchronously.
+
+    ``kind``/``payload`` tag a row for post-processing after it posts: the
+    observer enqueues a content post with ``kind="directive_proposal"`` and a
+    payload the drain's post-hook reads to wire the propose-then-confirm flow
+    (see ``_run_directive_proposal_hook``).
     """
     if (content is None) == (embed is None):
         raise ValueError("enqueue_message requires exactly one of content/embed")
@@ -51,6 +58,8 @@ def enqueue_message(
             content=content,
             embed_json=json.dumps(embed) if embed is not None else None,
             level=level,
+            kind=kind,
+            payload_json=json.dumps(payload) if payload is not None else None,
         )
     )
 
@@ -127,6 +136,8 @@ def _claim_pending(engine) -> list[dict]:
                 "target_message_id": r.target_message_id,
                 "reaction": r.reaction,
                 "reaction_remove": r.reaction_remove,
+                "kind": r.kind,
+                "payload_json": r.payload_json,
             }
             for r in rows
         ]
@@ -154,9 +165,14 @@ def _mark_failed(engine, row_id: int, error: str) -> None:
 _LEVEL_PREFIX = {"info": "", "warn": "⚠️ ", "error": "\U0001f534 "}
 
 
-async def _post_row(bot, row: dict) -> None:
+async def _post_row(bot, row: dict):
     """Post one outbox row via the bot. Mirrors chat.bot.send_message's channel
-    resolution (cache, then API fetch)."""
+    resolution (cache, then API fetch).
+
+    Returns the ``discord.Message`` a content/embed post created (so a post-hook
+    like the directive-proposal wiring can react on it), or ``None`` for a
+    reaction/edit row, which mutates an existing message rather than creating one.
+    """
     import discord
 
     channel = bot.get_channel(int(row["channel_id"]))
@@ -164,14 +180,16 @@ async def _post_row(bot, row: dict) -> None:
         channel = await bot.fetch_channel(int(row["channel_id"]))
     if row.get("reaction") is not None:
         await _apply_reaction(bot, channel, row)
+        return None
     elif row.get("target_message_id") is not None and row["content"] is not None:
         await _apply_edit(bot, channel, row)
+        return None
     elif row["embed_json"] is not None:
         embed = discord.Embed.from_dict(json.loads(row["embed_json"]))
-        await channel.send(embed=embed)
+        return await channel.send(embed=embed)
     else:
         prefix = _LEVEL_PREFIX.get(row["level"], "")
-        await channel.send(f"{prefix}{row['content']}")
+        return await channel.send(f"{prefix}{row['content']}")
 
 
 async def _apply_reaction(bot, channel, row: dict) -> None:
@@ -218,17 +236,68 @@ async def _apply_edit(bot, channel, row: dict) -> None:
     await message.edit(content=row["content"])
 
 
+# The rejection copy the interactive bot path uses when the style-only guard
+# blocks a proposed directive (chat.bot); the drain hook reuses it verbatim so a
+# guard-rejected observer proposal reads identically to a rejected /agent one.
+_DIRECTIVE_REJECTED = (
+    "That change was rejected (it tried to alter tools, permissions, or access)."
+)
+
+
+async def _run_directive_proposal_hook(row: dict, posted_message) -> None:
+    """Wire the propose-then-confirm flow onto a freshly-posted directive proposal.
+
+    The observer cannot know the Discord message id until the leader posts the
+    summary, so it enqueues a ``kind="directive_proposal"`` content row and lets
+    this hook, running right after the post, stage the proposal keyed on that
+    message id and seed 👍/👎 (or edit to the rejection copy if the style-only
+    guard, re-run inside ``propose_update`` for defense in depth, blocks it).
+
+    Never raises: any failure here (bad payload, a Discord hiccup adding the
+    reactions) is logged and swallowed so the caller still marks the row posted
+    and the drain keeps going, exactly as the task requires. propose_update opens
+    its own session, so it goes through asyncio.to_thread (no session crosses the
+    await, no sync Session in this async def).
+    """
+    from chat import directives
+
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+        channel_id = payload["channel_id"]
+        directive_change = payload["directive_change"]
+        motivating_message_id = payload.get("motivating_message_id", "")
+        ok, _ = await asyncio.to_thread(
+            directives.propose_update,
+            channel_id,
+            directive_change,
+            "observer",
+            motivating_message_id,
+            str(posted_message.id),
+        )
+        if ok:
+            await posted_message.add_reaction("👍")
+            await posted_message.add_reaction("👎")
+        else:
+            await posted_message.edit(content=_DIRECTIVE_REJECTED)
+    except Exception:
+        logger.exception(
+            "outbox: directive-proposal hook failed for row %s", row.get("id")
+        )
+
+
 async def drain_once(bot, engine) -> int:
     """Post every currently-pending row. Returns the number posted."""
     rows = await asyncio.to_thread(_claim_pending, engine)
     posted = 0
     for row in rows:
         try:
-            await _post_row(bot, row)
+            posted_message = await _post_row(bot, row)
         except Exception as exc:  # noqa: BLE001 - a bad row must not stall the rest
             logger.warning("outbox: failed to post row %s: %s", row["id"], exc)
             await asyncio.to_thread(_mark_failed, engine, row["id"], str(exc))
         else:
+            if row.get("kind") == "directive_proposal" and posted_message is not None:
+                await _run_directive_proposal_hook(row, posted_message)
             await asyncio.to_thread(_mark_posted, engine, row["id"])
             posted += 1
     return posted

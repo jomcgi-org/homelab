@@ -110,6 +110,12 @@ class DiscordOutbox(SQLModel, table=True):
     sets neither. The CHECK mirrors the DB constraint so the SQLite test fixtures
     enforce it too (create_all does not see migration-only constraints, which is
     how a reaction row's NULL/NULL content once slipped past tests into prod).
+
+    kind tags a row that needs post-processing after it posts: a plain post
+    leaves kind="", while a directive_proposal row (enqueued by the observer
+    job) is a normal content post whose payload_json carries the channel /
+    directive_change / evidence the drain's post-hook needs to wire the
+    propose-then-confirm flow against the message id it just posted.
     """
 
     __tablename__ = "discord_outbox"
@@ -137,6 +143,10 @@ class DiscordOutbox(SQLModel, table=True):
     posted_at: datetime | None = Field(default=None)
     attempts: int = Field(default=0)
     last_error: str | None = Field(default=None)
+    # Post-hook discriminator: "" for a plain post, "directive_proposal" for a
+    # row the leader drain follows up on (payload_json below carries the args).
+    kind: str = Field(default="")
+    payload_json: str | None = Field(default=None)
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (running_since is intentionally NULL until a turn goes running)
