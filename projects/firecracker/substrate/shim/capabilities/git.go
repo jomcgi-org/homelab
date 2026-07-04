@@ -46,6 +46,18 @@ type ExecGit struct {
 	// Bin is the git binary path. Defaults to "git" when empty.
 	Bin string
 
+	// CommitterName is the git user.name set on scratch-ref commits made by
+	// RecordScratch. When empty, a neutral substrate default is used. A
+	// product built on this shared capability sets this to attribute its own
+	// scratch-ref commits, keeping this shared capability workload-agnostic.
+	CommitterName string
+
+	// CommitterEmail is the git user.email set on scratch-ref commits made by
+	// RecordScratch. When empty, a neutral substrate default is used. A
+	// product built on this shared capability sets this to attribute its own
+	// scratch-ref commits, keeping this shared capability workload-agnostic.
+	CommitterEmail string
+
 	// runner is the subprocess executor; nil means defaultRunner.
 	runner runnerFunc
 }
@@ -55,6 +67,24 @@ func (g *ExecGit) bin() string {
 		return g.Bin
 	}
 	return "git"
+}
+
+// committerName returns the configured CommitterName, or a neutral
+// substrate default when unset.
+func (g *ExecGit) committerName() string {
+	if g.CommitterName != "" {
+		return g.CommitterName
+	}
+	return "fc-agent"
+}
+
+// committerEmail returns the configured CommitterEmail, or a neutral
+// substrate default when unset.
+func (g *ExecGit) committerEmail() string {
+	if g.CommitterEmail != "" {
+		return g.CommitterEmail
+	}
+	return "agent@localhost"
 }
 
 // run executes a git sub-command and returns only an error. Output bytes are
@@ -127,10 +157,10 @@ func (g *ExecGit) RecordScratch(ctx context.Context, workspace, mirrorURL, sessi
 	ref := "refs/agents/" + sanitizeRefComponent(session)
 
 	// Set a bot git identity so the commit is attributed correctly.
-	if err := g.run(ctx, "-C", workspace, "config", "user.name", "goosecracker"); err != nil {
+	if err := g.run(ctx, "-C", workspace, "config", "user.name", g.committerName()); err != nil {
 		return "", fmt.Errorf("git RecordScratch (config name): %w", err)
 	}
-	if err := g.run(ctx, "-C", workspace, "config", "user.email", "agent@jomcgi.dev"); err != nil {
+	if err := g.run(ctx, "-C", workspace, "config", "user.email", g.committerEmail()); err != nil {
 		return "", fmt.Errorf("git RecordScratch (config email): %w", err)
 	}
 

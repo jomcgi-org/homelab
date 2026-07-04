@@ -201,13 +201,16 @@ func (r *execRunner) Run(ctx context.Context, argv []string, env map[string]stri
 // Clone clones mirror into dest (shallow partial clone) and checks out ref via
 // the shared ExecGit.
 func (r *execRunner) Clone(ctx context.Context, mirror, ref, dest string) error {
-	return (&capabilities.ExecGit{}).Clone(ctx, mirror, ref, dest)
+	return (&capabilities.ExecGit{CommitterName: "goosecracker", CommitterEmail: "agent@jomcgi.dev"}).Clone(ctx, mirror, ref, dest)
 }
 
 // RecordScratch commits workspace changes and pushes them to
-// refs/agents/<session> on the mirror (WS3 scratch-ref recording).
+// refs/agents/<session> on the mirror (WS3 scratch-ref recording). The
+// substrate's neutral committer default is overridden here so scratch-ref
+// commits are attributed to goosecracker, the product using this shared
+// capability.
 func (r *execRunner) RecordScratch(ctx context.Context, workspace, mirrorURL, session string) (string, error) {
-	return (&capabilities.ExecGit{}).RecordScratch(ctx, workspace, mirrorURL, session)
+	return (&capabilities.ExecGit{CommitterName: "goosecracker", CommitterEmail: "agent@jomcgi.dev"}).RecordScratch(ctx, workspace, mirrorURL, session)
 }
 
 // execSessionStore is the production handler.SessionStore. It persists goose's

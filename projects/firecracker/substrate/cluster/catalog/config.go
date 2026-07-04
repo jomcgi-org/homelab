@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
@@ -74,6 +75,16 @@ type Config struct {
 	// workload). Default "127.0.0.1:8888".
 	EgressSidecarAddr string
 
+	// AllowedCallers is the allow-list of Kubernetes caller identities permitted
+	// to POST /invoke, as full usernames (e.g.
+	// "system:serviceaccount:monolith:monolith"), parsed from the
+	// comma-separated FC_INVOKE_ALLOWED_CALLERS. When empty, caller
+	// authentication is DISABLED and the daemon logs a startup warning: /invoke
+	// is then open to any in-cluster client. Production deployments always set
+	// it; the empty default keeps the pre-substrate (firecracker.enabled=false)
+	// and non-Kubernetes test paths runnable without the TokenReview API.
+	AllowedCallers []string
+
 	// Workloads is the set of named workloads the daemon can dispatch, keyed
 	// by workload name. Empty when no workload table is configured.
 	Workloads map[string]substrate.Workload
@@ -96,6 +107,7 @@ func Load() (Config, error) {
 		GuestOomScoreAdj:  atoiDefault("FC_INVOKE_GUEST_OOM_SCORE_ADJ", 1000),
 		BootReadyTimeout:  60 * time.Second,
 		EgressSidecarAddr: getenvDefault("FC_INVOKE_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
+		AllowedCallers:    splitList(os.Getenv("FC_INVOKE_ALLOWED_CALLERS")),
 	}
 
 	if c.Node == "" {
@@ -213,6 +225,21 @@ func getenvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitList parses a comma-separated environment value into a slice of trimmed,
+// non-empty entries. An empty or all-whitespace value yields a nil slice.
+func splitList(v string) []string {
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // atoiDefault returns the named environment variable parsed as an int, or def

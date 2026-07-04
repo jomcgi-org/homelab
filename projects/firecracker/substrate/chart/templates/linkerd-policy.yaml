@@ -1,0 +1,55 @@
+{{- if .Values.linkerdPolicy.enabled }}
+# Linkerd-native authorization for /invoke (STPA: unauthenticated /invoke),
+# layered on top of the daemon's own TokenReview control as defence-in-depth.
+# The pod is meshed, so access is expressed with Linkerd's policy CRDs rather
+# than a Kubernetes NetworkPolicy (which in a meshed namespace needs the proxy's
+# 4143 inbound + control-plane allowances and is a known cluster footgun).
+#
+# A Server makes the daemon's http port deny-by-default; only traffic permitted
+# by the AuthorizationPolicy below reaches it. Linkerd auto-authorizes the
+# kubelet liveness/readiness probes declared on the pod, so /healthz keeps
+# working without an explicit rule.
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: {{ include "fc-invoke.fullname" . }}-invoke
+  labels:
+    {{- include "fc-invoke.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "fc-invoke.selectorLabels" . | nindent 6 }}
+  port: http
+---
+# The mesh identities allowed to reach /invoke: the monolith orchestrator (its
+# goosecracker runner and the semgrep MCP tool both call the daemon under the
+# monolith ServiceAccount). Configured as a list so a second caller can be added
+# without a template change.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: {{ include "fc-invoke.fullname" . }}-invoke-clients
+  labels:
+    {{- include "fc-invoke.labels" . | nindent 4 }}
+spec:
+  identities:
+    {{- range .Values.linkerdPolicy.allowedIdentities }}
+    - {{ . | quote }}
+    {{- end }}
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "fc-invoke.fullname" . }}-allow-invoke-clients
+  labels:
+    {{- include "fc-invoke.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: {{ include "fc-invoke.fullname" . }}-invoke
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: {{ include "fc-invoke.fullname" . }}-invoke-clients
+{{- end }}

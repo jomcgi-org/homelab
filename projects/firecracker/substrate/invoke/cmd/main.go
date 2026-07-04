@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/auth"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/catalog"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/ingress"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/fcvm/driver"
@@ -137,9 +138,28 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	// Caller authentication (STPA: unauthenticated /invoke). When
+	// FC_INVOKE_ALLOWED_CALLERS is set, every /invoke request must present a
+	// ServiceAccount bearer token that the Kubernetes TokenReview API resolves to
+	// an allow-listed identity; /healthz stays open for kubelet probes. When it is
+	// unset the daemon runs open and says so loudly, so a missing config is never
+	// a silent hole. This is the portable, substrate-independent control; the
+	// homelab layers a Linkerd AuthorizationPolicy on top as defence-in-depth.
+	var handler http.Handler = ingress.New(invokers, logger)
+	if len(cfg.AllowedCallers) > 0 {
+		reviewer, err := auth.NewClusterReviewer()
+		if err != nil {
+			return fmt.Errorf("build token reviewer: %w", err)
+		}
+		handler = auth.Middleware(handler, reviewer, cfg.AllowedCallers, logger)
+		logger.Info("caller authentication enabled", "allowedCallers", cfg.AllowedCallers)
+	} else {
+		logger.Warn("caller authentication DISABLED: FC_INVOKE_ALLOWED_CALLERS is unset, so /invoke is open to any in-cluster client")
+	}
+
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: ingress.New(invokers, logger),
+		Handler: handler,
 		// Bound so a slow client sending headers cannot pin the ingress.
 		ReadHeaderTimeout: 10 * time.Second,
 	}

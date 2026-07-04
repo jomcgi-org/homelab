@@ -14,6 +14,7 @@ import os
 import httpx
 
 from app.mcp_app import mcp
+from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,13 @@ async def semgrep_scan(files: list[dict]) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{FC_INVOKE_URL}/invoke/semgrep", json=payload)
+            # Carry this pod's ServiceAccount token so fc-invoke's TokenReview
+            # gate admits the call; off-cluster this is an empty header set.
+            resp = await client.post(
+                f"{FC_INVOKE_URL}/invoke/semgrep",
+                json=payload,
+                headers=auth_headers(),
+            )
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError as exc:
