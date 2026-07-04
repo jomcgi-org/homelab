@@ -325,6 +325,14 @@ def chat_changelog(name: str) -> None:
     logger.info("chat-changelog[%s]: done", name)
 
 
+@app.command("chat-drain-reminders")
+def chat_drain_reminders() -> None:
+    """Deliver due reminders into the Discord outbox (one-shot of
+    chat.jobs.drain_reminders_handler). No bot required; the leader's outbox
+    drain posts the enqueued rows."""
+    _run_job("chat-drain-reminders", "chat.jobs", "drain_reminders_handler")
+
+
 @app.command("evict-artifact-sessions")
 def evict_artifact_sessions() -> None:
     """Evict goose session DBs older than the TTL (ADR 026 Phase 2 Task 2.5).

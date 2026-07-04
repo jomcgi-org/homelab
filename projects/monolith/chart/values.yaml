@@ -444,6 +444,25 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # chat.jobs.drain_reminders_handler: net-new (never ran in-process, so no
+    # `replaces`/ARGO_JOBS entry needed). Delivers due chat reminders into the
+    # Discord outbox; DB-only, no bot in the job. 2-minute cadence is the
+    # fastest plain-cron interval already in use elsewhere in this file
+    # (observability-stats-rollup); the reminder spec's delivery tolerance is
+    # minutes, not seconds, so this stays inside that envelope instead of
+    # introducing the first sub-minute `@every` schedule.
+    - name: chat-drain-reminders
+      args: ["chat-drain-reminders"]
+      schedule: "*/2 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 120
+      suspend: false
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
     # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
     # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
