@@ -13,12 +13,11 @@ npm_link_all_packages(name = "node_modules")
 
 # gazelle:semgrep_target_kinds py_venv_binary
 
-# Custom gazelle binary with ArgoCD and wrangler extensions
+# Custom gazelle binary with ArgoCD extensions
 gazelle_binary(
     name = "gazelle_binary",
     languages = [
         "//bazel/helm/gazelle",
-        "//bazel/wrangler/gazelle",
         "//bazel/semgrep/defs/gazelle",
         "@bazel_skylib_gazelle_plugin//bzl",
         "@gazelle//language/go",
@@ -32,7 +31,6 @@ gazelle(
     env = {
         "ENABLE_LANGUAGES": ",".join([
             "argocd",
-            "wrangler",
             "semgrep",
             "bzl",
             "proto",
