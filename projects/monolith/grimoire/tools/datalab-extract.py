@@ -197,7 +197,7 @@ def probe(check_url: str) -> dict | None:
         if 400 <= e.code < 500:
             return None
         die(f"HTTP {e.code} checking the in-flight request; retry later to resume")
-    except (urllib.error.URLError, TimeoutError) as e:
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
         die(f"cannot reach Datalab to resume the in-flight request ({e}); retry later")
 
 
@@ -377,8 +377,11 @@ def main(argv: list[str] | None = None) -> int:
         unwrap(env, folder)
         (folder / _CHECKPOINT_NAME).unlink(missing_ok=True)
 
+    # Refresh source.pdf when the input file differs (size heuristic), so a
+    # --force-extract against a corrected PDF does not archive a stale source
+    # next to the new extraction.
     source = folder / "source.pdf"
-    if not source.is_file():
+    if not source.is_file() or source.stat().st_size != pdf.stat().st_size:
         shutil.copyfile(pdf, source)
 
     if args.skip_drive:
