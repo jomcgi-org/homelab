@@ -41,6 +41,9 @@ def _make_message(
     msg.reference = reference
     msg.attachments = []
     msg.embeds = []
+    # Ack-first (ADR 035 Task 8): on_message awaits message.add_reaction on the
+    # agent path, so it must be awaitable on every message mock.
+    msg.add_reaction = AsyncMock()
     sent = MagicMock(id=100)
     sent.edit = AsyncMock()
     msg.reply = AsyncMock(return_value=sent)
@@ -943,10 +946,15 @@ class TestStartAgentFlowOrchestrator:
         mock_start_session.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_goose_verdict_submits_brief_task_and_prerenders_checklist(self):
-        """A goose verdict opens a thread, submits the brief markdown + the raw
-        prompt as the task, and pre-renders the checklist from brief stages."""
+    async def test_plan_verdict_submits_raw_task_and_prerenders_checklist_from_plan(
+        self,
+    ):
+        """A PlanVerdict opens a thread, submits the RAW prompt as the task (the
+        plan supersedes the advisory brief, so no brief markdown is prepended),
+        threads the plan through to start_agent_session, and pre-renders the
+        checklist from the plan's step stage-titles."""
         from chat import orchestrator
+        from chat.orchestrator_plan import Plan, PlanStep
 
         bot = _make_bot()
         channel = _flow_channel()
@@ -956,31 +964,39 @@ class TestStartAgentFlowOrchestrator:
         channel.create_thread = AsyncMock(return_value=thread)
         user = MagicMock()
 
-        brief = orchestrator.Brief(
-            recipe="implement",
+        plan = Plan(
+            enabled_subrecipes=("query", "implement"),
+            steps=(
+                PlanStep(sub_recipe="query", context="Find the failing test."),
+                PlanStep(sub_recipe="implement", context="Fix it and open a PR."),
+            ),
+            done_criteria=("CI green",),
+        )
+        verdict = orchestrator.PlanVerdict(
+            plan=plan,
             repo="jomcgi/homelab",
             repo_paths=["projects/monolith/chat/bot.py"],
-            hints="hint text",
-            constraints="do not break",
-            done_criteria=["CI green"],
-            stages=["First stage", "Second stage"],
+            repo_replaced=False,
         )
         with (
-            patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=brief)),
+            patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=verdict)),
             patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
             patch.object(bot, "_start_goosecracker_stream") as mock_stream,
         ):
             outcome = await bot.start_agent_flow(channel, user, "raw prompt", "")
 
         assert outcome.thread is thread
-        # The submitted task carries the brief AND the raw prompt (ground truth).
+        # The submitted task is the raw prompt (ground truth), never brief-prefixed.
         task = mock_start_session.call_args.kwargs["task"]
-        assert "Task brief" in task
-        assert "First stage" in task
-        assert "raw prompt" in task
-        # The checklist is pre-rendered from the brief stages on one of the sends.
+        assert task == "raw prompt"
+        assert "Task brief" not in task
+        # The validated plan is threaded through so the runner renders the router.
+        assert mock_start_session.call_args.kwargs["plan"] is plan
+        # The checklist is pre-rendered from the plan's step stage-titles (the
+        # same mapping the rendered router's progress markers use: query ->
+        # "Answering", implement -> "Implementing").
         sent_bodies = [c.args[0] for c in thread.send.call_args_list]
-        assert any("First stage" in b and "Second stage" in b for b in sent_bodies)
+        assert any("Answering" in b and "Implementing" in b for b in sent_bodies)
         mock_stream.assert_called_once()
 
     @pytest.mark.asyncio

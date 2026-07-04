@@ -230,6 +230,7 @@ def test_start_agent_session_dispatches_with_agent_recipe(engine, fake_api):
         tier="",
         repo="loom",
         discord_thread="thread-2",
+        plan=None,
     )
 
 

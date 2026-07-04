@@ -19,11 +19,12 @@ from typing import TYPE_CHECKING, Any
 from goosecracker import runner, threads
 
 if TYPE_CHECKING:
-    # Type-only: chat.orchestrator_plan imports goosecracker.recipe_catalog, so a
-    # runtime import here (this module loads at goosecracker package init) would
-    # risk a circular import. `from __future__ import annotations` above makes
-    # this annotation a string, never evaluated, so TYPE_CHECKING-only is safe.
-    from chat.orchestrator_plan import Plan
+    # Type-only: chat.api re-exports Plan from chat.orchestrator_plan, which
+    # imports goosecracker.recipe_catalog, so a runtime import here (this module
+    # loads at goosecracker package init) would risk a circular import. `from
+    # __future__ import annotations` above makes this annotation a string, never
+    # evaluated, so TYPE_CHECKING-only is safe (import_boundaries_test).
+    from chat.api import Plan
 
 logger = logging.getLogger(__name__)
 

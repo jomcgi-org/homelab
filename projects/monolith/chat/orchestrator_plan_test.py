@@ -76,6 +76,30 @@ class TestPlanFromDict:
         assert plan.steps == ()
         assert plan.done_criteria == ()
 
+    def test_malformed_payload_does_not_raise_and_fails_validation(self):
+        """A malformed tool payload (the JSON Schema constrains type but not
+        nullability) must deserialize without raising and instead yield a plan
+        that validate_plan rejects (the fail-open path), never a None/unhashable
+        value that escapes as AttributeError/TypeError. Covers a null context, a
+        sub_recipe that is an object, and a non-str enabled_subrecipes item."""
+        args = {
+            "enabled_subrecipes": ["query", {"unhashable": 1}],
+            "steps": [
+                {"sub_recipe": "query", "context": None},
+                {"sub_recipe": {"nested": "obj"}, "context": "do it"},
+            ],
+            "done_criteria": [None],
+        }
+        plan = plan_from_dict(args)  # must not raise
+        # Every field coerced to str: no None, no dict, so validate_plan can run.
+        assert all(isinstance(x, str) for x in plan.enabled_subrecipes)
+        assert all(
+            isinstance(s.sub_recipe, str) and isinstance(s.context, str)
+            for s in plan.steps
+        )
+        # The coerced garbage is rejected by the validator (fail-open path).
+        assert validate_plan(plan) != []
+
 
 class TestValidatePlan:
     def test_accepts_good_plan(self):

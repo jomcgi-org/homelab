@@ -24,12 +24,18 @@ from chat.goosecracker_progress import (  # re-exported
     mark_done as mark_goosecracker_progress_done,
     set_notice as set_goosecracker_progress_notice,
 )
+from chat.orchestrator import replan  # re-exported
+from chat.orchestrator_plan import Plan  # re-exported
+from chat.orchestrator_plan import PlanStep  # re-exported
 from chat.outbox import enqueue_edit  # re-exported
 from chat.outbox import enqueue_message  # re-exported
 from chat.summarizer import conversational_agent_reply  # re-exported
 from chat.summarizer import run_summary_generation  # re-exported
 
 __all__ = [
+    "Plan",
+    "PlanStep",
+    "replan",
     "ack_inflight",
     "artifact_id_for_thread",
     "build_injected_context",

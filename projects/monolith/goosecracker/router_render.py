@@ -33,14 +33,23 @@ in the rendered recipe at all: it lives in a separate plain-markdown plan
 file (``render_plan_file``, delivered to the guest at ``/injected-context/
 plan.md``) that goose only reads as a data file, never templates. The recipe
 itself carries only controlled strings the router authors: sub-recipe ids,
-step order, and stage titles from ``_stage_title``.
+step order, and stage titles from ``stage_title``.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import yaml
 
-from chat.orchestrator_plan import Plan
+if TYPE_CHECKING:
+    # Type-only: chat.api re-exports Plan from chat.orchestrator_plan, which
+    # imports goosecracker.recipe_catalog at runtime. Importing it eagerly here
+    # (goosecracker.api eagerly imports this module) would create a runtime
+    # goosecracker -> chat -> goosecracker cycle. `from __future__ import
+    # annotations` makes every Plan annotation below a string, never evaluated,
+    # so TYPE_CHECKING-only is safe (import_boundaries_test).
+    from chat.api import Plan
 
 # --- Recipe-shape constants copied verbatim from the guest agent.yaml. Keep in
 # sync; tests/router_render_test.py has a drift guard asserting the scaffold
@@ -185,7 +194,7 @@ def _steps_block(plan: Plan) -> str:
         "Announce the checklist BEFORE step 1 by printing, in one printf:",
         f"  printf '::stages::{n}\\n"
         + "".join(
-            f"::stage::{i}::{'running' if i == 0 else 'pending'}::{_stage_title(step)}\\n"
+            f"::stage::{i}::{'running' if i == 0 else 'pending'}::{stage_title(step)}\\n"
             for i, step in enumerate(plan.steps)
         )
         + "'",
@@ -210,7 +219,7 @@ def _steps_block(plan: Plan) -> str:
     ]
     for i, step in enumerate(plan.steps):
         lines.append(f'--- Step {i} of {n}: delegate(source: "{step.sub_recipe}") ---')
-        lines.append(f"Stage title: {_stage_title(step)}")
+        lines.append(f"Stage title: {stage_title(step)}")
         lines.append(f'Context: see "## Step {i}: {step.sub_recipe}" in {_PLAN_FILE}.')
         lines.append("")
     lines.append(
@@ -249,7 +258,7 @@ def render_plan_file(plan: Plan) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _stage_title(step) -> str:
+def stage_title(step) -> str:
     """A short, ::-free stage title for a step (used in progress markers)."""
     titles = {
         "query": "Answering",

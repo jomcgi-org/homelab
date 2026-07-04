@@ -37,14 +37,14 @@ from app.db import get_engine
 from goosecracker import replan, sessions, threads, tiers
 
 if TYPE_CHECKING:
-    # Type-only: chat.orchestrator_plan imports goosecracker.recipe_catalog, and
-    # this module is imported at goosecracker package init (via dispatch), so a
-    # runtime import here would risk a circular import. `render_router` /
-    # `render_plan_file` (goosecracker.router_render, which itself imports
-    # chat.orchestrator_plan.Plan) are imported lazily inside `_invoke_turn`
-    # instead, for the same reason; `chat.orchestrator.replan` (Task 7) is
-    # likewise imported lazily inside `_request_replan`.
-    from chat.orchestrator_plan import Plan
+    # Type-only: chat.api re-exports Plan from chat.orchestrator_plan, which
+    # imports goosecracker.recipe_catalog, and this module is imported at
+    # goosecracker package init (via dispatch), so a runtime import here would
+    # risk a circular import. `render_router` / `render_plan_file`
+    # (goosecracker.router_render) are imported lazily inside `_invoke_turn`
+    # instead, for the same reason; `chat.api.replan` (Task 7) is likewise
+    # imported lazily inside `_request_replan` (import_boundaries_test).
+    from chat.api import Plan
 
 logger = logging.getLogger(__name__)
 
@@ -722,15 +722,15 @@ async def _request_replan(
 ) -> "Plan | None":
     """Ask the DeepSeek orchestrator for a revised plan; None on any failure.
 
-    Lazily imports ``chat.orchestrator.replan`` (the same lazy-chat-import
-    discipline the rest of this module follows for ``chat.api``) and passes the
-    replan feedback as plain strings, so ``chat.orchestrator`` never imports
+    Lazily imports ``chat.api.replan`` (the same lazy-chat-import discipline the
+    rest of this module follows for ``chat.api``) and passes the replan feedback
+    as plain strings, so ``chat.orchestrator`` never imports
     ``goosecracker.replan`` (no layering cycle). Fail-open (Design invariant 2):
-    any error, or ``orchestrator.replan`` returning None, yields None so the
-    caller finalizes with the current goose result instead of looping.
+    any error, or ``replan`` returning None, yields None so the caller finalizes
+    with the current goose result instead of looping.
     """
     try:
-        from chat.orchestrator import replan as orchestrator_replan
+        from chat.api import replan as orchestrator_replan
 
         return await orchestrator_replan(
             task,

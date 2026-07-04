@@ -8,6 +8,24 @@ Other domains (chat's /artifact adapter, agent's MCP tools) must import from
 from __future__ import annotations
 
 from goosecracker.dispatch import resume, status, submit  # re-exported
+from goosecracker.recipe_catalog import CATALOG, enabled_enum  # re-exported
+from goosecracker.router_render import (  # re-exported
+    render_plan_file,
+    render_router,
+    stage_title,
+)
 from goosecracker.threads import get_run, list_runs, serialize  # re-exported
 
-__all__ = ["get_run", "list_runs", "resume", "serialize", "status", "submit"]
+__all__ = [
+    "CATALOG",
+    "enabled_enum",
+    "get_run",
+    "list_runs",
+    "render_plan_file",
+    "render_router",
+    "resume",
+    "serialize",
+    "stage_title",
+    "status",
+    "submit",
+]
