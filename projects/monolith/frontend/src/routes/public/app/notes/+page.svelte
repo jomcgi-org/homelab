@@ -50,7 +50,7 @@
   // to the URL (?view=graph&focus=<id>), so a graph-focused view is shareable
   // and the back button pops the toggle naturally. Defaults are omitted from the
   // URL (no ?view=chat). The ephemeral chat transcript is NOT in the URL: only
-  // the structural view/focus state is. Mirrors the HomepageStack pattern
+  // the structural view/focus state is. Mirrors the old homepage URL-state pattern
   // ($page + goto with keepFocus/noScroll/replaceState).
   function syncUrl() {
     const url = new URL($page.url);

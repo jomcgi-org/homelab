@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { Sticker, Marquee, Footer, Seo } from "$lib/public/components";
-  import HomepageStack from "./HomepageStack.svelte";
+  import HomepageRack from "./HomepageRack.svelte";
 
   let { data } = $props();
 
@@ -176,7 +176,7 @@
 </div>
 
 <!-- ═══ Project stack ═══ -->
-<HomepageStack />
+<HomepageRack />
 
 <!-- ═══ Footer ═══ -->
 <Footer />
