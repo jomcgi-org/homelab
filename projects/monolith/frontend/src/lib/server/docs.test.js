@@ -11,24 +11,24 @@ import {
 
 const MANIFEST = [
   {
-    path: "docs/agents.md",
-    slug: "agents",
-    title: "Agent Platform",
-    section: "Reference",
+    path: "projects/firecracker/README.md",
+    slug: "projects/firecracker",
+    title: "Firecracker",
+    section: "Projects",
     order: 0,
   },
   {
-    path: "docs/security.md",
-    slug: "security",
-    title: "Security Model",
-    section: "Reference",
+    path: "projects/firecracker/goosecracker/README.md",
+    slug: "projects/firecracker/goosecracker",
+    title: "Goosecracker",
+    section: "Projects",
     order: 1,
   },
   {
-    path: "docs/services.md",
-    slug: "services",
-    title: "Services Overview",
-    section: "Reference",
+    path: "projects/monolith/README.md",
+    slug: "projects/monolith",
+    title: "Monolith",
+    section: "Projects",
     order: 2,
   },
   {
@@ -97,9 +97,13 @@ describe("resolveDocHref", () => {
 
   it("rewrites a relative link to a published doc into a /docs slug", () => {
     expect(
-      resolveDocHref("services.md", "docs/security.md", pathIndex),
+      resolveDocHref(
+        "goosecracker/README.md",
+        "projects/firecracker/README.md",
+        pathIndex,
+      ),
     ).toEqual({
-      href: "/docs/services",
+      href: "/docs/projects/firecracker/goosecracker",
     });
     // from a sibling ADR up to another category
     expect(
@@ -113,9 +117,13 @@ describe("resolveDocHref", () => {
 
   it("preserves a fragment when rewriting", () => {
     expect(
-      resolveDocHref("services.md#deploy", "docs/security.md", pathIndex),
+      resolveDocHref(
+        "goosecracker/README.md#deploy",
+        "projects/firecracker/README.md",
+        pathIndex,
+      ),
     ).toEqual({
-      href: "/docs/services#deploy",
+      href: "/docs/projects/firecracker/goosecracker#deploy",
     });
   });
 
@@ -131,6 +139,18 @@ describe("resolveDocHref", () => {
     });
   });
 
+  it("resolves a README doc via its directory alias", () => {
+    expect(
+      resolveDocHref(
+        "..",
+        "projects/firecracker/goosecracker/README.md",
+        pathIndex,
+      ),
+    ).toEqual({
+      href: "/docs/projects/firecracker",
+    });
+  });
+
   it("strips a link to an unpublished doc (returns null)", () => {
     expect(
       resolveDocHref("plans/secret.md", "docs/security.md", pathIndex),
@@ -142,13 +162,22 @@ describe("resolveDocHref", () => {
 });
 
 describe("buildSidebar", () => {
-  it("splits reference docs from grouped ADR categories", () => {
+  it("nests project READMEs by path and groups ADRs by category", () => {
     const s = buildSidebar(MANIFEST);
-    expect(s.reference.map((r) => r.slug)).toEqual([
-      "agents",
-      "security",
-      "services",
+    expect(s.projects.map((p) => p.name)).toEqual(["firecracker", "monolith"]);
+
+    const firecracker = s.projects[0];
+    expect(firecracker.slug).toBe("projects/firecracker");
+    expect(firecracker.title).toBe("Firecracker");
+    expect(firecracker.children.map((c) => c.slug)).toEqual([
+      "projects/firecracker/goosecracker",
     ]);
+    expect(firecracker.children[0].children).toEqual([]);
+
+    const monolith = s.projects[1];
+    expect(monolith.slug).toBe("projects/monolith");
+    expect(monolith.children).toEqual([]);
+
     expect(s.decisions.index.slug).toBe("decisions");
     expect(s.decisions.categories.map((c) => c.name)).toEqual([
       "agents",
@@ -158,6 +187,24 @@ describe("buildSidebar", () => {
       "decisions/agents/001-a",
       "decisions/agents/002-b",
     ]);
+  });
+
+  it("gives a group node a null slug when its directory has no README", () => {
+    const manifest = [
+      {
+        path: "projects/platform/linkerd/README.md",
+        slug: "projects/platform/linkerd",
+        title: "Linkerd",
+        section: "Projects",
+        order: 0,
+      },
+    ];
+    const s = buildSidebar(manifest);
+    expect(s.projects[0]).toMatchObject({ name: "platform", slug: null });
+    expect(s.projects[0].children[0]).toMatchObject({
+      name: "linkerd",
+      slug: "projects/platform/linkerd",
+    });
   });
 });
 
@@ -169,7 +216,7 @@ describe("renderDoc", () => {
     "",
     "## Section One",
     "",
-    "See [services](services.md), [internal plan](plans/secret.md) and [home](https://example.com).",
+    "See [goosecracker](goosecracker/README.md), [internal plan](plans/secret.md) and [home](https://example.com).",
     "",
     "### Sub Heading",
     "",
@@ -183,12 +230,12 @@ describe("renderDoc", () => {
   ].join("\n");
 
   const { html, toc } = renderDoc(
-    { path: "docs/security.md", content },
+    { path: "projects/firecracker/README.md", content },
     pathIndex,
   );
 
   it("rewrites intra-doc links to /docs slugs", () => {
-    expect(html).toContain('href="/docs/services"');
+    expect(html).toContain('href="/docs/projects/firecracker/goosecracker"');
   });
 
   it("strips links to unpublished docs but keeps the text", () => {
