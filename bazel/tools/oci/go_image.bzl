@@ -180,10 +180,15 @@ def go_image(name, binary, base = "@distroless_base", repository = None, extra_t
         visibility = visibility,
     )
 
-    # Expose OciImageInfo provider for use by helm_chart(images = {...})
+    # Expose OciImageInfo provider for use by helm_chart(images = {...}).
+    # image is referenced so the chart-version bot's dependency closure reaches
+    # the application sources layered into the image (parity with apko_image);
+    # without it a go-only code change is invisible to both the PR auto-bump
+    # and the main-branch missed-bump guard.
     oci_image_info(
         name = name + ".info",
         repository = _repository,
         image_tags = name + "_stamped_ci.tags.txt",
+        image = ":" + name,
         visibility = ["//visibility:public"],
     )

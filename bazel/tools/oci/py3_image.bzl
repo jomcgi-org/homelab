@@ -223,10 +223,16 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         visibility = visibility,
     )
 
-    # Expose OciImageInfo provider for use by helm_chart(images = {...})
+    # Expose OciImageInfo provider for use by helm_chart(images = {...}).
+    # image is referenced so the chart-version bot's dependency closure reaches
+    # the application sources layered into the image (parity with apko_image);
+    # without it a py-only code change is invisible to both the PR auto-bump
+    # and the main-branch missed-bump guard, and a merge deploys nothing
+    # (chart 0.285.5 / d263cefa3 incident, 2026-07-04).
     oci_image_info(
         name = name + ".info",
         repository = _repository,
         image_tags = name + "_stamped_ci.tags.txt",
+        image = ":" + name,
         visibility = ["//visibility:public"],
     )
