@@ -31,15 +31,16 @@ argo-cd:
         jqPathExpressions:
           - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
           - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
-          # After the pointer removals below strip the injected annotations,
-          # live is left with an EMPTY annotations map while the predicted
-          # state drops the key entirely. gitops-engine treats {} != absent,
-          # which kept Deployments permanently OutOfSync (root cause of the
-          # 2026-07-04 monolith saga; kyverno/otel-operator showed the same
-          # class). jsonPointers run before jq within one override, so this
-          # deletes only a then-empty map and can never mask real annotation
-          # drift (e.g. config checksums).
-          - '.spec.template.metadata.annotations | select(length == 0)'
+          # Kyverno/kubectl inject otel.injected-by + restartedAt into live;
+          # after they are ignored, live is left with an EMPTY annotations map
+          # while the predicted state drops the key, and gitops-engine treats
+          # {} != absent (permanent OutOfSync; the 2026-07-04 monolith saga).
+          # Delete the WHOLE map iff every key in it is one of the injected
+          # ones (vacuously true for {}), which is order-independent w.r.t.
+          # the jsonPointers below and can never mask real annotation drift
+          # (e.g. config checksums): any other key keeps the map, and the
+          # pointers then strip just the injected entries.
+          - '.spec.template.metadata.annotations | select(all(keys[]; . == "otel.injected-by" or . == "kubectl.kubernetes.io/restartedAt"))'
         jsonPointers:
           - /spec/template/metadata/annotations/otel.injected-by
           - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
