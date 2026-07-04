@@ -234,7 +234,12 @@ def list_chunks(
         }
         for chunk in rows
     ]
-    next_cursor = str(rows[-1].seq) if has_more and rows else None
+    # Guard against a NULL seq on the boundary row: stringifying it would yield
+    # "None", and the next request's int("None") would fail, drop the cursor, and
+    # re-serve page one forever. seq is backfilled + loader-set so this is an
+    # edge case, but the column is nullable, so fail safe by ending the page.
+    last_seq = rows[-1].seq if rows else None
+    next_cursor = str(last_seq) if has_more and last_seq is not None else None
     return {"items": items, "next_cursor": next_cursor}
 
 

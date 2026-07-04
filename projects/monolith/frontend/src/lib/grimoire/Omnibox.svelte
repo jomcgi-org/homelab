@@ -38,6 +38,11 @@
     activeIndex = -1;
   }
 
+  // A response is stale once the query has moved on; discard it rather than
+  // clobbering results for the newer query (network completion order is not
+  // guaranteed, so a slow "a" can land after "ab").
+  const isStale = (q) => q !== query.trim();
+
   async function runNameSearch(q) {
     try {
       const body = await apiFetch(
@@ -46,9 +51,10 @@
           limit: "6",
         })}`,
       );
+      if (isStale(q)) return;
       nameHits = body.items ?? [];
     } catch {
-      nameHits = [];
+      if (!isStale(q)) nameHits = [];
     }
   }
 
@@ -57,14 +63,17 @@
       const hits = await apiFetch(
         `/campaigns/${campaignId}/search?${asQuery(viewpoint, { q, k: "8" })}`,
       );
+      if (isStale(q)) return;
       const nameIds = new Set(nameHits.map((e) => e.id));
       semanticEntities = hits.filter(
         (h) => h.kind === "entity" && !nameIds.has(h.id),
       );
       loreHits = hits.filter((h) => h.kind === "chunk");
     } catch {
-      semanticEntities = [];
-      loreHits = [];
+      if (!isStale(q)) {
+        semanticEntities = [];
+        loreHits = [];
+      }
     }
   }
 

@@ -335,6 +335,37 @@ def test_load_chunks_seq_rewritten_on_reorder_without_reembedding(session: Sessi
     assert embedder.calls == embeds_after_first + 1
 
 
+def test_load_chunks_seq_global_across_multiple_manifests(session: Session):
+    # A book split across two manifest files must get one contiguous seq
+    # sequence over both (sorted key order), not a 0-based restart per file --
+    # otherwise seq collides within the book and the reader's ordering breaks.
+    s3 = FakeS3Client(
+        {
+            "books/mm/chunks/chunks-001.ndjson": "\n".join(
+                [_line("a1", "one"), _line("a2", "two")]
+            ),
+            "books/mm/chunks/chunks-002.ndjson": "\n".join(
+                [_line("b1", "three"), _line("b2", "four")]
+            ),
+        }
+    )
+    summary = _run(
+        ingest.load_chunks(session, s3, FakeEmbedClient(), bucket="grimoire")
+    )
+    assert summary["books"] == 1
+
+    by_ref = {
+        c.chunk_ref: c for c in session.execute(select(KnowledgeChunk)).scalars().all()
+    }
+    assert by_ref["a1"].seq == 0
+    assert by_ref["a2"].seq == 1
+    assert by_ref["b1"].seq == 2
+    assert by_ref["b2"].seq == 3
+    # Every seq within the book is distinct.
+    seqs = [c.seq for c in by_ref.values()]
+    assert len(set(seqs)) == len(seqs)
+
+
 def test_load_chunks_upserts_book_row_once(session: Session):
     s3 = FakeS3Client({"books/mm/chunks/chunks.ndjson": _line("c1", "one")})
     embedder = FakeEmbedClient()

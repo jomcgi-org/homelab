@@ -382,23 +382,33 @@ async def load_chunks(
     """
     keys = _list_manifest_keys(s3_client, bucket, prefix)
 
-    books = 0
     chunks_upserted = 0
     chunks_embedded = 0
     errors = 0
     pending_embed: list[KnowledgeChunk] = []
-    book_ids: set[str] = set()
 
-    for key in keys:
+    # Concatenate every manifest belonging to a book before upserting, so ``seq``
+    # is assigned once over the book's full chunk sequence. A book may span
+    # several ``<book_id>/chunks/*.ndjson`` files (see _list_manifest_keys); if
+    # each file were enumerated independently, seq would restart at 0 per file
+    # and collide within the book, breaking the reading-order reads in library.py
+    # (keyset pagination, prev/next, section order) that assume seq is unique per
+    # book. Keys are sorted so multi-file books have a deterministic order
+    # (e.g. chunks-001, chunks-002).
+    parsed_by_book: dict[str, list[dict]] = {}
+    for key in sorted(keys):
         book_id = _book_id_from_key(key, prefix)
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
         if isinstance(body, bytes):
             body = body.decode("utf-8")
         parsed, err_count = parse_manifest_lines(book_id, body.splitlines())
         errors += err_count
-        books += 1
-        book_ids.add(book_id)
+        parsed_by_book.setdefault(book_id, []).extend(parsed)
 
+    books = len(parsed_by_book)
+    book_ids: set[str] = set(parsed_by_book)
+
+    for book_id, parsed in parsed_by_book.items():
         _upsert_book(session, book_id)
         book_pending, book_upserted = _upsert_book_chunks(session, book_id, parsed)
         chunks_upserted += book_upserted
