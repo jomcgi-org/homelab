@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { Sticker, Marquee, Footer, Seo } from "$lib/public/components";
-  import HomepageTopology from "./HomepageTopology.svelte";
+  import HomepageStack from "./HomepageStack.svelte";
 
   let { data } = $props();
 
@@ -175,8 +175,8 @@
 
 </div>
 
-<!-- ═══ SLO Topology (blue) ═══ -->
-<HomepageTopology topology={data.topology} />
+<!-- ═══ Project stack ═══ -->
+<HomepageStack />
 
 <!-- ═══ Footer ═══ -->
 <Footer />
