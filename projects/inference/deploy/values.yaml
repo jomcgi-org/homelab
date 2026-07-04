@@ -207,8 +207,15 @@ vllm:
     - "qwen3"
     - "--reasoning-config"
     - '{"reasoning_start_str": "<think>", "reasoning_end_str": "</think>"}'
+    # Total concurrent decode sequences. Widened 3 -> 8 so the shared vLLM can
+    # batch bulk callers (grimoire entity extraction fans out ~6 concurrent
+    # short requests) alongside interactive traffic instead of forcing batch
+    # size 1. KV memory is a fixed pool (gpu-memory-utilization below); more
+    # seqs just share it, with graceful preemption on a rare full-context req.
+    # Consumers budget against this: chat_public caps public at 2, grimoire at
+    # 6, leaving headroom for Discord / private chat / agents.
     - "--max-num-seqs"
-    - "3"
+    - "8"
     - "--kv-cache-dtype"
     - "fp8"
 

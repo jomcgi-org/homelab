@@ -61,8 +61,8 @@ SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "180
 #
 # SIZING RULE (reserved-headroom): public aggregate in-flight inference is capped
 # at GLOBAL_MAX_CONCURRENT across ALL pods, and the remaining vLLM decode slots
-# are reserved for trusted callers. Today max_num_seqs=3 and we reserve 1, so the
-# public cluster-wide cap is 2.
+# are left for trusted callers (grimoire extraction, Discord, private chat,
+# agents). Today max_num_seqs=8 and public is capped at 2.
 GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "2"))
 
 # Advisory-lock namespace (classid) for the GPU limiter. A stable app-specific
