@@ -202,6 +202,31 @@ class TestGrants:
         )
         assert r.status_code == 404
 
+    def test_delete_grant_then_gone(self, client, session):
+        campaign = _create_campaign(client)
+        character = _create_character(client, campaign["id"])
+        _seed_entity(session, "entity-strahd")
+        created = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/grants",
+            json={
+                "entity_id": "entity-strahd",
+                "player_character_id": character["id"],
+                "grant_scope": "full",
+            },
+        ).json()
+
+        deleted = client.delete(
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/{created['id']}"
+        )
+        assert deleted.status_code == 204
+        assert client.get(f"/api/grimoire/campaigns/{campaign['id']}/grants").json() == []
+
+        # A second delete of the now-missing grant is a 404.
+        again = client.delete(
+            f"/api/grimoire/campaigns/{campaign['id']}/grants/{created['id']}"
+        )
+        assert again.status_code == 404
+
     def test_create_grant_unknown_entity_404(self, client):
         # entity_id is a FK; a missing entity must be a 404, not the 500 the
         # Postgres IntegrityError would otherwise produce (the SQLite fixture
