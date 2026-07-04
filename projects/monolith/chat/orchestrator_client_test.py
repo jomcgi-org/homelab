@@ -9,6 +9,7 @@ import pytest
 from chat.orchestrator_client import (
     OrchestratorUnavailable,
     _read_config,
+    _read_fallback_config,
     call,
     call_tool,
 )
@@ -175,6 +176,138 @@ _TOOL_SCHEMA = {
     "description": "Submit the delegation plan for this task.",
     "parameters": {"type": "object", "properties": {}},
 }
+
+
+_FALLBACK_ENV = {
+    "ORCHESTRATOR_MODEL": "zai-glm-4.7",
+    "ORCHESTRATOR_BASE_URL": "https://api.cerebras.ai/v1",
+    "ORCHESTRATOR_API_KEY": "cerebras-key",
+    "ORCHESTRATOR_FALLBACK_MODEL": "deepseek/deepseek-v4-flash",
+    "ORCHESTRATOR_FALLBACK_BASE_URL": "https://openrouter.ai/api/v1",
+    "OPENROUTER_API_KEY": "openrouter-key",
+}
+
+
+class TestCallFallback:
+    @pytest.mark.asyncio
+    async def test_falls_back_to_secondary_on_primary_failure(self):
+        """A primary transport failure retries once on the fallback provider,
+        which supplies the result (its model/base URL/key)."""
+        payload = {"choices": [{"message": {"content": "fallback brief"}}]}
+        instance = _mock_client(
+            post_side_effect=[
+                httpx.ConnectError("primary refused"),
+                _ok_response(payload),
+            ]
+        )
+        with (
+            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
+            patch.dict("os.environ", _FALLBACK_ENV, clear=False),
+        ):
+            result = await call("system", "user")
+
+        assert result.content == "fallback brief"
+        assert instance.post.call_count == 2
+        # The primary attempt targeted Cerebras/GLM...
+        first_args, _ = instance.post.call_args_list[0]
+        assert first_args[0] == "https://api.cerebras.ai/v1/chat/completions"
+        # ...and the fallback attempt targeted DeepSeek/OpenRouter with its key.
+        second_args, second_kwargs = instance.post.call_args_list[1]
+        assert second_args[0] == "https://openrouter.ai/api/v1/chat/completions"
+        assert second_kwargs["headers"]["Authorization"] == "Bearer openrouter-key"
+        assert second_kwargs["json"]["model"] == "deepseek/deepseek-v4-flash"
+
+    @pytest.mark.asyncio
+    async def test_raises_when_both_primary_and_fallback_fail(self):
+        instance = _mock_client(
+            post_side_effect=[
+                httpx.ConnectError("primary refused"),
+                httpx.ConnectError("fallback refused"),
+            ]
+        )
+        with (
+            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
+            patch.dict("os.environ", _FALLBACK_ENV, clear=False),
+        ):
+            with pytest.raises(OrchestratorUnavailable):
+                await call("system", "user")
+
+        assert instance.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_configured_is_single_attempt(self, monkeypatch):
+        """With no ORCHESTRATOR_FALLBACK_MODEL the single-attempt contract holds."""
+        monkeypatch.delenv("ORCHESTRATOR_FALLBACK_MODEL", raising=False)
+        instance = _mock_client(post_side_effect=httpx.ConnectError("refused"))
+        env = {"ORCHESTRATOR_MODEL": "m", "OPENROUTER_API_KEY": "k"}
+        with (
+            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
+            patch.dict("os.environ", env, clear=False),
+        ):
+            with pytest.raises(OrchestratorUnavailable):
+                await call("system", "user")
+
+        assert instance.post.call_count == 1
+
+
+class TestCallToolFallback:
+    @pytest.mark.asyncio
+    async def test_tool_call_falls_back_on_unusable_primary_shape(self):
+        """A primary response missing tool_calls (weaker forced-tool support)
+        degrades to the fallback provider, which returns a valid plan."""
+        args_payload = {
+            "enabled_subrecipes": [],
+            "steps": [],
+            "done_criteria": [],
+        }
+        bad = _ok_response({"choices": [{"message": {"content": "no tool call"}}]})
+        good = _ok_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "submit_plan",
+                                        "arguments": json.dumps(args_payload),
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        instance = _mock_client(post_side_effect=[bad, good])
+        with (
+            patch("chat.orchestrator_client.httpx.AsyncClient", return_value=instance),
+            patch.dict("os.environ", _FALLBACK_ENV, clear=False),
+        ):
+            args, response = await call_tool("system", "user", schema=_TOOL_SCHEMA)
+
+        assert args == args_payload
+        assert instance.post.call_count == 2
+        second_args, second_kwargs = instance.post.call_args_list[1]
+        assert second_kwargs["json"]["model"] == "deepseek/deepseek-v4-flash"
+
+
+class TestReadFallbackConfig:
+    def test_none_when_model_unset(self, monkeypatch):
+        monkeypatch.delenv("ORCHESTRATOR_FALLBACK_MODEL", raising=False)
+        assert _read_fallback_config() is None
+
+    def test_reads_model_base_url_and_key(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATOR_FALLBACK_MODEL", "deepseek/deepseek-v4-flash")
+        monkeypatch.setenv(
+            "ORCHESTRATOR_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1"
+        )
+        monkeypatch.delenv("ORCHESTRATOR_FALLBACK_API_KEY", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+        model, base_url, api_key = _read_fallback_config()
+        assert model == "deepseek/deepseek-v4-flash"
+        assert base_url == "https://openrouter.ai/api/v1"
+        assert api_key == "openrouter-key"
 
 
 class TestReadConfig:

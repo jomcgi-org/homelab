@@ -260,13 +260,24 @@ spec:
             {{- end }}
             {{- if .Values.orchestrator.enabled }}
             # ADR 036 orchestrator brief compiler (host-side only; the guest
-            # egress boundary in ADR 023 never carries this key). OPENROUTER_API_KEY
-            # is sourced from the same "goosecracker" 1Password item that already
+            # egress boundary in ADR 023 never carries these keys). Both keys are
+            # sourced from the same "goosecracker" 1Password item that already
             # syncs into the "goosecracker" Secret for the artifact egress
             # sidecar (see onepassworditem-goosecracker.yaml). We reuse that
-            # Secret rather than sync the item twice; the field name matches the
-            # OPENROUTER_API_KEY convention the goosecracker item exposes. Note
-            # the Secret is named "goosecracker" (not fullname-prefixed).
+            # Secret rather than sync the item twice; the field names match the
+            # conventions the goosecracker item exposes. Note the Secret is named
+            # "goosecracker" (not fullname-prefixed).
+            # ORCHESTRATOR_API_KEY drives the primary provider (Cerebras); the
+            # client falls back to OPENROUTER_API_KEY if this is absent.
+            - name: ORCHESTRATOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: goosecracker
+                  key: CEREBRAS_API_KEY
+                  # Optional: the client fails over to the fallback provider (and
+                  # ultimately fails open) when the key is absent.
+                  optional: true
+            # OPENROUTER_API_KEY drives the DeepSeek fallback provider.
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -280,6 +291,12 @@ spec:
               value: {{ .Values.orchestrator.model | quote }}
             - name: ORCHESTRATOR_BASE_URL
               value: {{ .Values.orchestrator.baseUrl | quote }}
+            {{- if .Values.orchestrator.fallbackModel }}
+            - name: ORCHESTRATOR_FALLBACK_MODEL
+              value: {{ .Values.orchestrator.fallbackModel | quote }}
+            - name: ORCHESTRATOR_FALLBACK_BASE_URL
+              value: {{ .Values.orchestrator.fallbackBaseUrl | quote }}
+            {{- end }}
             - name: ORCHESTRATOR_TIMEOUT_S
               value: {{ .Values.orchestrator.timeoutSeconds | quote }}
             - name: ORCHESTRATOR_REPLAN_TIMEOUT_S
