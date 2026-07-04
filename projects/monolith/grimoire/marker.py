@@ -147,7 +147,21 @@ def effective_section_id(block: dict, headers: dict[str, str]) -> str | None:
     id whose header text is not in ``_CONTINUATION_HEADERS`` (so ACTIONS /
     REACTIONS / LEGENDARY ACTIONS blocks merge into their monster). Falls back to
     the deepest id if every level is a continuation header.
+
+    A non-continuation SectionHeader block keys on *itself*, regardless of what
+    section_hierarchy claims: a heading definitionally names the section it
+    opens. Real Marker output for a heading that starts a new section often
+    still lists the *previous* header at this block's deepest level (its own
+    entry is not pushed onto the running stack until after the block is
+    emitted), which would otherwise fold the new heading into the prior
+    section's chunk (its title bleeding in as a trailing line). Continuation
+    headers (ACTIONS/REACTIONS/...) are excluded here so they still resolve up
+    to their parent monster via the hierarchy walk below.
     """
+    if block.get("block_type") == "SectionHeader":
+        hid = block.get("id")
+        if hid and headers.get(hid, "").strip().upper() not in _CONTINUATION_HEADERS:
+            return hid
     sh = block.get("section_hierarchy") or {}
     if not sh:
         return None
