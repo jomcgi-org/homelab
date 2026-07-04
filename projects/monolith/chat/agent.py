@@ -385,10 +385,14 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         window = deps.store.fetch_window(deps.channel_id)
         if not window:
             return "Nothing to summarize yet -- this channel doesn't have any messages."
-        from chat.summarizer import build_llm_caller
+        try:
+            from chat.summarizer import build_llm_caller
 
-        caller = build_llm_caller()
-        return await digest_window(window, "summary", caller)
+            caller = build_llm_caller()
+            return await digest_window(window, "summary", caller)
+        except Exception:
+            logger.exception("catch_up: digest failed")
+            return "Summarizing isn't available right now."
 
     @agent.tool
     @signposted(
@@ -403,10 +407,14 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         window = deps.store.fetch_window(deps.channel_id)
         if not window:
             return "Nothing to extract yet -- this channel doesn't have any messages."
-        from chat.summarizer import build_llm_caller
+        try:
+            from chat.summarizer import build_llm_caller
 
-        caller = build_llm_caller()
-        return await digest_window(window, "decisions", caller)
+            caller = build_llm_caller()
+            return await digest_window(window, "decisions", caller)
+        except Exception:
+            logger.exception("extract_decisions: digest failed")
+            return "Decision extraction isn't available right now."
 
     @agent.tool
     @signposted(
