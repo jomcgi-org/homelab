@@ -26,6 +26,9 @@ spec:
   validationFailureAction: Audit
   rules:
   - name: require-requests-and-mem-limit
+    # Kyverno 1.13 defaults these server-side; declare them so ArgoCD desired
+    # state matches live and the app does not sit permanently OutOfSync.
+    skipBackgroundRequests: true
     match:
       any:
       - resources:
@@ -38,6 +41,7 @@ spec:
           - {{ . }}
           {{- end }}
     validate:
+      allowExistingViolations: true
       message: >-
         Every container must set resources.requests.cpu, resources.requests.memory
         and resources.limits.memory (a CPU limit is intentionally not required, to
