@@ -241,6 +241,9 @@ class TestSearchCampaign:
         assert hit["kind"] == "chunk"
         assert hit["id"] == seed.chunk1.id
         assert hit["book_id"] == "phb"
+        # No grimoire.book row for "phb" in this fixture, so display_name falls
+        # back to the book_id (the loader would have upserted a real name).
+        assert hit["display_name"] == "phb"
         assert hit["section_path"] == "Chapter 1 > Intro"
         assert len(hit["preview"]) == 200
 

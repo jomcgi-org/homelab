@@ -546,6 +546,20 @@ def _prompt_hash() -> str:
     return hashlib.sha256(EXTRACTION_PROMPT.encode("utf-8")).hexdigest()
 
 
+def current_extraction_key() -> tuple[str, str]:
+    """The ``(model, prompt_hash)`` marker key the extraction pass writes right
+    now (env override or DEFAULT_MODEL, current prompt text).
+
+    Read paths that report extraction coverage (grimoire.library) count
+    ``chunk_extraction`` rows under exactly this key, so a book's "extracted"
+    count reflects the live model+prompt: bumping either resets coverage to
+    zero the same way it makes every chunk pending again in
+    ``_select_pending_chunks``.
+    """
+    model = os.environ.get("GRIMOIRE_EXTRACT_MODEL", DEFAULT_MODEL)
+    return model, _prompt_hash()
+
+
 def _select_pending_chunks(
     session: Session, model: str, prompt_hash: str, limit: int
 ) -> list[KnowledgeChunk]:

@@ -2741,6 +2741,21 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_library_test",
+    srcs = ["grimoire/library_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_ingest_test",
     srcs = ["grimoire/ingest_test.py"],
     imports = ["."],

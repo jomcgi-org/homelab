@@ -19,7 +19,7 @@ from typing import Any, Protocol
 
 from sqlmodel import Session, select
 
-from grimoire.models import Embedding, Entity, KnowledgeChunk
+from grimoire.models import Book, Embedding, Entity, KnowledgeChunk
 from grimoire.visibility import project_entity, visible_entities_query
 
 # How many extra candidates to pull past ``k`` before visibility filtering and
@@ -65,10 +65,14 @@ def _resolve_chunk_hit(
     chunk = session.get(KnowledgeChunk, chunk_id)
     if chunk is None:
         return None
+    # Resolve the book's display name so the omnibox can title chunk hits with a
+    # human name (and link into the reader) instead of showing the raw book_id.
+    book = session.get(Book, chunk.book_id)
     return {
         "kind": "chunk",
         "id": chunk.id,
         "book_id": chunk.book_id,
+        "display_name": book.display_name if book else chunk.book_id,
         "section_path": chunk.section_path,
         "preview": chunk.content[:_CHUNK_PREVIEW_LEN],
         "score": 1.0 - distance,

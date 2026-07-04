@@ -1,0 +1,344 @@
+"""Unit tests for grimoire/library.py and the Library/reader endpoints.
+
+In-memory SQLite + a minimal FastAPI app mounting only the grimoire router,
+mirroring the schema-stripping + ``app.dependency_overrides[get_session]``
+pattern in router_test.py / entities_test.py. Aggregations are asserted both
+directly (calling library.*) and through the HTTP endpoints.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.pool import StaticPool
+
+from app.db import get_session
+from grimoire.extract import current_extraction_key
+from grimoire.models import (
+    Book,
+    ChunkEntityMention,
+    ChunkExtraction,
+    Entity,
+    KnowledgeChunk,
+)
+from grimoire.router import router
+
+
+@pytest.fixture(name="session")
+def session_fixture():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            yield session
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
+@pytest.fixture(name="client")
+def client_fixture(session):
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_session] = lambda: session
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def _chunk(
+    session, *, book_id, chunk_ref, content, seq, section_path=None, image_ref=None
+):
+    row = KnowledgeChunk(
+        book_id=book_id,
+        chunk_ref=chunk_ref,
+        content=content,
+        section_path=section_path,
+        image_ref=image_ref,
+        seq=seq,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def seed_book(session):
+    """One book, four chunks across two sections (one image chunk), two entities
+    mentioned, partial extraction coverage under the live model+prompt."""
+    session.add(Book(id="mm", display_name="Monster Manual"))
+    c0 = _chunk(
+        session,
+        book_id="mm",
+        chunk_ref="r0",
+        content="Aboleths are ancient aberrations. " * 10,
+        seq=0,
+        section_path="Monsters/Aboleth",
+    )
+    c1 = _chunk(
+        session,
+        book_id="mm",
+        chunk_ref="r1",
+        content="The aboleth's tentacle attack.",
+        seq=1,
+        section_path="Monsters/Aboleth",
+    )
+    c2 = _chunk(
+        session,
+        book_id="mm",
+        chunk_ref="r2",
+        content="Illustration caption: an aboleth lurking.",
+        seq=2,
+        section_path="Monsters/Aboleth",
+        image_ref="s3://grimoire/books/mm/img/aboleth.png",
+    )
+    c3 = _chunk(
+        session,
+        book_id="mm",
+        chunk_ref="r3",
+        content="Beholders float and glare.",
+        seq=3,
+        section_path="Monsters/Beholder",
+    )
+
+    aboleth = Entity(id="e-aboleth", entity_type="creature", name="Aboleth")
+    beholder = Entity(id="e-beholder", entity_type="creature", name="Beholder")
+    session.add_all([aboleth, beholder])
+    session.add_all(
+        [
+            ChunkEntityMention(
+                chunk_id=c0.id, entity_id="e-aboleth", mention_text="Aboleth"
+            ),
+            ChunkEntityMention(
+                chunk_id=c1.id, entity_id="e-aboleth", mention_text="aboleth"
+            ),
+            ChunkEntityMention(
+                chunk_id=c3.id, entity_id="e-beholder", mention_text="Beholder"
+            ),
+        ]
+    )
+
+    # Extraction coverage: mark c0 and c1 done under the live (model, prompt).
+    model, prompt_hash = current_extraction_key()
+    session.add_all(
+        [
+            ChunkExtraction(
+                chunk_id=c0.id, model=model, prompt_hash=prompt_hash, status="ok"
+            ),
+            ChunkExtraction(
+                chunk_id=c1.id, model=model, prompt_hash=prompt_hash, status="empty"
+            ),
+            # A stale-key marker must NOT count toward coverage.
+            ChunkExtraction(
+                chunk_id=c3.id, model="old/model", prompt_hash="stale", status="ok"
+            ),
+        ]
+    )
+    session.commit()
+    return SimpleNamespace(
+        c0=c0, c1=c1, c2=c2, c3=c3, aboleth=aboleth, beholder=beholder
+    )
+
+
+class TestListBooks:
+    def test_coverage_counts(self, session, client):
+        seed_book(session)
+        body = client.get("/api/grimoire/books").json()
+        assert len(body) == 1
+        book = body[0]
+        assert book["book_id"] == "mm"
+        assert book["display_name"] == "Monster Manual"
+        assert book["chunk_count"] == 4
+        assert book["image_count"] == 1
+        # c0 (ok) + c1 (empty) under the live key; the stale-key c3 excluded.
+        assert book["extracted_count"] == 2
+        assert book["entity_count"] == 2
+        assert book["latest_chunk_at"] is not None
+        assert book["last_loaded_at"] is not None
+
+
+class TestSections:
+    def test_ordered_by_reading_order(self, session, client):
+        seed = seed_book(session)
+        body = client.get("/api/grimoire/books/mm/sections").json()
+        assert [s["section_path"] for s in body] == [
+            "Monsters/Aboleth",
+            "Monsters/Beholder",
+        ]
+        aboleth = body[0]
+        assert aboleth["title"] == "Aboleth"
+        assert aboleth["chunk_count"] == 3
+        assert aboleth["image_count"] == 1
+        assert aboleth["first_chunk_id"] == seed.c0.id
+
+
+class TestListChunks:
+    def test_pagination_and_section_filter(self, session, client):
+        seed = seed_book(session)
+        first = client.get("/api/grimoire/books/mm/chunks?limit=2").json()
+        assert [c["seq"] for c in first["items"]] == [0, 1]
+        assert first["next_cursor"] == "1"
+        assert first["items"][0]["kind"] == "text"
+
+        second = client.get(
+            f"/api/grimoire/books/mm/chunks?limit=2&cursor={first['next_cursor']}"
+        ).json()
+        assert [c["seq"] for c in second["items"]] == [2, 3]
+        assert second["next_cursor"] is None
+        # The image chunk reports kind=image.
+        assert second["items"][0]["kind"] == "image"
+
+        section = client.get(
+            "/api/grimoire/books/mm/chunks?section=Monsters/Beholder"
+        ).json()
+        assert [c["id"] for c in section["items"]] == [seed.c3.id]
+
+
+class TestGetChunk:
+    def test_content_neighbours_and_image_url(self, session, client):
+        seed = seed_book(session)
+        body = client.get(f"/api/grimoire/chunks/{seed.c2.id}?campaign=none&as=dm")
+        # campaign "none" does not exist -> 404 before viewpoint resolution.
+        assert body.status_code == 404
+
+        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
+        chunk = client.get(
+            f"/api/grimoire/chunks/{seed.c2.id}?campaign={campaign['id']}&as=dm"
+        ).json()
+        assert chunk["seq"] == 2
+        assert chunk["prev_id"] == seed.c1.id
+        assert chunk["next_id"] == seed.c3.id
+        assert chunk["image_url"] == f"/api/grimoire/chunks/{seed.c2.id}/image"
+        assert chunk["content"].startswith("Illustration caption")
+
+        first = client.get(
+            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as=dm"
+        ).json()
+        assert first["prev_id"] is None
+        assert first["image_url"] is None
+        assert {e["name"] for e in first["entities"]} == {"Aboleth"}
+
+    def test_missing_chunk_404(self, session, client):
+        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
+        r = client.get(f"/api/grimoire/chunks/nope?campaign={campaign['id']}&as=dm")
+        assert r.status_code == 404
+
+    def test_on_page_entities_respect_viewpoint(self, session, client):
+        seed = seed_book(session)
+        # Non-global entity, ungranted to the player: dropped from the chips.
+        seed.aboleth.is_global = False
+        session.add(seed.aboleth)
+        session.commit()
+
+        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
+        pc = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/characters",
+            json={"character_name": "Rogue"},
+        ).json()
+
+        chunk = client.get(
+            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as={pc['id']}"
+        ).json()
+        assert chunk["entities"] == []
+
+        # The DM still sees it.
+        dm = client.get(
+            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as=dm"
+        ).json()
+        assert {e["name"] for e in dm["entities"]} == {"Aboleth"}
+
+
+class TestMentions:
+    def test_dm_sees_sources(self, session, client):
+        seed = seed_book(session)
+        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
+        body = client.get(
+            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions?as=dm"
+        ).json()
+        chunk_ids = {m["chunk_id"] for m in body}
+        assert chunk_ids == {seed.c0.id, seed.c1.id}
+        assert all(m["book_id"] == "mm" for m in body)
+
+    def test_player_without_grant_404(self, session, client):
+        seed = seed_book(session)
+        seed.aboleth.is_global = False
+        session.add(seed.aboleth)
+        session.commit()
+        campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
+        pc = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/characters",
+            json={"character_name": "Rogue"},
+        ).json()
+        r = client.get(
+            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions"
+            f"?as={pc['id']}"
+        )
+        assert r.status_code == 404
+
+
+class TestRenameBook:
+    def test_rename_and_404(self, session, client):
+        seed_book(session)
+        r = client.patch(
+            "/api/grimoire/books/mm", json={"display_name": "The Monster Manual"}
+        )
+        assert r.status_code == 200
+        assert r.json()["display_name"] == "The Monster Manual"
+        assert session.get(Book, "mm").display_name == "The Monster Manual"
+
+        missing = client.patch("/api/grimoire/books/nope", json={"display_name": "X"})
+        assert missing.status_code == 404
+
+        empty = client.patch("/api/grimoire/books/mm", json={"display_name": "  "})
+        assert empty.status_code == 422
+
+
+class _FakeBody:
+    def __init__(self, data: bytes):
+        self._data = data
+        self.closed = False
+
+    def iter_chunks(self, chunk_size=65536):
+        for i in range(0, len(self._data), chunk_size):
+            yield self._data[i : i + chunk_size]
+
+    def close(self):
+        self.closed = True
+
+
+class TestChunkImage:
+    def test_streams_image(self, session, client, monkeypatch):
+        seed = seed_book(session)
+        captured = {}
+
+        class _FakeClient:
+            def get_object(self, Bucket, Key):
+                captured["bucket"] = Bucket
+                captured["key"] = Key
+                return {"Body": _FakeBody(b"PNGDATA")}
+
+        monkeypatch.setattr("grimoire.ingest.build_s3_client", lambda: _FakeClient())
+        r = client.get(f"/api/grimoire/chunks/{seed.c2.id}/image")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/png")
+        assert r.content == b"PNGDATA"
+        assert captured["bucket"] == "grimoire"
+        assert captured["key"] == "books/mm/img/aboleth.png"
+
+    def test_text_chunk_404(self, session, client):
+        seed = seed_book(session)
+        r = client.get(f"/api/grimoire/chunks/{seed.c0.id}/image")
+        assert r.status_code == 404

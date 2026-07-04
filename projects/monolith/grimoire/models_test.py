@@ -185,6 +185,32 @@ def test_chunk_extraction_status_check(session: Session):
     session.rollback()
 
 
+def test_book_and_chunk_seq_roundtrip(session: Session):
+    from grimoire.models import Book, KnowledgeChunk
+
+    session.add(Book(id="mm", display_name="Monster Manual"))
+    session.add(
+        KnowledgeChunk(
+            book_id="mm",
+            chunk_ref="r0",
+            content="Aboleths are aberrations.",
+            section_path="Monsters/Aboleth",
+            seq=0,
+        )
+    )
+    session.commit()
+
+    book = session.get(Book, "mm")
+    assert book is not None
+    assert book.display_name == "Monster Manual"
+    assert book.created_at is not None
+
+    chunk = session.exec(
+        select(KnowledgeChunk).where(KnowledgeChunk.book_id == "mm")
+    ).one()
+    assert chunk.seq == 0
+
+
 def test_knowledge_grant_unique_entity_player_character(session: Session):
     entity = Entity(entity_type="npc", name="Nott")
     campaign, pc = _make_campaign_and_pc(session)

@@ -11,7 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from grimoire import ingest
-from grimoire.models import Embedding, KnowledgeChunk
+from grimoire.models import Book, Embedding, KnowledgeChunk
 
 
 @pytest.fixture(name="session")
@@ -286,6 +286,71 @@ def test_load_chunks_two_books_in_one_run(session: Session):
         ("phb", "c1"),
         ("dmg", "c1"),
     }
+
+
+# --- seq (reading order) + book metadata ---------------------------------
+
+
+def test_load_chunks_assigns_seq_from_line_order(session: Session):
+    manifest = "\n".join([_line("c1", "one"), _line("c2", "two"), _line("c3", "three")])
+    s3 = FakeS3Client({"books/phb/chunks/chunks.ndjson": manifest})
+    _run(ingest.load_chunks(session, s3, FakeEmbedClient(), bucket="grimoire"))
+
+    by_ref = {
+        c.chunk_ref: c for c in session.execute(select(KnowledgeChunk)).scalars().all()
+    }
+    assert (by_ref["c1"].seq, by_ref["c2"].seq, by_ref["c3"].seq) == (0, 1, 2)
+
+
+def test_load_chunks_seq_rewritten_on_reorder_without_reembedding(session: Session):
+    # First load: c1, c2. Re-upload with the order swapped and a new line
+    # inserted. seq must follow the new NDJSON order even for unchanged content,
+    # and a pure reorder must not re-embed.
+    s3 = FakeS3Client(
+        {
+            "books/phb/chunks/chunks.ndjson": "\n".join(
+                [_line("c1", "one"), _line("c2", "two")]
+            )
+        }
+    )
+    embedder = FakeEmbedClient()
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+    embeds_after_first = embedder.calls
+
+    s3.manifests["books/phb/chunks/chunks.ndjson"] = "\n".join(
+        [_line("c2", "two"), _line("new", "new content"), _line("c1", "one")]
+    )
+    summary = _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+
+    by_ref = {
+        c.chunk_ref: c for c in session.execute(select(KnowledgeChunk)).scalars().all()
+    }
+    assert by_ref["c2"].seq == 0
+    assert by_ref["new"].seq == 1
+    assert by_ref["c1"].seq == 2
+    # Only the brand-new chunk is upserted/embedded; the two reordered ones are
+    # a pure seq shift (not counted as upserts, not re-embedded).
+    assert summary["chunks_upserted"] == 1
+    # The one embed batch this run covers only the new chunk.
+    assert embedder.calls == embeds_after_first + 1
+
+
+def test_load_chunks_upserts_book_row_once(session: Session):
+    s3 = FakeS3Client({"books/mm/chunks/chunks.ndjson": _line("c1", "one")})
+    embedder = FakeEmbedClient()
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+
+    book = session.get(Book, "mm")
+    assert book is not None
+    # display_name defaults to the id until renamed.
+    assert book.display_name == "mm"
+
+    # A rename must survive a re-upload (the loader never clobbers display_name).
+    book.display_name = "Monster Manual"
+    session.add(book)
+    session.commit()
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+    assert session.get(Book, "mm").display_name == "Monster Manual"
 
 
 # --- embed batching + self-heal ------------------------------------------
