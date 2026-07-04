@@ -955,6 +955,7 @@ py_test(
         ":monolith_backend",
         "@pip//pgvector",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )
