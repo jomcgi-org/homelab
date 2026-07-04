@@ -2,27 +2,58 @@
 name: improve-recipes
 description: >
   Classify goosecracker agent sessions from prod data and open evidence-backed
-  PRs editing the recipe YAMLs. Use when asked to "improve the goose recipes",
-  "/improve-recipes", "why did that agent session go badly", "classify agent
-  sessions", or "recipe feedback loop".
+  PRs editing the recipe levers (guest sub-recipe YAMLs, the DeepSeek plan
+  system prompt, and the recipe catalog). Use when asked to "improve the goose
+  recipes", "/improve-recipes", "why did that agent session go badly", "classify
+  agent sessions", or "recipe feedback loop".
 ---
 
 # improve-recipes
 
-On-demand feedback loop for goosecracker recipes. Gathers session outcomes
-from Postgres and S3, classifies the worst ones against a fixed taxonomy, and
-drafts a PR editing `projects/firecracker/goosecracker/guest/recipes/` with
-evidence tied to specific sessions.
+On-demand feedback loop for goosecracker recipes. Gathers session outcomes from
+Postgres and S3, classifies the worst ones against a fixed taxonomy, and drafts
+a PR editing the responsible lever with evidence tied to specific sessions.
 
 Design doc: `docs/plans/2026-07-01-improve-recipes-feedback-loop-design.md`.
 
+## How routing works now (read this first)
+
+As of the runtime-recipe paradigm (`docs/plans/2026-07-03-deepseek-runtime-recipes.md`),
+routing is no longer done inside the guest. The DeepSeek orchestrator constructs
+the recipe at runtime:
+
+1. The orchestrator (ADR 036) emits a typed `submit_plan` tool call that SELECTS
+   and SEQUENCES sub-recipes with per-step context. This is the routing brain.
+2. Python (`projects/monolith/goosecracker/router_render.py`) renders that plan
+   into a router recipe and injects it into the guest. Only the enabled
+   sub-recipes are listed; the ordered steps replace classification.
+3. The baked `projects/firecracker/goosecracker/guest/recipes/agent.yaml` is now
+   only the FALLBACK router, reached when the orchestrator is unavailable, the
+   plan is invalid, or the replan budget is exhausted.
+
+So "bad routing" is almost never an `agent.yaml` problem anymore. The routing
+levers are:
+
+| Symptom                                                   | Lever                          | File                                                              |
+| --------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------- |
+| Wrong sub-recipe selected / bad sequence / mis-fit plan   | DeepSeek plan system prompt    | `projects/monolith/chat/orchestrator.py` (`plan_system_prompt()`) |
+| DeepSeek misjudged a sub-recipe (its purpose was unclear) | Sub-recipe catalog description | `projects/monolith/goosecracker/recipe_catalog.py`                |
+| A sub-recipe did the work badly                           | Sub-recipe body                | `projects/firecracker/goosecracker/guest/recipes/<id>.yaml`       |
+| Generated router scaffolding is wrong (rare)              | Renderer                       | `projects/monolith/goosecracker/router_render.py`                 |
+| Fallback router misbehaved (fallback path only)           | `agent.yaml`                   | `projects/firecracker/goosecracker/guest/recipes/agent.yaml`      |
+
 ## Goal metrics
 
-Every recipe change is judged against two numbers, not vibes:
+Every change is judged against two numbers, not vibes:
 
 1. Time to outcome: wall time from dispatch to a useful result.
 2. Owner turns per interaction: every follow-up message means the first
    response missed. Fewer is better.
+
+A third signal is now available per session (see `gather`): whether the run was
+plan-driven (`orchestrator_route = goose`, with a `plan_step_count`) or fell
+back to the baked agent (`failopen`). A rising fallback rate is itself a
+regression to chase.
 
 ## Invocation
 
@@ -59,11 +90,16 @@ kubectl exec -i -n monolith <pod> -c backend -- env \
   < .claude/skills/improve-recipes/scripts/improve_recipes_tool.py
 ```
 
-Default `--since` window: the merge date of the last commit touching
-`projects/firecracker/goosecracker/guest/recipes/` on `origin/main`:
+Default `--since` window: the merge date of the last commit touching ANY recipe
+lever (guest recipes OR the monolith plan levers), whichever is later, so a
+before/after window closes on the most recent recipe-affecting change:
 
 ```bash
-git log -1 --format=%cI origin/main -- projects/firecracker/goosecracker/guest/recipes/
+git log -1 --format=%cI origin/main -- \
+  projects/firecracker/goosecracker/guest/recipes/ \
+  projects/monolith/goosecracker/recipe_catalog.py \
+  projects/monolith/goosecracker/router_render.py \
+  projects/monolith/chat/orchestrator.py
 ```
 
 The previous generation's window is between the prior two such commits; use
@@ -72,10 +108,13 @@ it to compute the before/after aggregates for the PR body.
 ## Rank rules
 
 Score completed sessions on wall_seconds and owner_turns. Any session in a
-FAILED state, or with a non-empty result_error, is automatically in the
-worst set regardless of score. Deep-read the worst 5 (or the single session
-the user named). Skip sessions where `has_eval` is already true with the
-current taxonomy_version, they don't need re-classifying.
+FAILED state, or with a non-empty result_error, is automatically in the worst
+set regardless of score. A session whose `orchestrator_route` is `failopen`
+(fell back to the baked agent) is worth attention even if it completed: a
+fallback that should have been a real plan is a routing miss. Deep-read the
+worst 5 (or the single session the user named). Skip sessions where `has_eval`
+is already true with the current taxonomy_version, they don't need
+re-classifying.
 
 ## Deep-read
 
@@ -83,33 +122,49 @@ For each selected session:
 
 1. `fetch-session <session_id>` to get the sessions.db blob, base64-encoded.
 2. Decode it to a scratchpad file.
-3. `sqlite3 <file> .schema` first, the goose session schema is not
-   documented here on purpose: inspect it before assuming table names.
-4. Extract the message and tool-call sequence from the schema you just
-   found, and read it for the failure signal.
+3. `sqlite3 <file> .schema` first, the goose session schema is not documented
+   here on purpose: inspect it before assuming table names.
+4. Extract the message and tool-call sequence from the schema you just found,
+   and read it for the failure signal.
+5. Cross-reference the `plan_json` and `plan_step_count` from `gather`: was the
+   sequence DeepSeek chose right for what the transcript shows the task
+   actually needed? A `replan` object in goose's final output (the run asked to
+   be re-planned) is the strongest `plan-misfit` signal; it lives only in the
+   session transcript, not in Postgres.
 
-## Taxonomy v1
+## Taxonomy v2
 
-Fixed vocabulary so runs are comparable over time. `taxonomy_version: 1`.
+Fixed vocabulary so runs are comparable over time. `taxonomy_version: 2`.
 Adding a mode means bumping the version in this file by PR.
 
-- **wrong-route**: agent.yaml dispatched the wrong sub-recipe
-- **missing-context**: guest lacked information the recipe should have
-  injected or asked for up front
+Routing/planning modes (map to the DeepSeek plan levers, NOT `agent.yaml`):
+
+- **wrong-route**: the plan selected the wrong sub-recipe for the task
+- **bad-sequence**: the plan ordered steps wrongly, or omitted a step the task
+  needed (multi-step runs)
+- **plan-misfit**: the plan did not fit the real task and goose emitted a
+  `replan` (or should have); the initial selection was off
+- **unwarranted-fallback**: the run fell back to the baked agent
+  (`orchestrator_route = failopen`) for a reason that is fixable in the plan
+  levers rather than a genuine outage
+
+Execution modes (map to the sub-recipe body that ran):
+
+- **missing-context**: guest lacked information the recipe should have injected
+  or asked for up front
 - **tool-flail**: repeated failing tool calls or retries
 - **over-clarification**: asked the owner something the recipe could have
   defaulted (direct hit on the minimum-turns goal)
-- **under-delivery**: run completed but the owner had to follow up to get
-  the real ask
-- **structured-output-miss**: result JSON parse fell back to regex or
-  narrative
-- **env-failure**: infrastructure fault, out of recipe scope (reported,
-  never diffed)
+- **under-delivery**: run completed but the owner had to follow up to get the
+  real ask
+- **structured-output-miss**: result JSON parse fell back to regex or narrative
+- **env-failure**: infrastructure fault, out of recipe scope (reported, never
+  diffed)
 
 ## eval.json contract
 
-Written per session via `put-eval <session_id> <base64-payload>`, alongside
-the session's sessions.db in `s3://artifacts/{session_id}/`. Keys:
+Written per session via `put-eval <session_id> <base64-payload>`, alongside the
+session's sessions.db in `s3://artifacts/{session_id}/`. Required keys:
 
 - `session_id`
 - `recipe`
@@ -117,37 +172,46 @@ the session's sessions.db in `s3://artifacts/{session_id}/`. Keys:
 - `failure_modes`: list of `{mode, confidence, rationale}`
 - `metrics`: `{wall_seconds, owner_turns, tool_calls, retries}`
 - `classified_at`: ISO timestamp, from `date -u`
-- `recipes_ref`: git SHA of `origin/main` for the recipes dir at run time
+- `recipes_ref`: git SHA of `origin/main` for the recipe levers at run time
 
-Set a low-confidence flag on the classification when sessions.db was missing
-and the classification came from `result_head` alone (see Guardrails).
+For `taxonomy_version >= 2`, also record the plan signal so aggregates can track
+routing quality and fallback rate:
+
+- `plan`: `{orchestrator_route, plan_step_count, replan_observed}` (from
+  `gather` plus the deep-read; `replan_observed` is a bool from the transcript)
+
+Set a low-confidence flag on the classification when sessions.db was missing and
+the classification came from `result_head` alone (see Guardrails).
 
 ## Diagnose and ship
 
-Recipe files live in `projects/firecracker/goosecracker/guest/recipes/`.
+Evidence rule: every diff hunk must cite at least one session_id. An edit that
+cannot cite a specific session is dropped from the diff.
 
-Evidence rule: every diff hunk must cite at least one session_id. An edit
-that cannot cite a specific session is dropped from the diff.
-
-1. Map each confirmed failure mode to the recipe section responsible
-   (router criteria in agent.yaml, sub-recipe instructions, missing
-   parameter, response schema gap).
+1. Map each confirmed failure mode to its lever via the table in "How routing
+   works now". A routing/planning mode edits the DeepSeek plan system prompt or
+   a catalog description; an execution mode edits the sub-recipe body. Do NOT
+   edit `agent.yaml` routing criteria for a routing miss: that only changes the
+   fallback path, not what actually ran.
 2. Create a worktree and branch, following the repo's normal workflow.
-3. Edit the recipe YAMLs only, nothing else.
-4. Sanity-check every edited file parses:
-
-   ```bash
-   python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" <file>
-   ```
-
-5. Open a PR. Body template, in order:
-   - Before/after aggregates table: this generation vs the previous one
-     (median wall time, mean owner turns, failure-mode histogram), computed
-     from the eval.json files in each window.
+3. Edit only the responsible lever files. A single PR may touch both a guest
+   recipe and a monolith lever if the evidence supports each independently.
+4. Sanity-check every edited file:
+   - guest recipe YAML parses:
+     `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" <file>`
+   - monolith python (`orchestrator.py`, `recipe_catalog.py`,
+     `router_render.py`) compiles: `python3 -m py_compile <file>`
+5. Bump the chart(s) for whatever you touched (see "After merge") in the same
+   PR.
+6. Open a PR. Body template, in order:
+   - Before/after aggregates table: this generation vs the previous one (median
+     wall time, mean owner turns, failure-mode histogram, AND fallback rate =
+     failopen sessions / total), computed from the eval.json files in each
+     window.
    - Per-edit evidence rows: session_id, metric values, failure mode,
      transcript excerpt, and which diff line addresses it.
    - "Out of scope, observed" section for anything the evidence points at
-     outside the recipes directory (for example an fc-invoke timeout).
+     outside the recipe levers (for example an fc-invoke timeout).
 
 ## Guardrails
 
@@ -156,13 +220,24 @@ that cannot cite a specific session is dropped from the diff.
   sessions.db or any other object.
 - Fewer than about 5 completed sessions in the window: report-only, no PR
   ("not enough evidence yet").
-- env-failure is never diffed, it is infrastructure fault, out of recipe
-  scope: report it, don't edit a recipe to work around it.
+- env-failure is never diffed, it is infrastructure fault, out of recipe scope:
+  report it, don't edit a recipe to work around it.
 
 ## After merge
 
-Recipes reach production through the existing pipeline: the merged PR's CI
-rebuilds the goosecracker guest apko image and bumps the substrate chart, so
-there is no extra deploy step. The next `/improve-recipes` run is what tells
-you whether this change actually worked, that's the point of the before/after
-aggregates table.
+The deploy path depends on which lever you edited:
+
+- Guest sub-recipe bodies or the fallback `agent.yaml`
+  (`projects/firecracker/goosecracker/guest/recipes/`): CI rebuilds the
+  goosecracker guest apko image and bumps the substrate chart. Bump the
+  substrate chart per its normal flow.
+- Monolith plan levers (`chat/orchestrator.py` plan system prompt,
+  `goosecracker/recipe_catalog.py`, `goosecracker/router_render.py`): these ship
+  with the MONOLITH, not the guest image. Bump `projects/monolith/chart/Chart.yaml`
+  and keep `projects/monolith/deploy/application.yaml` `targetRevision` in sync.
+  No guest image roll happens for these, which is the point of the paradigm:
+  routing changes deploy fast without a guest rebuild.
+
+A PR that touches both levers needs both bumps. The next `/improve-recipes` run
+is what tells you whether the change actually worked, that is the point of the
+before/after aggregates table.
