@@ -25,7 +25,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<section class="stack" aria-label="What this homelab runs">
+<section class="stack" id="homelab" aria-label="What this homelab runs">
   <p class="eyebrow">The stack, top to bottom. Click a project.</p>
   <h2>WHAT RUNS HERE</h2>
 

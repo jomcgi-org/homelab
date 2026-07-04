@@ -112,7 +112,7 @@ export const stack = [
         engineering:
           "Firecracker microVMs per session, vsock-only egress with token swapping, recipes compiled at runtime.",
         tags: ["Firecracker", "Go", "MCP"],
-        links: { readme: `${GH}/projects/agent_platform` },
+        links: { readme: `${GH}/projects/firecracker` },
       },
       {
         id: "grimoire",

@@ -29,9 +29,9 @@
       <p>{project.engineering}</p>
       <div class="actions">
         {#if project.links.live}
-          <a class="btn btn-live" href={project.links.live}>Visit live &nearr;</a>
+          <a class="card-btn card-btn-live" href={project.links.live}>Visit live &nearr;</a>
         {/if}
-        <a class="btn" href={project.links.readme} target="_blank" rel="noopener">
+        <a class="card-btn" href={project.links.readme} target="_blank" rel="noopener">
           Read the code &nearr;
         </a>
       </div>
@@ -112,7 +112,7 @@
     gap: 8px;
     flex-wrap: wrap;
   }
-  .btn {
+  .card-btn {
     font-family: var(--mono);
     font-size: 11px;
     font-weight: 700;
@@ -125,11 +125,11 @@
     padding: 6px 10px;
     box-shadow: var(--shadow-hard-sm);
   }
-  .btn:hover {
+  .card-btn:hover {
     transform: translate(-1px, -1px);
     box-shadow: var(--shadow-hard);
   }
-  .btn-live {
+  .card-btn-live {
     background: var(--ink);
     color: var(--paper);
   }
