@@ -176,6 +176,33 @@ class TestCatchUpNonEmptyWindow:
 
 
 # ---------------------------------------------------------------------------
+# catch_up -- fails open when the model caller errors
+# ---------------------------------------------------------------------------
+
+
+class TestCatchUpCallerFails:
+    @pytest.mark.asyncio
+    async def test_returns_failure_string_instead_of_raising(self, base_time):
+        messages = [
+            _make_message(
+                username="Alice", content="hello there", minutes_ago=1, base=base_time
+            ),
+        ]
+        store = MagicMock()
+        store.fetch_window.return_value = messages
+        deps = _make_deps(store)
+        agent = create_agent(base_url="http://fake:8080")
+
+        with patch(
+            "chat.summarizer.build_llm_caller",
+            side_effect=RuntimeError("model unreachable"),
+        ):
+            result = await _run_tool_capturing_return(agent, "catch_up", deps)
+
+        assert result == "Summarizing isn't available right now."
+
+
+# ---------------------------------------------------------------------------
 # extract_decisions -- empty window short-circuits without building a caller
 # ---------------------------------------------------------------------------
 
@@ -270,3 +297,30 @@ class TestExtractDecisionsNonEmptyWindow:
         prompt = fake_caller.call_args.args[0]
         assert "extract three" in prompt
         assert "Decisions, Action Items, and Open Questions" in prompt
+
+
+# ---------------------------------------------------------------------------
+# extract_decisions -- fails open when the model caller errors
+# ---------------------------------------------------------------------------
+
+
+class TestExtractDecisionsCallerFails:
+    @pytest.mark.asyncio
+    async def test_returns_failure_string_instead_of_raising(self, base_time):
+        messages = [
+            _make_message(
+                username="Alice", content="hello there", minutes_ago=1, base=base_time
+            ),
+        ]
+        store = MagicMock()
+        store.fetch_window.return_value = messages
+        deps = _make_deps(store)
+        agent = create_agent(base_url="http://fake:8080")
+
+        with patch(
+            "chat.summarizer.build_llm_caller",
+            side_effect=RuntimeError("model unreachable"),
+        ):
+            result = await _run_tool_capturing_return(agent, "extract_decisions", deps)
+
+        assert result == "Decision extraction isn't available right now."
