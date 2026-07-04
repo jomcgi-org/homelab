@@ -52,6 +52,10 @@ import uuid
 from pathlib import Path
 
 DATALAB_CONVERT_URL = "https://www.datalab.to/api/v1/convert"
+# Cloudflare in front of datalab.to rejects the default Python-urllib user
+# agent with error 1010 before the request reaches the API; any descriptive
+# UA passes.
+_USER_AGENT = "datalab-extract/1.0 (homelab grimoire pipeline)"
 DEFAULT_DRIVE_REMOTE = "jomcgi"
 # The shared "books" folder on Drive: extraction folders live at its top level.
 DEFAULT_DRIVE_FOLDER_ID = "1xa32QQR3ZfxYWd4MpxWZe_Q6_7a4rtih"
@@ -161,7 +165,11 @@ def submit(pdf: Path, mode: str, max_pages: int | None, folder: Path) -> str:
     req = urllib.request.Request(
         DATALAB_CONVERT_URL,
         data=body,
-        headers={"X-API-Key": key, "Content-Type": content_type},
+        headers={
+            "X-API-Key": key,
+            "Content-Type": content_type,
+            "User-Agent": _USER_AGENT,
+        },
         method="POST",
     )
     resp = _request_json(req, timeout=900)
@@ -189,7 +197,9 @@ def probe(check_url: str) -> dict | None:
     unreachable or erroring we cannot know the request's fate, and
     resubmitting blind is exactly the double-spend this guard exists for.
     """
-    req = urllib.request.Request(check_url, headers={"X-API-Key": _api_key()})
+    req = urllib.request.Request(
+        check_url, headers={"X-API-Key": _api_key(), "User-Agent": _USER_AGENT}
+    )
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.load(resp)
@@ -210,7 +220,9 @@ def poll(check_url: str, interval: int, deadline_s: int) -> dict:
     started = time.monotonic()
     failures = 0
     while True:
-        req = urllib.request.Request(check_url, headers={"X-API-Key": _api_key()})
+        req = urllib.request.Request(
+            check_url, headers={"X-API-Key": _api_key(), "User-Agent": _USER_AGENT}
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 env = json.load(resp)
