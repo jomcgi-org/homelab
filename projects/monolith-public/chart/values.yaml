@@ -494,7 +494,11 @@ imgproxy:
     # depth alongside URL signing (IMGPROXY_KEY/SALT below) and the preset
     # allow-list.
     - name: IMGPROXY_ALLOWED_SOURCES
-      value: "s3://monolith-trips/"
+      # monolith-trips: trip photos. docs-assets: first-party images referenced
+      # by repo READMEs on the public docs site (uploaded out-of-band, keyed by
+      # repo path; the docs renderer signs /full URLs for them, and SVG in ->
+      # SVG out is a passthrough so the raster quality option is inert).
+      value: "s3://monolith-trips/,s3://docs-assets/"
     # Signed-URL mode. With IMGPROXY_KEY/SALT set, imgproxy REQUIRES a valid
     # HMAC-SHA256 signature on every request (the unsigned /unsafe/ path is
     # rejected), so only URLs the SSR signer (frontend lib/server/trips-img.js)

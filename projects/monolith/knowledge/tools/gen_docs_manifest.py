@@ -56,6 +56,9 @@ _VENDORED_PREFIXES = ("projects/platform/linkerd/charts/",)
 _BLOCKLIST: frozenset[str] = frozenset(
     {
         "projects/shared/README.md",
+        # March-era standalone GCP app, slated for decommission; its runbook
+        # would read as the live ingest path to an outside reader.
+        "projects/grimoire/gcp/README.md",
         "projects/grimoire/chart/README.md",
         "projects/monolith/frontend/visual/README.md",
         "projects/platform/signoz-addons/operator/crds/README.md",

@@ -24,9 +24,10 @@ An agentic task graded by the repo's own tests works like SWE-bench:
    (a hidden grader the model never sees) and runs it on the monolith venv. On the buggy
    snapshot it fails; a correct edit makes it pass (fail-to-pass).
 
-Current agentic tasks: `slo-budget-breach-01` (pure-logic, `command` verifier),
-`worldcup-fixtures-guard-01` (httpx parsing, subtle missing-`continue` bug),
-`hikes-doability-01` (fastapi/sqlmodel + in-memory SQLite, duration-aware doability).
+For example, `hikes-walkhighlands-dom-01` and `hikes-walkhighlands-duration-01` are both
+agentic tasks against the hikes doability model (DOM scraping and duration-aware doability,
+respectively). The pack currently has 9 agentic and 4 single-shot tasks in total; `tasks/`
+is the source of truth for the full, current list.
 
 ## Setup
 

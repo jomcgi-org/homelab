@@ -8,10 +8,8 @@ Longhorn provides cloud-native distributed block storage with built-in replicati
 
 ```mermaid
 flowchart TB
-    subgraph Nodes
-        N1[Node 1<br/>Replica 1]
-        N2[Node 2<br/>Replica 2]
-        N3[Node 3<br/>Replica 3]
+    subgraph "node-4 (single replica, homelab default)"
+        N1[Replica]
     end
 
     subgraph Workload
@@ -19,310 +17,56 @@ flowchart TB
     end
 
     PVC --> N1
-    N1 <-.sync.-> N2
-    N2 <-.sync.-> N3
-    N1 -.backup.-> S3[S3 Backup]
-
-    style N1 fill:#90EE90
-    style N2 fill:#87CEEB
-    style N3 fill:#FFB6C1
 ```
 
 ## Key Features
 
-- **Distributed replication** - Data automatically replicated across nodes for high availability
+Longhorn as software supports the following; which of these are actually turned
+on in this cluster is covered in Replica Configuration below (short version:
+replication and S3 backup are not).
+
+- **Distributed replication** - Data can be replicated across nodes for high availability
 - **Automatic recovery** - Self-healing from node failures, rebuilds replicas on healthy nodes
 - **Backup/restore** - S3-compatible backup targets for disaster recovery
 - **Snapshots** - Point-in-time volume snapshots with instant restore
 - **Volume resize** - Expand PVCs without downtime
 - **ReadWriteMany** - RWX volumes via NFS for multi-pod access
 
-## Use Cases
-
-### Database Persistence
-
-```yaml
-# PostgreSQL with 3-replica storage
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-  labels:
-    app: postgres
-spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: longhorn
-  resources:
-    requests:
-      storage: 20Gi
-```
-
-**Configuration:**
-
-- 3 replicas for high availability
-- Automatic failover if node goes down
-- Snapshot before upgrades
-
-### Shared Configuration Data
-
-```yaml
-# Config files shared across multiple pods
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: shared-config
-spec:
-  accessModes: [ReadWriteMany] # Multiple pods can read/write
-  storageClassName: longhorn-rwx
-  resources:
-    requests:
-      storage: 1Gi
-```
-
-**Use when:**
-
-- Multiple pods need to access the same files
-- Read-heavy workloads
-- Configuration management across services
-
-### Stateful Application Data
-
-```yaml
-# SigNoz ClickHouse storage
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: clickhouse-data
-  labels:
-    app: signoz
-spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: longhorn-fast
-  resources:
-    requests:
-      storage: 100Gi
-```
-
-**Configuration:**
-
-- Fast storage class with higher IOPS
-- 2 replicas for performance (less overhead than 3)
-- Daily backups to S3
-
 ## Replica Configuration
 
 **homelab production default: 1 replica** (`values-prod.yaml` `defaultReplicaCount: 1`).
-The three tiers below describe the available trade-offs, but because the cluster
-runs single-replica by default most volumes have no node-loss tolerance and rely
-on daily S3 backups for durability.
+Because the cluster runs single-replica by default, most volumes have no
+node-loss tolerance: there is no second copy to fail over to. No S3
+`backupTarget` is configured either (see the Configuration table below), so
+durability currently rests entirely on the single replica plus whatever
+out-of-band export a given service does for its own data.
 
-### Three Replicas (Longhorn upstream default)
+The one exception is GPU workload storage: `storageclass-gpu.yaml` defines a
+real `longhorn-gpu` StorageClass, pinned to node-4 (`nodeSelector:
+"kubernetes.io/hostname:node-4"`, `diskSelector: "nvme,gpu"`) with
+`numberOfReplicas: "1"` and `dataLocality: "strict-local"`, used for
+performance rather than availability since GPU workloads only ever run on
+node-4 anyway.
 
-```yaml
-# Implicit in all PVCs using longhorn StorageClass
-kind: PersistentVolumeClaim
-spec:
-  storageClassName: longhorn
-  # Inherits numberOfReplicas from StorageClass (Longhorn upstream default is 3)
-```
-
-**Tolerance:** Can lose 2 nodes before data loss
-
-**Trade-offs:**
-
-- ✅ Maximum availability
-- ✅ Survives multiple node failures
-- ❌ 3x storage overhead
-- ❌ Higher write latency (3-way sync)
-
-### Reduced Replica Count (2)
-
-```yaml
-# Custom StorageClass for performance
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: longhorn-fast
-provisioner: driver.longhorn.io
-parameters:
-  numberOfReplicas: "2"
-  staleReplicaTimeout: "30"
-```
-
-**Tolerance:** Can lose 1 node
-
-**Use when:**
-
-- Data can be rebuilt from source (caches, logs)
-- Performance is critical
-- Storage space is limited
-
-### Single Replica (1)
-
-```yaml
-# Non-critical ephemeral data
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: longhorn-ephemeral
-provisioner: driver.longhorn.io
-parameters:
-  numberOfReplicas: "1"
-  dataLocality: "strict-local"
-```
-
-**Tolerance:** No redundancy - data lost if node fails
-
-**Use when:**
-
-- Temporary data only
-- Data is disposable or easily recreated
-- Maximum performance needed (no replication overhead)
-
-## Backup Configuration
-
-### S3 Backup Target
-
-Configure in Longhorn UI or via values:
-
-```yaml
-# values.yaml
-defaultSettings:
-  backupTarget: s3://longhorn-backups@us-east-1/
-  backupTargetCredentialSecret: longhorn-s3-credentials
-```
-
-**Secret:**
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: longhorn-s3-credentials
-  namespace: longhorn-system
-stringData:
-  AWS_ACCESS_KEY_ID: <access-key>
-  AWS_SECRET_ACCESS_KEY: <secret-key>
-```
-
-### Manual Backup
-
-Via Longhorn UI:
-
-1. Navigate to **Volume** → Select volume
-2. Click **Create Backup**
-3. Backup uploaded to S3
-
-Via CLI:
-
-```bash
-kubectl -n longhorn-system exec -it deploy/longhorn-manager -- \
-  longhorn-manager backup create <volume-name>
-```
-
-### Scheduled Backups
-
-Create recurring backup job:
-
-```yaml
-apiVersion: longhorn.io/v1beta2
-kind: RecurringJob
-metadata:
-  name: daily-backup
-  namespace: longhorn-system
-spec:
-  task: backup
-  cron: "0 2 * * *" # 2 AM daily
-  retain: 7 # Keep 7 backups
-  concurrency: 2
-  labels:
-    app: postgres # Only volumes with this label
-```
-
-**Apply to volumes:**
-
-```yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-  labels:
-    app: postgres # Matches RecurringJob selector
-```
-
-### Restore from Backup
-
-1. List available backups:
-
-   ```bash
-   kubectl -n longhorn-system get backupvolumes
-   ```
-
-2. Create PVC from backup:
-   ```yaml
-   apiVersion: v1
-   kind: PersistentVolumeClaim
-   metadata:
-     name: restored-data
-   spec:
-     accessModes: [ReadWriteOnce]
-     storageClassName: longhorn
-     dataSource:
-       kind: VolumeSnapshot
-       apiGroup: longhorn.io
-       name: backup-<timestamp>
-     resources:
-       requests:
-         storage: 20Gi
-   ```
+For the full range of replication trade-offs Longhorn supports (1 vs. 2 vs. 3
+replicas, rebuild behavior, node-loss tolerance), see the [upstream Longhorn
+volumes-and-nodes docs](https://longhorn.io/docs/latest/volumes-and-nodes/).
 
 ## Storage Classes
 
-### Default StorageClass
+The default `longhorn` StorageClass is created by the upstream chart with
+`numberOfReplicas` set from `defaultSettings.defaultReplicaCount` (`1` in this
+cluster, see above), not the Longhorn upstream default of `3`:
 
 ```bash
-kubectl get storageclass longhorn
+kubectl get storageclass longhorn -o yaml
 ```
 
-```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: longhorn
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: driver.longhorn.io
-allowVolumeExpansion: true
-parameters:
-  numberOfReplicas: "3"
-  staleReplicaTimeout: "30"
-  fromBackup: ""
-  fsType: "ext4"
-```
-
-### Create Custom StorageClass
-
-```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: longhorn-ssd
-provisioner: driver.longhorn.io
-allowVolumeExpansion: true
-parameters:
-  numberOfReplicas: "3"
-  dataLocality: "best-effort"
-  diskSelector: "ssd,fast" # Only use nodes with these tags
-  nodeSelector: "storage,high-performance"
-  fsType: "ext4"
-```
-
-**Tag nodes:**
-
-```bash
-kubectl label nodes node1 storage=true
-kubectl label nodes node1 high-performance=true
-```
+The only custom StorageClass in this repo is `longhorn-gpu`
+(`storageclass-gpu.yaml`), described above. For creating additional custom
+StorageClasses (disk/node selectors, data locality, reclaim policy), see the
+[upstream StorageClass parameters
+reference](https://longhorn.io/docs/latest/references/storage-class-parameters/).
 
 ## Volume Operations
 
@@ -471,6 +215,12 @@ kubectl -n longhorn-system delete replica <replica-name>
 Full configuration: See [longhorn chart values](https://github.com/longhorn/charts/tree/master/charts/longhorn)
 
 ## Access UI
+
+The authoritative route is the path-based private ingress:
+https://private.jomcgi.dev/app/longhorn (see `templates/httproute.yaml`). A
+former `longhorn.jomcgi.dev` tunnel route was retired in PR #2534.
+
+For local access without going through the ingress:
 
 ```bash
 kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80

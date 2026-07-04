@@ -11,6 +11,7 @@
 
 import { posix } from "node:path";
 import { Marked } from "marked";
+import { signedDocsImgUrl } from "./docs-img.js";
 
 const escapeHtml = (s) =>
   String(s).replace(
@@ -157,6 +158,25 @@ export function renderDoc(entry, slugByPath) {
         const label = language ? ` data-lang="${escapeAttr(language)}"` : "";
         const mermaidCls = language === "mermaid" ? " doc-mermaid" : "";
         return `<pre class="doc-code${mermaidCls}"${label}><code${cls}>${escapeHtml(text)}</code></pre>\n`;
+      },
+      image({ href, title, text }) {
+        // README images are authored as repo-relative refs (GitHub-native).
+        // Resolve against the doc's repo path and serve via the signed
+        // imgproxy URL over s3://docs-assets/ (objects keyed by repo path).
+        // External absolute URLs pass through; anything unresolvable renders
+        // as its alt text so a missing upload never yields a broken image.
+        const alt = escapeAttr(stripInlineMd(text || ""));
+        const t = title ? ` title="${escapeAttr(title)}"` : "";
+        if (EXTERNAL.test(href || "")) {
+          return `<img src="${escapeAttr(href)}" alt="${alt}"${t} loading="lazy" />`;
+        }
+        if (!href || href.startsWith("/") || href.startsWith("#")) {
+          return text ? escapeHtml(text) : "";
+        }
+        const dir = posix.dirname(entry.path || ".");
+        const repoPath = posix.normalize(posix.join(dir, href));
+        if (repoPath.startsWith("..")) return text ? escapeHtml(text) : "";
+        return `<img src="${escapeAttr(signedDocsImgUrl(repoPath))}" alt="${alt}"${t} loading="lazy" />`;
       },
       html({ text }) {
         // Neutralise raw HTML blocks rather than passing them through. The docs

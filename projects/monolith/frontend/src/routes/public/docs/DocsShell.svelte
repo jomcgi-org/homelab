@@ -1,5 +1,4 @@
 <script>
-  import { Footer } from "$lib/public/components";
   import DocsSearch from "./DocsSearch.svelte";
 
   /**
@@ -176,6 +175,7 @@
   </div>
 </header>
 
+<div class="docs-page">
 <div class="docs-layout" class:has-toc={hasToc}>
   <aside class="docs-side">
     <nav class="side-nav mono" aria-label="Documentation">
@@ -258,8 +258,8 @@
     </aside>
   {/if}
 </div>
+</div>
 
-<Footer />
 
 <style>
   /* ── Top bar: apex back link on the left, docs section nav on the right.
@@ -397,6 +397,11 @@
     }
   }
 
+  .docs-page {
+    background: var(--paper);
+    min-height: calc(100vh - 64px);
+  }
+
   .docs-layout {
     display: grid;
     grid-template-columns: 240px minmax(0, 1fr);
@@ -453,7 +458,7 @@
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--ink-3);
+    color: var(--ink-2);
     text-align: left;
     transition: color 120ms ease;
   }
@@ -544,7 +549,7 @@
   }
 
   .side-group-name {
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
   .side-group-link {

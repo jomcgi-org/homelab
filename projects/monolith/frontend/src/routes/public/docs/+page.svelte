@@ -109,12 +109,12 @@
   .ov-name-muted {
     display: block;
     padding: 12px 4px;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
   .ov-title {
     font-family: var(--sans);
     font-size: 0.9em;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 </style>
