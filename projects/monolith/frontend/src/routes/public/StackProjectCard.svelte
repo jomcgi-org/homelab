@@ -1,4 +1,6 @@
 <script>
+  import { LINK_LABELS } from "$lib/public/homepage-stack.js";
+
   /**
    * @type {{
    *   project: object,
@@ -7,6 +9,15 @@
    * }}
    */
   let { project, expanded = false, onselect } = $props();
+
+  const links = $derived(
+    LINK_LABELS.filter(([key]) => project.links[key]).map(([key, label]) => ({
+      key,
+      label,
+      href: project.links[key],
+      external: project.links[key].startsWith("http"),
+    })),
+  );
 </script>
 
 <article class="card" class:expanded>
@@ -28,12 +39,17 @@
     <div class="story">
       <p>{project.engineering}</p>
       <div class="actions">
-        {#if project.links.live}
-          <a class="card-btn card-btn-live" href={project.links.live}>Visit live &nearr;</a>
-        {/if}
-        <a class="card-btn" href={project.links.readme} target="_blank" rel="noopener">
-          Read the code &nearr;
-        </a>
+        {#each links as link (link.key)}
+          <a
+            class="card-btn"
+            class:card-btn-live={link.key === "live"}
+            href={link.href}
+            target={link.external ? "_blank" : undefined}
+            rel={link.external ? "noopener" : undefined}
+          >
+            {link.label} &nearr;
+          </a>
+        {/each}
       </div>
     </div>
   {/if}
@@ -43,14 +59,13 @@
   .card {
     background: var(--paper);
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard-sm);
     transition:
       transform 0.12s ease,
       box-shadow 0.12s ease;
   }
   .card:hover {
     transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
+    box-shadow: var(--shadow-hard-sm);
   }
   .card.expanded {
     background: var(--accent);
@@ -59,7 +74,7 @@
   .card-face {
     display: block;
     width: 100%;
-    padding: 14px 16px;
+    padding: 18px 20px 14px;
     text-align: left;
     background: none;
     border: none;
@@ -69,15 +84,15 @@
   }
   h3 {
     font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    margin: 0 0 6px;
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    margin: 0 0 8px;
   }
   .blurb {
-    font-size: 13px;
-    line-height: 1.4;
-    margin: 0 0 10px;
+    font-size: 14px;
+    line-height: 1.45;
+    margin: 0 0 12px;
     color: var(--ink-2);
   }
   .card.expanded .blurb {
@@ -100,12 +115,12 @@
     border: 1px solid var(--rule);
   }
   .story {
-    padding: 0 16px 14px;
+    padding: 0 20px 18px;
   }
   .story p {
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.5;
-    margin: 0 0 12px;
+    margin: 0 0 14px;
   }
   .actions {
     display: flex;
@@ -123,11 +138,10 @@
     background: var(--paper);
     border: 2px solid var(--ink);
     padding: 6px 10px;
-    box-shadow: var(--shadow-hard-sm);
   }
   .card-btn:hover {
     transform: translate(-1px, -1px);
-    box-shadow: var(--shadow-hard);
+    box-shadow: var(--shadow-hard-sm);
   }
   .card-btn-live {
     background: var(--ink);
