@@ -1,5 +1,5 @@
 <section class="rack-section" id="homelab" aria-label="Homelab hardware and systems">
-  <p class="eyebrow">4 nodes &middot; 52 CPUs &middot; 112 GB &middot; one RTX 4090</p>
+  <p class="rack-eyebrow">4 nodes &middot; 52 CPUs &middot; 112 GB &middot; one RTX 4090</p>
   <h2>HOMELAB</h2>
 
   <div class="rack-grid">
@@ -89,6 +89,18 @@
     max-width: 1360px;
     margin: 0 auto;
     padding: 48px 32px;
+  }
+  .rack-eyebrow {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: var(--blue);
+    padding: 4px 10px;
+    margin: 0;
   }
   h2 {
     font-family: var(--mono);
