@@ -229,6 +229,12 @@ spec:
             # OPENROUTER_API_KEY is synced from the "openrouter" 1Password item
             # into the {{ include "monolith.fullname" . }}-openrouter Secret; the
             # extract job skips cleanly if it is absent.
+            {{- if not .Values.orchestrator.enabled }}
+            # Only declared when the orchestrator block below is not already
+            # declaring OPENROUTER_API_KEY (from the goosecracker Secret).
+            # Declaring the same env name twice makes the API server collapse
+            # the duplicate on apply, so ArgoCD renders two entries but reads
+            # back one: the Deployment is then permanently OutOfSync.
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -238,6 +244,7 @@ spec:
                   # 1Password item is created; the pod must not be blocked on it
                   # (the extract job already skips cleanly when the key is unset).
                   optional: true
+            {{- end }}
             - name: GRIMOIRE_S3_BUCKET
               value: {{ .Values.grimoire.s3Bucket | quote }}
             - name: GRIMOIRE_EXTRACT_MODEL
