@@ -269,13 +269,20 @@ grimoire:
   extractModel: "qwen3.6-27b"
   extractBaseUrl: "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
 
-# ADR 036 orchestrator brief compiler (Phase 3 live enable). The OpenRouter key
-# is sourced from the existing "goosecracker" Secret (no dedicated OnePasswordItem;
-# see chart/templates/deployment.yaml), so nothing extra to sync here. The
+# ADR 036 orchestrator brief compiler (Phase 3 live enable). The primary planner
+# is GLM-4.7 on Cerebras (free, fast; ORCHESTRATOR_API_KEY sourced from the
+# CEREBRAS_API_KEY field of the existing "goosecracker" Secret). It falls back to
+# DeepSeek on OpenRouter (the proven forced-tool-call path) when Cerebras times
+# out, errors, or returns an unusable plan; the fallback key reuses the same
+# Secret's OPENROUTER_API_KEY field, so nothing extra to sync here. The
 # orchestrator only runs on channels with the ADR 029 "orchestrator" consent
-# grant; ungranted channels fail open to direct submit with no OpenRouter traffic.
+# grant; ungranted channels fail open to direct submit with no external traffic.
 orchestrator:
   enabled: true
+  model: "zai-glm-4.7"
+  baseUrl: "https://api.cerebras.ai/v1"
+  fallbackModel: "deepseek/deepseek-v4-flash"
+  fallbackBaseUrl: "https://openrouter.ai/api/v1"
 
 agent:
   discord:

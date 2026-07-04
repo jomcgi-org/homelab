@@ -1,12 +1,21 @@
-"""ADR 036 orchestrator brief-compiler OpenRouter client.
+"""ADR 036 orchestrator brief-compiler OpenAI-compatible client.
 
 Unary, short-timeout httpx client shaped like ``summarizer.build_llm_caller``
-(summarizer.py:412), but for the paid OpenRouter escalation tier rather than
-the local Qwen executor. Per the fail-open philosophy (ADR 036 Architecture:
-"Fail open"), this client makes exactly one attempt: any timeout or HTTP error
-raises ``OrchestratorUnavailable`` so the caller can fall back to direct
-submit. There is no retry loop here (contrast with build_llm_caller's 3
-retries), because escalations must degrade quickly, not stall on a paid call.
+(summarizer.py:412), but for the hosted escalation tier rather than the local
+Qwen executor. Per the fail-open philosophy (ADR 036 Architecture: "Fail open"),
+each provider attempt makes exactly one call: any timeout, HTTP error, or
+unusable response shape raises ``OrchestratorUnavailable``.
+
+The primary provider is pinned via ``ORCHESTRATOR_MODEL`` / ``ORCHESTRATOR_BASE_URL``
+/ ``ORCHESTRATOR_API_KEY``. When ``ORCHESTRATOR_FALLBACK_MODEL`` is set, a primary
+``OrchestratorUnavailable`` triggers exactly one retry against the fallback
+provider (``ORCHESTRATOR_FALLBACK_BASE_URL`` / ``ORCHESTRATOR_FALLBACK_API_KEY``)
+before the exception propagates. This exists so a Preview primary model
+(``zai-glm-4.7`` on Cerebras) degrades to the proven DeepSeek/OpenRouter path
+instead of failing open to direct submit. With no fallback configured the
+behavior is byte-identical to the original single-attempt contract. There is
+still no per-provider retry loop (contrast with build_llm_caller's 3 retries),
+because escalations must degrade quickly, not stall on a paid call.
 
 ``call_tool`` is the typed sibling used for the runtime ``submit_plan``
 plan (ADR 036 amendment, docs/plans/2026-07-03-deepseek-runtime-recipes.md):
@@ -57,20 +66,48 @@ class OrchestratorResponse:
 
 
 def _read_config() -> tuple[str, str, str, float]:
-    """Read the model, base URL, API key, and timeout from the environment.
+    """Read the primary model, base URL, API key, and timeout from the environment.
 
     The model is expected to be pinned (never ``:auto``) so briefs stay
-    attributable to a specific provider model (ADR 036 Risks table).
+    attributable to a specific provider model (ADR 036 Risks table). The API key
+    prefers the provider-agnostic ``ORCHESTRATOR_API_KEY`` and falls back to
+    ``OPENROUTER_API_KEY`` so a deployment that only wired the legacy OpenRouter
+    key keeps working unchanged.
     """
     model = os.environ.get("ORCHESTRATOR_MODEL", "")
     base_url = os.environ.get("ORCHESTRATOR_BASE_URL", "") or _DEFAULT_BASE_URL
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    api_key = os.environ.get("ORCHESTRATOR_API_KEY", "") or os.environ.get(
+        "OPENROUTER_API_KEY", ""
+    )
     timeout_raw = os.environ.get("ORCHESTRATOR_TIMEOUT_S", "")
     try:
         timeout_s = float(timeout_raw) if timeout_raw else _DEFAULT_TIMEOUT_S
     except ValueError:
         timeout_s = _DEFAULT_TIMEOUT_S
     return model, base_url, api_key, timeout_s
+
+
+def _read_fallback_config() -> tuple[str, str, str] | None:
+    """Read the fallback provider (model, base URL, API key), or ``None``.
+
+    The fallback is a second OpenAI-compatible provider tried once when the
+    primary attempt raises ``OrchestratorUnavailable``. Returns ``None`` when
+    ``ORCHESTRATOR_FALLBACK_MODEL`` is unset, which restores the single-attempt
+    contract exactly. The fallback API key prefers
+    ``ORCHESTRATOR_FALLBACK_API_KEY`` and falls back to ``OPENROUTER_API_KEY``
+    (the DeepSeek/OpenRouter path reuses the key already synced for it).
+    """
+    model = os.environ.get("ORCHESTRATOR_FALLBACK_MODEL", "").strip()
+    if not model:
+        return None
+    base_url = (
+        os.environ.get("ORCHESTRATOR_FALLBACK_BASE_URL", "").strip()
+        or _DEFAULT_BASE_URL
+    )
+    api_key = os.environ.get("ORCHESTRATOR_FALLBACK_API_KEY", "") or os.environ.get(
+        "OPENROUTER_API_KEY", ""
+    )
+    return model, base_url, api_key
 
 
 def _extract_usage(payload: dict) -> tuple[int | None, int | None, int | None]:
@@ -86,12 +123,17 @@ def _extract_usage(payload: dict) -> tuple[int | None, int | None, int | None]:
     return prompt_tokens, completion_tokens, cached_tokens
 
 
-async def call(system: str, user: str) -> OrchestratorResponse:
-    """Send one system/user turn to the configured OpenRouter model and
-    parse the response. Raises ``OrchestratorUnavailable`` on any timeout or
-    HTTP error; makes a single attempt (no retries)."""
-    model, base_url, api_key, timeout_s = _read_config()
-
+async def _attempt_call(
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout_s: float,
+    system: str,
+    user: str,
+) -> OrchestratorResponse:
+    """One provider attempt for ``call``: POST + parse, or raise
+    ``OrchestratorUnavailable``. No retry loop here (the caller decides whether
+    to retry against a fallback provider)."""
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
@@ -133,36 +175,48 @@ async def call(system: str, user: str) -> OrchestratorResponse:
     )
 
 
-async def call_tool(
+async def call(system: str, user: str) -> OrchestratorResponse:
+    """Send one system/user turn to the configured model and parse the response.
+
+    Tries the primary provider once; on ``OrchestratorUnavailable`` and when a
+    fallback is configured, retries once against the fallback provider. Raises
+    ``OrchestratorUnavailable`` if the primary fails with no fallback, or if the
+    fallback also fails.
+    """
+    model, base_url, api_key, timeout_s = _read_config()
+    try:
+        return await _attempt_call(model, base_url, api_key, timeout_s, system, user)
+    except OrchestratorUnavailable as primary_exc:
+        fallback = _read_fallback_config()
+        if fallback is None:
+            raise
+        fb_model, fb_base_url, fb_api_key = fallback
+        logger.warning(
+            "orchestrator primary model %s unavailable (%s); falling back to %s",
+            model,
+            primary_exc,
+            fb_model,
+        )
+        return await _attempt_call(
+            fb_model, fb_base_url, fb_api_key, timeout_s, system, user
+        )
+
+
+async def _attempt_call_tool(
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout_s: float,
     system: str,
     user: str,
-    *,
     schema: dict,
-    tool_name: str = "submit_plan",
-    timeout_s: float | None = None,
+    tool_name: str,
 ) -> tuple[dict, OrchestratorResponse]:
-    """Force a tool call against ``schema`` and parse its arguments.
-
-    Sends ``tools=[{"type": "function", "function": schema}]`` with
-    ``tool_choice`` pinned to ``tool_name``, then parses
-    ``choices[0].message.tool_calls[0].function.arguments`` (a JSON string)
-    into a dict. Returns ``(args, response)`` where ``response`` mirrors
-    ``call()``'s usage/latency accounting (``response.content`` holds the
-    raw arguments JSON string).
-
-    Raises ``OrchestratorUnavailable`` on any timeout, HTTP error, missing
-    ``tool_calls``, or JSON parse error. Single attempt, no retry loop, same
-    fail-open contract as ``call()``. Uses ``timeout_s`` if given, else the
-    configured default (see ``_read_config``).
-    """
-    model, base_url, api_key, default_timeout_s = _read_config()
-    effective_timeout_s = timeout_s if timeout_s is not None else default_timeout_s
-
+    """One provider attempt for ``call_tool``: forced tool call + parse, or raise
+    ``OrchestratorUnavailable``."""
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(effective_timeout_s)
-        ) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
             resp = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -215,3 +269,65 @@ async def call_tool(
         latency_ms=latency_ms,
     )
     return args, response
+
+
+async def call_tool(
+    system: str,
+    user: str,
+    *,
+    schema: dict,
+    tool_name: str = "submit_plan",
+    timeout_s: float | None = None,
+) -> tuple[dict, OrchestratorResponse]:
+    """Force a tool call against ``schema`` and parse its arguments.
+
+    Sends ``tools=[{"type": "function", "function": schema}]`` with
+    ``tool_choice`` pinned to ``tool_name``, then parses
+    ``choices[0].message.tool_calls[0].function.arguments`` (a JSON string)
+    into a dict. Returns ``(args, response)`` where ``response`` mirrors
+    ``call()``'s usage/latency accounting (``response.content`` holds the
+    raw arguments JSON string).
+
+    Tries the primary provider once; on ``OrchestratorUnavailable`` (timeout,
+    HTTP error, missing ``tool_calls``, or JSON parse error) and when a fallback
+    is configured, retries once against the fallback provider. This is where a
+    primary model with weaker forced-tool-call support degrades to the proven
+    path. Single attempt per provider, no retry loop. Uses ``timeout_s`` if
+    given, else the configured default (see ``_read_config``).
+    """
+    model, base_url, api_key, default_timeout_s = _read_config()
+    effective_timeout_s = timeout_s if timeout_s is not None else default_timeout_s
+
+    try:
+        return await _attempt_call_tool(
+            model,
+            base_url,
+            api_key,
+            effective_timeout_s,
+            system,
+            user,
+            schema,
+            tool_name,
+        )
+    except OrchestratorUnavailable as primary_exc:
+        fallback = _read_fallback_config()
+        if fallback is None:
+            raise
+        fb_model, fb_base_url, fb_api_key = fallback
+        logger.warning(
+            "orchestrator primary model %s tool-call unavailable (%s); "
+            "falling back to %s",
+            model,
+            primary_exc,
+            fb_model,
+        )
+        return await _attempt_call_tool(
+            fb_model,
+            fb_base_url,
+            fb_api_key,
+            effective_timeout_s,
+            system,
+            user,
+            schema,
+            tool_name,
+        )

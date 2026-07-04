@@ -647,6 +647,12 @@ orchestrator:
   enabled: false
   model: "deepseek/deepseek-v4-flash"
   baseUrl: "https://openrouter.ai/api/v1"
+  # Fallback provider: tried once when the primary raises OrchestratorUnavailable
+  # (timeout, 5xx, or an unusable/absent tool call), before the flow fails open to
+  # direct submit. Empty fallbackModel means no fallback (single-attempt contract).
+  # The fallback key reuses OPENROUTER_API_KEY from the "goosecracker" Secret.
+  fallbackModel: ""
+  fallbackBaseUrl: "https://openrouter.ai/api/v1"
   # Initial-compile budget: covers BOTH the route-decision call and the
   # submit_plan tool call (plan construction is real work, not a quick classify).
   timeoutSeconds: 60
