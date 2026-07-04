@@ -27,9 +27,22 @@ if [[ ! -f "$SETTINGS" ]]; then
 fi
 
 # Extract every hooks[].hooks[].command across all events (PreToolUse,
-# PostToolUse, etc.) and matchers. `.hooks // {}` tolerates a settings.json
-# with no hooks configured at all.
-COMMANDS=$(jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // empty' "$SETTINGS")
+# PostToolUse, etc.) and matchers. python3 stdlib, not jq: the BuildBuddy
+# Format check runner image has no jq (this script runs there on every PR),
+# while python3 is present everywhere this runs (CI runner, macOS, sandbox).
+COMMANDS=$(python3 -c '
+import json, sys
+
+with open(sys.argv[1]) as f:
+    settings = json.load(f)
+
+for matchers in (settings.get("hooks") or {}).values():
+    for matcher in matchers or []:
+        for hook in matcher.get("hooks") or []:
+            command = hook.get("command")
+            if command:
+                print(command)
+' "$SETTINGS")
 
 if [[ -z "$COMMANDS" ]]; then
 	exit 0
