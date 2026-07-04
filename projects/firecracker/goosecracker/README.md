@@ -58,6 +58,7 @@ The baked recipe library (`guest/recipes/`) uses a router model: the top-level
 ```mermaid
 graph TD
     A[agent.yaml router<br/>classify the task] -->|question to answer| Q[query.yaml]
+    A -->|needs facts outside repo/cluster| S[research.yaml]
     A -->|design doc wanted| P[plan.yaml]
     A -->|code change wanted| I[implement.yaml]
     A -->|web page wanted| B[artifact-build.yaml<br/>one-shot HTML build]

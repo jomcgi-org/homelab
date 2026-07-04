@@ -1,5 +1,12 @@
 # Grimoire GCP Bootstrap
 
+> **Status: out of scope, not deployed.** This directory is the March-era standalone
+> Firestore/Cloud Run app. It predates the current design and is slated for
+> decommission. Nothing here is deployed. The live ingest path is S3 NDJSON
+> manifests processed by Argo CronWorkflows inside the monolith; see
+> [../README.md](../README.md). The rest of this file is kept as historical
+> reference only.
+
 One-time setup for GCP serverless infrastructure (Firestore, Cloud Storage, Cloud Run).
 
 ## Prerequisites

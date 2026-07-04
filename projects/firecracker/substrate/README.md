@@ -142,13 +142,13 @@ Vsock ports (`vsockproto`):
 
 Host paths on node-4:
 
-| Path                                                | Purpose                                                                                         |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `/opt/kata/bin/firecracker`                         | Firecracker binary (reused from the kata install)                                               |
-| `/opt/kata/share/kata-containers/vmlinux.container` | Guest kernel                                                                                    |
-| `/disks/nvme-02/fc-invoke/{workload}/rootfs.ext4`   | Per-workload base rootfs (built by rootfs-builder)                                              |
-| `/disks/nvme-02/fc-invoke/snapshots/`               | Snapshot bundles (snapfile, memfile, vsock.sock, api.sock)                                      |
-| `/disks/nvme-02/fc-invoke-vsock/`                   | Canonical vsock dir the base snapshot embeds; bind-mounted per VM via a mount-namespace re-exec |
+| Path                                              | Purpose                                                                                         |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `/opt/fc/firecracker`                             | Firecracker binary (baked into the image, no node-level kata install needed)                    |
+| `/opt/fc/vmlinux.container`                       | Guest kernel                                                                                    |
+| `/disks/nvme-02/fc-invoke/{workload}/rootfs.ext4` | Per-workload base rootfs (built by rootfs-builder)                                              |
+| `/disks/nvme-02/fc-invoke/snapshots/`             | Snapshot bundles (snapfile, memfile, vsock.sock, api.sock)                                      |
+| `/disks/nvme-02/fc-invoke-vsock/`                 | Canonical vsock dir the base snapshot embeds; bind-mounted per VM via a mount-namespace re-exec |
 
 Guest processes run with `oom_score_adj 1000`: under node memory pressure the
 micro-VMs are the designated OOM victims, per ADR platform/010.

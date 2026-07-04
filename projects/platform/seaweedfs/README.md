@@ -4,7 +4,7 @@ S3-compatible distributed object storage -- shared infrastructure for the homela
 
 ## Overview
 
-Deploys SeaweedFS as shared object storage infrastructure using the upstream Helm chart. Multiple services (knowledge-graph, marine, etc.) use this for S3-compatible blob storage. Configured for a single-node homelab with Longhorn-backed persistent volumes and Prometheus metrics for SigNoz monitoring.
+Deploys SeaweedFS as shared object storage infrastructure using the upstream Helm chart. Multiple monolith modules (ships AIS tracking, the knowledge graph, stars climatology, artifact chat blobs, grimoire book uploads) and monolith-public's imgproxy use this for S3-compatible blob storage. Configured for a single-node homelab with Longhorn-backed persistent volumes and Prometheus metrics for SigNoz monitoring.
 
 ```mermaid
 flowchart LR
