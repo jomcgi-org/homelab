@@ -41,8 +41,7 @@
       "Bash(column:*)",
       "WebFetch(domain:*)",
       "Bash(bb:*)",
-      "mcp__buildbuddy",
-      "mcp__homelab"
+      "mcp__buildbuddy"
     ],
     "additionalDirectories": ["/tmp/claude-worktrees"]
   },

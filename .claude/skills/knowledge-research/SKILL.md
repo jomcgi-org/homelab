@@ -28,9 +28,11 @@ Important consequences you must respect:
 
 - **Only `create-atom` is used.** It writes straight to Postgres and indexes
   synchronously. It is the only fileless write path that works.
-- **Do NOT call `approve-research-gap`** (it feeds the dead handler) **or
-  `answer-gap`** (it writes vault stub files via the retired reconciler and
-  mislabels content as `source_tier: personal`). Both are filesystem-stranded.
+- **Do NOT call `approve-research-gap`** (no longer exposed as an MCP tool) **or
+  `answer-gap`**. `answer-gap` is fileless now (ADR 006 Phase 4c) but exists for
+  Joe's own answers to `in_review` internal/hybrid gaps: it forces the
+  personal/private tier and flips the gap to `committed`, both wrong for
+  web-researched external content.
 - **Creating the atom does not flip the gap row to `committed`.** That is
   expected for now. The gap row stays "open" in `/private/review`; that is a
   cosmetic backlog item, not a failure. What matters is that the term now has a

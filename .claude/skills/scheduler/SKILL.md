@@ -1,12 +1,12 @@
 ---
 name: scheduler
 description: >
-  Inspect and trigger Postgres-backed scheduled jobs (gardener, calendar poll,
-  vault backup, etc.) via the homelab CLI. Use when investigating "did the
-  gardener run", "kick the calendar poll", "are any jobs failing or stuck",
-  or when you need to trigger a job to run on the next scheduler tick without
-  redeploying. Also use to spot orphan job rows whose handlers were removed
-  but whose database row still exists.
+  Inspect and trigger Postgres-backed scheduled jobs (calendar poll, knowledge
+  ingest, gap discovery, etc.) via the homelab CLI. Use when investigating
+  "did the ingest run", "kick the calendar poll", "are any jobs failing or
+  stuck", or when you need to trigger a job to run on the next scheduler tick
+  without redeploying. Also use to spot orphan job rows whose handlers were
+  removed but whose database row still exists.
 ---
 
 # Scheduler
@@ -18,7 +18,7 @@ Inspect and trigger the monolith's Postgres-backed job scheduler via the
 
 - User asks if a scheduled job ran, or when it last ran
 - User wants to "kick", "trigger", or "force" a scheduled job to run now
-- Investigating gardener / calendar-poll / vault-backup behavior
+- Investigating calendar-poll / knowledge-ingest / gap-discovery behavior
 - Verifying a newly registered job is recognized after a deploy
 - Spotting orphan rows (DB row exists but no handler is registered — purged on
   next pod restart)
@@ -27,11 +27,20 @@ Prefer this over digging in SigNoz logs when the question is "what does the
 scheduler think the next/last run is" — that lives in the database, not the
 logs.
 
+NOT for the knowledge gardener: gardening is a claude.ai routine now (see the
+knowledge-gardener skill), not a scheduler job. There is no `knowledge.gardener`
+row.
+
 ## Auth
 
 `homelab` authenticates via Cloudflare Access. First-time auth prompts for a
 `CF_Authorization` token; cached on disk afterwards. See the `knowledge` skill
 for first-run setup details — same flow.
+
+The `homelab` CLI is a personal tool installed outside this repo. The API it
+calls is `projects/monolith/scheduler/router.py` (`GET /api/scheduler/jobs`,
+`POST /api/scheduler/jobs/<name>/run-now`). From an MCP-only context,
+`monolith-monolith-agent-trigger-job` kicks a job the same way `run-now` does.
 
 ## Commands
 
@@ -45,8 +54,8 @@ Output (one job per line):
 
 ```
 home.calendar_poll        every   900s  next 14:32  never run
-knowledge.gardener        every   600s  next 14:18  last ok at 14:08
-knowledge.vault_backup    every  3600s  next 15:08  last error: timeout (last at 14:08)
+knowledge.ingest          every   600s  next 14:18  last ok at 14:08
+knowledge.discover-gaps   every  3600s  next 15:08  last error: timeout (last at 14:08)
 orphan.removed_handler    every   300s  next 14:20  last ok at 14:15  [orphan]
 ```
 
@@ -58,7 +67,7 @@ Add `--json` for raw API output.
 ### Get a single job
 
 ```bash
-homelab scheduler jobs get knowledge.gardener
+homelab scheduler jobs get knowledge.ingest
 ```
 
 Same one-line format as `list`, just for one job. Exits non-zero if the name
@@ -67,7 +76,7 @@ is unknown.
 ### Trigger a job to run now
 
 ```bash
-homelab scheduler jobs run-now knowledge.gardener
+homelab scheduler jobs run-now knowledge.ingest
 ```
 
 Sets `next_run_at = now()` so the next scheduler tick (every ~30s) claims the
@@ -86,7 +95,7 @@ Exits non-zero if the name is unknown.
 ## Tips
 
 - All commands support `--json`
-- "Did the gardener run?" → `homelab scheduler jobs get knowledge.gardener`
+- "Did the ingest run?" → `homelab scheduler jobs get knowledge.ingest`
   and check `last_run_at` + `last_status`
 - "It says ok but I don't see effects" → `last_status` is `ok` if the handler
   returned without raising; the handler may be a no-op when nothing's
