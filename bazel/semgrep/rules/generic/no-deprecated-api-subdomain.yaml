@@ -18,5 +18,5 @@ rules:
         or the API gateway (api.jomcgi.dev/<service>) instead.
     paths:
       include:
-        - "projects/**/*.md"
+        - "**/projects/**/*.md"
     pattern-regex: '\w+-api\.jomcgi\.dev'

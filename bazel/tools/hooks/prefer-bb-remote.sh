@@ -36,8 +36,10 @@ if [[ "$COMMAND" == bb\ * ]] || [[ "$COMMAND" == */bb\ * ]]; then
 	exit 0
 fi
 
-# Block direct bazel/bazelisk invocations
-if [[ "$COMMAND" == bazel\ * ]] || [[ "$COMMAND" == bazelisk\ * ]] || [[ "$COMMAND" == *"&& bazel"* ]] || [[ "$COMMAND" == *"; bazel"* ]]; then
+# Block direct bazel/bazelisk invocations. The chained patterns require a
+# trailing space so repo-relative script paths under bazel/ (e.g.
+# "cd /tmp/wt && bazel/tools/format/fast-format.sh") are not false positives.
+if [[ "$COMMAND" == bazel\ * ]] || [[ "$COMMAND" == bazelisk\ * ]] || [[ "$COMMAND" == *"&& bazel "* ]] || [[ "$COMMAND" == *"; bazel "* ]]; then
 	cat >&2 <<-'EOF'
 		BLOCKED: Direct bazel/bazelisk invocations are not allowed locally.
 

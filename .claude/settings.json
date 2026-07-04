@@ -205,6 +205,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-hpa-ignoredifferences-replicas.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-public-reader-grant.sh",
+            "timeout": 10
           }
         ]
       }

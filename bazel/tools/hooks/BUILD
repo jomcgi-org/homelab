@@ -111,3 +111,15 @@ sh_test(
     srcs = ["check-hpa-ignoredifferences-replicas_test.sh"],
     data = [":check-hpa-ignoredifferences-replicas.sh"],
 )
+
+sh_test(
+    name = "check_public_reader_grant_test",
+    srcs = ["check-public-reader-grant_test.sh"],
+    data = [":check-public-reader-grant.sh"],
+)
+
+sh_test(
+    name = "validate_hooks_executable_test",
+    srcs = ["validate-hooks-executable_test.sh"],
+    data = [":validate-hooks-executable.sh"],
+)

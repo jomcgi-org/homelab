@@ -46,6 +46,10 @@ actions:
           # em-dashes, arrows, etc.). Check all commits since origin/main.
           ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
 
+          # Hook scripts referenced from .claude/settings.json must exist and be
+          # executable; a 644 script exits 126 in sessions and enforces nothing.
+          ./bazel/tools/hooks/validate-hooks-executable.sh
+
           # Check for formatting changes
           if git diff --exit-code; then
             echo "All files formatted correctly"

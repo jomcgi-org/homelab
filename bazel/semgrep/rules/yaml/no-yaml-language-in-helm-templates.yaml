@@ -21,7 +21,7 @@ rules:
         path filter — a combination that silently never fires on real Helm chart files.
     paths:
       include:
-        - "bazel/semgrep/rules/**/*.yaml"
+        - "**/bazel/semgrep/rules/**/*.yaml"
     patterns:
       - pattern: |
           languages:
@@ -32,4 +32,4 @@ rules:
               - $PATH
       - metavariable-regex:
           metavariable: $PATH
-          regex: '.*chart/templates.*'
+          regex: ".*chart/templates.*"

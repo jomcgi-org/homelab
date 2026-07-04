@@ -7,7 +7,7 @@ rules:
           regex: "^(?!monolith\\.)(?!discord)(?!httpx)(?!httpcore)(?!uvicorn)"
     paths:
       include:
-        - "projects/monolith/**"
+        - "**/projects/monolith/**"
       exclude:
         - "**/*_test.py"
         - "**/test_*.py"

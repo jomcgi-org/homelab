@@ -44,4 +44,4 @@ rules:
     paths:
       include:
         - "**/deploy/values.yaml"
-        - "*/values.yaml"
+        - "**/values.yaml"

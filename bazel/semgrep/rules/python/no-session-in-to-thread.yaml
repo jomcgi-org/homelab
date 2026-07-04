@@ -26,7 +26,10 @@ rules:
     metadata:
       category: correctness
       subcategory: thread-safety
-      cwe: ["CWE-362: Concurrent Execution using Shared Resource with Improper Synchronization"]
+      cwe:
+        [
+          "CWE-362: Concurrent Execution using Shared Resource with Improper Synchronization",
+        ]
       confidence: HIGH
       likelihood: HIGH
       impact: HIGH
@@ -37,4 +40,4 @@ rules:
         threads.
     paths:
       include:
-        - "projects/**/*.py"
+        - "**/projects/**/*.py"
