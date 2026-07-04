@@ -14,6 +14,7 @@ already used elsewhere (e.g. knowledge/router.py's `-> dict` handlers).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,6 +43,8 @@ from grimoire.search import search_campaign
 from grimoire.visibility import project_entity, visible_entities_query
 from knowledge.api import get_embedding_client
 from shared.embedding import EmbeddingClient
+
+logger = logging.getLogger("monolith.grimoire.router")
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire"])
 
@@ -610,6 +613,21 @@ def list_book_chunks(
     )
 
 
+@router.get("/books/{book_id}/read")
+def read_book(
+    book_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(
+        default=library.DEFAULT_READ_PAGE, ge=1, le=library.MAX_READ_PAGE
+    ),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Seq-ordered page of FULL chunks for the continuous reader. Corpus-
+    global like the chunk body itself; image chunks carry the bucket-relative
+    object key the frontend server signs into an imgproxy URL."""
+    return library.read_page(session, book_id, cursor=cursor, limit=limit)
+
+
 @router.get("/chunks/{chunk_id}")
 def get_chunk(
     chunk_id: str,
@@ -679,6 +697,8 @@ def get_chunk_image(
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
     except Exception as exc:  # noqa: BLE001 - any S3 miss/error becomes a 404
+        # Routine for text chunks probed directly; keep the log quiet but keyed.
+        logger.info("chunk image fetch failed for %s: %s", key, exc)
         raise HTTPException(status_code=404, detail="chunk image not found") from exc
 
     body = obj["Body"]

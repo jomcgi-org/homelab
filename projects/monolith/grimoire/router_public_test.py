@@ -148,6 +148,16 @@ class TestBooksAndSections:
         sections = r.json()
         assert sections[0]["section_path"] == "Monsters/Aboleth"
 
+    def test_read_page_full_content(self, session, client):
+        seed = seed_corpus(session)
+        r = client.get("/api/grimoire/books/mm/read")
+        assert r.status_code == 200
+        page = r.json()
+        assert page["items"][0]["id"] == seed.c0.id
+        # Full content (the reader reconstructs the book), not a preview.
+        assert page["items"][0]["content"] == seed.c0.content
+        assert page["next_cursor"] is None
+
 
 class TestGetChunk:
     def test_no_campaign_or_as_required(self, session, client):

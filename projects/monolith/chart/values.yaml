@@ -712,6 +712,15 @@ artifact:
   bucket: "artifacts"
   publicBase: "https://jomcgi.dev"
 
+# imgproxy URL signing for the private frontend (grimoire reader images).
+# Reuses the trips-imgproxy-signing 1Password item so signatures validate
+# against the shared imgproxy behind /img (served on both hostnames by the
+# monolith-public chart). Off by default; the deploy values enable it.
+imgproxySigning:
+  enabled: false
+  onepassword:
+    itemPath: ""
+
 cfIngress:
   private:
     enabled: true

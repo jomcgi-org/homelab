@@ -20,6 +20,11 @@
     { "id": "trips-day", "path": "/app/trips/demo-trip/day/1", "map": true },
     { "id": "notes", "path": "/app/notes", "static_initial": true },
     { "id": "chat", "path": "/chat", "static_initial": true },
+    {
+      "id": "grimoire-book",
+      "path": "/app/grimoire/book/mm",
+      "static_initial": true
+    },
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },
     { "id": "cv", "path": "/cv" },
