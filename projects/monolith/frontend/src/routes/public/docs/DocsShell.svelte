@@ -121,10 +121,11 @@
               <a
                 class="side-group-link"
                 class:active={activeSlug === node.slug}
-                href={`/docs/${node.slug}`}>{node.title}</a
+                href={`/docs/${node.slug}`}
+                title={node.title}>{node.name}</a
               >
             {:else}
-              <span class="side-group-name">{node.title}</span>
+              <span class="side-group-name">{node.name}</span>
             {/if}
           </div>
           {#if openProjects[nodePath]}
@@ -136,7 +137,8 @@
           <a
             class="side-link"
             class:active={activeSlug === node.slug}
-            href={`/docs/${node.slug}`}>{node.title}</a
+            href={`/docs/${node.slug}`}
+            title={node.title}>{node.name}</a
           >
         </li>
       {/if}
@@ -415,10 +417,7 @@
     top: 76px;
     max-height: calc(100vh - 96px);
     overflow-y: auto;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    box-shadow: var(--shadow-hard-sm);
-    padding: 16px 14px;
+    padding: 0 14px 0 0;
   }
 
   .side-head {
@@ -428,11 +427,10 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--ink);
-    background: var(--accent);
-    display: inline-block;
-    padding: 2px 8px;
-    margin: 14px 0 8px;
-    border: 2px solid var(--ink);
+    display: block;
+    padding-bottom: 6px;
+    margin: 18px 0 8px;
+    border-bottom: 2px solid var(--ink);
   }
 
   .side-head:first-child {
@@ -547,9 +545,6 @@
 
   .side-group-name {
     color: var(--ink-3);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-size: 10px;
   }
 
   .side-group-link {
@@ -582,10 +577,7 @@
   }
 
   .docs-card {
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    box-shadow: var(--shadow-hard);
-    padding: 40px 44px;
+    padding: 8px 0 0;
     /* Pin a fixed 16px base so the doc typography (expressed in `em`
        below) is immune to the fluid root font-size in global.css
        (`html { font-size: clamp(16px, max(1.6vw, 2.6vh), 48px) }`).
@@ -748,7 +740,7 @@
   }
 
   .docs-card :global(a:hover) {
-    background: var(--accent);
+    text-decoration-thickness: 3px;
   }
 
   .docs-card :global(strong) {
@@ -789,7 +781,6 @@
     background: var(--ink);
     color: var(--cream); /* cream on ink: brutalist code panel */
     border: 2px solid var(--ink);
-    box-shadow: var(--shadow-hard-sm);
     border-radius: var(--radius);
     padding: 18px 18px 16px;
     margin: 0 0 20px;
@@ -815,11 +806,10 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--ink);
-    background: var(--accent);
+    color: var(--cream);
     padding: 2px 7px;
-    border-left: 2px solid var(--ink);
-    border-bottom: 2px solid var(--ink);
+    border-left: 1px solid var(--rule-2);
+    border-bottom: 1px solid var(--rule-2);
   }
 
   /* Tables */
@@ -847,7 +837,7 @@
   }
 
   .docs-card :global(thead th) {
-    background: var(--accent);
+    background: var(--bg-elev);
     color: var(--ink);
     font-weight: 700;
     border-color: var(--ink);
