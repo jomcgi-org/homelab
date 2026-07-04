@@ -40,6 +40,7 @@ REQUIRED_PREFIXES = [
     "/api/dr-jobs",
     "/api/trips",
     "/api/campsites",
+    "/api/grimoire",
 ]
 
 
@@ -83,6 +84,9 @@ ALLOWED_PREFIXES = (
     "/api/wc2026",
     "/api/knowledge/public",
     "/api/home/observability",
+    # Grimoire public tier (Task 2 of docs/plans/2026-07-03-grimoire-public-readonly.md):
+    # no campaign/grant params, whole corpus is a single global read view.
+    "/api/grimoire",
     # Internal-only public chat API. It is mounted on the public binary but is
     # deliberately kept off the public HTTPRoute (see
     # projects/monolith-public/chart/httproute_public_test.py): it is reachable
