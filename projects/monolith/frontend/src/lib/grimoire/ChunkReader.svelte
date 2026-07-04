@@ -9,8 +9,9 @@
   let loading = $state(true);
   let error = $state("");
   // Measured pager height, fed back as bottom padding so the sticky pager never
-  // slices through the last lines of the reading column.
-  let pagerH = $state(0);
+  // slices through the last lines of the reading column. Null until measured so
+  // the CSS var stays unset and its fallback governs the first paint.
+  let pagerH = $state(null);
 
   // Structural blocks (headings / bullet lists / paragraphs) for text chunks.
   const blocks = $derived(chunk?.content ? renderChunk(chunk.content) : []);
@@ -62,7 +63,10 @@
   {:else if error}
     <p class="status status--error">{error}</p>
   {:else if chunk}
-    <div class="reader-body grim-paper" style:--pager-h={`${pagerH}px`}>
+    <div
+      class="reader-body grim-paper"
+      style:--pager-h={pagerH != null ? `${pagerH}px` : undefined}
+    >
       {#if chunk.image_url}
         <figure class="figure">
           {#if showSection}

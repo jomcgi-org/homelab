@@ -23,7 +23,9 @@
   let characters = $state([]);
   // Drives the two-pane Shell. matchMedia keeps it in sync with the 880px
   // breakpoint without a resize-listener storm; ssr=false so window is safe.
-  let isDesktop = $state(false);
+  // Seeded from the initial match (not false) so the first paint already picks
+  // the right frame, avoiding a mobile->desktop flash and a wasted list fetch.
+  let isDesktop = $state(window.matchMedia("(min-width: 880px)").matches);
 
   $effect(() => {
     const mq = window.matchMedia("(min-width: 880px)");

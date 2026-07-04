@@ -16,12 +16,15 @@
   let { children } = $props();
   const ctx = getContext("grimoire");
 
-  // Which list belongs in the left pane, inferred from the route. Library (the
-  // campaign root) has no list pane and stays full-width.
+  // Which list belongs in the left pane, inferred from the route. We match the
+  // SvelteKit route id (literal segments like `[campaign]`), not the resolved
+  // pathname, so a campaign or book slug that happens to contain "entities" or
+  // "book" cannot misclassify the frame. Library (the campaign root) has no list
+  // pane and stays full-width.
   const context = $derived.by(() => {
-    const p = $page.url.pathname;
-    if (p.includes("/entities") || p.includes("/entity/")) return "entities";
-    if (p.includes("/book/")) return "book";
+    const id = $page.route.id ?? "";
+    if (id.includes("/entity")) return "entities"; // covers /entities and /entity/[id]
+    if (id.includes("/book/")) return "book";
     return "library";
   });
   const twoPane = $derived(context !== "library");
