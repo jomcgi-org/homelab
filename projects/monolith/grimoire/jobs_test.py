@@ -71,7 +71,9 @@ class TestExtractEntitiesHandler:
     def test_skips_when_api_key_unset(self, monkeypatch, stub_clients):
         called = {"extract": False}
 
-        async def spy_extract_chunks(session, or_client, embed_client, limit):
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
             called["extract"] = True
             return {}
 
@@ -90,7 +92,9 @@ class TestExtractEntitiesHandler:
     ):
         called = {"extract": False}
 
-        async def spy_extract_chunks(session, or_client, embed_client, limit):
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
             called["extract"] = True
             return {}
 
@@ -108,7 +112,9 @@ class TestExtractEntitiesHandler:
     def test_runs_keyless_against_local_qwen_base_url(self, monkeypatch, stub_clients):
         captured: dict = {}
 
-        async def spy_extract_chunks(session, or_client, embed_client, limit):
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
             captured["ran"] = True
             captured["api_key"] = or_client.api_key
             captured["base_url"] = or_client.base_url
@@ -136,8 +142,11 @@ class TestExtractEntitiesHandler:
     ):
         captured: dict = {}
 
-        async def spy_extract_chunks(session, or_client, embed_client, limit):
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
             captured["limit"] = limit
+            captured["concurrency"] = concurrency
             captured["api_key"] = or_client.api_key
             captured["embed_client"] = embed_client
             return {
@@ -153,17 +162,47 @@ class TestExtractEntitiesHandler:
         monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-key")
         monkeypatch.setenv("GRIMOIRE_EXTRACT_LIMIT", "7")
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_CONCURRENCY", raising=False)
 
         _run(jobs.grimoire_extract_entities(session=None))
 
         assert captured["limit"] == 7
+        # Concurrency env unset -> code default.
+        assert captured["concurrency"] == jobs.DEFAULT_EXTRACT_CONCURRENCY
         assert captured["api_key"] == "sk-test-key"
         assert isinstance(captured["embed_client"], _SpyEmbedClient)
+
+    def test_passes_concurrency_env_and_falls_back_when_invalid(
+        self, monkeypatch, stub_clients
+    ):
+        captured: dict = {}
+
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
+            captured["concurrency"] = concurrency
+            return {}
+
+        monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-key")
+
+        monkeypatch.setenv("GRIMOIRE_EXTRACT_CONCURRENCY", "3")
+        _run(jobs.grimoire_extract_entities(session=None))
+        assert captured["concurrency"] == 3
+
+        # Non-positive / non-numeric values fall back to the default rather
+        # than passing 0 (which would stall) or raising.
+        for bad in ("0", "-2", "not-a-number"):
+            monkeypatch.setenv("GRIMOIRE_EXTRACT_CONCURRENCY", bad)
+            _run(jobs.grimoire_extract_entities(session=None))
+            assert captured["concurrency"] == jobs.DEFAULT_EXTRACT_CONCURRENCY
 
     def test_defaults_limit_when_env_unset(self, monkeypatch, stub_clients):
         captured: dict = {}
 
-        async def spy_extract_chunks(session, or_client, embed_client, limit):
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
             captured["limit"] = limit
             return {}
 
@@ -178,7 +217,9 @@ class TestExtractEntitiesHandler:
     def test_invalid_limit_env_falls_back_to_default(self, monkeypatch, stub_clients):
         captured: dict = {}
 
-        async def spy_extract_chunks(session, or_client, embed_client, limit):
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
             captured["limit"] = limit
             return {}
 
