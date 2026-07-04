@@ -61,8 +61,20 @@ postgres:
   storage:
     size: 3Gi
 
+# Iceberg warehouse on the cluster SeaweedFS (s3://loom). The in-cluster S3
+# gateway runs without identities (anonymous), so the referenced secret
+# (s3-credentials.yaml) carries dummy keys purely to satisfy the chart's
+# required secretKeyRef. Enabling S3 drops the local PVC and the ingest/
+# query-api co-scheduling affinity; the previous loom-data PVC is retained by
+# the chart and can be deleted once the switch is verified.
 objectStore:
-  size: 5Gi
+  s3:
+    enabled: true
+    bucket: loom
+    endpoint: http://seaweedfs-s3.seaweedfs:8333
+    region: us-east-1
+    port: 8333
+    credentialsSecret: loom-s3-credentials
 
 # The UI rides private.jomcgi.dev/app/loom (httproute.yaml strips the prefix
 # before query-api); the SPA needs the prefix on its API calls, mounted as a
