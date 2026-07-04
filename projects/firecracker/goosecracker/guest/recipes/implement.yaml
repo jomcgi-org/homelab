@@ -6,8 +6,9 @@ instructions: |
   microVM, on a checkout of the repo at /workspace.
 
   Implement the task below. Use the shell and editor to read, edit, and
-  build. Commit with Conventional Commits and push a claude/-prefixed
-  branch, opening a PR when the change is ready.
+  build. When the change is ready, open a PR by following the
+  "Opening the PR" steps below. This sandbox has NO writable git remote,
+  so `git push` cannot work here: do not attempt it (see below).
 
   Before you make changes, read the repo's root CLAUDE.md and the
   CLAUDE.md in any project directory you touch
@@ -28,6 +29,39 @@ instructions: |
   (`head`, `wc -l` first, sample) rather than dumping a full `git log` or
   large files, which can overflow context and trigger a compaction that loses
   progress.
+
+  Opening the PR. The `origin` remote here is a READ-ONLY git mirror
+  (a `git://git-mirror...` URL). `git push` over it, or over any GitHub
+  HTTPS/SSH remote you set, WILL fail ("Password authentication is not
+  supported", "send-pack: unexpected disconnect", "could not read from
+  remote"). Do not retry pushing with different remotes, credentials, or
+  protocols: none work. The `gh` CLI IS authenticated, but only for the
+  GitHub REST API, so open the PR through the API instead of pushing.
+
+  Do NOT commit locally (a local commit cannot leave this VM). Instead
+  build the branch server-side via the REST API. Set
+  `R=jomcgi/homelab` and `B=claude/<short-slug-for-the-task>`, then:
+
+    1. Base SHA:      `BASE=$(gh api repos/$R/git/ref/heads/main --jq .object.sha)`
+    2. Base tree:     `BT=$(gh api repos/$R/git/commits/$BASE --jq .tree.sha)`
+    3. For EACH changed file, create a blob and collect a tree entry
+       (mode 100644, type blob). Delete a file with an entry whose `sha`
+       is null instead of a blob. Build one JSON array of entries, e.g.
+       per file:
+         `S=$(gh api repos/$R/git/blobs -f content="$(cat path)" -f encoding=utf-8 --jq .sha)`
+       then append `{"path":"path","mode":"100644","type":"blob","sha":"$S"}`.
+    4. New tree:      `gh api repos/$R/git/trees -F base_tree=$BT -F 'tree=@entries.json' --jq .sha`
+       (write the entries array to a file and pass it with `-F tree=@file`).
+    5. New commit:    `NC=$(gh api repos/$R/git/commits -f message="<conventional-commit>" -f tree=$NEWTREE -f parents[]=$BASE --jq .sha)`
+    6. Create branch: `gh api repos/$R/git/refs -f ref="refs/heads/$B" -f sha=$NC`
+    7. Open the PR:   `gh pr create --repo $R --base main --head $B --title "<title>" --body "<body>"`
+       (or `gh api repos/$R/pulls -f title=... -f head=$B -f base=main -f body=...`).
+
+  Use a Conventional Commit message and a `claude/`-prefixed branch. Keep
+  the changed-file set small; for more than a few files, script step 3 by
+  iterating `git diff --name-status main`. If any `gh api` call errors,
+  read its message and fix the specific call: do not fall back to
+  `git push`, which cannot succeed here.
 
   Your final message is returned verbatim to the routing agent: state the
   action taken and the outcome in one or two sentences, the branch name,
