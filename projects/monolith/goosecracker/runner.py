@@ -35,6 +35,7 @@ from sqlmodel import Session
 
 from app.db import get_engine
 from goosecracker import replan, sessions, threads, tiers
+from shared.k8s_auth import auth_headers
 
 if TYPE_CHECKING:
     # Type-only: chat.api re-exports Plan from chat.orchestrator_plan, which
@@ -515,7 +516,10 @@ async def _post_agent_run(url: str, payload: dict, on_retry) -> dict:
         transient = False
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(url, json=payload)
+                # Carry this pod's ServiceAccount token so fc-invoke's
+                # TokenReview gate admits the call (read fresh per attempt to
+                # pick up kubelet token rotation).
+                resp = await client.post(url, json=payload, headers=auth_headers())
                 resp.raise_for_status()
                 return resp.json()
         except httpx.HTTPStatusError as exc:

@@ -150,6 +150,13 @@ spec:
             # names must match invoke/internal/config Workload JSON tags.
             - name: FC_INVOKE_WORKLOADS
               value: {{ .Values.workloads | toJson | quote }}
+            {{- if .Values.auth.enabled }}
+            # Caller allow-list for /invoke: the daemon TokenReview-validates each
+            # caller's SA bearer token and admits only these identities. Set only
+            # when auth is enabled; unset means the daemon runs open and warns.
+            - name: FC_INVOKE_ALLOWED_CALLERS
+              value: {{ join "," .Values.auth.allowedCallers | quote }}
+            {{- end }}
             {{- if .Values.firecracker.enabled }}
             # firecracker binary + kernel are baked into the image at /opt/fc, so
             # the daemon's built-in defaults govern; set binPath/kernelImagePath

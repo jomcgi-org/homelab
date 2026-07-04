@@ -15,6 +15,25 @@
 firecracker:
   enabled: true
 
+# Caller authentication for /invoke (STPA: unauthenticated /invoke). The only
+# clients are the monolith orchestrator (goosecracker runner) and the semgrep
+# MCP tool, both running under the `monolith` ServiceAccount, so the daemon
+# TokenReview-validates each caller's SA token and admits only that identity.
+# This is the portable, substrate-independent control.
+auth:
+  enabled: true
+  allowedCallers:
+    - system:serviceaccount:monolith:monolith
+
+# Linkerd-native authorization on top of the TokenReview control (defence in
+# depth): fc-invoke is meshed in the monolith namespace, so a Server + policy
+# restricts the http port to the monolith's mesh identity. Kubelet probes to
+# /healthz are auto-authorized by Linkerd.
+linkerdPolicy:
+  enabled: true
+  allowedIdentities:
+    - monolith.monolith.serviceaccount.identity.linkerd.cluster.local
+
 # The daemon image (private) and the proprietary semgrep-guest image (crane-pulled
 # by the rootfs-builder) need GHCR creds in-cluster; charts stay private too via
 # the ArgoCD repo-cred added in projects/platform/argocd.
@@ -34,10 +53,10 @@ imagePullSecret:
 #   - monolith.monolith.svc.cluster.local:8000    monolith progress / artifact sink
 #   - context-forge-...mcpgateway.mcp.svc.cluster.local:80  MCP tools (baked guest ext)
 #   - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318  goose OTLP traces
-# There is no in-cluster git mirror, so none is listed. The two external hosts
-# (api.github.com, openrouter.ai) carry a credential, so they ride the ADR 023
-# phase 6b swap path (secrets below) and must ALSO be listed here on :443, since
-# the sidecar's permits() consults only this allowlist, not the catalog.
+# There is no in-cluster git mirror, so none is listed. The external host
+# api.github.com carries a credential, so it rides the ADR 023 phase 6b swap
+# path (secrets below); external:allow already reaches it, and the per-secret
+# egressTo scopes where the real value materialises.
 egress:
   enabled: true
   # Split-horizon guardrail (ADR 023): the public internet is open so the agent can
@@ -47,9 +66,9 @@ egress:
   internal:
     default: deny
     # Internal (cluster) destinations the agent legitimately needs. A bare host
-    # allows any port; host:port pins the port. The external secret-swap hosts
-    # (api.github.com, openrouter.ai) are NOT here: external:allow reaches them and
-    # the per-secret egressTo scopes where the real value materialises.
+    # allows any port; host:port pins the port. The external secret-swap host
+    # api.github.com is NOT here: external:allow reaches it and the per-secret
+    # egressTo scopes where the real value materialises.
     allowlist:
       - inference.inference.svc.cluster.local:8080 # in-cluster model (Qwen; OPENAI_HOST)
       - monolith.monolith.svc.cluster.local:8000 # monolith progress / artifact sink
@@ -69,16 +88,14 @@ egress:
     # monolith from 1Password) only on api.github.com. Literal swap: gh API works;
     # raw git-over-HTTPS Basic (a base64'd token) is ADR-deferred. placeholder MUST
     # match goosecracker.tiers.default.GITHUB_TOKEN in the monolith deploy values.
+    #
+    # INVARIANT: the placeholder set here must equal the set of kloak: placeholders
+    # the monolith goose tiers hand to guests. kloak_placeholder_drift_test.py
+    # (in projects/monolith) fails CI if they drift. The artifact tier's former
+    # OpenRouter swap (kloak:or:...) was removed when that tier migrated onto the
+    # in-cluster Qwen model (free, keyless); re-adding an OpenRouter guest tier
+    # means restoring both the tier env and the catalog entry together.
     - env: GITHUB_TOKEN
       placeholder: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
       egressTo: [api.github.com]
       secretRef: { name: monolith-chat-secrets, key: GITHUB_TOKEN }
-    # The artifact tier's OpenRouter key (ADR 024): the guest holds this
-    # placeholder as OPENROUTER_API_KEY (goosecracker.tiers.artifact); the sidecar
-    # swaps it for the real key only on openrouter.ai. The real value is synced
-    # from 1Password into the `goosecracker` Secret by the monolith chart's
-    # OnePasswordItem. placeholder MUST match tiers.artifact.OPENROUTER_API_KEY.
-    - env: OPENROUTER_KEY
-      placeholder: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
-      egressTo: [openrouter.ai]
-      secretRef: { name: goosecracker, key: OPENROUTER_API_KEY }

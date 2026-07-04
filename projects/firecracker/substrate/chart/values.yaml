@@ -54,6 +54,30 @@ replicas: 1
 
 podAnnotations: {}
 
+# Caller authentication for POST /invoke (STPA: unauthenticated /invoke). The
+# daemon verifies each caller's Kubernetes ServiceAccount bearer token via the
+# TokenReview API and admits only allowedCallers. This is the PORTABLE control:
+# it lives in the daemon, not the mesh, so it holds on any cluster. `enabled`
+# also gates the system:auth-delegator ClusterRoleBinding the TokenReview call
+# needs (see templates/rbac.yaml). When enabled, allowedCallers MUST be non-empty
+# (a consuming deploy sets it) or the daemon runs open and warns at startup.
+auth:
+  enabled: false
+  # Full Kubernetes usernames permitted to invoke, e.g.
+  # "system:serviceaccount:<namespace>:<serviceaccount>". Joined into
+  # FC_INVOKE_ALLOWED_CALLERS. Empty here; the real list lives in deploy/values.yaml.
+  allowedCallers: []
+
+# Linkerd-native authorization for /invoke (homelab defence-in-depth on top of
+# the daemon's TokenReview control). Off by default because it depends on the
+# pod being meshed; a consuming deploy in a Linkerd namespace flips it on and
+# lists the caller mesh identities.
+linkerdPolicy:
+  enabled: false
+  # Mesh identities allowed to reach /invoke, e.g.
+  # "monolith.monolith.serviceaccount.identity.linkerd.cluster.local".
+  allowedIdentities: []
+
 # Safe-rollout drain budget. On SIGTERM the daemon stops accepting new invokes
 # and waits up to drain.timeoutSeconds for in-flight guests to finish before
 # exiting, so a rollout (or any pod delete) never drops a running task. This
@@ -164,11 +188,13 @@ firecracker:
   # The shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
   # guest path is a tmpfs, so one read-only rootfs file safely backs every microVM.
   kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
-  # The in-guest init the kernel boots into. A raw FC boot ignores the OCI
-  # entrypoint, so the driver appends init=<path>. Shared by every workload; for
-  # PR2's single semgrep workload this is the semgrep guest's shim init. (A
-  # per-workload init is a future enhancement when a second guest image lands.)
-  harnessInit: /usr/local/bin/semgrep-guest-init
+  # Fallback in-guest init the kernel boots into (a raw FC boot ignores the OCI
+  # entrypoint, so the driver appends init=<path>). Each workload sets its own
+  # `workloads.<name>.harnessInit` (semgrep-guest-init, fc-agent-init, ...), and
+  # the daemon prefers that; this global is used only for a workload that omits
+  # it. It matches the daemon's own built-in default, so leave it unless a node
+  # needs a different fallback path.
+  harnessInit: /usr/local/bin/fc-shim-init
   # The single scratch-disk knob: the whole nvme dir is host-mounted so
   # per-workload rootfs images (workloads.*.rootfsPath) plus the derived FC
   # snapshot dir (<nvmeRoot>/fc-invoke/snapshots) and vsock dir
