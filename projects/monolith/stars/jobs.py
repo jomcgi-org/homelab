@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
 from sqlmodel import Session, delete, select
@@ -23,6 +25,16 @@ from stars.forecast import fetch_all
 from stars.models import Site, SiteHour
 
 logger = logging.getLogger("monolith.stars.jobs")
+
+# The refresh fetches, scores, and persists sites in batches of this size rather
+# than accumulating the whole ~14k-site grid at once. The old whole-grid path
+# (one asyncio.gather over every site, then one add_all/commit) held the entire
+# scored result set plus its ORM object graph in memory simultaneously and OOMed
+# the 512Mi job pod. Batching bounds peak memory to O(batch size), independent of
+# the total site count, and commits each batch as it completes. The met.no rate
+# limiter (~15 req/s) is unchanged and dominates wall time, so batching does not
+# slow the run. Env-overridable so the batch size can be tuned without a redeploy.
+REFRESH_BATCH_SIZE = int(os.environ.get("STARS_REFRESH_BATCH_SIZE", "500"))
 
 
 def _load_sites() -> list[dict]:
@@ -127,28 +139,43 @@ def _run_prune() -> int:
     return deleted
 
 
-async def refresh_handler(session: Session) -> datetime | None:
-    """Refresh per-site dark-hour forecasts from met.no.
+def _chunks(items: list, size: int) -> Iterator[list]:
+    """Yield successive ``size``-length slices of ``items`` (the last may be short)."""
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
-    The site list is loaded from stars.sites in a worker thread; the network
-    fetch + scoring runs in the async handler; the synchronous write is
-    delegated to a worker thread with its own session. Sites whose fetch failed
-    keep their previous rows (stale beats empty); a total fetch failure writes
-    nothing.
+
+async def refresh_handler(session: Session) -> datetime | None:
+    """Refresh per-site dark-hour forecasts from met.no, in bounded batches.
+
+    The site list is loaded from stars.sites in a worker thread, then processed
+    in REFRESH_BATCH_SIZE-site batches: each batch's network fetch + scoring runs
+    in the async handler and its synchronous write is delegated to a worker
+    thread with its own fresh session. Batching keeps peak memory O(batch size)
+    instead of accumulating the whole ~14k-site grid at once (which OOMed the
+    pod), and commits each batch as it completes so a mid-run failure still lands
+    the batches that finished. Sites whose fetch failed keep their previous rows
+    (stale beats empty); a run where every batch fetched nothing writes nothing.
     """
     sites = await asyncio.to_thread(_load_sites)
     if not sites:
         logger.warning("stars.refresh: no sites in stars.sites, nothing to fetch")
         return None
-    scored = await fetch_all(sites)
-    if not scored:
+    total_written = 0
+    total_scored = 0
+    for batch in _chunks(sites, REFRESH_BATCH_SIZE):
+        scored = await fetch_all(batch)
+        if not scored:
+            continue
+        total_scored += len(scored)
+        total_written += await asyncio.to_thread(_persist_sites, scored)
+    if total_written == 0:
         logger.warning("stars.refresh: empty fetch, keeping existing rows")
         return None
-    written = await asyncio.to_thread(_persist_sites, scored)
     logger.info(
         "stars.refresh ok: %d hours across %d/%d sites",
-        written,
-        len(scored),
+        total_written,
+        total_scored,
         len(sites),
     )
     return None

@@ -254,8 +254,14 @@ jobs:
       args: ["stars-refresh"]
       schedule: "0 */3 * * *" # every 3h (was 10800s)
       concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 1800
+      # ~14k met.no fetches at the ~15 req/s courtesy rate is ~15-18 min; the
+      # highest external fanout in the registry. 45 min gives headroom for a slow
+      # met.no day without ever overlapping the next run (Forbid + 3h schedule).
+      activeDeadlineSeconds: 2700
       suspend: false
+      # 512Mi is comfortable now that the refresh fetches + persists in batches
+      # (stars/jobs.py REFRESH_BATCH_SIZE) instead of holding the whole ~14k-site
+      # grid in memory at once, which OOMed this pod.
       resources:
         requests:
           cpu: 250m
