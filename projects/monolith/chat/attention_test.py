@@ -172,3 +172,29 @@ class TestNeedsAgent:
         caller = AsyncMock(return_value='sure! {"needs_agent": true} ok')
         result = await needs_agent(message, _caller=caller)
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_prompt_keeps_channel_summarization_on_chat(self):
+        """The chat agent now has catch_up/extract_decisions tools (Task 1.3):
+        summarizing this conversation or pulling decisions/action items out of
+        channel history must stay "chat", not route to the heavy agent."""
+        message = _make_message(content="can you summarize this thread?")
+        caller = AsyncMock(return_value='{"needs_agent": false}')
+        await needs_agent(message, _caller=caller)
+        prompt = caller.call_args[0][0].lower()
+        assert "summarizing this conversation" in prompt
+        assert "catching up" in prompt
+        assert "channel history" in prompt
+        assert "decisions" in prompt
+        assert "action items" in prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_still_mentions_repo_artifact_and_research(self):
+        """Additive change: the existing depth-classify wording must survive."""
+        message = _make_message(content="anything")
+        caller = AsyncMock(return_value='{"needs_agent": false}')
+        await needs_agent(message, _caller=caller)
+        prompt = caller.call_args[0][0].lower()
+        assert "repository/codebase" in prompt
+        assert "artifact/page" in prompt
+        assert "thorough multi-source" in prompt

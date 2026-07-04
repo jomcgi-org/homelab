@@ -114,7 +114,10 @@ async def needs_agent(message, *, _caller=None) -> bool:
             "build or generate an artifact/page, or do thorough multi-source "
             'research. Answer "chat" for conversation, general knowledge, '
             "or a simple factual question (a basic web lookup is fine in "
-            "chat). Reply with ONLY a JSON object: "
+            "chat). Summarizing this conversation, catching up on channel "
+            "history, or extracting decisions or action items from it is "
+            'also "chat", not "agent": the chat agent already has tools '
+            "for that. Reply with ONLY a JSON object: "
             '{"needs_agent": true|false}. Message: ' + text
         )
         raw = await caller(prompt)
