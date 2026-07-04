@@ -327,6 +327,72 @@ class TestBuildInjectedContext:
             bundle = goosecracker.build_injected_context("unknown-thread", tier="")
         assert bundle == {}
 
+    def test_falls_back_to_own_transcript_when_parent_has_no_messages(
+        self, engine, fake_api
+    ):
+        # Parent channel recorded but empty: a "do it again" follow-up must still
+        # carry this thread's own prior turns, not ship an empty bundle.
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-own",
+                    recipe="agent",
+                    tier="",
+                    repo="homelab",
+                    parent_channel_id="chan-empty",
+                    transcript="wc2026 themed ball site\n\nYes let's do it again",
+                )
+            )
+            session.commit()
+
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            bundle = goosecracker.build_injected_context("thr-own", tier="")
+
+        assert set(bundle) == {"README.md", "transcript.md"}
+        assert "Yes let's do it again" in bundle["transcript.md"]
+        assert "own prior turns" in bundle["README.md"]
+
+    def test_falls_back_to_own_transcript_when_no_parent_channel(
+        self, engine, fake_api
+    ):
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-np",
+                    recipe="agent",
+                    tier="",
+                    repo="homelab",
+                    parent_channel_id="",
+                    transcript="build me a chart",
+                )
+            )
+            session.commit()
+
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            bundle = goosecracker.build_injected_context("thr-np", tier="")
+
+        assert "build me a chart" in bundle["transcript.md"]
+
+    def test_empty_when_no_parent_and_no_prior_turns(self, engine, fake_api):
+        # First turn of a thread with no parent channel and no transcript yet:
+        # genuinely nothing to inject, so an empty bundle is correct.
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thr-first",
+                    recipe="agent",
+                    tier="",
+                    repo="homelab",
+                    parent_channel_id="",
+                    transcript="",
+                )
+            )
+            session.commit()
+
+        with patch("chat.goosecracker.get_engine", return_value=engine):
+            bundle = goosecracker.build_injected_context("thr-first", tier="")
+        assert bundle == {}
+
 
 # ---------------------------------------------------------------------------
 # Agent conversational path: continue_session queuing + dispatching

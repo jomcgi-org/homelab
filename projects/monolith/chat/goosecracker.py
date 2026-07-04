@@ -857,6 +857,9 @@ def parent_channel_for_thread(thread_id: str) -> str:
 # the budget for the rest of the turn).
 _INJECTED_CONTEXT_MSG_LIMIT = 50
 _INJECTED_CONTEXT_PER_MSG_CHARS = 2000
+# Fallback path (own-transcript): keep the most recent slice so a long-running
+# thread's context stays bounded, mirroring the channel path's overall budget.
+_INJECTED_CONTEXT_OWN_CHARS = 8000
 
 
 def build_injected_context(thread_id: str, tier: str = "") -> dict[str, str]:
@@ -872,18 +875,39 @@ def build_injected_context(thread_id: str, tier: str = "") -> dict[str, str]:
     invoking channel.
     """
     parent = parent_channel_for_thread(thread_id)
-    if not parent:
-        return {}
-    with Session(get_engine()) as session:
-        rows = session.exec(
-            select(Message)
-            .where(Message.channel_id == parent)
-            .order_by(Message.created_at.desc())
-            .limit(_INJECTED_CONTEXT_MSG_LIMIT)
-        ).all()
-    if not rows:
-        return {}
-    rows = list(reversed(rows))  # oldest -> newest reads naturally
+    if parent:
+        with Session(get_engine()) as session:
+            rows = session.exec(
+                select(Message)
+                .where(Message.channel_id == parent)
+                .order_by(Message.created_at.desc())
+                .limit(_INJECTED_CONTEXT_MSG_LIMIT)
+            ).all()
+        if rows:
+            return _context_from_channel(list(reversed(rows)), parent)
+    # The parent-channel path resolved nothing: either no parent channel is
+    # recorded on the session row (an MCP-dispatched run, an id space that does
+    # not key a GoosecrackerSession, or an older thread) or the parent channel
+    # has no messages. Fall back to the thread's OWN accumulated transcript so a
+    # "do it again" / "change it" follow-up still carries this thread's earlier
+    # turns instead of shipping an empty /injected-context/ and costing the owner
+    # a correction turn.
+    own = _own_thread_transcript(thread_id)
+    if own:
+        logger.warning(
+            "build_injected_context: parent-channel context empty for thread "
+            "%s; falling back to the thread's own transcript (%d chars)",
+            thread_id,
+            len(own),
+        )
+        return _context_from_own_transcript(own)
+    # Truly nothing to inject: a brand-new thread with no prior turns. Expected
+    # on a first turn, so nothing to warn about.
+    return {}
+
+
+def _context_from_channel(rows: list[Message], parent: str) -> dict[str, str]:
+    """Build the injected-context bundle from a parent channel's recent messages."""
     lines = []
     truncated = 0
     for m in rows:
@@ -911,6 +935,41 @@ def build_injected_context(thread_id: str, tier: str = "") -> dict[str, str]:
         "as of this turn. Rebuilt every turn, so it grows as the thread advances.\n"
     )
     return {"README.md": readme, "transcript.md": transcript}
+
+
+def _own_thread_transcript(thread_id: str) -> str:
+    """The thread's own accumulated prompt transcript (its prior turns), or "".
+
+    ``GoosecrackerSession.transcript`` records the user's prompts for this
+    thread, one turn per blank-line-separated block. Sync; call via
+    ``asyncio.to_thread``.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(GoosecrackerSession, thread_id)
+        return (row.transcript or "").strip() if row else ""
+
+
+def _context_from_own_transcript(transcript: str) -> dict[str, str]:
+    """Build the injected-context bundle from the thread's own prior turns.
+
+    Used when the parent-channel path is unavailable. Keeps the most recent
+    slice so a long thread stays within budget.
+    """
+    body = transcript
+    if len(body) > _INJECTED_CONTEXT_OWN_CHARS:
+        body = "[...earlier turns omitted...]\n" + body[-_INJECTED_CONTEXT_OWN_CHARS:]
+    readme = (
+        "# Injected context\n\n"
+        "This directory (`/injected-context/`) holds context the caller staged "
+        "for this task. You did not gather it and it is not in the repo. Grep or "
+        "read it when the user refers to an earlier discussion.\n\n"
+        "- Source: this agent thread's own prior turns (the parent Discord "
+        "channel was unavailable this turn).\n"
+        "- `transcript.md`: the prompts sent to this thread so far, oldest "
+        'first. Use it to resolve a follow-up like "do it again" or "change '
+        'it" against what the thread was already working on.\n'
+    )
+    return {"README.md": readme, "transcript.md": body}
 
 
 async def build_roast(attempt_text: str) -> str:
