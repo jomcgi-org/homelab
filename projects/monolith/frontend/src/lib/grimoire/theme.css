@@ -18,6 +18,9 @@
   --grim-accent: #7c2b2b;
   --grim-accent-strong: #5c1d1d;
   --accent: var(--grim-accent);
+  /* Text and glyphs on the accent fill (active chips, badges, new markers):
+   * white on the deep light-mode oxblood. */
+  --grim-on-accent: #ffffff;
 
   --grim-serif:
     "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
@@ -34,10 +37,33 @@
 body.dark .grimoire {
   --grim-accent: #c56d6d;
   --grim-accent-strong: #d98a8a;
+  /* The dark theme's accent is a lighter rose, so on-accent text flips to dark
+   * ink for legible contrast. */
+  --grim-on-accent: #17130f;
   --grim-paper: #17130f;
   --grim-paper-line: #322920;
   --grim-ink: #ece3d4;
   --grim-ink-soft: #b3a793;
+}
+
+/* ── Focus ────────────────────────────────────────────────────
+ * One keyboard-focus ring for the whole grimoire tree: the oxblood accent, not
+ * the browser default blue that clashes with the theme. :focus-visible so it
+ * shows for keyboard/AT users but not on mouse click. :where() keeps specificity
+ * low enough that a component can still opt out, but high enough (via the
+ * .grimoire prefix) to beat the UA default. */
+.grimoire
+  :where(
+    a,
+    button,
+    input,
+    select,
+    textarea,
+    summary,
+    [tabindex]
+  ):focus-visible {
+  outline: 2px solid var(--grim-accent);
+  outline-offset: 2px;
 }
 
 /* ── Display type ─────────────────────────────────────────── */

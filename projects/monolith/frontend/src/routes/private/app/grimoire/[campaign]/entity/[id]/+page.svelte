@@ -56,7 +56,11 @@
 </script>
 
 <div class="detail-page">
-  <a class="back" href={entitiesHref(ctx.campaignId, ctx.viewpoint)}>← Entities</a>
+  {#if !ctx.isDesktop}
+    <a class="back" href={entitiesHref(ctx.campaignId, ctx.viewpoint)}
+      >← Entities</a
+    >
+  {/if}
 
   {#if loading}
     <div class="skeleton"></div>
