@@ -264,3 +264,78 @@ def test_refresh_handler_no_sites_is_noop(monkeypatch):
     result = asyncio.run(jobs.refresh_handler(None))
     assert result is None
     assert fetched is False
+
+
+def test_chunks_covers_all_items_without_overlap():
+    # Batching must partition the site list exactly: every item once, last short.
+    items = list(range(7))
+    batches = list(jobs._chunks(items, 3))
+    assert batches == [[0, 1, 2], [3, 4, 5], [6]]
+    assert sum(batches, []) == items
+
+
+def test_chunks_empty_input_yields_nothing():
+    assert list(jobs._chunks([], 3)) == []
+
+
+def test_refresh_handler_processes_all_sites_in_batches(monkeypatch):
+    # More sites than the batch size: the handler fetches + persists in bounded
+    # batches, covering every site exactly once and summing the totals. This is
+    # the OOM fix: fetch_all is never called with the whole grid at once.
+    sites = [
+        {"id": f"s{i}", "lat": 57.0, "lon": -4.0, "altitude_m": 100} for i in range(5)
+    ]
+    monkeypatch.setattr(jobs, "_load_sites", lambda: sites)
+    monkeypatch.setattr(jobs, "REFRESH_BATCH_SIZE", 2)
+
+    fetched_batches = []
+
+    async def _fake_fetch(batch):
+        fetched_batches.append([s["id"] for s in batch])
+        return {s["id"]: [_hour("2026-06-13T23:00:00Z")] for s in batch}
+
+    persisted = []
+
+    def _fake_persist(scored):
+        persisted.append(sorted(scored))
+        return len(scored)  # one hour per site in this batch
+
+    monkeypatch.setattr(jobs, "fetch_all", _fake_fetch)
+    monkeypatch.setattr(jobs, "_persist_sites", _fake_persist)
+
+    result = asyncio.run(jobs.refresh_handler(None))
+    assert result is None
+    # 5 sites, batch size 2 -> batches of [2, 2, 1]; no batch is the whole grid.
+    assert fetched_batches == [["s0", "s1"], ["s2", "s3"], ["s4"]]
+    # Every site is persisted exactly once across the batches.
+    assert sorted(sum(persisted, [])) == ["s0", "s1", "s2", "s3", "s4"]
+
+
+def test_refresh_handler_skips_empty_batches_but_persists_others(monkeypatch):
+    # A batch whose fetch returned nothing (all failed) is skipped, but later
+    # non-empty batches still persist: stale beats empty, per batch.
+    sites = [
+        {"id": f"s{i}", "lat": 57.0, "lon": -4.0, "altitude_m": 100} for i in range(4)
+    ]
+    monkeypatch.setattr(jobs, "_load_sites", lambda: sites)
+    monkeypatch.setattr(jobs, "REFRESH_BATCH_SIZE", 2)
+
+    async def _fake_fetch(batch):
+        # First batch fetches nothing; second batch succeeds.
+        if batch[0]["id"] == "s0":
+            return {}
+        return {s["id"]: [_hour("2026-06-13T23:00:00Z")] for s in batch}
+
+    persisted = []
+
+    def _fake_persist(scored):
+        persisted.append(sorted(scored))
+        return len(scored)
+
+    monkeypatch.setattr(jobs, "fetch_all", _fake_fetch)
+    monkeypatch.setattr(jobs, "_persist_sites", _fake_persist)
+
+    result = asyncio.run(jobs.refresh_handler(None))
+    assert result is None
+    # Only the second batch persisted; the empty first batch was skipped.
+    assert persisted == [["s2", "s3"]]
