@@ -43,7 +43,7 @@ from app.db import get_engine
 from chat import acl, orchestrator_client, orchestrator_plan
 from chat.models import OrchestratorBrief
 from chat.orchestrator_plan import Plan
-from goosecracker import recipe_catalog
+from goosecracker.api import CATALOG
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ def plan_system_prompt() -> str:
     bundle (which stays byte-identical so its provider prefix cache keeps
     hitting). It is validated in spirit against ``scratchpad/probe_submit_plan.py``
     (12/12) and its sub-recipe menu is sourced verbatim from
-    ``recipe_catalog.CATALOG`` so the prose and the tool-schema enum can never
+    ``CATALOG`` so the prose and the tool-schema enum can never
     drift. Byte-deterministic: derived only from the ordered catalog, no
     timestamps/ids, so identical catalogs give identical bytes and this call's
     own prefix stays cache-friendly too.
@@ -256,10 +256,7 @@ def plan_system_prompt() -> str:
         "context that step needs. You may only use these sub-recipes:",
         "",
     ]
-    lines.extend(
-        f"- {entry.id} = {entry.description}"
-        for entry in recipe_catalog.CATALOG.values()
-    )
+    lines.extend(f"- {entry.id} = {entry.description}" for entry in CATALOG.values())
     lines.extend(
         [
             "",
@@ -619,12 +616,18 @@ async def compile(ctx: RequestContext) -> Verdict:
             return FailOpen(reason)
 
         try:
+            # Both parse and validate run inside the guard: a malformed tool
+            # payload (e.g. a null context or a dict where a sub-recipe id
+            # belongs) must never escape compile. plan_from_dict coerces
+            # defensively, and any residual AttributeError/TypeError here still
+            # lands on the single-row FailOpen path below rather than unwinding
+            # (the "compile always fails open" invariant).
             plan = orchestrator_plan.plan_from_dict(plan_args)
+            errors = orchestrator_plan.validate_plan(plan)
         except (AttributeError, TypeError) as exc:
             plan = None
             plan_error = f"plan tool returned an unusable object: {exc}"
         else:
-            errors = orchestrator_plan.validate_plan(plan)
             plan_error = f"invalid plan: {errors}" if errors else ""
 
         if plan is None or plan_error:

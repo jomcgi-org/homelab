@@ -1044,17 +1044,18 @@ class ChatBot(discord.Client):
             # render_checklist then takes over.
             intro_content = "🤖 Planning..."
             if plan_verdict is not None and plan_verdict.plan.steps:
-                # Lazy import: goosecracker.router_render imports
-                # chat.orchestrator_plan.Plan, and this module (chat.bot)
-                # already imports chat.orchestrator at module load, so a
-                # top-level import here risks the same circular-import shape
-                # runner.py avoids by importing router_render lazily.
-                from goosecracker.router_render import _stage_title
+                # Cross-domain: reach goosecracker only through its api facade
+                # (import_boundaries_test). Kept lazy because this module
+                # (chat.bot) already imports chat.orchestrator at module load,
+                # so a top-level goosecracker.api import risks a circular-import
+                # shape. Distinct name from the `chat.goosecracker` module this
+                # file imports as `goosecracker`, to avoid shadowing it.
+                from goosecracker.api import stage_title
 
                 synthetic = goosecracker_progress.Progress(
                     stages=[
                         goosecracker_progress.Stage(
-                            index=i, title=_stage_title(step), state="pending"
+                            index=i, title=stage_title(step), state="pending"
                         )
                         for i, step in enumerate(plan_verdict.plan.steps)
                     ]

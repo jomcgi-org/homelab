@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from goosecracker import recipe_catalog
+from goosecracker.api import CATALOG, enabled_enum
 
 
 @dataclass(frozen=True)
@@ -56,11 +56,8 @@ def submit_plan_schema() -> dict:
     ``recipe_catalog.enabled_enum()`` so a non-catalog sub-recipe id is
     unrepresentable in the tool call.
     """
-    ids = recipe_catalog.enabled_enum()
-    descriptions = "; ".join(
-        f"{recipe_catalog.CATALOG[i].id} = {recipe_catalog.CATALOG[i].description}"
-        for i in ids
-    )
+    ids = enabled_enum()
+    descriptions = "; ".join(f"{CATALOG[i].id} = {CATALOG[i].description}" for i in ids)
 
     return {
         "name": "submit_plan",
@@ -121,18 +118,24 @@ def submit_plan_schema() -> dict:
 def plan_from_dict(args: dict) -> Plan:
     """Deserialize a ``submit_plan`` tool-call arguments object into a Plan.
 
-    Tolerates missing optional fields: ``done_criteria`` defaults to an
-    empty tuple.
+    Tolerates missing optional fields: ``done_criteria`` defaults to an empty
+    tuple. Coerces defensively so a malformed model payload can never yield a
+    ``None`` or unhashable value: the JSON Schema constrains a field's TYPE but
+    not its nullability, so a model can still emit ``"context": null`` or a
+    ``sub_recipe`` that is an object. Everything is coerced to ``str`` here, so
+    such a payload deserializes without raising and instead produces a Plan that
+    :func:`validate_plan` then rejects (the correct fail-open path), rather than
+    an ``AttributeError``/``TypeError`` escaping into ``compile``.
     """
-    enabled = tuple(args.get("enabled_subrecipes") or ())
+    enabled = tuple(str(x) for x in (args.get("enabled_subrecipes") or ()))
     steps = tuple(
         PlanStep(
-            sub_recipe=step.get("sub_recipe", ""),
-            context=step.get("context", ""),
+            sub_recipe=str(step.get("sub_recipe") or ""),
+            context=str(step.get("context") or ""),
         )
         for step in (args.get("steps") or ())
     )
-    done_criteria = tuple(args.get("done_criteria") or ())
+    done_criteria = tuple(str(x) for x in (args.get("done_criteria") or ()))
     return Plan(enabled_subrecipes=enabled, steps=steps, done_criteria=done_criteria)
 
 
@@ -145,7 +148,7 @@ def validate_plan(plan: Plan) -> list[str]:
     so it re-checks catalog membership directly.
     """
     errors: list[str] = []
-    catalog_ids = set(recipe_catalog.CATALOG)
+    catalog_ids = set(CATALOG)
 
     if not plan.steps:
         errors.append("plan has no steps")
