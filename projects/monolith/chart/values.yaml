@@ -463,6 +463,29 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # chat.observe_directives: weekly (Fri 18:00 UTC). Scans ambient-granted
+    # channels for recurring style friction and enqueues at most one
+    # directive-proposal outbox row per channel; the leader drain posts it and
+    # wires the 👍/👎 confirm flow. Sensitivity is env config: OBSERVER_MIN_EVIDENCE
+    # (min distinct evidence messages the classifier must cite) and
+    # OBSERVER_COOLDOWN_DAYS (suppress a channel that saw a recent proposal). The
+    # LLM classify hits Qwen via LLAMA_CPP_URL (injected into the workflows pod).
+    - name: chat-observe-directives
+      args: ["chat-observe-directives"]
+      schedule: "0 18 * * 5"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      env:
+        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        OBSERVER_MIN_EVIDENCE: "3"
+        OBSERVER_COOLDOWN_DAYS: "14"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
     # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
     # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
