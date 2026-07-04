@@ -219,7 +219,9 @@ class TestGrants:
             f"/api/grimoire/campaigns/{campaign['id']}/grants/{created['id']}"
         )
         assert deleted.status_code == 204
-        assert client.get(f"/api/grimoire/campaigns/{campaign['id']}/grants").json() == []
+        assert (
+            client.get(f"/api/grimoire/campaigns/{campaign['id']}/grants").json() == []
+        )
 
         # A second delete of the now-missing grant is a 404.
         again = client.delete(
