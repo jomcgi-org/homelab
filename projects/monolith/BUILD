@@ -790,6 +790,19 @@ py_test(
 )
 
 py_test(
+    name = "chat_models_reminder_test",
+    srcs = ["chat/models_reminder_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_models_coverage_test",
     srcs = ["chat/models_coverage_test.py"],
     imports = ["."],

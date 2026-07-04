@@ -338,6 +338,38 @@ class OrchestratorBrief(SQLModel, table=True):
     error: str | None = Field(default=None)
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (delivered_at is intentionally NULL until the drain delivers the row)
+class Reminder(SQLModel, table=True):
+    """A user-scheduled reminder (ambient-assistant parity, Phase 2).
+
+    A chat tool inserts a row with due_at in the future; the scheduler drain
+    job queries pending rows whose due_at has passed (status, due_at index),
+    posts them into chat.discord_outbox, then stamps delivered_at and flips
+    status to 'delivered'. A user can cancel a still-pending reminder before
+    it fires (status='cancelled'). The status CHECK mirrors the migration so
+    the SQLite test fixtures enforce it too (create_all does not see
+    migration-only constraints).
+    """
+
+    __tablename__ = "reminder"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'cancelled')",
+            name="reminder_status_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str = Field(index=True)
+    author_id: str
+    content: str
+    due_at: datetime
+    status: str = Field(default="pending")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    delivered_at: datetime | None = Field(default=None)
+
+
 class UserStylePref(SQLModel, table=True):
     """Per-user style preference (ADR 035 phase 5).
 
