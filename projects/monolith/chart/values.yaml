@@ -71,6 +71,9 @@ jobs:
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 300
       suspend: false
+      # artifact.s3 needs SEAWEEDFS_S3_ENDPOINT (creds default to the
+      # auth-open duckdb keys); without it the job raises at startup.
+      s3: true
       resources:
         requests:
           cpu: 100m
