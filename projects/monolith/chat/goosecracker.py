@@ -15,6 +15,7 @@ helpers are synchronous and open their own session, so the bot calls them via
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
@@ -147,8 +148,14 @@ def _is_stale(row: GoosecrackerSession, now: datetime) -> bool:
     return (now - since) > STALE_AFTER
 
 
-def start_session(thread_id: str, prompt: str) -> dict:
+def start_session(thread_id: str, prompt: str, parent_channel_id: str = "") -> dict:
     """Record a new thread's transcript and dispatch the first artifact run.
+
+    ``parent_channel_id`` is the channel the /artifact command was run from (the
+    thread's parent), mirroring ``start_agent_session``'s param of the same
+    name; stored on the row so the runner can fetch channel-scoped context
+    (recent messages, and the extracted dataset) for the artifact build. Empty
+    when the caller has none to record (e.g. an older call site).
 
     Synchronous (opens its own session); call via ``asyncio.to_thread``. Returns
     the dispatch result (``thread_id`` + ``action``).
@@ -171,7 +178,13 @@ def start_session(thread_id: str, prompt: str) -> dict:
         discord_thread=thread_id,
     )
     with Session(get_engine()) as session:
-        session.add(GoosecrackerSession(discord_thread=thread_id, transcript=prompt))
+        session.add(
+            GoosecrackerSession(
+                discord_thread=thread_id,
+                parent_channel_id=parent_channel_id,
+                transcript=prompt,
+            )
+        )
         session.commit()
     return result
 
@@ -984,6 +997,53 @@ def _context_from_own_transcript(transcript: str) -> dict[str, str]:
         'it" against what the thread was already working on.\n'
     )
     return {"README.md": readme, "transcript.md": body}
+
+
+def _channel_dataset_window(thread_id: str) -> list[Message]:
+    """Fetch the recent message window for a thread's parent channel, oldest
+    first, or [] when the thread has no parent channel recorded (or the
+    channel has no messages). Sync; call via ``asyncio.to_thread``. Mirrors
+    the channel query ``build_injected_context`` uses, same message cap.
+    """
+    parent = parent_channel_for_thread(thread_id)
+    if not parent:
+        return []
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(Message)
+            .where(Message.channel_id == parent)
+            .order_by(Message.created_at.desc())
+            .limit(_INJECTED_CONTEXT_MSG_LIMIT)
+        ).all()
+    return list(reversed(rows))
+
+
+async def build_channel_dataset(thread_id: str, request: str) -> str | None:
+    """Extract a structured dataset from an artifact thread's parent channel.
+
+    Attached to an artifact dispatch's ``/injected-context/channel-data.json``
+    so the guest can build a chart/table from real conversation data instead of
+    improvising. Delegates to ``chat.channel_data.extract_dataset`` once the
+    channel window is resolved.
+
+    Fail-open like ``build_roast``/``build_injected_context``: returns None
+    when the thread has no parent channel recorded, the channel has no
+    messages, or extraction fails for any reason (a Qwen outage must not block
+    an artifact dispatch, the exact class of bug that bit Phase 1). Sync DB
+    fetch is offloaded via ``asyncio.to_thread``; the rest is async (LLM call).
+    """
+    try:
+        window = await asyncio.to_thread(_channel_dataset_window, thread_id)
+        if not window:
+            return None
+        from chat.channel_data import extract_dataset
+        from chat.summarizer import build_llm_caller
+
+        caller = build_llm_caller()
+        return await extract_dataset(window, request, caller)
+    except Exception:
+        logger.exception("goosecracker: build_channel_dataset failed for %s", thread_id)
+        return None
 
 
 async def build_roast(attempt_text: str) -> str:

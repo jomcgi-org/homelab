@@ -228,3 +228,22 @@ class TestCallerFailsOpen:
     async def test_caller_exception_returns_none_not_raise(self, messages):
         result = await extract_dataset(messages, "req", _RaisingCaller())
         assert result is None
+
+
+class TestNoneEscapeHatch:
+    @pytest.mark.asyncio
+    async def test_none_reply_returns_none(self, messages):
+        # The model's documented escape hatch for a request that isn't
+        # actually asking for a dataset; falls out of the ordinary
+        # validation path (no "title") with no special-casing needed.
+        reply = json.dumps({"none": True})
+        result = await extract_dataset(
+            messages, "how's everyone doing?", _FakeCaller(reply)
+        )
+        assert result is None
+
+    def test_prompt_documents_the_none_escape_hatch(self):
+        from chat.channel_data import _EXTRACT_PROMPT
+
+        prompt = _EXTRACT_PROMPT.format(max_rows=200, request="req", messages="m")
+        assert '{"none": true}' in prompt

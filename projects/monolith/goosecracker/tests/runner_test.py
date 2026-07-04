@@ -606,6 +606,124 @@ async def test_run_one_turn_ships_injected_context_in_payload(monkeypatch):
     assert captured_payload["injectedContext"]["transcript.md"] == "hi"
 
 
+async def _run_artifact_turn_with_dataset_producer(monkeypatch, producer):
+    """Shared setup for the channel-data.json wiring tests (Task 3.2): stub
+    every seam _run_one_turn touches (mirrors
+    test_run_one_turn_ships_injected_context_in_payload) for an
+    artifact-recipe turn, with ``producer`` standing in for
+    chat.api.build_channel_dataset. Returns the captured fc-invoke payload."""
+    import chat.api
+
+    captured_payload = {}
+
+    async def fake_post(url, payload, on_retry):
+        captured_payload.update(payload)
+        return {"status": "ok", "result": "done", "sessionDb": ""}
+
+    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
+    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
+    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
+    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
+    monkeypatch.setattr(runner, "_deliver", AsyncMock())
+    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
+    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
+    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
+    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
+    monkeypatch.setattr(
+        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
+    )
+    monkeypatch.setattr(chat.api, "build_channel_dataset", producer)
+
+    ok = await runner._run_one_turn(
+        "sess-1",
+        task="q",
+        recipe="artifact",
+        tier="artifact",
+        git_mirror="",
+        git_ref="",
+        discord_thread="thr-1",
+    )
+    assert ok is True
+    return captured_payload
+
+
+async def test_run_one_turn_artifact_with_dataset_ships_channel_data_json(
+    monkeypatch,
+):
+    """Task 3.2: an artifact-recipe turn whose extraction succeeds ships the
+    dataset alongside the ADR 040 per-turn context, never replacing it."""
+    producer = AsyncMock(return_value='{"title": "t"}')
+    payload = await _run_artifact_turn_with_dataset_producer(monkeypatch, producer)
+
+    producer.assert_called_once_with("thr-1", "q")
+    assert payload["injectedContext"]["channel-data.json"] == '{"title": "t"}'
+    assert payload["injectedContext"]["transcript.md"] == "hi"
+
+
+async def test_run_one_turn_artifact_without_dataset_omits_key(monkeypatch):
+    """None (no channel to extract from, or a fail-open) means no key at all,
+    not an empty string: the guest's presence check must be a clean miss."""
+    producer = AsyncMock(return_value=None)
+    payload = await _run_artifact_turn_with_dataset_producer(monkeypatch, producer)
+
+    assert "channel-data.json" not in payload["injectedContext"]
+
+
+async def test_run_one_turn_artifact_dataset_producer_raising_still_dispatches(
+    monkeypatch,
+):
+    """A surprise exception from the chat.api boundary itself (build_channel_
+    dataset is already fail-open internally, but this is belt-and-suspenders)
+    must not fail the dispatch: the run still succeeds, just without the key."""
+    producer = AsyncMock(side_effect=RuntimeError("boom"))
+    payload = await _run_artifact_turn_with_dataset_producer(monkeypatch, producer)
+
+    assert "channel-data.json" not in payload["injectedContext"]
+
+
+async def test_run_one_turn_agent_recipe_never_calls_build_channel_dataset(
+    monkeypatch,
+):
+    """The dataset attachment is artifact-recipe only (Task 3.2); the agent
+    route is a documented follow-up, out of scope here."""
+    import chat.api
+
+    captured_payload = {}
+
+    async def fake_post(url, payload, on_retry):
+        captured_payload.update(payload)
+        return {"status": "ok", "result": "done", "sessionDb": ""}
+
+    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
+    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
+    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
+    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
+    monkeypatch.setattr(runner, "_deliver", AsyncMock())
+    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
+    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
+    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
+    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
+    monkeypatch.setattr(
+        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
+    )
+    producer = AsyncMock(return_value='{"title": "t"}')
+    monkeypatch.setattr(chat.api, "build_channel_dataset", producer)
+
+    ok = await runner._run_one_turn(
+        "sess-1",
+        task="q",
+        recipe="agent",
+        tier="",
+        git_mirror="",
+        git_ref="",
+        discord_thread="thr-1",
+    )
+
+    assert ok is True
+    producer.assert_not_called()
+    assert "channel-data.json" not in captured_payload["injectedContext"]
+
+
 def _one_step_plan():
     """A minimal Plan for the plan-delivery payload tests (Task 6)."""
     from chat.orchestrator_plan import Plan, PlanStep
