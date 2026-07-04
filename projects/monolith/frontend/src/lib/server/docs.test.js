@@ -257,8 +257,9 @@ describe("renderDoc", () => {
     ]);
   });
 
-  it("renders a mermaid fence as a labelled source block", () => {
+  it("renders a mermaid fence as a labelled source block marked for client rendering", () => {
     expect(html).toContain('data-lang="mermaid"');
+    expect(html).toContain('class="doc-code doc-mermaid"');
     expect(html).toContain("A--&gt;B");
   });
 
