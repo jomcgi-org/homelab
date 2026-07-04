@@ -1,7 +1,7 @@
 ---
 name: knowledge
 description: >
-  Search and read Joe's Obsidian knowledge graph, or debug ingest failures.
+  Search and read Joe's knowledge graph (fileless, Postgres-backed), or debug ingest failures.
   Use when ANY context about Joe's thinking, decisions, opinions, knowledge base,
   prior work, or personal notes might be relevant — even if there's only a 1%
   chance. Also use for dead-lettered raws, gardener errors, or ingest debugging.
@@ -55,7 +55,7 @@ homelab knowledge dead-letters
 Lists raws that exhausted all retry attempts:
 
 ```
-[42] _raw/2026/04/11/note.md (obsidian) — invalid JSON [3 retries]
+[42] _raw/2026/04/11/note.md (webpage) — invalid JSON [3 retries]
 ```
 
 ### Replay a dead letter
@@ -65,6 +65,14 @@ homelab knowledge replay <raw_id>
 ```
 
 Removes failed provenance so the gardener retries on its next cycle.
+
+### Tasks
+
+```bash
+homelab knowledge tasks
+```
+
+List, search, and manage knowledge-graph tasks.
 
 ## Workflow
 

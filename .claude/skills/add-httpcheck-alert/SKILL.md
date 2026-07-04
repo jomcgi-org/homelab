@@ -14,17 +14,17 @@ This skill creates a SigNoz HTTP health check alert that monitors service availa
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Step 1: Create ConfigMap with Alert Definition          │
-│  - Service: todo                                          │
-│  - URL: https://todo.jomcgi.dev                          │
+│  - Service: jomcgi-dev                                    │
+│  - URL: https://jomcgi.dev/health                        │
 │  - Label: signoz.io/alert="true"                         │
 └────────────────────────┬─────────────────────────────────┘
                          │
                          ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Step 2: Add to Kustomization                            │
-│  projects/todo/deploy/kustomization.yaml:                  │
+│  projects/platform/signoz/kustomization.yaml:              │
 │    resources:                                             │
-│      - todo-httpcheck-alert.yaml                         │
+│      - jomcgi-dev-httpcheck-alert.yaml                   │
 └────────────────────────┬─────────────────────────────────┘
                          │
                          ▼
@@ -47,26 +47,32 @@ This skill creates a SigNoz HTTP health check alert that monitors service availa
 │  Step 5: HTTP Monitoring Active                          │
 │  - SigNoz scrapes httpcheck.status metric               │
 │  - If status < 1 for 5 consecutive checks (10 min)      │
-│    → Alert fires → PagerDuty notification               │
+│    → Alert fires → incident.io notification               │
 │  - If status = 1 (healthy) → No alert                   │
 └──────────────────────────────────────────────────────────┘
 ```
 
 ## Arguments
 
-| Argument    | Required | Description                                     | Example                         |
-| ----------- | -------- | ----------------------------------------------- | ------------------------------- |
-| `service`   | Yes      | Service name (used in metadata and labels)      | `todo`, `api-gateway`, `claude` |
-| `url`       | Yes      | Full HTTPS URL for the health check endpoint    | `https://todo.jomcgi.dev`       |
-| `namespace` | No       | Kubernetes namespace (defaults to service name) | `signoz`, `argocd`              |
+| Argument    | Required | Description                                  | Example                            |
+| ----------- | -------- | -------------------------------------------- | ---------------------------------- |
+| `service`   | Yes      | Service name (used in metadata and labels)   | `jomcgi-dev`, `argocd`, `longhorn` |
+| `url`       | Yes      | Full HTTPS URL for the health check endpoint | `https://jomcgi.dev/health`        |
+| `namespace` | No       | Namespace of the owning component            | `signoz`, `argocd`                 |
 
 ## File Structure
 
-Create the alert ConfigMap in the service's overlay directory:
+Create the alert ConfigMap colocated with the platform component that owns the endpoint, and register it in that directory's `kustomization.yaml`. Existing alerts:
 
 ```
-projects/<service>/deploy/<service>-httpcheck-alert.yaml
+projects/platform/signoz/jomcgi-dev-httpcheck-alert.yaml
+projects/platform/signoz/trips-pages-httpcheck-alert.yaml
+projects/platform/signoz/signoz-httpcheck-alert.yaml
+projects/platform/argocd/argocd-httpcheck-alert.yaml
+projects/platform/longhorn/longhorn-httpcheck-alert.yaml
 ```
+
+Public-site checks (jomcgi.dev pages) live in `projects/platform/signoz/`, next to the notification channel resource (`incidentio-channel.yaml`).
 
 ## ConfigMap Structure
 
@@ -81,7 +87,7 @@ metadata:
   annotations:
     signoz.io/alert-name: "<Service Name> Unreachable"
     signoz.io/severity: "critical"
-    signoz.io/notification-channels: "pagerduty-homelab"
+    signoz.io/notification-channels: "incidentio"
 data:
   alert.json: |
     {
@@ -96,7 +102,7 @@ data:
 | `labels.signoz.io/alert`                      | `"true"`                  | SigNoz alert operator discovers this |
 | `annotations.signoz.io/alert-name`            | `"<Service> Unreachable"` | Human-readable alert name            |
 | `annotations.signoz.io/severity`              | `"critical"`              | Alert severity level                 |
-| `annotations.signoz.io/notification-channels` | `"pagerduty-homelab"`     | Notification channel                 |
+| `annotations.signoz.io/notification-channels` | `"incidentio"`            | Notification channel                 |
 
 ## SigNoz Alert JSON Format (v0.113+)
 
@@ -161,12 +167,12 @@ data:
           "targetUnit": "",
           "matchType": "5",
           "op": "2",
-          "channels": ["pagerduty-homelab"]
+          "channels": ["incidentio"]
         }
       ]
     }
   },
-  "preferredChannels": ["pagerduty-homelab"]
+  "preferredChannels": ["incidentio"]
 }
 ```
 
@@ -211,29 +217,21 @@ evaluation panics with a nil pointer dereference (`BasicRuleThreshold.TargetValu
 
 ## Usage Examples
 
-### Example 1: Simple Service (namespace matches service name)
+### Example 1: Public site health endpoint
 
 ```
-/add-httpcheck-alert todo https://todo.jomcgi.dev
+/add-httpcheck-alert jomcgi-dev https://jomcgi.dev/health signoz
 ```
 
-Creates: `projects/todo/deploy/todo-httpcheck-alert.yaml`
+Creates: `projects/platform/signoz/jomcgi-dev-httpcheck-alert.yaml`
 
-### Example 2: Service with Custom Namespace
-
-```
-/add-httpcheck-alert signoz https://private.jomcgi.dev/app/signoz signoz
-```
-
-Creates: `projects/signoz/deploy/signoz-httpcheck-alert.yaml`
-
-### Example 3: Service with Health Check Endpoint
+### Example 2: Platform component with its own namespace
 
 ```
-/add-httpcheck-alert api-gateway https://api.jomcgi.dev/status.json
+/add-httpcheck-alert argocd https://private.jomcgi.dev/app/argocd argocd
 ```
 
-Creates: `projects/api-gateway/deploy/api-gateway-httpcheck-alert.yaml`
+Creates: `projects/platform/argocd/argocd-httpcheck-alert.yaml`
 
 ## Post-Creation Steps
 

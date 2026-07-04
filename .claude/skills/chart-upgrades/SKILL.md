@@ -14,7 +14,7 @@ Two halves: build the inventory of what we run, then research and judge each can
 There are exactly two regular shapes that declare an **upstream** (third-party) version. Glob both; ignore everything first-party.
 
 - **ArgoCD app sources** in `projects/**/application.yaml`: a `sources[]` entry whose `repoURL` is NOT `github.com/jomcgi/homelab` and NOT `ghcr.io/jomcgi/homelab/charts` pins `chart` + `targetRevision` directly. Example: `cloudnative-pg @ 0.27.1`, `atlas-operator @ 0.7.28`.
-- **Chart.yaml dependencies** in `projects/**/Chart.yaml`: a `dependencies[]` entry whose `repository` is `http(s)://` or `oci://` (NOT `file://`). Example: `temporal @ 1.2.0`, `cert-manager`, `argo-cd`, `gateway-helm`, `nats`.
+- **Chart.yaml dependencies** in `projects/**/Chart.yaml`: a `dependencies[]` entry whose `repository` is `http(s)://` or `oci://` (NOT `file://`). Example: `argo-cd @ 8.5.3`, `cert-manager`, `gateway-helm`.
 
 Quick pass to list them:
 
@@ -30,7 +30,7 @@ Normalize each into: `component | current_version | source_type (app-source | ch
 
 **Two traps that change which changelog you read:**
 
-- **Chart version is not app version.** The Temporal chart `1.2.0` ships Temporal server `1.31.0` (see its `appVersion`). The changelog you care about is almost always the **app's**, not the chart's. Always resolve `appVersion` before searching.
+- **Chart version is not app version.** The `argo-cd` chart `8.5.3` ships Argo CD `2.13.x` (see its `appVersion`). The changelog you care about is almost always the **app's**, not the chart's. Always resolve `appVersion` before searching.
 - **Wrapped charts hide the version one level down.** Most `projects/platform/*` apps point `repoURL` at our own git `HEAD` and wrap the upstream chart as a `Chart.yaml` dependency inside the service dir (longhorn, linkerd, signoz, keda, kyverno, coredns, nvidia-gpu-operator, otel-operator). The upstream version is the `dependencies[]` pin, not the `application.yaml`.
 
 ## 2. Get the candidate list (drift)
