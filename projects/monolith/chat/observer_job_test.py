@@ -39,10 +39,10 @@ def engine_fixture():
             table.schema = original[table.name]
 
 
-def _grant(session, scope, *, feature="ambient", subject_id=""):
+def _grant(session, scope, *, feature="ambient", subject_id="", guild_id="g1"):
     session.add(
         DiscordFeatureGrant(
-            guild_id="g1", subject_id=subject_id, feature=feature, scope=scope
+            guild_id=guild_id, subject_id=subject_id, feature=feature, scope=scope
         )
     )
 
@@ -94,7 +94,7 @@ def test_granted_channel_ids_only_server_wide_ambient(engine):
     with Session(engine) as session:
         _grant(session, "chanA")
         _grant(session, "chanB")
-        _grant(session, "chanA")  # duplicate scope, deduped
+        _grant(session, "chanA", guild_id="g2")  # same scope other guild, deduped
         _grant(session, "chanC", feature="agent")  # wrong feature, ignored
         _grant(session, "chanD", subject_id="u1")  # per-user ambient, ignored
         _grant(session, "")  # whole-feature ambient (no channel), ignored
