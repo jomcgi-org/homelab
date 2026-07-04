@@ -10,9 +10,11 @@
 </script>
 
 <div class="reader-page">
-  <a class="back" href={bookHref(ctx.campaignId, bookId, ctx.viewpoint)}>
-    ← Sections
-  </a>
+  {#if !ctx.isDesktop}
+    <a class="back" href={bookHref(ctx.campaignId, bookId, ctx.viewpoint)}>
+      ← Sections
+    </a>
+  {/if}
   <ChunkReader
     campaignId={ctx.campaignId}
     {bookId}

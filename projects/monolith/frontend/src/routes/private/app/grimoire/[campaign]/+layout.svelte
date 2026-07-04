@@ -11,6 +11,7 @@
     entitiesHref,
   } from "$lib/grimoire/api.js";
   import Omnibox from "$lib/grimoire/Omnibox.svelte";
+  import Shell from "$lib/grimoire/Shell.svelte";
   import "$lib/grimoire/theme.css";
 
   let { children } = $props();
@@ -20,6 +21,17 @@
 
   let campaigns = $state([]);
   let characters = $state([]);
+  // Drives the two-pane Shell. matchMedia keeps it in sync with the 880px
+  // breakpoint without a resize-listener storm; ssr=false so window is safe.
+  let isDesktop = $state(false);
+
+  $effect(() => {
+    const mq = window.matchMedia("(min-width: 880px)");
+    const update = () => (isDesktop = mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  });
 
   // Shared state for child routes (character list for grant UIs, the campaign
   // list, and the fetch helper) via context with reactive getters.
@@ -36,6 +48,9 @@
     },
     get viewpoint() {
       return viewpoint;
+    },
+    get isDesktop() {
+      return isDesktop;
     },
     reloadCharacters: () => loadCharacters(campaignId),
   });
@@ -141,7 +156,7 @@
   </header>
 
   <main class="frame">
-    {@render children()}
+    <Shell {children} />
   </main>
 </div>
 
@@ -202,9 +217,14 @@
     grid-area: viewpoints;
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.5rem;
     flex-wrap: wrap;
     justify-content: flex-end;
+    /* Breathing room: separate the switcher cluster from the omnibox and keep
+     * it off the right edge. */
+    padding-left: 0.85rem;
+    margin-left: 0.25rem;
+    border-left: var(--border-thin);
   }
 
   .viewpoints-label {
@@ -212,6 +232,7 @@
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: var(--fg-tertiary);
+    margin-right: 0.15rem;
   }
 
   .vp {
@@ -228,7 +249,7 @@
   .vp--active {
     background: var(--grim-accent);
     border-color: var(--grim-accent);
-    color: #fff;
+    color: var(--grim-on-accent);
   }
 
   .crumbs {
