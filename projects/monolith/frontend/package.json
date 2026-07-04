@@ -22,6 +22,7 @@
     "@opentelemetry/semantic-conventions": "^1.28.0",
     "maplibre-gl": "^5.24.0",
     "marked": "^18.0.0",
+    "mermaid": "^11.16.0",
     "roughjs": "^4.6.6"
   },
   "devDependencies": {

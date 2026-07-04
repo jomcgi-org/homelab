@@ -149,12 +149,14 @@ export function renderDoc(entry, slugByPath) {
       },
       code({ text, lang }) {
         // marked passes the full info-string; keep only the language token. A
-        // ```mermaid fence renders as a labelled source block (the public bundle
-        // has no client mermaid lib), readable and styled like other code.
+        // ```mermaid fence renders as a labelled source block by default (the
+        // source stays escaped, as a no-JS fallback); the client marks it with
+        // `doc-mermaid` so the docs page can render it to SVG lazily.
         const language = (lang || "").trim().split(/\s+/)[0];
         const cls = language ? ` class="language-${escapeAttr(language)}"` : "";
         const label = language ? ` data-lang="${escapeAttr(language)}"` : "";
-        return `<pre class="doc-code"${label}><code${cls}>${escapeHtml(text)}</code></pre>\n`;
+        const mermaidCls = language === "mermaid" ? " doc-mermaid" : "";
+        return `<pre class="doc-code${mermaidCls}"${label}><code${cls}>${escapeHtml(text)}</code></pre>\n`;
       },
       html({ text }) {
         // Neutralise raw HTML blocks rather than passing them through. The docs

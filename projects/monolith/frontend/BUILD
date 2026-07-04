@@ -39,6 +39,8 @@ js_library(
         ":node_modules/@dagrejs/dagre",
         # Runtime markdown rendering
         ":node_modules/marked",
+        # Client-side mermaid diagram rendering on the public docs pages
+        ":node_modules/mermaid",
         # WebGL basemap for the /app/ships live vessel map
         ":node_modules/maplibre-gl",
         # OpenTelemetry browser tracing
@@ -106,6 +108,8 @@ js_library(
         ":node_modules/@dagrejs/dagre",
         # Runtime markdown rendering
         ":node_modules/marked",
+        # Client-side mermaid diagram rendering on the public docs pages
+        ":node_modules/mermaid",
         # WebGL basemap for the /app/ships live vessel map
         ":node_modules/maplibre-gl",
         # OpenTelemetry browser tracing
