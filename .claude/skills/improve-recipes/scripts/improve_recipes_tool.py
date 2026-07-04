@@ -30,9 +30,28 @@ SELECT at.thread_id, at.session_id, at.recipe, at.tier, at.state,
        at.result_error,
        at.created_at, at.completed_at,
        EXTRACT(EPOCH FROM (at.completed_at - at.created_at)) AS wall_seconds,
-       gs.transcript
+       gs.transcript,
+       ob.orchestrator_route,
+       ob.plan_step_count,
+       ob.plan_latency_ms,
+       ob.plan_json
 FROM claude_agent.agent_threads at
 LEFT JOIN chat.goosecracker_sessions gs ON gs.discord_thread = at.session_id
+LEFT JOIN LATERAL (
+    -- The most recent orchestrator verdict for this thread (ADR 036). Route
+    -- 'goose' means the run was driven by a DeepSeek-constructed runtime plan;
+    -- 'failopen' means it fell back to the baked agent router. plan_step_count
+    -- and plan_json expose what DeepSeek selected/sequenced. Replan events are
+    -- NOT here (kept as a log, not a telemetry row): detect those on deep-read.
+    SELECT b.route AS orchestrator_route,
+           (b.brief_json->>'plan_step_count') AS plan_step_count,
+           (b.brief_json->>'plan_latency_ms') AS plan_latency_ms,
+           b.brief_json->'plan' AS plan_json
+    FROM chat.orchestrator_brief b
+    WHERE b.thread_id = at.session_id
+    ORDER BY b.created_at DESC
+    LIMIT 1
+) ob ON TRUE
 WHERE at.created_at >= :since
 ORDER BY at.created_at
 """
