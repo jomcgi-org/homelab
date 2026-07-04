@@ -66,6 +66,13 @@ func run(logger *slog.Logger) error {
 	// /tmp additionally backs the writable HOME set below.
 	mountTmpfs(logger, "/tmp", "256m")
 	mountTmpfs(logger, handler.Workspace, "256m")
+	// /injected-context (ADR 040) receives the caller-staged context bundle the
+	// per-invoke handler unpacks (the recipe reads its router.yaml/plan.md from
+	// here). Like /workspace it is a path the guest WRITES to, so it needs a tmpfs
+	// over the read-only rootfs; the mountpoint is baked into the rootfs image
+	// (apko.yaml) so this can mount over it. Without it, the handler's mkdir fails
+	// with "read-only file system" and goose aborts on the missing recipe file.
+	mountTmpfs(logger, handler.InjectedContextDir, "64m")
 
 	// A raw Firecracker boot hands PID 1 no environment (the kernel ignores the OCI
 	// image config), so establish the baseline goose needs. goose lives in
