@@ -5,7 +5,16 @@
 // public corpus is a single global view, so there is no `?as=` query param and
 // no campaign segment in any route.
 
-export const API = "/api/grimoire";
+// Same-origin proxy path, not the backend's /api/grimoire directly: the public
+// gateway has no /api rule, so every read goes through the SvelteKit +server.js
+// proxy at /app/grimoire/api/<path> (see routes/public/app/grimoire/api).
+export const API = "/app/grimoire/api";
+
+// The backend returns image_url as an absolute /api/grimoire/... path (it does
+// not know about the public proxy); rewrite it onto the same-origin proxy so the
+// browser reaches it through the gateway.
+export const proxiedImageUrl = (imageUrl) =>
+  imageUrl ? imageUrl.replace("/api/grimoire", API) : imageUrl;
 
 export async function apiFetch(path, options = {}) {
   const res = await fetch(`${API}${path}`, {
