@@ -16,7 +16,7 @@ rules:
         - "**/deploy/values.yaml"
         - "**/chart/values.yaml"
       exclude:
-        - "projects/inference/**"
+        - "**/projects/inference/**"
     patterns:
       - pattern: |
           resources:

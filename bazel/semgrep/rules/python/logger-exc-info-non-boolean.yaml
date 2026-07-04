@@ -31,4 +31,4 @@ rules:
       description: logger exc_info set to non-boolean value
     paths:
       include:
-        - "projects/**/*.py"
+        - "**/projects/**/*.py"

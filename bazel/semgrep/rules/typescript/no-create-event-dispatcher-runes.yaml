@@ -4,7 +4,7 @@ rules:
     severity: ERROR
     paths:
       include:
-        - "projects/**/*.svelte"
+        - "**/projects/**/*.svelte"
     message: >-
       createEventDispatcher is a Svelte 4 API. All components under
       projects/**/*.svelte use Svelte 5 runes — replace with a callback

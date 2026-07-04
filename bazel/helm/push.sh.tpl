@@ -66,8 +66,55 @@ if [[ -n "$CHART_VERSION_SH" ]] && [[ -n "$ABS_CHART_DIR" ]] && [[ -x "$CHART_VE
 fi
 
 if [[ "$CURRENT_BRANCH" == "main" ]]; then
-  # --- Main branch: push with semver from Chart.yaml (already bumped by PR) ---
-  echo "On main — pushing chart with semver from Chart.yaml"
+  # --- Main branch: publish the semver from Chart.yaml (bumped in the PR) ---
+  # Publishing is IDEMPOTENT: if this version already exists in the registry,
+  # skip the push. Re-publishing an existing version with freshly stamped image
+  # tags mutates a deployed chart in place, which wedges ArgoCD into a permanent
+  # sync=OutOfSync + operationState=Succeeded state: the repo-server serves its
+  # cached copy for sync while diffing against the mutated re-pull.
+  echo "On main: publishing chart at the semver from Chart.yaml"
+  if [[ -n "$ABS_CHART_DIR" ]] && [[ -f "${ABS_CHART_DIR}/Chart.yaml" ]]; then
+    CHART_NAME=$(grep '^name:' "${ABS_CHART_DIR}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+    CHART_VERSION=$(grep '^version:' "${ABS_CHART_DIR}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+    if [[ -n "$CHART_NAME" ]] && [[ -n "$CHART_VERSION" ]]; then
+      set +e
+      SHOW_OUT=$("${HELM}" show chart "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}" 2>&1)
+      SHOW_RC=$?
+      set -e
+      if [[ $SHOW_RC -eq 0 ]]; then
+        echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published; skipping push."
+        # Missed-bump detector: if commits since this version was last set touch
+        # the chart's dependency closure, this merge deploys NOTHING until a bump
+        # lands. Fail loudly now instead of surfacing later as an OutOfSync
+        # mystery or a rollout that silently never happened.
+        if [[ "$CAN_VERSION" == "true" ]]; then
+          NEEDED_VERSION=$(cd "$WORKSPACE" && "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package") || NEEDED_VERSION=""
+          if [[ -n "$NEEDED_VERSION" ]] && [[ "$NEEDED_VERSION" != "$CHART_VERSION" ]]; then
+            PROJECT_DIR=$(dirname "$CHART_DIR")
+            {
+              echo "ERROR: ${CHART_NAME} ${CHART_VERSION} is already published, but commits since"
+              echo "that version touch this chart's dependency closure (computed next"
+              echo "version: ${NEEDED_VERSION}). This merge will NOT deploy until the chart"
+              echo "version is bumped."
+              echo ""
+              echo "Fix: in a fresh worktree run"
+              echo "  bazel/tools/git/bump-chart.sh ${PROJECT_DIR}"
+              echo "then commit and open a bump PR (auto-merge is fine)."
+            } >&2
+            exit 1
+          fi
+        fi
+        echo "No releasable changes since ${CHART_VERSION}; nothing to publish."
+        exit 0
+      fi
+      if echo "$SHOW_OUT" | grep -qiE 'not found|manifest unknown|404'; then
+        echo "Version ${CHART_VERSION} not in registry yet; publishing."
+      else
+        echo "WARNING: could not check whether ${CHART_NAME} ${CHART_VERSION} already exists; pushing anyway (legacy behavior). Check output:"
+        echo "$SHOW_OUT" | head -5
+      fi
+    fi
+  fi
 elif [[ "$CAN_VERSION" == "true" ]]; then
   # --- PR branch: compute version bump, commit to PR, push with datestamp ---
   BAZEL_PKG="//${CHART_DIR}:chart.package"

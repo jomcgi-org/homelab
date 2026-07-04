@@ -187,6 +187,17 @@ run_test "empty_json_allowed" \
 	'{}' \
 	0 ""
 
+# 13. Chained repo-relative script path under bazel/ → allowed (not a bazel
+# invocation; the block patterns require "bazel " with a trailing space)
+run_test "chained_bazel_dir_script_allowed" \
+	'{"tool_input":{"command":"cd /tmp/claude-worktrees/wt && bazel/tools/format/fast-format.sh"}}' \
+	0 ""
+
+# 14. Semicolon-chained repo-relative script path under bazel/ → allowed
+run_test "semicolon_bazel_dir_script_allowed" \
+	'{"tool_input":{"command":"echo done; bazel/tools/hooks/validate-hooks-executable.sh"}}' \
+	0 ""
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

@@ -34,14 +34,15 @@ main() {
 	# file: Exec format error" (why the manifest comment never posted). Read the
 	# output path from the bazel-bin convenience symlink, NOT `bazel info
 	# bazel-bin --config=ci` (that fails to resolve @@buildbuddy_toolchain).
-	bazel build @multitool//tools/helm @multitool//tools/dyff @multitool//tools/gh --config=ci 2>&1 | tail -1
+	bazel build @multitool//tools/helm @multitool//tools/dyff @multitool//tools/gh @multitool//tools/yq --config=ci 2>&1 | tail -1
 	BAZEL_BIN="$(git rev-parse --show-toplevel)/bazel-bin"
 
 	HELM=$(find -L "$BAZEL_BIN/external" -name "helm" -type f -perm /111 2>/dev/null | head -1)
 	DYFF=$(find -L "$BAZEL_BIN/external" -name "dyff" -type f -perm /111 2>/dev/null | head -1)
 	GH=$(find -L "$BAZEL_BIN/external" -name "gh" -type f -perm /111 2>/dev/null | head -1)
+	YQ=$(find -L "$BAZEL_BIN/external" -name "yq" -type f -perm /111 2>/dev/null | head -1)
 
-	for tool_name in HELM DYFF GH; do
+	for tool_name in HELM DYFF GH YQ; do
 		tool_path="${!tool_name}"
 		if [ -z "$tool_path" ]; then
 			echo "ERROR: $tool_name not found in bazel-bin"
@@ -239,7 +240,109 @@ main() {
 	done
 	echo "  Rendered: $pr_ok ok, $pr_fail failed/skipped"
 
-	# ── Phase 5: Diff and post comment ────────────────────────────────
+	# ── Phase 5: Validate no new duplicate env vars ───────────────────
+	echo ""
+	echo "==> Checking for duplicate env var names introduced by this PR..."
+
+	# Kubernetes silently collapses duplicate env[].name entries within the same
+	# container at apply time (last one wins), so two independently-added
+	# template blocks that both declare the same var (e.g. two features each
+	# adding OPENROUTER_API_KEY) render N entries but the live object only ever
+	# has 1. ArgoCD then reports a permanent phantom OutOfSync (rendered has N,
+	# live has 1) with operationState Succeeded, which looks like nothing is
+	# wrong. That cost a multi-hour production debugging saga (PR #3158). It is
+	# cheap to catch here and expensive to debug post-merge, so unlike the
+	# informational diff below this is a hard failure (exit 1).
+	#
+	# yq eval-all combined with chained `as $x` variable bindings cross-joins
+	# every document in a multi-doc file instead of scoping per document (a
+	# documented yq/jq eval-all quirk, confirmed empirically while writing this
+	# check), so the extraction below avoids `as` entirely and builds one JSON
+	# object per matching document instead. It also avoids piping into
+	# `python3 - <<HEREDOC`: the heredoc redirect claims stdin outright and
+	# silently discards piped input, so the python source is captured into a
+	# variable first and passed via `-c`, leaving stdin free for the piped data.
+	YQ_ENV_EXTRACT='
+		[.] | .[] |
+		select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet" or .kind == "Job" or .kind == "CronJob") |
+		{"kind": .kind, "name": .metadata.name, "containers": (((.spec.template.spec // .spec.jobTemplate.spec.template.spec // {}).containers // []) + ((.spec.template.spec // .spec.jobTemplate.spec.template.spec // {}).initContainers // []))}
+	'
+
+	# DUP_ENV_PY reads the newline-delimited JSON produced by YQ_ENV_EXTRACT and
+	# prints one "kind<TAB>name<TAB>container<TAB>dupNames" line per container
+	# that has a repeated env[].name. stdlib-only: yq does the YAML parsing
+	# (multi-doc, kind-aware pod-spec paths), python3's json module does the rest.
+	read -r -d '' DUP_ENV_PY <<-'PYEOF' || true
+		import json
+		import sys
+
+		for line in sys.stdin:
+		    line = line.strip()
+		    if not line:
+		        continue
+		    doc = json.loads(line)
+		    for container in doc.get("containers") or []:
+		        names = [e.get("name") for e in (container.get("env") or []) if e.get("name")]
+		        dupes = []
+		        for name in names:
+		            if names.count(name) > 1 and name not in dupes:
+		                dupes.append(name)
+		        if dupes:
+		            print("\t".join([doc["kind"], doc["name"], container.get("name") or "<unnamed>", ",".join(dupes)]))
+	PYEOF
+
+	find_duplicate_envs() {
+		local manifest_file="$1"
+		[ -f "$manifest_file" ] || return 0
+		"$YQ" eval-all -o=json -I=0 "$YQ_ENV_EXTRACT" "$manifest_file" 2>/dev/null | python3 -c "$DUP_ENV_PY"
+	}
+
+	env_check_failed=0
+	for app_spec in "${APPS[@]}"; do
+		IFS='|' read -r release_name _ _ _ <<<"$app_spec"
+
+		pr_file="$PR_RENDER_DIR/${release_name}.yaml"
+		main_file="$MAIN_RENDER_DIR/${release_name}.yaml"
+
+		pr_dupes=$(find_duplicate_envs "$pr_file") || true
+		[ -z "$pr_dupes" ] && continue
+
+		# Duplicates already present on main are pre-existing, not this PR's
+		# fault: don't fail on those. A missing main_file (new app) naturally
+		# yields an empty set here, so every duplicate in a new app's render
+		# still fails. Scoped at the container level (kind+name+container) on
+		# purpose, matching the instruction to keep this simple: a container
+		# already flagged on main stays ignored even if the PR's duplicate is a
+		# different variable name in that same container.
+		main_dupes=$(find_duplicate_envs "$main_file") || true
+		main_keys=$(printf '%s\n' "$main_dupes" | cut -f1-3)
+
+		while IFS=$'\t' read -r kind name container dup_names; do
+			[ -z "$kind" ] && continue
+			key=$(printf '%s\t%s\t%s' "$kind" "$name" "$container")
+			if ! grep -qxF "$key" <<<"$main_keys"; then
+				env_check_failed=1
+				echo ""
+				echo "ERROR: duplicate env var name(s) in PR-rendered manifest"
+				echo "  app:        $release_name"
+				echo "  kind/name:  $kind/$name"
+				echo "  container:  $container"
+				echo "  duplicated: $dup_names"
+				echo "  Kubernetes collapses duplicate env[].name entries at apply time (last"
+				echo "  one wins), so this renders N entries but the live object only gets 1."
+				echo "  Rename or remove one of the duplicate declarations."
+			fi
+		done <<<"$pr_dupes"
+	done
+
+	if [ "$env_check_failed" -eq 1 ]; then
+		echo ""
+		echo "==> Duplicate env var check FAILED. Fix the duplicate(s) above before merging."
+		exit 1
+	fi
+	echo "  No new duplicate env var names introduced."
+
+	# ── Phase 6: Diff and post comment ────────────────────────────────
 	echo ""
 	echo "==> Comparing manifests..."
 

@@ -25,4 +25,4 @@ rules:
       exclude:
         - "*_test.py"
         - "test_*.py"
-        - "tests/**"
+        - "**/tests/**"

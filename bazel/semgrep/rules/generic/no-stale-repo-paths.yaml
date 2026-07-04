@@ -23,4 +23,4 @@ rules:
       # whose action item was "remove overlays/prod/openhands/"). Keeping the
       # rule active for runbooks and live config, exclude the decision log.
       exclude:
-        - "docs/decisions/**"
+        - "**/docs/decisions/**"

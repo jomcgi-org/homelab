@@ -20,8 +20,8 @@ rules:
         causing CI/CD pipelines or automated scripts to hang indefinitely.
     paths:
       include:
-        - "tools/**/*.sh"
-        - "bazel/**/*.sh"
+        - "**/tools/**/*.sh"
+        - "**/bazel/**/*.sh"
     patterns:
       - pattern-regex: 'claude\b[^\n]*--print\b[^\n]*'
-      - pattern-not-regex: '--permission-mode'
+      - pattern-not-regex: "--permission-mode"

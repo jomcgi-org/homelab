@@ -19,6 +19,7 @@ find . \( -name "apko.yaml" -o -name "apko-*.yaml" \) \
 	# Generate lock file using rules_apko
 	if ! bazel run @rules_apko//apko -- lock "$config" 2>&1 | grep -v "^INFO:"; then
 		echo "  ⚠️  Warning: Failed to update lock for $config"
+		echo "  (config-only apko.yaml edits can use bazel/tools/format/fix-apko-checksum.sh, no bazel needed)"
 	fi
 done
 

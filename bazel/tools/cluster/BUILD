@@ -26,3 +26,11 @@ sh_binary(
     name = "argocd",
     srcs = ["scripts/argocd.sh"],
 )
+
+# Session-authenticated ArgoCD API calls (port-forward + admin JWT exchange).
+# Still read-only against the cluster: it only calls the ArgoCD API with
+# whatever curl args the caller passes; it does not itself mutate anything.
+sh_binary(
+    name = "argocd_api",
+    srcs = ["scripts/argocd-api.sh"],
+)
