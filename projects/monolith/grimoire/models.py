@@ -175,11 +175,41 @@ class KnowledgeChunk(SQLModel, table=True):
     chunk_ref: str
     content: str
     section_path: str | None = None
+    # Reading-order position within a book, 0-based, assigned by the loader from
+    # NDJSON line order (ingest._upsert_book_chunks). created_at is unreliable for
+    # ordering (bulk upserts share a timestamp; re-uploads mutate in place), so
+    # every reading-order read path (section tree, chunk reader, paged list)
+    # orders by seq instead. Mirror of the column added in
+    # 20260703250000_grimoire_chunk_seq_and_book.sql.
+    seq: int | None = None
     # Full s3:// URI of the source illustration for image-derived chunks (Marker
     # Picture blocks); NULL for text chunks. Stored so the app can later render
     # the image (via imgproxy) alongside the retrieved chunk. Mirror of the
     # column added in 20260703130000_grimoire_chunk_image_ref.sql.
     image_ref: str | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+class Book(SQLModel, table=True):
+    """Human-facing metadata for a loaded book.
+
+    book_id is a slug/UUID everywhere else in the schema; this table gives it a
+    display_name (defaulting to the id until renamed from the Library UI) so the
+    app never has to show a raw id. The loader upserts one row per book it sees
+    (ingest._upsert_book), and PATCH /books/{book_id} renames it. Mirror of
+    20260703250000_grimoire_chunk_seq_and_book.sql.
+    """
+
+    __tablename__ = "book"
+    __table_args__ = {"schema": "grimoire", "extend_existing": True}
+
+    # book_id is a caller-supplied slug/UUID (the S3 path segment), not a
+    # generated surrogate, so the string id is the primary key directly.
+    id: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
+    display_name: str
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),

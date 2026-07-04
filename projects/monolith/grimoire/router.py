@@ -18,11 +18,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from app.db import get_session
+from grimoire import library
 from grimoire.models import (
     Campaign,
     ENTITY_DETAIL_MODELS,
@@ -30,6 +32,7 @@ from grimoire.models import (
     EntityType,
     GameSession,
     GrantScope,
+    KnowledgeChunk,
     KnowledgeGrant,
     PlayerCharacter,
     Relationship,
@@ -337,20 +340,42 @@ def _project_neighbor(
     return project_entity(entity, None, grant, viewer, context="relationship")
 
 
+def _parse_offset(cursor: str | None) -> int:
+    """Decode the opaque entity-list cursor (a stringified offset). A missing or
+    malformed cursor starts from the top rather than erroring, so a stale cursor
+    degrades to page one instead of a 422."""
+    if cursor is None:
+        return 0
+    try:
+        return max(0, int(cursor))
+    except ValueError:
+        return 0
+
+
 @router.get("/campaigns/{campaign_id}/entities")
 def list_entities(
     campaign_id: str,
     as_: str = Query(alias="as"),
     entity_type: EntityType | None = Query(default=None, alias="type"),
     q: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    cursor: str | None = Query(default=None),
     session: Session = Depends(get_session),
-) -> list[dict[str, Any]]:
-    """Grant-filtered entity list, spine-level only (no typed detail rows).
+) -> dict[str, Any]:
+    """Grant-filtered, paginated entity list, spine-level only (no typed detail).
 
-    Returned dict shape is scope-dependent (full spine, partial identity +
-    revealed_details, or a full spine + grants annotation for the DM), so
-    this returns list[dict] rather than a fixed response_model, matching the
-    heterogeneous-payload pattern used by knowledge/router.py.
+    Returns ``{items, total, next_cursor}``. Item dict shape is scope-dependent
+    (full spine, partial identity + revealed_details, or a full spine + grants
+    annotation for the DM), so items are plain dicts rather than a fixed
+    response_model, matching the heterogeneous-payload pattern used by
+    knowledge/router.py.
+
+    The projection (DM grant-aggregation, player grant-filtering, name_only
+    suppression) has to run in Python before the page is known, so the full
+    visible set is materialised and then sliced by ``cursor``/``limit``. At v1
+    corpus scale (hundreds of entities) this stays cheap; keyset pagination
+    would have to reconcile the DM view's one-row-per-grant fan-out and is not
+    worth it yet.
     """
     _get_campaign_or_404(session, campaign_id)
     viewer = _resolve_viewer(session, campaign_id, as_)
@@ -365,14 +390,20 @@ def list_entities(
 
     if viewer == "dm":
         aggregated, order = _aggregate_dm_rows(rows, context="lookup")
-        return [aggregated[entity_id] for entity_id in order]
+        items = [aggregated[entity_id] for entity_id in order]
+    else:
+        items = []
+        for entity, grant in rows:
+            projected = project_entity(entity, None, grant, viewer, context="lookup")
+            if projected is not None:
+                items.append(projected)
 
-    items: list[dict[str, Any]] = []
-    for entity, grant in rows:
-        projected = project_entity(entity, None, grant, viewer, context="lookup")
-        if projected is not None:
-            items.append(projected)
-    return items
+    total = len(items)
+    offset = _parse_offset(cursor)
+    page = items[offset : offset + limit]
+    next_offset = offset + limit
+    next_cursor = str(next_offset) if next_offset < total else None
+    return {"items": page, "total": total, "next_cursor": next_cursor}
 
 
 @router.get("/campaigns/{campaign_id}/entities/{entity_id}")
@@ -468,6 +499,180 @@ def list_entity_relationships(
             }
         )
     return items
+
+
+@router.get("/campaigns/{campaign_id}/entities/{entity_id}/mentions")
+def list_entity_mentions(
+    campaign_id: str,
+    entity_id: str,
+    as_: str = Query(alias="as"),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Chunks that mention this entity (the "Sources" list on entity detail).
+
+    Gated behind the same visibility check as get_entity: the viewer must be
+    able to see the entity in lookup context, or this 404s (existence must not
+    leak, and a name_only viewer gets nothing, consistent with the entity
+    detail 404). Chunks themselves are corpus-global in v1, so once the gate
+    passes every mention is returned.
+    """
+    _get_campaign_or_404(session, campaign_id)
+    viewer = _resolve_viewer(session, campaign_id, as_)
+
+    rows = session.exec(
+        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="entity not found")
+    if viewer != "dm":
+        entity, grant = rows[0]
+        if project_entity(entity, None, grant, viewer, context="lookup") is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+
+    return library.list_entity_mentions(session, entity_id)
+
+
+# --- Library / corpus (book + chunk reads, corpus-global) ------------
+
+# Books and chunks are NOT campaign-scoped: the corpus is global in v1 (matching
+# search._resolve_chunk_hit). Only a chunk's on-page entity chips take a
+# campaign + viewpoint, since those are grant-projected; everything else here is
+# plain corpus data. All aggregation lives in library.py so these handlers stay
+# thin.
+
+
+class BookRenameRequest(BaseModel):
+    display_name: str
+
+
+@router.get("/books")
+def list_books(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
+    """Per-book coverage rows for the Library (counts, extraction progress,
+    entity yield, timestamps). See library.list_books."""
+    return library.list_books(session)
+
+
+@router.patch("/books/{book_id}")
+def rename_book(
+    book_id: str,
+    body: BookRenameRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Rename a book (set its display_name) from the Library UI."""
+    display_name = body.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=422, detail="display_name must not be empty")
+    book = library.rename_book(session, book_id, display_name)
+    if book is None:
+        raise HTTPException(status_code=404, detail="book not found")
+    return {"book_id": book.id, "display_name": book.display_name}
+
+
+@router.get("/books/{book_id}/sections")
+def list_book_sections(
+    book_id: str, session: Session = Depends(get_session)
+) -> list[dict[str, Any]]:
+    """Ordered section tree for one book (reading order, chunk counts)."""
+    return library.list_sections(session, book_id)
+
+
+@router.get("/books/{book_id}/chunks")
+def list_book_chunks(
+    book_id: str,
+    section: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(
+        default=library.DEFAULT_CHUNK_PAGE, ge=1, le=library.MAX_CHUNK_PAGE
+    ),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Seq-ordered page of a book's chunks (optionally one section)."""
+    return library.list_chunks(
+        session, book_id, section=section, cursor=cursor, limit=limit
+    )
+
+
+@router.get("/chunks/{chunk_id}")
+def get_chunk(
+    chunk_id: str,
+    campaign: str = Query(),
+    as_: str = Query(alias="as"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """One chunk with full content, image URL, seq neighbours, and on-page
+    entity chips projected for the (campaign, viewpoint). The campaign/viewpoint
+    only shape the entity chips; the chunk body is corpus-global."""
+    _get_campaign_or_404(session, campaign)
+    viewer = _resolve_viewer(session, campaign, as_)
+    chunk = library.get_chunk(session, campaign, viewer, chunk_id)
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="chunk not found")
+    return chunk
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str] | None:
+    """Split ``s3://bucket/key`` into ``(bucket, key)``; None if malformed."""
+    if not uri.startswith("s3://"):
+        return None
+    rest = uri[len("s3://") :]
+    bucket, _, key = rest.partition("/")
+    if not bucket or not key:
+        return None
+    return bucket, key
+
+
+_IMAGE_CONTENT_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+
+
+@router.get("/chunks/{chunk_id}/image")
+def get_chunk_image(
+    chunk_id: str, session: Session = Depends(get_session)
+) -> StreamingResponse:
+    """Stream the source illustration behind an image chunk's ``image_ref``.
+
+    404s for a missing chunk or a text chunk (no image_ref). Reads the object
+    from the shared SeaweedFS S3 endpoint the loader already uses (the API pod
+    carries the same SEAWEEDFS_S3_ENDPOINT/S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY
+    env under the always-set ``stars`` block, so no chart change is needed).
+    This is a sync ``def`` handler, so FastAPI runs the blocking boto3 read in
+    its threadpool, off the event loop. imgproxy resizing is a later
+    optimization (recorded as a follow-up, not built here).
+    """
+    from grimoire.ingest import build_s3_client
+
+    chunk = session.get(KnowledgeChunk, chunk_id)
+    if chunk is None or not chunk.image_ref:
+        raise HTTPException(status_code=404, detail="chunk image not found")
+    parsed = _parse_s3_uri(chunk.image_ref)
+    if parsed is None:
+        raise HTTPException(status_code=404, detail="chunk image not found")
+    bucket, key = parsed
+
+    suffix = key.rsplit(".", 1)[-1].lower() if "." in key else ""
+    content_type = _IMAGE_CONTENT_TYPES.get(suffix, "application/octet-stream")
+
+    client = build_s3_client()
+    try:
+        obj = client.get_object(Bucket=bucket, Key=key)
+    except Exception as exc:  # noqa: BLE001 - any S3 miss/error becomes a 404
+        raise HTTPException(status_code=404, detail="chunk image not found") from exc
+
+    body = obj["Body"]
+
+    def _stream():
+        try:
+            for part in body.iter_chunks(chunk_size=64 * 1024):
+                yield part
+        finally:
+            body.close()
+
+    return StreamingResponse(_stream(), media_type=content_type)
 
 
 # --- Vector search ---------------------------------------------------

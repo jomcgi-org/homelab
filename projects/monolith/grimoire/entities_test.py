@@ -174,7 +174,7 @@ class TestListEntities:
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as={seed.alice.id}"
         )
         assert r.status_code == 200
-        names = {item["name"] for item in r.json()}
+        names = {item["name"] for item in r.json()["items"]}
         assert names == {"Umbrasyl", "Strahd", "Castle Ravenloft"}
 
     def test_bob_sees_global_only(self, session, client):
@@ -183,7 +183,7 @@ class TestListEntities:
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as={seed.bob.id}"
         )
         assert r.status_code == 200
-        names = {item["name"] for item in r.json()}
+        names = {item["name"] for item in r.json()["items"]}
         assert names == {"Umbrasyl"}
 
     def test_dm_sees_all_with_grant_annotations_aggregated(self, session, client):
@@ -191,7 +191,7 @@ class TestListEntities:
         r = client.get(f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm")
         assert r.status_code == 200
         body = r.json()
-        by_name = {item["name"]: item for item in body}
+        by_name = {item["name"]: item for item in body["items"]}
         assert set(by_name) == {
             "Umbrasyl",
             "Strahd",
@@ -208,7 +208,9 @@ class TestListEntities:
             }
         ]
         # No duplicate rows for entities with exactly one grant.
-        assert len(body) == 5
+        assert len(body["items"]) == 5
+        assert body["total"] == 5
+        assert body["next_cursor"] is None
 
     def test_type_filter(self, session, client):
         seed = seed_scenario(session)
@@ -216,7 +218,7 @@ class TestListEntities:
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm&type=creature"
         )
         assert r.status_code == 200
-        names = {item["name"] for item in r.json()}
+        names = {item["name"] for item in r.json()["items"]}
         assert names == {"Umbrasyl"}
 
     def test_q_filter(self, session, client):
@@ -225,8 +227,32 @@ class TestListEntities:
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm&q=cast"
         )
         assert r.status_code == 200
-        names = {item["name"] for item in r.json()}
+        names = {item["name"] for item in r.json()["items"]}
         assert names == {"Castle Ravenloft"}
+
+    def test_pagination_limit_and_cursor(self, session, client):
+        seed = seed_scenario(session)
+        base = f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm"
+
+        first = client.get(f"{base}&limit=2")
+        assert first.status_code == 200
+        first_body = first.json()
+        assert first_body["total"] == 5
+        assert len(first_body["items"]) == 2
+        assert first_body["next_cursor"] is not None
+
+        # Walk every page via the cursor and assert we see all 5 entities once,
+        # in the endpoint's name order, with no overlap between pages.
+        seen = list(first_body["items"])
+        cursor = first_body["next_cursor"]
+        while cursor is not None:
+            page = client.get(f"{base}&limit=2&cursor={cursor}").json()
+            seen.extend(page["items"])
+            cursor = page["next_cursor"]
+        names = [item["name"] for item in seen]
+        assert names == sorted(names)
+        assert len(names) == 5
+        assert len(set(names)) == 5
 
     def test_unknown_viewer_pc_404(self, session, client):
         seed = seed_scenario(session)

@@ -34,7 +34,7 @@ from typing import Any, Protocol
 
 from sqlmodel import Session, select
 
-from grimoire.models import Embedding, KnowledgeChunk
+from grimoire.models import Book, Embedding, KnowledgeChunk
 
 logger = logging.getLogger("monolith.grimoire.ingest")
 
@@ -245,20 +245,35 @@ def _book_id_from_key(key: str, prefix: str) -> str:
     return rest.split(_CHUNKS_SEGMENT, 1)[0].split("/", 1)[0]
 
 
+def _upsert_book(session: Session, book_id: str) -> None:
+    """Ensure a grimoire.book row exists for ``book_id`` (display_name defaults
+    to the id until renamed from the Library UI). Never overwrites an existing
+    display_name: a rename must survive re-uploads. Own savepoint so a book-row
+    failure cannot roll back the chunk upserts that follow.
+    """
+    with session.begin_nested():
+        if session.get(Book, book_id) is None:
+            session.add(Book(id=book_id, display_name=book_id))
+
+
 def _upsert_book_chunks(
     session: Session, book_id: str, parsed: list[dict]
 ) -> tuple[list[KnowledgeChunk], int]:
     """Sync upsert of one book's parsed chunks, keyed on (book_id, chunk_ref).
 
     Inserts new chunks, updates changed content/section_path/image_ref, and
-    skips unchanged chunks entirely (so a second run over identical data embeds
-    nothing). Each chunk gets its own savepoint so one bad row cannot roll
-    back the rest of the batch. Returns the rows that need (re-)embedding
-    and how many chunks were upserted (inserted or changed).
+    keeps ``seq`` in lockstep with NDJSON line order (the ``parsed`` list is in
+    manifest order). seq is rewritten on every run, so a re-upload that reorders
+    or inserts lines produces correct reading order even for chunks whose
+    content is otherwise unchanged. A pure seq move does not touch the vector.
+    Each chunk gets its own savepoint so one bad row cannot roll back the rest
+    of the batch. Returns the rows that need (re-)embedding and how many chunks
+    were upserted (inserted or content/metadata-changed; a seq-only shift does
+    not count as an upsert).
     """
     pending_embed: list[KnowledgeChunk] = []
     upserted = 0
-    for item in parsed:
+    for seq, item in enumerate(parsed):
         with session.begin_nested():
             existing = session.execute(
                 select(KnowledgeChunk).where(
@@ -274,6 +289,7 @@ def _upsert_book_chunks(
                     content=item["content"],
                     section_path=item["section_path"],
                     image_ref=item["image_ref"],
+                    seq=seq,
                 )
                 session.add(row)
                 session.flush()
@@ -285,6 +301,11 @@ def _upsert_book_chunks(
                     existing.section_path != item["section_path"]
                     or existing.image_ref != item["image_ref"]
                 )
+                # seq is corrected on every run but is not itself an "upsert":
+                # reading order shifting on a re-upload should not report the
+                # whole book as changed nor trigger re-embedding.
+                if existing.seq != seq:
+                    existing.seq = seq
                 if content_changed or meta_changed:
                     existing.content = item["content"]
                     existing.section_path = item["section_path"]
@@ -294,7 +315,7 @@ def _upsert_book_chunks(
                     # metadata-only fix does not move the vector.
                     if content_changed:
                         pending_embed.append(existing)
-                # else: fully unchanged, skip entirely (idempotent re-run).
+                # else: content/metadata unchanged (seq may have been corrected).
     session.commit()
     return pending_embed, upserted
 
@@ -378,6 +399,7 @@ async def load_chunks(
         books += 1
         book_ids.add(book_id)
 
+        _upsert_book(session, book_id)
         book_pending, book_upserted = _upsert_book_chunks(session, book_id, parsed)
         chunks_upserted += book_upserted
         pending_embed.extend(book_pending)
