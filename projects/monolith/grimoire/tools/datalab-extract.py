@@ -17,7 +17,11 @@ Auth is the ``DATALAB_API_KEY`` env var (dashboard: https://www.datalab.to).
 Every stage is idempotent and skippable: an existing ``output.json`` skips the
 paid API call (``--force-extract`` overrides), rclone copy re-syncs cheaply,
 and the S3 uploader overwrites the same keys. Re-running after a failure
-resumes where it stopped.
+resumes where it stopped. Duplicate credit spend is guarded twice: a
+``.datalab-request.json`` checkpoint written at submit time lets an
+interrupted run re-attach to its in-flight request instead of resubmitting,
+and a completed ``output.json`` short-circuits the API stage entirely. Only
+``--force-extract`` re-spends credits deliberately.
 
 The default ``--mode accurate`` matches the "marker high accuracy" requests
 used for the existing corpus. Chunks land in Postgres at the next daily
@@ -55,10 +59,16 @@ DEFAULT_DRIVE_FOLDER_ID = "1xa32QQR3ZfxYWd4MpxWZe_Q6_7a4rtih"
 _BOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _TOOLS_DIR = Path(__file__).resolve().parent
 
+# In-flight request checkpoint: written right after a successful submit so a
+# crashed or interrupted run resumes polling the SAME request instead of
+# resubmitting the PDF and spending credits twice. Deleted once output.json
+# is safely on disk; only --force-extract ignores it.
+_CHECKPOINT_NAME = ".datalab-request.json"
+
 # Files that are pipeline by-products, not extraction artifacts: kept out of
 # the Drive copy so the offsite folder stays byte-comparable to what Datalab
 # produced (chunks are regenerated from output.json in seconds).
-_DRIVE_EXCLUDES = ("chunks.ndjson",)
+_DRIVE_EXCLUDES = ("chunks.ndjson", _CHECKPOINT_NAME)
 
 
 def log(msg: str) -> None:
@@ -111,8 +121,37 @@ def _request_json(req: urllib.request.Request, timeout: int) -> dict:
         die(f"HTTP {e.code} from {req.full_url}: {body}")
 
 
-def submit(pdf: Path, mode: str, max_pages: int | None) -> str:
-    """Submit the conversion request; return the request_check_url."""
+def _request_fingerprint(pdf: Path, mode: str, max_pages: int | None) -> dict:
+    """What identifies 'the same request': file identity + paid parse params."""
+    return {
+        "pdf_name": pdf.name,
+        "pdf_size": pdf.stat().st_size,
+        "mode": mode,
+        "max_pages": max_pages,
+    }
+
+
+def load_checkpoint(folder: Path, fingerprint: dict) -> str | None:
+    """Return the in-flight check_url if a matching checkpoint exists."""
+    path = folder / _CHECKPOINT_NAME
+    if not path.is_file():
+        return None
+    try:
+        ck = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        log(f"warning: unreadable {path}; ignoring it")
+        return None
+    if ck.get("fingerprint") != fingerprint:
+        log(
+            "warning: checkpoint params differ from this invocation "
+            f"({ck.get('fingerprint')} vs {fingerprint}); submitting fresh"
+        )
+        return None
+    return ck.get("check_url")
+
+
+def submit(pdf: Path, mode: str, max_pages: int | None, folder: Path) -> str:
+    """Submit the conversion request; checkpoint and return request_check_url."""
     key = _api_key()  # fail fast, before the multipart body is built
     fields = {"output_format": "json", "mode": mode}
     if max_pages:
@@ -129,16 +168,48 @@ def submit(pdf: Path, mode: str, max_pages: int | None) -> str:
     check_url = resp.get("request_check_url")
     if not check_url:
         die(f"no request_check_url in submit response: {json.dumps(resp)[:500]}")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / _CHECKPOINT_NAME).write_text(
+        json.dumps(
+            {
+                "check_url": check_url,
+                "fingerprint": _request_fingerprint(pdf, mode, max_pages),
+                "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+        )
+    )
     log(f"submitted; polling {check_url}")
     return check_url
 
 
+def probe(check_url: str) -> dict | None:
+    """One status GET; None if the request is gone server-side (HTTP 4xx).
+
+    Any other failure dies with the checkpoint intact: when Datalab is
+    unreachable or erroring we cannot know the request's fate, and
+    resubmitting blind is exactly the double-spend this guard exists for.
+    """
+    req = urllib.request.Request(check_url, headers={"X-API-Key": _api_key()})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            return None
+        die(f"HTTP {e.code} checking the in-flight request; retry later to resume")
+    except (urllib.error.URLError, TimeoutError) as e:
+        die(f"cannot reach Datalab to resume the in-flight request ({e}); retry later")
+
+
 def poll(check_url: str, interval: int, deadline_s: int) -> dict:
-    """Poll until the request leaves 'processing'; return the final envelope."""
+    """Poll until the request leaves 'processing'; return the final envelope.
+
+    Dies (checkpoint left in place) rather than resubmitting on timeout or
+    persistent poll errors: the next run resumes this same request for free.
+    """
     started = time.monotonic()
     failures = 0
     while True:
-        time.sleep(interval)
         req = urllib.request.Request(check_url, headers={"X-API-Key": _api_key()})
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
@@ -150,14 +221,19 @@ def poll(check_url: str, interval: int, deadline_s: int) -> dict:
             failures += 1
             log(f"poll error ({failures}/5): {e}")
             if failures >= 5:
-                die("5 consecutive poll failures; resume by re-running (cache hit)")
+                die("5 consecutive poll failures; re-run to resume this request")
+            time.sleep(interval)
             continue
         status = env.get("status")
         elapsed = int(time.monotonic() - started)
         if status == "processing":
             log(f"  processing ... ({elapsed}s)")
             if elapsed > deadline_s:
-                die(f"parse still processing after {deadline_s}s; giving up")
+                die(
+                    f"parse still processing after {deadline_s}s; "
+                    "re-run later to resume this request"
+                )
+            time.sleep(interval)
             continue
         if status == "complete" and env.get("success"):
             return env
@@ -276,9 +352,30 @@ def main(argv: list[str] | None = None) -> int:
     if (folder / "output.json").is_file() and not args.force_extract:
         log(f"{folder}/output.json exists; skipping API call (--force-extract to redo)")
     else:
-        check_url = submit(pdf, args.mode, args.max_pages)
-        env = poll(check_url, args.poll_interval, args.timeout)
+        fingerprint = _request_fingerprint(pdf, args.mode, args.max_pages)
+        check_url = None if args.force_extract else load_checkpoint(folder, fingerprint)
+        env = None
+        if check_url:
+            log(f"resuming in-flight request from checkpoint: {check_url}")
+            env = probe(check_url)
+            if env is None:
+                log("warning: checkpointed request is gone server-side; resubmitting")
+                check_url = None
+            elif env.get("status") == "complete" and env.get("success"):
+                pass  # finished while we were away; no polling needed
+            elif env.get("status") == "processing":
+                env = None  # still running; fall through to the poll loop
+            else:
+                die(
+                    f"checkpointed request ended status={env.get('status')} "
+                    f"error={env.get('error')!r}; --force-extract to resubmit"
+                )
+        if check_url is None:
+            check_url = submit(pdf, args.mode, args.max_pages, folder)
+        if env is None:
+            env = poll(check_url, args.poll_interval, args.timeout)
         unwrap(env, folder)
+        (folder / _CHECKPOINT_NAME).unlink(missing_ok=True)
 
     source = folder / "source.pdf"
     if not source.is_file():
