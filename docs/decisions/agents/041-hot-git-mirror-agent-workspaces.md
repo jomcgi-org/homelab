@@ -1,4 +1,4 @@
-# ADR 026: Hot Git Mirror for goosecracker Agent Workspaces
+# ADR 041: Hot Git Mirror for goosecracker Agent Workspaces
 
 **Author:** jomcgi
 **Status:** Draft

@@ -1,4 +1,4 @@
-# ADR 011: Agent MCP v1 Follow-ons and Deferred Self-Improvement Loop
+# ADR 042: Agent MCP v1 Follow-ons and Deferred Self-Improvement Loop
 
 **Author:** Joe McGinley (with Claude)
 **Status:** Accepted

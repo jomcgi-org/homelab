@@ -12,7 +12,7 @@ image:
 # +refs/heads/*:refs/heads/* and +refs/tags/*:refs/tags/* as the only fetch
 # refspecs (never refs/agents/**), and installs a pre-receive hook that
 # restricts pushes to refs/agents/** only. Structured so a DB-backed registry
-# can replace this static list later (ADR 026 open question 2).
+# can replace this static list later (ADR 041 open question 2).
 #
 # Names follow the GitHub owner/repo convention (ADR 029): the name is the ACL
 # scope, the /agent dropdown label, the on-disk mirror dir, and the git-daemon

@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-07-02
-**Builds on:** [024 - Discord Agent, Hosted-Model Tiers, and Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the `/agent` and `/artifact` commands and the owner gate this replaces), [026 - Hot Git Mirror Agent Workspaces](026-hot-git-mirror-agent-workspaces.md) (the mirror that serves the per-server repo, including private `loom`)
+**Builds on:** [024 - Discord Agent, Hosted-Model Tiers, and Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the `/agent` and `/artifact` commands and the owner gate this replaces), [041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (the mirror that serves the per-server repo, including private `loom`)
 
 ---
 

@@ -3,7 +3,7 @@
 **Author:** jomcgi (with Claude)
 **Created:** 2026-07-01
 **Status:** Draft, ready for execution
-**ADRs:** implements [026 - Hot Git Mirror](../decisions/agents/026-hot-git-mirror-agent-workspaces.md) (with a write-back amendment), completes the deferred generic-capture item in [023 - Egress Secret Proxy](../decisions/agents/023-egress-secret-proxy.md)
+**ADRs:** implements [041 - Hot Git Mirror](../decisions/agents/041-hot-git-mirror-agent-workspaces.md) (with a write-back amendment), completes the deferred generic-capture item in [023 - Egress Secret Proxy](../decisions/agents/023-egress-secret-proxy.md)
 
 ---
 
@@ -157,7 +157,7 @@ Standalone deployment; builds in parallel with WS4.
 
 **Task 1.2 - Init + refresh supervisor.** On start, for each registered repo: `git clone --bare` (non-mirror refspec) if absent, install the `pre-receive` hook (reject refs outside `refs/agents/**`), set `git config` for `receive.denyNonFastforwards=false` on `refs/agents/*` only via hook logic. Background loop: `git fetch --prune origin` per repo on an interval (default 60s). Serve: `git daemon --base-path=<dir> --export-all --enable=upload-pack --enable=receive-pack --reuseaddr` on :9418, `internalTrafficPolicy: Local`.
 
-**Task 1.3 - Registered repos.** Static values list to start: `homelab`, `loom` (ADR 026). Structure the values so a DB-backed registry is a later swap (ADR 026 open question 2).
+**Task 1.3 - Registered repos.** Static values list to start: `homelab`, `loom` (ADR 041). Structure the values so a DB-backed registry is a later swap (ADR 041 open question 2).
 
 **Task 1.4 - Chart + ArgoCD app.** `chart/` (Deployment on node-4 via nodeSelector/toleration matching the fc-invoke workload, PVC on NVMe for the bare clones, Service :9418) + `deploy/{application.yaml,kustomization.yaml,values.yaml}`. Multi-source OCI-chart + `$values` pattern like a recent service. Regenerate home-cluster root kustomization via `format`. (Salvage chart shape from PR #2900, relocate to `firecracker/`.)
 
@@ -173,7 +173,7 @@ Flip guests to fetch from the mirror instead of GitHub.
 
 **Task 2.1 - Inject mirror allowlist + insteadOf.** goosecracker injects the mirror `host:port` into the egress allowlist (substrate stays opaque, per ADR 025) and sets `git config url.git://<mirror>/.insteadOf https://github.com/` in the guest so recipes keep referencing github.com. (`projects/monolith/goosecracker/` env wiring + guest init.)
 
-**Task 2.2 - Partial/shallow fetch shape.** Guest clone uses `--single-branch --depth=<n> --filter=blob:none` against the mirror for sub-second provisioning (ADR 026). Extend `git.go` Clone or the handler clone call to pass these. Keep the conditional-fallback-to-GitHub-direct path (ADR 026 risk row: missing mirror degrades, does not break).
+**Task 2.2 - Partial/shallow fetch shape.** Guest clone uses `--single-branch --depth=<n> --filter=blob:none` against the mirror for sub-second provisioning (ADR 041). Extend `git.go` Clone or the handler clone call to pass these. Keep the conditional-fallback-to-GitHub-direct path (ADR 041 risk row: missing mirror degrades, does not break).
 
 **Task 2.3 - Remove dead params / confirm gitRef.** Clean up unused `repo`/`branch` in `dispatch.submit` (or wire them if they map to mirror repo + ref). Confirm `gitRef` selects the hydration branch.
 
@@ -197,7 +197,7 @@ After goose runs, commit the workspace and push a scratch ref to the mirror.
 
 ### WS5 - ADR + docs updates
 
-**Task 5.1 - Amend ADR 026.** Add a "Scratch-ref recording" section: the mirror accepts pushes to a reserved `refs/agents/**` namespace for agent work capture; these never sync to GitHub, never feed CI/ArgoCD/PR, and are pruned on retention. Note this narrows (does not reverse) the "push-through mirror rejected" alternative: authoritative writes still go direct to GitHub; only a non-authoritative audit/replay namespace is writable. Update the serving-protocol open question to "decided: git-daemon". Update PR reference from #2900 to this plan's PR(s).
+**Task 5.1 - Amend ADR 041.** Add a "Scratch-ref recording" section: the mirror accepts pushes to a reserved `refs/agents/**` namespace for agent work capture; these never sync to GitHub, never feed CI/ArgoCD/PR, and are pruned on retention. Note this narrows (does not reverse) the "push-through mirror rejected" alternative: authoritative writes still go direct to GitHub; only a non-authoritative audit/replay namespace is writable. Update the serving-protocol open question to "decided: git-daemon". Update PR reference from #2900 to this plan's PR(s).
 
 **Task 5.2 - Update ADR 023.** Move the generic any-port capture item (line 60 / open questions) from deferred to implemented: the synthetic-IP + `SO_ORIGINAL_DST` mechanism, preamble-host sidecar routing, and the kata-kernel netfilter finding (6.18.35-197, nat/conntrack/REDIRECT/TPROXY `=y`). Add the **split-horizon egress posture** as a new (amended) decision: external=allow, internal=deny-by-default+allowlist, classified on the resolved IP in the sidecar (resolve-once-pin). This supersedes ADR 023's flat `policy: allow|allowlist` knob and is a strict hardening (closes the cluster-pivot vector). Keep decision 3 (allowlist-as-per-secret-exfil-control) intact and note it is now orthogonal to the zone policy.
 
@@ -225,8 +225,8 @@ After goose runs, commit the workspace and push a scratch ref to the mirror.
 
 - GitHub push / deliverable branches (would need the git-push Basic-auth swap + ADR 027 roles). Explicitly deferred by the scratch-ref decision.
 - The `SecretProxy` CRD / horizontally-scaled proxy Deployment (ADR 023 Future Work).
-- DB-backed dynamic repo registry (ADR 026 open question 2; static values list here).
-- Context-cache prewarm overlap (ADR 026 open question 3).
+- DB-backed dynamic repo registry (ADR 041 open question 2; static values list here).
+- Context-cache prewarm overlap (ADR 041 open question 3).
 
 ---
 

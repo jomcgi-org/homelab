@@ -1,6 +1,6 @@
 # git-mirror
 
-A hot, in-cluster git mirror (ADR 026) pinned to node-4, so Firecracker agent
+A hot, in-cluster git mirror (ADR 041) pinned to node-4, so Firecracker agent
 guests clone their workspace from a node-local source in well under a second
 instead of cold-cloning GitHub on every spin-up. It also decouples agent spin-up
 from GitHub availability and gives every run an audit trail via scratch refs.

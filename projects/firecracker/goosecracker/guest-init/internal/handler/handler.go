@@ -141,7 +141,7 @@ func New(runner Runner, opts ...Option) shim.Handler {
 
 		// Seed the workspace from the git mirror before goose starts so the recipe
 		// operates on a checked-out tree. Clone failures are soft (best-effort per
-		// ADR 026 risk row): log and continue with an empty workspace rather than
+		// ADR 041 risk row): log and continue with an empty workspace rather than
 		// aborting the run. An agent can still complete useful work even without the
 		// checked-out source.
 		if req.GitMirror != "" {
