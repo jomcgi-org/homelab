@@ -31,16 +31,22 @@ argo-cd:
         jqPathExpressions:
           - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
           - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
+          # After the pointer removals below strip the injected annotations,
+          # live is left with an EMPTY annotations map while the predicted
+          # state drops the key entirely. gitops-engine treats {} != absent,
+          # which kept Deployments permanently OutOfSync (root cause of the
+          # 2026-07-04 monolith saga; kyverno/otel-operator showed the same
+          # class). jsonPointers run before jq within one override, so this
+          # deletes only a then-empty map and can never mask real annotation
+          # drift (e.g. config checksums).
+          - '.spec.template.metadata.annotations | select(length == 0)'
         jsonPointers:
           - /spec/template/metadata/annotations/otel.injected-by
           - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
-          # HPA-managed replicas. App-level spec.ignoreDifferences is not
-          # applied by the controller (observed on v3.1.6: the monolith app's
-          # /spec/replicas entry was inert while these global rules worked, so
-          # the HPA-set replicas kept the Deployment permanently OutOfSync
-          # against a chart that deliberately omits replicas). Only HPAs mutate
-          # replicas in this cluster (kubectl scale is forbidden by convention),
-          # so a fleet-wide ignore is safe.
+          # HPA-managed replicas: the chart omits replicas so the HPA owns it;
+          # keep live's HPA-set value out of the diff. Only HPAs mutate
+          # replicas in this cluster (kubectl scale is forbidden by
+          # convention), so a fleet-wide ignore is safe.
           - /spec/replicas
     rbac:
       policy.csv: |
