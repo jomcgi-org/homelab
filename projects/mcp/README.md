@@ -1,6 +1,6 @@
-# projects/mcp
+# MCP Gateway
 
-Holds the cluster deployment of **Context Forge**, the MCP (Model Context Protocol) gateway that aggregates cluster-internal tools for agents. It is the single in-cluster entry point that lets Claude Code, Claude.ai, and other MCP clients reach cluster services (SigNoz, ArgoCD, etc.) without per-service auth workarounds.
+The cluster deployment of **Context Forge**, the MCP (Model Context Protocol) gateway that aggregates cluster-internal tools for agents. It is the single in-cluster entry point that lets Claude Code, Claude.ai, and other MCP clients reach cluster services (SigNoz, ArgoCD, etc.) without per-service auth workarounds.
 
 See [ADR 003](../../docs/decisions/agents/003-context-forge.md) for the original design rationale and [ADR 011](../../docs/decisions/agents/011-cloudflare-managed-oauth.md) for the current auth model (Cloudflare Managed OAuth superseded an earlier in-cluster OAuth proxy).
 

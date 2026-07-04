@@ -51,8 +51,16 @@ README_SUFFIX = "/README.md"
 _VENDORED_PREFIXES = ("projects/platform/linkerd/charts/",)
 
 # Per-file blocklist: individual README paths that must NOT appear on the
-# public docs site even though they match the allowlist glob.
-_BLOCKLIST: frozenset[str] = frozenset()
+# public docs site even though they match the allowlist glob. These are
+# build glue or internal tooling notes, not project documentation.
+_BLOCKLIST: frozenset[str] = frozenset(
+    {
+        "projects/shared/README.md",
+        "projects/grimoire/chart/README.md",
+        "projects/monolith/frontend/visual/README.md",
+        "projects/platform/signoz-addons/operator/crds/README.md",
+    }
+)
 
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _NUM = re.compile(r"^(\d+)")

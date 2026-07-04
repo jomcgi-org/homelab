@@ -20,45 +20,29 @@
   </header>
 
   <section class="docs-overview">
-    <div class="ov-group">
-      <h2>Projects</h2>
-      <ul class="ov-grid">
-        {#each data.sidebar.projects as node}
-          <li>
-            {#if node.slug}
-              <a class="ov-card" href={`/docs/${node.slug}`}>{node.title}</a>
-            {:else}
-              <span class="ov-card ov-card-group">{node.title}</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </div>
-
-    <div class="ov-group">
-      <h2>Architecture Decisions</h2>
-      {#if data.sidebar.decisions.index}
-        <p class="ov-note">
-          <a href={`/docs/${data.sidebar.decisions.index.slug}`}
-            >Browse the full ADR index &rarr;</a
-          >
-        </p>
-      {/if}
-      <ul class="ov-cats">
-        {#each data.sidebar.decisions.categories as cat}
-          <li class="ov-cat">
-            <span class="ov-cat-name">{cat.name}</span>
-            <span class="ov-cat-count mono">{cat.items.length}</span>
-          </li>
-        {/each}
-      </ul>
-    </div>
+    <h2>Projects</h2>
+    <ul class="ov-list">
+      {#each data.sidebar.projects as node}
+        <li>
+          {#if node.slug}
+            <a class="ov-link" href={`/docs/${node.slug}`}>
+              <span class="ov-name">{node.name}</span>
+              {#if node.title !== node.name}
+                <span class="ov-title">{node.title}</span>
+              {/if}
+            </a>
+          {:else}
+            <span class="ov-name ov-name-muted">{node.name}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
   </section>
 </DocsShell>
 
 <style>
   .docs-hero {
-    margin-bottom: 28px;
+    margin-bottom: 36px;
   }
 
   .docs-hero h1 {
@@ -78,11 +62,7 @@
     max-width: 64ch;
   }
 
-  .ov-group + .ov-group {
-    margin-top: 34px;
-  }
-
-  .ov-group h2 {
+  .docs-overview h2 {
     font-family: var(--mono);
     font-size: 0.95em;
     font-weight: 700;
@@ -91,96 +71,50 @@
     color: var(--ink);
     padding-bottom: 8px;
     border-bottom: 2px solid var(--ink);
-    margin-bottom: 16px;
+    margin-bottom: 4px;
   }
 
-  .ov-grid {
+  .ov-list {
     list-style: none;
     margin: 0;
     padding: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 12px;
   }
 
-  .ov-card {
-    display: block;
-    font-family: var(--mono);
-    font-size: 0.85em;
-    font-weight: 600;
-    color: var(--ink);
+  .ov-list li + li {
+    border-top: 1px solid var(--rule-2);
+  }
+
+  .ov-link {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 12px 4px;
     text-decoration: none;
-    padding: 14px 16px;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    box-shadow: var(--shadow-hard-sm);
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease,
-      background 120ms ease;
-  }
-
-  .ov-card:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: var(--shadow-hard);
-    background: var(--accent);
-  }
-
-  /* A group directory with no README of its own: not a link, so no hover
-     lift, and a dashed border marks it as a pure grouping node. */
-  .ov-card-group {
-    border-style: dashed;
-    box-shadow: none;
-    color: var(--ink-2);
-  }
-
-  .ov-note {
-    font-family: var(--mono);
-    font-size: 0.85em;
-    margin: 0 0 14px;
-  }
-
-  .ov-note a {
     color: var(--ink);
+  }
+
+  .ov-link:hover .ov-name {
     text-decoration: underline;
     text-decoration-color: var(--coral);
     text-decoration-thickness: 2px;
-    text-underline-offset: 2px;
+    text-underline-offset: 3px;
   }
 
-  .ov-cats {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 10px;
-  }
-
-  .ov-cat {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 10px 14px;
-    border: 2px solid var(--ink);
-    background: var(--bg-elev);
-  }
-
-  .ov-cat-name {
+  .ov-name {
     font-family: var(--mono);
-    font-size: 0.82em;
+    font-size: 0.9em;
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: capitalize;
   }
 
-  .ov-cat-count {
-    font-size: 0.78em;
-    font-weight: 700;
-    color: var(--ink);
-    background: var(--accent);
-    border: 2px solid var(--ink);
-    padding: 0 7px;
+  .ov-name-muted {
+    display: block;
+    padding: 12px 4px;
+    color: var(--ink-3);
+  }
+
+  .ov-title {
+    font-family: var(--sans);
+    font-size: 0.9em;
+    color: var(--ink-3);
   }
 </style>
