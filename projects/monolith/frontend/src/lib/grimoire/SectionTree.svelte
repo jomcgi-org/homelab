@@ -1,6 +1,12 @@
 <script>
-  // A book's ordered section list. Rendered as the desktop Shell's left pane and
-  // as the mobile /book/[book] screen. Owns its own fetch so neither host has to.
+  // A book's ordered section list, styled as the flat brutalist TOC (see
+  // Reader.svelte's docblock for the --grimb-* token rationale: this and the
+  // reader are the only two components that use them, everything else in
+  // grimoire keeps the oxblood/paper theme). Rendered as the desktop Shell's
+  // left pane and as the mobile /book/[book] screen. Owns its own fetch so
+  // neither host has to. Data flow is unchanged from before the reader
+  // rework: each row still links through chunkHref -> /c/[chunk], which now
+  // redirects into the continuous reader positioned at that section's start.
   import { getContext } from "svelte";
   import { page } from "$app/stores";
   import {
@@ -52,15 +58,34 @@
       section.latest_chunk_at && (!seenAt || section.latest_chunk_at > seenAt)
     );
   }
+
+  // Indent depth from the section_path's segment count (1 = top-level
+  // "chapter" row, rendered bold mono uppercase; deeper rows indent).
+  function depth(sectionPath) {
+    if (!sectionPath) return 1;
+    return Math.max(1, sectionPath.split("/").filter(Boolean).length);
+  }
 </script>
 
-<div class="tree">
-  <div class="tree-head">
+<!-- See Reader.svelte: the private app doesn't load these families globally
+     (the public tier's root layout does), so load them here too — this and
+     Reader.svelte are the only two grimoire components using them. -->
+<svelte:head>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+</svelte:head>
+
+<div class="grimb-toc">
+  <div class="toc-head">
     <a class="back" href={libraryHref(ctx.campaignId, ctx.viewpoint)}>
       ← Library
     </a>
     {#if !loading && !error}
-      <h2 class="grim-title title">{displayName}</h2>
+      <h2 class="toc-title">{displayName}</h2>
     {/if}
   </div>
 
@@ -77,10 +102,13 @@
   {:else}
     <ul class="sections">
       {#each sections as section (section.section_path)}
+        {@const d = depth(section.section_path)}
         <li>
           <a
-            class="section"
-            class:section--active={section.first_chunk_id === activeChunkId}
+            class="row"
+            class:row--h1={d <= 1}
+            class:row--active={section.first_chunk_id === activeChunkId}
+            style:padding-left="{0.75 + (d - 1) * 0.9}rem"
             href={chunkHref(
               ctx.campaignId,
               bookId,
@@ -88,13 +116,10 @@
               ctx.viewpoint,
             )}
           >
-            <span class="section-title grim-title">{section.title}</span>
-            <span class="section-meta">
-              <span>{section.chunk_count}</span>
-              {#if section.image_count > 0}
-                <span>{section.image_count} img</span>
-              {/if}
-              {#if isNew(section)}<span class="new">new</span>{/if}
+            <span class="row-title">{section.title}</span>
+            <span class="row-meta">
+              {#if isNew(section)}<span class="row-new">new</span>{/if}
+              <span class="row-count">{section.chunk_count}</span>
             </span>
           </a>
         </li>
@@ -104,11 +129,16 @@
 </div>
 
 <style>
-  .tree {
-    padding: 0.75rem;
+  .grimb-toc {
+    padding: 0.75rem 0;
+    background: var(--grimb-cream);
+    color: var(--grimb-ink);
+    font-family: var(--grimb-mono);
+    min-height: 100%;
   }
 
-  .tree-head {
+  .toc-head {
+    padding: 0 0.85rem;
     margin-bottom: 0.85rem;
   }
 
@@ -119,88 +149,110 @@
     font-size: 0.68rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--grim-accent);
+    color: var(--grimb-ink-3);
   }
 
-  .title {
-    font-size: 1.15rem;
-    color: var(--grim-accent);
-    margin-top: 0.25rem;
+  .back:hover {
+    color: var(--grimb-ink);
+  }
+
+  .toc-title {
+    font-family: var(--grimb-serif);
+    font-size: 1.2rem;
+    color: var(--grimb-ink);
+    margin-top: 0.35rem;
   }
 
   .sections {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
   }
 
-  .section {
+  /* Flat: no boxes/borders between rows, just indentation and the active
+   * row's yellow fill + left border. */
+  .row {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 0.75rem;
-    min-height: 2.75rem;
-    padding: 0.45rem 0.6rem;
-    border: 1px solid transparent;
-    border-left: 2px solid transparent;
-    background: var(--bg);
-    color: var(--fg);
+    min-height: 2.5rem;
+    padding: 0.5rem 0.85rem;
+    border-left: 4px solid transparent;
+    color: var(--grimb-ink-3);
   }
 
-  .section:hover {
-    border-color: var(--grim-paper-line);
-    border-left-color: var(--grim-accent);
+  .row:hover {
+    color: var(--grimb-ink);
   }
 
-  .section--active {
-    border-color: var(--grim-paper-line);
-    border-left-color: var(--grim-accent);
-    background: var(--surface);
+  .row--h1 {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--grimb-ink);
   }
 
-  .section-title {
-    font-size: 0.98rem;
+  .row--active {
+    background: var(--grimb-yellow);
+    border-left-color: var(--grimb-ink);
+    color: var(--grimb-ink);
+  }
+
+  .row-title {
+    font-size: 0.85rem;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .section-meta {
+  .row--h1 .row-title {
+    font-size: 0.8rem;
+  }
+
+  .row-meta {
     display: flex;
+    align-items: baseline;
     gap: 0.5rem;
-    align-items: center;
-    font-size: 0.62rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--fg-tertiary);
-    white-space: nowrap;
     flex-shrink: 0;
   }
 
-  .new {
-    padding: 0.08rem 0.35rem;
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
+  .row-count {
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    min-width: 1.5rem;
+  }
+
+  .row-new {
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.08rem 0.3rem;
+    background: var(--grimb-ink);
+    color: var(--grimb-cream);
   }
 
   .empty {
-    padding: 1.5rem 0.6rem;
-    font-family: var(--grim-serif);
+    padding: 1.5rem 0.85rem;
+    font-family: var(--grimb-serif);
     font-style: italic;
-    color: var(--fg-tertiary);
+    color: var(--grimb-ink-3);
   }
 
   .status--error {
     color: var(--danger);
     font-size: 0.8rem;
+    padding: 0 0.85rem;
   }
 
   .skeleton {
-    height: 2.75rem;
+    height: 2.5rem;
+    margin: 0 0.85rem;
     background: linear-gradient(
       90deg,
-      var(--surface) 25%,
+      var(--grimb-paper) 25%,
       transparent 37%,
-      var(--surface) 63%
+      var(--grimb-paper) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;

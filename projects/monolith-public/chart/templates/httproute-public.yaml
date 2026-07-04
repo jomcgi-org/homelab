@@ -68,6 +68,11 @@ spec:
       namespace: {{ .Values.cfIngress.public.gateway.namespace }}
   hostnames:
     - {{ .Values.cfIngress.public.hostname | quote }}
+    {{- range .Values.imgproxy.extraHostnames }}
+    # Extra hostname (private tier): the grimoire reader loads signed /img
+    # URLs same-origin on private.jomcgi.dev; CF Access still fronts the edge.
+    - {{ . | quote }}
+    {{- end }}
   rules:
     - matches:
         - path:

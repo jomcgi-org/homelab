@@ -17,6 +17,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from app.db import get_session
+from grimoire import library
 from grimoire.extract import current_extraction_key
 from grimoire.models import (
     Book,
@@ -205,6 +206,39 @@ class TestListChunks:
             "/api/grimoire/books/mm/chunks?section=Monsters/Beholder"
         ).json()
         assert [c["id"] for c in section["items"]] == [seed.c3.id]
+
+
+class TestReadBook:
+    def test_full_content_and_image_key(self, session, client):
+        seed = seed_book(session)
+        page = client.get("/api/grimoire/books/mm/read").json()
+        assert [c["seq"] for c in page["items"]] == [0, 1, 2, 3]
+        assert page["next_cursor"] is None
+        first = page["items"][0]
+        # Full content, not the 200-char list preview.
+        assert first["content"] == seed.c0.content
+        assert len(first["content"]) > 200
+        assert first["image_key"] is None
+        img = page["items"][2]
+        assert img["kind"] == "image"
+        # Bucket-relative object key, ready for imgproxy signing server-side.
+        assert img["image_key"] == "books/mm/img/aboleth.png"
+
+    def test_keyset_pagination(self, session, client):
+        seed_book(session)
+        first = client.get("/api/grimoire/books/mm/read?limit=3").json()
+        assert [c["seq"] for c in first["items"]] == [0, 1, 2]
+        assert first["next_cursor"] == "2"
+        second = client.get(
+            f"/api/grimoire/books/mm/read?limit=3&cursor={first['next_cursor']}"
+        ).json()
+        assert [c["seq"] for c in second["items"]] == [3]
+        assert second["next_cursor"] is None
+
+    def test_malformed_image_ref_degrades_to_no_key(self):
+        assert library._image_object_key(None) is None
+        assert library._image_object_key("https://x/y.png") is None
+        assert library._image_object_key("s3://bucket-only") is None
 
 
 class TestGetChunk:

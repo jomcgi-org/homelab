@@ -47,6 +47,20 @@ def list_book_sections(
     return library.list_sections(session, book_id)
 
 
+@router.get("/books/{book_id}/read")
+def read_book(
+    book_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(
+        default=library.DEFAULT_READ_PAGE, ge=1, le=library.MAX_READ_PAGE
+    ),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Seq-ordered page of full chunks for the continuous public reader
+    (corpus-global; same shape as the private endpoint)."""
+    return library.read_page(session, book_id, cursor=cursor, limit=limit)
+
+
 # --- Chunk reader ----------------------------------------------------
 
 

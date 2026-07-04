@@ -34,6 +34,13 @@ imgproxySigning:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/trips-imgproxy-signing"
 
+# Serve /img on the private hostname too: the grimoire reader on
+# private.jomcgi.dev loads signed illustration URLs same-origin (CF Access
+# still fronts the hostname at the edge; same gateway, same imgproxy).
+imgproxy:
+  extraHostnames:
+    - private.jomcgi.dev
+
 # Phase 5e cutover: serve the public hostname from this isolated service.
 cfIngress:
   public:

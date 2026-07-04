@@ -46,6 +46,11 @@ _PREVIEW_LEN = 200
 DEFAULT_CHUNK_PAGE = 100
 MAX_CHUNK_PAGE = 500
 
+# Default and max page size for the continuous reader (full content per item,
+# so pages are kept smaller than the preview list above).
+DEFAULT_READ_PAGE = 40
+MAX_READ_PAGE = 120
+
 
 def _as_utc(dt: datetime | None) -> datetime | None:
     """Coerce a possibly-naive datetime (SQLite tests round-trip TIMESTAMPTZ as
@@ -238,6 +243,66 @@ def list_chunks(
     # "None", and the next request's int("None") would fail, drop the cursor, and
     # re-serve page one forever. seq is backfilled + loader-set so this is an
     # edge case, but the column is nullable, so fail safe by ending the page.
+    last_seq = rows[-1].seq if rows else None
+    next_cursor = str(last_seq) if has_more and last_seq is not None else None
+    return {"items": items, "next_cursor": next_cursor}
+
+
+def _image_object_key(image_ref: str | None) -> str | None:
+    """Bucket-relative S3 object key from a chunk's ``s3://bucket/key`` ref.
+
+    The reader response carries the object key (not a URL): the SvelteKit
+    server layer HMAC-signs it into a same-origin ``/img/<sig>/<preset>/...``
+    imgproxy URL, keeping the signing secret out of both this API and the
+    browser. Returns None for a malformed ref so a bad row degrades to a
+    caption-only figure instead of a broken image request.
+    """
+    if not image_ref or not image_ref.startswith("s3://"):
+        return None
+    _bucket, _, key = image_ref[len("s3://") :].partition("/")
+    return key or None
+
+
+def read_page(
+    session: Session,
+    book_id: str,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_READ_PAGE,
+) -> dict[str, Any]:
+    """Seq-ordered page of FULL chunks for the continuous book reader.
+
+    The reader reconstructs the book: complete text (not the preview
+    ``list_chunks`` serves), and for image chunks the bucket-relative object
+    key plus the caption as ``content``. Keyset paginated on ``seq`` exactly
+    like ``list_chunks`` (cursor = last seq returned; NULL-seq boundary rows
+    end the page rather than emitting a "None" cursor).
+    """
+    limit = max(1, min(limit, MAX_READ_PAGE))
+    query = select(KnowledgeChunk).where(KnowledgeChunk.book_id == book_id)
+    if cursor is not None:
+        try:
+            after = int(cursor)
+        except (TypeError, ValueError):
+            after = None
+        if after is not None:
+            query = query.where(KnowledgeChunk.seq > after)
+    query = query.order_by(KnowledgeChunk.seq).limit(limit + 1)
+    rows = session.exec(query).all()
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = [
+        {
+            "id": chunk.id,
+            "seq": chunk.seq,
+            "section_path": chunk.section_path,
+            "kind": _kind(chunk),
+            "content": chunk.content,
+            "image_key": _image_object_key(chunk.image_ref),
+        }
+        for chunk in rows
+    ]
     last_seq = rows[-1].seq if rows else None
     next_cursor = str(last_seq) if has_more and last_seq is not None else None
     return {"items": items, "next_cursor": next_cursor}

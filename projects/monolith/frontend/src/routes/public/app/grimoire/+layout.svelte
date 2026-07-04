@@ -94,6 +94,16 @@
     border-radius: 0;
   }
 
+  /* Grimoire is flat-ink brutalist: no box-shadows anywhere. The shared
+     .card-hard primitive normally lifts with a hard-offset shadow (both at
+     rest and on hover); neutralize both here so every card-hard row across
+     this app (Library book cards, the book section list, entities index,
+     entity detail, stat blocks) renders as a flat 2px ink border instead. */
+  .grimoire-app :global(.card-hard),
+  .grimoire-app :global(.card-hard:hover) {
+    box-shadow: none !important;
+  }
+
   .topbar {
     display: flex;
     align-items: center;

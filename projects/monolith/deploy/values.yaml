@@ -37,6 +37,13 @@ clickhouse:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/signoz-clickhouse"
 
+# Sign /img imgproxy URLs for grimoire reader illustrations; same 1Password
+# item as monolith-public so signatures validate against the shared imgproxy.
+imgproxySigning:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/trips-imgproxy-signing"
+
 cfIngress:
   public:
     # Phase 5e cutover (ADR 004): jomcgi.dev is now served by the isolated

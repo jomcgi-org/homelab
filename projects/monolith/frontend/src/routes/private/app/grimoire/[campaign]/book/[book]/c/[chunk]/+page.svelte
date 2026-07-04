@@ -1,44 +1,16 @@
 <script>
-  import { getContext } from "svelte";
-  import { page } from "$app/stores";
-  import { bookHref } from "$lib/grimoire/api.js";
-  import ChunkReader from "$lib/grimoire/ChunkReader.svelte";
-
-  const ctx = getContext("grimoire");
-  const bookId = $derived(decodeURIComponent($page.params.book));
-  const chunkId = $derived($page.params.chunk);
+  // Never actually shown: the sibling +page.server.js load() always throws a
+  // redirect into the continuous reader before this renders. Kept as a thin
+  // fallback only because SvelteKit requires a +page.svelte for the route.
 </script>
 
-<div class="reader-page">
-  {#if !ctx.isDesktop}
-    <a class="back" href={bookHref(ctx.campaignId, bookId, ctx.viewpoint)}>
-      ← Sections
-    </a>
-  {/if}
-  <ChunkReader
-    campaignId={ctx.campaignId}
-    {bookId}
-    {chunkId}
-    viewpoint={ctx.viewpoint}
-  />
-</div>
+<p class="redirect-note">Opening reader…</p>
 
 <style>
-  .reader-page {
-    display: flex;
-    flex-direction: column;
-    min-height: 100%;
-  }
-
-  .back {
-    display: inline-flex;
-    align-items: center;
-    min-height: 2.5rem;
-    padding: 0 clamp(1rem, 4vw, 2rem);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--grim-accent);
-    flex-shrink: 0;
+  .redirect-note {
+    padding: 2rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--fg-tertiary);
   }
 </style>

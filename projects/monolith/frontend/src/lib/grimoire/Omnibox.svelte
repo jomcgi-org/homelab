@@ -216,8 +216,10 @@
     max-height: 60vh;
     overflow-y: auto;
     background: var(--bg);
+    /* Flat brutalist chrome: a heavier second border lifts the panel off the
+     * page instead of a drop shadow (grimoire has no box-shadows anywhere). */
     border: var(--border-heavy);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    border-top-width: 3px;
   }
 
   .ob-empty {

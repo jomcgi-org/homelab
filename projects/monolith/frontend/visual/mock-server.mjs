@@ -15,6 +15,7 @@ const ROUTES = [
   ["/api/stars/sites", "fixtures/api/stars_sites.json"],
   ["/api/trips/trips", "fixtures/api/trips_trips.json"],
   ["/api/knowledge/public/graph", "fixtures/api/knowledge_graph.json"],
+  ["/api/grimoire/books/mm/read", "fixtures/api/grimoire_read.json"],
 ];
 const PREFIX = [["/api/trips/trip/", "fixtures/api/trips_trip.json"]];
 

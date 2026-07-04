@@ -437,6 +437,11 @@ frontend:
 # writable /tmp emptyDir, so no per-component security overrides are needed.
 imgproxy:
   enabled: true
+  # Additional hostnames the /img HTTPRoute answers on, beyond the public
+  # hostname (same gateway). The private tier lists private.jomcgi.dev here so
+  # the grimoire reader can load signed image URLs same-origin; Cloudflare
+  # Access still fronts the private hostname at the edge.
+  extraHostnames: []
   replicas: 2
   # Disruption budget (see web.pdb). imgproxy runs 2 replicas, so maxUnavailable:1
   # keeps one serving through a drain.
@@ -498,7 +503,9 @@ imgproxy:
       # by repo READMEs on the public docs site (uploaded out-of-band, keyed by
       # repo path; the docs renderer signs /full URLs for them, and SVG in ->
       # SVG out is a passthrough so the raster quality option is inert).
-      value: "s3://monolith-trips/,s3://docs-assets/"
+      # grimoire/books: sourcebook illustrations for the grimoire reader
+      # (prefix-scoped to books/ so chunk manifests etc. stay unreachable).
+      value: "s3://monolith-trips/,s3://docs-assets/,s3://grimoire/books/"
     # Signed-URL mode. With IMGPROXY_KEY/SALT set, imgproxy REQUIRES a valid
     # HMAC-SHA256 signature on every request (the unsigned /unsafe/ path is
     # rejected), so only URLs the SSR signer (frontend lib/server/trips-img.js)

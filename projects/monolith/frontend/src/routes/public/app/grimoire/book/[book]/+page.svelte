@@ -1,10 +1,22 @@
 <script>
-  // Public book view: the ordered section tree for one book. Tapping a section
-  // opens the chunk reader at that section's first chunk.
+  // Public book view. With no `from` cursor this is the ordered section list
+  // (unchanged: tapping a section still goes through chunkHref -> /c/[chunk],
+  // which now redirects into the continuous reader positioned there). With a
+  // `from` cursor — arrived via that same redirect, or a shared reader link —
+  // this renders the continuous Reader instead, pre-loaded server-side by the
+  // sibling +page.server.js.
   import { page } from "$app/stores";
   import { apiFetch, bookHref, chunkHref, libraryHref } from "$lib/public/grimoire/api.js";
+  import Reader from "$lib/public/grimoire/Reader.svelte";
+
+  let { data } = $props();
 
   const bookId = $derived(decodeURIComponent($page.params.book));
+  const fromCursor = $derived($page.url.searchParams.get("from"));
+  const anchorChunkId = $derived(
+    $page.url.hash.startsWith("#c-") ? $page.url.hash.slice(3) : null,
+  );
+  const showReader = $derived(fromCursor !== null);
 
   let sections = $state([]);
   let displayName = $state("");
@@ -12,7 +24,7 @@
   let error = $state("");
 
   $effect(() => {
-    load(bookId);
+    if (!showReader) load(bookId);
   });
 
   async function load(id) {
@@ -33,48 +45,62 @@
   }
 </script>
 
-<div class="wrap book-page page">
-  <a class="eyebrow back-link" href={libraryHref()}>&larr; LIBRARY</a>
+{#if showReader}
+  <a class="eyebrow back-link reader-back" href={bookHref(bookId)}>&larr; SECTIONS</a>
+  {#key `${bookId}:${fromCursor ?? ""}`}
+    <Reader
+      {bookId}
+      items={data.items}
+      nextCursor={data.nextCursor}
+      {anchorChunkId}
+    />
+  {/key}
+{:else}
+  <div class="wrap book-page page">
+    <a class="eyebrow back-link" href={libraryHref()}>&larr; LIBRARY</a>
 
-  {#if !loading && !error}
-    <h1 class="display book-title">{displayName}</h1>
-  {/if}
+    {#if !loading && !error}
+      <h1 class="display book-title">{displayName}</h1>
+    {/if}
 
-  {#if loading}
-    <div class="skeletons">
-      {#each Array(8) as _, i (i)}
-        <div class="card-hard skeleton-row"></div>
-      {/each}
-    </div>
-  {:else if error}
-    <p class="mono status-error">{error}</p>
-  {:else if sections.length === 0}
-    <p class="mono empty-copy">This book has no chunks yet.</p>
-  {:else}
-    <ul class="section-list">
-      {#each sections as section (section.section_path)}
-        <li>
-          <a
-            class="card-hard section-row"
-            href={chunkHref(bookId, section.first_chunk_id)}
-          >
-            <span class="display section-title">{section.title}</span>
-            <span class="section-meta mono">
-              <span>{section.chunk_count} CHUNKS</span>
-              {#if section.image_count > 0}
-                <span>{section.image_count} IMG</span>
-              {/if}
-            </span>
-          </a>
-        </li>
-      {/each}
-    </ul>
-  {/if}
-</div>
+    {#if loading}
+      <div class="skeletons">
+        {#each Array(8) as _, i (i)}
+          <div class="card-hard skeleton-row"></div>
+        {/each}
+      </div>
+    {:else if error}
+      <p class="mono status-error">{error}</p>
+    {:else if sections.length === 0}
+      <p class="mono empty-copy">This book has no chunks yet.</p>
+    {:else}
+      <ul class="section-list">
+        {#each sections as section (section.section_path)}
+          <li>
+            <a
+              class="card-hard section-row"
+              href={chunkHref(bookId, section.first_chunk_id)}
+            >
+              <span class="display section-title">{section.title}</span>
+              <span class="section-meta mono">
+                <span>{section.chunk_count} CHUNKS</span>
+                {#if section.image_count > 0}
+                  <span>{section.image_count} IMG</span>
+                {/if}
+              </span>
+            </a>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+{/if}
 
 <style>
   /* Structural only: page rhythm + the section-row flex layout, everything
-     visual (.card-hard, .display, .eyebrow, .mono) is the design system. */
+     visual (.card-hard, .display, .eyebrow, .mono) is the design system.
+     .card-hard is shadow-free everywhere in this app (see the grimoire
+     +layout.svelte override): no box-shadows in grimoire. */
   .book-page {
     padding: 40px 32px 96px;
   }
@@ -85,6 +111,15 @@
   }
 
   .back-link:hover {
+    color: var(--ink);
+  }
+
+  .reader-back {
+    display: inline-block;
+    margin: 20px 0 0 32px;
+  }
+
+  .reader-back:hover {
     color: var(--ink);
   }
 

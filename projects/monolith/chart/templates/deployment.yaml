@@ -342,6 +342,23 @@ spec:
               value: "http://localhost:8000"
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}
+            {{- if .Values.imgproxySigning.enabled }}
+            # HMAC secret for signing /img imgproxy URLs (grimoire reader
+            # illustrations). Optional: a missing Secret degrades to unsigned
+            # dev-only URLs in $lib/server/grimoire-img.js, never a crash.
+            - name: IMGPROXY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-imgproxy-signing
+                  key: IMGPROXY_KEY
+                  optional: true
+            - name: IMGPROXY_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-imgproxy-signing
+                  key: IMGPROXY_SALT
+                  optional: true
+            {{- end }}
           livenessProbe:
             tcpSocket:
               port: http

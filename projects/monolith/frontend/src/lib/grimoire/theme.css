@@ -46,6 +46,40 @@ body.dark .grimoire {
   --grim-ink-soft: #b3a793;
 }
 
+/* ── Reader / TOC brutalist tokens ────────────────────────────
+ * A second, deliberately separate palette used ONLY by Reader.svelte and the
+ * flat TOC in SectionTree.svelte (the continuous book reader). Everything
+ * else in the grimoire tree (entity views, stat blocks, GrantChips, the
+ * Library) keeps the oxblood/paper identity above untouched: these are new
+ * token NAMES, not overrides of --grim-accent/--grim-paper/etc., so nothing
+ * outside the reader/TOC can pick them up by accident.
+ *
+ * Matches the PUBLIC tier's design-system.css palette exactly (same cream /
+ * ink / yellow / Instrument Serif / JetBrains Mono brutalist language), so the
+ * reading experience looks the same on both hostnames. No box-shadows: every
+ * surface break is a flat 2px ink border. */
+.grimoire {
+  --grimb-cream: #f3ede1;
+  --grimb-paper: #ffffff;
+  --grimb-ink: #1a1a1a;
+  --grimb-ink-3: #6b6658;
+  --grimb-yellow: #ffde01;
+  --grimb-border: 2px solid var(--grimb-ink);
+  --grimb-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --grimb-serif: "Instrument Serif", Georgia, serif;
+}
+
+body.dark .grimoire {
+  /* Dark mode: invert cream/ink so the reader stays flat-ink-on-paper rather
+   * than rendering white-on-white borders against the app's dark chrome. */
+  --grimb-cream: #17130f;
+  --grimb-paper: #211b15;
+  --grimb-ink: #ece3d4;
+  --grimb-ink-3: #a89b86;
+  --grimb-yellow: #ffde01;
+}
+
 /* ── Focus ────────────────────────────────────────────────────
  * One keyboard-focus ring for the whole grimoire tree: the oxblood accent, not
  * the browser default blue that clashes with the theme. :focus-visible so it
