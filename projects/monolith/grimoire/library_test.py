@@ -223,6 +223,8 @@ class TestGetChunk:
         assert chunk["next_id"] == seed.c3.id
         assert chunk["image_url"] == f"/api/grimoire/chunks/{seed.c2.id}/image"
         assert chunk["content"].startswith("Illustration caption")
+        # seed_book seeds 4 chunks (c0-c3) for book "mm".
+        assert chunk["chunk_count"] == 4
 
         first = client.get(
             f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as=dm"
@@ -296,7 +298,7 @@ class TestRenameBook:
             "/api/grimoire/books/mm", json={"display_name": "The Monster Manual"}
         )
         assert r.status_code == 200
-        assert r.json()["display_name"] == "The Monster Manual"
+        assert r.json().get("display_name") == "The Monster Manual"
         assert session.get(Book, "mm").display_name == "The Monster Manual"
 
         missing = client.patch("/api/grimoire/books/nope", json={"display_name": "X"})

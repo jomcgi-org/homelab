@@ -373,8 +373,8 @@ def test_load_chunks_upserts_book_row_once(session: Session):
 
     book = session.get(Book, "mm")
     assert book is not None
-    # display_name defaults to the id until renamed.
-    assert book.display_name == "mm"
+    # display_name defaults to the title-cased id until renamed.
+    assert book.display_name == "Mm"
 
     # A rename must survive a re-upload (the loader never clobbers display_name).
     book.display_name = "Monster Manual"
@@ -382,6 +382,20 @@ def test_load_chunks_upserts_book_row_once(session: Session):
     session.commit()
     _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
     assert session.get(Book, "mm").display_name == "Monster Manual"
+
+
+def test_load_chunks_default_display_name_title_cases_hyphenated_id(
+    session: Session,
+):
+    # A hyphenated id title-cases to a human-friendly default (not clobbered
+    # here since this is a fresh book row, unlike the rename check above).
+    s3 = FakeS3Client({"books/monster-manual/chunks/chunks.ndjson": _line("c1", "one")})
+    embedder = FakeEmbedClient()
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+
+    book = session.get(Book, "monster-manual")
+    assert book is not None
+    assert book.display_name == "Monster Manual"
 
 
 # --- embed batching + self-heal ------------------------------------------
