@@ -874,6 +874,18 @@ py_test(
 )
 
 py_test(
+    name = "chat_digest_test",
+    srcs = ["chat/digest_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "chat_outbox_test",
     srcs = ["chat/outbox_test.py"],
     imports = ["."],
