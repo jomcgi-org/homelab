@@ -435,6 +435,11 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/observability/topology_query.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
+    # Grimoire: only the public read path ships. The daily ingest/extract jobs
+    # import the scheduler (a forbidden public module), so they stay out of the
+    # public binary; the read path (public/router_public/library/models/
+    # visibility plus the extract/ingest helpers it calls) ships.
+    "grimoire/jobs.py",
 ]
 
 py_library(
@@ -454,6 +459,12 @@ py_library(
             "trips/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
+            # Grimoire public read tier: the read modules (router_public, public,
+            # library, models, visibility, extract, ingest) ship here so
+            # main_public can mount register_public. The private grant router and
+            # scheduler-bound jobs are never imported by the public closure
+            # (main_public_imports_test enforces this).
+            "grimoire/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -511,6 +522,7 @@ py_venv_binary(
             "trips/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
+            "grimoire/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
