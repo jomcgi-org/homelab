@@ -3,13 +3,13 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-03
-**Builds on:** [026 - Hot Git Mirror for goosecracker Agent Workspaces](026-hot-git-mirror-agent-workspaces.md) (the guest-hydration model this adds a third input to), [030 - fc-invoke Configurable Firecracker Surface](030-fc-invoke-configurable-firecracker-surface.md) (the opaque payload the new field rides in), [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (places bundle assembly in the `goosecracker`/chat layer, not the substrate), [035 - Discord Multiplayer Agent UX](035-discord-multiplayer-agent-ux.md) (the thread-scoped per-turn loop the bundle is rebuilt inside)
+**Builds on:** [041 - Hot Git Mirror for goosecracker Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (the guest-hydration model this adds a third input to), [030 - fc-invoke Configurable Firecracker Surface](030-fc-invoke-configurable-firecracker-surface.md) (the opaque payload the new field rides in), [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (places bundle assembly in the `goosecracker`/chat layer, not the substrate), [035 - Discord Multiplayer Agent UX](035-discord-multiplayer-agent-ux.md) (the thread-scoped per-turn loop the bundle is rebuilt inside)
 
 ---
 
 ## Problem
 
-An agent guest today can see two things: the repo (cold-fetched from the hot mirror per ADR 026) and its own prior goose session (restored from the persisted `sessionDb` blob on resume). It cannot see any context that lives in the _caller_ and is neither in the repo nor in the agent's own conversation.
+An agent guest today can see two things: the repo (cold-fetched from the hot mirror per ADR 041) and its own prior goose session (restored from the persisted `sessionDb` blob on resume). It cannot see any context that lives in the _caller_ and is neither in the repo nor in the agent's own conversation.
 
 The concrete failure: a user asked the Discord agent "Does our recent conversation about Loom's future match the open roadmap items?" The agent happily read `docs/ROADMAP.md` and `docs/FUTURE.md` from the workspace, then answered "I don't have access to the prior conversation you're referencing." The repo hydrated; the conversation did not. The prior conversation lived in another Discord channel/thread, a surface the thread-scoped session (ADR 035) cannot see.
 
@@ -35,7 +35,7 @@ The design keeps knowledge in exactly one layer:
 | `goosecracker` `run_and_deliver` |        No         | Ask a provider for "context for this session," pack it, ship it, **every turn**.   |
 | The producer (behind `chat.api`) |      **Yes**      | Turn Discord messages into files, tier-filter them, and describe their provenance. |
 
-This mirrors ADR 026's split exactly: there the substrate "boots an opaque rootfs ... never learning there is a git mirror," and `goosecracker` owns provisioning. Here the substrate and guest handler stay context-agnostic, and the chat layer owns the bundle. The directory is named `/injected-context/`, not `/conversation-context/`, precisely so the guest cannot assume the payload is conversation or that it came from Discord.
+This mirrors ADR 041's split exactly: there the substrate "boots an opaque rootfs ... never learning there is a git mirror," and `goosecracker` owns provisioning. Here the substrate and guest handler stay context-agnostic, and the chat layer owns the bundle. The directory is named `/injected-context/`, not `/conversation-context/`, precisely so the guest cannot assume the payload is conversation or that it came from Discord.
 
 Two properties fall out of rebuilding the bundle **inside the per-turn loop** (`run_and_deliver` calls `_run_one_turn` per turn; the bundle is built beside `sessions.load` at `runner.py:525`, which already round-trips per turn):
 
@@ -78,7 +78,7 @@ The only layer that references Discord is `chat.api.build_injected_context`. `go
 ## Alternatives Considered
 
 - **Stuff the context into the prompt.** Eager (pays tokens whether or not the agent needs it) and hard-capped by the context window; a curated summary fits but a raw transcript never will. Rejected: does not scale and wastes tokens the agent may not spend.
-- **Carry the context in the git mirror (ADR 026 machinery).** Reuses the existing hydration path with zero new guest code, but writes private per-turn chat transcripts into permanent git history and adds per-turn commit churn to the hot path. Rejected in one sentence: transcripts do not belong in durable git history, and tmpfs injection avoids it entirely.
+- **Carry the context in the git mirror (ADR 041 machinery).** Reuses the existing hydration path with zero new guest code, but writes private per-turn chat transcripts into permanent git history and adds per-turn commit churn to the hot path. Rejected in one sentence: transcripts do not belong in durable git history, and tmpfs injection avoids it entirely.
 - **A chat-specific payload field (e.g. `discordMessages`).** Couples the substrate/guest to a single channel. Rejected: the interface must be source-agnostic so a second channel needs no substrate change.
 - **Describe the context in the prompt/task text (Option B), not a bundled README.** Simplest, but re-pollutes every turn's user message with boilerplate and fails silently if a producer injects files but forgets the sentence (invisible files). Rejected in favour of the self-describing bundle plus a generic recipe line.
 - **Live-mutate a warm guest (vsock file push / shared virtio-fs mount).** Only necessary if guests persisted across turns. Rejected: guests are ephemeral per turn, so regenerate-on-hydrate is strictly simpler and has no concurrency hazard.
@@ -118,7 +118,7 @@ Baseline in `docs/security.md`. The injected bundle is user data (chat messages)
 
 | Resource                                                                         | Relevance                                                                                    |
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [ADR 026 - Hot Git Mirror](026-hot-git-mirror-agent-workspaces.md)               | The guest-hydration model this adds a third input to; the repo-agnostic-substrate precedent. |
+| [ADR 041 - Hot Git Mirror](041-hot-git-mirror-agent-workspaces.md)               | The guest-hydration model this adds a third input to; the repo-agnostic-substrate precedent. |
 | [ADR 030 - fc-invoke Surface](030-fc-invoke-configurable-firecracker-surface.md) | The opaque payload the new field rides in; daemon stays stateless.                           |
 | [ADR 025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) | Places bundle assembly in the goosecracker/chat layer, not the substrate.                    |
 | [ADR 035 - Discord Multiplayer Agent UX](035-discord-multiplayer-agent-ux.md)    | The thread-scoped per-turn loop the bundle is rebuilt inside.                                |

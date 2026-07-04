@@ -122,7 +122,7 @@ func (g *ExecGit) runOutput(ctx context.Context, args ...string) ([]byte, error)
 // tasks work) while deferring file contents: --filter=blob:none fetches commits
 // and trees up front and lazily pulls a blob only when a file is opened, which
 // keeps the clone fast against the in-cluster mirror without the --depth=1
-// shallow cut that left the workspace with only the tip commit (ADR 026). Both
+// shallow cut that left the workspace with only the tip commit (ADR 041). Both
 // branch names and full SHAs work.
 func (g *ExecGit) Clone(ctx context.Context, mirror, ref, dest string) error {
 	if err := g.run(ctx, "clone", "--single-branch", "--filter=blob:none", mirror, dest); err != nil {

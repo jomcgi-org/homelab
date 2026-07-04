@@ -164,7 +164,7 @@ goosecracker:
   steeringUrl: "http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/steering"
   # The in-cluster git mirror base URL (WS2 hydration). The runner defaults
   # gitMirror to "<gitMirror>/homelab" when the caller does not specify one.
-  # The mirror serves git:// on :9418 (ADR 026 + git-mirror service in
+  # The mirror serves git:// on :9418 (ADR 041 + git-mirror service in
   # projects/firecracker/git-mirror/). Keep empty if the mirror is not deployed.
   gitMirror: "git://git-mirror.monolith.svc.cluster.local:9418"
   # Per-tier guest env (relocated from the fc-agentd chart). The runner merges the

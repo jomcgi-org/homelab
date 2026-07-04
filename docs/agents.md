@@ -53,7 +53,7 @@ Discord  (owner types /artifact <prompt> or /agent <prompt>)
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
 │  Guest microVM  (projects/firecracker/goosecracker/guest · apko image, uid 65532)          │
-│  Hydrates /workspace from the git mirror (ADR 026) · runs goose --recipe <recipe>          │
+│  Hydrates /workspace from the git mirror (ADR 041) · runs goose --recipe <recipe>          │
 │  Recipes: agent (router → query/plan/implement) · artifact (build one HTML file)           │
 │  Model: in-cluster Qwen (default tier) or Gemini via OpenRouter (artifact tier)            │
 │  Streams goose stdout to the progress endpoint · publishes artifact HTML to the monolith   │
@@ -351,7 +351,7 @@ egress:
       - monolith.monolith.svc.cluster.local:8000 # progress + artifact publish sink
       - context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80 # MCP tools
       - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318 # OTLP traces
-      - git-mirror.monolith.svc.cluster.local:9418 # hot git mirror (ADR 026)
+      - git-mirror.monolith.svc.cluster.local:9418 # hot git mirror (ADR 041)
 ```
 
 ### Git mirror and session hydration
@@ -359,7 +359,7 @@ egress:
 - **Workspace.** The guest clones `/workspace` from the in-cluster git mirror
   (`git://git-mirror.monolith.svc.cluster.local:9418`, from
   `projects/firecracker/git-mirror/`). This decouples repo freshness from VM base
-  freshness ([ADR 026](decisions/agents/026-hot-git-mirror-agent-workspaces.md)):
+  freshness ([ADR 041](decisions/agents/041-hot-git-mirror-agent-workspaces.md)):
   the microVM snapshot can be old while the checkout is current. The runner
   defaults the mirror to `<gitMirror>/homelab` when the caller does not specify a
   repo.
@@ -447,7 +447,7 @@ For anyone reading old commits or ADRs, these are gone and should not be built o
 | [024 - Discord Agent, Tiers, Artifacts](decisions/agents/024-discord-agent-hosted-model-tiers-and-artifacts.md)               | Draft    | goosecracker: owner gate, tiers, sandboxed live artifacts    |
 | [025 - Three-Layer Agent Stack](decisions/agents/025-three-layer-agent-stack-goosecracker.md)                                 | Draft    | Layering: firecracker-substrate / goosecracker / discord     |
 | [026 - Fast MicroVM Starts + Stateful Artifacts](decisions/agents/026-fast-microvm-starts-and-stateful-artifact-iteration.md) | Accepted | CoW rootfs, `sessions.db` to S3, disposable VM model         |
-| [026 - Hot Git Mirror](decisions/agents/026-hot-git-mirror-agent-workspaces.md)                                               | Draft    | In-cluster mirror decouples repo freshness from VM base      |
+| [041 - Hot Git Mirror](decisions/agents/041-hot-git-mirror-agent-workspaces.md)                                               | Draft    | In-cluster mirror decouples repo freshness from VM base      |
 | [027 - Agent GitHub App Roles](decisions/agents/027-agent-github-app-roles.md)                                                | Draft    | Implementer / reviewer GitHub apps, scoped permissions       |
 | [028 - Elastic MicroVM Capacity](decisions/agents/028-elastic-agent-microvm-capacity-and-reclaim.md)                          | Draft    | State-preserving reclaim of node-4 microVM slots             |
 | [030 - fc-invoke](decisions/agents/030-fc-invoke-configurable-firecracker-surface.md)                                         | Draft    | One configurable Firecracker surface (absorbs older daemons) |

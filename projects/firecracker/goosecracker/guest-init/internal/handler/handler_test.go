@@ -219,7 +219,7 @@ func TestGitMirrorTriggersCloneIntoWorkspace(t *testing.T) {
 }
 
 func TestCloneFailureContinuesWithEmptyWorkspace(t *testing.T) {
-	// Clone failure is soft (best-effort per ADR 026): the run continues with an
+	// Clone failure is soft (best-effort per ADR 041): the run continues with an
 	// empty workspace rather than aborting. The result is "ok" when goose itself
 	// succeeds, even though the mirror clone failed.
 	runner := &fakeRunner{cloneErr: io.ErrUnexpectedEOF, out: "ok despite no workspace"}

@@ -74,7 +74,7 @@ egress:
       - monolith.monolith.svc.cluster.local:8000 # monolith progress / artifact sink
       - context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80 # MCP tools
       - signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318 # goose OTLP traces
-      - git-mirror.monolith.svc.cluster.local:9418 # hot git mirror (ADR 026 hydrate + record)
+      - git-mirror.monolith.svc.cluster.local:9418 # hot git mirror (ADR 041 hydrate + record)
       - monolith-searxng.monolith.svc.cluster.local:8080 # SearXNG JSON API (research sub-recipe web search)
   # ADR 023 phase 6b secret catalog. Each guest holds only the high-entropy
   # placeholder as env; the sidecar TLS-terminates the egressTo host with a leaf

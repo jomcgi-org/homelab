@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-02
-**Builds on:** [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (goosecracker dispatch as the execution seam), [026 - Hot Git Mirror Agent Workspaces](026-hot-git-mirror-agent-workspaces.md) (repo hydration for homelab and loom), [027 - Agent GitHub App Roles](027-agent-github-app-roles.md) (the implementer/reviewer identity split and merge gate this ADR routes work through), [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md) (the substrate whose capacity this ADR saturates)
+**Builds on:** [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (goosecracker dispatch as the execution seam), [041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (repo hydration for homelab and loom), [027 - Agent GitHub App Roles](027-agent-github-app-roles.md) (the implementer/reviewer identity split and merge gate this ADR routes work through), [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md) (the substrate whose capacity this ADR saturates)
 
 ---
 
@@ -169,7 +169,7 @@ Baseline `docs/security.md`; inherits 023 (no credentials in guests), 026 (mirro
 | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | [ADR 027 - Agent GitHub App Roles](027-agent-github-app-roles.md)                     | The implementer/reviewer identities, `agent-review/gate`, and review semantics this queue routes all merges through. |
 | [ADR 025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md)      | `dispatch.submit` as the execution seam the drain loop calls.                                                        |
-| [ADR 026 - Hot Git Mirror Agent Workspaces](026-hot-git-mirror-agent-workspaces.md)   | Repo hydration (homelab, loom) and `refs/agents/**` recording for every queued run.                                  |
+| [ADR 041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md)   | Repo hydration (homelab, loom) and `refs/agents/**` recording for every queued run.                                  |
 | [ADR 030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md)              | The workload config (`concurrency`, timeouts) that defines a "free slot".                                            |
 | [ADR 024 - Hosted-Model Tiers](024-discord-agent-hosted-model-tiers-and-artifacts.md) | Tier mechanism used to run judgment classes on Opus-or-better implementers.                                          |
 | docs/plans/2026-07-01-improve-recipes-feedback-loop-design.md                         | The eval loop the verdict ledger feeds as ground truth.                                                              |
