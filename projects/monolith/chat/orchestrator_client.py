@@ -7,15 +7,16 @@ each provider attempt makes exactly one call: any timeout, HTTP error, or
 unusable response shape raises ``OrchestratorUnavailable``.
 
 The primary provider is pinned via ``ORCHESTRATOR_MODEL`` / ``ORCHESTRATOR_BASE_URL``
-/ ``ORCHESTRATOR_API_KEY``. When ``ORCHESTRATOR_FALLBACK_MODEL`` is set, a primary
-``OrchestratorUnavailable`` triggers exactly one retry against the fallback
-provider (``ORCHESTRATOR_FALLBACK_BASE_URL`` / ``ORCHESTRATOR_FALLBACK_API_KEY``)
-before the exception propagates. This exists so a Preview primary model
-(``zai-glm-4.7`` on Cerebras) degrades to the proven DeepSeek/OpenRouter path
-instead of failing open to direct submit. With no fallback configured the
-behavior is byte-identical to the original single-attempt contract. There is
-still no per-provider retry loop (contrast with build_llm_caller's 3 retries),
-because escalations must degrade quickly, not stall on a paid call.
+/ ``ORCHESTRATOR_API_KEY``. ``ORCHESTRATOR_FALLBACKS`` is an ordered JSON array of
+additional providers (``{"model", "base_url", "api_key_env"}``); a primary
+``OrchestratorUnavailable`` walks that chain in order, stopping at the first
+success, before the exception finally propagates and the caller fails open to
+direct submit. This exists so a free rate-limited primary (Nemotron on NVIDIA's
+40 RPM tier) degrades to DeepSeek/OpenRouter, then to always-available in-cluster
+Qwen, rather than dropping the whole brief on one throttle or blip. With no chain
+configured the behavior is byte-identical to the original single-attempt contract.
+There is still no per-provider retry loop (contrast with build_llm_caller's 3
+retries), because escalations must degrade quickly, not stall on any single call.
 
 ``call_tool`` is the typed sibling used for the runtime ``submit_plan``
 plan (ADR 036 amendment, docs/plans/2026-07-03-deepseek-runtime-recipes.md):
@@ -87,27 +88,41 @@ def _read_config() -> tuple[str, str, str, float]:
     return model, base_url, api_key, timeout_s
 
 
-def _read_fallback_config() -> tuple[str, str, str] | None:
-    """Read the fallback provider (model, base URL, API key), or ``None``.
+def _read_fallback_chain() -> list[tuple[str, str, str]]:
+    """Read the ordered fallback chain as ``[(model, base_url, api_key), ...]``.
 
-    The fallback is a second OpenAI-compatible provider tried once when the
-    primary attempt raises ``OrchestratorUnavailable``. Returns ``None`` when
-    ``ORCHESTRATOR_FALLBACK_MODEL`` is unset, which restores the single-attempt
-    contract exactly. The fallback API key prefers
-    ``ORCHESTRATOR_FALLBACK_API_KEY`` and falls back to ``OPENROUTER_API_KEY``
-    (the DeepSeek/OpenRouter path reuses the key already synced for it).
+    Parses ``ORCHESTRATOR_FALLBACKS``, a JSON array of
+    ``{"model", "base_url", "api_key_env"}`` objects in priority order. Each
+    ``api_key_env`` names the env var holding that provider's key (injected from a
+    Secret; empty/absent means no auth, e.g. the in-cluster Qwen tier). A primary
+    ``OrchestratorUnavailable`` walks this list in order, so a rate-limited or
+    erroring primary degrades to DeepSeek, then to always-available in-cluster
+    Qwen, before failing open. Returns ``[]`` when unset or unparseable, which
+    restores the single-attempt contract exactly.
     """
-    model = os.environ.get("ORCHESTRATOR_FALLBACK_MODEL", "").strip()
-    if not model:
-        return None
-    base_url = (
-        os.environ.get("ORCHESTRATOR_FALLBACK_BASE_URL", "").strip()
-        or _DEFAULT_BASE_URL
-    )
-    api_key = os.environ.get("ORCHESTRATOR_FALLBACK_API_KEY", "") or os.environ.get(
-        "OPENROUTER_API_KEY", ""
-    )
-    return model, base_url, api_key
+    raw = os.environ.get("ORCHESTRATOR_FALLBACKS", "").strip()
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.exception("orchestrator: ORCHESTRATOR_FALLBACKS is not valid JSON")
+        return []
+    if not isinstance(entries, list):
+        logger.error("orchestrator: ORCHESTRATOR_FALLBACKS must be a JSON array")
+        return []
+    chain: list[tuple[str, str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model = str(entry.get("model", "")).strip()
+        if not model:
+            continue
+        base_url = str(entry.get("base_url", "")).strip() or _DEFAULT_BASE_URL
+        api_key_env = str(entry.get("api_key_env", "")).strip()
+        api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+        chain.append((model, base_url, api_key))
+    return chain
 
 
 def _extract_usage(payload: dict) -> tuple[int | None, int | None, int | None]:
@@ -133,7 +148,7 @@ async def _attempt_call(
 ) -> OrchestratorResponse:
     """One provider attempt for ``call``: POST + parse, or raise
     ``OrchestratorUnavailable``. No retry loop here (the caller decides whether
-    to retry against a fallback provider)."""
+    to walk the fallback chain)."""
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
@@ -178,28 +193,27 @@ async def _attempt_call(
 async def call(system: str, user: str) -> OrchestratorResponse:
     """Send one system/user turn to the configured model and parse the response.
 
-    Tries the primary provider once; on ``OrchestratorUnavailable`` and when a
-    fallback is configured, retries once against the fallback provider. Raises
-    ``OrchestratorUnavailable`` if the primary fails with no fallback, or if the
-    fallback also fails.
+    Tries the primary provider, then each provider in the fallback chain in
+    order, stopping at the first success. Raises ``OrchestratorUnavailable`` only
+    when every provider fails (or when no chain is configured and the primary
+    fails), so the caller then fails open to direct submit.
     """
     model, base_url, api_key, timeout_s = _read_config()
-    try:
-        return await _attempt_call(model, base_url, api_key, timeout_s, system, user)
-    except OrchestratorUnavailable as primary_exc:
-        fallback = _read_fallback_config()
-        if fallback is None:
-            raise
-        fb_model, fb_base_url, fb_api_key = fallback
-        logger.warning(
-            "orchestrator primary model %s unavailable (%s); falling back to %s",
-            model,
-            primary_exc,
-            fb_model,
-        )
-        return await _attempt_call(
-            fb_model, fb_base_url, fb_api_key, timeout_s, system, user
-        )
+    providers = [(model, base_url, api_key), *_read_fallback_chain()]
+    last_exc: OrchestratorUnavailable | None = None
+    for i, (m, b, k) in enumerate(providers):
+        try:
+            return await _attempt_call(m, b, k, timeout_s, system, user)
+        except OrchestratorUnavailable as exc:
+            last_exc = exc
+            if i + 1 < len(providers):
+                logger.warning(
+                    "orchestrator provider %s unavailable (%s); trying next: %s",
+                    m,
+                    exc,
+                    providers[i + 1][0],
+                )
+    raise last_exc or OrchestratorUnavailable("no orchestrator providers configured")
 
 
 async def _attempt_call_tool(
@@ -288,46 +302,29 @@ async def call_tool(
     ``call()``'s usage/latency accounting (``response.content`` holds the
     raw arguments JSON string).
 
-    Tries the primary provider once; on ``OrchestratorUnavailable`` (timeout,
-    HTTP error, missing ``tool_calls``, or JSON parse error) and when a fallback
-    is configured, retries once against the fallback provider. This is where a
-    primary model with weaker forced-tool-call support degrades to the proven
-    path. Single attempt per provider, no retry loop. Uses ``timeout_s`` if
-    given, else the configured default (see ``_read_config``).
+    Tries the primary provider, then each provider in the fallback chain in
+    order, stopping at the first success. This is where a primary with weaker
+    forced-tool-call support (or an exhausted rate limit) degrades to the proven
+    path. One attempt per provider, no retry loop. Uses ``timeout_s`` if given,
+    else the configured default (see ``_read_config``).
     """
     model, base_url, api_key, default_timeout_s = _read_config()
     effective_timeout_s = timeout_s if timeout_s is not None else default_timeout_s
-
-    try:
-        return await _attempt_call_tool(
-            model,
-            base_url,
-            api_key,
-            effective_timeout_s,
-            system,
-            user,
-            schema,
-            tool_name,
-        )
-    except OrchestratorUnavailable as primary_exc:
-        fallback = _read_fallback_config()
-        if fallback is None:
-            raise
-        fb_model, fb_base_url, fb_api_key = fallback
-        logger.warning(
-            "orchestrator primary model %s tool-call unavailable (%s); "
-            "falling back to %s",
-            model,
-            primary_exc,
-            fb_model,
-        )
-        return await _attempt_call_tool(
-            fb_model,
-            fb_base_url,
-            fb_api_key,
-            effective_timeout_s,
-            system,
-            user,
-            schema,
-            tool_name,
-        )
+    providers = [(model, base_url, api_key), *_read_fallback_chain()]
+    last_exc: OrchestratorUnavailable | None = None
+    for i, (m, b, k) in enumerate(providers):
+        try:
+            return await _attempt_call_tool(
+                m, b, k, effective_timeout_s, system, user, schema, tool_name
+            )
+        except OrchestratorUnavailable as exc:
+            last_exc = exc
+            if i + 1 < len(providers):
+                logger.warning(
+                    "orchestrator provider %s tool-call unavailable (%s); "
+                    "trying next: %s",
+                    m,
+                    exc,
+                    providers[i + 1][0],
+                )
+    raise last_exc or OrchestratorUnavailable("no orchestrator providers configured")
