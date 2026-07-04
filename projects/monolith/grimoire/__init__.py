@@ -1,7 +1,9 @@
 """Grimoire: D&D campaign manager, private-tier monolith domain module.
 
-Follows ADR 010 (privilege-typed module) and ADR 011 (hot-tier schema). No
-register_public: Grimoire is private-tier only in v1.
+Follows ADR 010 (privilege-typed module) and ADR 011 (hot-tier schema).
+register_public exposes a corpus-global, no-grants read surface for the
+public tier (Task 2 of docs/plans/2026-07-03-grimoire-public-readonly.md);
+campaign/grant CRUD stays private-tier only.
 """
 
 from fastapi import FastAPI
@@ -13,6 +15,14 @@ def register(app: FastAPI) -> None:
     from grimoire.router import router
 
     app.include_router(router)
+
+
+def register_public(app: FastAPI) -> None:
+    """Register only the public, read-only Grimoire routes (no campaign/grant
+    surface, see grimoire/router_public.py)."""
+    from grimoire.router_public import router as public_router
+
+    app.include_router(public_router)
 
 
 def on_startup_jobs(session: Session) -> None:
