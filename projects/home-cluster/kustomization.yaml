@@ -6,6 +6,7 @@ resources:
   - ../../projects/firecracker/git-mirror/deploy
   - ../../projects/firecracker/substrate/deploy
   - ../../projects/inference/deploy
+  - ../../projects/loom/deploy
   - ../../projects/mcp/context-forge-gateway/deploy
   - ../../projects/monolith-public/deploy
   - ../../projects/monolith/deploy

@@ -1,0 +1,65 @@
+# loom deploy values (upstream chart: oci://ghcr.io/weave-hand/charts/loom).
+#
+# The upstream chart digest-pins images, but the pinned digests do not exist in
+# the registry (weave-hand/loom#353), so digest is cleared and the immutable
+# per-commit sha tags are pinned instead. Bump all three tags together to the
+# same main-commit sha.
+
+ingest:
+  image:
+    tag: sha-139e5c1
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+queryApi:
+  image:
+    tag: sha-139e5c1
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+# DataFusion serving engine (sidecar in the query-api pod).
+engine:
+  image:
+    tag: sha-139e5c1
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+
+# The chart's SA has no imagePullSecrets support (weave-hand/loom#354); use the
+# SA from serviceaccount.yaml, which carries ghcr-imagepull-secret.
+serviceAccount:
+  create: false
+  name: loom
+
+# onBoot instead of the default hook Job: ArgoCD maps helm post-install to a
+# PostSync hook, which only runs once the app is Healthy, and the service pods
+# need the schema to become healthy. Each pod migrates at startup; sqlx's
+# advisory lock serialises concurrent migrators.
+migrations:
+  mode: onBoot
+
+postgres:
+  enabled: true
+  instances: 1
+  storage:
+    size: 3Gi
+
+objectStore:
+  size: 5Gi

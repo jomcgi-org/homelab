@@ -96,6 +96,7 @@ Top-level projects/ directories:
 - grimoire
 - home-cluster
 - inference
+- loom
 - mcp
 - model-bench
 - monolith
