@@ -9,4 +9,5 @@ resources:
   - argocd-repo-cred.yaml
   - image-pull-secret.yaml
   - serviceaccount.yaml
+  - httproute.yaml
   - application.yaml
