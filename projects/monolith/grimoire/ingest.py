@@ -38,6 +38,14 @@ from grimoire.models import Book, Embedding, KnowledgeChunk
 
 logger = logging.getLogger("monolith.grimoire.ingest")
 
+
+def _default_display_name(book_id: str) -> str:
+    """Human-friendly default title for a book id slug: "monster-manual" ->
+    "Monster Manual".
+    """
+    return book_id.replace("-", " ").replace("_", " ").title()
+
+
 DEFAULT_PREFIX = "books/"
 _MANIFEST_SUFFIX = ".ndjson"
 # Manifests live under ``<prefix><book_id>/chunks/``; this segment both filters
@@ -253,7 +261,7 @@ def _upsert_book(session: Session, book_id: str) -> None:
     """
     with session.begin_nested():
         if session.get(Book, book_id) is None:
-            session.add(Book(id=book_id, display_name=book_id))
+            session.add(Book(id=book_id, display_name=_default_display_name(book_id)))
 
 
 def _upsert_book_chunks(

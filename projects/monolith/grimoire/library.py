@@ -312,12 +312,19 @@ def get_chunk(
             projected["mention_text"] = mention_text
             entities.append(projected)
 
+    chunk_count = session.exec(
+        select(func.count())
+        .select_from(KnowledgeChunk)
+        .where(KnowledgeChunk.book_id == chunk.book_id)
+    ).one()
+
     return {
         "id": chunk.id,
         "book_id": chunk.book_id,
         "content": chunk.content,
         "section_path": chunk.section_path,
         "seq": chunk.seq,
+        "chunk_count": chunk_count,
         # A relative URL to the streaming endpoint; null for text chunks so the
         # reader knows there is no image to render.
         "image_url": (
