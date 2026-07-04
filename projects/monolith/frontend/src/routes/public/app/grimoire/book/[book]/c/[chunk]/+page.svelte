@@ -4,7 +4,13 @@
   // whole book in reading order, and the entities mentioned on this page.
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { apiFetch, bookHref, chunkHref, entityHref } from "$lib/public/grimoire/api.js";
+  import {
+    apiFetch,
+    bookHref,
+    chunkHref,
+    entityHref,
+    proxiedImageUrl,
+  } from "$lib/public/grimoire/api.js";
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
 
   const bookId = $derived(decodeURIComponent($page.params.book));
@@ -86,7 +92,7 @@
           {/if}
           <img
             class="chunk-image"
-            src={chunk.image_url}
+            src={proxiedImageUrl(chunk.image_url)}
             alt={chunk.content || "sourcebook illustration"}
             onerror={() => (imageError = true)}
           />
