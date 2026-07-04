@@ -15,13 +15,27 @@ Postgres access is read-only (SELECT only). S3 writes are limited to eval.json.
 
 import base64
 import json
+import logging
+import sqlite3
 import sys
+import tempfile
 
 from sqlalchemy import text
 
 from app.db import get_engine
 from artifact import s3
 from goosecracker import sessions
+
+# stdout carries the NDJSON records, so best-effort failures log to stderr.
+logger = logging.getLogger(__name__)
+
+# Inter-message gaps above this (seconds) are treated as idle (waiting for an
+# owner reply between turns) and excluded from active_seconds; gaps at or below
+# it are contiguous guest work and summed. Chosen above a slow single work step
+# (a local-model turn or a slow tool call, observed up to ~75s) and well below a
+# typical owner-reply pause (minutes), so a multi-turn thread's idle waits drop
+# out while its real work bursts are kept.
+_ACTIVE_IDLE_GAP_SECONDS = 180
 
 _GATHER_SQL = """
 SELECT at.thread_id, at.session_id, at.recipe, at.tier, at.state,
@@ -66,6 +80,57 @@ def _owner_turns(transcript):
     return len([b for b in transcript.split("\n\n") if b.strip()])
 
 
+def _active_seconds(session_id):
+    """Real guest work time for a session, from goose sessions.db timestamps.
+
+    wall_seconds (thread created_at -> completed_at) counts the whole thread
+    lifetime, most of which is waiting for owner replies between turns, so it
+    wildly overstates effort (a 2510s thread whose guest ran ~150s). This sums
+    the gaps between consecutive goose messages, dropping any gap above
+    _ACTIVE_IDLE_GAP_SECONDS (an owner-reply pause) and keeping the rest (the
+    contiguous tool-call / model / tool-result cadence of an active run). Robust
+    to goose recording tool results as role=user (which breaks a naive
+    user->assistant turn span). Best-effort: returns None when the db is
+    absent, unreadable, or has too few messages to span any time.
+    """
+    try:
+        blob = sessions.load(session_id)
+    except Exception:
+        logger.exception("active_seconds: sessions.load failed for %s", session_id)
+        return None
+    if not blob:
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".db") as f:
+            f.write(blob)
+            f.flush()
+            con = sqlite3.connect(f.name)
+            try:
+                ts = [
+                    row[0]
+                    for row in con.execute(
+                        "SELECT created_timestamp FROM messages "
+                        "ORDER BY created_timestamp, id"
+                    )
+                    if row[0] is not None
+                ]
+            finally:
+                con.close()
+    except Exception:
+        logger.exception(
+            "active_seconds: reading sessions.db failed for %s", session_id
+        )
+        return None
+    if len(ts) < 2:
+        return None
+    total = 0.0
+    for earlier, later in zip(ts, ts[1:]):
+        gap = later - earlier
+        if 0 < gap <= _ACTIVE_IDLE_GAP_SECONDS:
+            total += gap
+    return total
+
+
 def _bucket_index():
     """One paginated listing of the artifacts bucket -> per-session key sets."""
     client = s3._client()
@@ -104,6 +169,13 @@ def gather(since):
             )
             leaves = have.get(sid, set())
             rec["has_sessions_db"] = "sessions.db" in leaves
+            # Real guest work time from sessions.db message gaps (see
+            # _active_seconds): rank on this, not wall_seconds, which is thread
+            # lifetime inflated by owner-reply waits. Only computable when the
+            # session db is present.
+            rec["active_seconds"] = (
+                _active_seconds(sid) if rec["has_sessions_db"] else None
+            )
             rec["has_eval"] = "eval.json" in leaves
             rec["eval_taxonomy_version"] = None
             if rec["has_eval"]:

@@ -107,7 +107,15 @@ it to compute the before/after aggregates for the PR body.
 
 ## Rank rules
 
-Score completed sessions on wall_seconds and owner_turns. Any session in a
+Score completed sessions on `active_seconds` and owner_turns. Rank on
+`active_seconds` (real guest work time, summed from sessions.db message gaps
+with owner-reply pauses excluded), NOT `wall_seconds`: wall_seconds is the
+whole thread lifetime and is dominated by time waiting for owner replies
+between turns, so it overstates effort by 10x or more (a 2510s thread whose
+guest actually ran ~152s). `wall_seconds` stays in the record for reference and
+for spotting threads that sat idle a long time, but a slow, expensive session
+is one with high `active_seconds`. `active_seconds` is null when the session
+has no sessions.db (fall back to wall_seconds for those). Any session in a
 FAILED state, or with a non-empty result_error, is automatically in the worst
 set regardless of score. A session whose `orchestrator_route` is `failopen`
 (fell back to the baked agent) is worth attention even if it completed: a
@@ -170,7 +178,8 @@ session's sessions.db in `s3://artifacts/{session_id}/`. Required keys:
 - `recipe`
 - `taxonomy_version`
 - `failure_modes`: list of `{mode, confidence, rationale}`
-- `metrics`: `{wall_seconds, owner_turns, tool_calls, retries}`
+- `metrics`: `{active_seconds, wall_seconds, owner_turns, tool_calls, retries}`
+  (rank on `active_seconds`; keep `wall_seconds` for reference)
 - `classified_at`: ISO timestamp, from `date -u`
 - `recipes_ref`: git SHA of `origin/main` for the recipe levers at run time
 
