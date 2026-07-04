@@ -1687,6 +1687,20 @@ py_test(
 )
 
 py_test(
+    name = "chat_agent_channel_digest_tool_test",
+    srcs = ["chat/agent_channel_digest_tool_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pydantic_ai_slim",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_bot_attachments_test",
     srcs = ["chat/bot_attachments_test.py"],
     imports = ["."],

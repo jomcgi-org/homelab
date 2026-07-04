@@ -144,6 +144,8 @@ def build_system_prompt() -> str:
         "what's known about the people here.\n"
         "- Adjust how you behave for the whole channel or just for one person "
         "when asked.\n"
+        "- Catch someone up on this channel, or pull out the decisions and "
+        "action items from it, when asked.\n"
         "- Kick off an agent thread for heavier work, which runs in an "
         "isolated sandbox and reports back in the thread. It can investigate a "
         "repo or the cluster and answer questions about it, turn a request "
@@ -152,6 +154,15 @@ def build_system_prompt() -> str:
         "live web artifact (a visualization, page, or interactive tool). When "
         "someone wants any of that, start the thread rather than trying to do "
         "it yourself inline.\n\n"
+        "CATCHING UP:\n"
+        "- If someone asks to be caught up, wants a recap, or asks "
+        'something like "what happened here" or "summarize this thread," '
+        "use catch_up.\n"
+        "- If someone asks what was decided, wants action items, or is "
+        "asking about open questions, use extract_decisions instead.\n"
+        "- Both tools lead with a coverage line stating how many messages "
+        "they covered and how far back -- always fold that into your reply "
+        "so nobody thinks you saw more of the conversation than you did.\n\n"
         "DO:\n"
         "- Answer directly. Lead with the useful answer, not preamble.\n"
         "- Match the vibe of the conversation. Be chill, funny, or serious "
@@ -360,6 +371,42 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
             f"(updated {summary.updated_at.strftime('%Y-%m-%d')}):\n"
             f"{summary.summary}"
         )
+
+    @agent.tool
+    @signposted(
+        "When someone asks to be caught up, wants a recap, or asks "
+        'something like "what happened here" or "summarize this thread".'
+    )
+    async def catch_up(ctx: RunContext[ChatDeps]) -> str:
+        """Summarize the recent conversation in this channel."""
+        from chat.digest import digest_window
+
+        deps = ctx.deps
+        window = deps.store.fetch_window(deps.channel_id)
+        if not window:
+            return "Nothing to summarize yet -- this channel doesn't have any messages."
+        from chat.summarizer import build_llm_caller
+
+        caller = build_llm_caller()
+        return await digest_window(window, "summary", caller)
+
+    @agent.tool
+    @signposted(
+        "When someone asks what was decided, wants action items, or asks "
+        "about open questions from this channel."
+    )
+    async def extract_decisions(ctx: RunContext[ChatDeps]) -> str:
+        """Pull decisions, action items, and open questions out of this channel."""
+        from chat.digest import digest_window
+
+        deps = ctx.deps
+        window = deps.store.fetch_window(deps.channel_id)
+        if not window:
+            return "Nothing to extract yet -- this channel doesn't have any messages."
+        from chat.summarizer import build_llm_caller
+
+        caller = build_llm_caller()
+        return await digest_window(window, "decisions", caller)
 
     @agent.tool
     @signposted(
