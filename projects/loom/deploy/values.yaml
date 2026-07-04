@@ -7,7 +7,7 @@
 
 ingest:
   image:
-    tag: sha-2acba02
+    tag: sha-6797f45
     digest: ""
     pullPolicy: IfNotPresent
   resources:
@@ -19,7 +19,7 @@ ingest:
 
 queryApi:
   image:
-    tag: sha-2acba02
+    tag: sha-6797f45
     digest: ""
     pullPolicy: IfNotPresent
   resources:
@@ -32,7 +32,7 @@ queryApi:
 # DataFusion serving engine (sidecar in the query-api pod).
 engine:
   image:
-    tag: sha-2acba02
+    tag: sha-6797f45
     digest: ""
     pullPolicy: IfNotPresent
   resources:
