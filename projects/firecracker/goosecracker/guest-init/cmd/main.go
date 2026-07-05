@@ -83,12 +83,17 @@ func run(logger *slog.Logger) error {
 	// dirs are set EXPLICITLY (not left to derive from HOME) because goose resolves
 	// its state/data/config/cache via the XDG base dirs, and an unset XDG var can
 	// resolve to a bare "/.local/..." path (off HOME) that is also unwritable.
-	// GOOSE_RECIPE_PATH still points at the baked recipe library on the read-only
-	// rootfs, which is fine: recipes are only read. ensureEnv only sets an unset
-	// key, so an injected value still wins; HOME/XDG are force-set (a read-only
-	// value must never win).
+	// GOOSE_RECIPE_PATH points at /injected-context, where the monolith injects
+	// the router and every sub-recipe body each turn (recipes are no longer baked
+	// into the rootfs). In practice goose loads them by absolute path (--recipe
+	// /injected-context/router.yaml, and the router's sub_recipes list absolute
+	// paths for delegate), so this search path is only a fallback for a bare
+	// recipe name; set it there so any such lookup resolves against the injected
+	// recipes rather than a directory that no longer exists. ensureEnv only sets
+	// an unset key, so an injected value still wins; HOME/XDG are force-set (a
+	// read-only value must never win).
 	ensureEnv("PATH", "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/local/sbin")
-	ensureEnv("GOOSE_RECIPE_PATH", "/home/goose-agent/recipes")
+	ensureEnv("GOOSE_RECIPE_PATH", "/injected-context")
 	const gooseHome = "/tmp/goose-home"
 	for k, v := range map[string]string{
 		"HOME":            gooseHome,
