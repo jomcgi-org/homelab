@@ -282,6 +282,7 @@ class AttentionDecision(SQLModel, table=True):
     decision: str = Field(default="ignore")
     confidence: float = Field(default=0.0)
     directive_version: int = Field(default=0)
+    reply_message_id: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
