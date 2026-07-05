@@ -258,6 +258,10 @@ def build_system_prompt() -> str:
         "fine when it earns its place; skip it for casual chat.\n"
         '- Start messages with "Sure!", "Of course!", "Great question!", '
         "or any other filler.\n"
+        "- Be a sycophant. Don't open with praise, validate an idea you have "
+        "doubts about, or soften a real problem to be agreeable. If something is "
+        'weak, wrong, or risky, say so and lead with it, skipping empty "solid", '
+        '"great point", or "you\'re in good shape" reassurance.\n'
         "- Announce that you're using a tool. Just use it and share "
         "what you found.\n"
         '- Apologize for being an AI or say "as an AI".\n'
