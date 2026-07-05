@@ -465,6 +465,91 @@ class TestCompile:
         assert verdict.repo_replaced is True
         assert _rows(engine)[0].brief_json["repo_replaced"] is True
 
+    @pytest.mark.asyncio
+    async def test_goose_verdict_carries_brief_row_id(self, engine, monkeypatch):
+        # The goose PlanVerdict carries the id of the telemetry row it wrote, so
+        # start_agent_flow can backfill thread_id once the thread exists (the
+        # orchestrator runs before the thread is created, so the row is written
+        # with a null thread_id).
+        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
+        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
+        monkeypatch.setattr(
+            orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
+        )
+        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call())
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+
+        verdict = await orchestrator.compile(_ctx(thread_id=None))
+        assert isinstance(verdict, PlanVerdict)
+        rows = _rows(engine)
+        assert len(rows) == 1
+        assert verdict.brief_id == rows[0].id
+
+    @pytest.mark.asyncio
+    async def test_failopen_verdict_carries_brief_row_id(self, engine, monkeypatch):
+        # An enabled fail-open (model called, then unreachable) also carries the
+        # row id: the fallback path still opens a thread, and linking it lets the
+        # skill measure the fallback rate against real sessions.
+        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
+        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
+        monkeypatch.setattr(
+            orchestrator_client,
+            "call",
+            AsyncMock(side_effect=orchestrator_client.OrchestratorUnavailable("down")),
+        )
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+
+        verdict = await orchestrator.compile(_ctx(thread_id=None))
+        assert isinstance(verdict, FailOpen)
+        rows = _rows(engine)
+        assert len(rows) == 1
+        assert verdict.brief_id == rows[0].id
+
+    @pytest.mark.asyncio
+    async def test_ungranted_failopen_has_no_brief_id(self, engine, monkeypatch):
+        # The ungranted short-circuit writes no row, so there is nothing to link.
+        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
+        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: False)
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+
+        verdict = await orchestrator.compile(_ctx(thread_id=None))
+        assert isinstance(verdict, FailOpen)
+        assert verdict.brief_id is None
+        assert _rows(engine) == []
+
+
+class TestLinkThread:
+    """orchestrator.link_thread backfills a telemetry row's thread_id once the
+    session thread exists (the row is written before the thread is created)."""
+
+    def test_backfills_null_thread_id(self, engine, monkeypatch):
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+        # A row written before the thread exists (thread_id null), as in prod.
+        brief_id = orchestrator._record(
+            _ctx(thread_id=None), "goose", "m", {"k": "v"}, 1, None, None, None, None
+        )
+        assert brief_id is not None
+        assert _rows(engine)[0].thread_id is None
+
+        orchestrator.link_thread(brief_id, "12345")
+        assert _rows(engine)[0].thread_id == "12345"
+
+    def test_is_idempotent_and_does_not_clobber(self, engine, monkeypatch):
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+        brief_id = orchestrator._record(
+            _ctx(thread_id=None), "goose", "m", {"k": "v"}, 1, None, None, None, None
+        )
+        orchestrator.link_thread(brief_id, "12345")
+        # A second link (e.g. a retry) leaves the already-linked row untouched.
+        orchestrator.link_thread(brief_id, "99999")
+        assert _rows(engine)[0].thread_id == "12345"
+
+    def test_missing_row_is_noop(self, engine, monkeypatch):
+        # A stale/absent id must not raise (best-effort telemetry).
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+        orchestrator.link_thread(999999, "12345")
+        assert _rows(engine) == []
+
 
 class TestReplan:
     """The capped replan escape hatch's orchestrator side (Task 7).

@@ -1029,6 +1029,17 @@ class ChatBot(discord.Client):
                 task=prompt,
                 plan=plan_verdict.plan if plan_verdict is not None else None,
             )
+            # ADR 036: the orchestrator wrote its telemetry row BEFORE this
+            # thread existed (it decides whether to open one), so the row's
+            # thread_id is null. Backfill it now that the thread id is known, so
+            # the routing verdict joins to the goosecracker_sessions run it
+            # produced (both goose and failopen verdicts carry the row id;
+            # ungranted/disabled fail-opens carry None and are skipped).
+            brief_id = getattr(verdict, "brief_id", None)
+            if brief_id is not None:
+                await asyncio.to_thread(
+                    orchestrator.link_thread, brief_id, str(thread.id)
+                )
         except Exception:
             logger.exception("goosecracker: failed to start agent session")
             return AgentFlowOutcome()
