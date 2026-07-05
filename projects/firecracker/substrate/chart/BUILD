@@ -11,6 +11,7 @@ helm_chart(
         "image": "//projects/firecracker/substrate/invoke:image.info",
         "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
         "agent.guestImage": "//projects/firecracker/goosecracker/guest:image.info",
+        "sandbox.guestImage": "//projects/firecracker/sandbox/guest:image.info",
         "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
         "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
     },

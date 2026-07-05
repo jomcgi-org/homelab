@@ -59,7 +59,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- end }}
-      {{- if and .Values.firecracker.enabled (or .Values.workloads.semgrep .Values.workloads.agent) }}
+      {{- if and .Values.firecracker.enabled .Values.workloads }}
       # Build each workload's base rootfs in-cluster from its pinned guest image,
       # so the node never needs a manual sudo rootfs placement. One builder per
       # workload that declares a top-level `<name>.guestImage` block (Bazel pins
@@ -321,7 +321,7 @@ spec:
           hostPath:
             path: {{ .Values.firecracker.nvmeRoot }}
             type: Directory
-        {{- if or .Values.workloads.semgrep .Values.workloads.agent }}
+        {{- if .Values.workloads }}
         - name: rootfs-builder-script
           configMap:
             name: {{ include "fc-invoke.fullname" . }}-rootfs-builder
