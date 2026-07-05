@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import os
@@ -52,6 +53,12 @@ THINKING_TRUNCATE_AT = 1985
 LLM_MAX_RETRIES = 3
 LLM_RETRY_BASE_DELAY = 1.0  # seconds
 STREAM_EDIT_INTERVAL = 1.0
+
+# run_python attachment flush (ADR agents/044). The sandbox handler already
+# caps well under this (2 MiB/file, 5 MiB total), so this is a backstop
+# against Discord's own base-tier upload limit, not the primary control.
+RUN_PYTHON_MAX_ATTACHMENTS = 8
+RUN_PYTHON_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
 # Fact-check (the "Get your facts STR8!" button). The result streams into a
 # thread anchored to the response so it stays out of the main channel.
@@ -1825,7 +1832,14 @@ class ChatBot(discord.Client):
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    if isinstance(args, dict):
+                    if event.part.tool_name == "run_python" and isinstance(args, dict):
+                        # A code blob makes a useless checklist row; show the
+                        # first line of the snippet instead of the generic
+                        # query extraction below.
+                        code = args.get("code", "") or ""
+                        first_line = code.splitlines()[0] if code else ""
+                        query = f"run python: {first_line[:80]}"
+                    elif isinstance(args, dict):
                         query = args.get("query", str(args))
                     else:
                         query = str(args)
@@ -1916,6 +1930,43 @@ class ChatBot(discord.Client):
                         )
                 except Exception:
                     logger.exception("directives: failed to post proposal summary")
+
+            # run_python may have generated files (e.g. a chart) this run. The
+            # tool can't post to Discord itself, so flush them here as a
+            # follow-up message to the same channel/thread the reply went to
+            # (mirrors the pending_proposal flush above). Guarded end-to-end
+            # so an attachment failure never eats the text reply already sent.
+            if deps.generated_files:
+                try:
+                    to_send = deps.generated_files[:RUN_PYTHON_MAX_ATTACHMENTS]
+                    dropped = [
+                        name
+                        for name, _ in deps.generated_files[RUN_PYTHON_MAX_ATTACHMENTS:]
+                    ]
+                    discord_files = []
+                    for name, data in to_send:
+                        if len(data) > RUN_PYTHON_MAX_ATTACHMENT_BYTES:
+                            dropped.append(name)
+                            continue
+                        filename = os.path.basename(name) or "output.bin"
+                        discord_files.append(
+                            discord.File(io.BytesIO(data), filename=filename)
+                        )
+                    if dropped:
+                        logger.info(
+                            "run_python: skipping %d generated file(s) over the "
+                            "attachment cap/size limit: %s",
+                            len(dropped),
+                            ", ".join(dropped),
+                        )
+                    if discord_files:
+                        await message.reply(files=discord_files)
+                except Exception:
+                    logger.exception(
+                        "run_python: failed to flush generated file attachments"
+                    )
+                finally:
+                    deps.generated_files.clear()
 
             return sent, response_text, thinking_text
 
