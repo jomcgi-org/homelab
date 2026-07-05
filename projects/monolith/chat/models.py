@@ -286,13 +286,14 @@ class AttentionDecision(SQLModel, table=True):
 
 
 class ReactionEvent(SQLModel, table=True):
-    """Human reactions on Bosun's own messages in ambient channels.
+    """Human reactions on Bosun's own messages.
 
     Ground-truth signal for the /improve-ambient loop: a reaction on a reply is
     a cheaper, clearer quality signal than inferring from follow-up text. Only
     reactions on bot-authored messages are persisted (target_is_bot always True
-    today); the bot's own seed reactions are never logged. action add/remove
-    lets a removal cancel an earlier signal.
+    today); the bot's own seed reactions are never logged. Reactions on any
+    bot-authored message are stored (the skill filters to ambient episodes later
+    by joining). action add/remove lets a removal cancel an earlier signal.
     """
 
     __tablename__ = "reaction_event"
