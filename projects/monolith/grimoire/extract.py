@@ -647,6 +647,26 @@ class OpenRouterClient:
         in-cluster vLLM endpoint uses ``guided_json`` and ignores ``reasoning``."""
         return (not self.base_url) or "openrouter.ai" in self.base_url
 
+    @staticmethod
+    def _provider_routing() -> dict[str, Any] | None:
+        """OpenRouter provider preference from ``GRIMOIRE_EXTRACT_PROVIDER``.
+
+        OpenRouter's cheapest V4-Flash route is an fp4-quantized endpoint
+        (DeepInfra), which degrades extraction precision and does not preserve
+        the prompt cache. Pinning a first-party / native-precision provider (the
+        cronworkflow default ``deepseek``; Fireworks is the documented
+        alternative) avoids that. A comma list becomes an ordered array;
+        ``allow_fallbacks`` is False so OpenRouter never silently drops to fp4.
+        Returns None when the env is unset (no provider constraint sent).
+        """
+        raw = os.environ.get("GRIMOIRE_EXTRACT_PROVIDER", "").strip()
+        if not raw:
+            return None
+        order = [p.strip() for p in raw.split(",") if p.strip()]
+        if not order:
+            return None
+        return {"order": order, "allow_fallbacks": False}
+
     def _format_kwargs(self) -> dict[str, Any]:
         """Output-format enforcement for the active prompt version (spec #4).
 
@@ -788,6 +808,9 @@ class OpenRouterClient:
             # V4 Flash it keeps the call to a single JSON turn. vLLM does not
             # accept the field, so only send it to OpenRouter.
             payload["reasoning"] = {"enabled": False}
+            provider = self._provider_routing()
+            if provider is not None:
+                payload["provider"] = provider
         headers = self._headers()
 
         last_exc: Exception | None = None
