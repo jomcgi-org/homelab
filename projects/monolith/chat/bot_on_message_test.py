@@ -355,7 +355,6 @@ def _make_goosecracker_mock(**overrides) -> MagicMock:
     """A chat.bot.goosecracker stand-in for an agent thread mid-turn."""
     mock = MagicMock()
     mock.is_goosecracker_thread = MagicMock(return_value=True)
-    mock.is_agent_thread = MagicMock(return_value=True)
     mock.session_scope = MagicMock(return_value="homelab")
     mock.is_owner = MagicMock(return_value=False)
     mock.build_roast = AsyncMock(return_value="Nice try.")

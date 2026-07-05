@@ -2,7 +2,7 @@
 
 Trigger-agnostic core: ``submit`` writes a run ledger row and fires an fc-invoke
 run + result delivery off detached; ``status`` / ``list_runs`` / ``get_run`` read
-the ledger. Thin adapters (chat's /artifact command, agent's MCP tools) call
+the ledger. Thin adapters (chat's /agent command, agent's MCP tools) call
 ``submit`` and poll the ledger; they own no execution logic.
 """
 

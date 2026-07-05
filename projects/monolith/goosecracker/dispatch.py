@@ -1,6 +1,6 @@
 """Trigger-agnostic goose dispatch: the ``submit`` seam every trigger calls.
 
-A trigger (the Discord ``/artifact`` adapter, an MCP tool, a future CI hook)
+A trigger (the Discord ``/agent`` command, an MCP tool, a future CI hook)
 supplies a task + a stable ``session`` id and calls :func:`submit`. This writes
 the run ledger row and fires the fc-invoke run off as a detached task, then
 returns immediately with the session, thread id, and whether the row was created
@@ -74,9 +74,9 @@ def submit(
 
     Writes/updates the ledger row (state RUNNING) and kicks off the fc-invoke run
     + result delivery as a detached task. ``session`` is the stable run id (the
-    Discord thread id for /artifact, or a caller-generated id for MCP). ``tier``
-    selects the guest model env (default -> in-cluster Qwen; "artifact" ->
-    OpenRouter, pending egress secret-swap). ``plan`` is the optional runtime
+    Discord thread id for /agent, or a caller-generated id for MCP). ``tier``
+    selects the guest model env (default -> in-cluster Qwen). ``plan`` is the
+    optional runtime
     :class:`~chat.orchestrator_plan.Plan` from the DeepSeek orchestrator (Task 6);
     when present the runner delivers a rendered router + plan file via
     ``injectedContext`` instead of the baked ``recipe="agent"`` path. Returns

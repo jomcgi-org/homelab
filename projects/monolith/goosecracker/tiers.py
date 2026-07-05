@@ -8,16 +8,13 @@ fc-invoke egress proxy swaps them for real secrets at the egress hop.
 
 The map itself is injected as the ``GOOSECRACKER_TIERS`` env var (a JSON object
 ``{tier: {ENV_KEY: value}}``) from Helm values, never hardcoded here: the values
-carry in-cluster service URLs (OPENAI_HOST, the OTLP endpoint,
-ARTIFACT_PUBLISH_URL) that would break silently on a release rename if baked into
-Python (semgrep ``no-hardcoded-k8s-service-url``).
+carry in-cluster service URLs (OPENAI_HOST, the OTLP endpoint) that would break
+silently on a release rename if baked into Python (semgrep
+``no-hardcoded-k8s-service-url``).
 
 Tiers:
-  default -> in-cluster Qwen on vLLM (the proven cold-run path).
-  artifact -> Gemini via OpenRouter. Kept, but the OpenRouter key is a placeholder
-    the fc-invoke egress proxy must swap on openrouter.ai; until that egress
-    secret-swap lands, the artifact tier will not reach the model. Correctness
-    here is focused on the default/Qwen tier.
+  default -> in-cluster Qwen on vLLM (the proven cold-run path). The only tier;
+    artifacts are just an agent run with no repo, so they run here too.
 """
 
 from __future__ import annotations

@@ -69,7 +69,7 @@ def _truncate_thinking(thinking: str) -> str:
     return thinking[:THINKING_TRUNCATE_AT] + "... (truncated)"
 
 
-# Live /artifact progress streaming (ADR 024). The guest streams goose's
+# Live goosecracker progress streaming (ADR 024). The guest streams goose's
 # stdout to the in-process progress buffer; the bot edits the thread message on
 # this cadence so the owner sees activity instead of a multi-minute silent wait.
 GOOSECRACKER_STREAM_INTERVAL = 1.5  # seconds between Discord edits (rate-limit safe)
@@ -83,7 +83,7 @@ _GOOSECRACKER_WROTE_RE = re.compile(r"Created\s+\S+\s+\((\d+)\s+lines?\)")
 _GOOSECRACKER_SUMMARY_RE = re.compile(r"^\s*summary:\s*(.+?)\s*`*\s*$", re.MULTILINE)
 
 
-def _render_goosecracker_progress(snap, elapsed: int, kind: str = "artifact") -> str:
+def _render_goosecracker_progress(snap, elapsed: int, kind: str = "agent") -> str:
     """Render a concise live progress message from a progress snapshot.
 
     ``snap`` is a chat.goosecracker_progress.Progress or None (nothing yet).
@@ -602,7 +602,7 @@ class ChatBot(discord.Client):
         self.embed_client = EmbeddingClient()
         self.vision_client = VisionClient()
         self.agent = create_agent()
-        # Slash commands (e.g. /artifact, ADR 024 Task 4) live on a
+        # Slash commands (e.g. /agent, ADR 024) live on a
         # CommandTree; on_message handles plain chat. Registered at construction,
         # synced to the guild in on_ready.
         self.tree = discord.app_commands.CommandTree(self)
@@ -610,16 +610,6 @@ class ChatBot(discord.Client):
 
     def _register_commands(self) -> None:
         """Register application (slash) commands on the tree."""
-
-        @self.tree.command(
-            name="artifact",
-            description="Build a self-contained web artifact (owner only)",
-        )
-        @discord.app_commands.describe(prompt="What to build")
-        async def goosecracker_command(
-            interaction: discord.Interaction, prompt: str
-        ) -> None:
-            await self._handle_goosecracker_command(interaction, prompt)
 
         @self.tree.command(
             name="agent",
@@ -748,7 +738,7 @@ class ChatBot(discord.Client):
             logger.exception("Failed to acquire lock for message %s", msg_id)
             return
 
-        # A reply inside a goosecracker thread iterates the artifact (Model B)
+        # A reply inside a goosecracker thread continues that agent session
         # instead of going to the chat agent. Only threads can be goosecracker
         # sessions, so the DB lookup is skipped for ordinary channels.
         if isinstance(message.channel, discord.Thread):
@@ -842,58 +832,6 @@ class ChatBot(discord.Client):
             await summary.add_reaction("✅" if applied else "❌")
         except discord.HTTPException:
             logger.exception("directives: failed to finalize proposal reactions")
-
-    async def _handle_goosecracker_command(
-        self, interaction: discord.Interaction, prompt: str
-    ) -> None:
-        """Grant-gated /artifact: open a thread and dispatch the first run."""
-        if not await asyncio.to_thread(
-            acl.is_granted, interaction.guild_id, interaction.user.id, "artifact"
-        ):
-            # Defer first: the roast hits the qwen model (with retries), which
-            # routinely exceeds Discord's 3s initial-response deadline. Without
-            # the defer the interaction 404s and the roast never lands.
-            await interaction.response.defer(ephemeral=True)
-            roast = await goosecracker.build_roast(prompt)
-            await interaction.followup.send(roast, ephemeral=True)
-            return
-
-        channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "Run /artifact from a normal text channel so I can open a thread.",
-                ephemeral=True,
-            )
-            return
-
-        # Dispatch (DB inserts) can take a beat; ack first so the interaction
-        # never times out, then create the thread and kick off the run.
-        await interaction.response.defer(thinking=True)
-        try:
-            name = f"goosecracker: {prompt}"[:90]
-            thread = await channel.create_thread(
-                name=name, type=discord.ChannelType.public_thread
-            )
-            await asyncio.to_thread(
-                goosecracker.start_session,
-                str(thread.id),
-                prompt,
-                str(channel.id),
-            )
-        except Exception:
-            logger.exception("goosecracker: failed to start session")
-            await interaction.followup.send(
-                "Couldn't start that one. Check the logs.", ephemeral=True
-            )
-            return
-
-        await interaction.followup.send(f"Building your artifact in {thread.mention}")
-        try:
-            # ADR 035: see the matching comment in _handle_agent_command.
-            intro = await thread.send("🛠 Planning...")
-            self._start_goosecracker_stream(str(thread.id), intro)
-        except Exception:
-            logger.exception("goosecracker: failed to post thread intro")
 
     async def _handle_agent_command(
         self, interaction: discord.Interaction, prompt: str, repo: str
@@ -1189,7 +1127,7 @@ class ChatBot(discord.Client):
             return None
 
     def _start_goosecracker_stream(
-        self, artifact_id: str, message: discord.Message, kind: str = "artifact"
+        self, artifact_id: str, message: discord.Message, kind: str = "agent"
     ) -> None:
         """Spawn the background task that live-edits ``message`` with run output.
 
@@ -1209,7 +1147,7 @@ class ChatBot(discord.Client):
         task.add_done_callback(streams.discard)
 
     async def _stream_goosecracker_progress(
-        self, artifact_id: str, message: discord.Message, kind: str = "artifact"
+        self, artifact_id: str, message: discord.Message, kind: str = "agent"
     ) -> None:
         """Edit ``message`` with goose's live build output until done or timeout.
 
@@ -1315,41 +1253,27 @@ class ChatBot(discord.Client):
         if message.author.bot:
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
-        # Artifact threads are open to whoever is granted /artifact in this
-        # server (ADR 024 amendment), so the person who built an artifact can
-        # iterate on it, not just the owner. Agent threads are per-server ACL
-        # gated on the session's own repo scope (ADR 035 Phase 2): steering an
-        # in-flight agent turn needs the same grant that opened it.
-        is_agent = await asyncio.to_thread(goosecracker.is_agent_thread, thread_id)
+        # Goosecracker threads are per-server ACL gated on the session's own repo
+        # scope (ADR 035 Phase 2): steering or continuing an in-flight turn needs
+        # the same `agent` grant that opened it. A repo-less run (an artifact the
+        # agent built with no repo) uses the empty scope.
         guild_id = message.guild.id if message.guild else None
-        if is_agent:
-            repo = await asyncio.to_thread(goosecracker.session_scope, thread_id) or ""
-            if not await asyncio.to_thread(
-                acl.is_granted, guild_id, message.author.id, "agent", repo
-            ):
-                scopes = await asyncio.to_thread(
-                    acl.allowed_scopes, guild_id, message.author.id, "agent"
-                )
-                allowed = ", ".join(sorted(scopes)) or "none"
-                roast = await goosecracker.build_roast(message.content)
-                target = f"`{repo}`" if repo else "this"
-                await message.reply(
-                    f"{roast}\nYou'd need an `agent` grant for {target} in this "
-                    f"server to steer here. Allowed here: {allowed}."
-                )
-                await asyncio.to_thread(self._complete_lock, msg_id)
-                return True
-        else:
-            allowed = goosecracker.is_owner(
-                message.author.id
-            ) or await asyncio.to_thread(
-                acl.is_granted, guild_id, message.author.id, "artifact"
+        repo = await asyncio.to_thread(goosecracker.session_scope, thread_id) or ""
+        if not await asyncio.to_thread(
+            acl.is_granted, guild_id, message.author.id, "agent", repo
+        ):
+            scopes = await asyncio.to_thread(
+                acl.allowed_scopes, guild_id, message.author.id, "agent"
             )
-            if not allowed:
-                roast = await goosecracker.build_roast(message.content)
-                await message.reply(roast)
-                await asyncio.to_thread(self._complete_lock, msg_id)
-                return True
+            allowed = ", ".join(sorted(scopes)) or "none"
+            roast = await goosecracker.build_roast(message.content)
+            target = f"`{repo}`" if repo else "this"
+            await message.reply(
+                f"{roast}\nYou'd need an `agent` grant for {target} in this "
+                f"server to steer here. Allowed here: {allowed}."
+            )
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
 
         try:
             result = await asyncio.to_thread(
@@ -1395,19 +1319,10 @@ class ChatBot(discord.Client):
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
 
-        if action == "dispatched":
-            # Agent thread: a new turn was dispatched (session was idle).
-            # ADR 035: see the matching comment in _handle_agent_command.
-            progress_msg = await message.reply("🤖 Planning...")
-            self._start_goosecracker_stream(thread_id, progress_msg, kind="agent")
-            await asyncio.to_thread(self._complete_lock, msg_id)
-            return True
-
-        # Artifact path: continue_session returned the raw submit result dict
-        # (action is "create" or "resume" from threads.upsert_run).
+        # Otherwise a new turn was dispatched (session was idle or reclaimed).
         # ADR 035: see the matching comment in _handle_agent_command.
-        progress_msg = await message.reply("🛠 Planning...")
-        self._start_goosecracker_stream(thread_id, progress_msg)
+        progress_msg = await message.reply("🤖 Planning...")
+        self._start_goosecracker_stream(thread_id, progress_msg, kind="agent")
         await asyncio.to_thread(self._complete_lock, msg_id)
         return True
 

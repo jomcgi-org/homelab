@@ -96,7 +96,7 @@ _AGENT_RESULT_WITH_PR = (
 
 async def test_delivery_message_agent_posts_summary_not_transcript():
     data = {"result": _AGENT_RESULT, "recordedRef": "refs/agents/s-1"}
-    msg = await runner._delivery_message("s-1", "agent", data)
+    msg = await runner._delivery_message("s-1", data)
     assert "Added a null check in parse()." in msg
     # the raw transcript (recipe banner + tool lines) must NOT be dumped
     assert "▸ shell" not in msg
@@ -107,16 +107,14 @@ async def test_delivery_message_agent_posts_summary_not_transcript():
 
 
 async def test_delivery_message_agent_appends_real_pr_url():
-    msg = await runner._delivery_message(
-        "s-2", "agent", {"result": _AGENT_RESULT_WITH_PR}
-    )
+    msg = await runner._delivery_message("s-2", {"result": _AGENT_RESULT_WITH_PR})
     assert "Opened a PR fixing the parser." in msg
     assert "https://github.com/jomcgi/homelab/pull/42" in msg
 
 
 async def test_delivery_message_agent_falls_back_to_transcript_without_block():
     msg = await runner._delivery_message(
-        "s-3", "agent", {"result": "just some raw output, no result block"}
+        "s-3", {"result": "just some raw output, no result block"}
     )
     assert "just some raw output" in msg
 
@@ -130,7 +128,7 @@ async def test_delivery_message_agent_posts_trailing_narrative():
         "  __( O)>  goose is ready\n"
         "Joe has been working on the git mirror and the /agent command this week."
     )
-    msg = await runner._delivery_message("s-9", "agent", {"result": result})
+    msg = await runner._delivery_message("s-9", {"result": result})
     assert "Joe has been working on the git mirror" in msg
     assert "Loading recipe" not in msg  # recipe banner stripped
     assert "goose is ready" not in msg  # no terminal chrome leaks
@@ -154,7 +152,7 @@ async def test_delivery_message_agent_suppresses_raw_transcript():
         "  ────────────────────────────────\n"
         "Now I have a thorough picture. Let me compile the answer."
     )
-    msg = await runner._delivery_message("s-12", "agent", {"result": result})
+    msg = await runner._delivery_message("s-12", {"result": result})
     assert "rfind(marker)" not in msg  # did not ship (or slice into) the cat-ed source
     assert "▸" not in msg
     assert "goose is ready" not in msg
@@ -172,7 +170,7 @@ async def test_delivery_message_agent_prefers_typed_response():
         '"details": "Added a guard in parse() and a regression test.", '
         '"url": "https://github.com/jomcgi/homelab/pull/99"}'
     )
-    msg = await runner._delivery_message("s-10", "agent", {"result": result})
+    msg = await runner._delivery_message("s-10", {"result": result})
     assert "Fixed the parser null check." in msg
     assert "Added a guard in parse()" in msg
     assert "https://github.com/jomcgi/homelab/pull/99" in msg
@@ -181,7 +179,7 @@ async def test_delivery_message_agent_prefers_typed_response():
 
 async def test_delivery_message_agent_typed_response_summary_only():
     result = '{"type": "answer", "summary": "There were 3 commits today."}'
-    msg = await runner._delivery_message("s-11", "agent", {"result": result})
+    msg = await runner._delivery_message("s-11", {"result": result})
     assert "There were 3 commits today." in msg
 
 
@@ -197,7 +195,7 @@ async def test_delivery_message_publishes_and_links(monkeypatch):
     )
     data = {"artifactHtml": "<html>x</html>", "result": _GOOSE_RESULT}
 
-    msg = await runner._delivery_message("sess", "artifact", data)
+    msg = await runner._delivery_message("sess", data)
 
     assert "https://jomcgi.dev/artifact/abc123" in msg
     assert "A bouncing ball demo with gravity." in msg
@@ -205,26 +203,17 @@ async def test_delivery_message_publishes_and_links(monkeypatch):
     assert "▸ write path" not in msg
 
 
-async def test_delivery_message_artifact_run_with_no_artifact():
-    msg = await runner._delivery_message(
-        "sess", "artifact", {"result": "chatted instead"}
-    )
-    assert "no artifact" in msg.lower()
-
-
 async def test_delivery_message_publish_failure_is_reported(monkeypatch):
     def boom(_s, _h):
         raise RuntimeError("s3 down")
 
     monkeypatch.setattr(runner, "_publish_artifact", boom)
-    msg = await runner._delivery_message(
-        "sess", "artifact", {"artifactHtml": "<html>x</html>"}
-    )
+    msg = await runner._delivery_message("sess", {"artifactHtml": "<html>x</html>"})
     assert "failed" in msg.lower()
 
 
 async def test_delivery_message_non_artifact_posts_result():
-    msg = await runner._delivery_message("sess", "agent", {"result": "hello from qwen"})
+    msg = await runner._delivery_message("sess", {"result": "hello from qwen"})
     assert msg == "hello from qwen"
 
 
@@ -305,7 +294,7 @@ def test_effective_mirror_explicit_git_mirror_overrides_repo(monkeypatch):
 async def test_delivery_message_appends_recorded_ref_for_agent():
     """A recorded scratch ref is appended to the agent result message."""
     data = {"result": "did the work", "recordedRef": "refs/agents/sess-abc"}
-    msg = await runner._delivery_message("sess-abc", "agent", data)
+    msg = await runner._delivery_message("sess-abc", data)
     assert "did the work" in msg
     assert "recorded: refs/agents/sess-abc" in msg
 
@@ -320,14 +309,14 @@ async def test_delivery_message_appends_recorded_ref_for_artifact(monkeypatch):
         "result": "",
         "recordedRef": "refs/agents/sess-art",
     }
-    msg = await runner._delivery_message("sess-art", "artifact", data)
+    msg = await runner._delivery_message("sess-art", data)
     assert "https://jomcgi.dev/artifact/x" in msg
     assert "recorded: refs/agents/sess-art" in msg
 
 
 async def test_delivery_message_no_recorded_ref_unchanged():
     """When no recordedRef is present, the message is unchanged."""
-    msg = await runner._delivery_message("sess", "agent", {"result": "result text"})
+    msg = await runner._delivery_message("sess", {"result": "result text"})
     assert msg == "result text"
     assert "recorded:" not in msg
 
@@ -710,124 +699,6 @@ async def test_run_one_turn_repoless_omits_repo_key(monkeypatch):
     assert "repo" not in payload["injectedContext"]
 
 
-async def _run_artifact_turn_with_dataset_producer(monkeypatch, producer):
-    """Shared setup for the channel-data.json wiring tests (Task 3.2): stub
-    every seam _run_one_turn touches (mirrors
-    test_run_one_turn_ships_injected_context_in_payload) for an
-    artifact-recipe turn, with ``producer`` standing in for
-    chat.api.build_channel_dataset. Returns the captured fc-invoke payload."""
-    import chat.api
-
-    captured_payload = {}
-
-    async def fake_post(url, payload, on_retry):
-        captured_payload.update(payload)
-        return {"status": "ok", "result": "done", "sessionDb": ""}
-
-    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
-    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
-    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
-    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
-    monkeypatch.setattr(runner, "_deliver", AsyncMock())
-    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
-    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
-    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
-    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
-    monkeypatch.setattr(
-        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
-    )
-    monkeypatch.setattr(chat.api, "build_channel_dataset", producer)
-
-    ok = await runner._run_one_turn(
-        "sess-1",
-        task="q",
-        recipe="artifact",
-        tier="artifact",
-        git_mirror="",
-        git_ref="",
-        discord_thread="thr-1",
-    )
-    assert ok is True
-    return captured_payload
-
-
-async def test_run_one_turn_artifact_with_dataset_ships_channel_data_json(
-    monkeypatch,
-):
-    """Task 3.2: an artifact-recipe turn whose extraction succeeds ships the
-    dataset alongside the ADR 040 per-turn context, never replacing it."""
-    producer = AsyncMock(return_value='{"title": "t"}')
-    payload = await _run_artifact_turn_with_dataset_producer(monkeypatch, producer)
-
-    producer.assert_called_once_with("thr-1", "q")
-    assert payload["injectedContext"]["channel-data.json"] == '{"title": "t"}'
-    assert payload["injectedContext"]["transcript.md"] == "hi"
-
-
-async def test_run_one_turn_artifact_without_dataset_omits_key(monkeypatch):
-    """None (no channel to extract from, or a fail-open) means no key at all,
-    not an empty string: the guest's presence check must be a clean miss."""
-    producer = AsyncMock(return_value=None)
-    payload = await _run_artifact_turn_with_dataset_producer(monkeypatch, producer)
-
-    assert "channel-data.json" not in payload["injectedContext"]
-
-
-async def test_run_one_turn_artifact_dataset_producer_raising_still_dispatches(
-    monkeypatch,
-):
-    """A surprise exception from the chat.api boundary itself (build_channel_
-    dataset is already fail-open internally, but this is belt-and-suspenders)
-    must not fail the dispatch: the run still succeeds, just without the key."""
-    producer = AsyncMock(side_effect=RuntimeError("boom"))
-    payload = await _run_artifact_turn_with_dataset_producer(monkeypatch, producer)
-
-    assert "channel-data.json" not in payload["injectedContext"]
-
-
-async def test_run_one_turn_agent_recipe_never_calls_build_channel_dataset(
-    monkeypatch,
-):
-    """The dataset attachment is artifact-recipe only (Task 3.2); the agent
-    route is a documented follow-up, out of scope here."""
-    import chat.api
-
-    captured_payload = {}
-
-    async def fake_post(url, payload, on_retry):
-        captured_payload.update(payload)
-        return {"status": "ok", "result": "done", "sessionDb": ""}
-
-    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
-    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
-    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
-    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
-    monkeypatch.setattr(runner, "_deliver", AsyncMock())
-    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
-    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
-    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
-    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
-    monkeypatch.setattr(
-        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
-    )
-    producer = AsyncMock(return_value='{"title": "t"}')
-    monkeypatch.setattr(chat.api, "build_channel_dataset", producer)
-
-    ok = await runner._run_one_turn(
-        "sess-1",
-        task="q",
-        recipe="agent",
-        tier="",
-        git_mirror="",
-        git_ref="",
-        discord_thread="thr-1",
-    )
-
-    assert ok is True
-    producer.assert_not_called()
-    assert "channel-data.json" not in captured_payload["injectedContext"]
-
-
 def _one_step_plan():
     """A minimal Plan for the plan-delivery payload tests (Task 6)."""
     from chat.orchestrator_plan import Plan, PlanStep
@@ -989,7 +860,7 @@ async def test_delivery_message_agent_appends_url_after_conversational(monkeypat
         '"details": "guard + test", '
         '"url": "https://github.com/jomcgi/homelab/pull/99"}'
     )
-    msg = await runner._delivery_message("s-10", "agent", {"result": result})
+    msg = await runner._delivery_message("s-10", {"result": result})
     assert msg.startswith("All done, opened a PR for you.")
     assert "https://github.com/jomcgi/homelab/pull/99" in msg
     assert "guard + test" not in msg  # raw details replaced by the conversational reply
