@@ -614,7 +614,16 @@ class OpenRouterClient:
         base_url: str | None = None,
         prompt_version: str | None = None,
     ):
-        self.api_key = api_key
+        # Provider-agnostic key env: prefer GRIMOIRE_EXTRACT_API_KEY (the key for
+        # whatever provider GRIMOIRE_EXTRACT_BASE_URL points at, e.g. direct
+        # DeepSeek), falling back to OPENROUTER_API_KEY for back-compat. An
+        # explicit arg always wins; a keyless in-cluster vLLM passes "" with
+        # neither env set, so it stays keyless.
+        self.api_key = (
+            api_key
+            or os.environ.get("GRIMOIRE_EXTRACT_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY", "")
+        )
         self.model = model or os.environ.get("GRIMOIRE_EXTRACT_MODEL", DEFAULT_MODEL)
         self.base_url = base_url or os.environ.get(
             "GRIMOIRE_EXTRACT_BASE_URL", OPENROUTER_URL
@@ -647,6 +656,15 @@ class OpenRouterClient:
         in-cluster vLLM endpoint uses ``guided_json`` and ignores ``reasoning``."""
         return (not self.base_url) or "openrouter.ai" in self.base_url
 
+    def _is_deepseek(self) -> bool:
+        """True when the endpoint is the direct DeepSeek API (api.deepseek.com).
+
+        DeepSeek is a keyed hosted provider like OpenRouter, but its
+        reasoning-off control is ``thinking: {type: disabled}`` (not OpenRouter's
+        ``reasoning``), it has no provider-routing concept, and it takes
+        ``response_format: json_object`` (not the strict json_schema block)."""
+        return "api.deepseek.com" in self.base_url
+
     @staticmethod
     def _provider_routing() -> dict[str, Any] | None:
         """OpenRouter provider preference from ``GRIMOIRE_EXTRACT_PROVIDER``.
@@ -672,10 +690,12 @@ class OpenRouterClient:
 
         No schema (v1): keep ``response_format: json_object`` (valid JSON, no
         shape). With a schema (v2): OpenRouter gets a strict ``json_schema`` so
-        the ``rel_type``/``entity_type`` enums are hard decode constraints; a
-        vLLM endpoint gets ``guided_json`` (same schema) plus ``json_object``.
-        The self-correction retry stays as a belt for providers that silently
-        downgrade json_schema.
+        the ``rel_type``/``entity_type`` enums are hard decode constraints;
+        direct DeepSeek gets plain ``json_object`` (it does not accept the strict
+        json_schema block or vLLM's guided_json, and the post-parse safety net
+        covers the enum); a vLLM endpoint gets ``guided_json`` (same schema) plus
+        ``json_object``. The self-correction retry stays as a belt for providers
+        that silently downgrade the format.
         """
         schema = self._version.schema
         if schema is None:
@@ -691,6 +711,8 @@ class OpenRouterClient:
                     },
                 }
             }
+        if self._is_deepseek():
+            return {"response_format": {"type": "json_object"}}
         # vLLM guided decoding: guided_json constrains the output to the schema;
         # response_format json_object is a harmless belt for older vLLM builds.
         return {
@@ -802,11 +824,13 @@ class OpenRouterClient:
             "messages": messages,
         }
         payload.update(self._format_kwargs())
-        if self._is_openrouter():
-            # Disable reasoning tokens for the structured-extraction task (spec
-            # #5). OpenRouter ignores this on non-reasoning models; on DeepSeek
-            # V4 Flash it keeps the call to a single JSON turn. vLLM does not
-            # accept the field, so only send it to OpenRouter.
+        # Disable reasoning tokens for the structured-extraction task (spec #5),
+        # using the provider's own control. Direct DeepSeek uses
+        # ``thinking: {type: disabled}``; OpenRouter uses ``reasoning`` and also
+        # accepts a provider-routing block. A vLLM endpoint takes neither.
+        if self._is_deepseek():
+            payload["thinking"] = {"type": "disabled"}
+        elif self._is_openrouter():
             payload["reasoning"] = {"enabled": False}
             provider = self._provider_routing()
             if provider is not None:

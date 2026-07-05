@@ -109,13 +109,13 @@ spec:
             {{- if .grimoire }}
             # Grimoire ingest jobs (spec #4.2/#4.3): the loader reads the shared
             # SeaweedFS S3 env + EMBEDDING_URL + GRIMOIRE_S3_BUCKET; extraction
-            # reads OPENROUTER_API_KEY + GRIMOIRE_EXTRACT_MODEL/LIMIT + EMBEDDING_URL.
-            # Both get the union (the loader ignores OPENROUTER_API_KEY, the
-            # extractor ignores the S3 env) so the grimoire concern is one env
-            # block, mirroring how the deployment injects it. OPENROUTER_API_KEY
-            # comes from the "goosecracker" Secret (field OPENROUTER_API_KEY),
-            # Kyverno-cloned into monolith-workflows (see the clone-openrouter
-            # policy); the extract handler skips its run cleanly if it is absent.
+            # reads GRIMOIRE_EXTRACT_API_KEY + GRIMOIRE_EXTRACT_MODEL/BASE_URL/LIMIT
+            # + EMBEDDING_URL. Both get the union (the loader ignores the extract
+            # key, the extractor ignores the S3 env) so the grimoire concern is one
+            # env block. The production default is direct DeepSeek, so
+            # GRIMOIRE_EXTRACT_API_KEY comes from the "goosecracker" Secret (field
+            # DEEPSEEK_API_KEY), Kyverno-cloned into monolith-workflows (see the
+            # clone-openrouter policy); the extract handler skips cleanly if absent.
             - name: SEAWEEDFS_S3_ENDPOINT
               value: {{ $.Values.stars.seaweedfsS3Endpoint | quote }}
             - name: S3_ACCESS_KEY_ID
@@ -133,11 +133,16 @@ spec:
               value: "300"
             - name: EMBED_RETRY_TIMEOUT
               value: "900"
-            - name: OPENROUTER_API_KEY
+            - name: GRIMOIRE_EXTRACT_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: goosecracker
-                  key: OPENROUTER_API_KEY
+                  # Direct-DeepSeek key (production default). The client reads
+                  # GRIMOIRE_EXTRACT_API_KEY first, falling back to
+                  # OPENROUTER_API_KEY; to run against OpenRouter instead, point
+                  # this key at the goosecracker OPENROUTER_API_KEY field and set
+                  # GRIMOIRE_EXTRACT_BASE_URL/MODEL accordingly.
+                  key: DEEPSEEK_API_KEY
                   # Optional: the cloned "goosecracker" Secret only exists once
                   # goosecracker is enabled and Kyverno has replicated it into
                   # monolith-workflows; the pod must not be blocked on it (the
