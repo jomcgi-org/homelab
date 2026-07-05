@@ -486,6 +486,38 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # chat.directive_autopilot: daily (04:30 UTC). The silent counterpart to
+    # chat-observe-directives: it auto-applies high-confidence low-risk channel
+    # AND per-user directive refinements from ambient reaction/follow-up signals,
+    # baselines each apply, and self-validates one window later, reverting on
+    # regression. It NEVER posts to Discord; provenance is read out-of-band via
+    # the monolith-chat-* MCP tools. A human manual tune (source=manual) wins.
+    # Shipping LIVE + AGGRESSIVE per PR 3: AUTOPILOT_MODE=live (flip to shadow to
+    # kill-switch: it logs what it WOULD do and mutates nothing). Classifies via
+    # Qwen (LLAMA_CPP_URL). All thresholds are AUTOPILOT_* env knobs.
+    - name: chat-directive-autopilot
+      args: ["chat-directive-autopilot"]
+      schedule: "30 4 * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      env:
+        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        AUTOPILOT_MODE: "live"
+        AUTOPILOT_MIN_CONFIDENCE: "0.65"
+        AUTOPILOT_MIN_EVIDENCE: "2"
+        AUTOPILOT_COOLDOWN_DAYS: "2"
+        AUTOPILOT_VALIDATE_DAYS: "1"
+        AUTOPILOT_MANUAL_COOLDOWN_DAYS: "30"
+        AUTOPILOT_REGRESS_MARGIN: "0.1"
+        AUTOPILOT_LOOKBACK_DAYS: "7"
+        AUTOPILOT_MAX_LEN_DELTA: "300"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
     # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
     # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145

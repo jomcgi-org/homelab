@@ -1069,6 +1069,32 @@ py_test(
 )
 
 py_test(
+    name = "chat_ambient_analysis_test",
+    srcs = ["chat/ambient_analysis_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_autopilot_job_test",
+    srcs = ["chat/autopilot_job_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_attention_test",
     srcs = ["chat/attention_test.py"],
     imports = ["."],

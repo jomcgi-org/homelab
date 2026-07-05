@@ -350,6 +350,25 @@ def chat_observe_directives() -> None:
     )
 
 
+@app.command("chat-directive-autopilot")
+def chat_directive_autopilot() -> None:
+    """Silently auto-tune channel and personal behavioural directives from ambient
+    interaction signals, self-validate against downstream reactions, and revert on
+    regression (one-shot of chat.autopilot_job.directive_autopilot_handler).
+
+    NEVER posts to Discord; provenance is exposed via the monolith-chat-* MCP
+    tools. Classifies with Qwen (needs LLAMA_CPP_URL). All thresholds come from
+    the AUTOPILOT_* env: AUTOPILOT_MODE (live or shadow kill switch),
+    AUTOPILOT_MIN_CONFIDENCE, AUTOPILOT_MIN_EVIDENCE, AUTOPILOT_COOLDOWN_DAYS,
+    AUTOPILOT_VALIDATE_DAYS, AUTOPILOT_MANUAL_COOLDOWN_DAYS,
+    AUTOPILOT_REGRESS_MARGIN, AUTOPILOT_LOOKBACK_DAYS, AUTOPILOT_MAX_LEN_DELTA."""
+    _run_job(
+        "chat-directive-autopilot",
+        "chat.autopilot_job",
+        "directive_autopilot_handler",
+    )
+
+
 @app.command("evict-artifact-sessions")
 def evict_artifact_sessions() -> None:
     """Evict goose session DBs older than the TTL (ADR 026 Phase 2 Task 2.5).
