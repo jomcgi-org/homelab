@@ -235,6 +235,140 @@ def reset(channel_id: str, user_id: str, motivating_message_id: str = "") -> Non
             session.rollback()
 
 
+def insert_active_directive(
+    session: Session,
+    channel_id: str,
+    text: str,
+    *,
+    source: str,
+    motivating_message_id: str = "",
+    updated_by_user_id: str = "",
+) -> int:
+    """Flip the current active row inactive and add a new active row (``text`` +
+    ``source``) WITHIN the caller's ``session``, WITHOUT committing. The caller
+    owns the transaction. This is the session-param primitive the autopilot
+    shares so its baseline read, directive apply, and log write commit
+    atomically in one session (monolith async/session rule: the caller runs it in
+    a ``to_thread`` worker with its own session). Returns the new version.
+    """
+    current = _active_row(session, channel_id)
+    new_version = (current.version if current is not None else 0) + 1
+    if current is not None:
+        current.active = False
+        session.flush()  # release the partial-unique active slot before insert
+    session.add(
+        ChannelDirective(
+            channel_id=channel_id,
+            directive=text,
+            version=new_version,
+            active=True,
+            source=source,
+            updated_by_user_id=updated_by_user_id,
+            motivating_message_id=motivating_message_id,
+            previous_version=current.version if current is not None else 0,
+        )
+    )
+    return new_version
+
+
+def set_channel_directive(
+    channel_id: str,
+    text: str,
+    *,
+    source: str,
+    motivating_message_id: str = "",
+    updated_by_user_id: str = "",
+) -> int:
+    """Own-session wrapper around ``insert_active_directive``: reinstate arbitrary
+    ``text`` as the new active row for a channel, deactivating the current one.
+    History is never mutated in place. This is the versioned-history primitive
+    the autopilot revert path and the MCP manual-set surface share. ``source``
+    records provenance for the manual-precedence rule (seed | observer |
+    autopilot | manual). Returns the new active version, or the current version
+    unchanged if a concurrent writer won the active-row race.
+
+    Unlike ``reset``/``propose_update`` this reinstates arbitrary text (a revert
+    passes the prior row's stored text), so it never re-derives from the seed.
+    """
+    with Session(get_engine()) as session:
+        new_version = insert_active_directive(
+            session,
+            channel_id,
+            text,
+            source=source,
+            motivating_message_id=motivating_message_id,
+            updated_by_user_id=updated_by_user_id,
+        )
+        try:
+            session.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent apply/reset for this channel; the
+            # other writer's active row stands. Report the current version.
+            session.rollback()
+            row = _active_row(session, channel_id)
+            return row.version if row is not None else 0
+    return new_version
+
+
+def active_channel_detail(channel_id: str) -> dict | None:
+    """The active channel directive as ``{text, version, source}``, or None if
+    the channel has no active row. Used by the introspection surface and by the
+    autopilot to capture prior text/version + check the manual-precedence source.
+    """
+    with Session(get_engine()) as session:
+        row = _active_row(session, channel_id)
+        if row is None:
+            return None
+        return {"text": row.directive, "version": row.version, "source": row.source}
+
+
+def active_style_pref_detail(user_id: str) -> dict | None:
+    """The active user style pref as ``{pref, source, created_at}``, or None if
+    the user has no active pref. UserStylePref has no version column, so the
+    autopilot keys its revert on the stored prior text, not a version."""
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(UserStylePref)
+            .where(UserStylePref.user_id == user_id)
+            .where(UserStylePref.active == True)  # noqa: E712 - SQL boolean
+        ).first()
+        if row is None:
+            return None
+        return {"pref": row.pref, "source": row.source, "created_at": row.created_at}
+
+
+def pin_channel_directive(channel_id: str) -> bool:
+    """Mark a channel's active directive row ``source='manual'`` in place so the
+    autopilot leaves it alone. This stamps provenance, not directive text, so it
+    is not a versioned change (no new row). Returns False if the channel has no
+    active row yet."""
+    with Session(get_engine()) as session:
+        row = _active_row(session, channel_id)
+        if row is None:
+            return False
+        row.source = "manual"
+        session.add(row)
+        session.commit()
+    return True
+
+
+def pin_style_pref(user_id: str) -> bool:
+    """Mark a user's active style pref ``source='manual'`` in place so the
+    autopilot leaves it alone. Returns False if the user has no active pref."""
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(UserStylePref)
+            .where(UserStylePref.user_id == user_id)
+            .where(UserStylePref.active == True)  # noqa: E712 - SQL boolean
+        ).first()
+        if row is None:
+            return False
+        row.source = "manual"
+        session.add(row)
+        session.commit()
+    return True
+
+
 def is_proposal(proposal_message_id: str) -> bool:
     """True if a channel_directive row was staged with this proposal message
     id (active or not -- an already-applied or discarded proposal is still a
@@ -259,26 +393,58 @@ def get_style_pref(user_id: str) -> str:
         return row.pref if row is not None else ""
 
 
-def set_style_pref(user_id: str, pref: str, motivating_message_id: str = "") -> None:
+def insert_active_pref(
+    session: Session,
+    user_id: str,
+    pref: str,
+    *,
+    source: str,
+    motivating_message_id: str = "",
+) -> None:
+    """Flip the user's current active pref inactive and add a new active pref
+    (``pref`` + ``source``) WITHIN the caller's ``session``, WITHOUT committing.
+    The caller owns the transaction, so the autopilot can commit its pref apply
+    and its log row atomically. Companion of ``insert_active_directive``."""
+    current = session.exec(
+        select(UserStylePref)
+        .where(UserStylePref.user_id == user_id)
+        .where(UserStylePref.active == True)  # noqa: E712 - SQL boolean
+        .with_for_update()
+    ).first()
+    if current is not None:
+        current.active = False
+        session.flush()  # release the partial-unique active slot before insert
+    session.add(
+        UserStylePref(
+            user_id=user_id,
+            pref=pref,
+            active=True,
+            updated_by_user_id=user_id,
+            motivating_message_id=motivating_message_id,
+            source=source,
+        )
+    )
+
+
+def set_style_pref(
+    user_id: str,
+    pref: str,
+    motivating_message_id: str = "",
+    *,
+    source: str = "manual",
+) -> None:
     """Deactivate the user's current active preference (if any) and insert
-    the new one as active. History is never deleted."""
+    the new one as active. History is never deleted. ``source`` defaults to
+    'manual' because a user setting their own style is a human action that must
+    win over the autopilot; the autopilot passes source='autopilot' (both for an
+    apply and for a revert, which reinstates the prior pref text)."""
     with Session(get_engine()) as session:
-        current = session.exec(
-            select(UserStylePref)
-            .where(UserStylePref.user_id == user_id)
-            .where(UserStylePref.active == True)  # noqa: E712 - SQL boolean
-            .with_for_update()
-        ).first()
-        if current is not None:
-            current.active = False
-        session.add(
-            UserStylePref(
-                user_id=user_id,
-                pref=pref,
-                active=True,
-                updated_by_user_id=user_id,
-                motivating_message_id=motivating_message_id,
-            )
+        insert_active_pref(
+            session,
+            user_id,
+            pref,
+            source=source,
+            motivating_message_id=motivating_message_id,
         )
         try:
             session.commit()
