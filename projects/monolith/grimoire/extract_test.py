@@ -17,12 +17,18 @@ from sqlmodel.pool import StaticPool
 
 from grimoire import extract
 from grimoire.extract import (
+    ACTIVE_PROMPT_VERSION,
+    PROMPT_VERSIONS,
+    REL_TYPE_SET,
     OpenRouterClient,
     OpenRouterError,
-    _prompt_hash,
+    _canonicalize_name,
+    book_kind,
     extract_chunks,
+    prompt_version_hash,
 )
 from grimoire.models import (
+    Book,
     ChunkEntityMention,
     ChunkExtraction,
     Embedding,
@@ -59,12 +65,20 @@ class FakeOpenRouterClient:
     """Canned extraction responses keyed by chunk content; no HTTP."""
 
     model = "test-extract-model"
+    prompt_version = ACTIVE_PROMPT_VERSION
 
     def __init__(self, responses: dict[str, object]):
         self.responses = responses
         self.calls: list[str] = []
 
-    async def extract(self, chunk_text: str) -> dict:
+    async def extract(
+        self,
+        chunk_text: str,
+        section_path: str | None = None,
+        image_ref: str | None = None,
+        book_title: str | None = None,
+        book_kind: str | None = None,
+    ) -> dict:
         self.calls.append(chunk_text)
         result = self.responses.get(chunk_text)
         if isinstance(result, Exception):
@@ -232,7 +246,9 @@ def test_extract_chunks_happy_path(session: Session):
     }
 
     entities = session.execute(select(Entity)).scalars().all()
-    assert {e.name for e in entities} == {"Owlbear", "The Zhentarim", "Existing NPC"}
+    # "The Zhentarim" is canonicalized to "Zhentarim" (leading article dropped),
+    # and the MEMBER_OF edge's to_name resolves through the same canonical key.
+    assert {e.name for e in entities} == {"Owlbear", "Zhentarim", "Existing NPC"}
 
     owlbear = (
         session.execute(select(Entity).where(Entity.name == "Owlbear")).scalars().one()
@@ -296,7 +312,7 @@ def test_extract_chunks_rerun_skips_already_marked_chunks(session: Session):
     assert len(markers) == 1
     assert markers[0].chunk_id == chunk.id
     assert markers[0].model == FakeOpenRouterClient.model
-    assert markers[0].prompt_hash == _prompt_hash()
+    assert markers[0].prompt_version == ACTIVE_PROMPT_VERSION
     assert markers[0].status == "ok"
 
 
@@ -306,7 +322,7 @@ def test_processed_marker_reextracts_on_model_change(session: Session):
         ChunkExtraction(
             chunk_id=chunk.id,
             model="some-other-model",
-            prompt_hash=_prompt_hash(),
+            prompt_version=ACTIVE_PROMPT_VERSION,
             status="ok",
         )
     )
@@ -334,13 +350,15 @@ def test_processed_marker_reextracts_on_model_change(session: Session):
     }
 
 
-def test_processed_marker_reextracts_on_prompt_change(session: Session):
+def test_processed_marker_reextracts_on_prompt_version_change(session: Session):
     chunk = _make_chunk(session, "mm", "mm-001", "A goblin ambushes the party.")
+    # A marker under an OLD prompt version (v1) must not satisfy the active
+    # version (v2), so the chunk is re-extracted and gets a second marker.
     session.add(
         ChunkExtraction(
             chunk_id=chunk.id,
             model=FakeOpenRouterClient.model,
-            prompt_hash="stale-hash-from-an-old-prompt",
+            prompt_version="v1",
             status="ok",
         )
     )
@@ -362,10 +380,7 @@ def test_processed_marker_reextracts_on_prompt_change(session: Session):
 
     assert summary["chunks_processed"] == 1
     markers = session.execute(select(ChunkExtraction)).scalars().all()
-    assert {m.prompt_hash for m in markers} == {
-        "stale-hash-from-an-old-prompt",
-        _prompt_hash(),
-    }
+    assert {m.prompt_version for m in markers} == {"v1", ACTIVE_PROMPT_VERSION}
 
 
 def test_empty_yield_records_empty_marker(session: Session):
@@ -585,6 +600,290 @@ def test_extract_chunks_limit_respected(session: Session):
     markers = session.execute(select(ChunkExtraction)).scalars().all()
     assert len(markers) == 2
     assert all(m.status == "empty" for m in markers)
+
+
+# --- prompt versioning + safety net + canonicalization ---------------------
+
+
+def test_released_prompt_versions_are_frozen_by_hash():
+    """Freeze each released version's text by sha256. Editing a shipped prompt
+    (v1 or v2) changes its hash and fails here, forcing the change to be a NEW
+    version (v3) with a new label, since the label is the marker cache key."""
+    frozen = {
+        "v1": "64cb5df96d35c282f0ad004233ef01ef52c0eb86eed94342f9bfec4479ac949f",
+        "v2": "aeb536de96f21e54bcd54ed073efc9945b92b125e3dae6f748808e4f0325ab52",
+    }
+    # Every released version must be pinned (a new version needs a new pin here).
+    assert set(frozen) == set(PROMPT_VERSIONS)
+    for label, expected in frozen.items():
+        assert prompt_version_hash(label) == expected, (
+            f"prompt {label} text changed: bump to a new version label instead of "
+            f"editing a released prompt"
+        )
+
+
+def test_v2_has_schema_v1_does_not():
+    assert PROMPT_VERSIONS["v1"].schema is None
+    assert PROMPT_VERSIONS["v2"].schema is not None
+
+
+def test_non_enum_rel_type_mapped_to_related_to(session: Session):
+    """A rel_type outside the closed set is stored as RELATED_TO, not free text."""
+    chunk = _make_chunk(session, "mm", "mm-001", "Two heroes and a bond.")
+    responses = {
+        chunk.content: {
+            "entities": [
+                {"entity_type": "npc", "name": "Alice", "summary": "A hero."},
+                {"entity_type": "npc", "name": "Bob", "summary": "Another hero."},
+            ],
+            "mentions": [],
+            "relationships": [
+                # Not in REL_TYPE_SET -> must be normalized to RELATED_TO.
+                {"from_name": "Alice", "to_name": "Bob", "rel_type": "BEFRIENDS"},
+            ],
+        }
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    summary = _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    assert summary["relationships_created"] == 1
+    rels = session.execute(select(Relationship)).scalars().all()
+    assert len(rels) == 1
+    assert rels[0].rel_type == "RELATED_TO"
+    assert rels[0].rel_type in REL_TYPE_SET
+
+
+def test_enum_rel_type_stored_verbatim(session: Session):
+    """A rel_type already inside the closed set is stored unchanged."""
+    chunk = _make_chunk(session, "mm", "mm-001", "A ranger serves a lord.")
+    responses = {
+        chunk.content: {
+            "entities": [
+                {"entity_type": "npc", "name": "Ranger", "summary": "A scout."},
+                {"entity_type": "faction", "name": "Harpers", "summary": "A network."},
+            ],
+            "mentions": [],
+            "relationships": [
+                {"from_name": "Ranger", "to_name": "Harpers", "rel_type": "MEMBER_OF"},
+            ],
+        }
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+
+    _run(extract_chunks(session, or_client, embed_client, limit=25))
+    rels = session.execute(select(Relationship)).scalars().all()
+    assert [r.rel_type for r in rels] == ["MEMBER_OF"]
+
+
+def test_canonicalize_name_strips_map_key_prefix():
+    assert _canonicalize_name("L17. SURGERY") == "SURGERY"
+    assert _canonicalize_name("P2. West Shore") == "West Shore"
+    assert _canonicalize_name("17. Old Mill") == "Old Mill"
+    # A real name that merely contains a period is left alone (no digit prefix).
+    assert _canonicalize_name("St. Cuthbert") == "St. Cuthbert"
+
+
+def test_canonicalize_name_drops_leading_article():
+    assert _canonicalize_name("The Zhentarim") == "Zhentarim"
+    assert _canonicalize_name("the Nine Hells") == "Nine Hells"
+    assert _canonicalize_name("An Ancient Evil") == "Ancient Evil"
+    # "Theramin" must not lose "The"; only a whole leading article word is dropped.
+    assert _canonicalize_name("Theramin") == "Theramin"
+
+
+def test_canonicalize_name_normalizes_curly_apostrophe_and_whitespace():
+    assert _canonicalize_name("Uk’otoa") == "Uk'otoa"
+    assert _canonicalize_name("  Wind   Dukes  ") == "Wind Dukes"
+    # Proper-noun plurals are intentionally NOT de-pluralized in code (prompt-side).
+    assert _canonicalize_name("Harpers") == "Harpers"
+
+
+def test_canonical_names_dedupe_article_and_map_key_variants(session: Session):
+    """Article/map-key variants collapse to one spine node via canonicalization."""
+    c1 = _make_chunk(session, "mm", "mm-001", "The enclave stronghold.")
+    c2 = _make_chunk(session, "mm", "mm-002", "Enclave, seen again.")
+    responses = {
+        c1.content: {
+            "entities": [
+                {
+                    "entity_type": "faction",
+                    "name": "The Emerald Enclave",
+                    "summary": "A.",
+                }
+            ],
+            "mentions": [],
+            "relationships": [],
+        },
+        c2.content: {
+            "entities": [
+                {"entity_type": "faction", "name": "Emerald Enclave", "summary": "B."}
+            ],
+            "mentions": [],
+            "relationships": [],
+        },
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+    _run(extract_chunks(session, or_client, embed_client, limit=1))
+    _run(extract_chunks(session, or_client, embed_client, limit=1))
+
+    entities = session.execute(select(Entity)).scalars().all()
+    assert [e.name for e in entities] == ["Emerald Enclave"]
+
+
+def test_extract_passes_context_to_client(session: Session):
+    """extract_chunks threads the hierarchy (preferred over leaf), image_ref, and
+    book title + genre into the extract call."""
+    session.add(Book(id="monster-manual", display_name="Monster Manual"))
+    chunk = KnowledgeChunk(
+        book_id="monster-manual",
+        chunk_ref="mm-001",
+        content="A caption of a dragon.",
+        section_path="A > BRASS DRAGON",
+        section_hierarchy="Chapter 1: Dragons > Metallic Dragons > BRASS DRAGON",
+        image_ref="s3://grimoire/img/brass.png",
+    )
+    session.add(chunk)
+    session.commit()
+
+    captured: dict = {}
+
+    class CapturingClient(FakeOpenRouterClient):
+        async def extract(
+            self,
+            chunk_text,
+            section_path=None,
+            image_ref=None,
+            book_title=None,
+            book_kind=None,
+        ):
+            captured.update(
+                section_path=section_path,
+                image_ref=image_ref,
+                book_title=book_title,
+                book_kind=book_kind,
+            )
+            return {"entities": [], "mentions": [], "relationships": []}
+
+    or_client = CapturingClient({})
+    embed_client = FakeEmbedClient()
+    _run(extract_chunks(session, or_client, embed_client, limit=25))
+
+    # The full hierarchy breadcrumb is preferred over the 2-level section_path.
+    assert captured["section_path"] == (
+        "Chapter 1: Dragons > Metallic Dragons > BRASS DRAGON"
+    )
+    assert captured["image_ref"] == "s3://grimoire/img/brass.png"
+    assert captured["book_title"] == "Monster Manual"
+    assert captured["book_kind"] == "bestiary"
+
+
+def test_extract_falls_back_to_leaf_section_and_book_id(session: Session):
+    """When section_hierarchy is null and the book has no title row, extract falls
+    back to the leaf section_path and the raw book_id, with no genre."""
+    chunk = KnowledgeChunk(
+        book_id="homebrew-thing",
+        chunk_ref="hb-001",
+        content="A tavern.",
+        section_path="The Rusty Tankard",
+        section_hierarchy=None,
+    )
+    session.add(chunk)
+    session.commit()
+
+    captured: dict = {}
+
+    class CapturingClient(FakeOpenRouterClient):
+        async def extract(
+            self,
+            chunk_text,
+            section_path=None,
+            image_ref=None,
+            book_title=None,
+            book_kind=None,
+        ):
+            captured.update(
+                section_path=section_path, book_title=book_title, book_kind=book_kind
+            )
+            return {"entities": [], "mentions": [], "relationships": []}
+
+    _run(extract_chunks(session, CapturingClient({}), FakeEmbedClient(), limit=25))
+    assert captured["section_path"] == "The Rusty Tankard"
+    assert captured["book_title"] == "homebrew-thing"
+    assert captured["book_kind"] is None
+
+
+def test_book_kind_mapping():
+    assert book_kind("monster-manual") == "bestiary"
+    assert book_kind("players-handbook-2024") == "rulebook"
+    assert book_kind("deep-magic-5e") == "spellbook"
+    assert book_kind("curse-of-strahd") == "adventure"
+    # Prefix family match after an exact miss.
+    assert book_kind("tome-of-beasts-2") == "bestiary"
+    assert book_kind("sword-coast-adventurers-guide") == "setting-guide"
+    # Unmapped slug: no guessed genre.
+    assert book_kind("some-random-homebrew") is None
+
+
+def test_client_user_message_layers_book_section_and_image():
+    """The user turn carries Book, Section (single newline apart), and an image
+    signal ahead of the body; each line is optional."""
+    client = OpenRouterClient(api_key="", base_url="http://fake/chat")
+    assert client._user_message("Body text.", None, None) == "Body text."
+
+    full = client._user_message(
+        "Body text.",
+        "Chapter 4 > Village > L17. Surgery",
+        "s3://x/y.png",
+        book_title="Curse of Strahd",
+        book_kind="adventure",
+    )
+    lines = full.split("\n\n", 1)[0].split("\n")
+    assert lines[0] == "Book: Curse of Strahd (adventure)"
+    assert lines[1] == "Section: Chapter 4 > Village > L17. Surgery"
+    assert "illustration" in lines[2]
+    assert full.endswith("Body text.")
+
+    # Book title with no mapped genre omits the parenthetical.
+    no_kind = client._user_message(
+        "B.", None, None, book_title="Homebrew", book_kind=None
+    )
+    assert no_kind.startswith("Book: Homebrew\n\n")
+
+
+def test_openrouter_hosted_uses_json_schema_response_format():
+    """Against OpenRouter, a v2 client sends a strict json_schema response_format
+    (the enum hard-constraint) and disables reasoning."""
+    client = OpenRouterClient(
+        api_key="k", base_url=extract.OPENROUTER_URL, prompt_version="v2"
+    )
+    fmt = client._format_kwargs()
+    assert fmt["response_format"]["type"] == "json_schema"
+    assert fmt["response_format"]["json_schema"]["strict"] is True
+    schema = fmt["response_format"]["json_schema"]["schema"]
+    rel_enum = schema["properties"]["relationships"]["items"]["properties"]["rel_type"][
+        "enum"
+    ]
+    assert "RELATED_TO" in rel_enum
+    assert set(rel_enum) == set(REL_TYPE_SET)
+
+
+def test_vllm_uses_guided_json():
+    """Against a vLLM endpoint, a v2 client sends guided_json (not json_schema)."""
+    client = OpenRouterClient(
+        api_key="", base_url="http://inference/v1/chat/completions", prompt_version="v2"
+    )
+    fmt = client._format_kwargs()
+    assert fmt["response_format"] == {"type": "json_object"}
+    assert fmt["guided_json"] == PROMPT_VERSIONS["v2"].schema
+
+
+def test_v1_client_keeps_json_object():
+    client = OpenRouterClient(api_key="k", prompt_version="v1")
+    assert client._format_kwargs() == {"response_format": {"type": "json_object"}}
 
 
 # --- OpenRouterClient -------------------------------------------------------

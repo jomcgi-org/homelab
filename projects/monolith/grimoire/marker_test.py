@@ -355,3 +355,76 @@ def test_to_chunks_drops_empty_content():
         "metadata": {},
     }
     assert marker.to_chunks(doc, image_key_prefix="p/") == []
+
+
+# --- section_hierarchy breadcrumb (extraction context) ---------------------
+
+
+def test_section_hierarchy_path_joins_full_ancestry():
+    headers = {
+        "toc": "CONTENTS",
+        "ch": "Chapter 3: Magic Items",
+        "sec": "Armor",
+        "leaf": "Armor of Vulnerability",
+    }
+    hier = {"section_hierarchy": {"1": "toc", "2": "ch", "3": "sec", "4": "leaf"}}
+    # CONTENTS furniture dropped; leaf appended once; shallowest-first order.
+    assert (
+        marker._section_hierarchy_path(hier, headers, "Armor of Vulnerability")
+        == "Chapter 3: Magic Items > Armor > Armor of Vulnerability"
+    )
+
+
+def test_section_hierarchy_path_degrades_to_leaf_without_ancestry():
+    # No hier_block (header-only run) and no leaf both degrade gracefully.
+    assert marker._section_hierarchy_path(None, {}, "Goblin") == "Goblin"
+    assert marker._section_hierarchy_path(None, {}, None) is None
+
+
+def test_to_chunks_emits_full_section_hierarchy():
+    """A content block's trustworthy ancestry becomes the section_hierarchy field;
+    section_path (2-level) and chunk boundaries are unchanged."""
+    doc = {
+        "children": [
+            _page(
+                0,
+                [
+                    {
+                        "id": "/page/0/SectionHeader/0",
+                        "block_type": "SectionHeader",
+                        "html": "<h1>CHAPTER 1: DRAGONS</h1>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        "id": "/page/0/SectionHeader/1",
+                        "block_type": "SectionHeader",
+                        "html": "<h2>BRASS DRAGON</h2>",
+                        "section_hierarchy": {
+                            "1": "/page/0/SectionHeader/0",
+                            "2": "/page/0/SectionHeader/1",
+                        },
+                    },
+                    {
+                        "id": "/page/0/Text/0",
+                        "block_type": "Text",
+                        "html": "<p>A talkative metallic dragon.</p>",
+                        "section_hierarchy": {
+                            "1": "/page/0/SectionHeader/0",
+                            "2": "/page/0/SectionHeader/1",
+                        },
+                    },
+                ],
+            )
+        ],
+        "metadata": {},
+    }
+    chunks = marker.to_chunks(doc, image_key_prefix="p/")
+    monster = [c for c in chunks if "talkative" in c["content"]]
+    assert len(monster) == 1
+    c = monster[0]
+    # Full ancestry breadcrumb for extraction context (" > " joined).
+    assert c["section_hierarchy"] == "CHAPTER 1: DRAGONS > BRASS DRAGON"
+    # section_path stays the 2-level chapter/leaf breadcrumb ("/" joined) that the
+    # reader + nav consume; boundaries and chunk_ref are unchanged.
+    assert c["section_path"] == "CHAPTER 1: DRAGONS/BRASS DRAGON"
+    assert c["chunk_ref"] == "/page/0/SectionHeader/1"

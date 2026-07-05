@@ -175,6 +175,14 @@ class KnowledgeChunk(SQLModel, table=True):
     chunk_ref: str
     content: str
     section_path: str | None = None
+    # Full section-ancestry breadcrumb (e.g. "Chapter 3: Magic Items > Armor >
+    # Armor of Vulnerability"), joined by " > ", shallowest ancestor first. Used
+    # ONLY as extraction context (the user message's Section: line), never for the
+    # reader/nav (that stays on the 2-level section_path). NULL for chunks loaded
+    # before the backfill; extraction falls back to section_path. Extraction-only
+    # metadata, so a change never re-embeds. Mirror of the column added in
+    # 20260705130000_grimoire_chunk_section_hierarchy.sql.
+    section_hierarchy: str | None = None
     # Reading-order position within a book, 0-based, assigned by the loader from
     # NDJSON line order (ingest._upsert_book_chunks). created_at is unreliable for
     # ordering (bulk upserts share a timestamp; re-uploads mutate in place), so
@@ -239,14 +247,18 @@ class ChunkEntityMention(SQLModel, table=True):
 
 
 class ChunkExtraction(SQLModel, table=True):
-    """Processed-marker: one row per (chunk, model, prompt_hash) successfully
+    """Processed-marker: one row per (chunk, model, prompt_version) successfully
     extracted. Presence means "this chunk is done under this exact model +
-    prompt"; absence means pending. We record status='empty' for zero-yield
-    chunks (so they aren't re-run forever) but write NOTHING on HTTP/parse
-    failure, so genuine failures are naturally re-selected next run. The key
-    deliberately excludes chunk content hash in v1 (in-place content edits are
-    out of scope; re-loading a changed chunk under a seen model+prompt will not
-    re-extract until content hashing is added)."""
+    prompt version"; absence means pending. The key stores the prompt VERSION
+    LABEL (``v1``, ``v2``, ...), not a sha256 of the prompt text, so promoting a
+    prompt is a deliberate pointer move rather than an accidental byte-diff (see
+    extract.PROMPT_VERSIONS). We record status='empty' for zero-yield chunks (so
+    they aren't re-run forever) but write NOTHING on HTTP/parse failure, so
+    genuine failures are naturally re-selected next run. The key deliberately
+    excludes a chunk content hash (in-place content edits are out of scope;
+    re-loading a changed chunk under a seen model+version will not re-extract
+    until content hashing is added). Mirror of the column swap in
+    chart/migrations/20260705120000_grimoire_prompt_version.sql."""
 
     __tablename__ = "chunk_extraction"
     __table_args__ = (
@@ -263,7 +275,9 @@ class ChunkExtraction(SQLModel, table=True):
         )
     )
     model: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
-    prompt_hash: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
+    prompt_version: str = Field(
+        sa_column=Column(String, primary_key=True, nullable=False)
+    )
     status: ExtractionStatus = Field(sa_column=Column(String, nullable=False))
     extracted_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
