@@ -33,6 +33,7 @@ multirun(
         "//projects/firecracker/git-mirror:image.push",
         "//projects/firecracker/goosecracker/guest-init:image.push",
         "//projects/firecracker/goosecracker/guest:image.push",
+        "//projects/firecracker/sandbox/guest:image.push",
         "//projects/firecracker/semgrep/guest:image.push",
         "//projects/firecracker/substrate/chart:chart.push",
         "//projects/firecracker/substrate/egress-proxy:image.push",
