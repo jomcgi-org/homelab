@@ -31,7 +31,7 @@ def test_manifest_ids_and_paths() -> None:
     ]
     for rid, entry in cat.items():
         assert entry.id == rid
-        assert entry.baked_path == f"/home/goose-agent/recipes/{rid}.yaml"
+        assert entry.injected_path == f"/injected-context/{rid}.yaml"
         assert entry.description  # non-empty, used in the tool schema
 
     assert recipe_catalog.enabled_enum() == list(cat)

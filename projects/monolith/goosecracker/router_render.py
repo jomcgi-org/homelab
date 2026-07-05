@@ -7,9 +7,11 @@ guest ``agent.yaml`` scaffolding. The generated router is a specialization,
 not a novel recipe (Design invariant 4):
 
 - ``sub_recipes:`` lists ONLY the plan's enabled sub-recipes, each pointing at
-  its stable baked guest path ``/home/goose-agent/recipes/<id>.yaml`` (goose's
-  ``delegate`` resolves a source name against the recipe's own local
-  ``sub_recipes`` list, so listing them here is required and sufficient).
+  its injected path ``/injected-context/<id>.yaml`` (goose's ``delegate``
+  resolves a source name against the recipe's own local ``sub_recipes`` list,
+  so listing them here is required and sufficient). Sub-recipe bodies are no
+  longer baked into the guest image: the runner injects them fresh each turn
+  alongside this router, so resumed threads run current sub-recipe text too.
 - The ``agent.yaml`` "classify and route" preamble is replaced by an EXPLICIT
   ORDERED PLAN: the caller already decided the route, so the model executes the
   steps in order instead of classifying.
@@ -325,9 +327,16 @@ _AGENT_RESPONSE_SCHEMA = {
 }
 
 
-def _baked_path(recipe_id: str) -> str:
-    """The stable guest path a sub-recipe id resolves to (Design invariant 5)."""
-    return f"/home/goose-agent/recipes/{recipe_id}.yaml"
+def _injected_recipe_path(recipe_id: str) -> str:
+    """The guest path a sub-recipe id resolves to.
+
+    Sub-recipe bodies are no longer baked into the guest image: the runner
+    injects them fresh every turn into ``/injected-context/`` (the same
+    mechanism that already delivers the router), so both fresh and
+    snapshot-resumed threads run current sub-recipe text. This path is where
+    that injected body lands, and what the router's ``sub_recipes`` list and
+    goose's ``delegate`` resolve against."""
+    return f"/injected-context/{recipe_id}.yaml"
 
 
 # Verbatim from agent.yaml: the /injected-context/ (ADR 040) handling block.
@@ -570,7 +579,7 @@ def _sub_recipes(plan: Plan) -> list[dict]:
     order, each pointing at its baked guest path. A disabled id appears nowhere."""
     entries: list[dict] = []
     for recipe_id in plan.enabled_subrecipes:
-        entry: dict = {"name": recipe_id, "path": _baked_path(recipe_id)}
+        entry: dict = {"name": recipe_id, "path": _injected_recipe_path(recipe_id)}
         # Preserve agent.yaml's sequential_when_repeated for implement.
         if recipe_id == "implement":
             entry["sequential_when_repeated"] = True
@@ -703,7 +712,7 @@ def render_router(plan: Plan) -> str:
 
 
 def _fallback_sub_recipes() -> list[dict]:
-    """All catalog sub-recipes, in catalog order, each at its baked guest path.
+    """All catalog sub-recipes, in catalog order, each at its injected path.
 
     Mirrors the guest agent.yaml sub_recipes block so the injected fallback
     router is byte-faithful to it. Sourced from ``recipe_catalog.CATALOG`` (the
@@ -714,7 +723,7 @@ def _fallback_sub_recipes() -> list[dict]:
 
     entries: list[dict] = []
     for recipe_id in CATALOG:
-        entry: dict = {"name": recipe_id, "path": _baked_path(recipe_id)}
+        entry: dict = {"name": recipe_id, "path": _injected_recipe_path(recipe_id)}
         # Preserve agent.yaml's sequential_when_repeated for implement.
         if recipe_id == "implement":
             entry["sequential_when_repeated"] = True
@@ -739,9 +748,10 @@ def render_fallback_router() -> str:
 
     The recipe is a verbatim reproduction of the checked-in guest agent.yaml,
     pinned by ``tests/router_render_test.py`` (full parse-equality). Sub-recipe
-    BODIES still resolve to their baked guest paths, exactly as
-    :func:`render_router` does: this restores the delegate tool + current router
-    text, not sub-recipe body currency.
+    BODIES resolve to their injected paths (``/injected-context/<id>.yaml``),
+    exactly as :func:`render_router` does: the runner injects those bodies fresh
+    each turn, so a resumed thread runs current router text AND current
+    sub-recipe text, not the frozen copies its rootfs was snapshotted with.
     """
     recipe = {
         "version": _RECIPE_VERSION,

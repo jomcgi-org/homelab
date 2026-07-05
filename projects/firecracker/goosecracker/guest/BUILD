@@ -18,19 +18,13 @@ pkg_tar(
     package_dir = "/home/goose-agent/.config/goose",
 )
 
-# Bake the recipe library at ~/recipes (FC_GOOSE_RECIPE points here).
-pkg_tar(
-    name = "recipes_tar",
-    srcs = glob(["recipes/*.yaml"]),
-    mode = "0644",
-    owner = "65532.65532",
-    package_dir = "/home/goose-agent/recipes",
-)
-
-# Expose the recipe YAMLs (read-only) to the monolith's recipe_catalog
-# drift-guard test, which asserts the monolith's sub-recipe id manifest
-# matches this checked-in set. Same source glob as recipes_tar above; this
-# just adds a public label so a cross-package py_test can take it as data.
+# Recipe bodies are NOT baked into the image any more. The monolith runner
+# injects them into the guest's /injected-context each turn (the same channel
+# that delivers the router), so both fresh and snapshot-resumed threads run
+# current recipe text. This filegroup is the single source of truth: the
+# monolith takes it as data both for runtime injection (`//projects/monolith:main`)
+# and for the recipe_catalog drift-guard test (which asserts the monolith's
+# sub-recipe id manifest matches this checked-in set).
 filegroup(
     name = "recipe_yamls",
     srcs = glob(["recipes/*.yaml"]),
@@ -90,7 +84,6 @@ apko_image(
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/goosecracker/guest",
     tars = [
         ":config_tar",
-        ":recipes_tar",
         ":impeccable_tar",
     ],
 )

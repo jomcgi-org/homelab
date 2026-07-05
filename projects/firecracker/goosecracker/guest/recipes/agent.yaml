@@ -230,33 +230,33 @@ parameters:
 # safe.
 sub_recipes:
   - name: query
-    path: /home/goose-agent/recipes/query.yaml
+    path: /injected-context/query.yaml
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
   - name: research
-    path: /home/goose-agent/recipes/research.yaml
+    path: /injected-context/research.yaml
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
   - name: plan
-    path: /home/goose-agent/recipes/plan.yaml
+    path: /injected-context/plan.yaml
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
   - name: implement
-    path: /home/goose-agent/recipes/implement.yaml
+    path: /injected-context/implement.yaml
     sequential_when_repeated: true
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
   - name: artifact-build
-    path: /home/goose-agent/recipes/artifact-build.yaml
+    path: /injected-context/artifact-build.yaml
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md
   - name: artifact-review
-    path: /home/goose-agent/recipes/artifact-review.yaml
+    path: /injected-context/artifact-review.yaml
     values:
       task_file: "{{ task_file }}"
       context_file: /tmp/goose/context.md

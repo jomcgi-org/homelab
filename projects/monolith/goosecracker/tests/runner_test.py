@@ -25,6 +25,46 @@ _GOOSE_RESULT = (
 )
 
 
+def test_subrecipe_bodies_loads_every_catalog_id_from_runfiles():
+    """The runner reads every catalog sub-recipe body from runfiles for injection.
+
+    Guards the cross-package data dep (goosecracker_runner_test data ->
+    :recipe_yamls) and the parents[] runfiles hop in ``_GUEST_RECIPES_DIR``: a
+    missing data dep or a wrong path fails here in CI, not at runtime with a
+    FileNotFoundError that would kill every agent run.
+    """
+    import yaml
+
+    from goosecracker.recipe_catalog import CATALOG
+
+    runner._subrecipe_bodies.cache_clear()
+    bodies = runner._subrecipe_bodies()
+    assert set(bodies) == {f"{rid}.yaml" for rid in CATALOG}
+    for name, body in bodies.items():
+        parsed = yaml.safe_load(body)
+        assert isinstance(parsed, dict) and parsed.get("instructions"), name
+
+
+def test_router_delegate_paths_match_injected_bodies():
+    """Every path the fallback router delegates to is a body the runner injects.
+
+    The naming contract binds render_fallback_router() to _subrecipe_bodies():
+    the router points ``delegate`` at ``/injected-context/<id>.yaml`` and the
+    runner must inject a body under that exact basename, or the guest delegates
+    to a file that was never staged.
+    """
+    import yaml
+
+    from goosecracker.router_render import render_fallback_router
+
+    runner._subrecipe_bodies.cache_clear()
+    keys = set(runner._subrecipe_bodies())
+    doc = yaml.safe_load(render_fallback_router())
+    for sub in doc["sub_recipes"]:
+        assert sub["path"] == f"/injected-context/{sub['name']}.yaml"
+        assert f"{sub['name']}.yaml" in keys
+
+
 def test_extract_summary_pulls_summary_line():
     assert (
         runner._extract_summary(_GOOSE_RESULT) == "A bouncing ball demo with gravity."

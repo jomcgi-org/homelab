@@ -2,9 +2,12 @@
 
 This module is the one place that knows the sub-recipe id set, the human
 descriptions surfaced in the DeepSeek orchestrator's ``submit_plan`` tool
-schema, and the baked guest recipe paths those ids resolve to. Everything
+schema, and the injected guest recipe paths those ids resolve to. Everything
 downstream (the tool schema enum, the router renderer's ``sub_recipes``
 list) derives from ``CATALOG`` rather than repeating the id set.
+
+Sub-recipe bodies are injected into ``/injected-context/`` by the runner each
+turn (not baked into the guest image), so the paths point there.
 
 The router recipe itself (``agent.yaml``) is the classifier the runtime
 router replaces; it is not a selectable sub-recipe and is intentionally
@@ -20,18 +23,18 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RecipeEntry:
-    """One selectable sub-recipe: its id, tool-schema description, and baked guest path."""
+    """One selectable sub-recipe: its id, tool-schema description, and injected guest path."""
 
     id: str
     description: str
-    baked_path: str
+    injected_path: str
 
 
 def _entry(recipe_id: str, description: str) -> RecipeEntry:
     return RecipeEntry(
         id=recipe_id,
         description=description,
-        baked_path=f"/home/goose-agent/recipes/{recipe_id}.yaml",
+        injected_path=f"/injected-context/{recipe_id}.yaml",
     )
 
 

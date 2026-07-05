@@ -90,7 +90,7 @@ def test_sub_recipes_match_enabled_in_order() -> None:
     names = [s["name"] for s in doc["sub_recipes"]]
     assert tuple(names) == plan.enabled_subrecipes
     for sub in doc["sub_recipes"]:
-        assert sub["path"] == f"/home/goose-agent/recipes/{sub['name']}.yaml"
+        assert sub["path"] == f"/injected-context/{sub['name']}.yaml"
         assert sub["values"]["task_file"] == "{{ task_file }}"
         assert sub["values"]["context_file"] == "/tmp/goose/context.md"
 
@@ -258,7 +258,7 @@ def test_fallback_router_lists_all_sub_recipes_for_delegate() -> None:
     names = [s["name"] for s in doc["sub_recipes"]]
     assert tuple(names) == _ALL_IDS
     for sub in doc["sub_recipes"]:
-        assert sub["path"] == f"/home/goose-agent/recipes/{sub['name']}.yaml"
+        assert sub["path"] == f"/injected-context/{sub['name']}.yaml"
         assert sub["values"]["task_file"] == "{{ task_file }}"
         assert sub["values"]["context_file"] == "/tmp/goose/context.md"
     impl = next(s for s in doc["sub_recipes"] if s["name"] == "implement")
