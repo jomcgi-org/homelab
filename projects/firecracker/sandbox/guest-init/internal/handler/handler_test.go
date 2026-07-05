@@ -128,6 +128,53 @@ func TestHandleInputFileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleInputFileOverwriteRoundTrip(t *testing.T) {
+	requirePython(t)
+	// Regression guard (Opus PR B review): a script that rewrites an input
+	// file in place must succeed and the modified content must come back in
+	// result.Files. The plain round-trip test only READS an input, so it
+	// never exercised the write path collectOutputFiles's doc promises ("An
+	// input the script modified ... IS returned").
+	//
+	// Caveat: dropPrivileges is off in this package's tests (a non-root
+	// runner cannot chown to uid 65532), so this proves the round-trip and
+	// change-detection logic but NOT the chownTree fix itself. Under real
+	// uid-drop in the guest the overwrite would fail with PermissionError
+	// without chownTree; that path only exists when running as root, which CI
+	// does not. The chownTree call is covered by code reading, not this test.
+	original := []byte("original\n")
+	resp, err := call(t, ExecRequest{
+		Code: "open('data.txt', 'w').write('rewritten')",
+		Files: []ExecFile{
+			{Path: "data.txt", ContentB64: base64.StdEncoding.EncodeToString(original)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Handle returned unexpected error: %v", err)
+	}
+	result := decodeResult(t, resp)
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d (error %q), want 0", result.ExitCode, result.Error)
+	}
+	var found bool
+	for _, f := range result.Files {
+		if f.Path != "data.txt" {
+			continue
+		}
+		found = true
+		data, decErr := base64.StdEncoding.DecodeString(f.ContentB64)
+		if decErr != nil {
+			t.Fatalf("decode data.txt content: %v", decErr)
+		}
+		if string(data) != "rewritten" {
+			t.Errorf("data.txt content = %q, want %q", data, "rewritten")
+		}
+	}
+	if !found {
+		t.Error("overwritten input data.txt not present in result.Files (change-detection missed it)")
+	}
+}
+
 func TestHandleGeneratedFilePickup(t *testing.T) {
 	requirePython(t)
 	resp, err := call(t, ExecRequest{Code: "open('out.txt', 'w').write('generated')"})
