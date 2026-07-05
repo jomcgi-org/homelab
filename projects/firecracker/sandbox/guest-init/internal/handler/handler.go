@@ -99,15 +99,9 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 	}
 	defer os.RemoveAll(workdir) // nosemgrep: no-bare-error-return
 
-	// The workdir is created by this process (root, since PID 1 in a raw
-	// Firecracker boot never drops privilege). The python subprocess drops to
-	// sandboxUID/sandboxGID below, so it needs ownership here to read inputs
-	// and write generated files.
-	if dropPrivileges {
-		if err := os.Chown(workdir, sandboxUID, sandboxGID); err != nil {
-			return nil, fmt.Errorf("handler: chown workdir: %w", err)
-		}
-	}
+	// Ownership of workdir and everything written into it is fixed up in one
+	// chownTree pass after all files exist (below), so the python subprocess,
+	// which drops to sandboxUID/sandboxGID, owns its whole working directory.
 
 	inputs := map[string]inputRecord{}
 	for _, f := range req.Files {
@@ -130,6 +124,21 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 
 	if err := os.WriteFile(filepath.Join(workdir, "main.py"), []byte(req.Code), 0o644); err != nil {
 		return nil, fmt.Errorf("handler: write main.py: %w", err)
+	}
+
+	// Everything under workdir was created by this (root) process, so the
+	// files and any nested parent dirs written above are owned root:root and
+	// the subprocess (uid 65532) sees them only as "other": read-only. A
+	// script that rewrites an input in place (open(path, "w"), df.to_csv) or
+	// creates a sibling in a nested input dir would then hit PermissionError.
+	// Chowning workdir alone is not enough because MkdirAll and WriteFile
+	// created new inodes under it; walk the tree and chown every entry so the
+	// subprocess owns its whole working directory. Gated by dropPrivileges:
+	// tests run as a non-root user that cannot chown to an arbitrary uid.
+	if dropPrivileges {
+		if err := chownTree(workdir); err != nil {
+			return nil, fmt.Errorf("handler: chown workdir tree: %w", err)
+		}
 	}
 
 	timeout := defaultTimeout
@@ -157,6 +166,27 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 		return nil, fmt.Errorf("handler: marshal result: %w", err)
 	}
 	return &shim.Response{Status: http.StatusOK, Body: body}, nil
+}
+
+// chownTree recursively chowns root and every entry beneath it to
+// sandboxUID/sandboxGID, so the python subprocess (which drops to that uid)
+// owns its whole working directory: the workdir itself, the main.py and
+// input files root wrote into it, and any nested parent dirs MkdirAll
+// created. Without this, those inodes stay root-owned and the subprocess,
+// being "other", can only read them, so an in-place rewrite of an input
+// (open(path, "w")) or a new sibling in a nested input dir fails with
+// PermissionError. Called only under dropPrivileges (production); a non-root
+// test runner cannot chown to an arbitrary uid.
+func chownTree(root string) error {
+	return filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("handler: walk %s: %w", path, err)
+		}
+		if err := os.Chown(path, sandboxUID, sandboxGID); err != nil {
+			return fmt.Errorf("handler: chown %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 // badRequest returns a structured ExecResult error at HTTP 400: malformed
