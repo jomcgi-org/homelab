@@ -48,6 +48,18 @@ func run(logger *slog.Logger) error {
 	// request.
 	_ = os.Setenv("PATH", "/usr/bin:/bin:/usr/local/bin")
 
+	// matplotlib's config/cache dir, shared by the warm-import below and every
+	// per-request exec (handler.MPLConfigDir). Created world-writable (0777)
+	// because warm-import runs as root here but per-request python runs as the
+	// dropped uid 65532; both must be able to (re)write the font cache. It
+	// lives on the /tmp tmpfs so it is captured in the warm-base snapshot.
+	_ = os.Setenv("MPLCONFIGDIR", handler.MPLConfigDir)
+	if err := os.MkdirAll(handler.MPLConfigDir, 0o777); err != nil {
+		logger.Warn("could not create MPLCONFIGDIR; matplotlib will fall back and may leak a font cache into workdirs", "err", err)
+	} else {
+		_ = os.Chmod(handler.MPLConfigDir, 0o777)
+	}
+
 	warmImports(logger)
 
 	// The warm-base snapshot (ADR 022) is taken once /shim/ready first
@@ -90,8 +102,16 @@ func run(logger *slog.Logger) error {
 func warmImports(logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// Beyond importing, render one throwaway figure so matplotlib builds its
+	// font cache (fontlist.json) into MPLCONFIGDIR now, captured in the
+	// warm-base snapshot. Without an actual draw the cache is not built at
+	// import time, and the first real plot per guest would both scan fonts and
+	// write the cache into the request workdir.
 	cmd := exec.CommandContext(ctx, "python3", "-c",
-		"import numpy, pandas, matplotlib, matplotlib.pyplot, scipy, PIL, yaml, dateutil")
+		"import matplotlib; matplotlib.use('Agg'); "+
+			"import numpy, pandas, scipy, PIL, yaml, dateutil; "+
+			"import io, matplotlib.pyplot as plt; "+
+			"plt.plot([0, 1], [0, 1]); plt.savefig(io.BytesIO(), format='png')")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn("warm-import failed; guest still serves, just cold on the first request", "err", err, "out", string(out))
 		return
