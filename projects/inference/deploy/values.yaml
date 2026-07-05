@@ -218,6 +218,17 @@ vllm:
     - "8"
     - "--kv-cache-dtype"
     - "fp8"
+    # FlashInfer (below) supports fp8 KV cache + automatic prefix caching
+    # together on CUDA; the default FlashAttention-2 backend silently disables
+    # APC when kv-cache-dtype is fp8. Multi-turn chat re-prefills full history
+    # today and goose agents share an identical tool-def prefix, so this is a
+    # real TTFT win at no extra VRAM cost (APC reuses the existing KV pool).
+    - "--enable-prefix-caching"
+  # Selects the FlashInfer attention backend (see extraArgs comment above).
+  # FlashInfer ships in the official vllm/vllm-openai:v0.19.1 image already,
+  # so no image rebuild is needed.
+  env:
+    VLLM_ATTENTION_BACKEND: FLASHINFER
 
 runtimeClassName: nvidia
 
