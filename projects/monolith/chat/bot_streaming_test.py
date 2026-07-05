@@ -741,3 +741,81 @@ class TestEditIfDueRateLimiting:
         # Both tool queries must appear in edit calls despite rapid arrival
         assert "first" in combined
         assert "second" in combined
+
+
+class TestAmbientNonStreaming:
+    """Ambient (unprompted) engages skip the thinking->edit flow and post one
+    complete message, so the bot reads as chiming in rather than visibly typing
+    a message it edits in place."""
+
+    @pytest.mark.asyncio
+    async def test_ambient_posts_single_complete_message(self):
+        """live=False: no placeholder, no progressive edits — one reply with the
+        full final text, and no intermediate "Thinking"/"Searching" render."""
+        bot = _make_bot()
+        message = _make_message(content="fable is kinda woof no?")
+        mock_store = _make_store()
+
+        events = [
+            _thinking_delta("Let me weigh that"),
+            _tool_call_event("web_search", {"query": "fable stats patch"}),
+            _tool_result_event("web_search", tool_call_id="c1"),
+            _text_delta("Nah, "),
+            _text_delta("fable's holding up fine."),
+        ]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=False, live=False
+            )
+
+        # Exactly one message posted — the complete response, not a placeholder.
+        message.reply.assert_called_once()
+        posted = message.reply.call_args_list[0][0][0]
+        assert posted == "Nah, fable's holding up fine."
+        assert "Thinking" not in posted
+        assert "Searching" not in posted
+        # No progressive/in-place edits in ambient mode.
+        sent.edit.assert_not_called()
+        assert text == "Nah, fable's holding up fine."
+
+    @pytest.mark.asyncio
+    async def test_live_true_still_streams_placeholder_and_edits(self):
+        """Regression guard: the explicit (live=True) path keeps the initial
+        placeholder-then-edit behavior so mentions still get live feedback."""
+        bot = _make_bot()
+        message = _make_message(content="hey bot")
+        mock_store = _make_store()
+
+        events = [
+            _thinking_delta("hmm"),
+            _text_delta("Hello "),
+            _text_delta("there."),
+        ]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=True, live=True
+            )
+
+        # The placeholder went out first (thinking indicator), then edits followed.
+        first_reply = message.reply.call_args_list[0][0][0]
+        assert "\U0001f4ad Thinking..." == first_reply
+        sent.edit.assert_called()
+        assert text == "Hello there."
