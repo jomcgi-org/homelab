@@ -285,6 +285,35 @@ class AttentionDecision(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ReactionEvent(SQLModel, table=True):
+    """Human reactions on Bosun's own messages in ambient channels.
+
+    Ground-truth signal for the /improve-ambient loop: a reaction on a reply is
+    a cheaper, clearer quality signal than inferring from follow-up text. Only
+    reactions on bot-authored messages are persisted (target_is_bot always True
+    today); the bot's own seed reactions are never logged. action add/remove
+    lets a removal cancel an earlier signal.
+    """
+
+    __tablename__ = "reaction_event"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('add', 'remove')",
+            name="reaction_event_action_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str = Field(default="")
+    message_id: str = Field(default="")
+    target_is_bot: bool = Field(default=True)
+    emoji: str = Field(default="")
+    reactor_id: str = Field(default="")
+    action: str = Field(default="add")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ChannelDirective(SQLModel, table=True):
     """Living per-channel behavioural directive (ADR 035 phase 5).
 
