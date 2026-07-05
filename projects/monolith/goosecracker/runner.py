@@ -28,6 +28,8 @@ import logging
 import os
 import re
 import time
+from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -91,6 +93,44 @@ _MAX_DISCORD = 1800
 # to this many replans. The cap is enforced deterministically here, never
 # trusting a recipe-side counter; at the cap the current result is finalized.
 _MAX_REPLANS = 3
+
+# Sub-recipe bodies (query/plan/implement/research/artifact-*) are NOT baked
+# into the guest image any more: the runner injects them into /injected-context
+# fresh every turn, the same channel that already delivers the router. That is
+# what lets a snapshot-resumed thread run CURRENT sub-recipe text instead of the
+# frozen copy its rootfs was snapshotted with. The source YAMLs live in the
+# guest recipe package and are shipped into this binary's runfiles as data (see
+# `//projects/monolith:main` data -> `:recipe_yamls`); read cross-package via
+# the same parents[] hop the recipe-catalog drift test uses.
+# No .resolve(): the runfiles entry is a symlink, and resolving it would follow
+# the file out to a content-addressed store where this relative parents[] hop no
+# longer reaches the sibling firecracker/ package. The recipe-catalog drift test
+# reads the same dir the same way (parents-relative, unresolved).
+_GUEST_RECIPES_DIR = (
+    Path(__file__).parents[2] / "firecracker/goosecracker/guest/recipes"
+)
+
+
+@lru_cache(maxsize=1)
+def _subrecipe_bodies() -> dict[str, str]:
+    """Every catalog sub-recipe body, keyed by the basename the router points at.
+
+    Returns ``{"<id>.yaml": <body>}`` for each id in ``CATALOG``, ready to merge
+    into ``injectedContext`` so the guest finds each body at
+    ``/injected-context/<id>.yaml`` (the path ``render_router`` /
+    ``render_fallback_router`` resolve ``delegate`` against). All ids are always
+    injected, not just a plan's enabled subset, because an enabled sub-recipe can
+    transitively delegate to another (plan and implement both delegate research).
+    Cached: the bodies are immutable in the image, so read once.
+    """
+    from goosecracker.recipe_catalog import CATALOG
+
+    return {
+        f"{recipe_id}.yaml": (_GUEST_RECIPES_DIR / f"{recipe_id}.yaml").read_text(
+            encoding="utf-8"
+        )
+        for recipe_id in CATALOG
+    }
 
 
 def _progress_url(session: str) -> str:
@@ -670,19 +710,21 @@ async def _invoke_turn(
         injected_context = {**injected_context, "repo": repo}
     # Task 6: a Plan present means the DeepSeek orchestrator constructed a
     # runtime plan for this turn. Render the router + plan file and ADD them
-    # to injected_context (the ADR 040 per-turn context built above is
-    # preserved untouched), then point the guest at the injected router
-    # instead of the baked agent recipe. Basenames only (router.yaml,
-    # plan.md), as writeInjectedContext requires. Absent a plan, this is a
-    # no-op: recipe stays "agent" (or whatever the caller passed), exactly
-    # today's behavior. On a Task 7 replan re-run, this is called again with a
-    # revised plan, so the router/plan file reflect the new plan each time.
+    # to injected_context, alongside the sub-recipe bodies the router delegates
+    # to (the ADR 040 per-turn context built above is preserved untouched), then
+    # point the guest at the injected router instead of the baked agent recipe.
+    # Basenames only (router.yaml, plan.md, <id>.yaml), as writeInjectedContext
+    # requires. Absent a plan, this is a no-op: recipe stays "agent" (or whatever
+    # the caller passed), exactly today's behavior. On a Task 7 replan re-run,
+    # this is called again with a revised plan, so the router/plan file reflect
+    # the new plan each time.
     effective_recipe = recipe
     if plan is not None:
         from goosecracker.router_render import render_plan_file, render_router
 
         injected_context = {
             **injected_context,
+            **_subrecipe_bodies(),
             "router.yaml": render_router(plan),
             "plan.md": render_plan_file(plan),
         }
@@ -701,6 +743,7 @@ async def _invoke_turn(
 
         injected_context = {
             **injected_context,
+            **_subrecipe_bodies(),
             "router.yaml": render_fallback_router(),
         }
         effective_recipe = "/injected-context/router.yaml"

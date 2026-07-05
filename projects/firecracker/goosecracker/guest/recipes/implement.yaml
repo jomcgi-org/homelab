@@ -107,7 +107,7 @@ extensions:
     name: developer
 sub_recipes:
   - name: research
-    path: /home/goose-agent/recipes/research.yaml
+    path: /injected-context/research.yaml
     values:
       task_file: /tmp/goose/research-question.md
       context_file: /tmp/goose/context.md

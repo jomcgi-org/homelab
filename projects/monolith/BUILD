@@ -117,6 +117,12 @@ py_venv_binary(
         # 036); the "chat/**/*.py" glob does not capture the .md, so ship it
         # explicitly or every escalation fails open with FileNotFoundError.
         "chat/orchestrator_bundle.md",
+        # goosecracker.runner injects the guest sub-recipe bodies into
+        # /injected-context each turn (they are no longer baked into the guest
+        # image), reading them from runfiles via Path(__file__).parents[2] /
+        # "firecracker/goosecracker/guest/recipes". Ship the source YAMLs into
+        # runfiles as data or every agent run fails with FileNotFoundError.
+        "//projects/firecracker/goosecracker/guest:recipe_yamls",
         "knowledge/repo_docs_manifest.ndjson",
         ":frontend_dist",
     ],
@@ -146,6 +152,10 @@ py_venv_binary(
         # must ship in the jobs image too (data on :main does not propagate to
         # this separate binary).
         "campsites/catalog.json",
+        # A scheduled routine can dispatch a goosecracker run, which reaches
+        # goosecracker.runner and reads the injected sub-recipe bodies from
+        # runfiles; ship them here too (data on :main does not propagate here).
+        "//projects/firecracker/goosecracker/guest:recipe_yamls",
     ],
     imports = ["."],  # keep
     main = "app/jobs_main.py",
@@ -4601,6 +4611,11 @@ py_test(
 py_test(
     name = "goosecracker_runner_test",
     srcs = ["goosecracker/tests/runner_test.py"],
+    # runner._subrecipe_bodies() reads the checked-in guest recipe YAMLs from
+    # runfiles (Path(__file__).parents[2]) to inject them each turn; the loader
+    # test exercises that read, so ship the recipes as data (same filegroup
+    # goosecracker_router_render_test uses) or the test hits FileNotFoundError.
+    data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
     imports = ["."],
     deps = [
         ":monolith_backend",
