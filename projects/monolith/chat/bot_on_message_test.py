@@ -680,6 +680,115 @@ class TestAttentionGate:
             mock_proc.assert_called_once_with(message)
 
 
+class TestAmbientReplyIdRecorded:
+    """The ambient in-channel reply's discord id is linked back to the engage
+    decision (PR 1.5 of /improve-ambient), so a reaction on the reply joins to
+    the engage exactly rather than by a time window."""
+
+    @pytest.fixture(name="engine")
+    def engine_fixture(self):
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        original_schemas = {}
+        for table in SQLModel.metadata.tables.values():
+            if table.schema is not None:
+                original_schemas[table.name] = table.schema
+                table.schema = None
+        SQLModel.metadata.create_all(engine)
+        yield engine
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+    @pytest.mark.asyncio
+    async def test_process_message_links_reply_to_engage(self, engine):
+        """_process_message(force_respond=True) records the delivered reply's id
+        on the newest engage row for the trigger message."""
+        from chat import attention_log
+        from chat.models import AttentionDecision
+
+        bot = _make_bot()
+        message = _make_message(
+            content="what's a good name for a boat?", channel_id=99, msg_id=7
+        )
+        message.reference = None
+
+        # Seed the engage decision on_message would have logged for this trigger.
+        with patch("chat.attention_log.get_engine", return_value=engine):
+            attention_log.log_decision("99", "7", "engage", 0.9, _rng=lambda: 0.0)
+
+        mock_store = _make_store()
+        sent = MagicMock(id=100)
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.attention_log.get_engine", return_value=engine),
+            patch.object(
+                bot,
+                "_stream_response",
+                AsyncMock(return_value=(sent, "The SS Anytime", None)),
+            ),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot._process_message(message, force_respond=True)
+
+        with Session(engine) as session:
+            row = session.exec(select(AttentionDecision)).one()
+        assert row.reply_message_id == "100"
+
+    @pytest.mark.asyncio
+    async def test_non_ambient_reply_does_not_link(self, engine):
+        """A normal (non-force_respond) reply has no engage row and must not
+        attempt to record a reply id, so the seeded ignore row stays untouched."""
+        from chat import attention_log
+        from chat.models import AttentionDecision
+
+        bot = _make_bot()
+        bot._connection.user.id = 999
+        bot_user = bot.user
+        message = _make_message(
+            content="Hey bot!", channel_id=99, msg_id=7, mentions=[bot_user]
+        )
+        message.reference = None
+
+        with patch("chat.attention_log.get_engine", return_value=engine):
+            attention_log.log_decision("99", "7", "ignore", 0.1, _rng=lambda: 0.0)
+
+        mock_store = _make_store()
+        sent = MagicMock(id=100)
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.attention_log.get_engine", return_value=engine),
+            patch("chat.bot.attention_log.set_reply_message") as mock_set_reply,
+            patch.object(
+                bot,
+                "_stream_response",
+                AsyncMock(return_value=(sent, "Hi there", None)),
+            ),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot._process_message(message, force_respond=False)
+
+        mock_set_reply.assert_not_called()
+        with Session(engine) as session:
+            row = session.exec(select(AttentionDecision)).one()
+        assert row.reply_message_id is None
+
+
 class TestRecentlyTagged:
     """ChatBot._recently_tagged: recent-tag weighting for the attention gate."""
 
