@@ -469,6 +469,10 @@ apko.translate_lock(
     lock = "//projects/firecracker/semgrep/guest:apko.lock.json",
 )
 apko.translate_lock(
+    name = "sandbox_guest_lock",
+    lock = "//projects/firecracker/sandbox/guest:apko.lock.json",
+)
+apko.translate_lock(
     name = "fc_invoke_lock",
     lock = "//projects/firecracker/substrate/invoke:apko.lock.json",
 )
@@ -476,7 +480,7 @@ apko.translate_lock(
     name = "git_mirror_lock",
     lock = "//projects/firecracker/git-mirror:apko.lock.json",
 )
-use_repo(apko, "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "semgrep_guest_lock", "visual_chromium_lock")
+use_repo(apko, "fc_invoke_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
