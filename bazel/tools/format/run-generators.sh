@@ -13,8 +13,10 @@
 # wrapper only cd's to the workspace and invokes them):
 #   - home-cluster kustomization, the push-all BUILD list, monolith routes,
 #     the two doc-index manifests
-#     (repo_docs_manifest.ndjson + the public docs-manifest.json), and the
-#     ADR 036 orchestrator context bundle (orchestrator_bundle.md).
+#     (repo_docs_manifest.ndjson + the public docs-manifest.json), the
+#     ADR 036 orchestrator context bundle (orchestrator_bundle.md), and the
+#     guest env-readmes (ADR agents/044: environment.md per guest image,
+#     derived from that guest's apko.lock.json + env-notes.md).
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;
@@ -33,6 +35,11 @@ run() {
 	"$@" &
 	pids+=($!)
 }
+
+# Guest env-readmes run BEFORE the parallel batch: the doc-manifest
+# generators below index repo markdown (including environment.md), so
+# writing it concurrently would make the manifests flip-flop across runs.
+python3 ./projects/firecracker/tools/env_readme/gen_env_readme.py --lock projects/firecracker/goosecracker/guest/apko.lock.json --title "goosecracker agent guest environment" --notes projects/firecracker/goosecracker/guest/env-notes.md --out projects/firecracker/goosecracker/guest/environment.md || exit 1
 
 run ./bazel/images/generate-home-cluster.sh
 run ./bazel/images/generate-push-all.sh
