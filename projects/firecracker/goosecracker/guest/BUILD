@@ -42,7 +42,7 @@ genrule(
     ],
     outs = ["environment.md"],
     cmd = "$(location //projects/firecracker/tools/env_readme:env_readme) --lock $(location apko.lock.json) --title 'goosecracker agent guest environment' --notes $(location env-notes.md) > $@",
-    tools = ["//projects/firecracker/tools/env_readme:env_readme"],
+    tools = ["//projects/firecracker/tools/env_readme"],
 )
 
 pkg_tar(
