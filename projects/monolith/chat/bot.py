@@ -1492,7 +1492,23 @@ class ChatBot(discord.Client):
             # ADR 036: routed to chat, so reply to the triggering message rather
             # than opening a session thread.
             try:
-                await message.reply(outcome.chat_reply)
+                sent = await message.reply(outcome.chat_reply)
+                # Link this in-channel reply to the ambient engage decision so a
+                # reaction on it joins to the engage exactly (ADR 035 /
+                # improve-ambient). The thread-opening path has no single
+                # in-channel reply, so it stays null. Best-effort.
+                try:
+                    await asyncio.to_thread(
+                        attention_log.set_reply_message,
+                        str(channel.id),
+                        str(message.id),
+                        str(sent.id),
+                    )
+                except Exception:
+                    logger.exception(
+                        "attention: failed to record agent reply id for %s",
+                        message.id,
+                    )
             except discord.HTTPException:
                 logger.exception("orchestrator: failed to send chat reply")
         elif outcome.thread is None and explicit:
@@ -1598,6 +1614,25 @@ class ChatBot(discord.Client):
                 )
         except Exception:
             logger.exception("Failed to store bot response for message %s", msg_id)
+
+        # Link this reply back to the ambient engage decision (ADR 035 /
+        # improve-ambient), so a reaction on the reply joins to the engage
+        # exactly rather than by a time window. Only the ambient path
+        # (force_respond) has an engage row to attach to; a normal mention/reply
+        # has none, so guard on force_respond. Best-effort: never block the
+        # reply on a bookkeeping failure.
+        if force_respond:
+            try:
+                await asyncio.to_thread(
+                    attention_log.set_reply_message,
+                    channel_id,
+                    str(message.id),
+                    str(sent.id),
+                )
+            except Exception:
+                logger.exception(
+                    "attention: failed to record reply id for message %s", msg_id
+                )
 
         with Session(get_engine()) as session:
             store = MessageStore(session=session, embed_client=self.embed_client)
