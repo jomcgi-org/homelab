@@ -310,33 +310,6 @@ def set_channel_directive(
     return new_version
 
 
-def active_channel_detail(channel_id: str) -> dict | None:
-    """The active channel directive as ``{text, version, source}``, or None if
-    the channel has no active row. Used by the introspection surface and by the
-    autopilot to capture prior text/version + check the manual-precedence source.
-    """
-    with Session(get_engine()) as session:
-        row = _active_row(session, channel_id)
-        if row is None:
-            return None
-        return {"text": row.directive, "version": row.version, "source": row.source}
-
-
-def active_style_pref_detail(user_id: str) -> dict | None:
-    """The active user style pref as ``{pref, source, created_at}``, or None if
-    the user has no active pref. UserStylePref has no version column, so the
-    autopilot keys its revert on the stored prior text, not a version."""
-    with Session(get_engine()) as session:
-        row = session.exec(
-            select(UserStylePref)
-            .where(UserStylePref.user_id == user_id)
-            .where(UserStylePref.active == True)  # noqa: E712 - SQL boolean
-        ).first()
-        if row is None:
-            return None
-        return {"pref": row.pref, "source": row.source, "created_at": row.created_at}
-
-
 def pin_channel_directive(channel_id: str) -> bool:
     """Mark a channel's active directive row ``source='manual'`` in place so the
     autopilot leaves it alone. This stamps provenance, not directive text, so it
