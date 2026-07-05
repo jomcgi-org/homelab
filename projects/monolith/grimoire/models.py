@@ -15,6 +15,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     Column,
+    Computed,
     DateTime,
     ForeignKey,
     String,
@@ -25,8 +26,38 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import JSON, Field, SQLModel
 
 # Mirror of the CHECK constraint in
-# chart/migrations/20260703070000_grimoire_schema.sql - keep in sync.
-EntityType = Literal["creature", "spell", "location", "npc", "faction", "deity", "item"]
+# chart/migrations/20260703070000_grimoire_schema.sql, expanded by
+# 20260705150000_grimoire_extraction_v4.sql to the generic typed-extraction set
+# (lore + gameplay + mechanics) - keep in sync. Grouped by the DERIVED category:
+# lore (unchanged from v1), gameplay (event/quest), mechanics (D&D game rules).
+EntityType = Literal[
+    # lore
+    "creature",
+    "spell",
+    "location",
+    "npc",
+    "faction",
+    "deity",
+    "item",
+    # gameplay
+    "event",
+    "quest",
+    # mechanics
+    "condition",
+    "feat",
+    "race",
+    "background",
+    "class",
+    "subclass",
+    "class_feature",
+    "action",
+    "rule",
+]
+# Category is DERIVED from entity_type by a stored generated column (see
+# _ENTITY_CATEGORY_EXPR / the migration), never written by the app.
+Category = Literal["lore", "gameplay", "mechanics"]
+# Temporality is set only for event/quest (nullable everywhere else).
+Temporality = Literal["historical", "present", "future"]
 SourceType = Literal["extracted", "homebrew"]
 EmbeddableKind = Literal["entity", "chunk", "transcript"]
 SessionStatus = Literal["active", "paused", "ended"]
@@ -52,16 +83,40 @@ def _uuid_column(
     return Column(*args, primary_key=primary_key, nullable=nullable)
 
 
+# Type -> category derivation (spec v4): a stored generated column so category is
+# ALWAYS a clean function of entity_type on both Postgres (the migration) and
+# SQLite (create_all fixtures). spell stays in lore here; the mechanics surface
+# unions spell in at QUERY time (category='mechanics' OR entity_type='spell'), not
+# at the column level. Mirror of the CASE in
+# 20260705150000_grimoire_extraction_v4.sql - keep in sync.
+_ENTITY_CATEGORY_EXPR = (
+    "CASE "
+    "WHEN entity_type IN ("
+    "'creature', 'spell', 'location', 'npc', 'faction', 'deity', 'item'"
+    ") THEN 'lore' "
+    "WHEN entity_type IN ('event', 'quest') THEN 'gameplay' "
+    "ELSE 'mechanics' END"
+)
+
+
 class Entity(SQLModel, table=True):
     __tablename__ = "entity"
     __table_args__ = (
         CheckConstraint(
-            "entity_type IN ('creature', 'spell', 'location', 'npc', 'faction', 'deity', 'item')",
+            "entity_type IN ("
+            "'creature', 'spell', 'location', 'npc', 'faction', 'deity', 'item', "
+            "'event', 'quest', "
+            "'condition', 'feat', 'race', 'background', 'class', 'subclass', "
+            "'class_feature', 'action', 'rule')",
             name="entity_entity_type_chk",
         ),
         CheckConstraint(
             "source_type IN ('extracted', 'homebrew')",
             name="entity_source_type_chk",
+        ),
+        CheckConstraint(
+            "temporality IS NULL OR temporality IN ('historical', 'present', 'future')",
+            name="entity_temporality_chk",
         ),
         {"schema": "grimoire", "extend_existing": True},
     )
@@ -75,6 +130,23 @@ class Entity(SQLModel, table=True):
     )
     entity_type: EntityType = Field(sa_column=Column(String, nullable=False))
     name: str
+    # DERIVED, never written: a stored generated column over entity_type. Read
+    # after a flush/refresh; the app must not pass a value (the DB computes it).
+    category: Category | None = Field(
+        default=None,
+        sa_column=Column(
+            String, Computed(_ENTITY_CATEGORY_EXPR, persisted=True), nullable=False
+        ),
+    )
+    # Set only for event/quest (the DB CHECK allows NULL for every other type).
+    temporality: Temporality | None = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
+    # Generic typed-detail payload for the gameplay/mechanics types that have no
+    # dedicated detail table (event/quest/condition/feat/.../rule). creature,
+    # location, npc, and spell keep their own typed detail tables and do NOT use
+    # this column. Postgres JSONB, SQLite JSON.
+    detail: dict | None = Field(default=None, sa_column=Column(_JSONB))
     source_type: SourceType = Field(
         default="extracted", sa_column=Column(String, nullable=False)
     )

@@ -88,7 +88,34 @@ DEFAULT_LIMIT = 25
 # by chat_public.limits; Discord / private chat / agents share the rest). It
 # also bounds the group size for the incremental per-group commit below.
 DEFAULT_CONCURRENCY = 6
-ENTITY_TYPES = {"creature", "spell", "location", "npc", "faction", "deity", "item"}
+
+# v4 generic typed-extraction taxonomy (spec v4). ~18 entity types grouped by the
+# DERIVED category: lore (unchanged from v1), gameplay (event/quest), and mechanics
+# (D&D game rules). ``category`` itself is a stored generated column on the entity
+# spine (models._ENTITY_CATEGORY_EXPR / the migration), not a value the extractor
+# emits. ENTITY_TYPES is the union: it gates the spine (unknown types are dropped
+# in _get_or_create_entity) and feeds the json_schema entity_type enum.
+LORE_TYPES: frozenset[str] = frozenset(
+    {"creature", "spell", "location", "npc", "faction", "deity", "item"}
+)
+GAMEPLAY_TYPES: frozenset[str] = frozenset({"event", "quest"})
+MECHANICS_TYPES: frozenset[str] = frozenset(
+    {
+        "condition",
+        "feat",
+        "race",
+        "background",
+        "class",
+        "subclass",
+        "class_feature",
+        "action",
+        "rule",
+    }
+)
+ENTITY_TYPES = set(LORE_TYPES | GAMEPLAY_TYPES | MECHANICS_TYPES)
+# temporality is set only for these two gameplay types (nullable elsewhere).
+TEMPORAL_TYPES: frozenset[str] = GAMEPLAY_TYPES
+TEMPORALITY_VALUES: frozenset[str] = frozenset({"historical", "present", "future"})
 
 # Mirrors ingest._Embedder: a per-module Protocol so extract.py does not
 # depend on ingest.py's private name across the package boundary.
@@ -145,6 +172,19 @@ REL_TYPES: tuple[str, ...] = (
     # Taxonomy
     "VARIANT_OF",
     "ORIGINATES_FROM",
+    # Events / gameplay (v4)
+    "OCCURRED_AT",
+    "INVOLVED",
+    "PRECEDED",
+    "CAUSED",
+    "ADVANCES",
+    "GIVEN_BY",
+    "OBJECTIVE_AT",
+    "REWARDS",
+    # Mechanics (v4)
+    "SUBCLASS_OF",
+    "FEATURE_OF",
+    "REQUIRES",
     # Fallback (escape hatch so the model never invents outside the set)
     "RELATED_TO",
 )
@@ -157,6 +197,9 @@ RELATED_TO = "RELATED_TO"
 AGENT_TYPES: frozenset[str] = frozenset({"npc", "creature", "faction", "deity"})
 PLACE_TYPES: frozenset[str] = frozenset({"location"})
 _KIN_TYPES: frozenset[str] = frozenset({"npc", "creature", "deity"})
+# Gameplay / mechanics endpoint groups for the v4 relationship signatures.
+EVENT_TYPES: frozenset[str] = frozenset({"event"})
+QUEST_TYPES: frozenset[str] = frozenset({"quest"})
 _ALL_TYPES: frozenset[str] = frozenset(ENTITY_TYPES)
 
 
@@ -195,7 +238,12 @@ REL_SIGNATURES: dict[str, RelSignature] = {
     "LOCATED_IN": RelSignature(_pairs(_ALL_TYPES, PLACE_TYPES), spatial=True),
     "CONTAINS": RelSignature(_pairs(PLACE_TYPES, _ALL_TYPES), spatial=True),
     "PART_OF": RelSignature(
-        _pairs(PLACE_TYPES, PLACE_TYPES) | _pairs({"faction"}, {"faction"}),
+        _pairs(PLACE_TYPES, PLACE_TYPES)
+        | _pairs({"faction"}, {"faction"})
+        # v4: a sub-event/sub-quest is PART_OF its parent (same-type; spatial flag
+        # keeps it from being reordered, which is harmless for same-type endpoints).
+        | _pairs(EVENT_TYPES, EVENT_TYPES)
+        | _pairs(QUEST_TYPES, QUEST_TYPES),
         spatial=True,
     ),
     "NEAR": RelSignature(
@@ -233,6 +281,22 @@ REL_SIGNATURES: dict[str, RelSignature] = {
     "DESCENDANT_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES)),
     "SIBLING_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES), symmetric=True),
     "SPOUSE_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES), symmetric=True),
+    # Events / gameplay (v4; all asymmetric, so a backwards edge swaps and an
+    # impossible one downgrades to RELATED_TO, exactly like the rest).
+    "OCCURRED_AT": RelSignature(_pairs(EVENT_TYPES, PLACE_TYPES)),
+    "INVOLVED": RelSignature(_pairs(EVENT_TYPES, AGENT_TYPES)),
+    # event -> event: same-type endpoints, so a reversed edge cannot be detected
+    # by type alone (like kinship); an off-type endpoint still downgrades.
+    "PRECEDED": RelSignature(_pairs(EVENT_TYPES, EVENT_TYPES)),
+    "CAUSED": RelSignature(_pairs(EVENT_TYPES, EVENT_TYPES)),
+    "ADVANCES": RelSignature(_pairs(EVENT_TYPES, QUEST_TYPES)),
+    "GIVEN_BY": RelSignature(_pairs(QUEST_TYPES, {"npc"})),
+    "OBJECTIVE_AT": RelSignature(_pairs(QUEST_TYPES, PLACE_TYPES)),
+    "REWARDS": RelSignature(_pairs(QUEST_TYPES, {"item"})),
+    # Mechanics (v4; asymmetric).
+    "SUBCLASS_OF": RelSignature(_pairs({"subclass"}, {"class"})),
+    "FEATURE_OF": RelSignature(_pairs({"class_feature"}, {"class", "subclass"})),
+    "REQUIRES": RelSignature(_pairs({"feat"}, {"feat", "class", "race"})),
     # Fallback: any <-> any, so a downgraded edge is always valid.
     "RELATED_TO": RelSignature(_pairs(_ALL_TYPES, _ALL_TYPES), symmetric=True),
 }
@@ -291,6 +355,11 @@ EXTRACT_SCHEMA: dict[str, Any] = {
                     "entity_type": {"type": "string", "enum": sorted(ENTITY_TYPES)},
                     "name": {"type": "string"},
                     "summary": {"type": "string"},
+                    # v4: set only for event/quest; enum-constrained but optional.
+                    "temporality": {
+                        "type": "string",
+                        "enum": sorted(TEMPORALITY_VALUES),
+                    },
                     "detail": {"type": "object"},
                 },
                 "required": ["entity_type", "name", "summary"],
@@ -695,17 +764,82 @@ A named identity or alias, even one that names an object (a disguised villain, a
 _V3_PROMPT_TEXT = _V2_PROMPT_TEXT + _V3_REL_SIGNATURE_ADDENDUM
 
 
+# v4: generic typed extraction over lore + gameplay + mechanics (spec v4). v3
+# verbatim (so v3 stays byte-frozen) PLUS a taxonomy addendum that widens the
+# entity vocabulary from the 7 lore types to ~18, introduces the derived category
+# and the event/quest temporality, promotes game mechanics (conditions, feats,
+# races, classes, class features, actions, rules) to first-class entities, and
+# adds the new relationship types. All of v3's lore/enrichment, dungeon-room,
+# canonical-naming, and relationship-direction guidance still applies. Built by
+# concatenation; do NOT edit this text once released, add a v5 instead.
+_V4_TAXONOMY_ADDENDUM = """
+
+GENERIC TYPED EXTRACTION (v4): LORE + GAMEPLAY + MECHANICS
+Everything above still holds. This section WIDENS what counts as an entity beyond the seven lore types. Each entity_type below derives a category automatically (you do NOT emit category): lore, gameplay, or mechanics.
+
+- category=lore (unchanged): creature, npc, location, faction, deity, item, spell.
+- category=gameplay: event, quest. Each carries a "temporality" field (see below).
+- category=mechanics: condition, feat, race, background, class, subclass, class_feature, action, rule.
+
+WHAT COUNTS for the new types (extract when the chunk genuinely describes one; a bare mention still belongs in "mentions"):
+- event: a specific happening in the world's history or the adventure's plot (a battle, a cataclysm, a founding, a prophesied doom). Not a generic recurring activity.
+- quest: an objective the party can pursue (a main plot goal, a side task, or an adventure hook), typically with a giver, an objective, and a reward.
+- condition: a defined game condition or status effect (Poisoned, Grappled, Frightened, Exhaustion).
+- feat: a named character feat (Sentinel, Great Weapon Master).
+- race: a playable species/ancestry (Elf, Dwarf, Tiefling) and its traits.
+- background: a character background (Acolyte, Criminal, Folk Hero).
+- class: a character class (Wizard, Fighter, Cleric).
+- subclass: a class's subclass/archetype (Circle of the Moon, School of Evocation).
+- class_feature: a feature a class or subclass grants at a level (Rage, Sneak Attack, Wild Shape). A class feature is class_feature, NEVER spell, even when it resembles magic.
+- action: a defined action, bonus action, or reaction available in play (Dodge, Dash, Opportunity Attack).
+- rule: a named rules subsystem or procedure worth capturing as an entity (Concentration, Cover, Exhaustion track). Keep pure prose rules text that names nothing as empty, as before.
+
+TEMPORALITY (event and quest only; set the top-level "temporality" field, one of historical|present|future):
+- historical: setting backstory or a past occurrence (an ancient war, a fallen empire).
+- present: current to the adventure (an ongoing siege, an active quest).
+- future: prophesied or scheduled (a foretold return, a planned ritual).
+Do NOT set temporality for any other type.
+
+MECHANICS GUIDANCE
+Extract game mechanics wherever they appear: in rulebooks (a class chapter, the conditions appendix) AND when an adventure or guide references them by name. This does NOT reopen the generic-suppression rule: a generic monster or mundane item mentioned in a scene is still furniture (put it in mentions). But a named condition, feat, race, class, subclass, class feature, action, or rule is now a first-class entity, not junk. Reconciling with the v3 "CLASS FEATURES ARE NOT SPELLS" rule: a class feature is now its OWN entity_type class_feature (still never spell).
+
+DETAIL fields for the new types (include only what the text supports; omit the rest):
+- event: temporality(historical|present|future), when(str), when_ordering(str), where(str), participants(array), outcome(str)
+- quest: temporality(present|future|historical), objective(str), giver(str), reward(str or array), quest_type(main|side|hook)
+- condition: effects(str)
+- feat: prerequisite(str), benefit(str)
+- race: ability_scores(object), traits(object), speed(str), size(str), subraces(array)
+- background: proficiencies(str), feature(str), equipment(str)
+- class: hit_die(str), primary_ability(str), saves(str), features_by_level(object)
+- subclass: parent_class(str), features_by_level(object)
+- class_feature: class(str), subclass(str), level(int), description(str)
+- action: action_type(action|bonus|reaction), description(str)
+- rule: rule_category(combat|exploration|social|magic), description(str)
+
+NEW RELATIONSHIP TYPES (added to the closed set; same direction discipline as above, a wrong-typed edge is worse than no edge):
+- OCCURRED_AT: event -> location (where an event happened).
+- INVOLVED: event -> agent (npc/creature/faction/deity that took part).
+- PRECEDED: event -> event (the from-event happened before the to-event). CAUSED: event -> event (the from-event caused the to-event).
+- ADVANCES: event -> quest (an event that moves a quest forward).
+- GIVEN_BY: quest -> npc (the quest giver). OBJECTIVE_AT: quest -> location (where the objective is). REWARDS: quest -> item (an item the quest grants).
+- SUBCLASS_OF: subclass -> class. FEATURE_OF: class_feature -> class or subclass. REQUIRES: feat -> feat, class, or race (a prerequisite).
+- Reuse the existing set where it fits: PART_OF for a sub-event/sub-quest of a larger one, GRANTS for a class/subclass/feat that grants a spell or class feature, RELATED_TO as the fallback."""
+
+_V4_PROMPT_TEXT = _V3_PROMPT_TEXT + _V4_TAXONOMY_ADDENDUM
+
+
 PROMPT_VERSIONS: dict[str, PromptVersion] = {
     "v1": PromptVersion(text=_V1_PROMPT_TEXT, schema=None),
     "v2": PromptVersion(text=_V2_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
     "v3": PromptVersion(text=_V3_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
+    "v4": PromptVersion(text=_V4_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
 }
 
 # The version the extraction pass writes and reads by default. Env-overridable so
 # a candidate (v4) can run on a fresh book without touching code; promotion is
 # moving this pointer. Read at import: jobs run as fresh processes, so the env is
 # honored per run.
-ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v3")
+ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v4")
 
 # Backward-compatible alias: the active version's system text. The
 # self-correction turn and any caller referencing EXTRACTION_PROMPT get the live
@@ -1129,6 +1263,29 @@ def _coerce_detail_fields(
     return coerced
 
 
+def _apply_generic_detail(entity: Entity, item: dict) -> None:
+    """Route a new-type entity's detail into the generic JSONB column and lift
+    temporality onto the spine (spec v4).
+
+    Used for the gameplay/mechanics types (and any spine-only lore type) that have
+    no dedicated detail table; creature/location/npc/spell keep their typed tables
+    and never reach here. Enrich, not overwrite, to match ADR 012 rev.: JSONB keys
+    are merged with existing keys winning (a fresh dict is reassigned so SQLAlchemy
+    flags the column dirty), and temporality (a top-level field or a ``detail`` key)
+    fills only when still NULL and only for event/quest.
+    """
+    detail = item.get("detail")
+    if isinstance(detail, dict) and detail:
+        current = entity.detail or {}
+        entity.detail = {**detail, **current}
+    if entity.entity_type in TEMPORAL_TYPES and entity.temporality is None:
+        temporality = item.get("temporality")
+        if not isinstance(temporality, str) and isinstance(detail, dict):
+            temporality = detail.get("temporality")
+        if temporality in TEMPORALITY_VALUES:
+            entity.temporality = temporality
+
+
 def _create_or_enrich_detail(
     session: Session, detail_model: type, entity_id: str, entity_name: str, detail: dict
 ) -> None:
@@ -1244,10 +1401,16 @@ def _get_or_create_entity(
 
     # Both paths enrich detail: a new entity's row is created, an existing one
     # is filled where NULL (so a monster split across chunks ends up whole).
+    # creature/location/npc/spell use their typed detail tables; every other type
+    # (event/quest/mechanics, plus spine-only faction/deity/item) routes into the
+    # generic detail JSONB and lifts temporality onto the spine (spec v4).
     detail_model = ENTITY_DETAIL_MODELS.get(entity_type)
     detail = item.get("detail")
-    if detail_model is not None and isinstance(detail, dict) and detail:
-        _create_or_enrich_detail(session, detail_model, entity.id, name, detail)
+    if detail_model is not None:
+        if isinstance(detail, dict) and detail:
+            _create_or_enrich_detail(session, detail_model, entity.id, name, detail)
+    else:
+        _apply_generic_detail(entity, item)
 
     return entity, created
 

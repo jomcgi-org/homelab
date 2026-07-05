@@ -620,6 +620,7 @@ def test_released_prompt_versions_are_frozen_by_hash():
         "v1": "64cb5df96d35c282f0ad004233ef01ef52c0eb86eed94342f9bfec4479ac949f",
         "v2": "aeb536de96f21e54bcd54ed073efc9945b92b125e3dae6f748808e4f0325ab52",
         "v3": "1d4f924fb55bc021dddffb320461e4a93c065bd2ef1946aeca95293e25959377",
+        "v4": "2437034db1f660f0b2f0f130d55d1f94c4cdd039a170af6bd269dd7264ff71c9",
     }
     # Every released version must be pinned (a new version needs a new pin here).
     assert set(frozen) == set(PROMPT_VERSIONS)
@@ -635,15 +636,27 @@ def test_v2_has_schema_v1_does_not():
     assert PROMPT_VERSIONS["v2"].schema is not None
 
 
-def test_v3_is_active_and_extends_v2():
-    """v3 is the active version, carries the same schema as v2, and contains v2's
-    text verbatim (built by concatenation) plus the type-signature guidance."""
-    assert ACTIVE_PROMPT_VERSION == "v3"
+def test_v3_extends_v2():
+    """v3 carries the same schema as v2 and contains v2's text verbatim (built by
+    concatenation) plus the type-signature guidance."""
     assert PROMPT_VERSIONS["v3"].schema is PROMPT_VERSIONS["v2"].schema
     v3_text = PROMPT_VERSIONS["v3"].text
     assert v3_text.startswith(PROMPT_VERSIONS["v2"].text)
     assert "RELATIONSHIP TYPE SIGNATURES" in v3_text
     assert "A NAMED IDENTITY IS AN NPC, NOT AN ITEM" in v3_text
+
+
+def test_v4_is_active_and_extends_v3():
+    """v4 is the active version, carries the same schema as v3, and contains v3's
+    text verbatim (built by concatenation) plus the generic-typed-extraction
+    taxonomy (gameplay + mechanics types, category/temporality, new rels)."""
+    assert ACTIVE_PROMPT_VERSION == "v4"
+    assert PROMPT_VERSIONS["v4"].schema is PROMPT_VERSIONS["v3"].schema
+    v4_text = PROMPT_VERSIONS["v4"].text
+    assert v4_text.startswith(PROMPT_VERSIONS["v3"].text)
+    assert "GENERIC TYPED EXTRACTION" in v4_text
+    assert "class_feature, NEVER spell" in v4_text
+    assert "OCCURRED_AT" in v4_text and "SUBCLASS_OF" in v4_text
 
 
 def test_non_enum_rel_type_mapped_to_related_to(session: Session):
@@ -870,6 +883,211 @@ def test_rel_signature_swaps_reversed_non_spatial_edge(session: Session):
     assert summary["rel_signature_downgrades"] == {}
     assert rels[0].rel_type == "MEMBER_OF"
     assert _endpoint_names(session, rels[0]) == ("Glasstaff", "Redbrands")
+
+
+# --- v4 generic typed extraction (category / temporality / detail / new rels) --
+
+
+def _extract_entities(
+    session: Session, entities: list[dict]
+) -> tuple[dict, list[Entity]]:
+    """Run one chunk carrying the given entities; return the summary and the
+    persisted Entity rows (re-selected so the DB-derived category is loaded)."""
+    chunk = _make_chunk(session, "phb", "phb-001", "A rules chunk.")
+    or_client = FakeOpenRouterClient(
+        {chunk.content: {"entities": entities, "mentions": [], "relationships": []}}
+    )
+    summary = _run(extract_chunks(session, or_client, FakeEmbedClient(), limit=25))
+    rows = session.execute(select(Entity)).scalars().all()
+    return summary, rows
+
+
+def test_category_derived_for_each_category_including_spell_lore(session: Session):
+    """category is a stored generated column derived from entity_type: lore for the
+    seven lore types (spell included), gameplay for event/quest, mechanics for the
+    rules types. spell is lore at the column level (the mechanics surface unions it
+    in at query time, not here)."""
+    _summary, rows = _extract_entities(
+        session,
+        entities=[
+            {"entity_type": "creature", "name": "Beholder", "summary": "An eye."},
+            {"entity_type": "spell", "name": "Fireball", "summary": "A boom."},
+            {"entity_type": "item", "name": "Sun Blade", "summary": "A sword."},
+            {"entity_type": "event", "name": "Sundering", "summary": "A cataclysm."},
+            {"entity_type": "quest", "name": "Find the Gem", "summary": "A task."},
+            {"entity_type": "condition", "name": "Poisoned", "summary": "Ill."},
+            {"entity_type": "class", "name": "Wizard", "summary": "A caster."},
+            {"entity_type": "class_feature", "name": "Rage", "summary": "Anger."},
+        ],
+    )
+    by_name = {e.name: e for e in rows}
+    assert by_name["Beholder"].category == "lore"
+    assert by_name["Fireball"].category == "lore"  # spell derives to lore
+    assert by_name["Sun Blade"].category == "lore"
+    assert by_name["Sundering"].category == "gameplay"
+    assert by_name["Find the Gem"].category == "gameplay"
+    assert by_name["Poisoned"].category == "mechanics"
+    assert by_name["Wizard"].category == "mechanics"
+    assert by_name["Rage"].category == "mechanics"
+
+
+def test_temporality_set_only_for_event_and_quest(session: Session):
+    """temporality is lifted onto the spine for event/quest only; a creature that
+    (wrongly) carries a temporality field is ignored."""
+    _summary, rows = _extract_entities(
+        session,
+        entities=[
+            {
+                "entity_type": "event",
+                "name": "Dragon War",
+                "summary": "A long war.",
+                "temporality": "historical",
+            },
+            {
+                "entity_type": "quest",
+                "name": "Stop the Ritual",
+                "summary": "Urgent.",
+                "detail": {"temporality": "present", "objective": "Stop it"},
+            },
+            {
+                "entity_type": "creature",
+                "name": "Goblin",
+                "summary": "Small.",
+                "temporality": "future",
+            },
+        ],
+    )
+    by_name = {e.name: e for e in rows}
+    assert by_name["Dragon War"].temporality == "historical"
+    assert by_name["Stop the Ritual"].temporality == "present"  # read from detail
+    assert by_name["Goblin"].temporality is None  # ignored for non-gameplay types
+
+
+def test_new_type_persists_with_generic_detail_jsonb(session: Session):
+    """A gameplay/mechanics type has no typed detail table: its detail is stored on
+    the entity's generic JSONB column, and category is derived."""
+    _summary, rows = _extract_entities(
+        session,
+        entities=[
+            {
+                "entity_type": "quest",
+                "name": "Retrieve the Orb",
+                "summary": "Fetch it.",
+                "detail": {
+                    "objective": "Bring the Orb to Sildar",
+                    "giver": "Sildar",
+                    "reward": "500 gp",
+                    "quest_type": "side",
+                    "temporality": "present",
+                },
+            }
+        ],
+    )
+    quest = rows[0]
+    assert quest.entity_type == "quest"
+    assert quest.category == "gameplay"
+    assert quest.temporality == "present"
+    assert quest.detail["objective"] == "Bring the Orb to Sildar"
+    assert quest.detail["quest_type"] == "side"
+
+
+def test_class_feature_accepted_as_own_type_not_spell(session: Session):
+    """class_feature is a first-class entity_type (mechanics), never coerced to
+    spell, and gets no entity_spell detail row."""
+    from grimoire.models import EntitySpell
+
+    _summary, rows = _extract_entities(
+        session,
+        entities=[
+            {
+                "entity_type": "class_feature",
+                "name": "Sneak Attack",
+                "summary": "Extra damage.",
+                "detail": {"class": "Rogue", "level": 1},
+            }
+        ],
+    )
+    feature = rows[0]
+    assert feature.entity_type == "class_feature"
+    assert feature.category == "mechanics"
+    assert feature.detail["class"] == "Rogue"
+    # No spell detail table row was created for it.
+    assert session.execute(select(EntitySpell)).scalars().all() == []
+
+
+def test_apply_rel_signature_new_v4_rels():
+    """The v4 asymmetric rels swap a reversed edge and downgrade an off-type one."""
+    # Valid as-is.
+    assert _apply_rel_signature("event", "location", "OCCURRED_AT") == (
+        "OCCURRED_AT",
+        False,
+        None,
+    )
+    assert _apply_rel_signature("subclass", "class", "SUBCLASS_OF") == (
+        "SUBCLASS_OF",
+        False,
+        None,
+    )
+    # Reversed asymmetric -> swap.
+    assert _apply_rel_signature("location", "event", "OCCURRED_AT") == (
+        "OCCURRED_AT",
+        True,
+        "swap",
+    )
+    # Off-type in both directions -> downgrade (quest GIVEN_BY a location).
+    assert _apply_rel_signature("quest", "location", "GIVEN_BY") == (
+        "RELATED_TO",
+        False,
+        "downgrade",
+    )
+
+
+def test_rel_signature_swaps_reversed_occurred_at(session: Session):
+    """`Neverwinter OCCURRED_AT Siege` is backwards: swap to `Siege OCCURRED_AT
+    Neverwinter` (event -> location)."""
+    summary, rels = _extract_one_edge(
+        session,
+        entities=[
+            {"entity_type": "location", "name": "Neverwinter", "summary": "A city."},
+            {"entity_type": "event", "name": "Siege", "summary": "A battle."},
+        ],
+        relationships=[
+            {
+                "from_name": "Neverwinter",
+                "to_name": "Siege",
+                "rel_type": "OCCURRED_AT",
+            }
+        ],
+    )
+    assert summary["relationships_created"] == 1
+    assert summary["rel_signature_swaps"] == {"OCCURRED_AT": 1}
+    assert summary["rel_signature_downgrades"] == {}
+    assert rels[0].rel_type == "OCCURRED_AT"
+    assert _endpoint_names(session, rels[0]) == ("Siege", "Neverwinter")
+
+
+def test_rel_signature_downgrades_given_by_wrong_endpoint(session: Session):
+    """`Find the Gem GIVEN_BY Neverwinter` (a quest given by a place) is impossible
+    in both directions: keep the edge but downgrade rel_type to RELATED_TO."""
+    summary, rels = _extract_one_edge(
+        session,
+        entities=[
+            {"entity_type": "quest", "name": "Find the Gem", "summary": "A task."},
+            {"entity_type": "location", "name": "Neverwinter", "summary": "A city."},
+        ],
+        relationships=[
+            {
+                "from_name": "Find the Gem",
+                "to_name": "Neverwinter",
+                "rel_type": "GIVEN_BY",
+            }
+        ],
+    )
+    assert summary["relationships_created"] == 1
+    assert summary["rel_signature_downgrades"] == {"GIVEN_BY": 1}
+    assert summary["rel_signature_swaps"] == {}
+    assert rels[0].rel_type == "RELATED_TO"
+    assert _endpoint_names(session, rels[0]) == ("Find the Gem", "Neverwinter")
 
 
 def test_canonicalize_name_strips_map_key_prefix():
