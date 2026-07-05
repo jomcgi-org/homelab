@@ -384,7 +384,11 @@ def _build_agent_reply_prompt(summary: str, details: str, context: str) -> str:
         "the member by name. Be natural, warm, and specific. Give the complete "
         "answer with nothing padded: a quick task is a sentence or two, a review "
         "or explanation runs as long as it needs to land every real point, with "
-        "no filler. Do not invent links, PR numbers, file names, or any detail "
+        "no filler. Warmth is in how you say it, never in inflating the verdict: "
+        "if the result is critical or carries caveats, deliver that criticism at "
+        "full strength and never soften it into reassurance, and never add praise "
+        "or a rosy summary the result does not contain. "
+        "Do not invent links, PR numbers, file names, or any detail "
         "that is not in the result below (any link is posted separately). No "
         "markdown headers or bullet lists, no preamble.\n\n"
         f"What you did and found:\n{reported}\n\n"
@@ -430,7 +434,10 @@ def _build_chat_reply_prompt(question: str, guidance: str, context: str) -> str:
         'speaking to them as "you". Do not open with or address them by name. '
         "Be natural, warm, and specific. Give the complete answer with nothing "
         "padded: a quick question is a sentence or two, a broader one runs as "
-        "long as it needs, with no filler. No run happened here, so do not "
+        "long as it needs, with no filler. Be honest over agreeable: if their "
+        "idea or work has real problems, lead with them instead of validating it "
+        "to be nice, and skip empty openers like 'great question' or 'solid'. "
+        "No run happened here, so do not "
         "narrate one or claim you did any work. Do not invent links, PR numbers, "
         "or file names. No markdown headers or bullet lists, no preamble.",
         f"What the member said:\n{question.strip()}",
