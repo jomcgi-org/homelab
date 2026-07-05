@@ -151,6 +151,129 @@ REL_TYPES: tuple[str, ...] = (
 REL_TYPE_SET: frozenset[str] = frozenset(REL_TYPES)
 RELATED_TO = "RELATED_TO"
 
+# Entity-type groups used by the relationship type-signature validator (spec #2).
+# "agent" is anything that can act (npc/creature/faction/deity); "place" is a
+# location. Kinship connects only living/divine agents (not factions).
+AGENT_TYPES: frozenset[str] = frozenset({"npc", "creature", "faction", "deity"})
+PLACE_TYPES: frozenset[str] = frozenset({"location"})
+_KIN_TYPES: frozenset[str] = frozenset({"npc", "creature", "deity"})
+_ALL_TYPES: frozenset[str] = frozenset(ENTITY_TYPES)
+
+
+def _pairs(
+    from_types: frozenset[str] | set[str], to_types: frozenset[str] | set[str]
+) -> frozenset[tuple[str, str]]:
+    """Cartesian product of two entity-type groups as a set of (from, to) pairs."""
+    return frozenset((f, t) for f in from_types for t in to_types)
+
+
+@dataclass(frozen=True)
+class RelSignature:
+    """The type signature for one rel_type: the set of allowed concrete
+    ``(from_type, to_type)`` endpoint pairs, a ``symmetric`` flag (order does not
+    matter, so a "reversed" edge is never swapped), and a ``spatial`` flag.
+
+    ``spatial`` marks the containment relations (LOCATED_IN / CONTAINS / PART_OF /
+    NEAR / CONNECTS_TO). Spatial edges are NOT reordered on a direction mismatch,
+    because the text can describe a magical exception (a location inside an item,
+    a pocket dimension); the one narrow exception is handled explicitly in
+    ``_apply_rel_signature``.
+    """
+
+    allowed: frozenset[tuple[str, str]]
+    symmetric: bool = False
+    spatial: bool = False
+
+
+# Deterministic relationship type signatures (spec #2). Keyed by rel_type; only
+# the rel_types with a meaningful type constraint are listed. A rel_type absent
+# here (GRANTS, SUMMONS, TRANSFORMS_INTO, COUNTERED_BY, PATRON_OF) is not
+# validated and is kept verbatim. RELATED_TO is any->any so it is always valid
+# (the downgrade target never re-triggers).
+REL_SIGNATURES: dict[str, RelSignature] = {
+    # Spatial (magical-exception-aware: not reordered except place LOCATED_IN agent)
+    "LOCATED_IN": RelSignature(_pairs(_ALL_TYPES, PLACE_TYPES), spatial=True),
+    "CONTAINS": RelSignature(_pairs(PLACE_TYPES, _ALL_TYPES), spatial=True),
+    "PART_OF": RelSignature(
+        _pairs(PLACE_TYPES, PLACE_TYPES) | _pairs({"faction"}, {"faction"}),
+        spatial=True,
+    ),
+    "NEAR": RelSignature(
+        _pairs(PLACE_TYPES, PLACE_TYPES), symmetric=True, spatial=True
+    ),
+    "CONNECTS_TO": RelSignature(
+        _pairs(PLACE_TYPES, PLACE_TYPES), symmetric=True, spatial=True
+    ),
+    # Social / organizational
+    "MEMBER_OF": RelSignature(_pairs(AGENT_TYPES, {"faction"})),
+    "FOUNDED": RelSignature(_pairs(AGENT_TYPES, {"faction"})),
+    "LEADER_OF": RelSignature(_pairs(_KIN_TYPES, {"faction"})),
+    "SERVES": RelSignature(_pairs(AGENT_TYPES, {"npc", "faction", "deity"})),
+    "ALLY_OF": RelSignature(_pairs(AGENT_TYPES, AGENT_TYPES), symmetric=True),
+    "ENEMY_OF": RelSignature(_pairs(AGENT_TYPES, AGENT_TYPES), symmetric=True),
+    "WORSHIPS": RelSignature(_pairs(AGENT_TYPES, {"deity"})),
+    # Creation (thing <-> creator; asymmetric so a backwards edge swaps)
+    "CREATED_BY": RelSignature(_pairs(_ALL_TYPES, AGENT_TYPES)),
+    "CREATES": RelSignature(_pairs(AGENT_TYPES, _ALL_TYPES)),
+    # Magic / possession
+    "CASTS": RelSignature(_pairs({"npc", "creature"}, {"spell"})),
+    "OWNS": RelSignature(_pairs({"npc", "creature"}, {"item"})),
+    "WIELDS": RelSignature(_pairs({"npc", "creature"}, {"item"})),
+    # Taxonomy
+    "VARIANT_OF": RelSignature(frozenset((t, t) for t in _ALL_TYPES), symmetric=True),
+    "ORIGINATES_FROM": RelSignature(
+        _pairs({"creature", "npc", "faction", "item"}, {"location", "faction"})
+    ),
+    # Kinship (npc/creature/deity on both ends). PARENT_OF/CHILD_OF/ANCESTOR_OF/
+    # DESCENDANT_OF are asymmetric, but same-type endpoints mean the type signature
+    # cannot detect a reversed edge; it only catches a kin edge pointed at a place.
+    "PARENT_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES)),
+    "CHILD_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES)),
+    "ANCESTOR_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES)),
+    "DESCENDANT_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES)),
+    "SIBLING_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES), symmetric=True),
+    "SPOUSE_OF": RelSignature(_pairs(_KIN_TYPES, _KIN_TYPES), symmetric=True),
+    # Fallback: any <-> any, so a downgraded edge is always valid.
+    "RELATED_TO": RelSignature(_pairs(_ALL_TYPES, _ALL_TYPES), symmetric=True),
+}
+
+
+def _apply_rel_signature(
+    from_type: str, to_type: str, rel_type: str
+) -> tuple[str, bool, str | None]:
+    """Graduated, magical-exception-aware type-signature check for one resolved edge.
+
+    Returns ``(rel_type, swap, action)`` where ``swap`` asks the caller to
+    exchange the from/to endpoints and ``action`` is ``None`` (kept), ``"swap"``,
+    or ``"downgrade"`` (for the per-rel_type compliance monitor). Rules:
+
+    - valid signature -> keep.
+    - spatial rel (LOCATED_IN/CONTAINS/PART_OF/NEAR/CONNECTS_TO): NOT reordered on
+      a direction mismatch (the text may describe a magical exception, e.g. a
+      location inside an item), EXCEPT the narrow safe case ``place LOCATED_IN
+      agent`` -> swap to ``agent LOCATED_IN place``. A ``location LOCATED_IN item``
+      is left as-is.
+    - non-spatial, reversed valid, asymmetric -> swap the endpoints.
+    - non-spatial, invalid in both directions (e.g. LEADER_OF/SERVES/OWNS with a
+      location endpoint) -> downgrade rel_type to RELATED_TO (the edge is kept,
+      never dropped).
+    """
+    sig = REL_SIGNATURES.get(rel_type)
+    if sig is None or (from_type, to_type) in sig.allowed:
+        return rel_type, False, None
+    if sig.spatial:
+        if (
+            rel_type == "LOCATED_IN"
+            and from_type in PLACE_TYPES
+            and to_type in AGENT_TYPES
+        ):
+            return rel_type, True, "swap"
+        return rel_type, False, None
+    if not sig.symmetric and (to_type, from_type) in sig.allowed:
+        return rel_type, True, "swap"
+    return RELATED_TO, False, "downgrade"
+
+
 # Strict JSON schema (spec #4) sent as ``response_format`` (hosted) or
 # ``guided_json`` (vLLM). Its leverage is the ``rel_type``/``entity_type`` enums:
 # they make the closed vocabulary a hard decode-time constraint, not a prompt
@@ -539,16 +662,50 @@ Output:
 "relationships":[]}"""
 
 
+# v3: v2 verbatim PLUS a relationship type-signature table, a magical-exception
+# caveat, and a person-as-item nudge (spec). The validation batch on
+# lost-mine-of-phandelver confirmed v2's enrichment and dungeon-room entities are
+# WANTED, so v3 keeps everything v2 does (book title, section path, dungeon rooms,
+# closed rel enum) and only adds relationship-structure guidance to cut the
+# residual wrong_direction / type_mismatch / person-as-item defects. Built by
+# concatenation so v2 stays byte-frozen; do NOT edit this text once released, add
+# a v4 instead.
+_V3_REL_SIGNATURE_ADDENDUM = """
+
+RELATIONSHIP TYPE SIGNATURES (defaults you must follow; a wrong-typed or backwards edge is worse than no edge)
+Treat "agent" as an npc, creature, faction, or deity, and "place" as a location. Each rel_type has a default type signature and direction:
+- LOCATED_IN: any -> place. CONTAINS: place -> any. PART_OF: place -> place, or faction -> faction.
+- NEAR, CONNECTS_TO: place <-> place (symmetric).
+- MEMBER_OF, FOUNDED: agent -> faction.
+- LEADER_OF: npc / creature / deity -> faction (leader of an ORGANIZATION, NEVER of a place; for "rules a place" use LEADER_OF against the place's ruling faction, or LOCATED_IN).
+- SERVES: agent -> npc / faction / deity (NEVER serve a place).
+- ALLY_OF, ENEMY_OF: agent <-> agent (symmetric; NEVER point one at a place).
+- WORSHIPS: agent -> deity.
+- CREATED_BY / CREATES: a thing and its creator (CREATED_BY points thing -> creator; CREATES points creator -> thing).
+- CASTS: npc / creature -> spell. OWNS, WIELDS: npc / creature -> item.
+- VARIANT_OF: same-type -> same-type. ORIGINATES_FROM: creature / npc / faction / item -> location / faction.
+- Kinship (PARENT_OF, CHILD_OF, SIBLING_OF, ANCESTOR_OF, DESCENDANT_OF, SPOUSE_OF): npc / creature / deity <-> npc / creature / deity.
+- RELATED_TO: any <-> any (the fallback when nothing above fits).
+
+These signatures and directions are DEFAULTS, not anti-hallucination rules: keep extracting every connection the chunk supports. If the text explicitly describes a magical exception (a location that exists inside an item, a pocket dimension, a demiplane bound to an object), follow the text. Otherwise obey the signatures and get the DIRECTION right: a person is LOCATED_IN a castle, the castle is not LOCATED_IN the person; a servant SERVES a master, never a place.
+
+A NAMED IDENTITY IS AN NPC, NOT AN ITEM
+A named identity or alias, even one that names an object (a disguised villain, a masked persona, "the Glass Staff" used as a person's alias), is an npc, not an item. The item is the object that person wields or owns; the person is a separate npc entity. Never type a character as an item just because their alias names a thing."""
+
+_V3_PROMPT_TEXT = _V2_PROMPT_TEXT + _V3_REL_SIGNATURE_ADDENDUM
+
+
 PROMPT_VERSIONS: dict[str, PromptVersion] = {
     "v1": PromptVersion(text=_V1_PROMPT_TEXT, schema=None),
     "v2": PromptVersion(text=_V2_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
+    "v3": PromptVersion(text=_V3_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
 }
 
 # The version the extraction pass writes and reads by default. Env-overridable so
-# a candidate (v3) can run on a fresh book without touching code; promotion is
+# a candidate (v4) can run on a fresh book without touching code; promotion is
 # moving this pointer. Read at import: jobs run as fresh processes, so the env is
 # honored per run.
-ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v2")
+ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v3")
 
 # Backward-compatible alias: the active version's system text. The
 # self-correction turn and any caller referencing EXTRACTION_PROMPT get the live
@@ -1229,11 +1386,16 @@ def _apply_extraction(
     split. Mutates ``newly_created`` in place with (entity, embed_text) for
     every entity created this call; returns the per-chunk count deltas.
     """
-    counts = {
+    counts: dict[str, Any] = {
         "entities_created": 0,
         "entities_reused": 0,
         "mentions_created": 0,
         "relationships_created": 0,
+        # Per-rel_type compliance monitors (keyed by the ORIGINAL rel_type the
+        # model emitted): how often the deterministic type-signature validator had
+        # to reorder a backwards edge or downgrade an impossible one to RELATED_TO.
+        "rel_signature_swaps": {},
+        "rel_signature_downgrades": {},
     }
     with session.begin_nested():
         local_by_name: dict[str, Entity] = {}
@@ -1306,6 +1468,27 @@ def _apply_extraction(
                     to_name,
                 )
                 continue
+            # Deterministic type-signature validation (spec #2): now that both
+            # endpoints resolve to entities, from_type/to_type are known, so a
+            # backwards edge can be swapped and an impossible one downgraded to
+            # RELATED_TO (kept, never dropped). Magical exceptions in the text are
+            # respected (spatial edges are not reordered except place->agent
+            # LOCATED_IN). Runs BEFORE persistence, composing with the non-enum ->
+            # RELATED_TO mapping above and the drop-unresolvable logic.
+            new_rel_type, swap, action = _apply_rel_signature(
+                from_entity.entity_type, to_entity.entity_type, rel_type
+            )
+            if swap:
+                from_entity, to_entity = to_entity, from_entity
+            if action == "swap":
+                counts["rel_signature_swaps"][rel_type] = (
+                    counts["rel_signature_swaps"].get(rel_type, 0) + 1
+                )
+            elif action == "downgrade":
+                counts["rel_signature_downgrades"][rel_type] = (
+                    counts["rel_signature_downgrades"].get(rel_type, 0) + 1
+                )
+            rel_type = new_rel_type
             if _insert_relationship(session, from_entity.id, to_entity.id, rel_type):
                 counts["relationships_created"] += 1
 
@@ -1387,7 +1570,7 @@ async def extract_chunks(
     book_titles = _load_book_titles(session)
     group_size = max(1, concurrency)
 
-    summary = {
+    summary: dict[str, Any] = {
         "chunks_processed": 0,
         "chunks_failed": 0,
         "entities_created": 0,
@@ -1395,6 +1578,10 @@ async def extract_chunks(
         "mentions_created": 0,
         "relationships_created": 0,
         "entities_embedded": 0,
+        # Per-rel_type type-signature validator monitors (dict rel_type -> count),
+        # merged across chunks below.
+        "rel_signature_swaps": {},
+        "rel_signature_downgrades": {},
     }
 
     for group_start in range(0, len(chunks), group_size):
@@ -1463,7 +1650,13 @@ async def extract_chunks(
                 newly_created,
             )
             for key, value in counts.items():
-                summary[key] += value
+                if isinstance(value, dict):
+                    # Per-rel_type monitor dicts: merge, summing per rel_type.
+                    dest = summary[key]
+                    for rel, n in value.items():
+                        dest[rel] = dest.get(rel, 0) + n
+                else:
+                    summary[key] += value
             summary["chunks_processed"] += 1
 
             status = (
