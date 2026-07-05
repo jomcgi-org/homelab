@@ -341,6 +341,10 @@ class ChannelDirective(SQLModel, table=True):
     motivating_message_id: str = Field(default="")
     proposal_message_id: str = Field(default="")
     previous_version: int = Field(default=0)
+    # Provenance for the manual-precedence rule (PR 3): seed | observer |
+    # autopilot | manual. A source='manual' active row blocks the directive
+    # autopilot for a cooldown, so an out-of-band human tune always wins.
+    source: str = Field(default="seed")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -431,4 +435,57 @@ class UserStylePref(SQLModel, table=True):
     active: bool = Field(default=True)
     updated_by_user_id: str = Field(default="")
     motivating_message_id: str = Field(default="")
+    # Provenance for the manual-precedence rule (PR 3): seed | autopilot |
+    # manual. A user setting their own style pref is 'manual' (blocks the
+    # autopilot); the autopilot writes 'autopilot'.
+    source: str = Field(default="seed")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (applied_at/validate_after get a DB now() default; the model factory mirrors it)
+class DirectiveAutopilot(SQLModel, table=True):
+    """Autopilot decision + self-validation log (ADR chat/007, PR 3).
+
+    One row per autonomous action the directive autopilot takes. The APPLY phase
+    writes a 'pending_validation' row capturing the pre-apply baseline score, the
+    prior version AND its text (so a revert can reinstate without re-deriving),
+    and the supporting episode ids. The VALIDATE phase reads pending rows whose
+    validate_after has passed, recomputes the post-apply score, and flips status
+    to kept / reverted / superseded_manual. Confident-but-ungated findings land
+    as 'proposed' (channel, routed to the human confirm flow), 'suggested' (user,
+    no proposal flow exists), or 'shadow' (kill-switch mode: what the autopilot
+    WOULD have done, mutating nothing).
+
+    scope_kind and status CHECKs mirror the migration so the SQLite create_all
+    test fixtures enforce them too (create_all does not see migration-only
+    constraints). baseline_json and evidence_json are TEXT (JSON-serialised) so
+    the SQLite fixtures build them cleanly, matching the migration.
+    """
+
+    __tablename__ = "directive_autopilot"
+    __table_args__ = (
+        CheckConstraint(
+            "scope_kind IN ('channel', 'user')",
+            name="directive_autopilot_scope_valid",
+        ),
+        CheckConstraint(
+            "status IN ('pending_validation', 'kept', 'reverted', "
+            "'superseded_manual', 'proposed', 'suggested', 'shadow')",
+            name="directive_autopilot_status_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    scope_kind: str = Field(default="channel")
+    scope_id: str = Field(default="")
+    target_version: int = Field(default=0)
+    prior_version: int | None = Field(default=None)
+    prior_text: str | None = Field(default=None)
+    baseline_json: str = Field(default="{}")
+    rationale: str = Field(default="")
+    evidence_json: str = Field(default="[]")
+    status: str = Field(default="pending_validation")
+    applied_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    validate_after: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
