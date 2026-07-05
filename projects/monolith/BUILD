@@ -9,6 +9,7 @@
 # gazelle:exclude notes
 # gazelle:exclude scripts
 # gazelle:exclude home
+# gazelle:exclude sandbox
 # gazelle:exclude scheduler
 # gazelle:exclude semgrep
 # gazelle:exclude goosecracker
@@ -67,6 +68,7 @@ _BACKEND_SRCS = glob(
         "goosecracker/**/*.py",
         "knowledge/**/*.py",
         "home/**/*.py",
+        "sandbox/**/*.py",
         "scheduler/**/*.py",
         "semgrep/**/*.py",
         "shared/**/*.py",
@@ -247,6 +249,7 @@ py_library(
             "goosecracker/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
+            "sandbox/**/*.py",
             "scheduler/**/*.py",
             "semgrep/**/*.py",
             "shared/**/*.py",
