@@ -39,6 +39,7 @@ from chat import goosecracker
 from chat import goosecracker_progress
 from chat import orchestrator
 from chat import summarizer
+from chat.models import ReactionEvent
 from app.db import get_engine
 
 from sqlmodel import Session
@@ -594,6 +595,19 @@ def _format_agent_prompt_echo(user: discord.abc.User, prompt: str) -> str:
     return f"{header}```\n{safe}\n```"
 
 
+def _record_reaction(data: dict) -> None:
+    """Persist one human reaction on a bot message.
+
+    Synchronous (opens its own session); call via ``asyncio.to_thread`` from
+    the bot's async handlers, never with the caller's session. Best-effort:
+    callers wrap this so a persistence failure never blocks the directive
+    confirm/discard flow it runs ahead of.
+    """
+    with Session(get_engine()) as session:
+        session.add(ReactionEvent(**data))
+        session.commit()
+
+
 class ChatBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -797,6 +811,36 @@ class ChatBot(discord.Client):
 
         await self._process_message(message)
 
+    async def _persist_reaction_signal(
+        self, payload: discord.RawReactionActionEvent, action: str
+    ) -> None:
+        """Persist a human reaction on one of Bosun's own messages, best-effort.
+
+        A fluidity/productivity signal for /improve-ambient: only reactions on
+        bot-authored messages are stored (``message_author_id`` is populated on
+        raw reaction events; it is not, and never should be, set for a message
+        Bosun didn't author). A persistence failure must never block the
+        directive confirm/discard flow that runs after this in
+        ``on_raw_reaction_add``.
+        """
+        author_id = getattr(payload, "message_author_id", None)
+        if author_id is None or str(author_id) != str(self.user.id):
+            return
+        try:
+            await asyncio.to_thread(
+                _record_reaction,
+                {
+                    "channel_id": str(payload.channel_id),
+                    "message_id": str(payload.message_id),
+                    "target_is_bot": True,
+                    "emoji": str(payload.emoji),
+                    "reactor_id": str(payload.user_id),
+                    "action": action,
+                },
+            )
+        except Exception:
+            logger.exception("reaction_event: persist failed (non-fatal)")
+
     async def on_raw_reaction_add(
         self, payload: discord.RawReactionActionEvent
     ) -> None:
@@ -805,9 +849,17 @@ class ChatBot(discord.Client):
         HUMAN 👍/👎 on a proposal message acts. 👍 applies (subject to
         ``apply_proposal``'s freshness check); 👎 discards (no DB mutation
         needed, the proposed row just stays inactive). Either way the seed
-        reactions are swapped for a terminal ✅/❌ on the summary message."""
+        reactions are swapped for a terminal ✅/❌ on the summary message.
+
+        Also persists any human reaction on a Bosun-authored message as a
+        ground-truth signal for /improve-ambient (including the proposal 👍/👎
+        itself, which is a signal too), before the proposal-specific logic
+        below runs."""
         if payload.user_id == self.user.id:
             return
+
+        await self._persist_reaction_signal(payload, "add")
+
         emoji = str(payload.emoji)
         if emoji not in ("👍", "👎"):
             return
@@ -832,6 +884,17 @@ class ChatBot(discord.Client):
             await summary.add_reaction("✅" if applied else "❌")
         except discord.HTTPException:
             logger.exception("directives: failed to finalize proposal reactions")
+
+    async def on_raw_reaction_remove(
+        self, payload: discord.RawReactionActionEvent
+    ) -> None:
+        """Persist a human reaction removal on a Bosun-authored message.
+
+        A removal cancels an earlier add signal; it never confirms or discards
+        a directive proposal (that only happens on add, above)."""
+        if payload.user_id == self.user.id:
+            return
+        await self._persist_reaction_signal(payload, "remove")
 
     async def _handle_agent_command(
         self, interaction: discord.Interaction, prompt: str, repo: str
