@@ -1,4 +1,4 @@
-h1:6FZvSpm9YJWavJbIyTULCEmSHjXQCYe+Q/CqsMGVbbM=
+h1:BDv/csOUkMnnb/IShg3GhJOhb+PUUMNqk3n4rqi6Wvo=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -102,3 +102,4 @@ h1:6FZvSpm9YJWavJbIyTULCEmSHjXQCYe+Q/CqsMGVbbM=
 20260705010000_attention_decision_reply_message_id.sql h1:8jB2RoxsYtgV3IPxel0tV8PUg2IZtZwwrUBdUiDyHK4=
 20260705120000_grimoire_prompt_version.sql h1:AuXYV7dJF8stoRAaN5RMGc7hICLgy6BvJzqaRS7L2WA=
 20260705130000_grimoire_chunk_section_hierarchy.sql h1:2v1iZZipu+Fnw+rUrdyKYJ81u7IlLD0IU/HaM/EB79A=
+20260705140000_directive_autopilot.sql h1:Yo3ZBeYtbC9SCxMGQ7POv9QJtLXWnosmD6fI8AJK29I=
