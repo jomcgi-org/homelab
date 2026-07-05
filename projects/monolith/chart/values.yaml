@@ -544,9 +544,12 @@ jobs:
       resources:
         requests:
           cpu: 250m
-          memory: 512Mi
+          # 1Gi (up from 512Mi): the hosted-provider default runs 64 concurrent
+          # extract calls, so more in-flight response bodies + entity batches sit
+          # in memory at once; the headroom keeps a wide run from OOMing.
+          memory: 1Gi
         limits:
-          memory: 512Mi
+          memory: 1Gi
 
 frontend:
   otelCollectorUrl: ""

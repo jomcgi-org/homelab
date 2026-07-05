@@ -949,6 +949,46 @@ async def test_provider_routing_not_sent_to_vllm(monkeypatch):
     assert "reasoning" not in payload
 
 
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_disables_reasoning_via_thinking(monkeypatch):
+    """Direct DeepSeek gets thinking:{type:disabled}, never OpenRouter's
+    reasoning field, and never the provider-routing block (even if env set)."""
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_PROVIDER", "deepseek")
+    client = OpenRouterClient(api_key="k", base_url=DEEPSEEK_URL)
+    payload = await _capture_payload(client)
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "reasoning" not in payload
+    assert "provider" not in payload
+
+
+def test_deepseek_uses_json_object_not_schema_or_guided():
+    """Direct DeepSeek takes plain json_object (no strict json_schema block, no
+    vLLM guided_json); the post-parse safety net covers the enum."""
+    client = OpenRouterClient(api_key="k", base_url=DEEPSEEK_URL, prompt_version="v2")
+    fmt = client._format_kwargs()
+    assert fmt == {"response_format": {"type": "json_object"}}
+
+
+def test_client_reads_grimoire_extract_api_key(monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_API_KEY", "ds-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert OpenRouterClient().api_key == "ds-key"
+
+
+def test_client_falls_back_to_openrouter_api_key(monkeypatch):
+    monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    assert OpenRouterClient().api_key == "or-key"
+
+
+def test_client_explicit_api_key_wins_over_env(monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_API_KEY", "ds-key")
+    assert OpenRouterClient(api_key="explicit").api_key == "explicit"
+
+
 # --- OpenRouterClient -------------------------------------------------------
 
 

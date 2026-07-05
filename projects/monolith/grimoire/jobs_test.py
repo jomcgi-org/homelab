@@ -3,8 +3,9 @@
 Everything external is stubbed (the S3 client builder, the embedding client, the
 OpenRouter client, and the async orchestrators themselves). These tests assert
 the handler-to-orchestrator wiring only: which bucket/limit reaches the
-orchestrator, and that extraction skips cleanly when OPENROUTER_API_KEY is
-unset. The orchestrators' own behavior is covered by ingest_test/extract_test.
+orchestrator, and that extraction skips cleanly when a hosted endpoint has no
+key (GRIMOIRE_EXTRACT_API_KEY / OPENROUTER_API_KEY unset). The orchestrators'
+own behavior is covered by ingest_test/extract_test.
 """
 
 from __future__ import annotations
@@ -79,6 +80,7 @@ class TestExtractEntitiesHandler:
 
         monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
         monkeypatch.delenv("GRIMOIRE_EXTRACT_BASE_URL", raising=False)
 
         # Must not raise, and must not touch the orchestrator or clients.
@@ -100,6 +102,7 @@ class TestExtractEntitiesHandler:
 
         monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
         monkeypatch.setenv(
             "GRIMOIRE_EXTRACT_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"
         )
@@ -108,6 +111,54 @@ class TestExtractEntitiesHandler:
 
         assert result is None
         assert called["extract"] is False
+
+    def test_skips_when_deepseek_base_url_explicit_and_key_unset(
+        self, monkeypatch, stub_clients
+    ):
+        called = {"extract": False}
+
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
+            called["extract"] = True
+            return {}
+
+        monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "GRIMOIRE_EXTRACT_BASE_URL", "https://api.deepseek.com/chat/completions"
+        )
+
+        result = _run(jobs.grimoire_extract_entities(session=None))
+
+        assert result is None
+        assert called["extract"] is False
+
+    def test_runs_deepseek_with_grimoire_extract_api_key(
+        self, monkeypatch, stub_clients
+    ):
+        captured: dict = {}
+
+        async def spy_extract_chunks(
+            session, or_client, embed_client, limit, concurrency
+        ):
+            captured["api_key"] = or_client.api_key
+            captured["base_url"] = or_client.base_url
+            return {}
+
+        monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("GRIMOIRE_EXTRACT_API_KEY", "ds-key")
+        monkeypatch.setenv(
+            "GRIMOIRE_EXTRACT_BASE_URL", "https://api.deepseek.com/chat/completions"
+        )
+
+        result = _run(jobs.grimoire_extract_entities(session=None))
+
+        assert result is None
+        assert captured["api_key"] == "ds-key"
+        assert captured["base_url"] == "https://api.deepseek.com/chat/completions"
 
     def test_runs_keyless_against_local_qwen_base_url(self, monkeypatch, stub_clients):
         captured: dict = {}
@@ -122,6 +173,7 @@ class TestExtractEntitiesHandler:
 
         monkeypatch.setattr("grimoire.extract.extract_chunks", spy_extract_chunks)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
         monkeypatch.setenv(
             "GRIMOIRE_EXTRACT_BASE_URL",
             "http://inference.inference.svc.cluster.local:8080/v1/chat/completions",

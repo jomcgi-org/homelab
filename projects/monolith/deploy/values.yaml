@@ -244,17 +244,19 @@ gardener:
 grimoire:
   enabled: true
   s3Bucket: "grimoire"
-  extractModel: "deepseek/deepseek-v4-flash"
-  # Empty: the code falls back to OpenRouter (openrouter.ai), where DeepSeek V4
-  # Flash lives. Point this at the in-cluster Qwen vLLM for a keyless local pass.
-  extractBaseUrl: ""
-  # Pin the first-party DeepSeek provider on OpenRouter: it is native precision
-  # (not fp4-quantized like the cheapest DeepInfra route) and preserves the
-  # prompt cache. Fireworks is the documented alternative ("deepseek,fireworks").
-  extractProvider: "deepseek"
-  # Hosted provider has no local decode-slot limit, so run wide; the client backs
-  # off on 429. (The code default 6 was tuned for the local GPU's 8 slots.)
-  extractConcurrency: "40"
+  # Production default: direct DeepSeek (first-party, native precision, no fp4
+  # quantization, prompt cache preserved). Model id is the bare DeepSeek id (not
+  # the "deepseek/" OpenRouter-namespaced form). Key comes from the goosecracker
+  # DEEPSEEK_API_KEY field via GRIMOIRE_EXTRACT_API_KEY (cronworkflows template).
+  extractModel: "deepseek-v4-flash"
+  extractBaseUrl: "https://api.deepseek.com/chat/completions"
+  # No extractProvider: provider routing is an OpenRouter-only concept and does
+  # not apply to the direct DeepSeek API. (The code feature stays for a future
+  # OpenRouter run: set extractProvider + repoint base_url/model.)
+  # DeepSeek allows very high concurrency (thousands); 64 is a safe default the
+  # client backs off from on 429. A run can override higher. (Code default 6 was
+  # tuned for the local GPU's 8 decode slots, irrelevant for a hosted provider.)
+  extractConcurrency: "64"
 
 # ADR 036 orchestrator brief compiler (Phase 3 live enable). The primary planner
 # is NVIDIA Nemotron 3 Ultra (free, 256K context, orchestrator-tuned tool calling;
