@@ -146,6 +146,21 @@ class TestAssemblePrompt:
         # The channel context stays a separate, distinct block.
         assert "## Channel context" in user
 
+    def test_repo_menu_rides_in_user_not_system(self):
+        system, user = assemble_prompt(
+            "BUNDLE",
+            Directive(version=1, text="d"),
+            ["kg a"],
+            "chan ctx",
+            "do it",
+            "- jomcgi/homelab = the homelab repo",
+        )
+        assert "## Available repos" in user
+        assert "- jomcgi/homelab = the homelab repo" in user
+        # Per-invoker (their grants), so it must never enter the cache-stable
+        # system prefix, or the provider prefix cache would miss every invoker.
+        assert "jomcgi/homelab" not in system
+
 
 # ---------------------------------------------------------------------------
 # parse_brief
@@ -464,6 +479,31 @@ class TestCompile:
         assert verdict.repo == "weave-hand/loom"
         assert verdict.repo_replaced is True
         assert _rows(engine)[0].brief_json["repo_replaced"] is True
+
+    @pytest.mark.asyncio
+    async def test_route_call_user_message_lists_granted_repos(
+        self, engine, monkeypatch
+    ):
+        # compile injects the invoker's scope-filtered repo menu into the route
+        # call, so DeepSeek selects the brief's repo from a real, grant-limited
+        # list instead of guessing a name that gets validated away.
+        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
+        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
+        captured = {}
+
+        async def fake_call(system, user):
+            captured["system"] = system
+            captured["user"] = user
+            return _response(_CHAT_JSON)
+
+        monkeypatch.setattr(orchestrator_client, "call", fake_call)
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+
+        await orchestrator.compile(_ctx(allowed_scopes=frozenset({"weave-hand/loom"})))
+        assert "## Available repos" in captured["user"]
+        assert "weave-hand/loom" in captured["user"]
+        # A repo the invoker does not hold is not offered.
+        assert "jomcgi/homelab" not in captured["user"]
 
     @pytest.mark.asyncio
     async def test_goose_verdict_carries_brief_row_id(self, engine, monkeypatch):

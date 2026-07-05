@@ -4630,6 +4630,16 @@ py_test(
 )
 
 py_test(
+    name = "goosecracker_repo_catalog_test",
+    srcs = ["goosecracker/tests/repo_catalog_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "goosecracker_recipe_catalog_test",
     srcs = ["goosecracker/tests/recipe_catalog_test.py"],
     # The drift-guard test reads the real, checked-in guest recipe YAMLs at

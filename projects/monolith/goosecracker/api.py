@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from goosecracker.dispatch import resume, status, submit  # re-exported
 from goosecracker.recipe_catalog import CATALOG, enabled_enum  # re-exported
+from goosecracker.repo_catalog import describe_repos  # re-exported
 from goosecracker.router_render import (  # re-exported
     render_plan_file,
     render_router,
@@ -18,6 +19,7 @@ from goosecracker.threads import get_run, list_runs, serialize  # re-exported
 
 __all__ = [
     "CATALOG",
+    "describe_repos",
     "enabled_enum",
     "get_run",
     "list_runs",

@@ -43,7 +43,7 @@ from app.db import get_engine
 from chat import acl, orchestrator_client, orchestrator_plan
 from chat.models import OrchestratorBrief
 from chat.orchestrator_plan import Plan
-from goosecracker.api import CATALOG
+from goosecracker.api import CATALOG, describe_repos
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,7 @@ def assemble_prompt(
     similar_messages: list[str],
     channel_context: str,
     request: str,
+    repo_menu: str = "",
 ) -> tuple[str, str]:
     """Assemble the (system, user) messages in strict stability order (spec
     section 4).
@@ -216,8 +217,10 @@ def assemble_prompt(
     timestamps, ids, or unsorted collections, so two consecutive escalations in
     the same channel produce byte-identical ``system`` messages and the
     provider's prefix cache hits. All volatile content (contextually similar
-    past messages, channel context, the request) goes in ``user``.
-    Byte-deterministic: identical inputs give identical bytes.
+    past messages, channel context, the invoker-scoped repo menu, the request)
+    goes in ``user``. ``repo_menu`` is per-invoker (their ADR 029 grants), so it
+    rides here rather than in the cached system prefix. Byte-deterministic:
+    identical inputs give identical bytes.
     """
     system = (
         bundle.rstrip("\n")
@@ -233,6 +236,11 @@ def assemble_prompt(
         + similar_block
         + "\n\n## Channel context\n\n"
         + (channel_context.strip() or "(none)")
+        + "\n\n## Available repos\n\n"
+        + "When the request needs a repo checkout, set the goose brief's `repo` "
+        "to exactly one of these owner/repo ids, and leave it empty only for a "
+        "repo-less artifact or build. Never name a repo that is not listed.\n\n"
+        + (repo_menu.strip() or "(none)")
         + "\n\n## Request\n\n"
         + request.strip()
         + "\n"
@@ -577,6 +585,7 @@ async def compile(ctx: RequestContext) -> Verdict:
         ctx.similar_messages,
         ctx.channel_context,
         ctx.request,
+        describe_repos(ctx.allowed_scopes),
     )
 
     try:
