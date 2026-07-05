@@ -33,7 +33,7 @@ async def run_python(code: str, files: list[dict] | None = None) -> dict:
 
     Args:
         code: The Python source to run. It is written to a file and executed
-            with python3; use print(...) for anything you want back as
+            with python3. Use print(...) for anything you want back as
             stdout.
         files: Optional input files to write into the working directory
             before running code. Each entry needs a path (relative
