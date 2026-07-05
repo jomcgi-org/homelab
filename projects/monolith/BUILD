@@ -762,6 +762,18 @@ py_test(
 )
 
 py_test(
+    name = "sandbox_mcp_test",
+    srcs = ["sandbox/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "integration_test",
     size = "medium",
     srcs = ["app/integration_test.py"],
