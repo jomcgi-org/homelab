@@ -36,19 +36,23 @@ reactions and human follow-up that landed in the same channel shortly after the
 engage, and (best effort) the agent thread that ran. `episode_id` is the
 `attention_decision.id`.
 
-**Temporal-window heuristic (known v1 limitation).** `attention_decision`
-records the HUMAN trigger message, not Bosun's reply, and reactions attach to
-the reply. So episode -> reply -> reaction linking is NOT exact. Reactions and
-follow-up are attributed to an episode by `channel_id` plus a time-after-engage
-window (`AMBIENT_WINDOW_MINUTES`, default 30): any reaction on a bot message, or
-any human message, in that channel within the window after the engage's
-`created_at`. Overlapping episodes in the same channel can share signal. The
-agent-thread match is also heuristic: `claude_agent.agent_threads` carries no
-channel or trigger key, only its own `session_id`, so an episode is tied to the
-nearest agent thread created just after the engage (`AMBIENT_AGENT_WINDOW_MINUTES`,
-default 5). The Opus deep-read (`fetch-episode`) resolves the ambiguity per
-episode; do not over-trust the gathered `became_agent`/reaction attribution
-without reading the slice.
+**Reaction linking: exact where known, heuristic fallback.**
+`attention_decision.reply_message_id` records the Discord id of Bosun's reply to
+an ambient engage (populated by the bot; see the reply-link change). When it is
+present, reactions are matched EXACTLY on
+`reaction_event.message_id = reply_message_id` and each record's `reaction_match`
+is `"exact"`. When it is null (the agent thread-opening path, or engages from
+before the column was populated), reactions fall back to a `channel_id` plus
+time-after-engage window (`AMBIENT_WINDOW_MINUTES`, default 30) and
+`reaction_match` is `"time-window-heuristic"`; overlapping episodes in that
+channel can then share signal. Human follow-up is always window-based (there is
+no exact "did a human follow up" link). The agent-thread match is likewise
+heuristic: `claude_agent.agent_threads` carries no channel or trigger key, only
+its own `session_id`, so an episode is tied to the nearest agent thread created
+just after the engage (`AMBIENT_AGENT_WINDOW_MINUTES`, default 5). The Opus
+deep-read (`fetch-episode`) resolves ambiguity per episode; do not over-trust a
+`time-window-heuristic` attribution without reading the slice, and carry
+`reaction_match` into the eval's `signals` so the fidelity is recorded.
 
 ## 2. Taxonomy v1
 
