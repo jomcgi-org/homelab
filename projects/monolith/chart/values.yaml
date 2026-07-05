@@ -667,8 +667,6 @@ gardener:
 # SeaweedFS block emitted alongside stars.
 grimoire:
   enabled: false
-  onepassword:
-    itemPath: ""
   s3Bucket: "grimoire"
   # Default extraction model (spec #5): DeepSeek V4 Flash via OpenRouter, with
   # reasoning disabled per call in code. deploy/values.yaml can repoint this at
@@ -678,15 +676,20 @@ grimoire:
   # Empty here so the code falls back to OpenRouter; deploy/values.yaml points
   # it at the in-cluster Qwen vLLM (free, keyless) to avoid OpenRouter spend.
   extractBaseUrl: ""
+  # extractProvider: OpenRouter provider preference (GRIMOIRE_EXTRACT_PROVIDER).
+  # OpenRouter's cheapest V4-Flash route is fp4-quantized (DeepInfra), which
+  # degrades precision and breaks the prompt cache; pin a native-precision
+  # first-party provider (comma list allowed). Empty here (no constraint);
+  # deploy/values.yaml sets it. Only applied when the endpoint is OpenRouter.
+  extractProvider: ""
   # extractLimit: optional per-run cap on chunks the extraction job processes.
   # Unset here so the code default (25) applies; set to tune without a code
   # change.
   extractLimit: ""
-  # extractConcurrency: optional cap on concurrent extract calls to the vLLM
-  # server (lets it continuous-batch instead of running batch size 1). Unset
-  # here so the code default (6) applies; keep it below vLLM --max-num-seqs (8)
-  # so this bulk job leaves decode-slot headroom for trusted interactive
-  # callers. Set to tune without a code change.
+  # extractConcurrency: cap on concurrent extract calls. The code default (6)
+  # suits the local GPU's 8 decode slots; a hosted provider (OpenRouter) has no
+  # such limit, so deploy/values.yaml raises it (the client backs off on 429).
+  # Empty here so the code default applies.
   extractConcurrency: ""
 
 # ADR 036 orchestrator brief compiler: a host-side OpenRouter call that routes

@@ -886,6 +886,69 @@ def test_v1_client_keeps_json_object():
     assert client._format_kwargs() == {"response_format": {"type": "json_object"}}
 
 
+async def _capture_payload(client: OpenRouterClient) -> dict:
+    """Run one extract call against a mocked httpx and return the sent payload."""
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {"entities": [], "mentions": [], "relationships": []}
+                    )
+                }
+            }
+        ]
+    }
+    with patch("grimoire.extract.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post.return_value = ok
+        mock_cls.return_value = mock_client
+        await client.extract("chunk")
+    return mock_client.post.call_args[1]["json"]
+
+
+@pytest.mark.asyncio
+async def test_provider_routing_sent_to_openrouter_when_env_set(monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_PROVIDER", "deepseek")
+    client = OpenRouterClient(api_key="k", base_url=extract.OPENROUTER_URL)
+    payload = await _capture_payload(client)
+    assert payload["provider"] == {"order": ["deepseek"], "allow_fallbacks": False}
+
+
+@pytest.mark.asyncio
+async def test_provider_routing_comma_list_becomes_ordered_array(monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_PROVIDER", "deepseek, fireworks")
+    client = OpenRouterClient(api_key="k", base_url=extract.OPENROUTER_URL)
+    payload = await _capture_payload(client)
+    assert payload["provider"]["order"] == ["deepseek", "fireworks"]
+    assert payload["provider"]["allow_fallbacks"] is False
+
+
+@pytest.mark.asyncio
+async def test_provider_routing_absent_when_env_unset(monkeypatch):
+    monkeypatch.delenv("GRIMOIRE_EXTRACT_PROVIDER", raising=False)
+    client = OpenRouterClient(api_key="k", base_url=extract.OPENROUTER_URL)
+    payload = await _capture_payload(client)
+    assert "provider" not in payload
+
+
+@pytest.mark.asyncio
+async def test_provider_routing_not_sent_to_vllm(monkeypatch):
+    """Even with the env set, a vLLM endpoint never gets the OpenRouter-only
+    provider field (nor the reasoning field)."""
+    monkeypatch.setenv("GRIMOIRE_EXTRACT_PROVIDER", "deepseek")
+    client = OpenRouterClient(
+        api_key="", base_url="http://inference/v1/chat/completions"
+    )
+    payload = await _capture_payload(client)
+    assert "provider" not in payload
+    assert "reasoning" not in payload
+
+
 # --- OpenRouterClient -------------------------------------------------------
 
 

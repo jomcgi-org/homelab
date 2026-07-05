@@ -155,14 +155,23 @@ spec:
             - name: GRIMOIRE_EXTRACT_BASE_URL
               value: {{ $.Values.grimoire.extractBaseUrl | quote }}
             {{- end }}
+            {{- if $.Values.grimoire.extractProvider }}
+            # OpenRouter provider preference (comma list -> ordered array in
+            # code, allow_fallbacks=false). Pins a native-precision first-party
+            # provider so extraction never lands on the cheapest fp4-quantized
+            # route. Only honored when the endpoint is OpenRouter.
+            - name: GRIMOIRE_EXTRACT_PROVIDER
+              value: {{ $.Values.grimoire.extractProvider | quote }}
+            {{- end }}
             {{- if $.Values.grimoire.extractLimit }}
             - name: GRIMOIRE_EXTRACT_LIMIT
               value: {{ $.Values.grimoire.extractLimit | quote }}
             {{- end }}
             {{- if $.Values.grimoire.extractConcurrency }}
-            # Concurrent extract calls to vLLM. Keep <= vLLM --max-num-seqs so
-            # requests batch rather than queue; empty falls back to the code
-            # default (6).
+            # Concurrent extract calls. Bounded by vLLM --max-num-seqs for a
+            # local endpoint, but a hosted provider (OpenRouter) has no such
+            # limit, so production runs wide (the client backs off on 429).
+            # Empty falls back to the code default (6).
             - name: GRIMOIRE_EXTRACT_CONCURRENCY
               value: {{ $.Values.grimoire.extractConcurrency | quote }}
             {{- end }}
