@@ -31,6 +31,28 @@ filegroup(
     visibility = ["//projects/monolith:__subpackages__"],
 )
 
+# Generate /etc/environment.md from the apko lock plus hand-written notes
+# (ADR agents/044), so the guest's self-description cannot drift from the
+# packages actually baked into the image.
+genrule(
+    name = "environment_md",
+    srcs = [
+        "apko.lock.json",
+        "env-notes.md",
+    ],
+    outs = ["environment.md"],
+    cmd = "$(location //projects/firecracker/tools/env_readme:env_readme) --lock $(location apko.lock.json) --title 'goosecracker agent guest environment' --notes $(location env-notes.md) > $@",
+    tools = ["//projects/firecracker/tools/env_readme:env_readme"],
+)
+
+pkg_tar(
+    name = "environment_md_tar",
+    srcs = [":environment_md"],
+    mode = "0644",
+    owner = "0.0",
+    package_dir = "/etc",
+)
+
 # Bake impeccable's frontend-design reference docs at /opt/impeccable/. The
 # artifact-build / artifact-review recipes consult these on demand for depth on
 # a specific dimension. Vendored unmodified (Apache-2.0); NOTICE.md ships with
@@ -84,6 +106,7 @@ apko_image(
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/goosecracker/guest",
     tars = [
         ":config_tar",
+        ":environment_md_tar",
         ":impeccable_tar",
     ],
 )
