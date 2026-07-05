@@ -40,6 +40,11 @@ spec:
         - name: llama-server
           image: "{{ .Values.image.vllm.repository }}:{{ .Values.image.vllm.tag }}"
           imagePullPolicy: {{ .Values.image.vllm.pullPolicy }}
+          env:
+            {{- range $k, $v := .Values.vllm.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           command: ["/bin/sh", "-c"]
