@@ -39,8 +39,12 @@ instructions: |
   GitHub REST API, so open the PR through the API instead of pushing.
 
   Do NOT commit locally (a local commit cannot leave this VM). Instead
-  build the branch server-side via the REST API. Set
-  `R=jomcgi/homelab` and `B=claude/<short-slug-for-the-task>`, then:
+  build the branch server-side via the REST API. Your target GitHub repo
+  (owner/repo) was staged for you at /injected-context/repo, so set
+  `R=$(cat /injected-context/repo 2>/dev/null)`. If that file is missing or
+  empty, do NOT guess a repo and do NOT push: say in your final message that
+  no target repo was provided so you could not open a PR. Otherwise set
+  `B=claude/<short-slug-for-the-task>`, then:
 
     1. Base SHA:      `BASE=$(gh api repos/$R/git/ref/heads/main --jq .object.sha)`
     2. Base tree:     `BT=$(gh api repos/$R/git/commits/$BASE --jq .tree.sha)`

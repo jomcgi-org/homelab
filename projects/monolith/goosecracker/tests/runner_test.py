@@ -606,6 +606,70 @@ async def test_run_one_turn_ships_injected_context_in_payload(monkeypatch):
     assert captured_payload["injectedContext"]["transcript.md"] == "hi"
 
 
+async def _run_turn_capturing_payload(monkeypatch, **turn_kwargs):
+    """Run a turn with every seam stubbed and return the captured fc-invoke
+    payload (mirrors test_run_one_turn_ships_injected_context_in_payload)."""
+    import chat.api
+
+    captured_payload = {}
+
+    async def fake_post(url, payload, on_retry):
+        captured_payload.update(payload)
+        return {"status": "ok", "result": "done", "sessionDb": ""}
+
+    monkeypatch.setattr(runner, "_post_agent_run", fake_post)
+    monkeypatch.setattr(runner, "FC_INVOKE_URL", "http://fc-invoke")
+    monkeypatch.setattr(runner.sessions, "load", MagicMock(return_value=None))
+    monkeypatch.setattr(runner.threads, "mark_completed", MagicMock())
+    monkeypatch.setattr(runner, "_deliver", AsyncMock())
+    monkeypatch.setattr(runner, "_mark_progress_done", MagicMock())
+    monkeypatch.setattr(runner, "_persist_session_db", AsyncMock())
+    monkeypatch.setattr(chat.api, "reset_goosecracker_progress", MagicMock())
+    monkeypatch.setattr(chat.api, "ensure_steering_token", lambda _s: "")
+    monkeypatch.setattr(
+        chat.api, "build_injected_context", lambda tid, tier="": {"transcript.md": "hi"}
+    )
+    ok = await runner._run_one_turn("sess-1", **turn_kwargs)
+    assert ok is True
+    return captured_payload
+
+
+async def test_run_one_turn_injects_repo_owner_for_pr_path(monkeypatch):
+    """The guest's git origin (the read-only mirror) does not carry its GitHub
+    owner/repo, so the runner stages the resolved ADR 029 scope at
+    /injected-context/repo for the implement recipe's REST-API PR path."""
+    payload = await _run_turn_capturing_payload(
+        monkeypatch,
+        task="open a PR",
+        recipe="agent",
+        tier="",
+        repo="weave-hand/loom",
+        git_mirror="",
+        git_ref="",
+        discord_thread="thr-1",
+    )
+    assert payload["injectedContext"]["repo"] == "weave-hand/loom"
+    # The ADR 040 per-turn context still rides alongside it.
+    assert payload["injectedContext"]["transcript.md"] == "hi"
+
+
+async def test_run_one_turn_repoless_omits_repo_key(monkeypatch):
+    """The repo-less path (e.g. a /agent artifact build with no checkout) injects
+    no repo key, so the recipe's presence check is a clean miss and it fails
+    loudly rather than opening a PR against the wrong repo."""
+    payload = await _run_turn_capturing_payload(
+        monkeypatch,
+        task="build an artifact",
+        recipe="agent",
+        tier="",
+        repo="",
+        git_mirror="",
+        git_ref="",
+        discord_thread="thr-1",
+    )
+    assert "repo" not in payload["injectedContext"]
+
+
 async def _run_artifact_turn_with_dataset_producer(monkeypatch, producer):
     """Shared setup for the channel-data.json wiring tests (Task 3.2): stub
     every seam _run_one_turn touches (mirrors
