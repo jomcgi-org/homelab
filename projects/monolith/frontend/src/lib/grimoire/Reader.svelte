@@ -7,11 +7,12 @@
   // the sibling read/+server.js proxy, which signs images the same way.
   //
   // Deliberately brutalist-styled with the --grimb-* tokens (theme.css), a
-  // second palette used ONLY here and in the flat TOC (SectionTree.svelte):
-  // the rest of the grimoire tree (entities, stat blocks) keeps the oxblood
-  // theme untouched.
+  // second palette used ONLY here and in the sticky bar's Chapters dropdown
+  // (ChaptersNav.svelte): the rest of the grimoire tree (entities, stat
+  // blocks) keeps the oxblood theme untouched.
   import { apiFetch } from "$lib/grimoire/api.js";
   import { renderChunk } from "$lib/grimoire/renderChunk.js";
+  import ChaptersNav from "$lib/grimoire/ChaptersNav.svelte";
 
   let {
     campaignId,
@@ -41,7 +42,8 @@
   // only ever appends to local `items`/`nextCursor` state below.
 
   // Book display name + total chunk count for the sticky bar's "seq/total".
-  // Owns its own fetch (same rationale as SectionTree: neither host has to).
+  // Owns its own fetch (same rationale as ChaptersNav's /sections fetch
+  // below: neither host has to).
   $effect(() => {
     loadBookMeta(bookId);
   });
@@ -174,8 +176,9 @@
 
 <!-- The public tier's root layout already loads these two families globally;
      the private app doesn't, so load them here, scoped to wherever the
-     reader actually mounts (this and SectionTree.svelte are the only two
-     grimoire components that reference --grimb-mono/--grimb-serif). -->
+     reader actually mounts. ChaptersNav.svelte also uses --grimb-mono but is
+     always a child of this component, so it never needs its own copy of
+     this block. -->
 <svelte:head>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -188,12 +191,15 @@
 <div class="grimb-reader">
   <div class="grimb-bar">
     <span class="grimb-bar-title">{bookMeta.displayName}</span>
-    <span class="grimb-bar-pos">
-      {sectionTitle(activeSectionPath).toUpperCase()}
-      {#if activeSeq != null && bookMeta.chunkCount}
-        · {activeSeq + 1}/{bookMeta.chunkCount}
-      {/if}
-    </span>
+    <div class="grimb-bar-right">
+      <span class="grimb-bar-pos">
+        {sectionTitle(activeSectionPath).toUpperCase()}
+        {#if activeSeq != null && bookMeta.chunkCount}
+          · {activeSeq + 1}/{bookMeta.chunkCount}
+        {/if}
+      </span>
+      <ChaptersNav {bookId} {activeSectionPath} />
+    </div>
   </div>
 
   <div class="grimb-panel" bind:this={containerEl}>
@@ -296,6 +302,13 @@
   .grimb-bar-title {
     text-transform: uppercase;
     font-weight: 700;
+  }
+
+  .grimb-bar-right {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    min-width: 0;
   }
 
   .grimb-bar-pos {
