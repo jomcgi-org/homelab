@@ -417,6 +417,8 @@ async def monolith_chat_list_directives() -> dict:
 
 
 def _directive_history_sync(scope_kind: str, scope_id: str) -> dict:
+    if scope_kind not in ("channel", "user"):
+        return {"error": "scope_kind must be 'channel' or 'user'"}
     from sqlmodel import Session, select
 
     from app.db import get_engine
@@ -495,6 +497,8 @@ async def monolith_chat_directive_history(scope_kind: str, scope_id: str) -> dic
 
 
 def _set_directive_sync(scope_kind: str, scope_id: str, text: str) -> dict:
+    if scope_kind not in ("channel", "user"):
+        return {"ok": False, "reason": "scope_kind must be 'channel' or 'user'"}
     from chat import directives
 
     ok, reason = directives.guard(text)
@@ -522,6 +526,8 @@ async def monolith_chat_set_directive(
 
 
 def _pin_directive_sync(scope_kind: str, scope_id: str) -> dict:
+    if scope_kind not in ("channel", "user"):
+        return {"ok": False, "reason": "scope_kind must be 'channel' or 'user'"}
     from chat import directives
 
     if scope_kind == "user":
@@ -542,6 +548,8 @@ async def monolith_chat_pin_directive(scope_kind: str, scope_id: str) -> dict:
 
 
 def _revert_directive_sync(scope_kind: str, scope_id: str) -> dict:
+    if scope_kind not in ("channel", "user"):
+        return {"ok": False, "reason": "scope_kind must be 'channel' or 'user'"}
     from sqlmodel import Session, select
 
     from app.db import get_engine
