@@ -582,6 +582,36 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
+    # grimoire.backfill_hierarchy: one-off metadata backfill (NOT a re-load). Some
+    # books were loaded before marker.py emitted section_hierarchy, so their rows
+    # have it NULL. This re-runs marker's chunking over each book's archived raw
+    # output.json and writes ONLY the section_hierarchy column of matching
+    # (book_id, chunk_ref) rows: it never inserts a chunk and never re-embeds, so
+    # it is cheap and safe to re-run. Reuses the same `grimoire: true` env as the
+    # loader (S3 env + GRIMOIRE_S3_BUCKET + DATABASE_URL). Ships SUSPENDED
+    # (manual-only): submit by hand with
+    #   argo submit --from cronworkflow/grimoire-backfill-hierarchy -n monolith-workflows
+    # To scope to ONE book for a safe verify run first, set GRIMOIRE_BACKFILL_BOOK
+    # below to the book id (e.g. "monster-manual"), deploy, submit, then revert to
+    # "" (empty = every book with loaded chunks). The inert yearly schedule is
+    # belt-and-suspenders.
+    - name: grimoire-backfill-hierarchy
+      args: ["grimoire-backfill-hierarchy"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: true
+      grimoire: true
+      env:
+        # Empty = backfill every book with loaded chunks. Set to a single book id
+        # for a scoped verify run, then revert to "".
+        GRIMOIRE_BACKFILL_BOOK: ""
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
 
 frontend:
   otelCollectorUrl: ""

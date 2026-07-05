@@ -3025,6 +3025,19 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_hierarchy_backfill_test",
+    srcs = ["grimoire/hierarchy_backfill_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],
     imports = ["."],

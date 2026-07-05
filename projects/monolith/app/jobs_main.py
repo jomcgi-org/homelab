@@ -236,6 +236,22 @@ def grimoire_extract_entities() -> None:
     _run_job("grimoire-extract-entities", "grimoire.jobs", "grimoire_extract_entities")
 
 
+@app.command("grimoire-backfill-hierarchy")
+def grimoire_backfill_hierarchy() -> None:
+    """Backfill section_hierarchy onto already-loaded grimoire chunks.
+
+    One-shot of the metadata-only hierarchy backfill: re-runs marker chunking
+    over each book's archived raw output.json and writes ONLY the
+    section_hierarchy column of matching (book_id, chunk_ref) rows. Never inserts
+    a chunk and never re-embeds. Needs the same env as grimoire-load-chunks (S3
+    env + GRIMOIRE_S3_BUCKET, injected by the cronWorkflows `grimoire: true`
+    flag). Set GRIMOIRE_BACKFILL_BOOK to scope to a single book for a safe verify
+    run; unset processes every book with loaded chunks."""
+    _run_job(
+        "grimoire-backfill-hierarchy", "grimoire.jobs", "grimoire_backfill_hierarchy"
+    )
+
+
 @app.command("stars-load-grid")
 def stars_load_grid() -> None:
     """Reload the stars site grid from S3 (one-shot of stars.load_grid)."""
