@@ -341,16 +341,24 @@ def _apply_or_log(
         if mode != "live":
             status = "shadow"
         elif scope_kind == "channel":
-            # Stage a proposal row so the introspection surface surfaces it. No
-            # Discord message is posted, so the autopilot stays silent; a human
-            # applies it via the MCP set-directive tool. The synthetic proposal id
-            # is unguessable, so a stray reaction can never confirm it.
-            directives.propose_update(
-                scope_id,
-                proposed,
-                "autopilot",
-                "",
-                f"autopilot:{uuid4().hex}",
+            # Stage an inactive proposal row (same shape propose_update produces)
+            # WITHIN this session so it commits atomically with the log and never
+            # opens a nested session. No Discord message is posted, so the
+            # autopilot stays silent; a human applies it via the MCP set-directive
+            # tool. The synthetic proposal id is unguessable, so a stray reaction
+            # can never confirm it.
+            current = _active_channel_row(session, scope_id)
+            session.add(
+                ChannelDirective(
+                    channel_id=scope_id,
+                    directive=proposed,
+                    version=(current.version if current is not None else 0) + 1,
+                    active=False,
+                    source="autopilot",
+                    updated_by_user_id="autopilot",
+                    proposal_message_id=f"autopilot:{uuid4().hex}",
+                    previous_version=current.version if current is not None else 0,
+                )
             )
             status = "proposed"
         else:
@@ -420,8 +428,12 @@ def _validate_one(row_id: int, now: datetime, mode: str) -> str:
             baseline = json.loads(da.baseline_json).get("score")
         except (ValueError, AttributeError):
             baseline = None
+        # Bound the post-apply window with the stored applied_at as-is: it shares
+        # the created_at columns' awareness (both tz-aware in Postgres, both naive
+        # in SQLite tests), so a SQL range compare stays valid. Coercing only one
+        # side would mix aware/naive and mis-bind under SQLite.
         post = ambient_analysis.score_window(
-            session, scope_kind, scope_id, _as_utc(da.applied_at), now
+            session, scope_kind, scope_id, da.applied_at, now
         )
         margin = _float_env("AUTOPILOT_REGRESS_MARGIN", _DEFAULT_REGRESS_MARGIN)
 
@@ -432,13 +444,16 @@ def _validate_one(row_id: int, now: datetime, mode: str) -> str:
             if mode != "live":
                 # Kill switch engaged: defer the revert to a later live run.
                 return "deferred"
+            # Reinstate the stored prior text WITHIN this session (session-param
+            # primitives, no nested own session) so the revert and the status
+            # flip commit atomically.
             if scope_kind == "channel":
-                directives.set_channel_directive(
-                    scope_id, da.prior_text or "", source="autopilot"
+                directives.insert_active_directive(
+                    session, scope_id, da.prior_text or "", source="autopilot"
                 )
             else:
-                directives.set_style_pref(
-                    scope_id, da.prior_text or "", source="autopilot"
+                directives.insert_active_pref(
+                    session, scope_id, da.prior_text or "", source="autopilot"
                 )
             da.status = "reverted"
         else:
