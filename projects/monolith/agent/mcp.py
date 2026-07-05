@@ -35,6 +35,7 @@ from agent import checks, locks
 from agent import notify as notify_mod
 from agent import routine_jobs
 from app.mcp_app import mcp
+import chat.api as chat_api
 import goosecracker.api as goosecracker
 
 
@@ -340,70 +341,6 @@ async def monolith_agent_resume_agent_thread(thread_id: str) -> dict:
 # row within its cooldown). All DB work runs in a worker thread, own session.
 
 
-def _latest_autopilot_action(session, scope_kind: str, scope_id: str) -> dict | None:
-    from sqlmodel import select
-
-    from chat.models import DirectiveAutopilot
-
-    row = session.exec(
-        select(DirectiveAutopilot)
-        .where(DirectiveAutopilot.scope_kind == scope_kind)
-        .where(DirectiveAutopilot.scope_id == scope_id)
-        .order_by(DirectiveAutopilot.id.desc())
-    ).first()
-    if row is None:
-        return None
-    return {
-        "status": row.status,
-        "rationale": row.rationale,
-        "target_version": row.target_version,
-        "applied_at": _iso(row.applied_at),
-        "created_at": _iso(row.created_at),
-    }
-
-
-def _list_directives_sync() -> dict:
-    from sqlmodel import Session, select
-
-    from app.db import get_engine
-    from chat.models import ChannelDirective, UserStylePref
-
-    with Session(get_engine()) as session:
-        channels = session.exec(
-            select(ChannelDirective).where(
-                ChannelDirective.active == True  # noqa: E712
-            )
-        ).all()
-        prefs = session.exec(
-            select(UserStylePref).where(UserStylePref.active == True)  # noqa: E712
-        ).all()
-        return {
-            "channel_directives": [
-                {
-                    "channel_id": c.channel_id,
-                    "version": c.version,
-                    "source": c.source,
-                    "directive": c.directive,
-                    "latest_autopilot": _latest_autopilot_action(
-                        session, "channel", c.channel_id
-                    ),
-                }
-                for c in channels
-            ],
-            "user_style_prefs": [
-                {
-                    "user_id": p.user_id,
-                    "source": p.source,
-                    "pref": p.pref,
-                    "latest_autopilot": _latest_autopilot_action(
-                        session, "user", p.user_id
-                    ),
-                }
-                for p in prefs
-            ],
-        }
-
-
 @mcp.tool
 async def monolith_chat_list_directives() -> dict:
     """List the active per-channel behavioural directives and per-user style
@@ -413,76 +350,7 @@ async def monolith_chat_list_directives() -> dict:
     of manual means a human pinned or set it and the autopilot will leave it
     alone.
     """
-    return await asyncio.to_thread(_list_directives_sync)
-
-
-def _directive_history_sync(scope_kind: str, scope_id: str) -> dict:
-    if scope_kind not in ("channel", "user"):
-        return {"error": "scope_kind must be 'channel' or 'user'"}
-    from sqlmodel import Session, select
-
-    from app.db import get_engine
-    from chat.models import ChannelDirective, DirectiveAutopilot, UserStylePref
-
-    with Session(get_engine()) as session:
-        versions: list[dict] = []
-        if scope_kind == "user":
-            rows = session.exec(
-                select(UserStylePref)
-                .where(UserStylePref.user_id == scope_id)
-                .order_by(UserStylePref.id)
-            ).all()
-            versions = [
-                {
-                    "text": r.pref,
-                    "active": r.active,
-                    "source": r.source,
-                    "created_at": _iso(r.created_at),
-                }
-                for r in rows
-            ]
-        else:
-            rows = session.exec(
-                select(ChannelDirective)
-                .where(ChannelDirective.channel_id == scope_id)
-                .order_by(ChannelDirective.version)
-            ).all()
-            versions = [
-                {
-                    "version": r.version,
-                    "text": r.directive,
-                    "active": r.active,
-                    "source": r.source,
-                    "proposal_message_id": r.proposal_message_id,
-                    "created_at": _iso(r.created_at),
-                }
-                for r in rows
-            ]
-        log = session.exec(
-            select(DirectiveAutopilot)
-            .where(DirectiveAutopilot.scope_kind == scope_kind)
-            .where(DirectiveAutopilot.scope_id == scope_id)
-            .order_by(DirectiveAutopilot.id)
-        ).all()
-        return {
-            "scope_kind": scope_kind,
-            "scope_id": scope_id,
-            "versions": versions,
-            "autopilot_log": [
-                {
-                    "status": a.status,
-                    "target_version": a.target_version,
-                    "prior_version": a.prior_version,
-                    "rationale": a.rationale,
-                    "baseline_json": a.baseline_json,
-                    "evidence_json": a.evidence_json,
-                    "applied_at": _iso(a.applied_at),
-                    "validate_after": _iso(a.validate_after),
-                    "created_at": _iso(a.created_at),
-                }
-                for a in log
-            ],
-        }
+    return await asyncio.to_thread(chat_api.list_directives)
 
 
 @mcp.tool
@@ -493,22 +361,7 @@ async def monolith_chat_directive_history(scope_kind: str, scope_id: str) -> dic
     is every autonomous action the autopilot took on this scope with its baseline
     and evidence, so an apply and its later keep or revert can be traced.
     """
-    return await asyncio.to_thread(_directive_history_sync, scope_kind, scope_id)
-
-
-def _set_directive_sync(scope_kind: str, scope_id: str, text: str) -> dict:
-    if scope_kind not in ("channel", "user"):
-        return {"ok": False, "reason": "scope_kind must be 'channel' or 'user'"}
-    from chat import directives
-
-    ok, reason = directives.guard(text)
-    if not ok:
-        return {"ok": False, "reason": reason}
-    if scope_kind == "user":
-        directives.set_style_pref(scope_id, text, source="manual")
-        return {"ok": True}
-    version = directives.set_channel_directive(scope_id, text, source="manual")
-    return {"ok": True, "version": version}
+    return await asyncio.to_thread(chat_api.directive_history, scope_kind, scope_id)
 
 
 @mcp.tool
@@ -522,19 +375,7 @@ async def monolith_chat_set_directive(
     acls, ambient mode, repos, or admin access is rejected with a reason and
     nothing is written. Returns ok true on success.
     """
-    return await asyncio.to_thread(_set_directive_sync, scope_kind, scope_id, text)
-
-
-def _pin_directive_sync(scope_kind: str, scope_id: str) -> dict:
-    if scope_kind not in ("channel", "user"):
-        return {"ok": False, "reason": "scope_kind must be 'channel' or 'user'"}
-    from chat import directives
-
-    if scope_kind == "user":
-        ok = directives.pin_style_pref(scope_id)
-    else:
-        ok = directives.pin_channel_directive(scope_id)
-    return {"ok": ok}
+    return await asyncio.to_thread(chat_api.set_directive, scope_kind, scope_id, text)
 
 
 @mcp.tool
@@ -544,54 +385,7 @@ async def monolith_chat_pin_directive(scope_kind: str, scope_id: str) -> dict:
     channel or user. This stamps provenance only and does not change the
     directive text. Returns ok false when the scope has no active row yet.
     """
-    return await asyncio.to_thread(_pin_directive_sync, scope_kind, scope_id)
-
-
-def _revert_directive_sync(scope_kind: str, scope_id: str) -> dict:
-    if scope_kind not in ("channel", "user"):
-        return {"ok": False, "reason": "scope_kind must be 'channel' or 'user'"}
-    from sqlmodel import Session, select
-
-    from app.db import get_engine
-    from chat import directives
-    from chat.models import ChannelDirective, UserStylePref
-
-    with Session(get_engine()) as session:
-        if scope_kind == "user":
-            prior = session.exec(
-                select(UserStylePref)
-                .where(UserStylePref.user_id == scope_id)
-                .where(UserStylePref.active == False)  # noqa: E712
-                .order_by(UserStylePref.id.desc())
-            ).first()
-            if prior is None:
-                return {"ok": False, "reason": "no prior version to revert to"}
-            prior_text = prior.pref
-        else:
-            active = session.exec(
-                select(ChannelDirective)
-                .where(ChannelDirective.channel_id == scope_id)
-                .where(ChannelDirective.active == True)  # noqa: E712
-            ).first()
-            if active is None:
-                return {"ok": False, "reason": "no active directive"}
-            prior = session.exec(
-                select(ChannelDirective)
-                .where(ChannelDirective.channel_id == scope_id)
-                .where(ChannelDirective.version == active.previous_version)
-                .order_by(ChannelDirective.id.desc())
-            ).first()
-            if prior is None:
-                return {"ok": False, "reason": "no prior version to revert to"}
-            prior_text = prior.directive
-
-    # Reinstate as a fresh active row, source manual (a human-initiated revert
-    # that also wins precedence over the autopilot).
-    if scope_kind == "user":
-        directives.set_style_pref(scope_id, prior_text, source="manual")
-        return {"ok": True}
-    version = directives.set_channel_directive(scope_id, prior_text, source="manual")
-    return {"ok": True, "version": version}
+    return await asyncio.to_thread(chat_api.pin_directive, scope_kind, scope_id)
 
 
 @mcp.tool
@@ -601,4 +395,4 @@ async def monolith_chat_revert_directive(scope_kind: str, scope_id: str) -> dict
     scope_kind is channel or user. Returns ok false with a reason when there is
     no prior version to restore.
     """
-    return await asyncio.to_thread(_revert_directive_sync, scope_kind, scope_id)
+    return await asyncio.to_thread(chat_api.revert_directive, scope_kind, scope_id)

@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from chat.bot import send_message  # re-exported
 from chat.changelog import run_changelog_for_config  # re-exported
+from chat.directive_admin import directive_history  # re-exported
+from chat.directive_admin import list_directives  # re-exported
+from chat.directive_admin import pin_directive  # re-exported
+from chat.directive_admin import revert_directive  # re-exported
+from chat.directive_admin import set_directive  # re-exported
 from chat.goosecracker import ack_inflight  # re-exported
 from chat.goosecracker import artifact_id_for_thread  # re-exported
 from chat.goosecracker import build_injected_context  # re-exported
@@ -56,4 +61,9 @@ __all__ = [
     "run_changelog_for_config",
     "run_summary_generation",
     "send_message",
+    "list_directives",
+    "directive_history",
+    "set_directive",
+    "pin_directive",
+    "revert_directive",
 ]
