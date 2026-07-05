@@ -49,7 +49,8 @@ channel can then share signal. Human follow-up is always window-based (there is
 no exact "did a human follow up" link). The agent-thread match is likewise
 heuristic: `claude_agent.agent_threads` carries no channel or trigger key, only
 its own `session_id`, so an episode is tied to the nearest agent thread created
-just after the engage (`AMBIENT_AGENT_WINDOW_MINUTES`, default 5). The Opus
+closest in time around the engage (`AMBIENT_AGENT_WINDOW_MINUTES`, default 5,
+with 2 min of pre-engage slack for clock skew). The Opus
 deep-read (`fetch-episode`) resolves ambiguity per episode; do not over-trust a
 `time-window-heuristic` attribution without reading the slice, and carry
 `reaction_match` into the eval's `signals` so the fidelity is recorded.
@@ -114,8 +115,10 @@ directive autopilot consumes.
 ## 5. Directive guard() gotcha
 
 Proposed directive text must avoid the blocked keywords `tool`, `grant`, `acl`,
-`permission`, `ambient`, `repo`, `admin` (whole-word, case-insensitive), or
-`propose_update` / `guard()` silently rejects it. Phrase around them (directives
+`permission`, `ambient`, `repo`, `push to`, `admin` (whole-word,
+case-insensitive; keep this list in sync with `_GUARD_KEYWORDS` in
+`directives.py`), or `propose_update` / `guard()` rejects it (returning a reason,
+not silently). Phrase around them (directives
 shape tone and interaction style only, never access). Channel directives are
 propose-then-confirm: `propose_update()` stages an inactive row and a human 👍 in
 Discord confirms it. This skill never auto-applies a directive. Personal style

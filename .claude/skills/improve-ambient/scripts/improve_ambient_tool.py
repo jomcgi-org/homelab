@@ -33,7 +33,8 @@ path was used ("exact" or "time-window-heuristic").
 The agent-thread match is likewise a nearest-in-time heuristic
 (``_AGENT_WINDOW_MINUTES``): ``claude_agent.agent_threads`` carries no channel
 or trigger-message key, only a ``session_id`` (the run's own Discord thread), so
-an episode is tied to the agent thread created closest in time after the engage.
+an episode is tied to the agent thread created closest in time around the engage
+(a tight window after, with 2 min of pre-engage slack for clock skew).
 
 eval JSON contract (written by put-eval, one key per episode under
 ``ambient-evals/``):
@@ -360,6 +361,13 @@ _EVAL_REQUIRED = {
 
 
 def put_eval(episode_id, payload_b64):
+    # episode_id is an integer PK; coerce so a crafted (e.g. slash-bearing) id
+    # can never build an S3 key outside the ambient-evals/ prefix.
+    try:
+        episode_id = int(episode_id)
+    except (TypeError, ValueError):
+        print(json.dumps({"error": "episode_id must be an integer"}))
+        sys.exit(2)
     doc = json.loads(base64.b64decode(payload_b64))
     missing = _EVAL_REQUIRED - set(doc)
     if missing:
