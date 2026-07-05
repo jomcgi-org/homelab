@@ -264,6 +264,60 @@ def test_to_chunks_new_header_with_stale_hierarchy_does_not_bleed():
     assert monster["chunk_ref"] == "/page/0/SectionHeader/1"
 
 
+def test_to_chunks_breadcrumbs_nested_section_under_chapter():
+    """A section that sits under a chapter gets a ``chapter/leaf`` section_path
+    (read off a content block's trustworthy ancestry), while the leaf title
+    alone is what the body is prefixed with and what the header-only chapter
+    chunk stores."""
+    doc = {
+        "children": [
+            _page(
+                0,
+                [
+                    {
+                        "id": "/page/0/SectionHeader/0",
+                        "block_type": "SectionHeader",
+                        "html": "<h1>GIANT KIN</h1>",
+                        "section_hierarchy": {"1": "/page/0/SectionHeader/0"},
+                    },
+                    {
+                        "id": "/page/0/SectionHeader/1",
+                        "block_type": "SectionHeader",
+                        "html": "<h2>GOLIATHS AND FIRBOLGS</h2>",
+                        "section_hierarchy": {
+                            "1": "/page/0/SectionHeader/0",
+                            "2": "/page/0/SectionHeader/1",
+                        },
+                    },
+                    {
+                        "id": "/page/0/Text/0",
+                        "block_type": "Text",
+                        "html": "<p>Two humanoid kinds claim kinship to giants.</p>",
+                        "section_hierarchy": {
+                            "1": "/page/0/SectionHeader/0",
+                            "2": "/page/0/SectionHeader/1",
+                        },
+                    },
+                ],
+            )
+        ],
+        "metadata": {},
+    }
+    chunks = marker.to_chunks(doc, image_key_prefix="p/")
+    by_leaf = {c["section_path"].rsplit("/", 1)[-1]: c for c in chunks}
+
+    goliaths = by_leaf["GOLIATHS AND FIRBOLGS"]
+    # Breadcrumb nests the section under its chapter, so the Chapters nav and
+    # reader can group it (they split section_path on "/").
+    assert goliaths["section_path"] == "GIANT KIN/GOLIATHS AND FIRBOLGS"
+    # The body is prefixed with the leaf name only, never the full breadcrumb.
+    assert goliaths["content"].startswith("GOLIATHS AND FIRBOLGS")
+    assert not goliaths["content"].startswith("GIANT KIN/")
+
+    # The chapter header (no direct content) keeps its bare top-level path.
+    assert by_leaf["GIANT KIN"]["section_path"] == "GIANT KIN"
+
+
 def test_to_chunks_drops_empty_content():
     doc = {
         "children": [

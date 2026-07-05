@@ -179,6 +179,37 @@ def _page_of(block: dict) -> str:
     return f"{m.group(1)}/_nosection" if m else "/_nosection"
 
 
+def _section_breadcrumb(
+    hier_block: dict | None, headers: dict[str, str], leaf: str | None
+) -> str | None:
+    """A ``chapter/section/leaf`` breadcrumb for the run whose leaf section is
+    ``leaf``, so the reader and Chapters nav can nest sections under their real
+    chapter (they split ``section_path`` on ``/``).
+
+    Ancestry comes from ``hier_block``'s ``section_hierarchy`` (level -> header
+    id): the non-continuation ancestor header names, shallowest first, with the
+    leaf appended last. Only a *content* block (never a SectionHeader) should be
+    passed as ``hier_block``: a header block's own ``section_hierarchy`` is stale
+    (it still lists the previous sibling at its level, see ``effective_section_id``),
+    which would graft a sibling on as a bogus parent. Callers pass ``None`` for
+    header-only runs, degrading to the bare ``leaf`` rather than risk that.
+    """
+    if not leaf:
+        return leaf
+    parents: list[str] = []
+    sh = (hier_block or {}).get("section_hierarchy") or {}
+    for level in sorted(sh, key=lambda k: int(k)):
+        txt = headers.get(sh[level], "").strip()
+        # Skip empties, stat-block continuation headers, the leaf itself (it is
+        # appended once at the end), and any run of the same name.
+        if not txt or txt.upper() in _CONTINUATION_HEADERS or txt == leaf:
+            continue
+        if parents and parents[-1] == txt:
+            continue
+        parents.append(txt)
+    return "/".join([*parents, leaf])
+
+
 def parse_image_block(html: str) -> tuple[str, str, str]:
     """From a Picture block's html, return (src_filename, alt, caption)."""
     src_m = _IMG_SRC_RE.search(html)
@@ -227,12 +258,17 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
         body = "\n\n".join(run["parts"]).strip()
         if not body:
             return
-        sp = run["section_path"]
+        leaf = run["section_path"]
         # The extractor sees only `content`, so the section/monster name must
         # live in the text itself (not just section_path) for the entity to be
-        # named reliably. Prepend it as a title line unless already leading.
-        if sp and not body.upper().startswith(sp.upper()):
-            body = f"{sp}\n\n{body}"
+        # named reliably. Prepend the *leaf* name (never the full breadcrumb) as
+        # a title line unless already leading.
+        if leaf and not body.upper().startswith(leaf.upper()):
+            body = f"{leaf}\n\n{body}"
+        # Stored path is the chapter/section/leaf breadcrumb (from the run's
+        # first content block's trustworthy ancestry); the leaf alone when the
+        # run has no content block to read ancestry from.
+        sp = _section_breadcrumb(run["hier_block"], headers, leaf)
         ordered.append(
             (
                 run["order"],
@@ -250,13 +286,18 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
             content = _image_content(alt, caption)
             if content:
                 img_sid = effective_section_id(block, headers)
+                img_leaf = headers.get(img_sid) if img_sid else None
+                # A Picture is a content block, so its own section_hierarchy is
+                # trustworthy ancestry: read the breadcrumb straight off it.
                 ordered.append(
                     (
                         idx,
                         {
                             "chunk_ref": block.get("id", ""),
                             "content": content,
-                            "section_path": (headers.get(img_sid) if img_sid else None),
+                            "section_path": _section_breadcrumb(
+                                block, headers, img_leaf
+                            ),
                             "image_ref": (image_key_prefix + src) if src else None,
                         },
                     )
@@ -284,9 +325,15 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
                 # overwrite each other on load.
                 "chunk_ref": block.get("id") or _page_of(block),
                 "section_path": section_path or None,
+                # First non-header block of the run, read at flush for the
+                # section's ancestry. A SectionHeader's own hierarchy is stale
+                # (see _section_breadcrumb), so headers never fill this slot.
+                "hier_block": None,
                 "parts": [],
                 "order": idx,
             }
+        if btype != "SectionHeader" and run["hier_block"] is None:
+            run["hier_block"] = block
         run["parts"].append(text)
     flush()
 
