@@ -42,7 +42,7 @@ from chat import summarizer
 from chat.models import ReactionEvent
 from app.db import get_engine
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 logger = logging.getLogger(__name__)
 
@@ -595,15 +595,34 @@ def _format_agent_prompt_echo(user: discord.abc.User, prompt: str) -> str:
     return f"{header}```\n{safe}\n```"
 
 
-def _record_reaction(data: dict) -> None:
+def _record_reaction(data: dict, require_prior_add: bool = False) -> None:
     """Persist one human reaction on a bot message.
 
     Synchronous (opens its own session); call via ``asyncio.to_thread`` from
     the bot's async handlers, never with the caller's session. Best-effort:
     callers wrap this so a persistence failure never blocks the directive
     confirm/discard flow it runs ahead of.
+
+    When ``require_prior_add`` is set (the remove path), the row is inserted
+    only if a matching ``action='add'`` row already exists for the same
+    (message_id, reactor_id, emoji). Discord does not send message_author_id on
+    REACTION_REMOVE, so we cannot re-check the target was Bosun's message from
+    the payload; but an add row was stored ONLY for bot-authored messages, so
+    its existence is itself proof the target was Bosun's, and it guarantees a
+    remove is never logged without the add it cancels.
     """
     with Session(get_engine()) as session:
+        if require_prior_add:
+            prior = session.exec(
+                select(ReactionEvent).where(
+                    ReactionEvent.message_id == data["message_id"],
+                    ReactionEvent.reactor_id == data["reactor_id"],
+                    ReactionEvent.emoji == data["emoji"],
+                    ReactionEvent.action == "add",
+                )
+            ).first()
+            if prior is None:
+                return
         session.add(ReactionEvent(**data))
         session.commit()
 
@@ -816,16 +835,24 @@ class ChatBot(discord.Client):
     ) -> None:
         """Persist a human reaction on one of Bosun's own messages, best-effort.
 
-        A fluidity/productivity signal for /improve-ambient: only reactions on
-        bot-authored messages are stored (``message_author_id`` is populated on
-        raw reaction events; it is not, and never should be, set for a message
-        Bosun didn't author). A persistence failure must never block the
-        directive confirm/discard flow that runs after this in
-        ``on_raw_reaction_add``.
+        A fluidity/productivity signal for /improve-ambient. A persistence
+        failure must never block the directive confirm/discard flow that runs
+        after the add call in ``on_raw_reaction_add``.
+
+        The add and remove paths establish "the target was Bosun's message"
+        differently, because Discord only sends ``message_author_id`` on
+        REACTION_ADD (and only for guild adds), never on REACTION_REMOVE:
+        - add: gate on ``message_author_id == self.user.id`` from the payload.
+        - remove: skip that (the field is absent) and instead require a prior
+          matching ``action='add'`` row. An add row exists only for bot-authored
+          messages, so its presence proves the target was Bosun's and ensures a
+          remove is never logged without the add it cancels.
         """
-        author_id = getattr(payload, "message_author_id", None)
-        if author_id is None or str(author_id) != str(self.user.id):
-            return
+        require_prior_add = action == "remove"
+        if not require_prior_add:
+            author_id = getattr(payload, "message_author_id", None)
+            if author_id is None or str(author_id) != str(self.user.id):
+                return
         try:
             await asyncio.to_thread(
                 _record_reaction,
@@ -837,6 +864,7 @@ class ChatBot(discord.Client):
                     "reactor_id": str(payload.user_id),
                     "action": action,
                 },
+                require_prior_add,
             )
         except Exception:
             logger.exception("reaction_event: persist failed (non-fatal)")

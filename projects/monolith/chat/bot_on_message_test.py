@@ -1001,8 +1001,55 @@ class TestReactionPersistence:
 
     @pytest.mark.asyncio
     async def test_reaction_remove_persisted(self, engine):
-        """on_raw_reaction_remove persists a 'remove' row for a bot-authored
-        message, cancelling an earlier add signal."""
+        """on_raw_reaction_remove persists a 'remove' row when a matching prior
+        'add' row exists, cancelling that earlier add signal.
+
+        Discord does not send message_author_id on REACTION_REMOVE, so the
+        payload leaves it at the None default: the prior add row (stored only
+        for bot-authored messages) is what proves the target was Bosun's."""
+        bot = _make_bot()
+
+        # Seed the prior add row directly, matching (message_id, reactor_id,
+        # emoji) of the incoming remove.
+        with Session(engine) as session:
+            session.add(
+                ReactionEvent(
+                    channel_id="99",
+                    message_id="555",
+                    target_is_bot=True,
+                    emoji="\U0001f44e",
+                    reactor_id="42",
+                    action="add",
+                )
+            )
+            session.commit()
+
+        payload = _make_payload(
+            emoji="\U0001f44e",
+            user_id=42,
+            message_id=555,
+            channel_id=99,
+        )
+        assert payload.message_author_id is None  # Discord omits it on remove
+
+        with patch("chat.bot.get_engine", return_value=engine):
+            await bot.on_raw_reaction_remove(payload)
+
+        with Session(engine) as session:
+            rows = session.exec(
+                select(ReactionEvent).where(ReactionEvent.action == "remove")
+            ).all()
+        assert len(rows) == 1
+        assert rows[0].emoji == "\U0001f44e"
+        assert rows[0].reactor_id == "42"
+        assert rows[0].message_id == "555"
+
+    @pytest.mark.asyncio
+    async def test_reaction_remove_without_prior_add_not_persisted(self, engine):
+        """The real production case: a remove with no matching prior add row
+        (e.g. an un-reaction on a message that was never a bot message, or whose
+        add predates this table) writes nothing. Guards against logging a remove
+        that cancels nothing."""
         bot = _make_bot()
 
         payload = _make_payload(
@@ -1010,7 +1057,6 @@ class TestReactionPersistence:
             user_id=42,
             message_id=555,
             channel_id=99,
-            message_author_id=bot.user.id,
         )
 
         with patch("chat.bot.get_engine", return_value=engine):
@@ -1018,26 +1064,43 @@ class TestReactionPersistence:
 
         with Session(engine) as session:
             rows = session.exec(select(ReactionEvent)).all()
-        assert len(rows) == 1
-        assert rows[0].action == "remove"
-        assert rows[0].emoji == "\U0001f44e"
+        assert rows == []
 
     @pytest.mark.asyncio
     async def test_reaction_remove_ignores_bots_own_reaction(self, engine):
-        """The bot's own reaction removal is ignored too (same early return)."""
+        """The bot's own reaction removal is ignored on the top guard
+        (payload.user_id == bot id), independent of message_author_id."""
         bot = _make_bot()
+
+        # Even with a matching prior add present, the bot's own un-reaction
+        # short-circuits before the persistence path.
+        with Session(engine) as session:
+            session.add(
+                ReactionEvent(
+                    channel_id="99",
+                    message_id="555",
+                    target_is_bot=True,
+                    emoji="\U0001f44e",
+                    reactor_id=str(bot.user.id),
+                    action="add",
+                )
+            )
+            session.commit()
 
         payload = _make_payload(
             emoji="\U0001f44e",
             user_id=bot.user.id,
-            message_author_id=bot.user.id,
+            message_id=555,
+            channel_id=99,
         )
 
         with patch("chat.bot.get_engine", return_value=engine):
             await bot.on_raw_reaction_remove(payload)
 
         with Session(engine) as session:
-            rows = session.exec(select(ReactionEvent)).all()
+            rows = session.exec(
+                select(ReactionEvent).where(ReactionEvent.action == "remove")
+            ).all()
         assert rows == []
 
     @pytest.mark.asyncio
