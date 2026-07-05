@@ -40,6 +40,14 @@ const (
 	sandboxGID = 65532
 )
 
+// MPLConfigDir is matplotlib's config/cache directory, set as MPLCONFIGDIR on
+// every python exec. It sits on the /tmp tmpfs OUTSIDE any per-invoke workdir
+// so the font cache matplotlib builds is never collected as an output file.
+// cmd/main.go creates it and pre-populates the font cache during warm-import,
+// so the warm-base snapshot carries it and per-call plotting is both quiet and
+// fast (no first-use font scan).
+const MPLConfigDir = "/tmp/mplconfig"
+
 // dropPrivileges controls whether the python subprocess's Credential is set
 // to sandboxUID/sandboxGID. It defaults on: production always executes
 // untrusted code as uid 65532, never as the guest-init root process.
@@ -237,6 +245,13 @@ func runPython(ctx context.Context, workdir string, timeout time.Duration) ExecR
 		"MPLBACKEND=Agg",
 		"PYTHONUNBUFFERED=1",
 		"TMPDIR=" + workdir,
+		// Keep matplotlib's font cache OUT of the workdir. With HOME=workdir
+		// matplotlib would write $HOME/.cache/matplotlib/fontlist.json on
+		// first use, which collectOutputFiles then returns as a spurious
+		// ~36 KiB attachment on every plot. MPLConfigDir points at a dir the
+		// warm-base snapshot already pre-populated (main.go), so per-call
+		// matplotlib reads the cache from there and writes nothing here.
+		"MPLCONFIGDIR=" + MPLConfigDir,
 	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
