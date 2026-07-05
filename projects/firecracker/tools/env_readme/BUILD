@@ -1,3 +1,9 @@
+# Hand-managed targets: gazelle's package-named py_library would collide
+# with the py_venv_binary below (same exclude convention as other
+# hand-registered python packages in this repo).
+# gazelle:exclude gen_env_readme.py
+# gazelle:exclude gen_env_readme_test.py
+
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
