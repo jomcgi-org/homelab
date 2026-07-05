@@ -112,6 +112,9 @@ class PlanVerdict:
     repo: str
     repo_paths: list[str]
     repo_replaced: bool = False
+    # Id of the telemetry row this verdict wrote, so start_agent_flow can
+    # backfill its thread_id once the session thread exists (see link_thread).
+    brief_id: int | None = None
 
 
 @dataclass
@@ -132,6 +135,10 @@ class FailOpen:
     model was actually called, recorded in the telemetry row's ``error``."""
 
     reason: str
+    # Id of the telemetry row, when this fail-open wrote one (the ungranted /
+    # disabled short-circuits write none, so it stays None). start_agent_flow
+    # backfills its thread_id once the fallback thread exists (see link_thread).
+    brief_id: int | None = None
 
 
 @dataclass
@@ -485,28 +492,54 @@ def _record(
     completion_tokens: int | None,
     cached_tokens: int | None,
     error: str | None,
-) -> None:
-    """Write exactly one telemetry row. Best-effort: a logging failure must
-    never break the escalation flow."""
+) -> int | None:
+    """Write exactly one telemetry row and return its id.
+
+    The id lets :func:`compile` hand the row to the caller (on a verdict that
+    opens a thread) so :func:`link_thread` can backfill ``thread_id`` once the
+    thread exists. Best-effort: a write failure must never break the escalation
+    flow and returns None."""
     try:
         with Session(get_engine()) as session:
-            session.add(
-                OrchestratorBrief(
-                    thread_id=ctx.thread_id,
-                    model=model,
-                    route=route,
-                    brief_json=brief_json,
-                    directive_version=ctx.directive.version,
-                    latency_ms=latency_ms,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    cached_tokens=cached_tokens,
-                    error=error,
-                )
+            row = OrchestratorBrief(
+                thread_id=ctx.thread_id,
+                model=model,
+                route=route,
+                brief_json=brief_json,
+                directive_version=ctx.directive.version,
+                latency_ms=latency_ms,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+                error=error,
             )
+            session.add(row)
             session.commit()
+            session.refresh(row)
+            return row.id
     except Exception:
         logger.exception("orchestrator: failed to write telemetry row")
+        return None
+
+
+def link_thread(brief_id: int, thread_id: str) -> None:
+    """Backfill a telemetry row's ``thread_id`` once the session thread exists.
+
+    The orchestrator runs BEFORE the session thread is created (deciding whether
+    to open one), so :func:`_record` writes the row with a null ``thread_id``.
+    Once ``start_agent_flow`` (chat/bot.py) has created the thread, it calls this
+    with the row id carried on the verdict, joining the routing verdict to the
+    ``goosecracker_sessions`` run it produced. Best-effort and idempotent: a
+    write failure must never break the run, and an already-linked row (non-null
+    ``thread_id``) is left untouched."""
+    try:
+        with Session(get_engine()) as session:
+            row = session.get(OrchestratorBrief, brief_id)
+            if row is not None and row.thread_id is None:
+                row.thread_id = thread_id
+                session.commit()
+    except Exception:
+        logger.exception("orchestrator: failed to link thread to brief row")
 
 
 async def compile(ctx: RequestContext) -> Verdict:
@@ -551,17 +584,17 @@ async def compile(ctx: RequestContext) -> Verdict:
     except orchestrator_client.OrchestratorUnavailable as exc:
         reason = f"orchestrator unavailable: {exc}"
         logger.warning("orchestrator: failing open, %s", reason)
-        await asyncio.to_thread(
+        brief_id = await asyncio.to_thread(
             _record, ctx, "failopen", model, None, 0, None, None, None, reason
         )
-        return FailOpen(reason)
+        return FailOpen(reason, brief_id=brief_id)
 
     try:
         verdict = parse_brief(resp.content, allowed_scopes=ctx.allowed_scopes)
     except BriefParseError as exc:
         reason = f"unparseable brief: {exc}"
         logger.warning("orchestrator: failing open, %s", reason)
-        await asyncio.to_thread(
+        brief_id = await asyncio.to_thread(
             _record,
             ctx,
             "failopen",
@@ -573,7 +606,7 @@ async def compile(ctx: RequestContext) -> Verdict:
             resp.cached_tokens,
             reason,
         )
-        return FailOpen(reason)
+        return FailOpen(reason, brief_id=brief_id)
 
     if isinstance(verdict, Brief):
         if verdict.repo_replaced:
@@ -601,7 +634,7 @@ async def compile(ctx: RequestContext) -> Verdict:
         except orchestrator_client.OrchestratorUnavailable as exc:
             reason = f"plan call unavailable: {exc}"
             logger.warning("orchestrator: failing open, %s", reason)
-            await asyncio.to_thread(
+            brief_id = await asyncio.to_thread(
                 _record,
                 ctx,
                 "failopen",
@@ -613,7 +646,7 @@ async def compile(ctx: RequestContext) -> Verdict:
                 resp.cached_tokens,
                 reason,
             )
-            return FailOpen(reason)
+            return FailOpen(reason, brief_id=brief_id)
 
         try:
             # Both parse and validate run inside the guard: a malformed tool
@@ -632,7 +665,7 @@ async def compile(ctx: RequestContext) -> Verdict:
 
         if plan is None or plan_error:
             logger.warning("orchestrator: failing open, %s", plan_error)
-            await asyncio.to_thread(
+            brief_id = await asyncio.to_thread(
                 _record,
                 ctx,
                 "failopen",
@@ -644,9 +677,9 @@ async def compile(ctx: RequestContext) -> Verdict:
                 resp.cached_tokens,
                 plan_error,
             )
-            return FailOpen(plan_error)
+            return FailOpen(plan_error, brief_id=brief_id)
 
-        await asyncio.to_thread(
+        brief_id = await asyncio.to_thread(
             _record,
             ctx,
             "goose",
@@ -663,6 +696,7 @@ async def compile(ctx: RequestContext) -> Verdict:
             repo=verdict.repo,
             repo_paths=verdict.repo_paths,
             repo_replaced=verdict.repo_replaced,
+            brief_id=brief_id,
         )
 
     await asyncio.to_thread(

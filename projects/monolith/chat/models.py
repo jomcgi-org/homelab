@@ -317,10 +317,13 @@ class OrchestratorBrief(SQLModel, table=True):
     """ADR 036 orchestrator brief-compiler telemetry (spec section 5).
 
     One row per orchestrator call: chat and goose verdicts and every fail-open
-    degradation. ``thread_id`` links a goose verdict to its
-    ``goosecracker_sessions`` run (null for chat/failopen routes with no
-    thread). ``brief_json`` holds the compiled Brief (goose) or the chat reply
-    guidance, null on failopen. The route CHECK mirrors the migration so the
+    degradation. ``thread_id`` links a goose (or fell-back) verdict to its
+    ``goosecracker_sessions`` run. The orchestrator runs before the session
+    thread exists, so the row is written with a null ``thread_id`` and
+    ``orchestrator.link_thread`` backfills it once ``start_agent_flow`` creates
+    the thread; it stays null for the chat route and for fail-opens that never
+    open a thread (ungranted/disabled). ``brief_json`` holds the compiled Brief
+    (goose) or the chat reply guidance, null on failopen. The route CHECK mirrors the migration so the
     SQLite test fixtures enforce it too (create_all does not see migration-only
     constraints). Token columns come from the provider response when present.
     """
