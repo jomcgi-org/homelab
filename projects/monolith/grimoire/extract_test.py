@@ -22,6 +22,7 @@ from grimoire.extract import (
     REL_TYPE_SET,
     OpenRouterClient,
     OpenRouterError,
+    _apply_rel_signature,
     _canonicalize_name,
     book_kind,
     extract_chunks,
@@ -243,6 +244,10 @@ def test_extract_chunks_happy_path(session: Session):
         "mentions_created": 3,
         "relationships_created": 1,
         "entities_embedded": 2,
+        # Owlbear(creature) MEMBER_OF Zhentarim(faction) is a valid signature:
+        # no swap, no downgrade.
+        "rel_signature_swaps": {},
+        "rel_signature_downgrades": {},
     }
 
     entities = session.execute(select(Entity)).scalars().all()
@@ -305,6 +310,8 @@ def test_extract_chunks_rerun_skips_already_marked_chunks(session: Session):
         "mentions_created": 0,
         "relationships_created": 0,
         "entities_embedded": 0,
+        "rel_signature_swaps": {},
+        "rel_signature_downgrades": {},
     }
     assert len(or_client.calls) == calls_before
 
@@ -612,6 +619,7 @@ def test_released_prompt_versions_are_frozen_by_hash():
     frozen = {
         "v1": "64cb5df96d35c282f0ad004233ef01ef52c0eb86eed94342f9bfec4479ac949f",
         "v2": "aeb536de96f21e54bcd54ed073efc9945b92b125e3dae6f748808e4f0325ab52",
+        "v3": "1d4f924fb55bc021dddffb320461e4a93c065bd2ef1946aeca95293e25959377",
     }
     # Every released version must be pinned (a new version needs a new pin here).
     assert set(frozen) == set(PROMPT_VERSIONS)
@@ -625,6 +633,17 @@ def test_released_prompt_versions_are_frozen_by_hash():
 def test_v2_has_schema_v1_does_not():
     assert PROMPT_VERSIONS["v1"].schema is None
     assert PROMPT_VERSIONS["v2"].schema is not None
+
+
+def test_v3_is_active_and_extends_v2():
+    """v3 is the active version, carries the same schema as v2, and contains v2's
+    text verbatim (built by concatenation) plus the type-signature guidance."""
+    assert ACTIVE_PROMPT_VERSION == "v3"
+    assert PROMPT_VERSIONS["v3"].schema is PROMPT_VERSIONS["v2"].schema
+    v3_text = PROMPT_VERSIONS["v3"].text
+    assert v3_text.startswith(PROMPT_VERSIONS["v2"].text)
+    assert "RELATIONSHIP TYPE SIGNATURES" in v3_text
+    assert "A NAMED IDENTITY IS AN NPC, NOT AN ITEM" in v3_text
 
 
 def test_non_enum_rel_type_mapped_to_related_to(session: Session):
@@ -676,6 +695,181 @@ def test_enum_rel_type_stored_verbatim(session: Session):
     _run(extract_chunks(session, or_client, embed_client, limit=25))
     rels = session.execute(select(Relationship)).scalars().all()
     assert [r.rel_type for r in rels] == ["MEMBER_OF"]
+
+
+# --- relationship type-signature validator (spec #2) -----------------------
+
+
+def _extract_one_edge(
+    session: Session,
+    entities: list[dict],
+    relationships: list[dict],
+) -> tuple[dict, list[Relationship]]:
+    """Run one chunk carrying the given entities + relationships; return the
+    summary and the persisted Relationship rows (validator runs before write)."""
+    chunk = _make_chunk(session, "lmop", "lmop-001", "A chunk body.")
+    or_client = FakeOpenRouterClient(
+        {
+            chunk.content: {
+                "entities": entities,
+                "mentions": [],
+                "relationships": relationships,
+            }
+        }
+    )
+    summary = _run(extract_chunks(session, or_client, FakeEmbedClient(), limit=25))
+    rels = session.execute(select(Relationship)).scalars().all()
+    return summary, rels
+
+
+def _endpoint_names(session: Session, rel: Relationship) -> tuple[str, str]:
+    return (
+        session.get(Entity, rel.from_entity_id).name,
+        session.get(Entity, rel.to_entity_id).name,
+    )
+
+
+def test_apply_rel_signature_unit_covers_each_branch():
+    """The pure validator: keep / spatial-keep / spatial-swap / non-spatial-swap /
+    downgrade."""
+    # Valid as-is -> keep.
+    assert _apply_rel_signature("npc", "faction", "MEMBER_OF") == (
+        "MEMBER_OF",
+        False,
+        None,
+    )
+    # Spatial magical exception (location inside an item) -> left alone.
+    assert _apply_rel_signature("location", "item", "LOCATED_IN") == (
+        "LOCATED_IN",
+        False,
+        None,
+    )
+    # Narrow spatial swap: place LOCATED_IN agent -> agent LOCATED_IN place.
+    assert _apply_rel_signature("location", "npc", "LOCATED_IN") == (
+        "LOCATED_IN",
+        True,
+        "swap",
+    )
+    # Non-spatial reversed + asymmetric -> swap.
+    assert _apply_rel_signature("faction", "npc", "MEMBER_OF") == (
+        "MEMBER_OF",
+        True,
+        "swap",
+    )
+    # Impossible in both directions (SERVES against a place) -> downgrade.
+    assert _apply_rel_signature("npc", "location", "SERVES") == (
+        "RELATED_TO",
+        False,
+        "downgrade",
+    )
+    # A rel_type without a signature is untouched.
+    assert _apply_rel_signature("faction", "spell", "GRANTS") == (
+        "GRANTS",
+        False,
+        None,
+    )
+
+
+def test_rel_signature_auto_swaps_place_located_in_agent(session: Session):
+    """`Cragmaw Castle LOCATED_IN King Grol` is backwards: the validator swaps it
+    to `King Grol LOCATED_IN Cragmaw Castle` and records the swap by rel_type."""
+    summary, rels = _extract_one_edge(
+        session,
+        entities=[
+            {"entity_type": "location", "name": "Cragmaw Castle", "summary": "A ruin."},
+            {"entity_type": "npc", "name": "King Grol", "summary": "A bugbear."},
+        ],
+        relationships=[
+            {
+                "from_name": "Cragmaw Castle",
+                "to_name": "King Grol",
+                "rel_type": "LOCATED_IN",
+            }
+        ],
+    )
+    assert summary["relationships_created"] == 1
+    assert summary["rel_signature_swaps"] == {"LOCATED_IN": 1}
+    assert summary["rel_signature_downgrades"] == {}
+    assert len(rels) == 1
+    assert rels[0].rel_type == "LOCATED_IN"
+    assert _endpoint_names(session, rels[0]) == ("King Grol", "Cragmaw Castle")
+
+
+def test_rel_signature_downgrades_serves_a_location(session: Session):
+    """`Sildar SERVES Neverwinter` (serving a place) is impossible in both
+    directions: keep the edge but downgrade rel_type to RELATED_TO."""
+    summary, rels = _extract_one_edge(
+        session,
+        entities=[
+            {"entity_type": "npc", "name": "Sildar", "summary": "A soldier."},
+            {"entity_type": "location", "name": "Neverwinter", "summary": "A city."},
+        ],
+        relationships=[
+            {"from_name": "Sildar", "to_name": "Neverwinter", "rel_type": "SERVES"}
+        ],
+    )
+    assert summary["relationships_created"] == 1
+    assert summary["rel_signature_downgrades"] == {"SERVES": 1}
+    assert summary["rel_signature_swaps"] == {}
+    assert len(rels) == 1
+    assert rels[0].rel_type == "RELATED_TO"
+    # Direction is NOT swapped on a downgrade; the edge is preserved as emitted.
+    assert _endpoint_names(session, rels[0]) == ("Sildar", "Neverwinter")
+
+
+def test_rel_signature_preserves_magical_exception_location_in_item(session: Session):
+    """A location inside an item is a magical exception the text can assert; the
+    validator leaves `location LOCATED_IN item` untouched (no swap, no downgrade)."""
+    summary, rels = _extract_one_edge(
+        session,
+        entities=[
+            {
+                "entity_type": "location",
+                "name": "Demiplane of Dread",
+                "summary": "A pocket realm.",
+            },
+            {
+                "entity_type": "item",
+                "name": "Amulet of Binding",
+                "summary": "A cursed amulet.",
+            },
+        ],
+        relationships=[
+            {
+                "from_name": "Demiplane of Dread",
+                "to_name": "Amulet of Binding",
+                "rel_type": "LOCATED_IN",
+            }
+        ],
+    )
+    assert summary["relationships_created"] == 1
+    assert summary["rel_signature_swaps"] == {}
+    assert summary["rel_signature_downgrades"] == {}
+    assert rels[0].rel_type == "LOCATED_IN"
+    assert _endpoint_names(session, rels[0]) == (
+        "Demiplane of Dread",
+        "Amulet of Binding",
+    )
+
+
+def test_rel_signature_swaps_reversed_non_spatial_edge(session: Session):
+    """`Redbrands MEMBER_OF Glasstaff` (faction is a member of a person) is
+    backwards: swap to `Glasstaff MEMBER_OF Redbrands`."""
+    summary, rels = _extract_one_edge(
+        session,
+        entities=[
+            {"entity_type": "faction", "name": "Redbrands", "summary": "A gang."},
+            {"entity_type": "npc", "name": "Glasstaff", "summary": "A wizard."},
+        ],
+        relationships=[
+            {"from_name": "Redbrands", "to_name": "Glasstaff", "rel_type": "MEMBER_OF"}
+        ],
+    )
+    assert summary["relationships_created"] == 1
+    assert summary["rel_signature_swaps"] == {"MEMBER_OF": 1}
+    assert summary["rel_signature_downgrades"] == {}
+    assert rels[0].rel_type == "MEMBER_OF"
+    assert _endpoint_names(session, rels[0]) == ("Glasstaff", "Redbrands")
 
 
 def test_canonicalize_name_strips_map_key_prefix():
