@@ -9,6 +9,7 @@
   // here — just flat 2px ink borders, never a box-shadow.
   import { apiFetch } from "$lib/public/grimoire/api.js";
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
+  import ChaptersNav from "$lib/public/grimoire/ChaptersNav.svelte";
 
   let {
     bookId,
@@ -152,12 +153,15 @@
 <div class="pub-reader">
   <div class="pub-bar mono">
     <span class="pub-bar-title">{bookMeta.displayName}</span>
-    <span class="pub-bar-pos">
-      {sectionTitle(activeSectionPath).toUpperCase()}
-      {#if activeSeq != null && bookMeta.chunkCount}
-        · {activeSeq + 1}/{bookMeta.chunkCount}
-      {/if}
-    </span>
+    <div class="pub-bar-right">
+      <span class="pub-bar-pos">
+        {sectionTitle(activeSectionPath).toUpperCase()}
+        {#if activeSeq != null && bookMeta.chunkCount}
+          · {activeSeq + 1}/{bookMeta.chunkCount}
+        {/if}
+      </span>
+      <ChaptersNav {bookId} {activeSectionPath} />
+    </div>
   </div>
 
   <div class="pub-panel" bind:this={containerEl}>
@@ -259,6 +263,13 @@
   .pub-bar-title {
     text-transform: uppercase;
     font-weight: 700;
+  }
+
+  .pub-bar-right {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
   }
 
   .pub-bar-pos {

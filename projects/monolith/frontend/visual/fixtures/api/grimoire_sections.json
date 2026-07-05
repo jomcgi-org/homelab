@@ -1,0 +1,18 @@
+[
+  {
+    "section_path": "Chapter 1/Introduction",
+    "title": "Introduction",
+    "chunk_count": 3,
+    "image_count": 1,
+    "first_chunk_id": "c1",
+    "latest_chunk_at": "2024-01-15T12:00:00Z"
+  },
+  {
+    "section_path": "Chapter 2/Aberrations",
+    "title": "Aberrations",
+    "chunk_count": 1,
+    "image_count": 0,
+    "first_chunk_id": "c4",
+    "latest_chunk_at": "2024-01-15T12:00:00Z"
+  }
+]
