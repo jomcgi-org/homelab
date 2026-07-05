@@ -21,9 +21,9 @@ contents:
     - nodejs
     - openssh-client
     - pnpm
-    # Python compute runtime. This block is duplicated in
-    # projects/firecracker/sandbox/guest/apko.yaml (ADR agents/044): the
-    # curated library set is the shared asset; keep the two lists in sync.
+    # Python compute runtime (ADR agents/044). The sandbox guest
+    # (projects/firecracker/sandbox/guest, follow-up PR) duplicates this
+    # block; keep the two lists in sync once it lands.
     # numpy is intentionally omitted: Wolfi only ships it as version-suffixed
     # package names (py3.12-numpy-2.5, etc.), not as a stable unversioned
     # name, so it is not pinned directly here. scipy and pandas still pull in
@@ -59,6 +59,8 @@ environment:
   TZ: Europe/Dublin
   HOME: /home/goose-agent
   GIT_SSH_COMMAND: ssh -o StrictHostKeyChecking=no
+  # Headless matplotlib. A raw Firecracker boot never consumes this block, so
+  # fc-agent-init also ensureEnv's it at runtime; kept here for self-documentation.
   MPLBACKEND: Agg
 
 paths:
