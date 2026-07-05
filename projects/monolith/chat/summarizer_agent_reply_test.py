@@ -149,6 +149,19 @@ class TestBuildAgentReplyPrompt:
         prompt = _build_agent_reply_prompt("Done.", "", "")
         assert "no channel context available" in prompt
 
+    def test_delivers_as_bosun_in_first_person(self):
+        # From the member's side this is one conversation with Bosun: the reply
+        # is delivered as Bosun in the first person, not as a third-person recap
+        # of "the agent" (the mis-framing that produced "the agent found ...").
+        prompt = _build_agent_reply_prompt("Done.", "", "ctx")
+        assert "Bosun" in prompt
+        assert "first person" in prompt.lower()
+        assert "relay what it did" not in prompt.lower()
+
+    def test_forbids_addressing_member_by_name(self):
+        prompt = _build_agent_reply_prompt("Done.", "", "ctx")
+        assert "by name" in prompt.lower()
+
 
 class TestConversationalAgentReply:
     async def test_calls_llm_with_built_prompt(self, monkeypatch):
@@ -195,6 +208,12 @@ class TestBuildChatReplyPrompt:
     def test_tolerates_empty_context(self):
         prompt = _build_chat_reply_prompt("hi", "", "")
         assert "no channel context available" in prompt
+
+    def test_is_bosun_first_person_and_no_name_address(self):
+        prompt = _build_chat_reply_prompt("hi", "", "ctx")
+        assert "Bosun" in prompt
+        assert "first person" in prompt.lower()
+        assert "by name" in prompt.lower()
 
 
 class TestConversationalChatReply:
