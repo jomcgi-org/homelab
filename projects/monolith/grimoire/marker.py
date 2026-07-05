@@ -69,6 +69,14 @@ _CONTINUATION_HEADERS = frozenset(
     }
 )
 
+# What counts as a chapter for the Chapters nav: an explicit "CHAPTER N",
+# "APPENDIX X", or "PART" header. This is the one signal that survives Marker's
+# noisy running section_hierarchy across every book here: rulebooks and
+# adventures mark chapters this way, while alphabetical bestiaries have none and
+# so stay (correctly) flat. Structural page headers (CONTENTS/INDEX) and running
+# titles (MONSTER MANUAL®) never match, so they can't masquerade as a chapter.
+_CHAPTER_RE = re.compile(r"^\s*(chapter|appendix|part)\b", re.IGNORECASE)
+
 _TAG_RE = re.compile(r"<[^>]+>")
 # Tags whose boundary should become a newline when flattening HTML to text.
 _BLOCK_BREAK_RE = re.compile(
@@ -182,32 +190,40 @@ def _page_of(block: dict) -> str:
 def _section_breadcrumb(
     hier_block: dict | None, headers: dict[str, str], leaf: str | None
 ) -> str | None:
-    """A ``chapter/section/leaf`` breadcrumb for the run whose leaf section is
-    ``leaf``, so the reader and Chapters nav can nest sections under their real
-    chapter (they split ``section_path`` on ``/``).
+    """A ``chapter/leaf`` breadcrumb for the run whose leaf section is ``leaf``,
+    so the reader and Chapters nav can group sections under their chapter (they
+    split ``section_path`` on ``/``).
 
-    Ancestry comes from ``hier_block``'s ``section_hierarchy`` (level -> header
-    id): the non-continuation ancestor header names, shallowest first, with the
-    leaf appended last. Only a *content* block (never a SectionHeader) should be
-    passed as ``hier_block``: a header block's own ``section_hierarchy`` is stale
-    (it still lists the previous sibling at its level, see ``effective_section_id``),
-    which would graft a sibling on as a bogus parent. Callers pass ``None`` for
+    Deliberately only TWO levels: chapter + leaf. The full ``section_hierarchy``
+    ancestry is noisy (see this module's docstring: "stale ancestors leak in") —
+    on the real 2024 PHB it roots every section under the table-of-contents page
+    ("CONTENTS/CHAPTER 1.../DICE NOTATION/PERCENTILE DICE"), which is neither a
+    real hierarchy nor a usable menu. So the chapter is the shallowest ancestor
+    whose header is an explicit chapter marker (``_CHAPTER_RE``): "CHAPTER 3
+    CHARACTER CLASSES", "APPENDIX A ...". Ancestors that are subsections, running
+    titles, or the ToC never match, and a section with no chapter marker above it
+    (e.g. a monster in an alphabetical bestiary) stays flat.
+
+    Only a *content* block (never a SectionHeader) should be passed as
+    ``hier_block``: a header block's own ``section_hierarchy`` is stale (it still
+    lists the previous sibling at its level, see ``effective_section_id``), which
+    would graft a sibling on as a bogus parent. Callers pass ``None`` for
     header-only runs, degrading to the bare ``leaf`` rather than risk that.
     """
     if not leaf:
         return leaf
-    parents: list[str] = []
     sh = (hier_block or {}).get("section_hierarchy") or {}
-    for level in sorted(sh, key=lambda k: int(k)):
+    for level in sorted(sh, key=lambda k: int(k)):  # shallowest first
         txt = headers.get(sh[level], "").strip()
-        # Skip empties, stat-block continuation headers, the leaf itself (it is
-        # appended once at the end), and any run of the same name.
-        if not txt or txt.upper() in _CONTINUATION_HEADERS or txt == leaf:
+        if not txt or txt == leaf:
             continue
-        if parents and parents[-1] == txt:
-            continue
-        parents.append(txt)
-    return "/".join([*parents, leaf])
+        # The shallowest chapter-marked ancestor is this section's chapter; pair
+        # it with the leaf and stop. Non-chapter ancestors (subsections, running
+        # titles, the ToC) are skipped, so a section with no chapter above it
+        # stays flat rather than nesting under noise.
+        if _CHAPTER_RE.match(txt):
+            return f"{txt}/{leaf}"
+    return leaf
 
 
 def parse_image_block(html: str) -> tuple[str, str, str]:
