@@ -94,6 +94,10 @@ func run(logger *slog.Logger) error {
 	// read-only value must never win).
 	ensureEnv("PATH", "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/local/sbin")
 	ensureEnv("GOOSE_RECIPE_PATH", "/injected-context")
+	// MPLBACKEND pins matplotlib to the headless Agg backend so it renders to
+	// files instead of probing for a GUI toolkit that no guest has (mirrors the
+	// self-documenting entry in apko.yaml, which a raw Firecracker boot ignores).
+	ensureEnv("MPLBACKEND", "Agg")
 	const gooseHome = "/tmp/goose-home"
 	for k, v := range map[string]string{
 		"HOME":            gooseHome,
