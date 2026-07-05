@@ -27,6 +27,14 @@ agent:
     repository: ghcr.io/jomcgi/homelab/projects/firecracker/goosecracker/guest
     tag: latest
 
+# The sandbox guest image the sandbox workload's base rootfs is built from
+# (ADR agents/044): a zero-egress python executor. Bazel-pinned from the guest
+# image's .info provider at chart-build (see chart/BUILD -> "sandbox.guestImage").
+sandbox:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
+    tag: latest
+
 # Tools image (crane + e2fsprogs) the base-rootfs initContainer runs to build
 # the ext4 base rootfs in-cluster, removing any manual node-4 sudo step. A generic
 # crane + mkfs.ext4 image (projects/firecracker/substrate/rootfs-builder). Bazel-pinned.
@@ -161,19 +169,40 @@ workloads:
     readyPath: /shim/ready
     sessioned: true
     requestTimeout: 600s
+  # The sandbox workload (ADR agents/044): one-shot python execution for chat
+  # and agent surfaces that need a deterministic answer without a full goose
+  # run. warmBase:true so the pre-imported scientific-library page cache is
+  # resident at restore (the guest primes then flips /shim/ready, and the warm
+  # snapshot is taken after). sessioned:false because every request is
+  # independent by design. egressEnabled:false: the guest holds nothing and
+  # reaches nothing; the microVM is the only thing standing between untrusted
+  # code and the host, which is the entire point.
+  sandbox:
+    image: sandbox-guest
+    rootfsPath: /disks/nvme-02/fc-invoke/sandbox/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+    vcpus: 2
+    memMib: 2048
+    concurrency: 2
+    egressEnabled: false
+    warmBase: true
+    readyPath: /shim/ready
+    sessioned: false
+    requestTimeout: 30s
 
 # The limit must hold the capped peak of every workload's guests plus the
 # daemon. semgrep caps at concurrency 4 * 2Gi = 8Gi; agent caps at concurrency
-# 2 * 4Gi = 8Gi; plus ~1Gi daemon overhead = 17Gi if both run at full tilt.
-# Bursty: request a small floor, let the limit cover the admission-capped peak.
-# The per-workload concurrency cap guarantees the cgroup never exceeds it, and
-# oom_score_adj guarantees a guest dies first if it nears (ADR platform/010).
+# 2 * 4Gi = 8Gi; sandbox caps at concurrency 2 * 2Gi = 4Gi; plus ~1Gi daemon
+# overhead = 21Gi if all three run at full tilt. Bursty: request a small floor,
+# let the limit cover the admission-capped peak. The per-workload concurrency
+# cap guarantees the cgroup never exceeds it, and oom_score_adj guarantees a
+# guest dies first if it nears (ADR platform/010).
 resources:
   requests:
     cpu: 50m
     memory: 2Gi
   limits:
-    memory: 18Gi
+    memory: 22Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the
