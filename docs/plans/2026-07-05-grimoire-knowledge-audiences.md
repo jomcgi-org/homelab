@@ -216,10 +216,12 @@ Mirror `extract.py` wholesale: same env-driven client (`GRIMOIRE_ENRICH_BASE_URL
 - A PC with `species='elf'` gets a derived grant for an entity with an elf audience rule; `class_name='wizard', level=3` matches `min_level<=3` rules only; level-up to 5 then re-run adds the level-5 rules.
 - Never touches `manual` grants: a manual grant on the same `(entity, pc)` pair is left untouched and no derived row is added (the unique constraint is `(entity_id, player_character_id)`).
 - Skips: suppression tombstones, entities whose `source_book` is blacklisted for the PC's campaign, non-extracted entities.
+- **Confidence gate:** an `origin='llm'` rule with `confidence=0.4` does not compile under the default `GRIMOIRE_ATTACH_MIN_CONFIDENCE=0.7`; the same rule compiles when the env is lowered to `0.3`; `deterministic` and `dm` rules (confidence NULL) always compile. Re-running after a threshold change reconciles: newly-passing rules attach, newly-failing DERIVED grants are deleted (manual grants never touched).
+- **Homonym-suspect cap:** an entity whose `chunk_entity_mention` rows span more than one `book_id` is homonym-suspect (the name-dedup merge signature); its derived grants are capped at `name_only` regardless of rule scope. A single-book entity attaches at full rule scope. Re-running after the underlying mentions change (e.g. post re-extraction) re-widens or re-caps accordingly.
 - Reconciliation: attribute removal deletes now-unmatched `derived` rows only.
 - Idempotent: second run changes nothing.
 
-**Step 2: Implement.** Matching is a join: PC attribute tuple resolved through `resolve_term` once, then rules filtered by term ids + `min_level <= pc.level`. Grant upsert sets `grant_source='derived'`, `derived_from_audience_id`, scope from the rule.
+**Step 2: Implement.** Matching is a join: PC attribute tuple resolved through `resolve_term` once, then rules filtered by term ids + `min_level <= pc.level`, `origin != 'llm' OR confidence >= threshold`. Grant upsert sets `grant_source='derived'`, `derived_from_audience_id`, scope from the rule capped to `name_only` for homonym-suspect entities (compute the suspect set once per run with a `GROUP BY entity_id HAVING count(DISTINCT kc.book_id) > 1` over mentions joined to chunks). Both gates are attach-time by design (ADR 013 Architecture): the job is an idempotent recompile, so tuning during actual use is "change the env, re-run the job", and the read path stays untouched. Env plumbing: `GRIMOIRE_ATTACH_MIN_CONFIDENCE` (float, default `0.7`) read in the job body and threaded through `attach_derived_grants(..., min_confidence=...)`; remember the workflows pods need the env set in the `jobs.cronWorkflows` values entry, not on the API deployment. When bumping the default later, grep tests for the old value first (repo lesson: config values that tests assert on).
 
 **Step 3: DM retract semantics:** modify the existing grant-delete path in `projects/monolith/grimoire/router.py` so deleting a `derived` grant also writes a `knowledge_grant_suppression` row (manual grant deletion does not). Test in `router_test.py`.
 
@@ -273,6 +275,7 @@ CRUD for `entity_knowledge_audience` (DM authoring, `origin='dm'`), vocabulary l
 - CI green on the PR (unit tests above all run remotely).
 - Prod: after seeding, `SELECT kind, count(*) FROM grimoire.audience_term GROUP BY kind;` and a sample `SELECT e.name, t.kind, t.key, a.grant_scope, a.min_level FROM grimoire.entity_knowledge_audience a JOIN ...  LIMIT 20` reviewed by Joe for sanity.
 - Prod: create a throwaway PC with `species='elf'`, run the attach job, confirm derived grants appear and a retract sticks across a re-run.
+- Prod tuning loop (expected, not a failure): review a sample of derived grants with Joe; if over-granting, raise `GRIMOIRE_ATTACH_MIN_CONFIDENCE` and re-run the attach job; check how many entities the homonym-suspect cap catches (`GROUP BY entity_id HAVING count(DISTINCT book_id) > 1` over mentions) and whether famous legitimately-cross-book entities (deities) are being over-capped.
 
 ## Explicitly out of scope (per ADR 013)
 

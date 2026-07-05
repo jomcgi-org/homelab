@@ -84,6 +84,7 @@ Attach-job semantics that make compilation safe:
 - **Never touches manual grants.** If a manual and a derived grant would both apply, the manual row stays authoritative; derived rows are only ever inserted or reconciled against other derived rows.
 - **Respects DM control**: locked entities, retract tombstones (a DM-deleted derived grant is never re-added), and blacklisted books are all skipped.
 - **Provenance**: derived grants carry `derived_from_audience_id`, so the UI can render "known because: elf" scope chips and the DM ledger can show why a card surfaced.
+- **Tunable quality gates** (the known name-dedup homonym risk is mitigated here, not left implicit): LLM-origin rules compile only at or above a confidence threshold (`GRIMOIRE_ATTACH_MIN_CONFIDENCE`; deterministic and DM rules always pass), and entities that look like name-dedup merges (mentions spanning multiple source books) are treated as homonym-suspect, with derived grants capped at `name_only` until the entity is resolved. Recognition still works; merged detail cannot leak. Both gates live at attach time rather than in the read predicate because the attach job is an idempotent recompile: tuning during real play is "change the knob, re-run the job", with no query-path complexity. This mirrors the live-play per-campaign auto-reveal confidence threshold, so the DM has one mental model for "how sure must the pipeline be".
 
 ---
 
@@ -113,7 +114,7 @@ Baseline per `docs/security.md`. Specifics:
 | Vocabulary gaps drop real audiences (unknown key emitted) | Medium | Low | Dropped keys are logged as vocabulary candidates for DM review, then a re-run picks them up |
 | Attach-job triggers missed (stale grants after level-up) | Medium | Low | Job is idempotent and cheap; a scheduled reconcile sweep bounds staleness |
 | Derived grants pollute the DM ledger | Low | Low | `grant_source` discriminator; ledger filters and renders provenance |
-| Name-dedup entity spine attaches audiences to merged homonyms | Medium | Medium | Known ADR 012 open question (entity resolution); evidence chunk refs make bad merges auditable; re-extraction improves the spine first |
+| Name-dedup entity spine attaches audiences to merged homonyms | Medium | Medium | Explicitly mitigated at attach time with tunable gates (see Architecture): homonym-suspect entities (mentions spanning multiple source books) capped at `name_only`, LLM rules gated by `GRIMOIRE_ATTACH_MIN_CONFIDENCE`; evidence chunk refs make bad merges auditable; re-extraction improves the spine first, and proper entity resolution (ADR 012 open question) removes the cause |
 
 ## Open Questions
 
@@ -121,6 +122,7 @@ Baseline per `docs/security.md`. Specifics:
 2. Region taxonomy granularity (settlement vs region vs continent) and whether region containment ("Baldur's Gate is in the Sword Coast") should expand matches transitively.
 3. Whether NPC subjects materialize into `knowledge_grant` with a generalized subject column or a parallel `npc_knowledge` table (decide when NPCs onboard, together with the depth enum).
 4. Blacklist enforcement on the library/chunk read path is blocked on live-play Phase 1 identity; until then it can only be enforced for grant-filtered entity reads.
+5. Gate defaults are guesses until real play: the initial `GRIMOIRE_ATTACH_MIN_CONFIDENCE` value and whether "mentions span multiple books" is the right homonym-suspect signal (it will flag legitimately cross-book entities like famous deities) are expected to be tuned during actual use.
 
 ## References
 
