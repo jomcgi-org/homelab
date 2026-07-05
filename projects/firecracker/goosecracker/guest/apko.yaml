@@ -21,6 +21,20 @@ contents:
     - nodejs
     - openssh-client
     - pnpm
+    # Python compute runtime. This block is duplicated in
+    # projects/firecracker/sandbox/guest/apko.yaml (ADR agents/044): the
+    # curated library set is the shared asset; keep the two lists in sync.
+    # numpy is intentionally omitted: Wolfi only ships it as version-suffixed
+    # package names (py3.12-numpy-2.5, etc.), not as a stable unversioned
+    # name, so it is not pinned directly here. scipy and pandas still pull in
+    # a compatible numpy transitively.
+    - python-3.12
+    - py3.12-pandas
+    - py3.12-matplotlib
+    - py3.12-scipy
+    - py3.12-pillow
+    - py3.12-pyyaml
+    - py3.12-python-dateutil
     # sqlite3 CLI: fc-agent-init checkpoints goose's WAL into sessions.db before
     # shipping it for session resume (ADR 026 Phase 2); goose does not checkpoint
     # on exit, so without this the shipped db is empty.
@@ -45,6 +59,7 @@ environment:
   TZ: Europe/Dublin
   HOME: /home/goose-agent
   GIT_SSH_COMMAND: ssh -o StrictHostKeyChecking=no
+  MPLBACKEND: Agg
 
 paths:
   - path: /home/goose-agent
