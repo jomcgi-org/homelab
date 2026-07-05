@@ -659,6 +659,15 @@ async def _invoke_turn(
     # via Helm values. An empty effective_mirror means no clone (no mirror
     # configured in this environment).
     effective_mirror, effective_ref = _effective_mirror_ref(git_mirror, git_ref, repo)
+    # The guest's git origin is the read-only mirror, whose URL carries only the
+    # nested clone path, so the guest cannot derive its GitHub owner/repo for the
+    # REST-API PR path. Hand it the resolved ADR 029 scope (owner/repo) via
+    # injected-context so the implement recipe targets the right repo instead of
+    # a hardcoded default. An empty repo (the repo-less artifact path) injects
+    # nothing, so the recipe fails loudly rather than opening a PR against the
+    # wrong repo.
+    if repo:
+        injected_context = {**injected_context, "repo": repo}
     # Task 6: a Plan present means the DeepSeek orchestrator constructed a
     # runtime plan for this turn. Render the router + plan file and ADD them
     # to injected_context (the ADR 040 per-turn context built above is
