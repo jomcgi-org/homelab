@@ -1558,7 +1558,10 @@ class ChatBot(discord.Client):
         try:
             async with message.channel.typing():
                 sent, response_text, thinking = await self._stream_response(
-                    message, attachments, with_buttons=not force_respond
+                    message,
+                    attachments,
+                    with_buttons=not force_respond,
+                    live=not force_respond,
                 )
         except Exception:
             logger.exception("Failed to respond to message %s", msg_id)
@@ -1600,12 +1603,19 @@ class ChatBot(discord.Client):
         current_attachments: list[dict] | None = None,
         *,
         with_buttons: bool = True,
+        live: bool = True,
     ) -> tuple[discord.Message, str, str | None]:
         """Build context and stream the PydanticAI agent response.
 
-        Sends an initial Discord reply on the first event, then progressively
-        edits the message as new content arrives. Returns
-        (sent_message, response_text, thinking_text).
+        When ``live`` is True (a mention/reply the user is waiting on), sends an
+        initial Discord reply on the first event, then progressively edits the
+        message as thinking/search/text arrives. When ``live`` is False (an
+        ambient interjection nobody explicitly asked for), suppresses the
+        placeholder and the progressive edits and posts one complete message at
+        the end, so the bot reads as chiming in rather than visibly "typing" a
+        message it edits in place (the channel's native typing indicator still
+        signals composition). Returns (sent_message, response_text,
+        thinking_text).
 
         ``with_buttons`` controls whether the "Show thinking" / fact-check
         action row is attached. Ambient (unprompted) replies pass ``False`` so
@@ -1759,12 +1769,14 @@ class ChatBot(discord.Client):
                         response_text = final_output
                 elif isinstance(event, PartDeltaEvent):
                     if isinstance(event.delta, ThinkingPartDelta):
-                        await _ensure_sent("\U0001f4ad Thinking...")
+                        if live:
+                            await _ensure_sent("\U0001f4ad Thinking...")
                         thinking_parts.append(event.delta.content_delta)
                     elif isinstance(event.delta, TextPartDelta):
                         response_text += event.delta.content_delta
-                        await _ensure_sent(response_text)
-                        await _edit_if_due(response_text)
+                        if live:
+                            await _ensure_sent(response_text)
+                            await _edit_if_due(response_text)
                 elif isinstance(event, FunctionToolCallEvent):
                     args = event.part.args
                     if isinstance(args, str):
@@ -1785,9 +1797,10 @@ class ChatBot(discord.Client):
                     # result event for either id flips the shared row to done.
                     if query not in search_status:
                         search_status[query] = False
-                        content = _search_content()
-                        await _ensure_sent(content)
-                        await _edit_if_due(content, force=True)
+                        if live:
+                            content = _search_content()
+                            await _ensure_sent(content)
+                            await _edit_if_due(content, force=True)
                 elif isinstance(event, FunctionToolResultEvent):
                     # A search returned: flip its row from \u23f3 to \u2705.
                     done_query = id_to_query.get(event.tool_call_id)
@@ -1795,7 +1808,8 @@ class ChatBot(discord.Client):
                         done_query, True
                     ):
                         search_status[done_query] = True
-                        await _edit_if_due(_search_content(), force=True)
+                        if live:
+                            await _edit_if_due(_search_content(), force=True)
 
             # Fallback if no events arrived or no text was produced
             if not had_events or not response_text:
@@ -1826,9 +1840,11 @@ class ChatBot(discord.Client):
                     content=response_text,
                     view=BotMessageView(response_text, thinking_text),
                 )
-            else:
-                # Ambient reply: no action row, so it reads as an organic message.
+            elif live:
+                # Streamed reply without buttons: settle the final delta in place.
                 await sent.edit(content=response_text)
+            # Ambient (not live): the finalizing _ensure_sent above already posted
+            # the complete text as one message, so there is nothing left to edit.
 
             # A directive change proposed this run needs a human 👍/👎 confirm
             # before it applies (ADR 035 Phase 5): post the summary, seed the
