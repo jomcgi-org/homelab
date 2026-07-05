@@ -1,25 +1,18 @@
-load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test")
-
-# Hand-managed targets: gazelle's package-named py_library would collide
-# with the py_venv_binary below (same exclude convention as other
-# hand-registered python packages in this repo).
+# Hand-managed targets (gazelle would generate a package-named py_library
+# with a different shape; same exclude convention as other hand-registered
+# python packages in this repo). The generator itself is invoked as plain
+# python3 from run-generators.sh, not as a bazel binary: py_venv_binary
+# tools cannot run under genrule on RBE, so the output is committed instead.
 # gazelle:exclude gen_env_readme.py
 # gazelle:exclude gen_env_readme_test.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
-load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_library(
     name = "gen_env_readme_lib",
     srcs = ["gen_env_readme.py"],
     imports = ["."],
-)
-
-py_venv_binary(
-    name = "env_readme",
-    main = "gen_env_readme.py",
-    visibility = ["//projects/firecracker:__subpackages__"],
 )
 
 py_test(
@@ -29,10 +22,4 @@ py_test(
         ":gen_env_readme_lib",
         "@pip//pytest",
     ],
-)
-
-semgrep_target_test(
-    name = "env_readme_semgrep_test",
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":env_readme",
 )

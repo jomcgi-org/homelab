@@ -1,5 +1,6 @@
-This file describes the environment you are running in. It is generated at
-image build time and always matches the installed packages exactly.
+This file describes the environment you are running in. It is generated
+from the image's package lock and always matches the installed packages
+exactly.
 
 - You are inside a disposable Firecracker microVM. The rootfs is read-only,
   write scratch files under /tmp or /workspace.
