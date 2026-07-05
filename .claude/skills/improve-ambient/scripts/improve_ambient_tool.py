@@ -18,14 +18,18 @@ document and pass it as the third argument.
 Postgres access is read-only (SELECT only). S3 writes are limited to the
 ``ambient-evals/`` key prefix in the artifacts bucket.
 
-Reaction attribution is a TEMPORAL-WINDOW HEURISTIC, not an exact link.
-``chat.attention_decision`` records the HUMAN trigger message, while reactions
-attach to Bosun's REPLY, and the reply id is not stored on the decision row. So
-reactions and follow-up are attributed to an episode by channel plus a
-time-after-engage window (``_WINDOW_MINUTES``): any reaction on a bot message,
-or any human message, in that channel within the window after the engage's
-``created_at``. Overlapping episodes in the same channel can therefore share
-signal; the Opus deep-read (fetch-episode) resolves the ambiguity per episode.
+Reaction attribution is EXACT when the engage's reply id is known, and a
+temporal-window heuristic otherwise. ``chat.attention_decision.reply_message_id``
+(populated when Bosun replies to an ambient engage) is the reply's Discord id,
+and reactions attach to that reply, so when it is present reactions are matched
+exactly on ``reaction_event.message_id = reply_message_id`` (no window needed).
+When it is null (the agent thread-opening path, or rows from before that column
+was populated) reactions fall back to a channel plus time-after-engage window
+(``_WINDOW_MINUTES``). Human follow-up is always attributed by the window (there
+is no exact "did a human follow up" link). Overlapping episodes in the same
+channel can share the windowed signal; the Opus deep-read (fetch-episode)
+resolves ambiguity per episode. ``reaction_match`` on each record flags which
+path was used ("exact" or "time-window-heuristic").
 The agent-thread match is likewise a nearest-in-time heuristic
 (``_AGENT_WINDOW_MINUTES``): ``claude_agent.agent_threads`` carries no channel
 or trigger-message key, only a ``session_id`` (the run's own Discord thread), so
@@ -92,6 +96,7 @@ SELECT
     ad.confidence               AS attention_confidence,
     ad.directive_version        AS directive_version,
     ad.created_at               AS created_at,
+    ad.reply_message_id         AS reply_message_id,
     m.user_id                   AS author_id,
     m.username                  AS author_name,
     LEFT(m.content, 500)        AS trigger_content,
@@ -120,8 +125,9 @@ LEFT JOIN LATERAL (
     ORDER BY ABS(EXTRACT(EPOCH FROM (t.created_at - ad.created_at)))
     LIMIT 1
 ) at ON TRUE
--- Reactions on any bot message in this channel within the window after engage,
--- aggregated to per-emoji add counts and an overall net (adds minus removes).
+-- Reactions on Bosun's reply, aggregated to per-emoji add counts and an overall
+-- net (adds minus removes). EXACT match on the reply id when known
+-- (reply_message_id), else a channel + time-after-engage window fallback.
 LEFT JOIN LATERAL (
     SELECT
         COALESCE(json_object_agg(e.emoji, e.adds), '{}') AS reaction_counts,
@@ -133,8 +139,13 @@ LEFT JOIN LATERAL (
                SUM(CASE WHEN re.action = 'add' THEN 1 ELSE -1 END) AS net
         FROM chat.reaction_event re
         WHERE re.channel_id = ad.channel_id
-          AND re.created_at >= ad.created_at
-          AND re.created_at <= ad.created_at + make_interval(mins => :window)
+          AND (
+              (ad.reply_message_id IS NOT NULL
+                   AND re.message_id = ad.reply_message_id)
+           OR (ad.reply_message_id IS NULL
+                   AND re.created_at >= ad.created_at
+                   AND re.created_at <= ad.created_at + make_interval(mins => :window))
+          )
         GROUP BY re.emoji
     ) e
 ) rx ON TRUE
@@ -214,6 +225,9 @@ def gather(since):
             rec["agent_match"] = (
                 "time-window-heuristic" if rec["became_agent"] else None
             )
+            rec["reaction_match"] = (
+                "exact" if rec.get("reply_message_id") else "time-window-heuristic"
+            )
             sid = str(rec["episode_id"])
             rec["has_eval"] = sid in have
             rec["eval_taxonomy_version"] = None
@@ -231,7 +245,8 @@ def gather(since):
 
 
 _FETCH_EPISODE_SQL = """
-SELECT id, channel_id, message_id, confidence, directive_version, created_at
+SELECT id, channel_id, message_id, confidence, directive_version, created_at,
+       reply_message_id
 FROM chat.attention_decision
 WHERE id = :episode_id
 """
@@ -250,12 +265,19 @@ WHERE channel_id = :channel_id
 ORDER BY created_at, id
 """
 
+# EXACT match on the reply id when known, else the channel + window fallback.
+# The nullable :reply_message_id bind needs ::text casts so psycopg can type the
+# NULL in the IS NULL / IS NOT NULL branches (repo gotcha).
 _FETCH_REACTIONS_SQL = """
 SELECT message_id, emoji, reactor_id, action, created_at
 FROM chat.reaction_event
 WHERE channel_id = :channel_id
-  AND created_at >= :engage_at
-  AND created_at <= :engage_at + make_interval(mins => :window)
+  AND (
+      (:reply_message_id::text IS NOT NULL AND message_id = :reply_message_id::text)
+   OR (:reply_message_id::text IS NULL
+           AND created_at >= :engage_at
+           AND created_at <= :engage_at + make_interval(mins => :window))
+  )
 ORDER BY created_at, id
 """
 
@@ -288,7 +310,12 @@ def fetch_episode(episode_id):
         }
         msgs = conn.execute(text(_FETCH_MESSAGES_SQL), slice_params).mappings().all()
         reactions = (
-            conn.execute(text(_FETCH_REACTIONS_SQL), slice_params).mappings().all()
+            conn.execute(
+                text(_FETCH_REACTIONS_SQL),
+                {**slice_params, "reply_message_id": ep["reply_message_id"]},
+            )
+            .mappings()
+            .all()
         )
         agent = (
             conn.execute(
@@ -302,6 +329,10 @@ def fetch_episode(episode_id):
         "episode_id": ep["id"],
         "channel_id": ep["channel_id"],
         "trigger_message_id": ep["message_id"],
+        "reply_message_id": ep["reply_message_id"],
+        "reaction_match": (
+            "exact" if ep["reply_message_id"] else "time-window-heuristic"
+        ),
         "attention_confidence": (
             float(ep["confidence"]) if ep["confidence"] is not None else None
         ),
