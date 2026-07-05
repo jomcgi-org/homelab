@@ -87,6 +87,24 @@
     })),
   );
 
+  // Ingest prepends the section name as a title line to every chunk's content
+  // (marker.py flush(), so the entity extractor can name the monster from text
+  // alone). The reader already shows that name as the section <h2> and in the
+  // sticky bar, so a leading block that merely repeats it renders the title
+  // twice. Drop it, comparing case-insensitively against both the full
+  // section_path and its last "/" segment (the visible title).
+  function bodyBlocks(item) {
+    const blocks = renderChunk(item.content);
+    const first = blocks[0];
+    if (!first || (first.type !== "heading" && first.type !== "para")) return blocks;
+    const norm = (s) => (s ?? "").trim().toUpperCase();
+    const head = norm(first.text);
+    if (head && (head === norm(item.section_path) || head === norm(sectionTitle(item.section_path)))) {
+      return blocks.slice(1);
+    }
+    return blocks;
+  }
+
   async function loadMore() {
     if (loadingMore || !nextCursor) return;
     loadingMore = true;
@@ -247,7 +265,7 @@
             {/if}
           </figure>
         {:else}
-          {#each renderChunk(row.item.content) as block, bi (bi)}
+          {#each bodyBlocks(row.item) as block, bi (bi)}
             {#if block.type === "heading"}
               <h3 class="grimb-inline-heading">{block.text}</h3>
             {:else if block.type === "list"}
@@ -321,7 +339,7 @@
   }
 
   .grimb-panel {
-    max-width: 50rem;
+    max-width: 60rem;
     margin: 0 auto;
     padding: clamp(1.5rem, 5vw, 3rem) clamp(1.25rem, 6vw, 3rem);
     background: var(--grimb-paper);
@@ -334,7 +352,7 @@
     align-items: center;
     gap: 1rem;
     margin: 2.5rem 0;
-    max-width: 66ch;
+    max-width: 72ch;
     margin-inline: auto;
   }
 
@@ -351,7 +369,7 @@
   }
 
   .grimb-heading {
-    max-width: 66ch;
+    max-width: 72ch;
     margin: 0 auto 1.25rem;
   }
 
@@ -380,7 +398,7 @@
 
   .grimb-chunk {
     position: relative;
-    max-width: 66ch;
+    max-width: 72ch;
     margin: 0 auto;
     font-family: var(--grimb-serif);
     font-size: 1.13rem;
