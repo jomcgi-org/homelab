@@ -3,7 +3,6 @@ session dispatch (ADR 024 Task 4). DB-backed tests run against in-memory SQLite
 with the chat schema stripped. goosecracker.api is injected as a fake module so
 the test does not pull the real executor (and so no run is dispatched)."""
 
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -121,63 +120,6 @@ def test_progress_message_helpers_noop_without_row(engine):
         assert goosecracker.take_progress_message("missing") == ""
 
 
-def test_start_session_records_transcript_and_dispatches(engine, fake_api):
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "  build a clock  ")
-
-    fake_api.submit.assert_called_once_with(
-        "build a clock",
-        session="thread-1",
-        recipe="artifact",
-        tier="artifact",
-        discord_thread="thread-1",
-    )
-    with Session(engine) as session:
-        row = session.get(GoosecrackerSession, "thread-1")
-        assert row is not None
-        assert row.transcript == "build a clock"
-
-
-def test_start_session_records_parent_channel_id(engine, fake_api):
-    """The /artifact command's parent channel is recorded on the row, mirroring
-    start_agent_session, so parent_channel_for_thread resolves it later."""
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock", "channel-1")
-    with Session(engine) as session:
-        row = session.get(GoosecrackerSession, "thread-1")
-        assert row is not None
-        assert row.parent_channel_id == "channel-1"
-
-
-def test_start_session_defaults_parent_channel_id_to_empty(engine, fake_api):
-    """Callers that omit parent_channel_id (e.g. an older call site) still work:
-    the row gets the field's empty default rather than an error."""
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock")
-    with Session(engine) as session:
-        row = session.get(GoosecrackerSession, "thread-1")
-        assert row is not None
-        assert row.parent_channel_id == ""
-
-
-def test_continue_session_appends_and_resubmits_full_transcript(engine, fake_api):
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock")
-        fake_api.submit.reset_mock()
-        goosecracker.continue_session("thread-1", "make it red")
-
-    fake_api.submit.assert_called_once_with(
-        "build a clock\n\nmake it red",
-        session="thread-1",
-        recipe="artifact",
-        tier="artifact",
-        discord_thread="thread-1",
-    )
-    with Session(engine) as session:
-        row = session.get(GoosecrackerSession, "thread-1")
-        assert row.transcript == "build a clock\n\nmake it red"
-
-
 def test_continue_session_unknown_thread_returns_none(engine, fake_api):
     with patch("chat.goosecracker.get_engine", return_value=engine):
         result = goosecracker.continue_session("nope", "hi")
@@ -185,60 +127,41 @@ def test_continue_session_unknown_thread_returns_none(engine, fake_api):
     fake_api.submit.assert_not_called()
 
 
+def test_continue_session_agent_thread_dispatches_with_agent_recipe(engine, fake_api):
+    """continue_session is agent-only now: an idle agent thread's reply is
+    dispatched with recipe='agent' (there is no artifact re-dispatch branch to
+    fall into)."""
+    with Session(engine) as session:
+        session.add(
+            GoosecrackerSession(
+                discord_thread="thread-1",
+                recipe="agent",
+                transcript="build a clock",
+                running=False,
+            )
+        )
+        session.commit()
+
+    with patch("chat.goosecracker.get_engine", return_value=engine):
+        result = goosecracker.continue_session("thread-1", "make it red")
+
+    assert result is not None
+    assert result.get("action") == "dispatched"
+    fake_api.submit.assert_called_once()
+    assert fake_api.submit.call_args.kwargs["recipe"] == "agent"
+
+
 def test_is_goosecracker_thread(engine, fake_api):
     with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock")
+        with Session(engine) as session:
+            session.add(
+                GoosecrackerSession(
+                    discord_thread="thread-1", transcript="build a clock"
+                )
+            )
+            session.commit()
         assert goosecracker.is_goosecracker_thread("thread-1") is True
         assert goosecracker.is_goosecracker_thread("other") is False
-
-
-# ---------------------------------------------------------------------------
-# ADR 026 Phase 2: continue_session resume gate
-# ---------------------------------------------------------------------------
-
-
-def test_continue_session_resume_path_when_session_exists(
-    engine, fake_api, monkeypatch
-):
-    """When head_session returns a truthy etag (Model A), the task is the latest
-    stripped message (not the full transcript)."""
-    from artifact import s3
-
-    monkeypatch.setattr(s3, "head_session", lambda _: "abc123")
-
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock")
-        fake_api.submit.reset_mock()
-        goosecracker.continue_session("thread-1", "  make it red  ")
-
-    fake_api.submit.assert_called_once_with(
-        "make it red",
-        session="thread-1",
-        recipe="artifact",
-        tier="artifact",
-        discord_thread="thread-1",
-    )
-
-
-def test_continue_session_cold_path_when_no_session(engine, fake_api, monkeypatch):
-    """When head_session returns None (Model B), the task is the full accumulated
-    transcript."""
-    from artifact import s3
-
-    monkeypatch.setattr(s3, "head_session", lambda _: None)
-
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock")
-        fake_api.submit.reset_mock()
-        goosecracker.continue_session("thread-1", "make it red")
-
-    fake_api.submit.assert_called_once_with(
-        "build a clock\n\nmake it red",
-        session="thread-1",
-        recipe="artifact",
-        tier="artifact",
-        discord_thread="thread-1",
-    )
 
 
 def test_start_agent_session_dispatches_with_agent_recipe(engine, fake_api):
@@ -417,131 +340,6 @@ class TestBuildInjectedContext:
         assert bundle == {}
 
 
-class _FakeDatasetCaller:
-    """Records the prompt it was called with; returns a canned reply."""
-
-    def __init__(self, response: str):
-        self.prompts: list[str] = []
-        self._response = response
-
-    async def __call__(self, prompt: str) -> str:
-        self.prompts.append(prompt)
-        return self._response
-
-
-class TestBuildChannelDataset:
-    """chat.summarizer.build_llm_caller is the established seam to patch (same
-    as TestBuildRoast further down); extract_dataset itself is exercised in
-    chat/channel_data_test.py, so these tests focus on the wiring: window
-    resolution and fail-open behavior."""
-
-    @pytest.mark.asyncio
-    async def test_no_parent_channel_returns_none_without_calling_caller(
-        self, engine, fake_api
-    ):
-        with Session(engine) as session:
-            session.add(
-                GoosecrackerSession(
-                    discord_thread="thr-art",
-                    recipe="artifact",
-                    tier="artifact",
-                    parent_channel_id="",
-                )
-            )
-            session.commit()
-
-        caller = _FakeDatasetCaller("{}")
-        with (
-            patch("chat.goosecracker.get_engine", return_value=engine),
-            patch("chat.summarizer.build_llm_caller", return_value=caller),
-        ):
-            result = await goosecracker.build_channel_dataset("thr-art", "count bugs")
-
-        assert result is None
-        assert caller.prompts == []
-
-    @pytest.mark.asyncio
-    async def test_parent_channel_with_no_messages_returns_none(self, engine, fake_api):
-        with Session(engine) as session:
-            session.add(
-                GoosecrackerSession(
-                    discord_thread="thr-art",
-                    recipe="artifact",
-                    tier="artifact",
-                    parent_channel_id="chan-empty",
-                )
-            )
-            session.commit()
-
-        caller = _FakeDatasetCaller("{}")
-        with (
-            patch("chat.goosecracker.get_engine", return_value=engine),
-            patch("chat.summarizer.build_llm_caller", return_value=caller),
-        ):
-            result = await goosecracker.build_channel_dataset("thr-art", "count bugs")
-
-        assert result is None
-        assert caller.prompts == []
-
-    @pytest.mark.asyncio
-    async def test_delegates_to_extract_dataset_with_channel_window(
-        self, engine, fake_api
-    ):
-        with Session(engine) as session:
-            session.add(
-                GoosecrackerSession(
-                    discord_thread="thr-art",
-                    recipe="artifact",
-                    tier="artifact",
-                    parent_channel_id="chan-1",
-                )
-            )
-            session.commit()
-            _msg(session, "chan-1", "alice", "we shipped 3 features", 1)
-            _msg(session, "chan-1", "bob", "and fixed 2 bugs", 2)
-
-        reply = json.dumps({"title": "t", "columns": ["a"], "rows": [["1"]]})
-        caller = _FakeDatasetCaller(reply)
-        with (
-            patch("chat.goosecracker.get_engine", return_value=engine),
-            patch("chat.summarizer.build_llm_caller", return_value=caller),
-        ):
-            result = await goosecracker.build_channel_dataset(
-                "thr-art", "count features per person"
-            )
-
-        assert result is not None
-        assert json.loads(result)["title"] == "t"
-        assert len(caller.prompts) == 1
-        assert "we shipped 3 features" in caller.prompts[0]
-        assert "count features per person" in caller.prompts[0]
-
-    @pytest.mark.asyncio
-    async def test_caller_exception_returns_none_not_raise(self, engine, fake_api):
-        with Session(engine) as session:
-            session.add(
-                GoosecrackerSession(
-                    discord_thread="thr-art",
-                    recipe="artifact",
-                    tier="artifact",
-                    parent_channel_id="chan-1",
-                )
-            )
-            session.commit()
-            _msg(session, "chan-1", "alice", "hello", 1)
-
-        def _raise():
-            raise RuntimeError("no model configured")
-
-        with (
-            patch("chat.goosecracker.get_engine", return_value=engine),
-            patch("chat.summarizer.build_llm_caller", side_effect=_raise),
-        ):
-            result = await goosecracker.build_channel_dataset("thr-art", "count bugs")
-
-        assert result is None
-
-
 # ---------------------------------------------------------------------------
 # Agent conversational path: continue_session queuing + dispatching
 # ---------------------------------------------------------------------------
@@ -688,32 +486,6 @@ def test_continue_agent_session_consumes_pending_on_dispatch(engine, fake_api):
         row = session.get(GoosecrackerSession, "agent-t4")
     assert row.pending == ""
     assert row.running
-
-
-def test_continue_session_falls_back_to_cold_on_head_session_error(
-    engine, fake_api, monkeypatch
-):
-    """When head_session raises any exception, the handler logs and falls back
-    to the cold (Model B) rebuild path using the full transcript."""
-    from artifact import s3
-
-    def _raise(_):
-        raise RuntimeError("S3 unavailable")
-
-    monkeypatch.setattr(s3, "head_session", _raise)
-
-    with patch("chat.goosecracker.get_engine", return_value=engine):
-        goosecracker.start_session("thread-1", "build a clock")
-        fake_api.submit.reset_mock()
-        goosecracker.continue_session("thread-1", "make it red")
-
-    fake_api.submit.assert_called_once_with(
-        "build a clock\n\nmake it red",
-        session="thread-1",
-        recipe="artifact",
-        tier="artifact",
-        discord_thread="thread-1",
-    )
 
 
 def test_drain_agent_queue_returns_task_and_clears_pending(engine):

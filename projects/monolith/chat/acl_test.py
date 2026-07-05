@@ -149,8 +149,6 @@ class TestBootstrapDefaults:
             assert (
                 acl.is_granted("home1", "anyone", "agent", "weave-hand/loom") is False
             )
-            assert acl.is_granted("home1", "owner1", "artifact") is True
-            assert acl.is_granted("home1", "someone", "artifact") is False
             # loom-server members get loom, but never homelab
             assert (
                 acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "weave-hand/loom")
@@ -160,8 +158,6 @@ class TestBootstrapDefaults:
                 acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "jomcgi/homelab")
                 is False
             )
-            # loom server can build artifacts (safe: capability URLs + qwen)
-            assert acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "artifact") is True
             # ADR 036: the orchestrator tier is granted server-wide on the home
             # server (any channel), and nowhere else by default.
             assert (
@@ -180,9 +176,8 @@ class TestBootstrapDefaults:
             acl.bootstrap_defaults()
             with Session(engine) as session:
                 rows = session.exec(select(DiscordFeatureGrant)).all()
-            # home: 2 agent + 1 artifact + 1 orchestrator, loom: 1 agent + 1
-            # artifact = 6, not doubled
-            assert len(rows) == 6
+            # home: 2 agent + 1 orchestrator, loom: 1 agent = 4, not doubled
+            assert len(rows) == 4
 
     def test_no_home_env_still_seeds_loom(self, engine, monkeypatch):
         monkeypatch.delenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", raising=False)

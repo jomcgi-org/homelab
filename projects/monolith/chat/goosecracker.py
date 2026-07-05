@@ -1,21 +1,20 @@
-"""goosecracker: the owner-gated Discord artifact agent (ADR 024 Task 4).
+"""goosecracker: the Discord coding-agent session logic (ADR 024 / ADR 035).
 
-``/artifact <prompt>`` opens a Discord thread and runs goose in a
-Firecracker microVM (the ``artifact`` recipe + tier), which builds a
-self-contained HTML artifact and publishes it; fc-agentd posts the artifact URL
-back into the thread (Task 5). Each owner follow-up in the thread re-runs goose
-from scratch with the FULL accumulated transcript (Model B), re-publishing the
-same artifact id so the live page hot-reloads.
+The ``/agent`` command opens a Discord thread and runs goose in a Firecracker
+microVM; the router classifies the task and delegates a sub-recipe (query, plan,
+implement, or artifact-build/review for a repo-less "build me a page" run), and
+the result is posted back into the thread. Each owner follow-up in the thread
+continues the same agent session: it steers an in-flight turn or dispatches the
+next one (ADR 035 Phase 2).
 
-This module is the pure logic seam (gate + transcript + dispatch + roast) so the
-Discord wiring in ``chat.bot`` stays thin and this stays unit-testable. The DB
-helpers are synchronous and open their own session, so the bot calls them via
-``asyncio.to_thread`` (never blocking the gateway loop).
+This module is the pure logic seam (gate + transcript + steering + dispatch +
+roast) so the Discord wiring in ``chat.bot`` stays thin and this stays
+unit-testable. The DB helpers are synchronous and open their own session, so the
+bot calls them via ``asyncio.to_thread`` (never blocking the gateway loop).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import secrets
@@ -54,20 +53,16 @@ INSTANCE_TOKEN = secrets.token_hex(8)
 # from under itself. The startup sweep is the fast path; this is the backstop.
 STALE_AFTER = timedelta(minutes=30)
 
-# The artifact recipe + model tier (ADR 024). The tier selects Gemini via
-# OpenRouter (key swapped at egress) and bounds the secret placeholders the guest
-# holds; the recipe is the write-only artifact builder.
-ARTIFACT_RECIPE = "artifact"
-ARTIFACT_TIER = "artifact"
-
 # The agent recipe + tier: default (empty) tier runs on the in-cluster Qwen model.
-# The agent recipe is the general coding agent (goosecracker general mode).
+# The agent recipe is the general coding agent (goosecracker general mode); an
+# artifact is just an agent run with no repo, which the router builds by
+# delegating the artifact-build / artifact-review sub-recipes.
 AGENT_RECIPE = "agent"
 AGENT_TIER = ""
 
 # Shown when the owner gate rejects someone and the qwen roast path is
 # unavailable (model down), so a non-owner always gets a clear refusal.
-_FALLBACK_ROAST = "Nice try. /artifact is owner-only."
+_FALLBACK_ROAST = "Nice try. You need an agent grant to drive that thread."
 
 
 def owner_id() -> str:
@@ -148,47 +143,6 @@ def _is_stale(row: GoosecrackerSession, now: datetime) -> bool:
     return (now - since) > STALE_AFTER
 
 
-def start_session(thread_id: str, prompt: str, parent_channel_id: str = "") -> dict:
-    """Record a new thread's transcript and dispatch the first artifact run.
-
-    ``parent_channel_id`` is the channel the /artifact command was run from (the
-    thread's parent), mirroring ``start_agent_session``'s param of the same
-    name; stored on the row so the runner can fetch channel-scoped context
-    (recent messages, and the extracted dataset) for the artifact build. Empty
-    when the caller has none to record (e.g. an older call site).
-
-    Synchronous (opens its own session); call via ``asyncio.to_thread``. Returns
-    the dispatch result (``thread_id`` + ``action``).
-    """
-    prompt = prompt.strip()
-    # Imported lazily (not at module load): chat.bot imports this module and
-    # goosecracker.runner imports chat.api, so a module-level import would risk a
-    # circular import. goosecracker.api is the boundary-approved surface.
-    from goosecracker.api import submit
-
-    # Dispatch first: if submit raises, no session row is left behind (which
-    # would otherwise make later replies look like a live goosecracker thread
-    # with no backing run). The Discord thread id doubles as the run session so
-    # the guest's progress stream and the bot's poll key line up.
-    result = submit(
-        prompt,
-        session=thread_id,
-        recipe=ARTIFACT_RECIPE,
-        tier=ARTIFACT_TIER,
-        discord_thread=thread_id,
-    )
-    with Session(get_engine()) as session:
-        session.add(
-            GoosecrackerSession(
-                discord_thread=thread_id,
-                parent_channel_id=parent_channel_id,
-                transcript=prompt,
-            )
-        )
-        session.commit()
-    return result
-
-
 def set_progress_message(thread_id: str, message_id: str) -> None:
     """Record the id of the run's single live message on the session row.
 
@@ -236,20 +190,15 @@ def continue_session(
     author_id: str = "",
     tier: str = "",
 ) -> dict | None:
-    """Append an owner follow-up and re-dispatch or queue depending on recipe.
+    """Append an owner follow-up to an agent thread and steer, queue, or dispatch.
 
-    Artifact sessions (recipe="artifact"): re-dispatch the full transcript (Model
-    B), preserving the original ADR 026 Phase 2 resume gate. Returns the raw
-    submit result dict.
-
-    Agent sessions (recipe="agent"): conversational queuing. If a turn is already
-    running (and not stale), the reply becomes STEERING (ADR 035 Phase 2): an
-    undelivered ``GoosecrackerSteering`` row is inserted for the running guest to
-    consume mid-run, and ``{"action": "steering"}`` is returned so the bot can
-    acknowledge with a 👀 reaction instead of a text reply. ``author_id``/``tier``
-    are only used on this path (a steering row needs an attributed author; tier
-    falls back to the session's own tier when blank). When idle (or the prior
-    turn is stale and reclaimed), build the next task from any backlog + this
+    Conversational queuing. If a turn is already running (and not stale), the reply
+    becomes STEERING (ADR 035 Phase 2): an undelivered ``GoosecrackerSteering`` row
+    is inserted for the running guest to consume mid-run, and
+    ``{"action": "steering"}`` is returned so the bot can acknowledge with a 👀
+    reaction instead of a text reply. ``author_id``/``tier`` attribute the steering
+    row (tier falls back to the session's own tier when blank). When idle (or the
+    prior turn is stale and reclaimed), build the next task from any backlog + this
     message, set running=True, dispatch, and return
     ``{"action": "dispatched", ...submit result}``.
 
@@ -259,12 +208,10 @@ def continue_session(
     """
     message = message.strip()
     # Captured inside the session for use after the with-block.
-    _is_agent = False
     _task = ""
     _stored_recipe = ""
     _stored_tier = ""
     _stored_repo = ""
-    _transcript = ""
 
     with Session(get_engine()) as session:
         # Lock the row for the whole read-modify-write so a concurrent
@@ -277,110 +224,79 @@ def continue_session(
         now = datetime.now(timezone.utc)
         row.updated_at = now
 
-        if row.recipe == AGENT_RECIPE:
-            _is_agent = True
-            if row.running and not _is_stale(row, now):
-                # A live turn is in flight: this reply steers it rather than
-                # queuing behind it (ADR 035 Phase 2). The steering insert and the
-                # running-check above must be atomic under the row lock, so a
-                # turn finishing concurrently can never be missed between the
-                # check and the write. Do NOT append to the transcript here:
-                # fetch_steering owns that write (with attribution) when the
-                # running guest consumes the row, so appending it here too would
-                # double it.
-                session.add(
-                    GoosecrackerSteering(
-                        thread_id=thread_id,
-                        message_id=message_id,
-                        author_id=author_id,
-                        tier=tier or row.tier,
-                        text=message,
-                        delivered=False,
-                    )
+        if row.running and not _is_stale(row, now):
+            # A live turn is in flight: this reply steers it rather than
+            # queuing behind it (ADR 035 Phase 2). The steering insert and the
+            # running-check above must be atomic under the row lock, so a
+            # turn finishing concurrently can never be missed between the
+            # check and the write. Do NOT append to the transcript here:
+            # fetch_steering owns that write (with attribution) when the
+            # running guest consumes the row, so appending it here too would
+            # double it.
+            session.add(
+                GoosecrackerSteering(
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    author_id=author_id,
+                    tier=tier or row.tier,
+                    text=message,
+                    delivered=False,
                 )
-                session.commit()
-                return {"action": "steering"}
-            if row.running:
-                # Stale/foreign-owned turn: the owner died or wedged. Reclaim its
-                # in-flight work by folding it back into this dispatch so nothing
-                # is lost (the startup sweep is the fast path; this is the inline
-                # backstop when the process lived but the turn died silently).
-                logger.warning(
-                    "goosecracker: reclaiming stale turn for thread %s "
-                    "(owner=%s, since=%s)",
-                    thread_id,
-                    row.runner_instance or "?",
-                    row.running_since,
-                )
-            # Idle (or reclaimed): the transcript gets this turn verbatim (the
-            # dispatch path is the record of what was asked, unlike steering).
-            row.transcript = _join_transcript(row.transcript, message)
-            # Consume the dead turn's task (if any), the backlog, and this
-            # message as a single task. Backlog + reclaimed message ids become
-            # this turn's ack set (they show the reaction lifecycle); the
-            # triggering message rides the live progress reply. Join non-empty
-            # parts only: an empty pending/inflight must not inject a blank line
-            # into the task.
-            _task = "\n".join(p for p in (row.inflight_task, row.pending, message) if p)
-            ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
-            _stored_recipe = row.recipe
-            _stored_tier = row.tier
-            _stored_repo = row.repo
-            row.pending = ""
-            row.pending_message_ids = ""
-            row.inflight_task = _task
-            row.inflight_ack_ids = ack_ids
-            row.running = True
-            row.running_since = now
-            row.runner_instance = INSTANCE_TOKEN
-            session.add(row)
+            )
             session.commit()
-        else:
-            # Artifact path: append this turn to the transcript, commit, then do
-            # the S3 check.
-            row.transcript = _join_transcript(row.transcript, message)
-            _transcript = row.transcript
-            session.add(row)
-            session.commit()
+            return {"action": "steering"}
+        if row.running:
+            # Stale/foreign-owned turn: the owner died or wedged. Reclaim its
+            # in-flight work by folding it back into this dispatch so nothing
+            # is lost (the startup sweep is the fast path; this is the inline
+            # backstop when the process lived but the turn died silently).
+            logger.warning(
+                "goosecracker: reclaiming stale turn for thread %s "
+                "(owner=%s, since=%s)",
+                thread_id,
+                row.runner_instance or "?",
+                row.running_since,
+            )
+        # Idle (or reclaimed): the transcript gets this turn verbatim (the
+        # dispatch path is the record of what was asked, unlike steering).
+        row.transcript = _join_transcript(row.transcript, message)
+        # Consume the dead turn's task (if any), the backlog, and this
+        # message as a single task. Backlog + reclaimed message ids become
+        # this turn's ack set (they show the reaction lifecycle); the
+        # triggering message rides the live progress reply. Join non-empty
+        # parts only: an empty pending/inflight must not inject a blank line
+        # into the task.
+        _task = "\n".join(p for p in (row.inflight_task, row.pending, message) if p)
+        ack_ids = _merge_ids(row.inflight_ack_ids, row.pending_message_ids)
+        _stored_recipe = row.recipe
+        _stored_tier = row.tier
+        _stored_repo = row.repo
+        row.pending = ""
+        row.pending_message_ids = ""
+        row.inflight_task = _task
+        row.inflight_ack_ids = ack_ids
+        row.running = True
+        row.running_since = now
+        row.runner_instance = INSTANCE_TOKEN
+        session.add(row)
+        session.commit()
 
     # Imports are lazy (circular import guard: chat.bot -> chat.goosecracker ->
     # goosecracker.runner -> chat.api).
     from goosecracker.api import submit
 
-    if _is_agent:
-        result = submit(
-            _task,
-            session=thread_id,
-            recipe=_stored_recipe,
-            tier=_stored_tier,
-            repo=_stored_repo,
-            discord_thread=thread_id,
-        )
-        # Spread the submit result first, then set action: submit returns its own
-        # "action" (create/resume) and a later key wins in a dict merge, so
-        # "dispatched" must come last to override it (the bot routes on this).
-        return {**result, "action": "dispatched"}
-
-    # Artifact path: ADR 026 Phase 2 (Model A vs B). If a persisted goose session
-    # exists for this thread, send only the new reply (Model A) so the guest can
-    # restore the session and edit in place; otherwise cold-rebuild from the full
-    # transcript (Model B). The S3 check is best-effort: a failure falls back to
-    # Model B, never a hard error.
-    from artifact import s3
-
-    has_session = False
-    try:
-        has_session = s3.head_session(thread_id) is not None
-    except Exception:
-        logger.exception("goosecracker: session existence check failed; cold rebuild")
-    task = message if has_session else _transcript
-    return submit(
-        task,
+    result = submit(
+        _task,
         session=thread_id,
-        recipe=ARTIFACT_RECIPE,
-        tier=ARTIFACT_TIER,
+        recipe=_stored_recipe,
+        tier=_stored_tier,
+        repo=_stored_repo,
         discord_thread=thread_id,
     )
+    # Spread the submit result first, then set action: submit returns its own
+    # "action" (create/resume) and a later key wins in a dict merge, so
+    # "dispatched" must come last to override it (the bot routes on this).
+    return {**result, "action": "dispatched"}
 
 
 def enqueue_steering(
@@ -701,8 +617,8 @@ def start_agent_session(
 
     Dispatches the first turn and writes a GoosecrackerSession row so that
     follow-up replies in the thread are routed through ``continue_session``
-    (agent path) with queuing support. The row is written AFTER dispatch so
-    that a failed submit leaves no row (mirroring ``start_session``).
+    with queuing support. The row is written AFTER dispatch so that a failed
+    submit leaves no orphan row.
 
     ``parent_channel_id`` is the channel the /agent command was run from (the
     thread's parent); stored on the row so the runner can fetch channel-scoped
@@ -724,8 +640,8 @@ def start_agent_session(
     """
     prompt = prompt.strip()
     task = (task or prompt).strip()
-    # Imported lazily for the same reason as start_session (circular import
-    # guard: chat.bot -> chat.goosecracker -> goosecracker.runner -> chat.api).
+    # Imported lazily to avoid a circular import (chat.bot ->
+    # chat.goosecracker -> goosecracker.runner -> chat.api).
     from goosecracker.api import submit
 
     # Dispatch first: a failed submit leaves no session row, avoiding a stuck
@@ -764,17 +680,6 @@ def is_goosecracker_thread(thread_id: str) -> bool:
     """Whether a Discord thread id has a goosecracker session. Synchronous."""
     with Session(get_engine()) as session:
         return session.get(GoosecrackerSession, thread_id) is not None
-
-
-def is_agent_thread(thread_id: str) -> bool:
-    """True for an agent (not artifact) goosecracker thread. Synchronous.
-
-    Lets the reply gate open agent threads to everyone while keeping artifact
-    threads owner-only (ADR 029).
-    """
-    with Session(get_engine()) as session:
-        row = session.get(GoosecrackerSession, thread_id)
-        return row is not None and row.recipe == AGENT_RECIPE
 
 
 def session_scope(thread_id: str) -> str | None:
@@ -999,53 +904,6 @@ def _context_from_own_transcript(transcript: str) -> dict[str, str]:
     return {"README.md": readme, "transcript.md": body}
 
 
-def _channel_dataset_window(thread_id: str) -> list[Message]:
-    """Fetch the recent message window for a thread's parent channel, oldest
-    first, or [] when the thread has no parent channel recorded (or the
-    channel has no messages). Sync; call via ``asyncio.to_thread``. Mirrors
-    the channel query ``build_injected_context`` uses, same message cap.
-    """
-    parent = parent_channel_for_thread(thread_id)
-    if not parent:
-        return []
-    with Session(get_engine()) as session:
-        rows = session.exec(
-            select(Message)
-            .where(Message.channel_id == parent)
-            .order_by(Message.created_at.desc())
-            .limit(_INJECTED_CONTEXT_MSG_LIMIT)
-        ).all()
-    return list(reversed(rows))
-
-
-async def build_channel_dataset(thread_id: str, request: str) -> str | None:
-    """Extract a structured dataset from an artifact thread's parent channel.
-
-    Attached to an artifact dispatch's ``/injected-context/channel-data.json``
-    so the guest can build a chart/table from real conversation data instead of
-    improvising. Delegates to ``chat.channel_data.extract_dataset`` once the
-    channel window is resolved.
-
-    Fail-open like ``build_roast``/``build_injected_context``: returns None
-    when the thread has no parent channel recorded, the channel has no
-    messages, or extraction fails for any reason (a Qwen outage must not block
-    an artifact dispatch, the exact class of bug that bit Phase 1). Sync DB
-    fetch is offloaded via ``asyncio.to_thread``; the rest is async (LLM call).
-    """
-    try:
-        window = await asyncio.to_thread(_channel_dataset_window, thread_id)
-        if not window:
-            return None
-        from chat.channel_data import extract_dataset
-        from chat.summarizer import build_llm_caller
-
-        caller = build_llm_caller()
-        return await extract_dataset(window, request, caller)
-    except Exception:
-        logger.exception("goosecracker: build_channel_dataset failed for %s", thread_id)
-        return None
-
-
 async def build_roast(attempt_text: str) -> str:
     """Roast a non-owner who tried to run the agent, via the in-cluster qwen
     model (same path as the changelog roasts). Falls back to a fixed line if the
@@ -1055,8 +913,8 @@ async def build_roast(attempt_text: str) -> str:
 
     attempt_text = (attempt_text or "").strip()[:300]
     prompt = (
-        "You are a cynical senior engineer. Someone who is NOT the owner just "
-        "tried to run the owner-only /artifact command"
+        "You are a cynical senior engineer. Someone who is NOT granted just "
+        "tried to steer a coding-agent thread that isn't theirs to drive"
         + (f' with: "{attempt_text}"' if attempt_text else "")
         + ". Roast them in one or two dry sentences for reaching for a tool that "
         "isn't theirs. Past tense or present, declarative. No preamble, no "

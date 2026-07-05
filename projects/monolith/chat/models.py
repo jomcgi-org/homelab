@@ -154,11 +154,11 @@ class GoosecrackerSession(SQLModel, table=True):
     """Per-Discord-thread curated transcript for the goosecracker agent (ADR 024).
 
     One row per thread; transcript accumulates the owner's instructions (never
-    ambient chatter or the bot's replies). ``recipe`` distinguishes artifact
-    sessions (iterative HTML builder) from agent sessions (conversational coding
-    agent). Agent sessions are conversational: ``running`` is True while a turn is
-    in flight; replies that arrive during a run are appended to ``pending`` and
-    dispatched as the next turn when the current one finishes.
+    ambient chatter or the bot's replies). Every session is an agent session
+    (conversational coding agent; an artifact is an agent run with no repo):
+    ``running`` is True while a turn is in flight; replies that arrive during a
+    run are appended to ``pending`` and dispatched as the next turn when the
+    current one finishes.
     """
 
     __tablename__ = "goosecracker_sessions"
@@ -168,7 +168,7 @@ class GoosecrackerSession(SQLModel, table=True):
     transcript: str = Field(default="")
     # recipe/tier/repo mirror the dispatch.submit params so continue_session can
     # re-dispatch without the caller re-supplying them.
-    recipe: str = Field(default="artifact")
+    recipe: str = Field(default="agent")
     tier: str = Field(default="")
     repo: str = Field(default="")
     # Discord parent channel the /agent thread was opened from. The thread itself

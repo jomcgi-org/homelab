@@ -1,6 +1,6 @@
 """goosecracker domain public API: the only surface other domains may import.
 
-Other domains (chat's /artifact adapter, agent's MCP tools) must import from
+Other domains (chat's /agent command, agent's MCP tools) must import from
 ``goosecracker.api``, never from ``goosecracker`` internals such as
 ``goosecracker.runner`` (enforced by ``import_boundaries_test``).
 """

@@ -440,18 +440,17 @@ async def _agent_reply_message(session: str, summary: str, details: str) -> str:
         return deterministic
 
 
-async def _delivery_message(session: str, recipe: str, data: dict) -> str:
+async def _delivery_message(session: str, data: dict) -> str:
     """Build the Discord message for a successful run.
 
-    Artifact runs publish the built HTML and post a clean ``Artifact ready: <url>``
-    (plus the recipe's one-line summary) instead of the raw goose transcript. A run
-    that was meant to build an artifact but produced none gets a clear miss message.
-    Any other run (e.g. the coding ``agent``) prefers the recipe's typed response
-    (a JSON object from response.json_schema): summary, optional details, and a
-    PR/issue url. It falls back to the legacy markdown summary, then goose's
-    trailing narrative, so there is always a meaningful response. When the guest
-    recorded a scratch ref (WS3), a ``recorded: refs/agents/<session>`` line is
-    appended for all run types.
+    A run that produced artifact HTML (an agent run the router took down the
+    artifact-build path) publishes it and posts a clean ``Artifact ready: <url>``
+    plus the one-line summary, instead of the raw goose transcript. Any other run
+    prefers the recipe's typed response (a JSON object from response.json_schema):
+    summary, optional details, and a PR/issue url. It falls back to the legacy
+    markdown summary, then goose's trailing narrative, so there is always a
+    meaningful response. When the guest recorded a scratch ref (WS3), a
+    ``recorded: refs/agents/<session>`` line is appended for all run types.
     """
     html = data.get("artifactHtml")
     if html:
@@ -461,18 +460,14 @@ async def _delivery_message(session: str, recipe: str, data: dict) -> str:
         except Exception:
             logger.exception("goosecracker: artifact publish failed for %s", session)
             return "Build finished, but publishing the artifact failed. Check the logs."
-        # Summary can come from the artifact recipe's markdown goose-result
-        # (/artifact command) or the router's typed JSON (a /agent run routed to
-        # the artifact sub-recipe). Prefer the structured summary, fall back to
-        # the markdown one.
+        # Summary comes from the router's typed JSON (a /agent run routed to the
+        # artifact-build sub-recipe), falling back to the markdown goose-result.
         result_text = data.get("result", "") or ""
         structured = _parse_structured_result(result_text)
         summary = (
             str(structured.get("summary", "")).strip() if structured else ""
         ) or _extract_summary(result_text)
         msg = f"Artifact ready: {url}" + (f"\n\n{summary}" if summary else "")
-    elif recipe == "artifact":
-        msg = "Build finished but produced no artifact. Try rephrasing the request."
     else:
         # Coding agent (and any non-artifact recipe). Prefer the typed response
         # (the agent recipe's response.json_schema makes goose emit a JSON object
@@ -671,29 +666,6 @@ async def _invoke_turn(
                 "continuing without it",
                 session,
             )
-        # Task 3.2: attach an extracted dataset for an artifact dispatch only
-        # (the agent-route gap is a documented follow-up, out of scope here).
-        # build_channel_dataset is already fail-open internally (a Qwen outage
-        # must not block the dispatch), but it is wrapped again here so a
-        # surprise exception in the chat.api boundary itself cannot fail the
-        # run either.
-        if recipe == "artifact":
-            from chat.api import build_channel_dataset
-
-            try:
-                dataset = await build_channel_dataset(discord_thread, task)
-            except Exception:
-                logger.exception(
-                    "goosecracker: build_channel_dataset failed for %s; "
-                    "continuing without it",
-                    session,
-                )
-                dataset = None
-            if dataset is not None:
-                injected_context = {
-                    **injected_context,
-                    "channel-data.json": dataset,
-                }
     # WS2 - Hydration: default the mirror and ref when the caller did not
     # specify them. The mirror is read from GOOSECRACKER_GIT_MIRROR, injected
     # via Helm values. An empty effective_mirror means no clone (no mirror
@@ -783,9 +755,7 @@ async def _invoke_turn(
     return await _post_agent_run(url, payload, _notify_retry)
 
 
-async def _deliver_result(
-    session: str, recipe: str, discord_thread: str, data: dict
-) -> bool:
+async def _deliver_result(session: str, discord_thread: str, data: dict) -> bool:
     """Mark the ledger and settle a run's terminal result into its Discord thread.
 
     This is the delivery half split out of the old ``_run_one_turn`` (Task 7): it
@@ -804,7 +774,7 @@ async def _deliver_result(
         await _persist_session_db(session, data.get("sessionDb"))
         # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
         await asyncio.to_thread(threads.mark_completed, session, result)
-        await _settle(discord_thread, await _delivery_message(session, recipe, data))
+        await _settle(discord_thread, await _delivery_message(session, data))
         return True
     err = data.get("error", "") or "goose run failed with no detail"
     # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
@@ -927,7 +897,7 @@ async def _run_one_turn(
                     )
             # No replan requested, replan budget exhausted, orchestrator
             # fail-open, or a non-plan turn: this result is final. Deliver it.
-            ok = await _deliver_result(session, recipe, discord_thread, data)
+            ok = await _deliver_result(session, discord_thread, data)
             break
     except Exception as exc:  # noqa: BLE001 - any failure must mark + deliver
         logger.exception("goosecracker: run_and_deliver failed for %s", session)

@@ -126,9 +126,9 @@ def bootstrap_defaults() -> None:
 
     Reads the existing owner/home-server env so the home server always works out
     of the box: the home server gets /agent on the public homelab repo for
-    everyone, the owner additionally gets /agent on the private loom repo and
-    /artifact, and the Loom server gets /agent on loom for its members. Safe to
-    call on every startup; existing rows are left untouched.
+    everyone, the owner additionally gets /agent on the private loom repo, and
+    the Loom server gets /agent on loom for its members. Safe to call on every
+    startup; existing rows are left untouched.
     """
     home = os.environ.get("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "")
     owner = os.environ.get("OWNER_DISCORD_USER_ID", "")
@@ -151,12 +151,7 @@ def bootstrap_defaults() -> None:
             # home-server member cannot drive the private repo. Loom-server
             # members get loom via the LOOM_GUILD_ID grant below.
             defaults.append((home, owner, "agent", "weave-hand/loom"))
-            defaults.append((home, owner, "artifact", ""))
     defaults.append((LOOM_GUILD_ID, "", "agent", "weave-hand/loom"))
-    # Artifact viewing is behind unguessable capability URLs and runs on the free
-    # qwen tier, so it is safe to open /artifact to the Loom server (ADR 024
-    # amendment). Everyone in the Loom server may build artifacts there.
-    defaults.append((LOOM_GUILD_ID, "", "artifact", ""))
 
     to_add: list[DiscordFeatureGrant] = []
     with Session(get_engine()) as session:
