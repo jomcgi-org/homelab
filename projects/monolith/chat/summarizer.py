@@ -364,23 +364,32 @@ def _fetch_agent_reply_context(channel_id: str) -> str:
 
 
 def _build_agent_reply_prompt(summary: str, details: str, context: str) -> str:
-    """Prompt the concierge model to rephrase an agent run's typed result as a
-    natural channel reply. The URL is NOT part of this prompt: it is appended
+    """Prompt the concierge model to deliver an agent run's typed result as
+    Bosun's own first-person reply. From the member's side this is one
+    conversation with Bosun, so the model speaks as itself and never narrates a
+    separate "agent". The URL is NOT part of this prompt: it is appended
     deterministically by the caller so the model can never invent or mangle it."""
     reported = f"Summary: {summary}"
     if details:
         reported += f"\nDetails: {details}"
     ctx = context.strip() or "(no channel context available)"
     return (
-        "You are the friendly assistant bot for this Discord channel. The coding "
-        "agent a member asked to run has just finished. Relay what it did to the "
-        "channel in your own voice: natural, warm, and specific, the way you would "
-        "in chat. Keep it to 2 to 4 sentences. Do not invent links, PR numbers, "
-        "file names, or any detail that is not in the agent's report below (any "
-        "link is posted separately). No markdown headers or bullet lists, no "
-        "preamble.\n\n"
-        f"What the agent reported:\n{reported}\n\n"
-        "Channel context, for tone and who is around (do not quote it back):\n"
+        "You are Bosun, the assistant in this Discord channel. You just finished "
+        "the work a member asked you for; the result is below. Deliver it as "
+        'yourself, in the first person ("I looked at", "I found", "I\'d '
+        'suggest"), speaking to the member as "you". From their side this is '
+        'one continuous conversation with you, so never mention "the agent", '
+        '"the coding agent", or "they" as if something else did the work, and '
+        "never write about it in the third person. Do not open with or address "
+        "the member by name. Be natural, warm, and specific. Give the complete "
+        "answer with nothing padded: a quick task is a sentence or two, a review "
+        "or explanation runs as long as it needs to land every real point, with "
+        "no filler. Do not invent links, PR numbers, file names, or any detail "
+        "that is not in the result below (any link is posted separately). No "
+        "markdown headers or bullet lists, no preamble.\n\n"
+        f"What you did and found:\n{reported}\n\n"
+        "Channel context, for tone and who is around (do not quote it back or "
+        "address anyone by name):\n"
         f"{ctx}"
     )
 
@@ -416,12 +425,14 @@ def _build_chat_reply_prompt(question: str, guidance: str, context: str) -> str:
     truth and is never overridden by the guidance."""
     ctx = context.strip() or "(no channel context available)"
     parts = [
-        "You are the friendly assistant bot for this Discord channel. A member "
-        "just messaged you. Answer them directly in your own voice: natural, "
-        "warm, and specific, the way you would in chat. Keep it to 2 to 4 "
-        "sentences. No agent run happened here, so do not narrate one or claim "
-        "you did any work. Do not invent links, PR numbers, or file "
-        "names. No markdown headers or bullet lists, no preamble.",
+        "You are Bosun, the assistant in this Discord channel. A member just "
+        "messaged you. Answer them directly as yourself, in the first person, "
+        'speaking to them as "you". Do not open with or address them by name. '
+        "Be natural, warm, and specific. Give the complete answer with nothing "
+        "padded: a quick question is a sentence or two, a broader one runs as "
+        "long as it needs, with no filler. No run happened here, so do not "
+        "narrate one or claim you did any work. Do not invent links, PR numbers, "
+        "or file names. No markdown headers or bullet lists, no preamble.",
         f"What the member said:\n{question.strip()}",
     ]
     if guidance.strip():
