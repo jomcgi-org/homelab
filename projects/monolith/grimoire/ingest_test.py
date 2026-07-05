@@ -82,10 +82,13 @@ def _line(
     content: str,
     section_path: str | None = None,
     image_ref: str | None = None,
+    section_hierarchy: str | None = None,
 ) -> str:
     obj = {"chunk_ref": chunk_ref, "content": content}
     if section_path is not None:
         obj["section_path"] = section_path
+    if section_hierarchy is not None:
+        obj["section_hierarchy"] = section_hierarchy
     if image_ref is not None:
         obj["image_ref"] = image_ref
     return json.dumps(obj)
@@ -100,7 +103,12 @@ def _run(coro):
 
 def test_parse_manifest_lines_valid_and_optional_fields():
     lines = [
-        _line("phb-c3-014", "Wizards cast spells.", "Chapter 3 > Classes > Wizard"),
+        _line(
+            "phb-c3-014",
+            "Wizards cast spells.",
+            "Chapter 3 > Wizard",
+            section_hierarchy="Chapter 3: Classes > Spellcasting > Wizard",
+        ),
         _line("phb-c3-015", "Fighters fight."),
         _line(
             "mm-goblin-img",
@@ -116,19 +124,22 @@ def test_parse_manifest_lines_valid_and_optional_fields():
         {
             "chunk_ref": "phb-c3-014",
             "content": "Wizards cast spells.",
-            "section_path": "Chapter 3 > Classes > Wizard",
+            "section_path": "Chapter 3 > Wizard",
+            "section_hierarchy": "Chapter 3: Classes > Spellcasting > Wizard",
             "image_ref": None,
         },
         {
             "chunk_ref": "phb-c3-015",
             "content": "Fighters fight.",
             "section_path": None,
+            "section_hierarchy": None,
             "image_ref": None,
         },
         {
             "chunk_ref": "mm-goblin-img",
             "content": "A small green goblin.",
             "section_path": "GOBLIN",
+            "section_hierarchy": None,
             "image_ref": "s3://grimoire/books/mm/raw/img/abc.jpg",
         },
     ]

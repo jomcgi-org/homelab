@@ -146,14 +146,14 @@ def test_chunk_extraction_marker_roundtrip(session: Session):
     row = ChunkExtraction(
         chunk_id="11111111-1111-1111-1111-111111111111",
         model="qwen3.6-27b",
-        prompt_hash="abc123",
+        prompt_version="v2",
         status="empty",
     )
     session.add(row)
     session.commit()
     got = session.get(
         ChunkExtraction,
-        ("11111111-1111-1111-1111-111111111111", "qwen3.6-27b", "abc123"),
+        ("11111111-1111-1111-1111-111111111111", "qwen3.6-27b", "v2"),
     )
     assert got is not None
     assert got.status == "empty"
@@ -170,7 +170,7 @@ def test_chunk_extraction_status_check(session: Session):
         session.execute(
             text(
                 "INSERT INTO chunk_extraction "
-                "(chunk_id, model, prompt_hash, status, extracted_at) "
+                "(chunk_id, model, prompt_version, status, extracted_at) "
                 "VALUES (:cid, :m, :h, :s, :t)"
             ),
             {

@@ -113,9 +113,9 @@ spec:
             # Both get the union (the loader ignores OPENROUTER_API_KEY, the
             # extractor ignores the S3 env) so the grimoire concern is one env
             # block, mirroring how the deployment injects it. OPENROUTER_API_KEY
-            # comes from the {{ include "monolith.fullname" $ }}-openrouter Secret,
-            # Kyverno-cloned into monolith-workflows (see the kyverno clone policy);
-            # the extract handler skips its run cleanly if the key is absent.
+            # comes from the "goosecracker" Secret (field OPENROUTER_API_KEY),
+            # Kyverno-cloned into monolith-workflows (see the clone-openrouter
+            # policy); the extract handler skips its run cleanly if it is absent.
             - name: SEAWEEDFS_S3_ENDPOINT
               value: {{ $.Values.stars.seaweedfsS3Endpoint | quote }}
             - name: S3_ACCESS_KEY_ID
@@ -136,11 +136,12 @@ spec:
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "monolith.fullname" $ }}-openrouter
+                  name: goosecracker
                   key: OPENROUTER_API_KEY
-                  # Optional: the Secret only exists once the "openrouter"
-                  # 1Password item is created; the pod must not be blocked on it
-                  # (the extract job already skips cleanly when the key is unset).
+                  # Optional: the cloned "goosecracker" Secret only exists once
+                  # goosecracker is enabled and Kyverno has replicated it into
+                  # monolith-workflows; the pod must not be blocked on it (the
+                  # extract job already skips cleanly when the key is unset).
                   optional: true
             - name: GRIMOIRE_S3_BUCKET
               value: {{ $.Values.grimoire.s3Bucket | quote }}

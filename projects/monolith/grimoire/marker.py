@@ -226,6 +226,47 @@ def _section_breadcrumb(
     return leaf
 
 
+# Structural furniture headers that leak into Marker's running section_hierarchy
+# (the ToC page roots every early section under CONTENTS). Dropped from the
+# extraction-context breadcrumb so it reflects real nesting, not page furniture.
+_HIERARCHY_FURNITURE = frozenset({"CONTENTS", "TABLE OF CONTENTS", "INDEX"})
+
+
+def _section_hierarchy_path(
+    hier_block: dict | None, headers: dict[str, str], leaf: str | None
+) -> str | None:
+    """Full ancestor breadcrumb for the run's section, shallowest first, joined by
+    " > " and ending at ``leaf`` (e.g. "Chapter 3: Magic Items > Armor > Armor of
+    Vulnerability"). Extraction CONTEXT ONLY: it never feeds the reader/nav (which
+    keep the 2-level ``section_path``), so its extra ancestry depth is a feature
+    here, not the noise it would be in a menu.
+
+    Same trust rule as ``_section_breadcrumb``: read ancestry only off a *content*
+    block (a SectionHeader's own ``section_hierarchy`` is stale, listing the
+    previous sibling at its level), so ``hier_block`` must be a content block and
+    header-only runs pass ``None`` (degrading to the bare ``leaf``). Structural
+    furniture (CONTENTS/INDEX), empty headers, adjacent duplicates, and a level
+    equal to the leaf are dropped so the path reflects real nesting. Returns the
+    bare ``leaf`` when there is no usable ancestry, matching how a chunk with no
+    hierarchy still gets its leaf heading.
+    """
+    if not leaf:
+        return leaf
+    sh = (hier_block or {}).get("section_hierarchy") or {}
+    parts: list[str] = []
+    for level in sorted(sh, key=lambda k: int(k)):  # shallowest first
+        txt = headers.get(sh[level], "").strip()
+        if not txt or txt.upper() in _HIERARCHY_FURNITURE or txt == leaf:
+            continue
+        if parts and parts[-1] == txt:
+            continue
+        parts.append(txt)
+    parts.append(leaf)
+    if len(parts) == 1:
+        return leaf
+    return " > ".join(parts)
+
+
 def parse_image_block(html: str) -> tuple[str, str, str]:
     """From a Picture block's html, return (src_filename, alt, caption)."""
     src_m = _IMG_SRC_RE.search(html)
@@ -283,12 +324,20 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
             body = f"{leaf}\n\n{body}"
         # Stored path is the chapter/section/leaf breadcrumb (from the run's
         # first content block's trustworthy ancestry); the leaf alone when the
-        # run has no content block to read ancestry from.
+        # run has no content block to read ancestry from. section_hierarchy is the
+        # FULL ancestor path (extraction context only); both read the same
+        # trustworthy hier_block, so neither changes the run's boundaries.
         sp = _section_breadcrumb(run["hier_block"], headers, leaf)
+        sh = _section_hierarchy_path(run["hier_block"], headers, leaf)
         ordered.append(
             (
                 run["order"],
-                {"chunk_ref": run["chunk_ref"], "content": body, "section_path": sp},
+                {
+                    "chunk_ref": run["chunk_ref"],
+                    "content": body,
+                    "section_path": sp,
+                    "section_hierarchy": sh,
+                },
             )
         )
 
@@ -312,6 +361,9 @@ def to_chunks(doc: dict, *, image_key_prefix: str) -> list[dict]:
                             "chunk_ref": block.get("id", ""),
                             "content": content,
                             "section_path": _section_breadcrumb(
+                                block, headers, img_leaf
+                            ),
+                            "section_hierarchy": _section_hierarchy_path(
                                 block, headers, img_leaf
                             ),
                             "image_ref": (image_key_prefix + src) if src else None,

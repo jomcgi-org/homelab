@@ -132,19 +132,22 @@ def seed_book(session):
         ]
     )
 
-    # Extraction coverage: mark c0 and c1 done under the live (model, prompt).
-    model, prompt_hash = current_extraction_key()
+    # Extraction coverage: mark c0 and c1 done under the live (model, version).
+    model, prompt_version = current_extraction_key()
     session.add_all(
         [
             ChunkExtraction(
-                chunk_id=c0.id, model=model, prompt_hash=prompt_hash, status="ok"
+                chunk_id=c0.id, model=model, prompt_version=prompt_version, status="ok"
             ),
             ChunkExtraction(
-                chunk_id=c1.id, model=model, prompt_hash=prompt_hash, status="empty"
+                chunk_id=c1.id,
+                model=model,
+                prompt_version=prompt_version,
+                status="empty",
             ),
             # A stale-key marker must NOT count toward coverage.
             ChunkExtraction(
-                chunk_id=c3.id, model="old/model", prompt_hash="stale", status="ok"
+                chunk_id=c3.id, model="old/model", prompt_version="v0", status="ok"
             ),
         ]
     )

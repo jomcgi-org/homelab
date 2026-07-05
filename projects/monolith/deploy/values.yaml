@@ -234,19 +234,22 @@ gardener:
 
 # Grimoire D&D ingest pipeline (private tier only; spec
 # docs/plans/2026-07-02-grimoire-pg-first-spec.md). Enabled here so the two
-# daily jobs register. Extraction runs on the in-cluster Qwen vLLM (free,
-# keyless) via extractBaseUrl, so OPENROUTER_API_KEY is not required for it;
-# the openrouter 1Password item stays wired as an optional fallback path.
+# daily jobs register. The v2 production re-extraction runs on DeepSeek V4 Flash
+# via OpenRouter (spec #5): cheap, fast, honors json_schema, reasoning disabled
+# per call. OPENROUTER_API_KEY comes from the "goosecracker" Secret, cloned into
+# monolith-workflows by the Kyverno clone-openrouter policy. To iterate cheaply
+# on a fresh book instead, set extractModel/extractBaseUrl to the in-cluster Qwen
+# vLLM (free, keyless): "qwen3.6-27b" +
+# "http://inference.inference.svc.cluster.local:8080/v1/chat/completions".
 grimoire:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/openrouter"
   s3Bucket: "grimoire"
-  # In-cluster Qwen (OpenAI-compatible vLLM): free, no API key. Entity
-  # grounding is not reasoning-hard, so a local model is the right default;
-  # flip extractModel/extractBaseUrl to route to OpenRouter for a frontier pass.
-  extractModel: "qwen3.6-27b"
-  extractBaseUrl: "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
+  extractModel: "deepseek/deepseek-v4-flash"
+  # Empty: the code falls back to OpenRouter (openrouter.ai), where DeepSeek V4
+  # Flash lives. Point this at the in-cluster Qwen vLLM for a keyless local pass.
+  extractBaseUrl: ""
 
 # ADR 036 orchestrator brief compiler (Phase 3 live enable). The primary planner
 # is NVIDIA Nemotron 3 Ultra (free, 256K context, orchestrator-tuned tool calling;

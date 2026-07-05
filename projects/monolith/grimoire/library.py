@@ -85,9 +85,9 @@ def list_books(session: Session) -> list[dict[str, Any]]:
     Combines four cheap grouped scans (chunk counts, extraction coverage under
     the live model+prompt, distinct entity yield, book display names) into one
     row per book. ``extracted_count`` counts distinct chunks with a
-    ``chunk_extraction`` marker for the current ``(model, prompt_hash)`` key, so
-    it ticks up as the extraction CronWorkflow runs and resets if the model or
-    prompt changes (mirroring extract._select_pending_chunks). Books appear if
+    ``chunk_extraction`` marker for the current ``(model, prompt_version)`` key,
+    so it ticks up as the extraction CronWorkflow runs and resets if the model or
+    prompt version changes (mirroring extract._select_pending_chunks). Books appear if
     they have either a grimoire.book row or any chunk, so a freshly-registered
     empty book still shows.
     """
@@ -102,7 +102,7 @@ def list_books(session: Session) -> list[dict[str, Any]]:
     ).all()
     chunk_by_book = {r.book_id: r for r in chunk_rows}
 
-    model, prompt_hash = current_extraction_key()
+    model, prompt_version = current_extraction_key()
     extracted_rows = session.execute(
         select(
             KnowledgeChunk.book_id,
@@ -111,7 +111,7 @@ def list_books(session: Session) -> list[dict[str, Any]]:
         .join(ChunkExtraction, ChunkExtraction.chunk_id == KnowledgeChunk.id)
         .where(
             ChunkExtraction.model == model,
-            ChunkExtraction.prompt_hash == prompt_hash,
+            ChunkExtraction.prompt_version == prompt_version,
         )
         .group_by(KnowledgeChunk.book_id)
     ).all()

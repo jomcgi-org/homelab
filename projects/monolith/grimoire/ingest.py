@@ -110,14 +110,15 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
     """Parse NDJSON manifest lines for one book (spec #4.1 shape).
 
     Required: ``chunk_ref`` (non-empty str), ``content`` (non-empty str).
-    Optional: ``section_path`` (str, else dropped); ``image_ref`` (str s3:// URI
-    for image-derived chunks, else dropped); ``meta`` and any other field is
-    ignored. A line that is invalid JSON, not an object, or missing a valid
-    required field is counted as an error and logged at warning (never raised)
-    so one bad line never fails the batch.
+    Optional: ``section_path`` (str, else dropped); ``section_hierarchy`` (str
+    full ancestor breadcrumb for extraction context, else dropped); ``image_ref``
+    (str s3:// URI for image-derived chunks, else dropped); ``meta`` and any other
+    field is ignored. A line that is invalid JSON, not an object, or missing a
+    valid required field is counted as an error and logged at warning (never
+    raised) so one bad line never fails the batch.
 
     Returns ``(valid_chunks, error_count)`` where each valid chunk is
-    ``{"chunk_ref", "content", "section_path", "image_ref"}``.
+    ``{"chunk_ref", "content", "section_path", "section_hierarchy", "image_ref"}``.
     """
     valid: list[dict] = []
     errors = 0
@@ -163,6 +164,10 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
         if not isinstance(section_path, str):
             section_path = None
 
+        section_hierarchy = obj.get("section_hierarchy")
+        if not isinstance(section_hierarchy, str):
+            section_hierarchy = None
+
         image_ref = obj.get("image_ref")
         if not isinstance(image_ref, str):
             image_ref = None
@@ -172,6 +177,7 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
                 "chunk_ref": chunk_ref,
                 "content": content,
                 "section_path": section_path,
+                "section_hierarchy": section_hierarchy,
                 "image_ref": image_ref,
             }
         )
@@ -304,6 +310,7 @@ def _upsert_book_chunks(
                     chunk_ref=item["chunk_ref"],
                     content=item["content"],
                     section_path=item["section_path"],
+                    section_hierarchy=item["section_hierarchy"],
                     image_ref=item["image_ref"],
                     seq=seq,
                 )
@@ -313,8 +320,13 @@ def _upsert_book_chunks(
                 pending_embed.append(row)
             else:
                 content_changed = existing.content != item["content"]
+                # section_hierarchy is extraction-context metadata (not embedded),
+                # so a change to it is a metadata-only upsert like section_path:
+                # it updates in place and does NOT re-embed. This is what makes the
+                # v2 hierarchy backfill a cheap metadata reload, not a 40k re-embed.
                 meta_changed = (
                     existing.section_path != item["section_path"]
+                    or existing.section_hierarchy != item["section_hierarchy"]
                     or existing.image_ref != item["image_ref"]
                 )
                 # seq is corrected on every run but is not itself an "upsert":
@@ -325,6 +337,7 @@ def _upsert_book_chunks(
                 if content_changed or meta_changed:
                     existing.content = item["content"]
                     existing.section_path = item["section_path"]
+                    existing.section_hierarchy = item["section_hierarchy"]
                     existing.image_ref = item["image_ref"]
                     upserted += 1
                     # Only re-embed when the embedded text (content) changed; a
