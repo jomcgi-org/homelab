@@ -12,8 +12,11 @@ from pydantic_ai import (
     TextPartDelta,
     ThinkingPartDelta,
 )
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel.pool import StaticPool
 
 from chat.bot import ChatBot, create_bot, should_respond
+from chat.models import ReactionEvent
 
 
 # ---------------------------------------------------------------------------
@@ -762,13 +765,43 @@ def _make_payload(
     user_id: int = 42,
     message_id: int = 555,
     channel_id: int = 99,
+    message_author_id: int | None = None,
 ) -> MagicMock:
     payload = MagicMock()
     payload.emoji = emoji
     payload.user_id = user_id
     payload.message_id = message_id
     payload.channel_id = channel_id
+    # Explicit (real discord.py raw reaction payloads populate this or leave it
+    # None; a bare MagicMock would auto-vivify a truthy attribute instead of
+    # None, silently defeating the "is this Bosun's own message" guard below).
+    payload.message_author_id = message_author_id
     return payload
+
+
+@pytest.fixture(name="engine")
+def engine_fixture():
+    """In-memory SQLite engine with the chat schema stripped for SQLite compat.
+
+    Mirrors chat.attention_log_test's fixture: ReactionEvent (and every other
+    chat.* table) is declared with schema="chat" for Postgres, which SQLite
+    does not support, so the schema is stripped for the duration of the test.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    SQLModel.metadata.create_all(engine)
+    yield engine
+    for table in SQLModel.metadata.tables.values():
+        if table.name in original_schemas:
+            table.schema = original_schemas[table.name]
 
 
 class TestDirectiveReactionHandler:
@@ -886,6 +919,162 @@ class TestDirectiveReactionHandler:
             mock_apply.assert_not_called()
 
         bot.get_channel.assert_not_called()
+
+
+class TestReactionPersistence:
+    """Human reactions on Bosun's own messages become chat.reaction_event rows
+    (the /improve-ambient ground-truth signal). Runs ahead of, and must not
+    disturb, the directive proposal-confirm handling above."""
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_bot_message_persisted(self, engine):
+        """A human 👍 on a bot-authored message persists one add row."""
+        bot = _make_bot()
+        bot.get_channel = MagicMock()
+
+        payload = _make_payload(
+            emoji="\U0001f44d",
+            user_id=42,
+            message_id=555,
+            channel_id=99,
+            message_author_id=bot.user.id,
+        )
+
+        with (
+            patch("chat.bot.get_engine", return_value=engine),
+            patch("chat.bot.directives.is_proposal", return_value=False),
+        ):
+            await bot.on_raw_reaction_add(payload)
+
+        with Session(engine) as session:
+            rows = session.exec(select(ReactionEvent)).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.action == "add"
+        assert row.emoji == "\U0001f44d"
+        assert row.reactor_id == "42"
+        assert row.channel_id == "99"
+        assert row.message_id == "555"
+        assert row.target_is_bot is True
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_human_message_not_persisted(self, engine):
+        """A reaction on a message NOT authored by the bot is never persisted."""
+        bot = _make_bot()
+        bot.get_channel = MagicMock()
+
+        payload = _make_payload(
+            emoji="\U0001f44d",
+            user_id=42,
+            message_author_id=777,  # some human author, not the bot
+        )
+
+        with (
+            patch("chat.bot.get_engine", return_value=engine),
+            patch("chat.bot.directives.is_proposal", return_value=False),
+        ):
+            await bot.on_raw_reaction_add(payload)
+
+        with Session(engine) as session:
+            rows = session.exec(select(ReactionEvent)).all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_bot_own_reaction_not_persisted(self, engine):
+        """The bot's own seed reaction (payload.user_id == bot id) is never
+        persisted -- the existing early return in on_raw_reaction_add."""
+        bot = _make_bot()
+        bot.get_channel = MagicMock()
+
+        payload = _make_payload(
+            emoji="\U0001f44d",
+            user_id=bot.user.id,
+            message_author_id=bot.user.id,
+        )
+
+        with patch("chat.bot.get_engine", return_value=engine):
+            await bot.on_raw_reaction_add(payload)
+
+        with Session(engine) as session:
+            rows = session.exec(select(ReactionEvent)).all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_reaction_remove_persisted(self, engine):
+        """on_raw_reaction_remove persists a 'remove' row for a bot-authored
+        message, cancelling an earlier add signal."""
+        bot = _make_bot()
+
+        payload = _make_payload(
+            emoji="\U0001f44e",
+            user_id=42,
+            message_id=555,
+            channel_id=99,
+            message_author_id=bot.user.id,
+        )
+
+        with patch("chat.bot.get_engine", return_value=engine):
+            await bot.on_raw_reaction_remove(payload)
+
+        with Session(engine) as session:
+            rows = session.exec(select(ReactionEvent)).all()
+        assert len(rows) == 1
+        assert rows[0].action == "remove"
+        assert rows[0].emoji == "\U0001f44e"
+
+    @pytest.mark.asyncio
+    async def test_reaction_remove_ignores_bots_own_reaction(self, engine):
+        """The bot's own reaction removal is ignored too (same early return)."""
+        bot = _make_bot()
+
+        payload = _make_payload(
+            emoji="\U0001f44e",
+            user_id=bot.user.id,
+            message_author_id=bot.user.id,
+        )
+
+        with patch("chat.bot.get_engine", return_value=engine):
+            await bot.on_raw_reaction_remove(payload)
+
+        with Session(engine) as session:
+            rows = session.exec(select(ReactionEvent)).all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_directive_proposal_confirm_persists_reaction_too(self, engine):
+        """The proposal-confirm path (TestDirectiveReactionHandler) also runs
+        through persistence first: a 👍 on a bot-authored proposal message
+        both persists the reaction AND still applies the proposal."""
+        bot = _make_bot()
+
+        summary = MagicMock()
+        summary.clear_reaction = AsyncMock()
+        summary.add_reaction = AsyncMock()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=summary)
+        bot.get_channel = MagicMock(return_value=channel)
+
+        payload = _make_payload(
+            emoji="\U0001f44d",
+            user_id=42,
+            message_author_id=bot.user.id,
+        )
+
+        with (
+            patch("chat.bot.get_engine", return_value=engine),
+            patch("chat.bot.directives.is_proposal", return_value=True),
+            patch(
+                "chat.bot.directives.apply_proposal", return_value=True
+            ) as mock_apply,
+        ):
+            await bot.on_raw_reaction_add(payload)
+            mock_apply.assert_called_once_with(str(payload.message_id))
+
+        summary.add_reaction.assert_called_once_with("✅")
+        with Session(engine) as session:
+            rows = session.exec(select(ReactionEvent)).all()
+        assert len(rows) == 1
+        assert rows[0].action == "add"
 
 
 # ---------------------------------------------------------------------------
