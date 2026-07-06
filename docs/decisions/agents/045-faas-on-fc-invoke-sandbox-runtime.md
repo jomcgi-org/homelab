@@ -1,7 +1,7 @@
 # ADR 045: FaaS on the fc-invoke Sandbox Runtime
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-05
 
 ---
