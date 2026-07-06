@@ -610,8 +610,13 @@ jobs:
         requests:
           cpu: 250m
           memory: 512Mi
+        # marker re-parses each book's whole raw output.json in memory; the
+        # largest (Monster Manual, 45MB raw) OOMs a 512Mi limit. Memory
+        # requests=limits per the sizing convention would cost 4Gi of quota on
+        # an inert cronworkflow, so this manual-only job keeps a low request
+        # with a 4Gi ceiling.
         limits:
-          memory: 512Mi
+          memory: 4Gi
 
 frontend:
   otelCollectorUrl: ""

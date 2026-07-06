@@ -415,6 +415,41 @@ def test_load_chunks_upserts_book_row_once(session: Session):
     assert session.get(Book, "mm").display_name == "Monster Manual"
 
 
+def test_load_chunks_none_hierarchy_never_clobbers_backfilled_value(
+    session: Session,
+):
+    # The original books' NDJSONs predate hierarchy baking, so a scheduled
+    # loader re-run carries section_hierarchy=None for every chunk. That None
+    # must not erase a breadcrumb the backfill job wrote (it did exactly that
+    # on 2026-07-06, wiping the corpus-wide backfill mid extraction run).
+    s3 = FakeS3Client({"books/cos/chunks/chunks.ndjson": _line("c1", "one")})
+    embedder = FakeEmbedClient()
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+
+    chunk = session.execute(select(KnowledgeChunk)).scalars().one()
+    assert chunk.section_hierarchy is None
+    chunk.section_hierarchy = "Chapter 4: Castle Ravenloft > K37. Study"
+    session.add(chunk)
+    session.commit()
+
+    # Re-run over the same hierarchy-less NDJSON: the stored breadcrumb wins.
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+    chunk = session.execute(select(KnowledgeChunk)).scalars().one()
+    assert chunk.section_hierarchy == "Chapter 4: Castle Ravenloft > K37. Study"
+
+    # A re-uploaded NDJSON that actually carries a hierarchy still updates it.
+    s3 = FakeS3Client(
+        {
+            "books/cos/chunks/chunks.ndjson": _line(
+                "c1", "one", section_hierarchy="Chapter 4 > K37. Study (rev)"
+            )
+        }
+    )
+    _run(ingest.load_chunks(session, s3, embedder, bucket="grimoire"))
+    chunk = session.execute(select(KnowledgeChunk)).scalars().one()
+    assert chunk.section_hierarchy == "Chapter 4 > K37. Study (rev)"
+
+
 def test_load_chunks_default_display_name_title_cases_hyphenated_id(
     session: Session,
 ):

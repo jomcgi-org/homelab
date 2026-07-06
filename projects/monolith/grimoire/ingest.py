@@ -324,9 +324,19 @@ def _upsert_book_chunks(
                 # so a change to it is a metadata-only upsert like section_path:
                 # it updates in place and does NOT re-embed. This is what makes the
                 # v2 hierarchy backfill a cheap metadata reload, not a 40k re-embed.
+                #
+                # A None hierarchy in the NDJSON must NOT clobber a stored
+                # breadcrumb: the original books' NDJSONs predate hierarchy baking,
+                # so a scheduled load-chunks re-run would silently erase the whole
+                # hierarchy backfill (it did, 2026-07-06, mid extraction run). The
+                # stored value wins until a re-uploaded NDJSON actually carries a
+                # hierarchy of its own.
+                incoming_hierarchy = item["section_hierarchy"]
+                if incoming_hierarchy is None:
+                    incoming_hierarchy = existing.section_hierarchy
                 meta_changed = (
                     existing.section_path != item["section_path"]
-                    or existing.section_hierarchy != item["section_hierarchy"]
+                    or existing.section_hierarchy != incoming_hierarchy
                     or existing.image_ref != item["image_ref"]
                 )
                 # seq is corrected on every run but is not itself an "upsert":
@@ -337,7 +347,7 @@ def _upsert_book_chunks(
                 if content_changed or meta_changed:
                     existing.content = item["content"]
                     existing.section_path = item["section_path"]
-                    existing.section_hierarchy = item["section_hierarchy"]
+                    existing.section_hierarchy = incoming_hierarchy
                     existing.image_ref = item["image_ref"]
                     upserted += 1
                     # Only re-embed when the embedded text (content) changed; a
