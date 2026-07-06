@@ -25,6 +25,16 @@
       "path": "/app/grimoire/book/mm",
       "static_initial": true
     },
+    {
+      "id": "grimoire-library",
+      "path": "/app/grimoire",
+      "static_initial": true
+    },
+    {
+      "id": "grimoire-entities",
+      "path": "/app/grimoire/entities",
+      "static_initial": true
+    },
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },
     { "id": "cv", "path": "/cv" },

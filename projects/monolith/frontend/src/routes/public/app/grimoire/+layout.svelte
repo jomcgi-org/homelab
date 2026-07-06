@@ -70,9 +70,9 @@
   <main class="grimoire-shell">
   {#if !admitted}
     <div class="wrap-narrow gate">
-      <p class="eyebrow">GRIMOIRE ACCESS</p>
-      <h1 class="display gate-title">
-        solve to <span class="hl-yellow">read.</span>
+      <p class="gate-eyebrow">Grimoire Access</p>
+      <h1 class="grim-title gate-title">
+        solve to <span class="gate-accent">read.</span>
       </h1>
       <p class="gate-copy">
         One quick check keeps the bots out of a copyrighted sourcebook. The
@@ -191,13 +191,26 @@
     gap: 16px;
   }
 
+  .gate-eyebrow {
+    margin: 0;
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--grim-text-faint);
+  }
+
   .gate-title {
     font-size: clamp(32px, 6vw, 56px);
   }
 
+  .gate-accent {
+    color: var(--grim-accent);
+  }
+
   .gate-copy {
     max-width: 52ch;
-    color: var(--ink-2);
+    color: var(--grim-text-dim);
     line-height: 1.6;
   }
 </style>
