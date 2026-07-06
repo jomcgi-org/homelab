@@ -180,9 +180,9 @@
     letter-spacing: 0.06em;
     min-height: 2.25rem;
     padding: 0.25rem 0.55rem;
-    background: var(--bg);
-    color: var(--fg-secondary);
-    border: var(--border-thin);
+    background: var(--grim-surface);
+    color: var(--grim-text-dim);
+    border: 1px solid var(--grim-line);
     cursor: pointer;
   }
 
@@ -195,7 +195,7 @@
   .count {
     margin-left: auto;
     font-size: 0.66rem;
-    color: var(--fg-tertiary);
+    color: var(--grim-text-faint);
     font-variant-numeric: tabular-nums;
   }
 
@@ -214,8 +214,8 @@
     padding: 0.4rem 0.6rem;
     border: 1px solid transparent;
     border-left: 2px solid transparent;
-    background: var(--bg);
-    color: var(--fg);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
   }
 
   .row:hover {
@@ -226,7 +226,7 @@
   .row--active {
     border-color: var(--grim-paper-line);
     border-left-color: var(--grim-accent);
-    background: var(--surface);
+    background: var(--grim-surface-2);
   }
 
   .row-name {
@@ -247,7 +247,7 @@
     font-size: 0.58rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--fg-tertiary);
+    color: var(--grim-text-faint);
   }
 
   .badge {
@@ -255,8 +255,8 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     padding: 0.08rem 0.35rem;
-    border: var(--border-thin);
-    color: var(--fg-secondary);
+    border: 1px solid var(--grim-line);
+    color: var(--grim-text-dim);
     white-space: nowrap;
   }
 
@@ -267,9 +267,9 @@
     font-size: 0.72rem;
     min-height: 2.75rem;
     padding: 0.4rem 1.25rem;
-    background: var(--bg);
-    color: var(--fg);
-    border: var(--border-thin);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
+    border: 1px solid var(--grim-line);
     cursor: pointer;
   }
 
@@ -290,11 +290,11 @@
 
   .empty-help {
     font-size: 0.78rem;
-    color: var(--fg-secondary);
+    color: var(--grim-text-dim);
   }
 
   .status--error {
-    color: var(--danger);
+    color: var(--grim-type-creature);
     font-size: 0.8rem;
   }
 
@@ -302,9 +302,9 @@
     height: 2.75rem;
     background: linear-gradient(
       90deg,
-      var(--surface) 25%,
+      var(--grim-surface-2) 25%,
       transparent 37%,
-      var(--surface) 63%
+      var(--grim-surface-2) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
