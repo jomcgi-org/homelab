@@ -6,10 +6,26 @@
   // the host route's +page.server.js load(); every later page is fetched from
   // the sibling read/+server.js proxy, which signs images the same way.
   //
-  // Deliberately brutalist-styled with the --grimb-* tokens (theme.css), a
-  // second palette used ONLY here and in the sticky bar's Chapters dropdown
-  // (ChaptersNav.svelte): the rest of the grimoire tree (entities, stat
-  // blocks) keeps the oxblood theme untouched.
+  // Styled with the clean grimoire theme (--grim-* tokens from
+  // $lib/grimoire/theme.css, which resolve here via the ancestor `.grimoire`
+  // wrapper) rather than the old brutalist second palette (a separate set of
+  // ink/cream/yellow custom properties) this reader used before this pass: a
+  // cool-paper reading surface, serif body copy, hairline rules, small-caps
+  // section labels, no hard ink borders or mono chrome. Mirrors the public
+  // tier's Reader.svelte (see that file for
+  // the shared design rationale); the differences here are all
+  // private-only: campaignId-scoped routes, and DM/player viewpoint
+  // (`?as=`) carried through ChaptersNav via the `grimoire` context rather
+  // than a plain prop.
+  //
+  // Layout: a left section-hierarchy sidebar (desktop, >760px) alongside the
+  // reading column, per docs/plans/assets/2026-07-05-grimoire-reskin-
+  // mockup.html's Reader tab. The sidebar is ChaptersNav in its new
+  // `variant="sidebar"` mode: the same fetch + active-section-highlight
+  // logic as the original Chapters dropdown, just rendered inline and always
+  // expanded instead of behind a toggle. Below 760px the sidebar is hidden
+  // and the original dropdown affordance (`variant="dropdown"`) reappears in
+  // the sticky bar as the compact mobile chapters entry point.
   import { apiFetch } from "$lib/grimoire/api.js";
   import { renderChunk } from "$lib/grimoire/renderChunk.js";
   import ChaptersNav from "$lib/grimoire/ChaptersNav.svelte";
@@ -69,7 +85,7 @@
     return last || sectionPath;
   }
 
-  // The section's immediate parent segment, for the eyebrow chip — only
+  // The section's immediate parent segment, for the eyebrow label — only
   // present when the section_path nests more than one level deep.
   function sectionParent(sectionPath) {
     if (!sectionPath) return null;
@@ -192,320 +208,369 @@
   });
 </script>
 
-<!-- The public tier's root layout already loads these two families globally;
-     the private app doesn't, so load them here, scoped to wherever the
-     reader actually mounts. ChaptersNav.svelte also uses --grimb-mono but is
-     always a child of this component, so it never needs its own copy of
-     this block. -->
-<svelte:head>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-    rel="stylesheet"
-  />
-</svelte:head>
-
-<div class="grimb-reader">
-  <div class="grimb-bar">
-    <span class="grimb-bar-title">{bookMeta.displayName}</span>
-    <div class="grimb-bar-right">
-      <span class="grimb-bar-pos">
-        {sectionTitle(activeSectionPath).toUpperCase()}
+<div class="rdr-reader">
+  <div class="rdr-bar">
+    <span class="rdr-bar-title">{bookMeta.displayName}</span>
+    <div class="rdr-bar-right">
+      <span class="rdr-bar-pos">
+        {sectionTitle(activeSectionPath)}
         {#if activeSeq != null && bookMeta.chunkCount}
           · {activeSeq + 1}/{bookMeta.chunkCount}
         {/if}
       </span>
-      <ChaptersNav {bookId} {activeSectionPath} />
+      <!-- Compact mobile-only affordance: the sidebar below is hidden under
+           760px, so the dropdown Chapters button is the only way to jump
+           sections on a phone. Hidden on desktop via CSS (the sidebar
+           replaces it there); still mounts and fetches regardless of
+           viewport, same as the sidebar instance below -- a second cheap GET
+           of /books/{bookId}/sections, not worth a JS media-query gate. -->
+      <div class="rdr-bar-chapters">
+        <ChaptersNav {bookId} {activeSectionPath} variant="dropdown" />
+      </div>
     </div>
   </div>
 
-  <div class="grimb-panel" bind:this={containerEl}>
-    {#each rows as row, i (row.item.id)}
-      {#if row.showHeading}
-        {#if i > 0}
-          <div class="grimb-divider" aria-hidden="true">
-            <span class="grimb-divider-line"></span>
-            <span class="grimb-divider-mark">§</span>
-            <span class="grimb-divider-line"></span>
+  <div class="rdr-layout">
+    <aside class="rdr-toc" aria-label="Sections">
+      <p class="rdr-toc-label">{bookMeta.displayName}</p>
+      <ChaptersNav {bookId} {activeSectionPath} variant="sidebar" />
+    </aside>
+
+    <div class="rdr-panel" bind:this={containerEl}>
+      {#each rows as row, i (row.item.id)}
+        {#if row.showHeading}
+          {#if i > 0}
+            <hr class="rdr-rule" aria-hidden="true" />
+          {/if}
+          <div
+            class="rdr-heading"
+            data-heading
+            data-seq={row.item.seq}
+            data-section={row.item.section_path ?? ""}
+          >
+            {#if sectionParent(row.item.section_path)}
+              <p class="rdr-section-label grim-smallcaps">
+                {sectionParent(row.item.section_path)}
+              </p>
+            {/if}
+            <h2 class="rdr-section-title">{sectionTitle(row.item.section_path)}</h2>
           </div>
         {/if}
-        <div
-          class="grimb-heading"
-          data-heading
-          data-seq={row.item.seq}
-          data-section={row.item.section_path ?? ""}
-        >
-          {#if sectionParent(row.item.section_path)}
-            <span class="grimb-chip">{sectionParent(row.item.section_path)}</span>
-          {/if}
-          <h2 class="grimb-section-title">{sectionTitle(row.item.section_path)}</h2>
-        </div>
-      {/if}
 
-      <div class="grimb-chunk" id="c-{row.item.id}">
-        <a
-          class="grimb-anchor"
-          href="#c-{row.item.id}"
-          aria-label="Link to this passage"
-        >
-          #
-        </a>
-        {#if row.item.kind === "image"}
-          <figure class="grimb-figure">
-            {#if row.item.image_url}
-              <img
-                class="grimb-image"
-                src={row.item.image_url}
-                alt={row.item.content || "sourcebook illustration"}
-              />
-            {/if}
-            {#if row.item.content}
-              <figcaption class="grimb-caption">{row.item.content}</figcaption>
-            {/if}
-          </figure>
-        {:else}
-          {#each bodyBlocks(row.item) as block, bi (bi)}
-            {#if block.type === "heading"}
-              <h3 class="grimb-inline-heading">{block.text}</h3>
-            {:else if block.type === "list"}
-              <ul class="grimb-list">
-                {#each block.items as li, lii (lii)}
-                  <li>{li}</li>
-                {/each}
-              </ul>
-            {:else}
-              <p>{block.text}</p>
-            {/if}
-          {/each}
+        <div class="rdr-chunk" id="c-{row.item.id}">
+          <a
+            class="rdr-anchor"
+            href="#c-{row.item.id}"
+            aria-label="Link to this passage"
+          >
+            #
+          </a>
+          {#if row.item.kind === "image"}
+            <figure class="rdr-figure">
+              {#if row.item.image_url}
+                <img
+                  class="rdr-image"
+                  src={row.item.image_url}
+                  alt={row.item.content || "sourcebook illustration"}
+                />
+              {/if}
+              {#if row.item.content}
+                <figcaption class="rdr-caption">{row.item.content}</figcaption>
+              {/if}
+            </figure>
+          {:else}
+            {#each bodyBlocks(row.item) as block, bi (bi)}
+              {#if block.type === "heading"}
+                <h3 class="rdr-inline-heading">{block.text}</h3>
+              {:else if block.type === "list"}
+                <ul class="rdr-list">
+                  {#each block.items as li, lii (lii)}
+                    <li>{li}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <p>{block.text}</p>
+              {/if}
+            {/each}
+          {/if}
+        </div>
+      {/each}
+
+      <div class="rdr-sentinel" bind:this={sentinelEl}>
+        {#if loadingMore}
+          <p class="rdr-status">Loading…</p>
+        {:else if loadError}
+          <button class="rdr-retry" onclick={loadMore}>Retry</button>
+        {:else if !nextCursor}
+          <p class="rdr-status">— end of book —</p>
         {/if}
       </div>
-    {/each}
-
-    <div class="grimb-sentinel" bind:this={sentinelEl}>
-      {#if loadingMore}
-        <p class="grimb-status">Loading…</p>
-      {:else if loadError}
-        <button class="grimb-retry" onclick={loadMore}>Retry</button>
-      {:else if !nextCursor}
-        <p class="grimb-status">— end of book —</p>
-      {/if}
     </div>
   </div>
 </div>
 
 <style>
-  .grimb-reader {
+  .rdr-reader {
     min-height: 100%;
-    background: var(--grimb-cream);
-    color: var(--grimb-ink);
+    background: var(--grim-paper);
+    color: var(--grim-ink);
   }
 
-  .grimb-bar {
+  .rdr-bar {
     position: sticky;
     top: 0;
     z-index: 5;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 0.75rem 1.25rem;
-    background: var(--grimb-cream);
-    border-bottom: var(--grimb-border);
-    font-family: var(--grimb-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.05em;
+    gap: 16px;
+    padding: 10px 20px;
+    background: color-mix(in srgb, var(--grim-paper) 90%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--grim-line);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
   }
 
-  .grimb-bar-title {
+  .rdr-bar-title {
     text-transform: uppercase;
-    font-weight: 700;
+    font-weight: 600;
+    color: var(--grim-ink);
   }
 
-  .grimb-bar-right {
+  .rdr-bar-right {
     display: flex;
-    align-items: baseline;
-    gap: 0.75rem;
+    align-items: center;
+    gap: 12px;
     min-width: 0;
   }
 
-  .grimb-bar-pos {
+  .rdr-bar-pos {
     text-transform: uppercase;
-    color: var(--grimb-ink-3);
+    color: var(--grim-text-faint);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .grimb-panel {
-    max-width: 60rem;
+  /* Sidebar covers this on desktop; only the mobile breakpoint below
+     switches it back on. */
+  .rdr-bar-chapters {
+    display: none;
+  }
+
+  .rdr-layout {
+    max-width: 1080px;
     margin: 0 auto;
-    padding: clamp(1.5rem, 5vw, 3rem) clamp(1.25rem, 6vw, 3rem);
-    background: var(--grimb-paper);
-    border: var(--grimb-border);
-    border-top: none;
+    padding: clamp(24px, 5vw, 48px) clamp(20px, 6vw, 48px) 80px;
+    display: grid;
+    grid-template-columns: 244px 1fr;
+    gap: 44px;
+    align-items: start;
   }
 
-  .grimb-divider {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    margin: 2.5rem 0;
-    max-width: 72ch;
-    margin-inline: auto;
+  .rdr-toc {
+    /* Sticky relative to .pane-read (this reader's scrolling ancestor, set
+       up by Shell.svelte), not the window: the outer app shell's own topbar
+       lives above .pane-read and isn't part of this scroll context, so only
+       .rdr-bar's own height (~52px) needs to be cleared here. The max-height
+       subtraction is a conservative estimate (rounds down) so the aside's
+       own overflow-y:auto scrollbar always has room to appear rather than
+       silently clipping sections off the bottom of the viewport. */
+    position: sticky;
+    top: 56px;
+    max-height: calc(100dvh - 200px);
+    overflow-y: auto;
+    border-right: 1px solid var(--grim-line-soft);
+    padding-right: 20px;
   }
 
-  .grimb-divider-line {
-    flex: 1;
-    height: 2px;
-    background: var(--grimb-ink);
+  .rdr-toc-label {
+    margin: 0 0 14px;
+    font-family: var(--grim-serif);
+    font-weight: 700;
+    font-size: 15px;
+    line-height: 1.25;
+    color: var(--grim-ink);
+    overflow-wrap: break-word;
   }
 
-  .grimb-divider-mark {
-    font-family: var(--grimb-mono);
-    font-size: 0.85rem;
-    color: var(--grimb-ink-3);
+  .rdr-panel {
+    min-width: 0;
   }
 
-  .grimb-heading {
-    max-width: 72ch;
-    margin: 0 auto 1.25rem;
+  .rdr-rule {
+    max-width: 68ch;
+    margin: 28px 0;
+    height: 1px;
+    border: 0;
+    background: var(--grim-line);
   }
 
-  .grimb-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 1.5rem;
-    padding: 0.1rem 0.5rem;
-    margin-bottom: 0.6rem;
-    font-family: var(--grimb-mono);
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    background: var(--grimb-yellow);
-    color: var(--grimb-ink);
-    border: 1px solid var(--grimb-ink);
+  .rdr-heading {
+    max-width: 68ch;
+    margin: 0 0 18px;
   }
 
-  .grimb-section-title {
-    font-family: var(--grimb-serif);
-    font-weight: 400;
-    font-size: 2rem;
-    line-height: 1.1;
-    color: var(--grimb-ink);
+  .rdr-section-label {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--grim-accent);
   }
 
-  .grimb-chunk {
+  .rdr-section-title {
+    margin: 0;
+    font-family: var(--grim-serif);
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+    color: var(--grim-ink);
+  }
+
+  .rdr-chunk {
     position: relative;
-    max-width: 72ch;
-    margin: 0 auto;
-    font-family: var(--grimb-serif);
-    font-size: 1.13rem;
+    max-width: 68ch;
+    font-family: var(--grim-serif);
+    font-size: 17px;
     line-height: 1.66;
-    color: var(--grimb-ink);
+    color: var(--grim-ink);
   }
 
-  .grimb-chunk p {
-    margin: 0 0 1rem;
+  .rdr-chunk p {
+    margin: 0 0 14px;
   }
 
-  .grimb-inline-heading {
-    font-family: var(--grimb-mono);
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--grimb-ink);
-    margin: 1.5rem 0 0.6rem;
+  .rdr-inline-heading {
+    margin: 26px 0 8px;
+    font-family: var(--grim-serif);
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--grim-ink);
   }
 
-  .grimb-inline-heading:first-child {
+  .rdr-inline-heading:first-child {
     margin-top: 0;
   }
 
-  .grimb-list {
-    margin: 0 0 1rem 1.3rem;
+  .rdr-list {
+    margin: 0 0 14px 22px;
     padding: 0;
     list-style: disc;
   }
 
-  .grimb-list li {
-    margin-bottom: 0.4rem;
+  .rdr-list li {
+    margin-bottom: 6px;
   }
 
-  /* Hover-only anchor: sits in the left margin of the chunk block, invisible
-   * until the block is hovered (or the link itself is focused via keyboard). */
-  .grimb-anchor {
+  .rdr-anchor {
     position: absolute;
-    left: -1.75rem;
-    top: 0.2rem;
-    font-family: var(--grimb-mono);
-    font-size: 0.9rem;
-    color: var(--grimb-ink-3);
+    left: -28px;
+    top: 3px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--grim-text-faint);
     text-decoration: none;
     opacity: 0;
     transition: opacity 120ms ease;
   }
 
-  .grimb-chunk:hover .grimb-anchor,
-  .grimb-anchor:focus-visible {
+  .rdr-chunk:hover .rdr-anchor,
+  .rdr-anchor:focus-visible {
     opacity: 1;
   }
 
-  .grimb-figure {
-    margin: 1.5rem 0;
+  .rdr-anchor:hover {
+    color: var(--grim-accent);
   }
 
-  .grimb-image {
-    width: 100%;
+  .rdr-figure {
+    margin: 24px 0;
+    max-width: 68ch;
+  }
+
+  /* Never upscale: max-width (not width) + no forced height keep small
+     illustrations at their natural size, while max-height caps oversized
+     scans so they never dominate the reading column. */
+  .rdr-image {
+    display: block;
+    max-width: 100%;
     height: auto;
-    border: var(--grimb-border);
+    max-height: 60vh;
+    margin-inline: auto;
+    border: 1px solid var(--grim-line);
+    border-radius: 8px;
   }
 
-  .grimb-caption {
-    margin-top: 0.6rem;
-    font-family: var(--grimb-serif);
+  .rdr-caption {
+    margin-top: 10px;
+    font-family: var(--grim-serif);
     font-style: italic;
-    font-size: 0.95rem;
-    color: var(--grimb-ink-3);
+    font-size: 14px;
+    color: var(--grim-text-dim);
     text-align: center;
   }
 
-  .grimb-sentinel {
+  .rdr-sentinel {
     display: flex;
     justify-content: center;
-    padding: 2rem 0 0.5rem;
+    padding: 32px 0 8px;
+    max-width: 68ch;
   }
 
-  .grimb-status {
-    font-family: var(--grimb-mono);
-    font-size: 0.72rem;
+  .rdr-status {
+    font-family: var(--font-mono);
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--grimb-ink-3);
+    color: var(--grim-text-faint);
   }
 
-  .grimb-retry {
-    font-family: var(--grimb-mono);
-    font-size: 0.72rem;
-    text-transform: uppercase;
+  .rdr-retry {
+    font-family: var(--font-mono);
+    min-height: 40px;
+    padding: 8px 18px;
+    font-size: 12px;
+    font-weight: 600;
     letter-spacing: 0.06em;
-    min-height: 2.5rem;
-    padding: 0.5rem 1rem;
-    background: var(--grimb-paper);
-    color: var(--grimb-ink);
-    border: var(--grimb-border);
+    text-transform: uppercase;
+    background: var(--grim-surface);
+    color: var(--grim-ink);
+    border: 1px solid var(--grim-line);
+    border-radius: 9px;
     cursor: pointer;
   }
 
+  .rdr-retry:hover {
+    color: var(--grim-accent);
+    border-color: var(--grim-accent);
+  }
+
+  @media (max-width: 760px) {
+    .rdr-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .rdr-toc {
+      display: none;
+    }
+
+    .rdr-bar-chapters {
+      display: inline-flex;
+    }
+  }
+
   @media (max-width: 640px) {
-    .grimb-anchor {
-      left: 0.25rem;
+    .rdr-anchor {
+      left: 4px;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .grimb-anchor {
+    .rdr-anchor {
       transition: none;
     }
   }
