@@ -23,7 +23,7 @@
      - `quests` = `entity_type='quest'`, split resolved (historical) vs active (present/future)
      - `rules`  = `category='mechanics'` OR `entity_type='spell'`
 
-3. **Renderer.** Reuse the hand-rolled Canvas force/draw code from the committed mockup at `docs/plans/assets/2026-07-05-grimoire-explore-mockup.html` (light-mode). Port it to a Svelte component and **re-skin to the grimoire design tokens** (`--grim-accent` oxblood, `--grim-serif`, `--grim-paper`), not the mockup's indigo. The mockup is the interaction spec (pan/zoom/hit-test/codex/reader); the tokens are the visual spec.
+3. **Visual direction: reskin grimoire TO the demo palette (not the reverse).** Joe's call (2026-07-05): the oxblood/parchment theme reads poorly; adopt the demo's clean, readable palette across the whole grimoire app. We retheme the shared CSS custom properties in `projects/monolith/frontend/src/lib/grimoire/theme.css` to the demo values (cool paper `#f3f5f7`, ink `#1a1f28`, indigo accent `#33507a`, plus the 7+ entity-type jewel hues and relationship-family hues promoted to tokens). Components already read these tokens, so the new look cascades to Library, Entities, EntityDetail/statblocks, the Reader, and EXPLORE from one edit. This ships as its OWN PR ahead of EXPLORE (see Phase B0), reviewed via the repo's automatic before/after visual-regression images. The mockup at `docs/plans/assets/2026-07-05-grimoire-explore-mockup.html` is BOTH the interaction and the visual spec for EXPLORE; the ExploreCanvas draws node/edge colors from the shared tokens, never hardcoded hex. The renderer itself reuses the mockup's hand-rolled Canvas force/draw/pan/zoom/hit-test code ported to a Svelte component; after Phase B0 the grimoire tokens ARE the demo palette, so reading `--grim-*` tokens gives the correct visual automatically.
 
 4. **Bulk over N+1.** The client must not call `/entities/{id}/relationships` once per node. Add one **subgraph endpoint** that returns `{nodes, edges}` for a scope in a single payload, plus a 1-hop **ego** expansion for wandering.
 
@@ -305,6 +305,29 @@ BFS over the `relationship` table (both directions, `is_global` nodes only), bou
 
 ---
 
+## Phase B0: Grimoire design-system reskin (ships as its OWN PR, before EXPLORE)
+
+Mechanical token retheme so the whole grimoire app adopts the demo's clean, readable palette. Verified by the visual-regression action (before/after/diff images posted inline on the PR for every changed grimoire page); there are no unit tests for CSS. **Land and merge this PR first, then rebase `feat/grimoire-explore` onto the new main** so EXPLORE inherits the palette.
+
+**Dark mode (OPEN, confirm with Joe):** default is KEEP dark mode, remapped to the demo's dark variant (ink `#0d1017` + indigo + jewel, the first mockup's star-chart colors). If Joe prefers light-only for simplicity, delete the `body.dark .grimoire` overrides instead.
+
+### Task B0.1: Retheme the light `--grim-*` tokens
+Modify `projects/monolith/frontend/src/lib/grimoire/theme.css`: set `--grim-accent`/`--grim-accent-strong` to indigo (`#33507a`/`#26406a`), `--grim-paper`/`--grim-ink`/`--grim-ink-soft`/`--grim-paper-line` to the demo's cool paper + ink, keep `--grim-serif`. Grep grimoire components for any hardcoded colors and promote them to tokens. Commit: `style(grimoire): retheme light palette to the clean demo tokens`.
+
+### Task B0.2: Entity-type + relationship-family color tokens
+Add `--grim-type-{location,creature,npc,faction,deity,item,spell}` and `--grim-rel-{spatial,social,kinship,religion,creation,magic,possession,taxonomy,events,quest,mechanics,related}` custom properties to `theme.css` (values from the light mockup, extended for the v4 gameplay/mechanics types). Update the statblocks / entity list to reference these tokens instead of any inline hex, so the DOM and the EXPLORE canvas share one source of truth. Commit: `style(grimoire): entity-type and relationship-family color tokens`.
+
+### Task B0.3: Retire the brutalist reader palette
+`Reader.svelte` + `ChaptersNav.svelte` use the separate `--grimb-*` brutalist tokens (cream, `#ffde01` yellow, 2px hard borders, `Instrument Serif`, `JetBrains Mono`). Reading is the readability-critical surface (Joe's stated pain point), so remap these to the clean system: cool-paper reading surface, serif body at a comfortable ~65ch measure, indigo accents, hairline rules instead of 2px borders, drop the acid yellow. Keep the reader's structure; change only tokens/border treatments. Commit: `style(grimoire): reader adopts the clean reading palette`.
+
+### Task B0.4: Dark-mode variant (or removal)
+Per the dark-mode decision above, either remap `body.dark .grimoire` (and any `--grimb-*` dark overrides) to the demo's dark star-chart palette, or remove the dark overrides for a single light theme. Commit: `style(grimoire): dark mode matches the demo dark variant` (or `style(grimoire): single clean light theme`).
+
+### Task B0.5: Ship the reskin PR
+`bazel/tools/format/fast-format.sh`; bump BOTH charts (`bazel/tools/git/bump-chart.sh projects/monolith` and `projects/monolith-public`); push; open PR; review the visual-regression before/after for every grimoire page; merge on green. Then `git rebase origin/main` the EXPLORE branch.
+
+---
+
 ## Phase B: Frontend EXPLORE scaffold
 
 Public route + tab + canvas + codex, wired to Phase A. Reuse `api.js`, `theme.css`, `EntityDetail.svelte`, `statblock/*`.
@@ -336,7 +359,7 @@ export const explorePath = (from, to) =>
 
 Port the force-sim + draw + pan/zoom/hit-test from `docs/plans/assets/2026-07-05-grimoire-explore-mockup.html` into a Svelte component. Contract:
 - Props: `nodes` (from the subgraph endpoint), `edges`, `focusId`, callbacks `onselect(id)`, `onexpand(id)`.
-- Re-skin: node color by `entity_type` (extend the 7 lore colors with gameplay/mechanics hues), edge color by `rel_type` family (extend the family map with the v4 rels: OCCURRED_AT/INVOLVED/PRECEDED/CAUSED -> "events"; GIVEN_BY/OBJECTIVE_AT/REWARDS/ADVANCES -> "quest"; SUBCLASS_OF/FEATURE_OF/REQUIRES -> "mechanics"). Chrome uses `--grim-accent`, `--grim-serif`, `--grim-paper` from `theme.css`; the focus ring is `--grim-accent` oxblood, not the mockup indigo.
+- Re-skin: node color by `entity_type` (extend the 7 lore colors with gameplay/mechanics hues), edge color by `rel_type` family (extend the family map with the v4 rels: OCCURRED_AT/INVOLVED/PRECEDED/CAUSED -> "events"; GIVEN_BY/OBJECTIVE_AT/REWARDS/ADVANCES -> "quest"; SUBCLASS_OF/FEATURE_OF/REQUIRES -> "mechanics"). Chrome and node/edge colors read the shared `--grim-*` / `--grim-type-*` / `--grim-rel-*` tokens from `theme.css` (which Phase B0 set to the demo palette), so EXPLORE matches the reskinned app automatically; the focus ring is `--grim-accent` (indigo after B0).
 - Respect `prefers-reduced-motion` (freeze sim after settle, drop the twinkle) exactly as the mockup does.
 
 Keep this a pure presentational component (no fetching). Commit: `feat(grimoire): ExploreCanvas graph renderer`.
