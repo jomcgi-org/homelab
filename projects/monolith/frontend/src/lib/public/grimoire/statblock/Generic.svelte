@@ -29,13 +29,13 @@
   );
 </script>
 
-<article class="card-hard frame">
-  <h2 class="display name">{data.name}</h2>
+<article class="generic grim-paper">
+  <h2 class="grim-title name">{data.name}</h2>
   {#if data.entity_type}
-    <p class="eyebrow strap">{data.entity_type}</p>
+    <p class="grim-smallcaps strap">{data.entity_type}</p>
   {/if}
 
-  <hr class="rule" />
+  <hr class="grim-rule" />
 
   {#if fields.length === 0}
     <p class="none">No further details recorded.</p>
@@ -44,17 +44,17 @@
       {#each fields as field (field.key)}
         {#if field.kind === "inline"}
           <div class="row">
-            <span class="eyebrow key">{formatFieldName(field.key)}</span>
+            <span class="key">{formatFieldName(field.key)}</span>
             <span class="val">{field.text}</span>
           </div>
         {:else if field.kind === "prose"}
           <div class="prose">
-            <span class="eyebrow key">{formatFieldName(field.key)}</span>
+            <span class="key">{formatFieldName(field.key)}</span>
             <p class="para">{field.text}</p>
           </div>
         {:else}
           <div class="prose">
-            <span class="eyebrow key">{formatFieldName(field.key)}</span>
+            <span class="key">{formatFieldName(field.key)}</span>
             {#each field.blocks as b, i (i)}
               <p class="para">
                 {#if b.name}<strong>{b.name}.</strong>{/if}
@@ -69,60 +69,66 @@
 </article>
 
 <style>
-  .frame {
-    padding: clamp(20px, 4vw, 32px);
-    border-top: 4px solid var(--coral);
-    max-width: 640px;
+  .generic {
+    padding: clamp(1rem, 3vw, 1.5rem);
+    border: 1px solid var(--grim-paper-line);
+    border-top: 3px solid var(--grim-accent);
+    max-width: 40rem;
   }
 
   .name {
-    font-size: clamp(28px, 5vw, 40px);
+    font-size: clamp(1.4rem, 4vw, 1.9rem);
+    color: var(--grim-accent-strong);
   }
 
   .strap {
-    margin-top: 4px;
-  }
-
-  .rule {
-    border: none;
-    border-top: 2px solid var(--rule);
-    margin: 16px 0;
+    font-size: 0.8rem;
+    color: var(--grim-ink-soft);
   }
 
   .fields {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 0.6rem;
   }
 
   .row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px 12px;
+    gap: 0.75rem;
     align-items: baseline;
   }
 
   .key {
-    min-width: 9em;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--grim-ink-soft);
+    min-width: 7rem;
     flex-shrink: 0;
   }
 
   .val {
-    font-weight: 700;
+    font-family: var(--grim-serif);
+    color: var(--grim-ink);
   }
 
   .prose .key {
     display: block;
-    margin-bottom: 6px;
+    margin-bottom: 0.2rem;
   }
 
   .para {
-    line-height: 1.65;
-    margin-bottom: 6px;
+    font-family: var(--grim-serif);
+    font-size: 0.95rem;
+    line-height: 1.55;
+    color: var(--grim-ink);
+    margin-bottom: 0.3rem;
   }
 
   .none {
+    font-family: var(--grim-serif);
     font-style: italic;
-    color: var(--ink-3);
+    color: var(--grim-ink-soft);
   }
 </style>

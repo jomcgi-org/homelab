@@ -21,46 +21,38 @@
   const actions = $derived(normalizeBlocks(data.actions));
 </script>
 
-<article class="card-hard frame">
-  <h2 class="display name">{data.name}</h2>
-  {#if strap}<p class="eyebrow strap">{strap}</p>{/if}
+<article class="statblock grim-paper">
+  <h2 class="grim-title name">{data.name}</h2>
+  {#if strap}<p class="grim-smallcaps strap">{strap}</p>{/if}
 
-  <hr class="rule" />
+  <hr class="grim-rule" />
 
   <dl class="topline">
     {#if data.ac != null}
-      <div>
-        <dt class="eyebrow">Armor Class</dt>
-        <dd>{data.ac}</dd>
-      </div>
+      <div><dt>Armor Class</dt>
+        <dd>{data.ac}</dd></div>
     {/if}
     {#if data.hp_avg != null}
-      <div>
-        <dt class="eyebrow">Hit Points</dt>
-        <dd>{data.hp_avg}</dd>
-      </div>
+      <div><dt>Hit Points</dt>
+        <dd>{data.hp_avg}</dd></div>
     {/if}
     {#if speed}
-      <div>
-        <dt class="eyebrow">Speed</dt>
-        <dd>{speed}</dd>
-      </div>
+      <div><dt>Speed</dt>
+        <dd>{speed}</dd></div>
     {/if}
     {#if data.cr != null}
-      <div>
-        <dt class="eyebrow">Challenge</dt>
-        <dd>{data.cr}</dd>
-      </div>
+      <div><dt>Challenge</dt>
+        <dd>{data.cr}</dd></div>
     {/if}
   </dl>
 
   {#if hasScores}
-    <hr class="rule" />
-    <table class="abilities mono">
+    <hr class="grim-rule" />
+    <table class="abilities">
       <thead>
         <tr>
           {#each ABILITIES as a (a)}
-            <th class="eyebrow">{a}</th>
+            <th class="grim-smallcaps">{a}</th>
           {/each}
         </tr>
       </thead>
@@ -82,7 +74,7 @@
   {/if}
 
   {#if traits.length}
-    <hr class="rule" />
+    <hr class="grim-rule" />
     <div class="blocks">
       {#each traits as t, i (i)}
         <p class="block">
@@ -94,7 +86,7 @@
   {/if}
 
   {#if actions.length}
-    <h3 class="eyebrow section-head">Actions</h3>
+    <h3 class="grim-smallcaps section-head">Actions</h3>
     <div class="blocks">
       {#each actions as a, i (i)}
         <p class="block">
@@ -107,44 +99,47 @@
 </article>
 
 <style>
-  /* Classic stat-block content reframed in the design system's flat-ink
-     language: .card-hard supplies the border/shadow, an accent top stripe
-     marks it as a stat block specifically. */
-  .frame {
-    padding: clamp(20px, 4vw, 32px);
-    border-top: 4px solid var(--accent);
-    max-width: 640px;
+  .statblock {
+    padding: clamp(1rem, 3vw, 1.5rem);
+    border: 1px solid var(--grim-paper-line);
+    border-top: 3px solid var(--grim-accent);
+    max-width: 40rem;
   }
 
   .name {
-    font-size: clamp(28px, 5vw, 40px);
+    font-size: clamp(1.4rem, 4vw, 1.9rem);
+    color: var(--grim-accent-strong);
   }
 
   .strap {
-    margin-top: 4px;
-  }
-
-  .rule {
-    border: none;
-    border-top: 2px solid var(--rule);
-    margin: 16px 0;
+    font-size: 0.85rem;
+    color: var(--grim-ink-soft);
+    font-style: italic;
   }
 
   .topline {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px 28px;
+    gap: 0.35rem 1.5rem;
   }
 
   .topline div {
     display: flex;
-    gap: 8px;
+    gap: 0.4rem;
     align-items: baseline;
   }
 
+  .topline dt {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--grim-ink-soft);
+  }
+
   .topline dd {
+    font-family: var(--grim-serif);
     font-weight: 700;
-    font-size: 15px;
   }
 
   .abilities {
@@ -154,14 +149,14 @@
   }
 
   .abilities th {
-    font-size: 12px;
-    color: var(--ink-3);
-    padding-bottom: 6px;
+    font-size: 0.72rem;
+    color: var(--grim-accent);
+    padding-bottom: 0.2rem;
   }
 
   .abilities td {
-    padding: 4px;
-    font-size: 15px;
+    padding: 0.15rem 0.2rem;
+    font-family: var(--grim-serif);
   }
 
   .ab-score {
@@ -169,26 +164,30 @@
   }
 
   .ab-mod {
-    color: var(--ink-3);
-    font-size: 0.85em;
+    color: var(--grim-ink-soft);
+    font-size: 0.8em;
   }
 
   .section-head {
-    margin-top: 20px;
-    padding-bottom: 6px;
-    border-bottom: 2px solid var(--accent);
-    color: var(--ink);
+    font-size: 0.95rem;
+    color: var(--grim-accent);
+    border-bottom: 1px solid var(--grim-accent);
+    margin-top: 0.75rem;
+    padding-bottom: 0.15rem;
   }
 
   .blocks {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 12px;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
   }
 
   .block {
-    line-height: 1.6;
+    font-family: var(--grim-serif);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    color: var(--grim-ink);
   }
 
   .block-name {

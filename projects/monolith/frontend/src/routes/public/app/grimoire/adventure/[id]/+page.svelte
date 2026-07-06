@@ -53,19 +53,19 @@
 
 <div class="wrap-narrow detail-page page">
   {#if loading}
-    <div class="card-hard skeleton-block"></div>
+    <div class="skeleton-block"></div>
   {:else if notFound}
     <div class="empty">
-      <p class="empty-lead display">Not found.</p>
+      <p class="grim-title empty-lead">Not found.</p>
       <p class="empty-help">This adventure isn't in the loaded corpus.</p>
     </div>
   {:else if error}
-    <p class="mono status-error">{error}</p>
+    <p class="status-error">{error}</p>
   {:else if adventure}
     <a class="eyebrow back-link" href={bookHref(adventure.book_id)}
       >&larr; {adventure.book_display_name.toUpperCase()}</a
     >
-    <h1 class="display adventure-title">{adventure.name}</h1>
+    <h1 class="grim-title adventure-title">{adventure.name}</h1>
     {#if adventure.level_range}
       <p class="eyebrow adventure-level">LEVEL {adventure.level_range}</p>
     {/if}
@@ -78,7 +78,7 @@
         <h3 class="eyebrow head">Roster</h3>
         {#each groups as group (group.entity_type)}
           <div class="roster-group">
-            <p class="mono roster-group-title">{group.entity_type}</p>
+            <p class="roster-group-title">{group.entity_type}</p>
             <ul class="rel-list">
               {#each group.items as ent (ent.id)}
                 <li class="rel">
@@ -90,7 +90,7 @@
         {/each}
       </section>
     {:else}
-      <p class="mono empty-help roster-empty">
+      <p class="empty-help roster-empty">
         No entities extracted in this range yet.
       </p>
     {/if}
@@ -105,13 +105,22 @@
     gap: 24px;
   }
 
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--grim-text-faint);
+    font-weight: 600;
+    margin: 0;
+  }
+
   .back-link {
     display: inline-block;
     align-self: flex-start;
   }
 
   .back-link:hover {
-    color: var(--ink);
+    color: var(--grim-ink);
   }
 
   .adventure-title {
@@ -121,11 +130,10 @@
 
   .adventure-level {
     margin-top: -16px;
-    color: var(--ink-3);
   }
 
   .adventure-summary {
-    color: var(--ink-2);
+    color: var(--grim-text-dim);
     font-size: 16px;
     line-height: 1.6;
   }
@@ -143,7 +151,8 @@
   }
 
   .roster-group-title {
-    color: var(--ink-3);
+    font-family: var(--font-mono);
+    color: var(--grim-text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-size: 11px;
@@ -168,10 +177,11 @@
   }
 
   .rel-name:hover {
-    color: var(--ink);
+    color: var(--grim-ink);
   }
 
   .roster-empty {
+    font-family: var(--font-mono);
     font-size: 12px;
   }
 
@@ -186,21 +196,23 @@
   }
 
   .empty-help {
-    color: var(--ink-3);
+    color: var(--grim-text-faint);
   }
 
   .status-error {
-    color: var(--coral);
+    font-family: var(--font-mono);
+    color: var(--grim-type-creature);
     padding: 32px 0;
   }
 
   .skeleton-block {
     height: 320px;
+    border-radius: 7px;
     background: linear-gradient(
       90deg,
-      var(--bg-elev) 25%,
+      var(--grim-surface-2) 25%,
       transparent 37%,
-      var(--bg-elev) 63%
+      var(--grim-surface-2) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;

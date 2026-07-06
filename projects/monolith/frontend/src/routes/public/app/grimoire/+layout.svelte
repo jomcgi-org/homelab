@@ -80,32 +80,15 @@
 </div>
 
 <style>
-  /* App-own chrome: a slim topbar plus hard-edge overrides. Setting the
-     radius custom properties to 0 on the app root squares off every
-     .card-hard / button / select inside via inheritance, without touching
-     the rest of the public site. */
+  /* App-own chrome: a slim sticky topbar over the clean --grim-* theme. No
+     more design-system .card-hard/.btn overrides here: every surface in this
+     app tree now renders its own --grim-surface cards and hairline borders
+     directly (see theme.css + each route's <style> block), so there is
+     nothing left for a global override to neutralize. */
   .grimoire-app {
-    --radius: 0px;
-    --radius-lg: 0px;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-  }
-
-  /* The design system's :focus-visible ring is rounded (6px); square it to
-     match the hard-edge language inside the app. */
-  .grimoire-app :global(:focus-visible) {
-    border-radius: 0;
-  }
-
-  /* Grimoire is flat-ink brutalist: no box-shadows anywhere. The shared
-     .card-hard primitive normally lifts with a hard-offset shadow (both at
-     rest and on hover); neutralize both here so every card-hard row across
-     this app (Library book cards, the book section list, entities index,
-     entity detail, stat blocks) renders as a flat 2px ink border instead. */
-  .grimoire-app :global(.card-hard),
-  .grimoire-app :global(.card-hard:hover) {
-    box-shadow: none !important;
   }
 
   .topbar {

@@ -59,14 +59,14 @@
   <a class="eyebrow back-link" href={entitiesHref()}>&larr; ENTITIES</a>
 
   {#if loading}
-    <div class="card-hard skeleton-block"></div>
+    <div class="skeleton-block"></div>
   {:else if notFound}
     <div class="empty">
-      <p class="empty-lead display">Not found.</p>
+      <p class="grim-title empty-lead">Not found.</p>
       <p class="empty-help">This entity isn't in the loaded corpus.</p>
     </div>
   {:else if error}
-    <p class="mono status-error">{error}</p>
+    <p class="status-error">{error}</p>
   {:else if entity}
     <EntityDetail {entity} />
 
@@ -76,8 +76,8 @@
         <ul class="rel-list">
           {#each relationships as rel, i (i)}
             <li class="rel">
-              <span class="arrow mono">{rel.direction === "out" ? "→" : "←"}</span>
-              <span class="mono rel-type">{rel.rel_type.replaceAll("_", " ")}</span>
+              <span class="arrow">{rel.direction === "out" ? "→" : "←"}</span>
+              <span class="rel-type">{rel.rel_type.replaceAll("_", " ")}</span>
               <a class="rel-name" href={entityHref(rel.entity.id)}
                 >{rel.entity.name}</a
               >
@@ -93,10 +93,7 @@
         <ul class="source-list">
           {#each sources as src, i (i)}
             <li>
-              <a
-                class="card-hard source"
-                href={chunkHref(src.book_id, src.chunk_id)}
-              >
+              <a class="source" href={chunkHref(src.book_id, src.chunk_id)}>
                 <span class="eyebrow source-where">
                   {src.section_path ?? "lore"}
                 </span>
@@ -118,13 +115,22 @@
     gap: 32px;
   }
 
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--grim-text-faint);
+    font-weight: 600;
+    margin: 0;
+  }
+
   .back-link {
     display: inline-block;
     align-self: flex-start;
   }
 
   .back-link:hover {
-    color: var(--ink);
+    color: var(--grim-ink);
   }
 
   .head {
@@ -146,11 +152,13 @@
   }
 
   .arrow {
-    color: var(--ink-3);
+    font-family: var(--font-mono);
+    color: var(--grim-text-faint);
   }
 
   .rel-type {
-    color: var(--ink-3);
+    font-family: var(--font-mono);
+    color: var(--grim-text-faint);
     font-size: 12px;
   }
 
@@ -160,7 +168,7 @@
   }
 
   .rel-name:hover {
-    color: var(--ink);
+    color: var(--grim-ink);
   }
 
   .source {
@@ -169,10 +177,23 @@
     gap: 4px;
     padding: 14px 16px;
     min-height: 44px;
+    text-decoration: none;
+    color: inherit;
+    background: var(--grim-surface);
+    border: 1px solid var(--grim-line-soft);
+    border-radius: 8px;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
+  }
+
+  .source:hover {
+    background: var(--grim-surface-2);
+    border-color: var(--grim-line);
   }
 
   .source-where {
-    color: var(--ink-3);
+    color: var(--grim-text-faint);
   }
 
   .source-preview {
@@ -181,7 +202,7 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
-    color: var(--ink-2);
+    color: var(--grim-text-dim);
   }
 
   .empty {
@@ -195,21 +216,23 @@
   }
 
   .empty-help {
-    color: var(--ink-3);
+    color: var(--grim-text-faint);
   }
 
   .status-error {
-    color: var(--coral);
+    font-family: var(--font-mono);
+    color: var(--grim-type-creature);
     padding: 32px 0;
   }
 
   .skeleton-block {
     height: 320px;
+    border-radius: 7px;
     background: linear-gradient(
       90deg,
-      var(--bg-elev) 25%,
+      var(--grim-surface-2) 25%,
       transparent 37%,
-      var(--bg-elev) 63%
+      var(--grim-surface-2) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
