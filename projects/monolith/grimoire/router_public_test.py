@@ -174,6 +174,84 @@ def seed_adventures(session):
     return SimpleNamespace(chunks=chunks, adv1=adv1, adv2=adv2)
 
 
+def _seed_adventure(
+    session,
+    *,
+    book_id: str,
+    name: str,
+    seq: int,
+    start_seq: int,
+    end_seq: int | None,
+    entity_name: str,
+    level_range: str | None = None,
+):
+    """One book with a single adventure spanning [start_seq, end_seq], a chunk
+    inside that range, and one is_global entity mentioned in it (so
+    entity_count == 1). Returns the new adventure's id. Used by the
+    cross-book EXPLORE-gallery tests (list_all_adventures)."""
+    session.add(Book(id=book_id, display_name=f"{book_id.upper()} Sourcebook"))
+    chunk = _chunk(
+        session,
+        book_id=book_id,
+        chunk_ref="r0",
+        content=f"{entity_name} appears here.",
+        seq=start_seq,
+    )
+    entity = Entity(entity_type="npc", name=entity_name, is_global=True)
+    session.add(entity)
+    session.commit()
+    session.refresh(entity)
+    session.add(
+        ChunkEntityMention(
+            chunk_id=chunk.id, entity_id=entity.id, mention_text=entity_name
+        )
+    )
+    adventure = Adventure(
+        book_id=book_id,
+        name=name,
+        seq=seq,
+        level_range=level_range,
+        start_seq=start_seq,
+        end_seq=end_seq,
+    )
+    session.add(adventure)
+    session.commit()
+    session.refresh(adventure)
+    return adventure.id
+
+
+def test_list_all_adventures_across_books(client, session):
+    # seed two books, each with one adventure and one in-range chunk+entity
+    _seed_adventure(
+        session,
+        book_id="cos",
+        name="Curse of Strahd",
+        seq=0,
+        start_seq=0,
+        end_seq=100,
+        entity_name="Strahd",
+        level_range="1-10",
+    )
+    _seed_adventure(
+        session,
+        book_id="lmop",
+        name="Lost Mine of Phandelver",
+        seq=0,
+        start_seq=0,
+        end_seq=50,
+        entity_name="Gundren",
+        level_range="1-5",
+    )
+    body = client.get("/api/grimoire/adventures").json()
+    names = {a["name"] for a in body}
+    assert names == {"Curse of Strahd", "Lost Mine of Phandelver"}
+    cos = next(a for a in body if a["name"] == "Curse of Strahd")
+    assert cos["book_id"] == "cos"
+    assert cos["book_display_name"]  # joined from book table
+    assert cos["level_range"] == "1-10"
+    assert cos["entity_count"] == 1
+
+
 class TestAdventures:
     def test_list_ordered_with_entity_counts(self, session, client):
         seed = seed_adventures(session)
