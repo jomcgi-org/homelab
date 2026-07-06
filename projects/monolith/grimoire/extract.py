@@ -828,18 +828,41 @@ NEW RELATIONSHIP TYPES (added to the closed set; same direction discipline as ab
 _V4_PROMPT_TEXT = _V3_PROMPT_TEXT + _V4_TAXONOMY_ADDENDUM
 
 
+# v5: prompt-only tune of two mechanics-extraction drifts a two-sample SRD 5.2
+# eval surfaced in v4. v4 verbatim (so v4 stays byte-frozen) PLUS a short
+# addendum that tightens exactly two definitions: (1) condition was over-eager,
+# sweeping in spells, items, senses/traits, and general mechanics; (2)
+# class_feature was conflated with monster/NPC innate abilities (135 FEATURE_OF
+# edges to a creature/npc were downgraded to RELATED_TO by the validator). No
+# schema, REL_SIGNATURES, or migration change: this is prompt text only. Built by
+# concatenation; do NOT edit this text once released, add a v6 instead.
+_V5_MECHANICS_CLARIFICATION_ADDENDUM = """
+
+MECHANICS CLARIFICATIONS (v5): condition scope and class_feature vs monster abilities
+Everything above still holds. These two clarifications tighten what counts as a condition and a class_feature; nothing else changes.
+
+CONDITION SCOPE
+A `condition` is a status effect that changes a creature's capabilities (e.g. Prone, Frightened, Grappled, Incapacitated, Poisoned, Exhaustion, Restrained). Do NOT classify a spell (`Dancing Lights`), an item (`Scrolls`), a sense or trait (`Darkvision`), or a general mechanic (`Advantage`) as a condition.
+
+CLASS_FEATURE VS MONSTER ABILITIES
+A `class_feature` is a feature a PLAYER CHARACTER gains from a class or subclass (e.g. Sneak Attack, Rage, Second Wind, Wild Shape), and connects `FEATURE_OF` a `class` or `subclass`. A monster's or NPC's innate traits/actions are part of that creature's own detail, NOT a `class_feature` - do not extract monster abilities as `class_feature`."""
+
+_V5_PROMPT_TEXT = _V4_PROMPT_TEXT + _V5_MECHANICS_CLARIFICATION_ADDENDUM
+
+
 PROMPT_VERSIONS: dict[str, PromptVersion] = {
     "v1": PromptVersion(text=_V1_PROMPT_TEXT, schema=None),
     "v2": PromptVersion(text=_V2_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
     "v3": PromptVersion(text=_V3_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
     "v4": PromptVersion(text=_V4_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
+    "v5": PromptVersion(text=_V5_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
 }
 
 # The version the extraction pass writes and reads by default. Env-overridable so
-# a candidate (v4) can run on a fresh book without touching code; promotion is
+# a candidate (v5) can run on a fresh book without touching code; promotion is
 # moving this pointer. Read at import: jobs run as fresh processes, so the env is
 # honored per run.
-ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v4")
+ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v5")
 
 # Backward-compatible alias: the active version's system text. The
 # self-correction turn and any caller referencing EXTRACTION_PROMPT get the live
