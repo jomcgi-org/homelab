@@ -152,6 +152,49 @@ De-risk the pinned-stage choreography before any Svelte work. Per Joe's standing
 
 ---
 
+## LOCKED CHOREOGRAPHY (2026-07-06, after 9 mockup iterations with Joe)
+
+The approved mockup is committed VERBATIM at
+`projects/monolith/frontend/src/lib/public/grimoire/scrollstory/reference-mockup.html`
+(template only; the built artifact inlines `data/story.js` + `page.webp`). It is the
+reference implementation: Tasks 2-8 are a port of it to Svelte 5, not a redesign.
+Match its phase table, easing curves, layouts, and copy exactly. Learnings that MUST
+survive the port:
+
+- Six phases with plateaus and rest anchors (see PHASES in the mockup). Choreography
+  completes by each phase's `hold`; the plateau after it is the interactive dwell.
+- Scroll snap: `scroll-snap-type: y proximity` on the document + invisible snap
+  markers at each rest anchor. NEVER `mandatory`. Arrow keys use NATIVE browser
+  scrolling; rail clicks use native smooth scroll. Timed/warped glides were tried
+  three ways (uniform, quintic, density-warped) and all rejected by Joe: nothing
+  matches hand-scroll feel.
+- Easing personalities per animation (see the named curves in the mockup): page
+  settles outCubic, boxes draw outQuart with tight stagger, cards arrive outCubic,
+  chips travel inOutCubic with outBack scale overshoot, counters outExpo, panels
+  outCubic. Port them as named exports in `timeline.js` with unit tests.
+- Copy: hero is "Grimoire." / "From scan to query." (no eyebrow); corner captions
+  only on phases 1-3; shelf and chat phases get full-width centered headlines
+  ("One page in. The whole shelf follows." / "Ask the Grimoire."). CTA: "Ask the
+  Grimoire" / "Wander the graph" / "Browse the library". No "sage" anywhere.
+- Interactivity: entity chips are buttons; click opens a pop-out card (type badge,
+  real relationships, mention count). GROUNDED IN chips open the same pop-out.
+  Pop-out closes on scroll-away (|dt| > 0.012), phase exit, Esc, click-out.
+- Gotchas found the hard way (all reproduce in prod if ignored):
+  - Decorative overlay layers (scale panel, captions) MUST be pointer-events: none
+    or they silently swallow node clicks.
+  - The pop-out must NOT live inside the graph layer: a child z-index cannot escape
+    its parent's stacking context, so it renders behind the chat panel.
+  - bbox kind classes are `k-` prefixed: marker emits a "caption" kind that collides
+    with the caption component class (caused a mystery backdrop-blur on one bbox).
+  - Constellation dots need a ~90px edge vignette (no half-dots) and must skip the
+    progress-rail column.
+  - Graph layout needs a label-collision pass plus an exclusion zone so nodes stay
+    clear of the caption block.
+- Highlighting: a shared `segmentize()` marks EVERY occurrence of every page entity
+  name + mention_text (longest-first, non-overlapping, min 4 chars). Used in both
+  chunk cards and the typed chat answer (segment-sliced so markup stays valid at
+  every scrub position). Nothing invented.
+
 ## Task 2: Pure timeline module with tests (TDD)
 
 The scrub math is the only genuinely unit-testable part; isolate it from the DOM.
