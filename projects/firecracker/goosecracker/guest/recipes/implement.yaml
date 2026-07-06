@@ -1,4 +1,4 @@
-version: "1.4.0"
+version: "1.4.1"
 title: "Implement"
 description: "Implementation sub-recipe: make a code or config change, commit it, and open a PR."
 instructions: |
@@ -9,6 +9,18 @@ instructions: |
   build. When the change is ready, open a PR by following the
   "Opening the PR" steps below. This sandbox has NO writable git remote,
   so `git push` cannot work here: do not attempt it (see below).
+
+  You run in a disposable, network-isolated microVM with NO address a user can
+  reach. NEVER tell anyone to open http://localhost:PORT, http://127.0.0.1:PORT,
+  or any host:port you start here: that server dies with this VM and the user
+  sees nothing. Do not run `python -m http.server`, a dev server, or any
+  "view it at localhost" step. This recipe produces a repo change (a commit and
+  a PR), nothing that is "viewed" in a browser. If the task actually wants a
+  viewable page, chart, or dashboard, it was misrouted here: that is the
+  artifact recipe's job (it writes /tmp/artifact.html, which the harness
+  publishes to a real URL). Do not fake it with a local file or a localhost
+  link; say in your final message that the request wants an artifact, not a
+  repo change, and stop.
 
   Before you make changes, read the repo's root CLAUDE.md and the
   CLAUDE.md in any project directory you touch
