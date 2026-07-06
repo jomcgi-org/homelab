@@ -141,7 +141,7 @@
           {#each groups as g (g.rel_type)}
             <div class="rel-group">
               <p class="rel-type-label">{relLabel(g.rel_type)}</p>
-              {#each g.items as r (r.peer.id + "|" + r.rel_type + "|" + r.out)}
+              {#each g.items as r, i (r.peer.id + "|" + r.rel_type + "|" + r.out + "|" + i)}
                 <button
                   type="button"
                   class="rel-row"
