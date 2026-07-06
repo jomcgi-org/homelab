@@ -621,6 +621,7 @@ def test_released_prompt_versions_are_frozen_by_hash():
         "v2": "aeb536de96f21e54bcd54ed073efc9945b92b125e3dae6f748808e4f0325ab52",
         "v3": "1d4f924fb55bc021dddffb320461e4a93c065bd2ef1946aeca95293e25959377",
         "v4": "2437034db1f660f0b2f0f130d55d1f94c4cdd039a170af6bd269dd7264ff71c9",
+        "v5": "df94db206235900ce377e50162a2678c06b000f75960d0af4c2982972e4e7459",
     }
     # Every released version must be pinned (a new version needs a new pin here).
     assert set(frozen) == set(PROMPT_VERSIONS)
@@ -646,17 +647,32 @@ def test_v3_extends_v2():
     assert "A NAMED IDENTITY IS AN NPC, NOT AN ITEM" in v3_text
 
 
-def test_v4_is_active_and_extends_v3():
-    """v4 is the active version, carries the same schema as v3, and contains v3's
-    text verbatim (built by concatenation) plus the generic-typed-extraction
-    taxonomy (gameplay + mechanics types, category/temporality, new rels)."""
-    assert ACTIVE_PROMPT_VERSION == "v4"
+def test_v4_extends_v3():
+    """v4 carries the same schema as v3 and contains v3's text verbatim (built by
+    concatenation) plus the generic-typed-extraction taxonomy (gameplay +
+    mechanics types, category/temporality, new rels)."""
     assert PROMPT_VERSIONS["v4"].schema is PROMPT_VERSIONS["v3"].schema
     v4_text = PROMPT_VERSIONS["v4"].text
     assert v4_text.startswith(PROMPT_VERSIONS["v3"].text)
     assert "GENERIC TYPED EXTRACTION" in v4_text
     assert "class_feature, NEVER spell" in v4_text
     assert "OCCURRED_AT" in v4_text and "SUBCLASS_OF" in v4_text
+
+
+def test_v5_is_active_and_extends_v4():
+    """v5 is the active version, carries the same schema as v4, and contains v4's
+    text verbatim (built by concatenation) plus the two mechanics clarifications
+    (condition scope, class_feature vs monster abilities). Prompt text only: same
+    schema object as v4."""
+    assert ACTIVE_PROMPT_VERSION == "v5"
+    assert PROMPT_VERSIONS["v5"].schema is PROMPT_VERSIONS["v4"].schema
+    v5_text = PROMPT_VERSIONS["v5"].text
+    assert v5_text.startswith(PROMPT_VERSIONS["v4"].text)
+    assert "MECHANICS CLARIFICATIONS" in v5_text
+    assert "CONDITION SCOPE" in v5_text
+    assert "Dancing Lights" in v5_text and "Darkvision" in v5_text
+    assert "CLASS_FEATURE VS MONSTER ABILITIES" in v5_text
+    assert "do not extract monster abilities as" in v5_text
 
 
 def test_non_enum_rel_type_mapped_to_related_to(session: Session):
