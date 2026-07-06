@@ -152,6 +152,13 @@ class Entity(SQLModel, table=True):
     )
     is_global: bool = True
     source_book: str | None = None
+    # Parent-place key for a location that is its own keyed entry (a dungeon
+    # room's containing site), lower-cased. Keeps same-named rooms in different
+    # dungeons/books distinct under the otherwise-global (entity_type,
+    # lower(name)) dedup; NULL for non-location entities and for prose location
+    # references that name no site. Mirror of the column added in
+    # 20260706000000_grimoire_extraction_hardening.sql.
+    site: str | None = None
     created_in_session: str | None = Field(default=None, sa_column=_uuid_column())
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -419,6 +426,15 @@ class Relationship(SQLModel, table=True):
     )
     rel_type: str
     properties: dict = Field(default_factory=dict, sa_column=Column(_JSONB))
+    # The knowledge_chunk this edge was first extracted from (provenance). Dedup
+    # is on the (from, to, rel_type) triple, so the first writer's chunk wins and
+    # a later duplicate never overwrites it. Nullable: edges written before this
+    # column, and any future non-extraction writer, have NULL. Mirror of the
+    # column added in 20260706000000_grimoire_extraction_hardening.sql.
+    chunk_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(nullable=True, fk="grimoire.knowledge_chunk.id"),
+    )
 
 
 class Embedding(SQLModel, table=True):
