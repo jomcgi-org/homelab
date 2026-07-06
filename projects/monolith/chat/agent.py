@@ -382,7 +382,10 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         # On a chat verdict the ADR 036 orchestrator already retrieved context
         # and framed how to answer; surface it so the reply stays grounded.
         # Empty on the direct-mention path, so this adds nothing there.
-        return ctx.deps.orchestrator_guidance or ""
+        # Tolerate a deps-less run (tool unit tests call agent.run without
+        # deps), mirroring the defensiveness of _channel_directive above.
+        deps = getattr(ctx, "deps", None)
+        return getattr(deps, "orchestrator_guidance", "") or ""
 
     @agent.tool_plain
     @signposted(
