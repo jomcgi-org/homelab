@@ -46,6 +46,12 @@
   let graphLoading = $state(true);
   let graphError = $state("");
 
+  // Per-lens entity counts for the current scope, from the graph response's
+  // `lens_counts`. Defaults to "everything present" (all 1s, not 0) so the
+  // lens buttons aren't disabled before the first response lands -- greying
+  // out only happens once we actually know a lens is empty.
+  let lensCounts = $state({ world: 1, story: 1, quests: 1, rules: 1 });
+
   // Nodes/edges pulled in by following a relationship to a peer outside the
   // current scope/lens ("guest" nodes, dashed ring on the canvas). Cleared on
   // every scope/lens change -- switching the slice is a fresh view, not a
@@ -160,7 +166,16 @@
     guestNodesById = {};
     guestEdgeMap = {};
     try {
-      baseGraph = (await exploreGraph(scope, lens)) ?? { nodes: [], edges: [] };
+      const result = (await exploreGraph(scope, lens)) ?? { nodes: [], edges: [] };
+      baseGraph = result;
+      // Missing lens_counts (older cached response shape) falls back to
+      // "everything present" rather than disabling every lens button.
+      lensCounts = result.lens_counts ?? {
+        world: 1,
+        story: 1,
+        quests: 1,
+        rules: 1,
+      };
     } catch (e) {
       graphError = e.message;
       baseGraph = { nodes: [], edges: [] };
@@ -184,7 +199,7 @@
   }
 
   function onLensChange(nextLens) {
-    if (nextLens === lens) return;
+    if (nextLens === lens || lensCounts[nextLens] === 0) return;
     lens = nextLens;
     loadGraph();
   }
@@ -294,6 +309,7 @@
             type="button"
             class:on={lens === l.value}
             aria-pressed={lens === l.value}
+            disabled={lensCounts[l.value] === 0}
             onclick={() => onLensChange(l.value)}
           >
             {l.label}
@@ -456,6 +472,16 @@
     background: var(--grim-surface);
     color: var(--grim-accent);
     box-shadow: 0 1px 2px rgba(20, 30, 50, 0.1);
+  }
+
+  .lens-switch button:disabled {
+    color: var(--grim-text-faint);
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .lens-switch button:not(:disabled):hover {
+    color: var(--grim-ink);
   }
 
   .ex-stage {

@@ -492,6 +492,16 @@ class TestExploreGraph:
         assert barovia_node["entity_type"] == "location"
         assert barovia_node["category"] == "lore"
         assert barovia_node["region"] == "Barovia Valley"
+        # this adventure roster has lore (Strahd, Barovia) and mechanics
+        # (Wizard) entities but no events/quests, so world/rules are
+        # non-empty while story/quests are empty: the lens buttons that
+        # should grey out on the public Explore page.
+        assert body["lens_counts"] == {
+            "world": 2,
+            "story": 0,
+            "quests": 0,
+            "rules": 1,
+        }
 
     def test_everything_scope_has_no_roster_restriction_but_still_applies_lens(
         self, session, client
@@ -510,7 +520,11 @@ class TestExploreGraph:
     def test_unknown_adventure_scope_returns_empty_graph(self, session, client):
         r = client.get("/api/grimoire/explore/graph?scope=adventure:nope&lens=world")
         assert r.status_code == 200
-        assert r.json() == {"nodes": [], "edges": []}
+        assert r.json() == {
+            "nodes": [],
+            "edges": [],
+            "lens_counts": {"world": 0, "story": 0, "quests": 0, "rules": 0},
+        }
 
 
 class TestExploreEgo:
