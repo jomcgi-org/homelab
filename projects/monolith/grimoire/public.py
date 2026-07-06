@@ -145,9 +145,12 @@ def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
 
 
 def _secondary_fields(entity_type: str, detail_row: Any) -> dict[str, Any]:
-    """The entity list's secondary line: creature size/CR, spell level/school.
-    Location and NPC have no list-view secondary fields in v1 (spine only);
-    other entity types (faction, deity, item) have no detail table at all.
+    """The entity list's secondary line: creature size/CR, spell level/school,
+    location region. NPC has no list-view secondary fields in v1 (spine
+    only); other entity types (faction, deity, item) have no detail table at
+    all. ``list_entities_public`` only ever passes a location detail_row via
+    the EXPLORE node projection (``entity_cards``); its own creature/spell-only
+    batching leaves it None for locations, so this is a pure addition.
     """
     if detail_row is None:
         return {}
@@ -155,7 +158,47 @@ def _secondary_fields(entity_type: str, detail_row: Any) -> dict[str, Any]:
         return {"size": detail_row.size, "cr": detail_row.cr}
     if entity_type == "spell":
         return {"level": detail_row.level, "school": detail_row.school}
+    if entity_type == "location":
+        return {"region": detail_row.region}
     return {}
+
+
+def _entity_card(entity: Entity, detail_row: Any | None) -> dict[str, Any]:
+    """One EXPLORE graph node: the spine fields the canvas needs to draw and
+    color a node (id, entity_type, name, category, temporality) plus the same
+    secondary detail line the public entity list shows. Shared by
+    grimoire.explore's subgraph/ego/path endpoints so "what does a node look
+    like" lives in exactly one place instead of being re-derived per caller.
+    """
+    return {
+        "id": entity.id,
+        "entity_type": entity.entity_type,
+        "name": entity.name,
+        "category": entity.category,
+        "temporality": entity.temporality,
+        **_secondary_fields(entity.entity_type, detail_row),
+    }
+
+
+def entity_cards(session: Session, entities: list[Entity]) -> list[dict[str, Any]]:
+    """Batch node projection for a set of entities (see _entity_card),
+    without an N+1 detail-table query per entity: EXPLORE subgraphs can have
+    hundreds of nodes, so detail rows are fetched once per entity_type
+    present in the set (mirrors list_entities_public's creature/spell
+    batching, generalized over every ENTITY_DETAIL_MODELS type).
+    """
+    ids_by_type: dict[str, list[str]] = {}
+    for entity in entities:
+        if entity.entity_type in ENTITY_DETAIL_MODELS:
+            ids_by_type.setdefault(entity.entity_type, []).append(entity.id)
+
+    detail_by_id: dict[str, Any] = {}
+    for entity_type, ids in ids_by_type.items():
+        model = ENTITY_DETAIL_MODELS[entity_type]
+        for row in session.exec(select(model).where(model.entity_id.in_(ids))).all():
+            detail_by_id[row.entity_id] = row
+
+    return [_entity_card(entity, detail_by_id.get(entity.id)) for entity in entities]
 
 
 def list_entities_public(

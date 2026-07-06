@@ -16,9 +16,13 @@ under SQLite's create_all too) and Postgres.
 
 from __future__ import annotations
 
-from sqlalchemy import and_, or_
+from typing import Any
 
-from grimoire.models import Entity
+from sqlalchemy import and_, or_
+from sqlmodel import Session, select
+
+from grimoire import library, public
+from grimoire.models import ChunkEntityMention, Entity, KnowledgeChunk, Relationship
 
 
 def lens_predicate(lens: str):
@@ -49,3 +53,88 @@ def lens_predicate(lens: str):
     if lens == "rules":
         return or_(Entity.category == "mechanics", Entity.entity_type == "spell")
     return Entity.id == Entity.id
+
+
+def _book_roster(book_id: str):
+    """Entity-id subquery for every entity mentioned in some chunk of
+    ``book_id``. Mirrors the join style _adventure_chunk_join uses (base
+    tables, not the grimoire.adventure_entity VIEW), so it works identically
+    against SQLite test fixtures and Postgres."""
+    return (
+        select(ChunkEntityMention.entity_id)
+        .join(KnowledgeChunk, KnowledgeChunk.id == ChunkEntityMention.chunk_id)
+        .where(KnowledgeChunk.book_id == book_id)
+    )
+
+
+def scope_entity_ids(session: Session, scope: str, lens: str) -> set[str]:
+    """Resolve the node set for a (scope, lens) pair.
+
+    ``scope`` is ``"everything"``, ``"adventure:{id}"``, or ``"book:{id}"``.
+    Every branch ANDs in ``Entity.is_global`` and ``lens_predicate(lens)`` on
+    top of whatever roster restriction the scope implies, so a private
+    (campaign-only) entity can never leak into a public EXPLORE graph even if
+    it happens to be in an adventure's or book's chunk range.
+
+    The adventure roster is NOT hand-rolled here: it reuses
+    ``library.adventure_entities``, which already computes the correct
+    seq-range roster via ``_adventure_chunk_join`` (the same helper
+    ``list_adventures``/``list_all_adventures`` use), so the seq-range SQL
+    lives in exactly one place.
+    """
+    if scope.startswith("adventure:"):
+        adventure_id = scope.split(":", 1)[1]
+        adventure = library.adventure_entities(session, adventure_id)
+        if adventure is None:
+            return set()
+        roster_ids = {e["id"] for e in adventure["entities"]}
+        if not roster_ids:
+            return set()
+        query = select(Entity.id).where(
+            Entity.id.in_(roster_ids), Entity.is_global, lens_predicate(lens)
+        )
+    elif scope.startswith("book:"):
+        book_id = scope.split(":", 1)[1]
+        query = select(Entity.id).where(
+            Entity.id.in_(_book_roster(book_id)),
+            Entity.is_global,
+            lens_predicate(lens),
+        )
+    else:
+        # "everything" (or any other unrecognized scope): no roster
+        # restriction, just is_global + lens.
+        query = select(Entity.id).where(Entity.is_global, lens_predicate(lens))
+    return set(session.exec(query).all())
+
+
+def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
+    """Induced subgraph ``{nodes, edges}`` for a scope + lens: the core
+    bulk-load endpoint for the EXPLORE canvas (see plan design decision 4,
+    "bulk over N+1" - the client fetches one payload per scope/lens change
+    instead of one relationship call per node).
+
+    Nodes are every entity in ``scope_entity_ids(session, scope, lens)``,
+    projected via ``public.entity_cards`` (spine + secondary detail, batched).
+    Edges are every relationship whose BOTH endpoints are in that node set
+    (a true induced subgraph, not "every edge touching any node").
+
+    A whole-corpus ``scope="everything"`` can return a large payload; no
+    truncation happens here (nodes are never silently dropped), so the
+    frontend should default to gallery/adventure scope and treat
+    "everything" as an explicit, occasionally-large view.
+    """
+    ids = scope_entity_ids(session, scope, lens)
+    if not ids:
+        return {"nodes": [], "edges": []}
+    entities = session.exec(select(Entity).where(Entity.id.in_(ids))).all()
+    nodes = public.entity_cards(session, entities)
+    edges = [
+        {"from": r.from_entity_id, "to": r.to_entity_id, "rel_type": r.rel_type}
+        for r in session.exec(
+            select(Relationship).where(
+                Relationship.from_entity_id.in_(ids),
+                Relationship.to_entity_id.in_(ids),
+            )
+        ).all()
+    ]
+    return {"nodes": nodes, "edges": edges}
