@@ -27,6 +27,29 @@
 
 ## Task 0: Curate the showcase page and bake the asset bundle (MAIN SESSION, interactive)
 
+> **STATUS: DONE (2026-07-06), kept for the record with corrections.** The chosen page is
+> Lost Mine of Phandelver marker page 49 ("Nezznar the Black Spider", the villain reveal):
+> 7 chunks, 21 entities, 42 edges, dramatic full-page art. Joe wants the page choice to stay
+> swappable, so the bake is a committed, parameterized script:
+> `projects/monolith/frontend/src/lib/public/grimoire/scrollstory/bake-scrollstory.sh <book_id> <page> <pdf_path>`.
+> Corrections to the original steps discovered while executing:
+> - `monolith-run-python` is a zero-egress sandbox with NO database or network access.
+>   All corpus reads go through `kubectl exec -i monolith-pg-1 -c postgres -- psql`.
+> - The pipeline stores no page scans: `image_ref` is per-chunk art crops. The page scan
+>   is rendered from a LOCAL PDF (`pdftoppm`), found on Joe's Mac via `mdfind`.
+> - No hand-traced bboxes needed: marker's full layout output (real per-block bboxes in
+>   page pixel space, block ids identical to `chunk_ref`) lives in SeaweedFS at
+>   `/buckets/grimoire/books/<book>/raw/output.json.gz`; the script fetches it via
+>   `kubectl exec` on `seaweedfs-filer-0` and normalizes to fractional coords.
+> - Chunks whose section starts on an earlier page yield bboxes with `chunkId: null`;
+>   the story fades those out instead of flying them.
+> - Corpus totals baked for the scale phase: 33 books, 40,514 chunks, 33,792 entities,
+>   45,401 relationships, plus per-type counts.
+> - STILL PENDING from this task: the scripted chat transcript (`data/transcript.js`,
+>   hand-curated; demo question: "Who is the Black Spider and what does he actually want?").
+>   Capture one real sage answer, e.g. `kubectl exec` curl against the grimoire chat
+>   backend, and record the GROUNDED IN entity ids.
+
 This task is judgment + live-cluster work; do it in the main session with Joe in the loop. Everything downstream consumes its output, so it goes first.
 
 **Files (output):**
