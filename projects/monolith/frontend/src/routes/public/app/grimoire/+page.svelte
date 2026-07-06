@@ -1,7 +1,7 @@
 <script>
   // Public Grimoire homepage: a scroll-scrubbed "From scan to query" explainer
-  // (ScrollStory) over the pitch, what exists today, a small invented demo of
-  // the grant system, and the roadmap. This page still makes zero /api/grimoire
+  // (ScrollStory) over a small invented demo of the grant system and the
+  // roadmap. This page still makes zero /api/grimoire
   // fetches, which is what lets the layout render it outside the Turnstile gate
   // (the gate protects the copyrighted corpus, not the product description).
   // The one deliberate exception: ScrollStory embeds ONE Joe-approved curated
@@ -10,37 +10,11 @@
   // allowed out here; any further corpus read must still move behind the gate.
   import ScrollStory from "$lib/public/grimoire/scrollstory/ScrollStory.svelte";
 
-  const features = [
-    {
-      title: "The Library",
-      body: "Every loaded book, grouped by kind (adventures, bestiaries, spellbooks, and more) with per-book chunk, image, and entity counts.",
-    },
-    {
-      title: "Structural reader",
-      body: "Continuous reading in source order with the section hierarchy and art preserved, not a wall of OCR text.",
-    },
-    {
-      title: "Adventures",
-      body: "Anthologies are split into their individual adventures, each with its own roster of the entities that appear in it.",
-    },
-    {
-      title: "Entity browser",
-      body: "Creatures, spells, NPCs, locations, items, and more as typed detail cards: stat blocks, spell levels, filter by type, search by name.",
-    },
-    {
-      title: "EXPLORE canvas",
-      body: "An interactive relationship graph: pick a scope (the whole corpus, one book, one adventure) and a lens (world, story, quests, rules), then wander from entity to entity.",
-    },
-    {
-      title: "Provenance",
-      body: "Every entity links back to the exact chunks it was extracted from, so a claim is always one click from its source text.",
-    },
-    {
-      title: "Campaign grants",
-      body: "In the private tier a DM controls what each player character knows about an entity, from full detail down to name-only recognition.",
-    },
-  ];
-
+  // The feature grid that used to live here was removed once the scroll story
+  // shipped: the story demonstrates the library, reader, entities, graph, and
+  // chat directly, so a prose retelling below it was redundant. The grant demo
+  // and roadmap stay: they cover what the story cannot show (the private tier
+  // and what is coming).
   const roadmap = [
     {
       status: "Planned",
@@ -73,18 +47,6 @@
 <ScrollStory />
 
 <div class="home">
-  <section class="block">
-    <div class="gh"><span class="kind">What's here today</span></div>
-    <ul class="feature-grid">
-      {#each features as f (f.title)}
-        <li class="feature">
-          <h3 class="feature-title">{f.title}</h3>
-          <p class="feature-body">{f.body}</p>
-        </li>
-      {/each}
-    </ul>
-  </section>
-
   <section class="block">
     <div class="gh">
       <span class="kind">At the table</span>
@@ -212,39 +174,6 @@
     color: var(--grim-text-faint);
     font-size: 12.5px;
     line-height: 1.6;
-  }
-
-  /* ── Feature grid ── */
-
-  .feature-grid {
-    list-style: none;
-    margin: 22px 0 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-  }
-
-  .feature {
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line-soft);
-    border-radius: 9px;
-    padding: 16px;
-  }
-
-  .feature-title {
-    margin: 0;
-    font-family: var(--grim-serif);
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--grim-ink);
-  }
-
-  .feature-body {
-    margin: 7px 0 0;
-    color: var(--grim-text-dim);
-    font-size: 12.5px;
-    line-height: 1.55;
   }
 
   /* ── Grant demo cards ── */
@@ -410,7 +339,7 @@
   /* ── Responsive ── */
 
   @media (max-width: 960px) {
-    .feature-grid,
+
     .grant-row {
       grid-template-columns: 1fr 1fr;
     }
@@ -421,7 +350,7 @@
       padding: 36px 20px 60px;
     }
 
-    .feature-grid,
+
     .grant-row {
       grid-template-columns: 1fr;
     }
