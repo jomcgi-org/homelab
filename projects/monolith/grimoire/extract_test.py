@@ -1252,6 +1252,11 @@ def test_book_kind_mapping():
     # Prefix family match after an exact miss.
     assert book_kind("tome-of-beasts-2") == "bestiary"
     assert book_kind("sword-coast-adventurers-guide") == "setting-guide"
+    # Mixed lore + player options + bestiary compendia map to bestiary.
+    assert book_kind("fizbans-treasury-of-dragons") == "bestiary"
+    assert book_kind("bigby-presents-glory-of-giants") == "bestiary"
+    # Majority-lore book around the Deck of Many Things.
+    assert book_kind("the-book-of-many-things") == "setting-guide"
     # Unmapped slug: no guessed genre.
     assert book_kind("some-random-homebrew") is None
 

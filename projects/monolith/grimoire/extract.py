@@ -421,6 +421,14 @@ BOOK_KIND: dict[str, str] = {
     "descent-into-avernus": "adventure",
     "the-wild-beyond-the-witchlight": "adventure",
     "waterdeep-dungeon-of-the-mad-mage": "adventure",
+    # Dragon/giant compendia share Mordenkainen's lore + player options +
+    # bestiary shape; the bestiary stat-block rule only fires on chunks that
+    # actually are stat-block entries, so it is safe for their mixed chapters.
+    "fizbans-treasury-of-dragons": "bestiary",
+    "bigby-presents-glory-of-giants": "bestiary",
+    # Majority lore/locations/items around the Deck of Many Things; the
+    # bestiary appendix is a minority of the book.
+    "the-book-of-many-things": "setting-guide",
 }
 # The two book_kind values the structural adventure layer (grimoire.adventure)
 # operates over: single-adventure books and multi-adventure anthologies. Used
