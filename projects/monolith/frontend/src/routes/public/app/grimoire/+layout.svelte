@@ -9,7 +9,13 @@
   // mitigation) regardless of admission state.
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
-  import { libraryHref, entitiesHref } from "$lib/public/grimoire/api.js";
+  import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
+  import "$lib/grimoire/theme.css";
+  import {
+    libraryHref,
+    entitiesHref,
+    exploreHref,
+  } from "$lib/public/grimoire/api.js";
 
   let { data, children } = $props();
 
@@ -20,6 +26,7 @@
   const section = $derived.by(() => {
     const id = $page.route.id ?? "";
     if (id.includes("/entities") || id.includes("/entity/")) return "entities";
+    if (id.includes("/explore")) return "explore";
     return "library";
   });
 </script>
@@ -36,21 +43,28 @@
   <meta name="robots" content="noindex, nofollow" />
 </svelte:head>
 
-<div class="grimoire-app">
+<div class="grimoire-app grimoire">
   <header class="topbar">
-    <a class="mono wordmark" href={libraryHref()}>GRIMOIRE</a>
+    <a class="wordmark" href={libraryHref()}>Grimoire</a>
     <nav class="topbar-nav" aria-label="Grimoire sections">
       <a
-        class="mono topbar-link"
+        class="topbar-link"
         class:active={section === "library"}
-        href={libraryHref()}>LIBRARY</a
+        href={libraryHref()}>Library</a
       >
       <a
-        class="mono topbar-link"
+        class="topbar-link"
         class:active={section === "entities"}
-        href={entitiesHref()}>ENTITIES</a
+        href={entitiesHref()}>Entities</a
+      >
+      <a
+        class="topbar-link"
+        class:active={section === "explore"}
+        href={exploreHref()}>Explore</a
       >
     </nav>
+    <div class="topbar-spacer"></div>
+    <ThemeToggle />
   </header>
 
   <main class="grimoire-shell">
@@ -105,49 +119,63 @@
   }
 
   .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 10px 32px;
-    border-bottom: 2px solid var(--ink);
-    background: var(--bg);
+    gap: 20px;
+    padding: 0 28px;
+    height: 58px;
+    background: color-mix(in srgb, var(--grim-paper) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--grim-line);
   }
 
   .wordmark {
+    font-weight: 700;
     font-size: 14px;
-    font-weight: 800;
-    letter-spacing: 0.14em;
-    color: var(--ink);
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--grim-ink);
     text-decoration: none;
+    flex: none;
   }
 
   .topbar-nav {
     display: flex;
-    gap: 6px;
+    gap: 4px;
+    margin-left: 8px;
   }
 
   .topbar-link {
     display: inline-flex;
     align-items: center;
-    min-height: 36px;
-    padding: 4px 12px;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--ink-3);
+    min-height: 40px;
+    padding: 6px 12px;
+    margin-bottom: -1px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--grim-text-faint);
     text-decoration: none;
+    border-bottom: 2px solid transparent;
   }
 
-  /* High-contrast state change, no lift: ink fill on hover/active. */
+  /* Quiet indigo underline on hover/active, no fill: matches the reskin's
+     denoised chrome (the brutalist ink-block hover is gone). */
   .topbar-link:hover {
-    background: var(--ink);
-    color: var(--paper);
+    color: var(--grim-text-dim);
   }
 
   .topbar-link.active {
-    background: var(--ink);
-    color: var(--paper);
+    color: var(--grim-ink);
+    border-bottom-color: var(--grim-accent);
+  }
+
+  .topbar-spacer {
+    flex: 1;
   }
 
   .grimoire-shell {
