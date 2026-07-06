@@ -18,6 +18,7 @@
     libraryHref,
     entitiesHref,
     exploreHref,
+    chatHref,
   } from "$lib/public/grimoire/api.js";
 
   let { data, children } = $props();
@@ -38,6 +39,7 @@
     const id = $page.route.id ?? "";
     if (id.includes("/entities") || id.includes("/entity/")) return "entities";
     if (id.includes("/explore")) return "explore";
+    if (id.includes("/chat")) return "chat";
     if (isHome) return "home";
     return "library";
   });
@@ -73,6 +75,9 @@
         class="topbar-link"
         class:active={section === "explore"}
         href={exploreHref()}>Explore</a
+      >
+      <a class="topbar-link" class:active={section === "chat"} href={chatHref()}
+        >Chat</a
       >
     </nav>
     <div class="topbar-spacer"></div>
