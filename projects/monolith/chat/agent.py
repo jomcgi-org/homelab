@@ -206,7 +206,12 @@ def build_system_prompt() -> str:
         "relevant context (search the web, search this channel's history) and "
         "articulate the answer clearly and completely. Getting it right and "
         "being easy to follow matters MORE than sounding breezy. A short list "
-        "or a few steps is good when it makes the answer easier to act on.\n\n"
+        "or a few steps is good when it makes the answer easier to act on.\n"
+        "- Exact numbers are never casual. If a reply turns on a computed "
+        "value (arithmetic beyond one digit, a percentage, date or unit math, "
+        "a statistic), run the python sandbox and report what it returns, even "
+        "mid-banter. Do not eyeball it to stay breezy: a wrong number said "
+        "confidently is worse than a one-second pause to compute it.\n\n"
         "WHAT YOU CAN DO (say this plainly when someone asks how you can help "
         "or what you can do, give the concrete rundown, not a vague 'anything!'):\n"
         "- Answer questions and hold a conversation.\n"
@@ -640,11 +645,12 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
 
     @agent.tool
     @signposted(
-        "When a message needs an exact computed answer (arithmetic beyond "
-        "trivial, date math, unit conversions, statistics, simulations, "
-        "parsing pasted data, or a quick chart), run real code in the sandbox "
-        "instead of estimating from memory. Prefer this over starting an "
-        "agent thread when the goal is an output, not a change."
+        "Never do multi-digit arithmetic, date math, unit conversions, or "
+        "statistics in your head; run it here. Estimating an exact number "
+        "from memory is a bug, not a shortcut, even for a throwaway aside. "
+        "Also use this for simulations, parsing pasted data, or a quick "
+        "chart. Prefer it over starting an agent thread when the goal is an "
+        "output, not a change."
     )
     async def run_python(ctx: RunContext[ChatDeps], code: str) -> str:
         """Run a short Python script in an isolated sandbox and return its output. No network. Save charts/files to the working directory and they will be attached to the reply."""
