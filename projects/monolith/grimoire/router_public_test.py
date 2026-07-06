@@ -20,6 +20,7 @@ from sqlmodel.pool import StaticPool
 
 from app.db import get_session
 from grimoire.models import (
+    Adventure,
     Book,
     ChunkEntityMention,
     Entity,
@@ -117,6 +118,107 @@ def seed_corpus(session):
     )
     session.commit()
     return SimpleNamespace(c0=c0, c1=c1, aboleth=aboleth, fireball=fireball)
+
+
+def seed_adventures(session):
+    """One book, six chunks (seq 0..5), two adventures: adv1 spans seq 0-2,
+    adv2 spans seq 3 to end of book (end_seq NULL). An entity mentioned in two
+    chunks of adv1 (dedup check); another entity only in adv2."""
+    session.add(Book(id="cm", display_name="Candlekeep Mysteries"))
+    chunks = [
+        _chunk(
+            session,
+            book_id="cm",
+            chunk_ref=f"r{i}",
+            content=f"chunk {i}",
+            seq=i,
+        )
+        for i in range(6)
+    ]
+
+    fistandia = Entity(id="e-fistandia", entity_type="npc", name="Fistandia")
+    raven = Entity(id="e-raven", entity_type="npc", name="Book of the Raven")
+    session.add_all([fistandia, raven])
+    session.commit()
+    session.add_all(
+        [
+            ChunkEntityMention(chunk_id=chunks[0].id, entity_id="e-fistandia"),
+            # Same entity mentioned again in a second chunk of the same
+            # adventure: the roster must dedup to one row.
+            ChunkEntityMention(chunk_id=chunks[1].id, entity_id="e-fistandia"),
+            ChunkEntityMention(chunk_id=chunks[4].id, entity_id="e-raven"),
+        ]
+    )
+    session.commit()
+
+    adv1 = Adventure(
+        book_id="cm",
+        name="The Joy of Extradimensional Spaces",
+        seq=1,
+        summary="A wizard's tower folds in on itself.",
+        level_range="1",
+        start_seq=0,
+        end_seq=2,
+    )
+    adv2 = Adventure(
+        book_id="cm",
+        name="Book of the Raven",
+        seq=2,
+        start_seq=3,
+        end_seq=None,
+    )
+    session.add_all([adv1, adv2])
+    session.commit()
+    session.refresh(adv1)
+    session.refresh(adv2)
+    return SimpleNamespace(chunks=chunks, adv1=adv1, adv2=adv2)
+
+
+class TestAdventures:
+    def test_list_ordered_with_entity_counts(self, session, client):
+        seed = seed_adventures(session)
+        body = client.get("/api/grimoire/books/cm/adventures").json()
+        assert [a["name"] for a in body] == [
+            "The Joy of Extradimensional Spaces",
+            "Book of the Raven",
+        ]
+        # Fistandia mentioned twice in adv1's chunks, but counted once.
+        assert body[0]["entity_count"] == 1
+        assert body[0]["start_seq"] == 0
+        assert body[0]["end_seq"] == 2
+        # adv2 has end_seq NULL and one entity mention within its range.
+        assert body[1]["entity_count"] == 1
+        assert body[1]["end_seq"] is None
+
+    def test_list_empty_for_book_without_adventures(self, session, client):
+        seed_corpus(session)
+        body = client.get("/api/grimoire/books/mm/adventures").json()
+        assert body == []
+
+    def test_detail_roster_respects_seq_boundary_and_dedup(self, session, client):
+        seed = seed_adventures(session)
+        r = client.get(f"/api/grimoire/adventures/{seed.adv1.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["name"] == "The Joy of Extradimensional Spaces"
+        assert body["book_id"] == "cm"
+        assert body["book_display_name"] == "Candlekeep Mysteries"
+        # Fistandia appears once despite two mentions within the range.
+        assert [e["name"] for e in body["entities"]] == ["Fistandia"]
+
+    def test_detail_end_seq_null_extends_to_end_of_book(self, session, client):
+        seed = seed_adventures(session)
+        r = client.get(f"/api/grimoire/adventures/{seed.adv2.id}")
+        assert r.status_code == 200
+        body = r.json()
+        # seq=4's mention (Book of the Raven) is captured even though end_seq
+        # is NULL, i.e. no upper bound.
+        assert [e["name"] for e in body["entities"]] == ["Book of the Raven"]
+
+    def test_detail_404_missing_adventure(self, session, client):
+        seed_adventures(session)
+        r = client.get("/api/grimoire/adventures/nope")
+        assert r.status_code == 404
 
 
 class _FakeBody:

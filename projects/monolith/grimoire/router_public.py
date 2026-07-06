@@ -61,6 +61,28 @@ def read_book(
     return library.read_page(session, book_id, cursor=cursor, limit=limit)
 
 
+@router.get("/books/{book_id}/adventures")
+def list_adventures(
+    book_id: str, session: Session = Depends(get_session)
+) -> list[dict[str, Any]]:
+    """Adventures in a book, seq-ordered, each with entity_count. Empty list
+    for the vast majority of books, which have no adventure rows. See
+    library.list_adventures."""
+    return library.list_adventures(session, book_id)
+
+
+@router.get("/adventures/{adventure_id}")
+def get_adventure(
+    adventure_id: str, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    """One adventure with its full entity roster, no grants. See
+    library.adventure_entities."""
+    adventure = library.adventure_entities(session, adventure_id)
+    if adventure is None:
+        raise HTTPException(status_code=404, detail="adventure not found")
+    return adventure
+
+
 # --- Chunk reader ----------------------------------------------------
 
 
