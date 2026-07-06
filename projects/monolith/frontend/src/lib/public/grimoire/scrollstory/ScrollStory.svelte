@@ -504,12 +504,24 @@
     }
   }
 
+  // Past the hero the story is immersive: the app topbar fades out (the
+  // layout styles .grimoire-app.story-immersed .topbar) and comes back as the
+  // visitor reaches the finale, so they land back in normal chrome.
+  let appEl = null;
+  let immersed = false;
+  function setImmersed(next) {
+    if (next === immersed) return;
+    immersed = next;
+    appEl?.classList.toggle("story-immersed", next);
+  }
+
   function onFrame() {
     raf = 0;
     if (!measured) return; // wait for the first layout() before scrubbing
     const r = scrollerEl.getBoundingClientRect();
     const span = r.height - H;
     lastT = span > 0 ? clamp(-r.top / span, 0, 1) : 0;
+    setImmersed(lastT > 0.03 && lastT < 0.97);
     frame(lastT);
   }
 
@@ -518,6 +530,7 @@
     if (reduced) return; // stay on the static stacked scenes
 
     ready = true; // reveal the scrubbed stage (re-render, refs already bound)
+    appEl = document.querySelector(".grimoire-app");
     // Proximity snap lives on the document scroll container: the .snap
     // markers' scroll-snap-align does nothing without it. html is outside this
     // component, so set it imperatively and remove it on destroy so other
@@ -563,6 +576,7 @@
     });
 
     return () => {
+      setImmersed(false);
       document.documentElement.style.scrollSnapType = "";
       window.removeEventListener("scroll", queue);
       window.removeEventListener("resize", onResize);
@@ -574,7 +588,13 @@
   });
 </script>
 
-<div class="scrollstory" class:ready>
+<!-- The extra `grimoire` class is a LIGHT ISLAND: the theme tokens are declared
+     on .grimoire and only overridden by .grimoire.dark, so re-applying the bare
+     class here resets every --grim-* token to its light value for the story
+     subtree regardless of app theme (and the canvas color resolver reads off
+     this island, so the constellation follows). The story ships light-only for
+     now; dark-mode art direction is a deliberate later pass. -->
+<div class="scrollstory grimoire" class:ready>
   <!-- ── Scrubbed stage: always in the DOM (refs bind at mount) but hidden by
        CSS until `ready` flips, so no-JS and reduced-motion never see it ── -->
   <div class="scroller" bind:this={scrollerEl}>

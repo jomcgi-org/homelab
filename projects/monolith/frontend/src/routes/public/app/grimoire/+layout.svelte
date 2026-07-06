@@ -81,7 +81,12 @@
       >
     </nav>
     <div class="topbar-spacer"></div>
-    <ThemeToggle />
+    {#if !isHome}
+      <!-- The landing's scroll story is a light-only island, so a theme toggle
+           there would appear to do nothing; the toggle stays on every other
+           route where the dark reskin fully applies. -->
+      <ThemeToggle />
+    {/if}
   </header>
 
   <main class="grimoire-shell">
@@ -134,6 +139,15 @@
     background: color-mix(in srgb, var(--grim-paper) 88%, transparent);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--grim-line);
+    transition: opacity 0.25s ease;
+  }
+
+  /* The landing's ScrollStory toggles .story-immersed on .grimoire-app while
+     the visitor is inside the story (past the hero, before the finale): the
+     chrome gets out of the way of the pinned stage and returns at the end. */
+  .grimoire-app:global(.story-immersed) .topbar {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .wordmark {
