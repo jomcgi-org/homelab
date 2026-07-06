@@ -22,6 +22,17 @@ from chat.models import (
 
 logger = logging.getLogger(__name__)
 
+# Allow-listed enums for MessageStore.query_stats -- the security seam. A
+# metric or group_by value outside these sets is rejected before any SQL is
+# built, and group_by's value is only ever used as a dict lookup into a
+# hard-coded fragment, never interpolated from the caller's string. See
+# docs/decisions/chat/002-structured-channel-history-query.md.
+_STATS_METRICS = {"count", "first", "latest"}
+_STATS_GROUP_BY = {
+    "author": "user_id",
+    "day": "date_trunc('day', created_at)",
+}
+
 
 def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
     """Best-effort upload of a content-addressed attachment blob to SeaweedFS.
@@ -380,6 +391,114 @@ class MessageStore:
             reverse=True,
         )
         return fused[:limit]
+
+    def query_stats(
+        self,
+        channel_id: str,
+        *,
+        metric: str,
+        group_by: str | None = None,
+        user_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        contains: str | None = None,
+        message_id: str | None = None,
+        limit: int = 25,
+    ) -> list[dict]:
+        """Structured, scope-locked aggregation/lookup over channel history.
+
+        The model chooses the filter; the caller (never the model) chooses the
+        scope via channel_id. metric and group_by are allow-listed enums mapped
+        to fixed SQL fragments/columns -- an unknown value is rejected with a
+        ValueError before any SQL is built, so there is no path for a
+        model-supplied identifier to reach the statement. Every filter value is
+        a bound parameter, exactly like lexical_search. See docs/decisions/
+        chat/002-structured-channel-history-query.md.
+        """
+        if metric not in _STATS_METRICS:
+            raise ValueError(
+                f"Unknown metric {metric!r}; must be one of {sorted(_STATS_METRICS)}"
+            )
+        if group_by is not None and group_by not in _STATS_GROUP_BY:
+            raise ValueError(
+                f"Unknown group_by {group_by!r}; must be one of "
+                f"{sorted(_STATS_GROUP_BY)} or None"
+            )
+        if metric in ("first", "latest") and group_by is not None:
+            raise ValueError(f"metric={metric!r} is only valid with group_by=None")
+
+        params: dict[str, object] = {"channel_id": channel_id, "limit": limit}
+        filters = "channel_id = :channel_id"
+        if user_id:
+            filters += " AND user_id = :user_id"
+            params["user_id"] = user_id
+        if since:
+            filters += " AND created_at >= :since"
+            params["since"] = since
+        if until:
+            filters += " AND created_at <= :until"
+            params["until"] = until
+        if contains:
+            filters += " AND content_tsv @@ websearch_to_tsquery('english', :contains)"
+            params["contains"] = contains
+        if message_id:
+            filters += " AND discord_message_id = :message_id"
+            params["message_id"] = message_id
+
+        if (
+            self.session.bind is not None
+            and self.session.bind.dialect.name == "postgresql"
+        ):
+            self.session.exec(text("SET LOCAL statement_timeout = '3s'"))
+
+        if metric in ("first", "latest"):
+            order = "ASC" if metric == "first" else "DESC"
+            sql = text(
+                f"SELECT * FROM chat.messages WHERE {filters} "
+                f"ORDER BY created_at {order} LIMIT 1"
+            )
+            result = self.session.exec(sql, params=params)
+            rows = list(result)
+            if not rows:
+                return []
+            row = rows[0]
+            return [
+                {
+                    "discord_message_id": row.discord_message_id,
+                    "username": row.username,
+                    "user_id": row.user_id,
+                    "content": row.content,
+                    "created_at": row.created_at,
+                    "is_bot": row.is_bot,
+                }
+            ]
+
+        # metric == "count"
+        if group_by == "author":
+            sql = text(
+                f"SELECT user_id, username, count(*) AS n FROM chat.messages "
+                f"WHERE {filters} GROUP BY user_id, username "
+                "ORDER BY n DESC LIMIT :limit"
+            )
+            result = self.session.exec(sql, params=params)
+            return [
+                {"user_id": row.user_id, "username": row.username, "count": row.n}
+                for row in result
+            ]
+        if group_by == "day":
+            group_fragment = _STATS_GROUP_BY["day"]
+            sql = text(
+                f"SELECT {group_fragment} AS d, count(*) AS n FROM chat.messages "
+                f"WHERE {filters} GROUP BY d ORDER BY d LIMIT :limit"
+            )
+            result = self.session.exec(sql, params=params)
+            return [{"day": row.d, "count": row.n} for row in result]
+
+        # group_by is None -- a single total count
+        sql = text(f"SELECT count(*) AS n FROM chat.messages WHERE {filters}")
+        result = self.session.exec(sql, params=params)
+        rows = list(result)
+        return [{"count": rows[0].n if rows else 0}]
 
     def get_attachments(
         self, message_ids: list[int]

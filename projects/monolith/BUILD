@@ -931,6 +931,19 @@ py_test(
 )
 
 py_test(
+    name = "chat_query_stats_test",
+    srcs = ["chat/query_stats_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_store_fetch_window_test",
     srcs = ["chat/store_fetch_window_test.py"],
     imports = ["."],
