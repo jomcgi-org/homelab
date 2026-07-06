@@ -16,11 +16,20 @@
 const CHAT_API_BASE = process.env.CHAT_API_BASE || "http://localhost:8000";
 // "gcs" (grimoire chat session), distinct from the notes chat's "cps" cookie.
 const SESSION_COOKIE = "gcs";
+// The public Turnstile site key gates the chat (ADR 005). PUBLIC by design (it
+// identifies the widget, not a credential); the Turnstile *secret* only ever
+// reaches the FastAPI backend. Must be returned so the gate can render.
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || "";
 
 export async function load({ fetch, cookies }) {
   const sessionId = cookies?.get?.(SESSION_COOKIE);
   if (!sessionId) {
-    return { admitted: false, initialMessages: [], initialTokens: 0 };
+    return {
+      admitted: false,
+      initialMessages: [],
+      initialTokens: 0,
+      turnstileSiteKey: TURNSTILE_SITE_KEY,
+    };
   }
   try {
     const res = await fetch(
@@ -31,7 +40,12 @@ export async function load({ fetch, cookies }) {
       },
     );
     if (!res.ok) {
-      return { admitted: false, initialMessages: [], initialTokens: 0 };
+      return {
+        admitted: false,
+        initialMessages: [],
+        initialTokens: 0,
+        turnstileSiteKey: TURNSTILE_SITE_KEY,
+      };
     }
     const body = await res.json();
     return {
@@ -39,9 +53,15 @@ export async function load({ fetch, cookies }) {
       initialMessages: Array.isArray(body.messages) ? body.messages : [],
       initialTokens:
         typeof body.total_tokens === "number" ? body.total_tokens : 0,
+      turnstileSiteKey: TURNSTILE_SITE_KEY,
     };
   } catch {
     // Fail-soft: any upstream hiccup leaves the visitor at the gate.
-    return { admitted: false, initialMessages: [], initialTokens: 0 };
+    return {
+      admitted: false,
+      initialMessages: [],
+      initialTokens: 0,
+      turnstileSiteKey: TURNSTILE_SITE_KEY,
+    };
   }
 }
