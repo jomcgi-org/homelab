@@ -11,6 +11,28 @@
 -- setting-guide volume is loaded so far (chunks end at Chapter 3), so it is
 -- classified later via the skill once Turn of Fortune's Wheel lands.
 -- Derived data: safe to re-seed (upsert on the natural key).
+
+-- Parent book rows first: in prod these already exist (created by the chunk
+-- loader) and DO NOTHING leaves them untouched, but a fresh database (the CI
+-- test harness applies migrations to an empty Postgres) needs them for the
+-- adventure book_id FK.
+INSERT INTO grimoire.book (id, display_name)
+VALUES
+    ('curse-of-strahd', 'Curse Of Strahd'),
+    ('lost-mine-of-phandelver', 'Lost Mine Of Phandelver'),
+    ('rime-of-the-frostmaiden', 'Rime Of The Frostmaiden'),
+    ('storm-kings-thunder', 'Storm Kings Thunder'),
+    ('waterdeep-dragon-heist', 'Waterdeep Dragon Heist'),
+    ('waterdeep-dungeon-of-the-mad-mage', 'Waterdeep Dungeon Of The Mad Mage'),
+    ('tomb-of-annihilation', 'Tomb Of Annihilation'),
+    ('descent-into-avernus', 'Descent Into Avernus'),
+    ('the-wild-beyond-the-witchlight', 'The Wild Beyond The Witchlight'),
+    ('candlekeep-mysteries', 'Candlekeep Mysteries'),
+    ('tales-from-the-yawning-portal', 'Tales From The Yawning Portal'),
+    ('keys-from-the-golden-vault', 'Keys From The Golden Vault'),
+    ('ghosts-of-saltmarsh', 'Ghosts Of Saltmarsh')
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO grimoire.adventure (book_id, name, seq, summary, level_range, start_seq, end_seq)
 VALUES
     -- Single-adventure books (whole book, end_seq NULL absorbs future chunks)
