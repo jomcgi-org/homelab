@@ -29,6 +29,12 @@
   ];
   const LENS_VALUES = new Set(LENS_OPTIONS.map((l) => l.value));
 
+  // Physics on this canvas is O(n^2) per frame; on the ~9000-entity
+  // "Everything" scope that freezes the tab. Cap what's actually simulated
+  // and drawn to the most-connected slice, small (per-adventure) graphs are
+  // well under this and render unchanged.
+  const NODE_CAP = 400;
+
   let scope = $state("everything");
   let lens = $state("world");
   let focusId = $state(null);
@@ -62,8 +68,42 @@
     ...Object.values(guestEdgeMap),
   ]);
 
+  // The bounded node/edge set actually handed to the canvas. Below the cap
+  // this is just a passthrough of combinedNodes/combinedEdges; above it,
+  // keep only the top-N most-connected nodes (degree = incident edges in
+  // the full returned edge set) plus the edges between them. The focused
+  // node is always kept even if it didn't make the degree cut: dropping the
+  // very entity the codex has open would read as a bug, not a deliberate
+  // "everything is too big to draw" truncation.
+  const displayGraph = $derived.by(() => {
+    if (combinedNodes.length <= NODE_CAP) {
+      return { nodes: combinedNodes, edges: combinedEdges, capped: false };
+    }
+    const degree = new Map();
+    for (const n of combinedNodes) degree.set(n.id, 0);
+    for (const e of combinedEdges) {
+      if (degree.has(e.from)) degree.set(e.from, degree.get(e.from) + 1);
+      if (degree.has(e.to)) degree.set(e.to, degree.get(e.to) + 1);
+    }
+    const topNodes = [...combinedNodes]
+      .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
+      .slice(0, NODE_CAP);
+    const topIds = new Set(topNodes.map((n) => n.id));
+    if (focusId && !topIds.has(focusId)) {
+      const focusNode = combinedNodes.find((n) => n.id === focusId);
+      if (focusNode) {
+        topNodes.push(focusNode);
+        topIds.add(focusId);
+      }
+    }
+    const topEdges = combinedEdges.filter(
+      (e) => topIds.has(e.from) && topIds.has(e.to),
+    );
+    return { nodes: topNodes, edges: topEdges, capped: true };
+  });
+
   const legendTypes = $derived(
-    [...new Set(combinedNodes.map((n) => n.entity_type))].sort(),
+    [...new Set(displayGraph.nodes.map((n) => n.entity_type))].sort(),
   );
 
   onMount(() => {
@@ -86,7 +126,10 @@
       const advs = await advsPromise;
       scope = advs.length ? `adventure:${advs[0].id}` : "everything";
     }
-    await loadGraph();
+    // clearStaleFocus=false: a deep-linked ?focus= for an entity outside this
+    // scope/lens is a guest candidate, not stale -- keep it and let the
+    // guest-ego $effect below pull it in.
+    await loadGraph(false);
   }
 
   async function loadAdventures() {
@@ -101,23 +144,34 @@
     return adventures;
   }
 
-  async function loadGraph() {
+  // `clearStaleFocus` distinguishes "the user changed scope/lens" (true,
+  // default) from "initial bootstrap" (false, passed by `bootstrap`). On a
+  // user-driven change, a focus that falls outside the new base graph is
+  // stale and cleared: switching the slice should read as a fresh view. On
+  // bootstrap, a deep-linked ?focus= for an entity outside the base graph
+  // isn't stale, it just hasn't been resolved yet -- keeping it lets the
+  // guest-ego $effect fetch + merge it so the codex opens and the node
+  // draws. A genuinely bad/private id still degrades gracefully: the ego
+  // fetch fails silently and the codex's own /entities/{id} fetch surfaces
+  // the error there.
+  async function loadGraph(clearStaleFocus = true) {
     graphLoading = true;
     graphError = "";
     guestNodesById = {};
     guestEdgeMap = {};
     try {
-      baseGraph = await exploreGraph(scope, lens);
+      baseGraph = (await exploreGraph(scope, lens)) ?? { nodes: [], edges: [] };
     } catch (e) {
       graphError = e.message;
       baseGraph = { nodes: [], edges: [] };
     } finally {
       graphLoading = false;
     }
-    // A focused entity that isn't part of the new scope/lens is cleared
-    // rather than silently re-pulled in as a guest: switching the slice
-    // should read as a fresh view.
-    if (focusId && !baseGraph.nodes.some((n) => n.id === focusId)) {
+    if (
+      clearStaleFocus &&
+      focusId &&
+      !baseGraph.nodes.some((n) => n.id === focusId)
+    ) {
       focusId = null;
     }
     syncUrl();
@@ -210,6 +264,12 @@
           {combinedNodes.length.toLocaleString()} entities &middot; {combinedEdges.length.toLocaleString()}
           relationships
         </p>
+        {#if displayGraph.capped}
+          <p class="cap-note">
+            Showing the {NODE_CAP} most-connected of {combinedNodes.length.toLocaleString()}.
+            Pick an adventure to explore everything.
+          </p>
+        {/if}
       {/if}
     </div>
     <div class="ex-controls">
@@ -260,8 +320,8 @@
       </div>
     {:else}
       <ExploreCanvas
-        nodes={combinedNodes}
-        edges={combinedEdges}
+        nodes={displayGraph.nodes}
+        edges={displayGraph.edges}
         {focusId}
         guestIds={guestIdSet}
         onselect={handleSelect}
@@ -332,6 +392,12 @@
   .count-line {
     margin-top: 10px;
     font-variant-numeric: tabular-nums;
+  }
+
+  .cap-note {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--grim-text-dim);
   }
 
   .ex-controls {
