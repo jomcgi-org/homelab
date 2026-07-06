@@ -111,6 +111,10 @@
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    /* Own the page background so every grimoire page is on the clean --grim
+       paper (not the site-wide design-system cream body) AND flips to dark
+       under .grimoire.dark, instead of a cream page showing behind dark cards. */
+    background: var(--grim-paper);
   }
 
   .topbar {
