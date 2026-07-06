@@ -1,0 +1,1439 @@
+<title>Grimoire: From Scan to Sage (choreography mockup)</title>
+<style>
+  :root {
+    --accent: #33507a;
+    --accent-strong: #26406a;
+    --accent-soft: rgba(51, 80, 122, 0.1);
+    --paper: #f3f5f7;
+    --ink: #1a1f28;
+    --ink-soft: #55606f;
+    --faint: #8a94a2;
+    --surface: #ffffff;
+    --surface-2: #edf0f4;
+    --line: #dbe0e7;
+    --serif: "Iowan Old Style", Palatino, Georgia, "Times New Roman", serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --t-location: #2f8f6b;
+    --t-creature: #c0492b;
+    --t-npc: #b07d1e;
+    --t-faction: #7a52b0;
+    --t-deity: #a8811f;
+    --t-item: #b83f7a;
+    --t-spell: #2f7fbf;
+    --t-quest: #2f8f8a;
+    --t-table: #556070;
+  }
+  html {
+    scroll-snap-type: y proximity;
+  }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--mono);
+    margin: 0;
+  }
+
+  .scroller {
+    height: 720vh;
+    position: relative;
+  }
+  .snap {
+    position: absolute;
+    left: 0;
+    width: 1px;
+    height: 2px;
+    scroll-snap-align: start;
+  }
+  .stage {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* hero copy: left column */
+  .hero-copy {
+    position: absolute;
+    left: 6vw;
+    top: 26vh;
+    max-width: 34ch;
+    z-index: 6;
+  }
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    color: var(--faint);
+    font-weight: 600;
+  }
+  .hero-copy h1 {
+    font-family: var(--serif);
+    font-size: clamp(34px, 4.6vw, 58px);
+    line-height: 1.08;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .hero-copy h1 .line {
+    display: block;
+  }
+  .hero-copy h1 .accent {
+    color: var(--accent);
+    font-size: 0.62em;
+    margin-top: 6px;
+  }
+  .hero-copy p {
+    color: var(--ink-soft);
+    font-size: 14px;
+    line-height: 1.6;
+    margin-top: 16px;
+    max-width: 38ch;
+  }
+  .cue {
+    margin-top: 26px;
+    color: var(--faint);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+  }
+  .cue .arrow {
+    display: inline-block;
+    animation: nudge 1.6s ease-in-out infinite;
+  }
+  @keyframes nudge {
+    50% {
+      transform: translateY(4px);
+    }
+  }
+
+  /* caption: TOP-left, clear of the page/cards/chat lanes */
+  .caption {
+    position: absolute;
+    left: 6vw;
+    top: 6vh;
+    z-index: 8;
+    max-width: 38ch;
+    opacity: 0;
+    pointer-events: none;
+    padding: 12px 16px 14px;
+    margin: -12px -16px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--paper) 80%, transparent);
+    backdrop-filter: blur(3px);
+  }
+  .caption .num {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.16em;
+  }
+  .caption .txt {
+    font-family: var(--serif);
+    font-size: clamp(15px, 1.5vw, 19px);
+    line-height: 1.4;
+    margin-top: 4px;
+  }
+
+  /* the page scan */
+  .page-wrap {
+    position: absolute;
+    z-index: 2;
+    will-change: transform, opacity;
+    filter: drop-shadow(0 18px 40px rgba(26, 31, 40, 0.28));
+  }
+  .page-wrap img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 3px;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+  }
+  .bbox {
+    position: absolute;
+    border: 1.5px solid;
+    border-radius: 2px;
+    opacity: 0;
+    will-change: transform, opacity;
+  }
+  /* kind classes are k- prefixed: marker emits a "caption" kind that would
+     otherwise collide with the .caption rail component */
+  .bbox.k-header {
+    border-color: var(--t-creature);
+    background: color-mix(in srgb, var(--t-creature) 14%, transparent);
+  }
+  .bbox.k-text,
+  .bbox.k-caption {
+    border-color: var(--t-spell);
+    background: color-mix(in srgb, var(--t-spell) 10%, transparent);
+  }
+  .bbox.k-aside {
+    border-color: var(--t-npc);
+    background: color-mix(in srgb, var(--t-npc) 14%, transparent);
+  }
+  .bbox.k-art {
+    border-color: var(--t-faction);
+    background: color-mix(in srgb, var(--t-faction) 10%, transparent);
+  }
+  .attribution {
+    position: absolute;
+    left: 2px;
+    bottom: -24px;
+    font-size: 10px;
+    color: var(--faint);
+    white-space: nowrap;
+  }
+
+  /* chunk cards: right column, clear of the rail gutter */
+  .chunks {
+    position: absolute;
+    right: max(6vw, 88px);
+    top: 50%;
+    transform: translateY(-50%);
+    width: min(38vw, 480px);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 3;
+  }
+  .chunk-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 14px;
+    opacity: 0;
+    will-change: transform, opacity;
+    box-shadow: 0 4px 14px rgba(26, 31, 40, 0.06);
+  }
+  .chunk-card .path {
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .chunk-card .body {
+    font-family: var(--serif);
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    margin-top: 5px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .chunk-card mark {
+    background: transparent;
+    color: inherit;
+    border-radius: 3px;
+    padding: 0 2px;
+  }
+
+  /* entity chips + graph: owns the middle band during its phase */
+  .graph {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+  }
+  .edges {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .edges line {
+    stroke: var(--faint);
+    stroke-opacity: 0.45;
+    stroke-width: 1;
+  }
+  .chip {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 3px 10px 3px 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    opacity: 0;
+    will-change: transform, opacity;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(26, 31, 40, 0.08);
+    cursor: pointer;
+  }
+  .chip .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .chip.lit {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent),
+      0 2px 8px rgba(26, 31, 40, 0.12);
+  }
+  .chip.open {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* entity pop-out */
+  .popout {
+    position: absolute;
+    z-index: 12;
+    width: 280px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 14px 44px rgba(26, 31, 40, 0.2);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(6px) scale(0.97);
+    transition:
+      opacity 0.18s ease,
+      transform 0.18s ease;
+  }
+  .popout.on {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+  .popout .ptype {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 2px 7px;
+  }
+  .popout .pname {
+    font-family: var(--serif);
+    font-size: 19px;
+    font-weight: 600;
+    margin-top: 7px;
+  }
+  .popout .prels {
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .popout .prels li {
+    font-size: 10.5px;
+    color: var(--ink-soft);
+    padding: 4px 0;
+    border-top: 1px solid var(--surface-2);
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+  }
+  .popout .rel {
+    color: var(--faint);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    flex: none;
+  }
+  .popout .pfoot {
+    margin-top: 10px;
+    font-size: 9.5px;
+    color: var(--faint);
+  }
+
+  /* scale phase: a structured stat panel up top, cluster sinks low */
+  .constellation {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+  }
+  .scale-panel {
+    position: absolute;
+    left: 50%;
+    top: 10vh;
+    transform: translateX(-50%);
+    z-index: 6;
+    text-align: center;
+    opacity: 0;
+    width: min(92vw, 860px);
+    padding: 24px 28px 22px;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--paper) 78%, transparent);
+    backdrop-filter: blur(3px);
+    pointer-events: none;
+  }
+  .scale-head {
+    font-family: var(--serif);
+    font-size: clamp(24px, 3.2vw, 40px);
+    font-weight: 600;
+    text-wrap: balance;
+  }
+  .this-page {
+    margin-top: 18px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: center;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .this-page .k {
+    color: var(--faint);
+    font-weight: 700;
+    font-size: 9px;
+  }
+  .this-page .arrow {
+    color: var(--accent);
+    font-size: 14px;
+  }
+  .counters {
+    display: flex;
+    justify-content: center;
+    gap: clamp(18px, 4.5vw, 58px);
+    margin-top: 18px;
+  }
+  .counter {
+    text-align: center;
+  }
+  .counter .n {
+    font-family: var(--serif);
+    font-size: clamp(28px, 4vw, 50px);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .counter .l {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-top: 4px;
+  }
+  .type-chips {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    max-width: 640px;
+    margin: 20px auto 0;
+  }
+  .tchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 4px 12px 4px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(26, 31, 40, 0.06);
+  }
+  .tchip .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .tchip .n {
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+    font-weight: 400;
+  }
+
+  /* chat: full-width heading up top (mirrors the shelf panel), panel below */
+  .chat-head {
+    position: absolute;
+    left: 50%;
+    top: 9vh;
+    transform: translateX(-50%);
+    z-index: 6;
+    text-align: center;
+    opacity: 0;
+    width: min(92vw, 860px);
+    padding: 18px 28px 16px;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--paper) 78%, transparent);
+    backdrop-filter: blur(3px);
+    pointer-events: none;
+  }
+  .chat-sub {
+    margin-top: 8px;
+    font-family: var(--serif);
+    font-size: clamp(14px, 1.6vw, 18px);
+    color: var(--ink-soft);
+  }
+
+  .chat {
+    position: absolute;
+    left: 50%;
+    top: 52%;
+    transform: translate(-50%, 120vh);
+    width: min(90vw, 720px);
+    z-index: 7;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 22px 26px 20px;
+    box-shadow: 0 18px 60px rgba(26, 31, 40, 0.18);
+    will-change: transform;
+  }
+  .bubble-q {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 12px 12px 3px 12px;
+    padding: 9px 13px;
+    font-size: 13px;
+    max-width: 80%;
+    margin-left: auto;
+    width: fit-content;
+  }
+  .bubble-a {
+    font-family: var(--serif);
+    font-size: 15.5px;
+    line-height: 1.55;
+    margin-top: 14px;
+    min-height: 8em;
+  }
+  .gchip {
+    cursor: pointer;
+  }
+  .gchip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .bubble-a .caret {
+    display: inline-block;
+    width: 7px;
+    height: 1em;
+    background: var(--accent);
+    vertical-align: text-bottom;
+    animation: blink 0.9s steps(1) infinite;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+  .grounded {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    opacity: 0;
+  }
+  .grounded .lbl {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--faint);
+    font-weight: 700;
+  }
+  .gchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 9px 2px 5px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--surface-2);
+    font-family: var(--mono);
+    color: var(--ink);
+  }
+  .gchip .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .ctas {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+    opacity: 0;
+  }
+  .cta {
+    flex: 1;
+    text-align: center;
+    padding: 10px 8px;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-decoration: none;
+  }
+  .cta.primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .cta.ghost {
+    border: 1px solid var(--line);
+    color: var(--accent);
+  }
+  .mock-note {
+    position: absolute;
+    right: 10px;
+    top: 8px;
+    font-size: 9px;
+    color: var(--faint);
+  }
+
+  /* progress rail */
+  .rail {
+    position: fixed;
+    right: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .rail button {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-direction: row-reverse;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: var(--faint);
+  }
+  .rail button::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--faint);
+    flex: none;
+  }
+  .rail button.on {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .rail button.on::before {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .rail button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  .rail .lbl {
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .rail button:hover .lbl,
+  .rail button.on .lbl {
+    opacity: 1;
+  }
+
+  .reduced-note {
+    display: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scroller {
+      display: none;
+    }
+    .rail {
+      display: none;
+    }
+    .reduced-note {
+      display: block;
+      padding: 40px;
+      font-size: 13px;
+      color: var(--ink-soft);
+      max-width: 60ch;
+    }
+  }
+  @media (max-width: 700px) {
+    .hero-copy {
+      top: 14vh;
+    }
+    .chunks {
+      width: 86vw;
+      right: 7vw;
+    }
+    .caption {
+      max-width: 70vw;
+    }
+    .type-chips {
+      max-width: 86vw;
+    }
+  }
+</style>
+
+<div class="scroller" id="scroller">
+  <div class="stage" id="stage">
+    <canvas class="constellation" id="constellation"></canvas>
+
+    <div class="hero-copy" id="heroCopy">
+      <h1>
+        <span class="line">Grimoire.</span
+        ><span class="line accent">From scan to query.</span>
+      </h1>
+      <p>
+        Watch one page of Lost Mine of Phandelver become structured, queryable
+        knowledge: layout, chunks, entities, and a grounded answer.
+      </p>
+      <div class="cue">SCROLL <span class="arrow">&darr;</span></div>
+    </div>
+
+    <div class="page-wrap" id="pageWrap">
+      <img
+        id="pageImg"
+        src="__IMG__"
+        alt="Scanned book page: Nezznar the Black Spider"
+      />
+      <div class="overlay" id="overlay"></div>
+      <div class="attribution">
+        Lost Mine of Phandelver, p.50 &middot; Wizards of the Coast &middot;
+        excerpt shown for demonstration
+      </div>
+    </div>
+
+    <div class="chunks" id="chunks"></div>
+
+    <div class="graph" id="graph">
+      <svg class="edges" id="edgesSvg"></svg>
+      <div id="chips"></div>
+    </div>
+
+    <!-- outside .graph: must stack above the chat panel -->
+    <div class="popout" id="popout"></div>
+
+    <div class="scale-panel" id="scalePanel">
+      <div class="scale-head">One page in. The whole shelf follows.</div>
+      <div class="this-page" id="thisPage"></div>
+      <div class="counters" id="counters"></div>
+      <div class="type-chips" id="typeChips"></div>
+    </div>
+
+    <div class="chat-head" id="chatHead">
+      <div class="scale-head">Ask the Grimoire.</div>
+      <div class="chat-sub">
+        Every claim cites the chunks and entities it came from. Click a
+        citation.
+      </div>
+    </div>
+
+    <div class="chat" id="chat">
+      <div class="mock-note">mock transcript</div>
+      <div class="bubble-q" id="bubbleQ"></div>
+      <div class="bubble-a" id="bubbleA"></div>
+      <div class="grounded" id="grounded">
+        <span class="lbl">GROUNDED IN</span>
+      </div>
+      <div class="ctas" id="ctas">
+        <a class="cta primary" href="#">Ask the Grimoire</a>
+        <a class="cta ghost" href="#">Wander the graph</a>
+        <a class="cta ghost" href="#">Browse the library</a>
+      </div>
+    </div>
+
+    <div class="caption" id="caption">
+      <div class="num" id="capNum"></div>
+      <div class="txt" id="capTxt"></div>
+    </div>
+  </div>
+</div>
+
+<div class="rail" id="rail"></div>
+<p class="reduced-note">
+  Reduced motion is on: the production page renders these six scenes as a static
+  stacked story. This mockup only demonstrates the scrubbed version; scroll
+  choreography review needs motion enabled.
+</p>
+
+<script>
+  const DATA = __DATA__;
+  const TYPE = {
+    location: "#2f8f6b",
+    creature: "#c0492b",
+    npc: "#b07d1e",
+    faction: "#7a52b0",
+    deity: "#a8811f",
+    item: "#b83f7a",
+    spell: "#2f7fbf",
+    quest: "#2f8f8a",
+    table: "#556070",
+  };
+  const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
+  const sub = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+  // easing personalities: different physical events, different curves
+  const outCubic = (t) => 1 - (1 - t) ** 3; // heavy object settling
+  const outQuart = (t) => 1 - (1 - t) ** 4; // crisp scanner strokes
+  const inOutCubic = (t) => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2); // swooping flight
+  const outBack = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2; // pop with overshoot
+  const outExpo = (t) => (t >= 1 ? 1 : 1 - 2 ** (-10 * t)); // counters rushing in
+
+  // Each phase: [start, end]. Choreography completes by `hold`, leaving a
+  // plateau to dwell on. `rest` is the snap anchor inside the plateau.
+  const PHASES = [
+    { id: "hero", start: 0.0, end: 0.08, rest: 0.0, label: "PAGE" },
+    {
+      id: "layout",
+      start: 0.08,
+      end: 0.26,
+      hold: 0.2,
+      rest: 0.22,
+      label: "LAYOUT",
+    },
+    {
+      id: "chunks",
+      start: 0.26,
+      end: 0.44,
+      hold: 0.38,
+      rest: 0.4,
+      label: "CHUNKS",
+    },
+    {
+      id: "entities",
+      start: 0.44,
+      end: 0.66,
+      hold: 0.56,
+      rest: 0.6,
+      label: "ENTITIES",
+    },
+    {
+      id: "scale",
+      start: 0.66,
+      end: 0.82,
+      hold: 0.76,
+      rest: 0.79,
+      label: "SHELF",
+    },
+    { id: "chat", start: 0.82, end: 1.0, hold: 0.97, rest: 1.0, label: "ASK" },
+  ];
+  // The shelf and chat phases carry their own full-width headlines.
+  const CAPTIONS = {
+    layout: [
+      "1 / LAYOUT DETECTION",
+      "Marker reads the scanned page and finds its structure: headers, columns, asides, art.",
+    ],
+    chunks: [
+      "2 / STRUCTURAL CHUNKING",
+      "Blocks become chunks in reading order, keyed to the section they belong to.",
+    ],
+    entities: [
+      "3 / ENTITY EXTRACTION",
+      "An LLM reads each chunk and emits typed entities, and how they relate. Click a node.",
+    ],
+  };
+
+  const TRANSCRIPT = {
+    q: "Who is the Black Spider, and what does he actually want?",
+    a: "The Black Spider is Nezznar, a drow directing events from the shadows: he sent the Cragmaw goblins after Gundren Rockseeker and planted the Redbrands in Phandalin. He is exploring Wave Echo Cave with his giant spiders, hunting the legendary Forge of Spells. Capture him alive and deliver him to Sildar Hallwinter in Phandalin, and the party earns double XP for the quarry.",
+    grounded: ["Nezznar", "Wave Echo Cave", "Redbrands", "Sildar Hallwinter"],
+  };
+
+  // ---------- static DOM build ----------
+  const stage = document.getElementById("stage");
+  const scroller = document.getElementById("scroller");
+  const pageWrap = document.getElementById("pageWrap");
+  const overlay = document.getElementById("overlay");
+  const aspect = DATA.source.aspect;
+
+  const boxEls = DATA.bboxes.map((b) => {
+    const el = document.createElement("div");
+    el.className = "bbox k-" + b.kind;
+    el.style.left = b.x * 100 + "%";
+    el.style.top = b.y * 100 + "%";
+    el.style.width = b.w * 100 + "%";
+    el.style.height = b.h * 100 + "%";
+    overlay.appendChild(el);
+    return el;
+  });
+
+  const chunksEl = document.getElementById("chunks");
+  const entById = Object.fromEntries(DATA.entities.map((e) => [e.id, e]));
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+  // Every REAL highlightable phrase on the page: entity names plus recorded
+  // mention texts, longest first so "Wave Echo Cave" wins over "Cave".
+  const PHRASES = [
+    ...DATA.entities.map((e) => ({
+      phrase: e.name,
+      color: TYPE[e.type] || "#556070",
+    })),
+    ...DATA.mentions
+      .filter((m) => m.text && entById[m.entity])
+      .map((m) => ({
+        phrase: m.text,
+        color: TYPE[entById[m.entity].type] || "#556070",
+      })),
+  ].sort((a, b) => b.phrase.length - a.phrase.length);
+
+  // split text into segments, marking every non-overlapping phrase occurrence
+  function segmentize(text) {
+    const lower = text.toLowerCase();
+    const marks = [];
+    for (const { phrase, color } of PHRASES) {
+      const nm = phrase.toLowerCase();
+      if (nm.length < 4) continue;
+      let idx = 0;
+      while ((idx = lower.indexOf(nm, idx)) !== -1) {
+        const end = idx + nm.length;
+        if (!marks.some((m) => idx < m.end && end > m.start))
+          marks.push({ start: idx, end, color });
+        idx = end;
+      }
+    }
+    marks.sort((a, b) => a.start - b.start);
+    const segs = [];
+    let pos = 0;
+    for (const m of marks) {
+      if (m.start > pos) segs.push({ t: text.slice(pos, m.start) });
+      segs.push({ t: text.slice(m.start, m.end), c: m.color });
+      pos = m.end;
+    }
+    if (pos < text.length) segs.push({ t: text.slice(pos) });
+    return segs;
+  }
+
+  const cardEls = DATA.chunks.map((c) => {
+    const el = document.createElement("div");
+    el.className = "chunk-card";
+    const body = segmentize(c.content.slice(0, 240))
+      .map((s) => (s.c ? `<mark data-c="${s.c}">${esc(s.t)}</mark>` : esc(s.t)))
+      .join("");
+    el.innerHTML = `<div class="path">${esc(c.section.split("/").pop())}</div><div class="body">${body}</div>`;
+    chunksEl.appendChild(el);
+    return el;
+  });
+  const markEls = [...chunksEl.querySelectorAll("mark")];
+
+  // graph nodes: deterministic layout, then a label-collision pass
+  function mulberry32(a) {
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rand = mulberry32(49);
+  const nodes = DATA.entities.map((e) => ({
+    ...e,
+    x: rand() * 2 - 1,
+    y: rand() * 2 - 1,
+  }));
+  const nById = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const edges = DATA.edges.filter((e) => nById[e.from] && nById[e.to]);
+  for (let it = 0; it < 260; it++) {
+    for (const a of nodes)
+      for (const b of nodes) {
+        if (a === b) continue;
+        let dx = a.x - b.x,
+          dy = a.y - b.y,
+          d2 = dx * dx + dy * dy + 0.001;
+        const f = 0.0028 / d2;
+        a.x += dx * f;
+        a.y += dy * f;
+      }
+    for (const e of edges) {
+      const a = nById[e.from],
+        b = nById[e.to];
+      const dx = b.x - a.x,
+        dy = b.y - a.y,
+        d = Math.hypot(dx, dy);
+      const f = (d - 0.5) * 0.02;
+      a.x += (dx / d) * f;
+      a.y += (dy / d) * f;
+      b.x -= (dx / d) * f;
+      b.y -= (dy / d) * f;
+    }
+    for (const n of nodes) {
+      n.x *= 0.985;
+      n.y *= 0.985;
+    }
+  }
+  // label collision: separate nodes whose pill labels would overlap
+  for (let it = 0; it < 60; it++) {
+    for (const a of nodes)
+      for (const b of nodes) {
+        if (a === b) continue;
+        const aw = 0.09 + a.name.length * 0.008,
+          bw = 0.09 + b.name.length * 0.008;
+        const dx = a.x - b.x,
+          dy = a.y - b.y;
+        const ox = (aw + bw) / 2 - Math.abs(dx),
+          oy = 0.11 - Math.abs(dy);
+        if (ox > 0 && oy > 0) {
+          const push = 0.5 * Math.min(ox, 0.02) * Math.sign(dx || 0.01);
+          a.x += push;
+          b.x -= push;
+          const pushY = 0.5 * Math.min(oy, 0.02) * Math.sign(dy || 0.01);
+          a.y += pushY;
+          b.y -= pushY;
+        }
+      }
+  }
+
+  const chipsEl = document.getElementById("chips");
+  const chipEls = nodes.map((n, i) => {
+    const el = document.createElement("button");
+    el.className = "chip";
+    el.innerHTML = `<span class="dot" style="background:${TYPE[n.type] || "#556070"}"></span>${n.name}`;
+    el.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      togglePopout(i);
+    });
+    chipsEl.appendChild(el);
+    return el;
+  });
+  const svg = document.getElementById("edgesSvg");
+  const lineEls = edges.map(() => {
+    const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    svg.appendChild(l);
+    return l;
+  });
+
+  // entity pop-out
+  const popout = document.getElementById("popout");
+  let popIdx = -1;
+  let popAnchor = null; // explicit [x,y] anchor (grounded chips); else node position
+  let popT = 0; // timeline position when opened; scrolling away closes it
+  function togglePopout(i, anchor = null) {
+    if (popIdx === i) return closePopout();
+    popIdx = i;
+    popAnchor = anchor;
+    popT = lastT;
+    const n = nodes[i];
+    const color = TYPE[n.type] || "#556070";
+    const rels = edges
+      .filter((e) => e.from === n.id || e.to === n.id)
+      .slice(0, 6)
+      .map((e) => {
+        const other = nById[e.from === n.id ? e.to : e.from];
+        return `<li><span class="rel">${e.type.replace(/_/g, " ")}</span> ${other.name}</li>`;
+      })
+      .join("");
+    const nMentions = DATA.mentions.filter((m) => m.entity === n.id).length;
+    popout.innerHTML = `
+      <span class="ptype" style="color:${color};background:color-mix(in srgb, ${color} 12%, transparent)">${n.type}</span>
+      <div class="pname">${n.name}</div>
+      <ul class="prels">${rels || "<li><span class='rel'>no relationships on this page</span></li>"}</ul>
+      <div class="pfoot">extracted from ${nMentions} mention${nMentions === 1 ? "" : "s"} on this page</div>`;
+    chipEls.forEach((c, j) => c.classList.toggle("open", j === i));
+    popout.classList.add("on");
+    placePopout();
+  }
+  function closePopout() {
+    popIdx = -1;
+    popAnchor = null;
+    popout.classList.remove("on");
+    chipEls.forEach((c) => c.classList.remove("open"));
+  }
+  function placePopout() {
+    if (popIdx < 0) return;
+    const [x, y] = popAnchor || lastNodePos[popIdx] || [W / 2, H / 2];
+    const px = clamp(x + 16, 12, W - 300);
+    const py = clamp(y + 14, 12, H - 240);
+    popout.style.left = px + "px";
+    popout.style.top = py + "px";
+  }
+  document.addEventListener("click", closePopout);
+  addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePopout();
+  });
+
+  // counters + per-type breakdown
+  const countersEl = document.getElementById("counters");
+  const COUNTS = [
+    ["books", DATA.corpus.books],
+    ["chunks", DATA.corpus.chunks],
+    ["entities", DATA.corpus.entities],
+    ["relationships", DATA.corpus.edges],
+  ];
+  const counterEls = COUNTS.map(([l]) => {
+    const d = document.createElement("div");
+    d.className = "counter";
+    d.innerHTML = `<div class="n">0</div><div class="l">${l}</div>`;
+    countersEl.appendChild(d);
+    return d.querySelector(".n");
+  });
+  const thisPageEl = document.getElementById("thisPage");
+  thisPageEl.innerHTML =
+    `<span class="k">THIS PAGE</span>` +
+    `<span>${DATA.bboxes.length} blocks</span><span class="k">/</span>` +
+    `<span>${DATA.chunks.length} chunks</span><span class="k">/</span>` +
+    `<span>${DATA.entities.length} entities</span><span class="k">/</span>` +
+    `<span>${edges.length} relationships</span>` +
+    `<span class="arrow">&darr;</span><span class="k">THE SHELF</span>`;
+  const typeChipsEl = document.getElementById("typeChips");
+  const topTypes = Object.entries(DATA.corpus.byType)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 9);
+  topTypes.forEach(([t, n]) => {
+    const el = document.createElement("span");
+    el.className = "tchip";
+    el.innerHTML = `<span class="dot" style="background:${TYPE[t] || "#556070"}"></span>${t} <span class="n">${n.toLocaleString("en-GB")}</span>`;
+    typeChipsEl.appendChild(el);
+  });
+
+  // constellation: denser, more saturated, radial reveal
+  const canvas = document.getElementById("constellation");
+  const ctx = canvas.getContext("2d");
+  const crand = mulberry32(7);
+  const typePool = [];
+  Object.entries(DATA.corpus.byType).forEach(([t, n]) => {
+    for (let i = 0; i < Math.round((n / DATA.corpus.entities) * 1800); i++)
+      typePool.push(t);
+  });
+  const dots = typePool
+    .map(() => {
+      const r = Math.sqrt(crand()),
+        th = crand() * Math.PI * 2;
+      return {
+        x: 0.5 + r * Math.cos(th) * 0.58,
+        y: 0.5 + r * Math.sin(th) * 0.5,
+        r,
+        s: 1.2 + crand() * 1.8,
+        t: typePool[Math.floor(crand() * typePool.length)],
+      };
+    })
+    .sort((a, b) => a.r - b.r);
+
+  // chat: the answer types out with entity names tinting in their type
+  // colors as they appear (real page entities, same segmenter as the cards)
+  const answerSegs = segmentize(TRANSCRIPT.a);
+  function renderTypedAnswer(chars) {
+    let html = "",
+      used = 0;
+    for (const s of answerSegs) {
+      if (used >= chars) break;
+      const frag = esc(s.t.slice(0, chars - used));
+      html += s.c
+        ? `<span style="color:${s.c};font-weight:600">${frag}</span>`
+        : frag;
+      used += s.t.length;
+    }
+    return html;
+  }
+  document.getElementById("bubbleQ").textContent = TRANSCRIPT.q;
+  const groundedEl = document.getElementById("grounded");
+  const groundedNodes = TRANSCRIPT.grounded
+    .map((name) =>
+      nodes.find((n) => n.name.toLowerCase().includes(name.toLowerCase())),
+    )
+    .filter(Boolean);
+  groundedNodes.forEach((n) => {
+    const c = document.createElement("button");
+    c.className = "gchip";
+    c.innerHTML = `<span class="dot" style="background:${TYPE[n.type]}"></span>${n.name}`;
+    c.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const r = ev.currentTarget.getBoundingClientRect();
+      togglePopout(nodes.indexOf(n), [r.left, r.top - 250]);
+    });
+    groundedEl.appendChild(c);
+  });
+
+  // rail + snap markers at each phase's rest anchor
+  const rail = document.getElementById("rail");
+  // Anchor glides are time-warped by ANIMATION DENSITY: anchors sit in the
+  // plateaus (nothing moving), the choreography lives in each phase's
+  // [start..hold] transition zone. A plain tween therefore idles, whips
+  // through the animation, and idles again. Instead we weight the timeline:
+  // transition scroll-distance costs ~5x plateau distance, so the glide
+  // cruises the dead zones and slows to hand-scroll pace where things move.
+  // Arrow keys use native browser scrolling (same feel as the wheel); the
+  // proximity snap still settles them onto scene anchors. Rail clicks use
+  // native smooth scroll. Timed/warped glides tried and rejected: they never
+  // matched the feel of hand scrolling.
+  function scrollToRest(p) {
+    const span = scroller.offsetHeight - innerHeight;
+    scrollTo({ top: scroller.offsetTop + p.rest * span, behavior: "smooth" });
+  }
+  const railBtns = PHASES.map((p) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="lbl">${p.label}</span>`;
+    b.onclick = () => scrollToRest(p);
+    rail.appendChild(b);
+    return b;
+  });
+  const snapEls = PHASES.map(() => {
+    const s = document.createElement("div");
+    s.className = "snap";
+    scroller.appendChild(s);
+    return s;
+  });
+
+  // ---------- per-frame choreography ----------
+  const heroCopy = document.getElementById("heroCopy");
+  const chatEl = document.getElementById("chat");
+  const bubbleA = document.getElementById("bubbleA");
+  const ctasEl = document.getElementById("ctas");
+  const captionEl = document.getElementById("caption");
+  const capNum = document.getElementById("capNum");
+  const capTxt = document.getElementById("capTxt");
+  const scalePanel = document.getElementById("scalePanel");
+  const chatHead = document.getElementById("chatHead");
+
+  let W = 0,
+    H = 0,
+    pageW = 0,
+    pageH = 0;
+  const lastNodePos = [];
+  function layout() {
+    W = innerWidth;
+    H = innerHeight;
+    // page lane: right-of-center during hero/layout, clear of the caption zone
+    pageH = H * 0.76;
+    pageW = pageH * aspect;
+    if (pageW > W * 0.42) {
+      pageW = W * 0.42;
+      pageH = pageW / aspect;
+    }
+    pageWrap.style.width = pageW + "px";
+    pageWrap.style.height = pageH + "px";
+    pageWrap.style.left = W * 0.56 - pageW / 2 + "px";
+    pageWrap.style.top = (H - pageH) / 2 + "px";
+    canvas.width = W * devicePixelRatio;
+    canvas.height = H * devicePixelRatio;
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const span = scroller.offsetHeight - H;
+    snapEls.forEach((s, i) => (s.style.top = PHASES[i].rest * span + "px"));
+  }
+
+  // graph occupies the middle band; shrinks to a cluster during pull-back
+  function nodePos(n, shrink, chatP = 0) {
+    const cx = W * 0.54,
+      cy = H * 0.52,
+      R = Math.min(W * 0.4, H * 0.42);
+    let sx = cx + n.x * R,
+      sy = cy + n.y * R * 0.78;
+    // exclusion zone: keep nodes clear of the caption block (top-left)
+    if (sy < H * 0.32 && sx < W * 0.38) sx = W * 0.38 + (W * 0.38 - sx) * 0.2;
+    // cluster center: mid-stage -> low-center (scale) -> upper-left (chat)
+    const kx = lerp(cx, W * 0.16, chatP),
+      ky = lerp(H * 0.78, H * 0.44, chatP);
+    return [
+      lerp(sx, kx + n.x * R * 0.12, shrink),
+      lerp(sy, ky + n.y * R * 0.07, shrink),
+    ];
+  }
+
+  function fmt(x) {
+    return Math.round(x).toLocaleString("en-GB");
+  }
+
+  function frame(t) {
+    const phase =
+      PHASES.find((p) => t >= p.start && t < p.end) ??
+      PHASES[PHASES.length - 1];
+    railBtns.forEach((b, i) => b.classList.toggle("on", PHASES[i] === phase));
+    const interactive =
+      phase.id === "entities" || phase.id === "scale" || phase.id === "chat";
+    if (popIdx >= 0 && (!interactive || Math.abs(t - popT) > 0.012))
+      closePopout();
+    chipsEl.style.pointerEvents =
+      phase.id === "entities" || phase.id === "scale" ? "auto" : "none";
+
+    // --- hero copy ---
+    const pHero = sub(t, 0.04, 0.08);
+    heroCopy.style.opacity = 1 - pHero;
+    heroCopy.style.transform = `translateY(${-pHero * 30}px)`;
+    heroCopy.style.visibility = pHero >= 1 ? "hidden" : "visible";
+
+    // --- page transform ---
+    const settle = outCubic(sub(t, 0, 0.08)); // heavy page settles flat
+    const slide = inOutCubic(sub(t, 0.26, 0.36)); // chunks: page swoops to left lane
+    const recede = outCubic(sub(t, 0.44, 0.54)); // entities: page dims further
+    const gone = inOutCubic(sub(t, 0.66, 0.72)); // scale: page exits
+    const rot = lerp(-3.5, 0, settle);
+    const px = lerp(lerp(0, -W * 0.34, slide), -W * 0.52, gone);
+    const sc = lerp(lerp(lerp(0.94, 1, settle), 0.78, slide), 0.66, recede);
+    pageWrap.style.transform = `translate(${px}px,0) rotate(${rot}deg) scale(${sc})`;
+    pageWrap.style.opacity = lerp(lerp(1, 0.25, recede), 0, gone);
+
+    // --- layout boxes ---
+    const pLay = sub(t, 0.08, 0.2); // completes at hold, then plateau
+    const flyP = inOutCubic(sub(t, 0.27, 0.38));
+    DATA.bboxes.forEach((b, i) => {
+      const el = boxEls[i];
+      // crisp scanner strokes: fast attack per box, tight stagger
+      const dp = outQuart(
+        sub(
+          pLay,
+          (i / DATA.bboxes.length) * 0.7,
+          (i / DATA.bboxes.length) * 0.7 + 0.22,
+        ),
+      );
+      if (flyP <= 0) {
+        el.style.opacity = dp;
+        el.style.transform = `scaleY(${lerp(0.25, 1, dp)})`;
+      } else {
+        el.style.opacity = Math.max(0, 1 - flyP * (b.chunkId ? 1.4 : 3));
+        el.style.transform = b.chunkId ? `translateX(${flyP * 60}px)` : "none";
+      }
+    });
+
+    // --- chunk cards: in during chunks, OUT once chips have extracted ---
+    const pChunk = sub(t, 0.28, 0.38);
+    const cardsOut = inOutCubic(sub(t, 0.5, 0.58));
+    cardEls.forEach((el, i) => {
+      const dp = outCubic(sub(pChunk, i * 0.08, i * 0.08 + 0.45));
+      el.style.opacity = dp * (1 - cardsOut);
+      el.style.transform = `translateX(${lerp(80, 0, dp) + cardsOut * 60}px)`;
+    });
+    chunksEl.style.visibility = cardsOut >= 1 ? "hidden" : "visible";
+
+    // --- mention marks tint (start of entities phase) ---
+    const pMark = ease(sub(t, 0.44, 0.48));
+    markEls.forEach((m) => {
+      const c = m.dataset.c;
+      m.style.background =
+        pMark > 0
+          ? `color-mix(in srgb, ${c} ${Math.round(pMark * 22)}%, transparent)`
+          : "transparent";
+      m.style.color = pMark > 0.5 ? c : "inherit";
+      m.style.fontWeight = pMark > 0.5 ? "700" : "inherit";
+    });
+
+    // --- chips fly from card column to graph; edges draw ---
+    const pChip = sub(t, 0.47, 0.56);
+    const shrink = inOutCubic(sub(t, 0.66, 0.74));
+    const graphDim = outCubic(sub(t, 0.82, 0.88));
+    const chatShift = inOutCubic(sub(t, 0.82, 0.9));
+    nodes.forEach((n, i) => {
+      const el = chipEls[i];
+      const raw = sub(pChip, i * 0.025, i * 0.025 + 0.4);
+      const move = inOutCubic(raw); // travel swoops
+      const pop = outBack(raw); // arrival overshoots: entities POP out
+      const [gx, gy] = nodePos(n, shrink, chatShift);
+      lastNodePos[i] = [gx, gy];
+      const x = lerp(W * 0.74, gx, move),
+        y = lerp(H * 0.5, gy, move);
+      el.style.opacity =
+        Math.min(raw * 3, 1) * lerp(1, 0.4, Math.max(shrink * 0.5, graphDim));
+      el.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%) scale(${lerp(0.4, 1, pop) * lerp(1, 0.66, shrink)})`;
+    });
+    placePopout();
+    const pEdge = outCubic(sub(t, 0.52, 0.6));
+    lineEls.forEach((l, i) => {
+      const a = nById[edges[i].from],
+        b = nById[edges[i].to];
+      const [x1, y1] = nodePos(a, shrink, chatShift),
+        [x2, y2] = nodePos(b, shrink, chatShift);
+      l.setAttribute("x1", x1);
+      l.setAttribute("y1", y1);
+      l.setAttribute("x2", x2);
+      l.setAttribute("y2", y2);
+      const dp = clamp(pEdge * lineEls.length - i * 0.5, 0, 1);
+      l.style.strokeOpacity = 0.45 * dp * lerp(1, 0.25, graphDim);
+    });
+
+    // --- scale: constellation + counters + type breakdown ---
+    const pScale = sub(t, 0.66, 0.76);
+    const chatDim = ease(sub(t, 0.82, 0.88));
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    if (pScale > 0) {
+      const vis = Math.floor(ease(pScale) * dots.length);
+      const alpha = lerp(1, 0.3, chatDim);
+      for (let i = 0; i < vis; i++) {
+        const d = dots[i];
+        const x = d.x * W,
+          y = d.y * H;
+        // soft vignette: dots fade before the viewport edge, no half-dots
+        const edge = clamp(Math.min(x, W - x, y, H - y) / 90, 0, 1);
+        // keep the progress rail's column clear
+        if (x > W - 150 && y > H * 0.26 && y < H * 0.74) continue;
+        if (edge <= 0) continue;
+        ctx.globalAlpha = 0.72 * alpha * edge;
+        ctx.fillStyle = TYPE[d.t] || "#556070";
+        ctx.beginPath();
+        ctx.arc(x, y, d.s, 0, 7);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const pCount = outExpo(sub(t, 0.68, 0.76));
+    const panelIn = outCubic(sub(t, 0.665, 0.71));
+    scalePanel.style.opacity = panelIn * (1 - chatDim);
+    scalePanel.style.transform = `translateX(-50%) translateY(${lerp(18, 0, panelIn)}px)`;
+    counterEls.forEach(
+      (el, i) => (el.textContent = fmt(COUNTS[i][1] * pCount)),
+    );
+    typeChipsEl.style.opacity = ease(sub(t, 0.72, 0.76));
+
+    // --- chat: headline fades in up top, panel rises to below it ---
+    const pChat = sub(t, 0.82, 1);
+    const rise = outCubic(sub(pChat, 0, 0.14));
+    chatHead.style.opacity = rise * ease(sub(pChat, 0.04, 0.16));
+    chatEl.style.transform = `translate(-50%, calc(-44% + ${lerp(120, 0, rise)}vh))`;
+    const typed = Math.floor(
+      TRANSCRIPT.a.length * clamp((pChat - 0.18) / 0.5, 0, 1),
+    );
+    bubbleA.innerHTML =
+      renderTypedAnswer(typed) +
+      (typed > 0 && typed < TRANSCRIPT.a.length
+        ? '<span class="caret"></span>'
+        : "");
+    const pG = ease(sub(pChat, 0.7, 0.8));
+    groundedEl.style.opacity = pG;
+    groundedNodes.forEach((n) => {
+      const i = nodes.indexOf(n);
+      chipEls[i].classList.toggle("lit", pG > 0.5);
+      if (pG > 0.5) chipEls[i].style.opacity = 0.95;
+    });
+    ctasEl.style.opacity = ease(sub(pChat, 0.82, 0.92));
+
+    // --- caption (top-left, crossfades between phases) ---
+    const cap = CAPTIONS[phase.id];
+    if (cap) {
+      const pin = sub(t, phase.start + 0.005, phase.start + 0.025);
+      const pout =
+        phase.id === "chat" ? 0 : sub(t, phase.end - 0.012, phase.end);
+      captionEl.style.opacity = Math.min(pin, 1 - pout);
+      capNum.textContent = cap[0];
+      capTxt.textContent = cap[1];
+    } else captionEl.style.opacity = 0;
+  }
+
+  // ---------- scrub loop ----------
+  let raf = 0;
+  let lastT = 0;
+  function onFrame() {
+    raf = 0;
+    const r = scroller.getBoundingClientRect();
+    const span = r.height - H;
+    lastT = span > 0 ? clamp(-r.top / span, 0, 1) : 0;
+    frame(lastT);
+  }
+  function queue() {
+    if (!raf) raf = requestAnimationFrame(onFrame);
+  }
+  addEventListener("scroll", queue, { passive: true });
+  addEventListener(
+    "resize",
+    () => {
+      layout();
+      queue();
+    },
+    { passive: true },
+  );
+  layout();
+  onFrame();
+</script>
