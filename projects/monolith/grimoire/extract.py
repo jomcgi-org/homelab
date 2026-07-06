@@ -20,7 +20,11 @@ recurs across dungeons and books): a ``location`` is deduped within its own
 entry (see ``_room_site``). Two same-named rooms under different sites, or in
 different books, stay separate nodes; a bare same-book reference that names no
 site still resolves to the book's single candidate, but an ambiguous one never
-guesses. Every other entity type keeps the global ``(entity_type, lower(name))``
+guesses. ``table`` (v6) is deduped within ``source_book`` too but WITHOUT the
+site logic: table captions ("Random Encounters") repeat across books, so a
+same-named table in another book stays separate, while a repeat within one book
+(a table split across chunks) reuses the oldest candidate and key-merges its
+rows. Every other entity type keeps the global ``(entity_type, lower(name))``
 dedup unchanged.
 
 Cache-key semantics: a chunk is considered processed for a given
@@ -98,12 +102,13 @@ DEFAULT_LIMIT = 25
 # also bounds the group size for the incremental per-group commit below.
 DEFAULT_CONCURRENCY = 6
 
-# v4 generic typed-extraction taxonomy (spec v4). ~18 entity types grouped by the
-# DERIVED category: lore (unchanged from v1), gameplay (event/quest), and mechanics
-# (D&D game rules). ``category`` itself is a stored generated column on the entity
-# spine (models._ENTITY_CATEGORY_EXPR / the migration), not a value the extractor
-# emits. ENTITY_TYPES is the union: it gates the spine (unknown types are dropped
-# in _get_or_create_entity) and feeds the json_schema entity_type enum.
+# v4 generic typed-extraction taxonomy (spec v4), widened to 19 types by v6's
+# ``table``. Grouped by the DERIVED category: lore (unchanged from v1), gameplay
+# (event/quest), and mechanics (D&D game rules + the v6 ``table`` container).
+# ``category`` itself is a stored generated column on the entity spine
+# (models._ENTITY_CATEGORY_EXPR / the migration), not a value the extractor emits.
+# ENTITY_TYPES is the union: it gates the spine (unknown types are dropped in
+# _get_or_create_entity) and feeds the json_schema entity_type enum.
 LORE_TYPES: frozenset[str] = frozenset(
     {"creature", "spell", "location", "npc", "faction", "deity", "item"}
 )
@@ -119,6 +124,10 @@ MECHANICS_TYPES: frozenset[str] = frozenset(
         "class_feature",
         "action",
         "rule",
+        # v6: a table/list of options captured as ONE entity (a treasure/magic-item
+        # table, spell list, class progression, random-encounter table) instead of
+        # N junk row entities. Book-scoped dedup in _get_or_create_entity.
+        "table",
     }
 )
 ENTITY_TYPES = set(LORE_TYPES | GAMEPLAY_TYPES | MECHANICS_TYPES)
@@ -879,19 +888,49 @@ A `class_feature` is a feature a PLAYER CHARACTER gains from a class or subclass
 _V5_PROMPT_TEXT = _V4_PROMPT_TEXT + _V5_MECHANICS_CLARIFICATION_ADDENDUM
 
 
+# v6: two extraction defects the first full v5 corpus run surfaced (see
+# grimoire/prompt-backlog.md). (1) Treasure/magic-item tables and spell lists were
+# exploded into dozens of junk row entities ("+1 Arrow", "10 Gems worth 100 GP")
+# and a bare "3rd Level" spell-list heading became a phantom class_feature; the new
+# ``table`` type captures a whole table as ONE entity. (2) 2024-format class
+# features under "LEVEL N: NAME" headings returned empty (recall loss). v5 verbatim
+# (so v5 stays byte-frozen) PLUS an addendum; the schema object is unchanged (it now
+# carries the wider entity_type enum via EXTRACT_SCHEMA). Built by concatenation; do
+# NOT edit this text once released, add a v7 instead.
+_V6_TABLE_AND_RECALL_ADDENDUM = """
+
+TABLES, CLASS FEATURE HEADINGS, AND ANTHOLOGIES (v6)
+Everything above still holds. These four clarifications change nothing else.
+
+TABLES ARE ONE ENTITY, NEVER ROW ENTITIES
+When a chunk is a table or a list of options (a treasure or magic-item table, a spell list, a class progression or level table, a random-encounter table, a rarity table), emit ONE entity with entity_type "table", named from the table's caption or the section heading (never from a row), and put the structure in "detail": dice (str, e.g. "d100", when it is a rollable table), columns (array of column names), rows (object keyed by the roll range or row index, with the row's text as the value). Do NOT emit the rows as entities: "+1 Arrow" from a treasure table, a spell name from a class spell list, or a level row is NOT an item, spell, or class_feature entity. A row's subject is an entity only when it is separately the stat-blocked subject of its own entry elsewhere. If the table continues from a previous chunk (no caption, rows only), still emit the same-named table entity with the additional rows.
+The table's "summary" MUST say what the table is FOR and what its rows contain, so it can be found by meaning, not just by caption: "Random magic items of common and uncommon rarity for treasure hoards at levels 5-10, rolled on a d100", never a restatement of the caption like "A table of magic items." The table entity's summary MUST be genuinely descriptive: say what the table is FOR and what its rows contain, because only name + summary is embedded for search (the rows in detail are never embedded), so a bare caption restatement is invisible to search by meaning. Write "Random magic items of common and uncommon rarity for treasure hoards at levels 5-10, rolled on a d100", NOT "A table of magic items", and never leave the summary as a restatement of the caption.
+
+CLASS FEATURE HEADINGS
+In a class or subclass chapter, a heading of the form "LEVEL N: FEATURE NAME" (for example "LEVEL 3: HAND OF HEALING", "LEVEL 7: EVASION") IS that class or subclass feature: extract it as class_feature with detail.level = N. But a BARE level heading with no feature name ("3RD LEVEL", "10th Level") sitting over a list of spells or options is a table or list heading, NOT a class_feature; capture it as a "table".
+
+ADVENTURE ANTHOLOGIES
+A book genre of "adventure-anthology" is a collection of standalone adventures; apply the adventure-module rules to each adventure's content.
+
+Keep it tight: these clarifications change nothing else; everything above still holds."""
+
+_V6_PROMPT_TEXT = _V5_PROMPT_TEXT + _V6_TABLE_AND_RECALL_ADDENDUM
+
+
 PROMPT_VERSIONS: dict[str, PromptVersion] = {
     "v1": PromptVersion(text=_V1_PROMPT_TEXT, schema=None),
     "v2": PromptVersion(text=_V2_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
     "v3": PromptVersion(text=_V3_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
     "v4": PromptVersion(text=_V4_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
     "v5": PromptVersion(text=_V5_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
+    "v6": PromptVersion(text=_V6_PROMPT_TEXT, schema=EXTRACT_SCHEMA),
 }
 
 # The version the extraction pass writes and reads by default. Env-overridable so
-# a candidate (v5) can run on a fresh book without touching code; promotion is
+# a candidate (v7) can run on a fresh book without touching code; promotion is
 # moving this pointer. Read at import: jobs run as fresh processes, so the env is
 # honored per run.
-ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v5")
+ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v6")
 
 # Backward-compatible alias: the active version's system text. The
 # self-correction turn and any caller referencing EXTRACTION_PROMPT get the live
@@ -1401,11 +1440,24 @@ def _apply_generic_detail(entity: Entity, item: dict) -> None:
     are merged with existing keys winning (a fresh dict is reassigned so SQLAlchemy
     flags the column dirty), and temporality (a top-level field or a ``detail`` key)
     fills only when still NULL and only for event/quest.
+
+    The merge is one level deep for nested dict values: a top-level key whose value
+    is a dict in both the incoming and stored detail is itself key-merged (existing
+    keys winning) rather than replaced wholesale. This is what lets a ``table`` (v6)
+    split across chunks accumulate its ``rows`` object, and a class accumulate its
+    ``features_by_level`` map, instead of a continuation chunk being dropped. It
+    mirrors ``_create_or_enrich_detail``'s JSONB-column enrichment; arrays and
+    scalars still take existing-wins wholesale.
     """
     detail = item.get("detail")
     if isinstance(detail, dict) and detail:
         current = entity.detail or {}
-        entity.detail = {**detail, **current}
+        merged = {**detail, **current}
+        for key, incoming in detail.items():
+            stored = current.get(key)
+            if isinstance(incoming, dict) and isinstance(stored, dict):
+                merged[key] = {**incoming, **stored}
+        entity.detail = merged
     if entity.entity_type in TEMPORAL_TYPES and entity.temporality is None:
         temporality = item.get("temporality")
         if not isinstance(temporality, str) and isinstance(detail, dict):
@@ -1549,9 +1601,12 @@ def _get_or_create_entity(
     (missing/invalid entity_type or name).
 
     Dedup is global by ``(entity_type, lower(name))`` for every type except
-    ``location``, which is scoped to ``source_book`` and a ``site`` key (the
-    room's parent place; see ``_room_site`` / ``_pick_location_candidate``) so
-    same-named rooms across dungeons and books do not merge.
+    ``location`` and ``table``. ``location`` is scoped to ``source_book`` and a
+    ``site`` key (the room's parent place; see ``_room_site`` /
+    ``_pick_location_candidate``) so same-named rooms across dungeons and books do
+    not merge. ``table`` (v6) is scoped to ``source_book`` alone (no site): repeated
+    table captions like "Random Encounters" stay distinct across books but a table
+    split across chunks in one book reuses the oldest same-named candidate.
     """
     entity_type = item.get("entity_type")
     name = item.get("name")
@@ -1580,6 +1635,25 @@ def _get_or_create_entity(
             .all()
         )
         existing = _pick_location_candidate(candidates, site)
+    elif entity_type == "table":
+        # Book-scoped dedup WITHOUT site logic (v6): a table caption like "Random
+        # Encounters" recurs across books, so scope to source_book and reuse the
+        # oldest same-named candidate (a table split across chunks in one book), but
+        # never merge tables across books.
+        site = None
+        existing = (
+            session.execute(
+                select(Entity)
+                .where(
+                    Entity.entity_type == "table",
+                    func.lower(Entity.name) == name_key,
+                    Entity.source_book == chunk.book_id,
+                )
+                .order_by(Entity.created_at)
+            )
+            .scalars()
+            .first()
+        )
     else:
         site = None
         existing = (
