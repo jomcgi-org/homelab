@@ -12,38 +12,57 @@
  */
 
 .grimoire {
-  /* Oxblood / madder red, inherited from the Monster Manual stat-block heritage.
-   * Overriding --accent here recolors every descendant that reads it (links,
-   * active states) without touching the global token. */
-  --grim-accent: #7c2b2b;
-  --grim-accent-strong: #5c1d1d;
+  /* Clean library palette (2026-07-05 reskin mockup): a cool slate-blue
+   * accent over a light neutral paper, replacing the earlier oxblood/parchment
+   * scheme. Overriding --accent here recolors every descendant that reads it
+   * (links, active states) without touching the global token. */
+  --grim-accent: #33507a;
+  --grim-accent-strong: #26406a;
   --accent: var(--grim-accent);
   /* Text and glyphs on the accent fill (active chips, badges, new markers):
-   * white on the deep light-mode oxblood. */
+   * white on the light-mode accent. */
   --grim-on-accent: #ffffff;
 
   --grim-serif:
     "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
     "Times New Roman", serif;
 
-  /* Paper: a warm near-white for reading surfaces only (the reader + stat
-   * block), never the whole chrome. */
-  --grim-paper: #faf6ee;
-  --grim-paper-line: #e6ddca;
-  --grim-ink: #241c15;
-  --grim-ink-soft: #5b4f42;
+  /* Paper: the reading-surface tint (reader + stat block), never the whole
+   * chrome. */
+  --grim-paper: #f3f5f7;
+  --grim-paper-line: #dbe0e7;
+  --grim-ink: #1a1f28;
+  --grim-ink-soft: #55606f;
+
+  /* Neutrals shared by the rest of the chrome (rows, cards, chips, panels):
+   * new token names, additive to the palette above. */
+  --grim-surface: #ffffff;
+  --grim-surface-2: #edf0f4;
+  --grim-line: #dbe0e7;
+  --grim-line-soft: #e8ebef;
+  --grim-text-dim: #55606f;
+  --grim-text-faint: #8a94a2;
+  --grim-accent-soft: rgba(51, 80, 122, 0.1);
 }
 
 body.dark .grimoire {
-  --grim-accent: #c56d6d;
-  --grim-accent-strong: #d98a8a;
-  /* The dark theme's accent is a lighter rose, so on-accent text flips to dark
+  --grim-accent: #7d9fd0;
+  --grim-accent-strong: #93b0da;
+  /* The dark theme's accent is a lighter blue, so on-accent text flips to dark
    * ink for legible contrast. */
-  --grim-on-accent: #17130f;
-  --grim-paper: #17130f;
-  --grim-paper-line: #322920;
-  --grim-ink: #ece3d4;
-  --grim-ink-soft: #b3a793;
+  --grim-on-accent: #0d1017;
+  --grim-paper: #0d1017;
+  --grim-paper-line: #2a3140;
+  --grim-ink: #e8e2d0;
+  --grim-ink-soft: #9aa3b2;
+
+  --grim-surface: #141924;
+  --grim-surface-2: #1a2130;
+  --grim-line: #2a3140;
+  --grim-line-soft: #212836;
+  --grim-text-dim: #9aa3b2;
+  --grim-text-faint: #626d7e;
+  --grim-accent-soft: rgba(125, 159, 208, 0.14);
 }
 
 /* ── Reader / Chapters-nav brutalist tokens ────────────────────
