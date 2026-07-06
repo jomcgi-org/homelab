@@ -239,3 +239,69 @@ def test_knowledge_grant_unique_entity_player_character(session: Session):
     with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
+
+
+def test_adventure_roundtrip(session: Session):
+    from grimoire.models import Adventure, Book, KnowledgeChunk
+
+    session.add(Book(id="cm", display_name="Candlekeep Mysteries"))
+    session.add(
+        KnowledgeChunk(
+            book_id="cm",
+            chunk_ref="r0",
+            content="The Joy of Extradimensional Spaces begins here.",
+            section_path="The Joy of Extradimensional Spaces",
+            seq=71,
+        )
+    )
+    session.commit()
+
+    adventure = Adventure(
+        book_id="cm",
+        name="The Joy of Extradimensional Spaces",
+        seq=1,
+        summary="A wizard's tower folds in on itself.",
+        level_range="1",
+        start_seq=71,
+        end_seq=157,
+    )
+    session.add(adventure)
+    session.commit()
+    session.refresh(adventure)
+
+    stored = session.exec(select(Adventure).where(Adventure.book_id == "cm")).one()
+    assert stored.name == "The Joy of Extradimensional Spaces"
+    assert stored.start_seq == 71
+    assert stored.end_seq == 157
+    assert stored.created_at is not None
+
+
+def test_adventure_unique_book_id_name(session: Session):
+    from grimoire.models import Adventure, Book
+
+    session.add(Book(id="cm", display_name="Candlekeep Mysteries"))
+    session.commit()
+
+    session.add(
+        Adventure(
+            book_id="cm",
+            name="The Joy of Extradimensional Spaces",
+            seq=1,
+            start_seq=71,
+            end_seq=157,
+        )
+    )
+    session.commit()
+
+    session.add(
+        Adventure(
+            book_id="cm",
+            name="The Joy of Extradimensional Spaces",
+            seq=2,
+            start_seq=158,
+            end_seq=200,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()

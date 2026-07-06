@@ -296,6 +296,41 @@ class Book(SQLModel, table=True):
     )
 
 
+class Adventure(SQLModel, table=True):
+    """One self-contained runnable module within a book (structural layer).
+
+    Boundaries are a contiguous ``seq`` range over the book's chunks; entity
+    membership is derived by join (see grimoire.adventure_entity), never
+    re-extracted. Mirror of 20260705160000_grimoire_adventure.sql.
+    """
+
+    __tablename__ = "adventure"
+    __table_args__ = (
+        UniqueConstraint("book_id", "name", name="adventure_book_id_name_key"),
+        UniqueConstraint("book_id", "seq", name="adventure_book_id_seq_key"),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    # Generated app-side (not relying on the migration's DEFAULT
+    # gen_random_uuid(), which SQLite create_all fixtures cannot run) so the
+    # id is populated the same way on both backends.
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    book_id: str
+    name: str
+    seq: int
+    summary: str | None = None
+    level_range: str | None = None
+    start_seq: int
+    end_seq: int | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
 class ChunkEntityMention(SQLModel, table=True):
     __tablename__ = "chunk_entity_mention"
     # Pure association table: the (chunk_id, entity_id) pair is the natural key,
