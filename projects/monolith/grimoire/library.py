@@ -28,7 +28,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
-from grimoire.extract import current_extraction_key
+from grimoire.extract import book_kind, current_extraction_key
 from grimoire.models import (
     Adventure,
     Book,
@@ -139,6 +139,7 @@ def list_books(session: Session) -> list[dict[str, Any]]:
             {
                 "book_id": book_id,
                 "display_name": book.display_name if book else book_id,
+                "book_kind": book_kind(book_id),
                 "chunk_count": chunks.chunk_count if chunks else 0,
                 "image_count": chunks.image_count if chunks else 0,
                 "extracted_count": extracted_by_book.get(book_id, 0),
