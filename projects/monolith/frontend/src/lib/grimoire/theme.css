@@ -43,6 +43,19 @@
   --grim-text-dim: #55606f;
   --grim-text-faint: #8a94a2;
   --grim-accent-soft: rgba(51, 80, 122, 0.1);
+
+  /* Entity-type accent colors: used by Entities rows, statblocks, and the
+   * Explore canvas to give each entity type a stable, distinct hue. */
+  --grim-type-location: #2f8f6b;
+  --grim-type-creature: #c0492b;
+  --grim-type-npc: #b07d1e;
+  --grim-type-faction: #7a52b0;
+  --grim-type-deity: #a8811f;
+  --grim-type-item: #b83f7a;
+  --grim-type-spell: #2f7fbf;
+  --grim-type-class: #556070;
+  --grim-type-event: #7a6f3a;
+  --grim-type-quest: #2f8f8a;
 }
 
 body.dark .grimoire {
@@ -63,6 +76,17 @@ body.dark .grimoire {
   --grim-text-dim: #9aa3b2;
   --grim-text-faint: #626d7e;
   --grim-accent-soft: rgba(125, 159, 208, 0.14);
+
+  --grim-type-location: #4f9a7a;
+  --grim-type-creature: #d0684a;
+  --grim-type-npc: #d9a441;
+  --grim-type-faction: #9f81cc;
+  --grim-type-deity: #e0cf8a;
+  --grim-type-item: #d072a0;
+  --grim-type-spell: #5aa8d6;
+  --grim-type-class: #97a3b5;
+  --grim-type-event: #b3a463;
+  --grim-type-quest: #4fb0aa;
 }
 
 /* ── Reader / Chapters-nav brutalist tokens ────────────────────
