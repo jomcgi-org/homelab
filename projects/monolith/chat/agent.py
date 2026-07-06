@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from pydantic_ai import Agent, ModelSettings, RunContext, ToolDefinition
@@ -445,6 +446,96 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         if not results:
             return "No matching messages found."
         return format_context_messages(results)
+
+    @agent.tool
+    @signposted(
+        "When someone asks for counts, rankings, or a breakdown of channel "
+        "activity (who posted most, how many messages, busiest day), or to "
+        "pull one specific past message."
+    )
+    async def explore_history(
+        ctx: RunContext[ChatDeps],
+        metric: str = "count",
+        group_by: Any = None,
+        username: Any = None,
+        since: Any = None,
+        until: Any = None,
+        contains: Any = None,
+        message_id: Any = None,
+        limit: int = 25,
+    ) -> str:
+        """Get counts, rankings, or a breakdown of this channel's message history, or look up one exact message.
+
+        metric is "count", "first", or "latest". group_by is "author", "day",
+        or omitted. Optionally filter by username, since/until (ISO
+        timestamps), contains (free text), or an exact message_id. Scope is
+        always this channel; there is no channel argument.
+        """
+        deps = ctx.deps
+        user_id = None
+        # Handle Discord mention dicts (e.g. {'type': 'user_id', 'id': '...'})
+        if isinstance(username, dict) and username.get("type") == "user_id":
+            raw_id = username.get("id")
+            if raw_id is not None:
+                user_id = str(raw_id)
+        else:
+            coerced = _coerce_username(username)
+            if coerced:
+                user_id = deps.store.find_user_id_by_username(deps.channel_id, coerced)
+
+        since_dt = _parse_due_at(since) if since else None
+        until_dt = _parse_due_at(until) if until else None
+
+        group_by_val = group_by if isinstance(group_by, str) else None
+        contains_val = (
+            contains if isinstance(contains, str) and contains.strip() else None
+        )
+        message_id_val = str(message_id) if message_id is not None else None
+
+        try:
+            rows = deps.store.query_stats(
+                channel_id=deps.channel_id,
+                metric=metric,
+                group_by=group_by_val,
+                user_id=user_id,
+                since=since_dt,
+                until=until_dt,
+                contains=contains_val,
+                message_id=message_id_val,
+                limit=limit,
+            )
+        except ValueError:
+            return (
+                "I can only group by author or day, and use metric "
+                "count/first/latest (first/latest only with no group_by)."
+            )
+
+        if not rows:
+            return "No matching messages found."
+
+        if metric in ("first", "latest"):
+            # query_stats returns a narrow dict (display fields only, not a
+            # full Message row), so build a duck-typed stand-in for
+            # format_context_messages rather than Message.model_validate,
+            # which would fail on missing required Message fields.
+            row = rows[0]
+            msg = SimpleNamespace(
+                id=None,
+                created_at=row["created_at"],
+                is_bot=row["is_bot"],
+                username=row["username"],
+                content=row["content"],
+            )
+            return format_context_messages([msg])
+
+        if group_by_val == "author":
+            lines = [f"- {r['username']}: {r['count']}" for r in rows]
+            return "\n".join(lines)
+        if group_by_val == "day":
+            lines = [f"- {r['day']}: {r['count']}" for r in rows]
+            return "\n".join(lines)
+
+        return f"Total: {rows[0]['count']}"
 
     @agent.tool
     @signposted(
