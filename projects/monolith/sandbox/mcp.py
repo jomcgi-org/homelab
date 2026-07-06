@@ -31,6 +31,10 @@ async def run_python(code: str, files: list[dict] | None = None) -> dict:
     duckdb, sympy, tabulate, or openpyxl, and no requests, httpx, or any
     other HTTP client, since the sandbox cannot reach the network at all.
 
+    Save any figure or output file with a plain relative filename such as
+    chart.png. Only files written to the working directory are returned, so an
+    absolute path or a /tmp path is lost.
+
     Args:
         code: The Python source to run. It is written to a file and executed
             with python3. Use print(...) for anything you want back as
