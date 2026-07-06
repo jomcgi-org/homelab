@@ -413,7 +413,19 @@ BOOK_KIND: dict[str, str] = {
     "storm-kings-thunder": "adventure",
     "waterdeep-dragon-heist": "adventure",
     "planescape-adventures-in-the-multiverse": "adventure",
+    "candlekeep-mysteries": "adventure-anthology",
+    "tales-from-the-yawning-portal": "adventure-anthology",
+    "keys-from-the-golden-vault": "adventure-anthology",
+    "ghosts-of-saltmarsh": "adventure-anthology",
+    "tomb-of-annihilation": "adventure",
+    "descent-into-avernus": "adventure",
+    "the-wild-beyond-the-witchlight": "adventure",
+    "waterdeep-dungeon-of-the-mad-mage": "adventure",
 }
+# The two book_kind values the structural adventure layer (grimoire.adventure)
+# operates over: single-adventure books and multi-adventure anthologies. Used
+# to scope which books get classified into adventures, not for extraction.
+ADVENTURE_BOOK_KINDS = frozenset({"adventure", "adventure-anthology"})
 # Prefix families for slug variants (edition suffixes / multi-volume sets), tried
 # only after an exact BOOK_KIND miss. Conservative: only well-known families.
 _BOOK_KIND_PREFIXES: tuple[tuple[str, str], ...] = (
