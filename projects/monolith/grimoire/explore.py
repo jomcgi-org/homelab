@@ -108,16 +108,39 @@ def scope_entity_ids(session: Session, scope: str, lens: str) -> set[str]:
     return set(session.exec(query).all())
 
 
+_LENS_NAMES = ("world", "story", "quests", "rules")
+
+
+def _lens_counts(
+    session: Session, scope: str, current_lens: str, current_ids: set[str]
+) -> dict[str, int]:
+    """Entity count per lens for ``scope``, via ``scope_entity_ids`` per lens
+    (id-set sized queries, never a full graph fetch) so the frontend can grey
+    out lens buttons with no entities in the current scope. Reuses the
+    caller's already-computed ``current_ids`` for ``current_lens`` instead of
+    re-querying it, so this is 3 extra queries, not 4."""
+    return {
+        name: len(current_ids)
+        if name == current_lens
+        else len(scope_entity_ids(session, scope, name))
+        for name in _LENS_NAMES
+    }
+
+
 def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
-    """Induced subgraph ``{nodes, edges}`` for a scope + lens: the core
-    bulk-load endpoint for the EXPLORE canvas (see plan design decision 4,
-    "bulk over N+1" - the client fetches one payload per scope/lens change
-    instead of one relationship call per node).
+    """Induced subgraph ``{nodes, edges, lens_counts}`` for a scope + lens:
+    the core bulk-load endpoint for the EXPLORE canvas (see plan design
+    decision 4, "bulk over N+1" - the client fetches one payload per
+    scope/lens change instead of one relationship call per node).
 
     Nodes are every entity in ``scope_entity_ids(session, scope, lens)``,
     projected via ``public.entity_cards`` (spine + secondary detail, batched).
     Edges are every relationship whose BOTH endpoints are in that node set
     (a true induced subgraph, not "every edge touching any node").
+
+    ``lens_counts`` is ``{world, story, quests, rules}`` -> entity count in
+    this scope, so the frontend can grey out lens buttons with zero entities
+    without a separate round trip.
 
     A whole-corpus ``scope="everything"`` can return a large payload; no
     truncation happens here (nodes are never silently dropped), so the
@@ -125,8 +148,9 @@ def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
     "everything" as an explicit, occasionally-large view.
     """
     ids = scope_entity_ids(session, scope, lens)
+    lens_counts = _lens_counts(session, scope, lens, ids)
     if not ids:
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "edges": [], "lens_counts": lens_counts}
     entities = session.exec(select(Entity).where(Entity.id.in_(ids))).all()
     nodes = public.entity_cards(session, entities)
     edges = [
@@ -138,7 +162,7 @@ def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
             )
         ).all()
     ]
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "lens_counts": lens_counts}
 
 
 def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
