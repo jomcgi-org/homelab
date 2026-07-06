@@ -3,15 +3,18 @@
   // Entities nav) and a Turnstile gate around the app content. The gate is a
   // real admission boundary, not decoration: children (and therefore every
   // /api/grimoire fetch) only mount after onAdmitted fires, so the WotC-
-  // copyrighted corpus never reaches an unsolved visitor or a crawler. No
-  // site Nav/Footer: this is a standalone shareable app, not a page of the
-  // portfolio site. noindex keeps it out of search entirely (copyright
-  // mitigation) regardless of admission state.
+  // copyrighted corpus never reaches an unsolved visitor or a crawler. The
+  // one exception is the static homepage at the app root (see isHome below),
+  // which carries no corpus content and no fetches. No site Nav/Footer: this
+  // is a standalone shareable app, not a page of the portfolio site. noindex
+  // keeps it out of search entirely (copyright mitigation) regardless of
+  // admission state.
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
   import "$lib/grimoire/theme.css";
   import {
+    homeHref,
     libraryHref,
     entitiesHref,
     exploreHref,
@@ -21,13 +24,21 @@
 
   let admitted = $state(false);
 
+  // The homepage at the app root is a static pitch page: no corpus content,
+  // no /api/grimoire fetches, so it renders OUTSIDE the Turnstile gate. The
+  // gate exists to keep the copyrighted corpus from bots, not the product
+  // description; every other route (library, reader, entities) stays gated.
+  const isHome = $derived(($page.route.id ?? "") === "/public/app/grimoire");
+
   // Highlight the active topbar link: the entities index and entity detail
   // pages both count as "entities"; the EXPLORE canvas is its own section;
-  // everything else is the library flow.
+  // the homepage highlights nothing; every other page (library, book reader,
+  // adventures) is the library flow.
   const section = $derived.by(() => {
     const id = $page.route.id ?? "";
     if (id.includes("/entities") || id.includes("/entity/")) return "entities";
     if (id.includes("/explore")) return "explore";
+    if (isHome) return "home";
     return "library";
   });
 </script>
@@ -46,7 +57,7 @@
 
 <div class="grimoire-app grimoire">
   <header class="topbar">
-    <a class="wordmark" href={libraryHref()}>Grimoire</a>
+    <a class="wordmark" href={homeHref()}>Grimoire</a>
     <nav class="topbar-nav" aria-label="Grimoire sections">
       <a
         class="topbar-link"
@@ -69,7 +80,9 @@
   </header>
 
   <main class="grimoire-shell">
-  {#if !admitted}
+  {#if isHome || admitted}
+    {@render children()}
+  {:else}
     <div class="wrap-narrow gate">
       <p class="gate-eyebrow">Grimoire Access</p>
       <h1 class="grim-title gate-title">
@@ -84,8 +97,6 @@
         onAdmitted={() => (admitted = true)}
       />
     </div>
-  {:else}
-    {@render children()}
   {/if}
   </main>
 </div>
