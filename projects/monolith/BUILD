@@ -2973,6 +2973,19 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_explore_test",
+    srcs = ["grimoire/explore_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_router_public_test",
     srcs = ["grimoire/router_public_test.py"],
     imports = ["."],
