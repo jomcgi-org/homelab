@@ -282,6 +282,105 @@ class MessageStore:
         result = self.session.exec(sql, params=params)
         return [Message.model_validate(row) for row in result]
 
+    def lexical_search(
+        self,
+        channel_id: str,
+        query_text: str,
+        limit: int = 5,
+        exclude_ids: list[int] | None = None,
+        user_id: str | None = None,
+    ) -> list[Message]:
+        """Full-text keyword search over channel history using the generated
+        content_tsv column (GIN indexed). Complements search_similar: vector
+        search finds semantic matches, this finds exact tokens (a username, a
+        URL, an error code, a rare noun) that embeddings routinely miss.
+
+        Raw SQL because tsvector/websearch_to_tsquery have no ORM equivalent.
+        Returns [] on an empty or stop-word-only query rather than every row.
+        """
+        if not query_text or not query_text.strip():
+            return []
+        exclude = exclude_ids or []
+        params: dict[str, object] = {
+            "channel_id": channel_id,
+            "q": query_text,
+            "limit": limit,
+        }
+        filters = "m.channel_id = :channel_id AND m.content_tsv @@ q.q"
+        if exclude:
+            placeholders = []
+            for idx, eid in enumerate(exclude):
+                key = f"excl_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = int(eid)
+            filters += f" AND m.id NOT IN ({', '.join(placeholders)})"
+        if user_id:
+            filters += " AND m.user_id = :user_id"
+            params["user_id"] = user_id
+
+        # websearch_to_tsquery tolerates arbitrary free text (never raises on
+        # punctuation the way to_tsquery does), so a user's raw question is a
+        # safe query. Compute it once in a CTE (q.q) and reuse for both the @@
+        # filter and the rank.
+        sql = text(
+            "WITH q AS (SELECT websearch_to_tsquery('english', :q) AS q) "
+            f"SELECT m.* FROM chat.messages m, q WHERE {filters} "
+            "ORDER BY ts_rank_cd(m.content_tsv, q.q) DESC, m.created_at DESC "
+            "LIMIT :limit"
+        )
+        result = self.session.exec(sql, params=params)
+        return [Message.model_validate(row) for row in result]
+
+    def search_hybrid(
+        self,
+        channel_id: str,
+        query_text: str,
+        query_embedding: list[float],
+        limit: int = 5,
+        exclude_ids: list[int] | None = None,
+        user_id: str | None = None,
+        candidate_k: int = 20,
+        rrf_k: int = 60,
+    ) -> list[Message]:
+        """Hybrid history search: fuse semantic (pgvector) and lexical
+        (full-text) results with Reciprocal Rank Fusion.
+
+        RRF scores each message by the sum of 1/(rrf_k + rank) across the lists
+        it appears in, so a message ranked highly by either retriever floats up
+        and one ranked by both wins. RRF fuses by rank order alone, so the two
+        incomparable scores (cosine distance vs ts_rank) never need
+        normalizing. Falls back to whichever list is non-empty when the other
+        returns nothing (e.g. a stop-word-only query yields no lexical hits).
+        """
+        vector_hits = self.search_similar(
+            channel_id=channel_id,
+            query_embedding=query_embedding,
+            limit=candidate_k,
+            exclude_ids=exclude_ids,
+            user_id=user_id,
+        )
+        lexical_hits = self.lexical_search(
+            channel_id=channel_id,
+            query_text=query_text,
+            limit=candidate_k,
+            exclude_ids=exclude_ids,
+            user_id=user_id,
+        )
+        scores: dict[int, float] = {}
+        by_id: dict[int, Message] = {}
+        for ranked in (vector_hits, lexical_hits):
+            for rank, msg in enumerate(ranked):
+                if msg.id is None:
+                    continue
+                scores[msg.id] = scores.get(msg.id, 0.0) + 1.0 / (rrf_k + rank)
+                by_id.setdefault(msg.id, msg)
+        fused = sorted(
+            by_id.values(),
+            key=lambda m: (scores[m.id], m.created_at),
+            reverse=True,
+        )
+        return fused[:limit]
+
     def get_attachments(
         self, message_ids: list[int]
     ) -> dict[int, list[tuple[Attachment, Blob]]]:
