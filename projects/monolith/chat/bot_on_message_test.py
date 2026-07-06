@@ -550,7 +550,8 @@ class TestAttentionGate:
             mock_recently_tagged.assert_called_once_with("99", str(message.id))
             assert mock_evaluate.call_args.kwargs.get("recently_tagged") is True
             mock_classify.assert_called_once()
-            mock_proc.assert_called_once_with(message, force_respond=True)
+            # Ambient engage (not an explicit mention) renders non-live.
+            mock_proc.assert_called_once_with(message, force_respond=True, ambient=True)
             mock_engage_agent.assert_not_called()
             mock_start_flow.assert_not_called()
 
@@ -639,7 +640,10 @@ class TestAttentionGate:
             mock_evaluate.assert_not_called()  # gate bypassed for explicit mention
             mock_classify.assert_called_once()  # but the depth split still runs
             mock_start_flow.assert_not_called()
-            mock_proc.assert_called_once_with(message, force_respond=True)
+            # Explicit mention renders live with buttons (ambient=False).
+            mock_proc.assert_called_once_with(
+                message, force_respond=True, ambient=False
+            )
 
     @pytest.mark.asyncio
     async def test_mention_escalates_to_agent_with_selected_repo(self):
