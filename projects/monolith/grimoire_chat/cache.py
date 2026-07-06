@@ -73,8 +73,11 @@ _WATERMARK_SQL = (
 class CachedResponse:
     """A stored assistant turn: the full reply text plus the touched list.
 
-    ``touched`` mirrors the ``node_touched`` SSE payloads (``{"id", "title"}``) so
-    a cache hit can repaint the same grounded nodes before replaying the text.
+    ``touched`` mirrors the ``node_touched`` SSE payloads (``id`` + ``title`` +
+    ``kind``, plus the clickable ``entity_type`` / ``book_id`` / ``chunk_ref``
+    fields when present) so a cache hit can repaint the same grounded nodes before
+    replaying the text. Entries written before those fields existed carry only the
+    ``id`` + ``title`` they were stored with and replay unchanged.
     """
 
     text: str

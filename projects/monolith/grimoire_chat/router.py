@@ -112,6 +112,25 @@ def _format_retrieved_context(retrieved: list[RetrievedPassage]) -> str:
     )
 
 
+def _touched_payload(passage: RetrievedPassage) -> dict:
+    """Serialize one retrieved passage into the node_touched / touched-list shape.
+
+    Always carries the stable ``id`` + ``title`` plus ``kind`` ("chunk"|"entity")
+    so the frontend can make the GROUNDED IN chip clickable. For an entity it adds
+    ``entity_type`` (open the entity by type); for a chunk it adds ``book_id`` +
+    ``chunk_ref`` (deep-link into the reader). Absent fields are omitted so the
+    payload stays tight. Reference metadata only, never model instructions.
+    """
+    payload: dict = {"id": passage.ref_id, "title": passage.title, "kind": passage.kind}
+    if passage.entity_type is not None:
+        payload["entity_type"] = passage.entity_type
+    if passage.book_id is not None:
+        payload["book_id"] = passage.book_id
+    if passage.chunk_ref is not None:
+        payload["chunk_ref"] = passage.chunk_ref
+    return payload
+
+
 def _build_model_messages(
     summary: str | None,
     tail: list[ChatMessage],
@@ -363,9 +382,7 @@ async def _turn_stream(
         # turn.
         retrieved = await retrieval.retrieve(read_db, message)
         for passage in retrieved:
-            yield format_sse(
-                "node_touched", {"id": passage.ref_id, "title": passage.title}
-            )
+            yield format_sse("node_touched", _touched_payload(passage))
 
         # Build the model context from the server-authoritative transcript BEFORE
         # appending the new message, compacting older turns into the rolling
@@ -414,7 +431,7 @@ async def _turn_stream(
             # Persist the turn's grounding so a shared snapshot can render the
             # same GROUNDED IN chips (same shape as the node_touched events and
             # the response cache's touched list).
-            touched=[{"id": p.ref_id, "title": p.title} for p in retrieved],
+            touched=[_touched_payload(p) for p in retrieved],
         )
         sessions.record_turn(db, session, tokens=turn_tokens)
 
@@ -427,7 +444,7 @@ async def _turn_stream(
                 db,
                 cache_key,
                 reply,
-                [{"id": p.ref_id, "title": p.title} for p in retrieved],
+                [_touched_payload(p) for p in retrieved],
             )
 
         yield format_sse(
@@ -474,9 +491,12 @@ async def _replay_cached(
     """
     try:
         # Repaint the same grounded nodes the original answer touched, before the
-        # text, mirroring the generated-turn ordering.
+        # text, mirroring the generated-turn ordering. The stored note already
+        # carries the full node_touched shape (id, title, kind, and the clickable
+        # entity_type / book_id / chunk_ref fields), so replay it as-is; an older
+        # entry that predates those fields simply replays the id + title it has.
         for note in cached.touched:
-            yield format_sse("node_touched", {"id": note["id"], "title": note["title"]})
+            yield format_sse("node_touched", dict(note))
 
         sessions.append_message(
             db,
