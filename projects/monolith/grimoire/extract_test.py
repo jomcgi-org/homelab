@@ -190,7 +190,11 @@ def test_extract_chunks_earlier_groups_commit_before_a_later_failure(
 
 def test_extract_chunks_happy_path(session: Session):
     chunk = _make_chunk(
-        session, "mm", "mm-001", "An owlbear stalks the Zhentarim camp."
+        session,
+        "mm",
+        "mm-001",
+        "An owlbear stalks the Zhentarim camp. "
+        "Armor Class 13, Hit Points 59, Challenge 3.",
     )
 
     existing_npc = Entity(entity_type="npc", name="Existing NPC", source_book="mm")
@@ -248,6 +252,9 @@ def test_extract_chunks_happy_path(session: Session):
         # no swap, no downgrade.
         "rel_signature_swaps": {},
         "rel_signature_downgrades": {},
+        # Stats are anchored in the chunk text, so nothing is dropped; no self loop.
+        "detail_ungrounded_drops": {},
+        "rel_self_loops_dropped": 0,
     }
 
     entities = session.execute(select(Entity)).scalars().all()
@@ -312,6 +319,8 @@ def test_extract_chunks_rerun_skips_already_marked_chunks(session: Session):
         "entities_embedded": 0,
         "rel_signature_swaps": {},
         "rel_signature_downgrades": {},
+        "detail_ungrounded_drops": {},
+        "rel_self_loops_dropped": 0,
     }
     assert len(or_client.calls) == calls_before
 
@@ -433,8 +442,18 @@ def test_failed_extraction_leaves_no_marker(session: Session):
 def test_extract_chunks_name_dedup_reuses_and_does_not_overwrite_detail(
     session: Session,
 ):
-    chunk1 = _make_chunk(session, "mm", "mm-001", "An owlbear guards the lair.")
-    chunk2 = _make_chunk(session, "mm", "mm-002", "The owlbear returns to its den.")
+    chunk1 = _make_chunk(
+        session,
+        "mm",
+        "mm-001",
+        "An owlbear guards the lair. Armor Class 13, Hit Points 59.",
+    )
+    chunk2 = _make_chunk(
+        session,
+        "mm",
+        "mm-002",
+        "The owlbear returns to its den. Armor Class 99, Hit Points 1.",
+    )
     responses = {
         chunk1.content: {
             "entities": [
@@ -488,8 +507,13 @@ def test_extract_chunks_enriches_disjoint_detail_across_chunks(
     # A monster whose lore and stat block land in different chunks: chunk1 sets
     # only cr + a partial actions blob, chunk2 adds ac/hp + more actions. The
     # entity must end up whole (ADR 012 rev. enrich, not first-wins).
-    chunk1 = _make_chunk(session, "mm", "mm-001", "Aboleth lore, cr only.")
-    chunk2 = _make_chunk(session, "mm", "mm-002", "Aboleth stat block.")
+    chunk1 = _make_chunk(session, "mm", "mm-001", "Aboleth lore. Challenge 10.")
+    chunk2 = _make_chunk(
+        session,
+        "mm",
+        "mm-002",
+        "Aboleth stat block. Armor Class 17, Hit Points 135, Challenge 99.",
+    )
     responses = {
         chunk1.content: {
             "entities": [
@@ -1163,16 +1187,17 @@ def test_canonical_names_dedupe_article_and_map_key_variants(session: Session):
 
 
 def test_extract_passes_context_to_client(session: Session):
-    """extract_chunks threads the hierarchy (preferred over leaf), image_ref, and
-    book title + genre into the extract call."""
-    session.add(Book(id="monster-manual", display_name="Monster Manual"))
+    """extract_chunks threads the hierarchy (preferred over leaf for a non-bestiary
+    book), image_ref, and book title + genre into the extract call. Bestiaries take
+    the leaf-only quarantine path, covered separately below."""
+    session.add(Book(id="curse-of-strahd", display_name="Curse of Strahd"))
     chunk = KnowledgeChunk(
-        book_id="monster-manual",
-        chunk_ref="mm-001",
-        content="A caption of a dragon.",
-        section_path="A > BRASS DRAGON",
-        section_hierarchy="Chapter 1: Dragons > Metallic Dragons > BRASS DRAGON",
-        image_ref="s3://grimoire/img/brass.png",
+        book_id="curse-of-strahd",
+        chunk_ref="cos-001",
+        content="A caption of a castle.",
+        section_path="A > Castle Ravenloft",
+        section_hierarchy="Chapter 4: Barovia > Svalich Woods > Castle Ravenloft",
+        image_ref="s3://grimoire/img/castle.png",
     )
     session.add(chunk)
     session.commit()
@@ -1202,11 +1227,11 @@ def test_extract_passes_context_to_client(session: Session):
 
     # The full hierarchy breadcrumb is preferred over the 2-level section_path.
     assert captured["section_path"] == (
-        "Chapter 1: Dragons > Metallic Dragons > BRASS DRAGON"
+        "Chapter 4: Barovia > Svalich Woods > Castle Ravenloft"
     )
-    assert captured["image_ref"] == "s3://grimoire/img/brass.png"
-    assert captured["book_title"] == "Monster Manual"
-    assert captured["book_kind"] == "bestiary"
+    assert captured["image_ref"] == "s3://grimoire/img/castle.png"
+    assert captured["book_title"] == "Curse of Strahd"
+    assert captured["book_kind"] == "adventure"
 
 
 def test_extract_falls_back_to_leaf_section_and_book_id(session: Session):
@@ -1645,3 +1670,368 @@ async def test_openrouter_client_extract_raises_after_failed_correction():
             await client.extract("chunk text")
 
     assert mock_client.post.call_count == 2
+
+
+# --- extraction hardening: site-scoped locations, numeric gate, provenance ----
+
+
+def _make_chunk_h(
+    session: Session,
+    book_id: str,
+    chunk_ref: str,
+    content: str,
+    hierarchy: str,
+) -> KnowledgeChunk:
+    """A chunk carrying a section_hierarchy breadcrumb (for the site/quarantine
+    paths), committed and refreshed like _make_chunk."""
+    chunk = KnowledgeChunk(
+        book_id=book_id,
+        chunk_ref=chunk_ref,
+        content=content,
+        section_hierarchy=hierarchy,
+    )
+    session.add(chunk)
+    session.commit()
+    session.refresh(chunk)
+    return chunk
+
+
+def _location_response(name: str, summary: str) -> dict:
+    return {
+        "entities": [{"entity_type": "location", "name": name, "summary": summary}],
+        "mentions": [],
+        "relationships": [],
+    }
+
+
+def test_location_same_name_different_sites_stay_separate(session: Session):
+    """Two rooms both named 'Kitchen' under different sites in ONE book are two
+    distinct location entities, not one merged node."""
+    c1 = _make_chunk_h(
+        session, "cos", "cos-001", "A castle kitchen.", "Castle Ravenloft > Kitchen"
+    )
+    c2 = _make_chunk_h(
+        session, "cos", "cos-002", "A village kitchen.", "Village of Barovia > Kitchen"
+    )
+    responses = {
+        c1.content: _location_response("Kitchen", "In the castle."),
+        c2.content: _location_response("Kitchen", "In the village."),
+    }
+    _run(extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient()))
+
+    locations = (
+        session.execute(select(Entity).where(Entity.entity_type == "location"))
+        .scalars()
+        .all()
+    )
+    assert len(locations) == 2
+    assert {e.site for e in locations} == {"castle ravenloft", "village of barovia"}
+
+
+def test_location_same_room_entry_reused(session: Session):
+    """A second keyed entry for the same room (same name, site, and book) reuses
+    the existing node instead of forking a duplicate."""
+    c1 = _make_chunk_h(
+        session, "cos", "cos-001", "Kitchen, first pass.", "Castle Ravenloft > Kitchen"
+    )
+    c2 = _make_chunk_h(
+        session, "cos", "cos-002", "Kitchen, second pass.", "Castle Ravenloft > Kitchen"
+    )
+    responses = {
+        c1.content: _location_response("Kitchen", "A."),
+        c2.content: _location_response("Kitchen", "B."),
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    locations = (
+        session.execute(select(Entity).where(Entity.entity_type == "location"))
+        .scalars()
+        .all()
+    )
+    assert len(locations) == 1
+    assert locations[0].site == "castle ravenloft"
+    assert summary["entities_created"] == 1
+    assert summary["entities_reused"] == 1
+
+
+def test_location_same_name_different_books_stay_separate(session: Session):
+    """The same room name in two different books never merges (dedup is
+    book-scoped for locations)."""
+    c1 = _make_chunk_h(
+        session, "cos", "cos-001", "Kitchen in cos.", "Castle Ravenloft > Kitchen"
+    )
+    c2 = _make_chunk_h(
+        session, "lmop", "lmop-001", "Kitchen in lmop.", "Cragmaw Castle > Kitchen"
+    )
+    responses = {
+        c1.content: _location_response("Kitchen", "A."),
+        c2.content: _location_response("Kitchen", "B."),
+    }
+    _run(extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient()))
+
+    locations = (
+        session.execute(select(Entity).where(Entity.entity_type == "location"))
+        .scalars()
+        .all()
+    )
+    assert len(locations) == 2
+    assert {e.source_book for e in locations} == {"cos", "lmop"}
+
+
+def test_location_prose_reference_reuses_unique_same_book_candidate(session: Session):
+    """A site-less (prose) reference to a location resolves to the book's single
+    same-named candidate, the keyed room entry, rather than forking a new node."""
+    c1 = _make_chunk_h(
+        session, "swn", "swn-001", "The town of Nightstone.", "Sword Coast > Nightstone"
+    )
+    # No breadcrumb: a bare prose reference, so _room_site returns None.
+    c2 = _make_chunk(session, "swn", "swn-002", "Nightstone is mentioned again.")
+    responses = {
+        c1.content: _location_response("Nightstone", "A town."),
+        c2.content: _location_response("Nightstone", "Seen again."),
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    locations = (
+        session.execute(select(Entity).where(Entity.entity_type == "location"))
+        .scalars()
+        .all()
+    )
+    assert len(locations) == 1
+    # The keyed entry's site is retained; the prose reference reused it.
+    assert locations[0].site == "sword coast"
+    assert summary["entities_reused"] == 1
+
+
+def test_creature_dedup_remains_global_across_books(session: Session):
+    """Only locations are book-scoped; a creature of the same name still dedups
+    globally across books."""
+    c1 = _make_chunk(session, "mm", "mm-001", "A goblin lurks.")
+    c2 = _make_chunk(session, "tob", "tob-001", "A goblin reappears.")
+    responses = {
+        c1.content: {
+            "entities": [
+                {"entity_type": "creature", "name": "Goblin", "summary": "A."}
+            ],
+            "mentions": [],
+            "relationships": [],
+        },
+        c2.content: {
+            "entities": [
+                {"entity_type": "creature", "name": "Goblin", "summary": "B."}
+            ],
+            "mentions": [],
+            "relationships": [],
+        },
+    }
+    _run(extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient()))
+
+    creatures = (
+        session.execute(select(Entity).where(Entity.entity_type == "creature"))
+        .scalars()
+        .all()
+    )
+    assert len(creatures) == 1
+
+
+def test_numeric_gate_keeps_grounded_ac_drops_absent_hp(session: Session):
+    """An AC anchored in the chunk text is kept; an HP the model invented (absent
+    from the text) is dropped and tallied in detail_ungrounded_drops."""
+    chunk = _make_chunk(session, "mm", "mm-001", "The ogre is tough. Armor Class 15.")
+    responses = {
+        chunk.content: {
+            "entities": [
+                {
+                    "entity_type": "creature",
+                    "name": "Ogre",
+                    "summary": "Big.",
+                    "detail": {"ac": 15, "hp_avg": 200},
+                }
+            ],
+            "mentions": [],
+            "relationships": [],
+        }
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    detail = session.execute(select(EntityCreature)).scalars().one()
+    assert detail.ac == 15
+    assert detail.hp_avg is None
+    assert summary["detail_ungrounded_drops"] == {"hp_avg": 1}
+
+
+def test_numeric_gate_cr_grounded_by_fraction_form(session: Session):
+    """A fractional CR grounds against the fraction spelling in the text
+    ('Challenge 1/2' grounds cr=0.5)."""
+    chunk = _make_chunk(session, "mm", "mm-001", "A weak kobold. Challenge 1/2.")
+    responses = {
+        chunk.content: {
+            "entities": [
+                {
+                    "entity_type": "creature",
+                    "name": "Kobold",
+                    "summary": "Small.",
+                    "detail": {"cr": 0.5},
+                }
+            ],
+            "mentions": [],
+            "relationships": [],
+        }
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    detail = session.execute(select(EntityCreature)).scalars().one()
+    assert detail.cr == pytest.approx(0.5)
+    assert summary["detail_ungrounded_drops"] == {}
+
+
+def test_numeric_gate_spell_level_zero_grounded_by_cantrip(session: Session):
+    """Spell level 0 grounds on the word 'cantrip'."""
+    from grimoire.models import EntitySpell
+
+    chunk = _make_chunk(
+        session, "phb", "phb-001", "Prestidigitation is a cantrip of minor magic."
+    )
+    responses = {
+        chunk.content: {
+            "entities": [
+                {
+                    "entity_type": "spell",
+                    "name": "Prestidigitation",
+                    "summary": "Minor magic.",
+                    "detail": {"level": 0, "school": "transmutation"},
+                }
+            ],
+            "mentions": [],
+            "relationships": [],
+        }
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    detail = session.execute(select(EntitySpell)).scalars().one()
+    assert detail.level == 0
+    assert detail.school == "transmutation"
+    assert summary["detail_ungrounded_drops"] == {}
+
+
+def test_self_loop_edge_dropped(session: Session):
+    """An edge whose endpoints resolve to the same entity (X -> X) is dropped and
+    counted in rel_self_loops_dropped."""
+    chunk = _make_chunk(session, "cos", "cos-001", "Strahd broods alone.")
+    responses = {
+        chunk.content: {
+            "entities": [
+                {"entity_type": "npc", "name": "Strahd", "summary": "A vampire."}
+            ],
+            "mentions": [],
+            "relationships": [
+                {"from_name": "Strahd", "to_name": "Strahd", "rel_type": "ENEMY_OF"}
+            ],
+        }
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    assert summary["rel_self_loops_dropped"] == 1
+    assert summary["relationships_created"] == 0
+    assert session.execute(select(Relationship)).scalars().all() == []
+
+
+def test_relationship_rows_carry_chunk_id(session: Session):
+    """A newly created relationship row records the chunk it was extracted from."""
+    chunk = _make_chunk(session, "lmop", "lmop-001", "Klarg leads the Cragmaw goblins.")
+    responses = {
+        chunk.content: {
+            "entities": [
+                {"entity_type": "npc", "name": "Klarg", "summary": "A bugbear."},
+                {"entity_type": "faction", "name": "Cragmaw", "summary": "A tribe."},
+            ],
+            "mentions": [],
+            "relationships": [
+                {"from_name": "Klarg", "to_name": "Cragmaw", "rel_type": "LEADER_OF"}
+            ],
+        }
+    }
+    _run(extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient()))
+
+    rel = session.execute(select(Relationship)).scalars().one()
+    assert rel.chunk_id == chunk.id
+
+
+def test_bestiary_passes_leaf_only_section_context(session: Session):
+    """A bestiary chunk gets leaf-only section context (the backfilled hierarchy
+    mis-nests, so it is quarantined in favor of the 2-level section_path)."""
+    session.add(Book(id="monster-manual", display_name="Monster Manual"))
+    chunk = KnowledgeChunk(
+        book_id="monster-manual",
+        chunk_ref="mm-001",
+        content="Aarakocra patrol the Howling Gyre.",
+        section_path="AARAKOCRA",
+        section_hierarchy="Appendix A > Misnested Sibling > AARAKOCRA",
+    )
+    session.add(chunk)
+    session.commit()
+
+    captured: dict = {}
+
+    class CapturingClient(FakeOpenRouterClient):
+        async def extract(
+            self,
+            chunk_text,
+            section_path=None,
+            image_ref=None,
+            book_title=None,
+            book_kind=None,
+        ):
+            captured.update(section_path=section_path, book_kind=book_kind)
+            return {"entities": [], "mentions": [], "relationships": []}
+
+    _run(extract_chunks(session, CapturingClient({}), FakeEmbedClient(), limit=25))
+
+    assert captured["book_kind"] == "bestiary"
+    # Leaf-only: the mis-nesting hierarchy is dropped, the 2-level section_path wins.
+    assert captured["section_path"] == "AARAKOCRA"
+
+
+def test_adventure_passes_full_hierarchy_section_context(session: Session):
+    """A non-bestiary (adventure) chunk keeps the full ancestry breadcrumb."""
+    session.add(Book(id="curse-of-strahd", display_name="Curse of Strahd"))
+    chunk = KnowledgeChunk(
+        book_id="curse-of-strahd",
+        chunk_ref="cos-001",
+        content="A blood-stained surgery.",
+        section_path="Chapter 13 > Surgery",
+        section_hierarchy="Chapter 13: The Abbey > L17. Surgery",
+    )
+    session.add(chunk)
+    session.commit()
+
+    captured: dict = {}
+
+    class CapturingClient(FakeOpenRouterClient):
+        async def extract(
+            self,
+            chunk_text,
+            section_path=None,
+            image_ref=None,
+            book_title=None,
+            book_kind=None,
+        ):
+            captured.update(section_path=section_path, book_kind=book_kind)
+            return {"entities": [], "mentions": [], "relationships": []}
+
+    _run(extract_chunks(session, CapturingClient({}), FakeEmbedClient(), limit=25))
+
+    assert captured["book_kind"] == "adventure"
+    assert captured["section_path"] == "Chapter 13: The Abbey > L17. Surgery"

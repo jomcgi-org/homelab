@@ -14,6 +14,15 @@ split across chunks (lore in one, stat block in another) ends up whole, while a
 later chunk never clobbers a value an earlier one already set. This keeps the
 job idempotent (a re-run fills nothing new) and needs no reconciliation pass.
 
+Locations are the one exception (they alone name rooms, and the same room name
+recurs across dungeons and books): a ``location`` is deduped within its own
+``source_book`` and by a ``site`` key, the parent place of the room's keyed
+entry (see ``_room_site``). Two same-named rooms under different sites, or in
+different books, stay separate nodes; a bare same-book reference that names no
+site still resolves to the book's single candidate, but an ambiguous one never
+guesses. Every other entity type keeps the global ``(entity_type, lower(name))``
+dedup unchanged.
+
 Cache-key semantics: a chunk is considered processed for a given
 ``(model, prompt_version)`` once a ``grimoire.chunk_extraction`` marker row
 exists for that key (see ``models.ChunkExtraction``). The key uses the prompt
@@ -1260,15 +1269,84 @@ _DETAIL_FIELD_TYPES: dict[type, dict[str, type]] = {
 }
 
 
+# Numeric detail fields gated on being anchored in the chunk text (spec Change 3):
+# creature ac/hp_avg/cr and spell level. On a chunk with no stat block the model
+# sometimes fills these from memory, and on third-party books those are reliably
+# wrong. A value that fails the check is dropped (never fails the chunk) and
+# counted in the run's ``detail_ungrounded_drops``. Ability scores, speed,
+# actions, traits, and prose fields are NOT gated (a post-run verifier covers
+# those).
+_GROUNDED_NUMERIC_FIELDS: frozenset[str] = frozenset({"ac", "hp_avg", "cr", "level"})
+
+# Non-integral CRs that appear as a fraction in stat blocks. A decimal cr maps to
+# both its decimal spelling and this fraction; an integral cr appears as a plain
+# int ("Challenge 2"), handled by ``{value:g}``.
+_CR_FRACTIONS: dict[float, str] = {0.125: "1/8", 0.25: "1/4", 0.5: "1/2"}
+
+
+def _cr_text_variants(value: float) -> list[str]:
+    """Textual forms a CR value may take in a stat block: the decimal spelling
+    ("2", "0.5") plus the canonical fraction for the three fractional CRs."""
+    variants = [f"{value:g}"]
+    fraction = _CR_FRACTIONS.get(round(float(value), 3))
+    if fraction is not None:
+        variants.append(fraction)
+    return variants
+
+
+def _grounded_numeric(chunk_text: str, field_name: str, value: Any) -> bool:
+    """Whether a numeric detail value is anchored in the chunk text (spec Change 3).
+
+    Case-insensitive. ``ac``/``hp_avg`` match their stat-block label followed by
+    the integer; ``cr`` matches Challenge/CR followed by the decimal or fraction
+    form; spell ``level`` matches "cantrip" for 0 and the ordinal or "level N"
+    form for N >= 1. A field not covered here is treated as grounded.
+    """
+    flags = re.IGNORECASE
+    if field_name == "ac":
+        v = re.escape(str(int(value)))
+        return bool(
+            re.search(rf"\bArmor Class[:\s]*{v}\b", chunk_text, flags)
+            or re.search(rf"\bAC[:\s]*{v}\b", chunk_text, flags)
+        )
+    if field_name == "hp_avg":
+        v = re.escape(str(int(value)))
+        return bool(
+            re.search(rf"\bHit Points[:\s]*{v}\b", chunk_text, flags)
+            or re.search(rf"\bHP[:\s]*{v}\b", chunk_text, flags)
+        )
+    if field_name == "cr":
+        alts = "|".join(re.escape(v) for v in _cr_text_variants(float(value)))
+        return bool(
+            re.search(rf"\bChallenge[:\s]*(?:{alts})\b", chunk_text, flags)
+            or re.search(rf"\bCR[:\s]*(?:{alts})\b", chunk_text, flags)
+        )
+    if field_name == "level":
+        n = int(value)
+        if n == 0:
+            return bool(re.search(r"\bcantrip\b", chunk_text, flags))
+        return bool(
+            re.search(rf"\b{n}(?:st|nd|rd|th)[-\s]level", chunk_text, flags)
+            or re.search(rf"\blevel {n}\b", chunk_text, flags)
+        )
+    return True
+
+
 def _coerce_detail_fields(
-    detail_model: type, entity_name: str, detail: dict
+    detail_model: type,
+    entity_name: str,
+    detail: dict,
+    chunk_text: str,
+    drops: dict[str, int],
 ) -> dict[str, Any]:
     """Coerce a raw detail payload to typed field kwargs (no entity_id).
 
     Any key in ``detail`` not in the model's known field set is silently
     ignored (defensive against the model inventing extra fields); a known
     field whose value cannot be coerced to the expected type is dropped
-    with a warning rather than failing the whole chunk.
+    with a warning rather than failing the whole chunk. The four numeric
+    stat fields in ``_GROUNDED_NUMERIC_FIELDS`` are additionally dropped (and
+    tallied in ``drops``) when their value is not anchored in ``chunk_text``.
     """
     field_types = _DETAIL_FIELD_TYPES[detail_model]
     coerced: dict[str, Any] = {}
@@ -1294,7 +1372,7 @@ def _coerce_detail_fields(
             continue
         # int / float
         try:
-            coerced[field_name] = expected_type(value)
+            coerced_value = expected_type(value)
         except (TypeError, ValueError):
             logger.warning(
                 "grimoire extract: dropping uncoercible detail field %s.%s=%r for %r",
@@ -1303,6 +1381,13 @@ def _coerce_detail_fields(
                 value,
                 entity_name,
             )
+            continue
+        if field_name in _GROUNDED_NUMERIC_FIELDS and not _grounded_numeric(
+            chunk_text, field_name, coerced_value
+        ):
+            drops[field_name] = drops.get(field_name, 0) + 1
+            continue
+        coerced[field_name] = coerced_value
     return coerced
 
 
@@ -1330,7 +1415,13 @@ def _apply_generic_detail(entity: Entity, item: dict) -> None:
 
 
 def _create_or_enrich_detail(
-    session: Session, detail_model: type, entity_id: str, entity_name: str, detail: dict
+    session: Session,
+    detail_model: type,
+    entity_id: str,
+    entity_name: str,
+    detail: dict,
+    chunk_text: str,
+    drops: dict[str, int],
 ) -> None:
     """Insert the typed detail row, or enrich an existing one (ADR 012 rev.).
 
@@ -1338,8 +1429,12 @@ def _create_or_enrich_detail(
     is still NULL, and a JSONB dict column is key-merged with existing keys
     winning. So a monster whose lore and stat block land in different chunks
     ends up whole, while a later chunk never clobbers an earlier one's value.
+    ``chunk_text``/``drops`` flow into the numeric grounding gate in
+    ``_coerce_detail_fields``.
     """
-    coerced = _coerce_detail_fields(detail_model, entity_name, detail)
+    coerced = _coerce_detail_fields(
+        detail_model, entity_name, detail, chunk_text, drops
+    )
     if not coerced:
         return
     existing = session.get(detail_model, entity_id)
@@ -1395,16 +1490,68 @@ def _canonicalize_name(name: str) -> str:
     return name
 
 
+def _room_site(chunk: KnowledgeChunk, canonical_name: str) -> str | None:
+    """The parent-place ``site`` key for a location that IS this chunk's own keyed
+    entry, used to keep same-named rooms in different dungeons/books distinct.
+
+    The breadcrumb (``section_hierarchy``, else ``section_path``) is split on
+    " > ". Only when it has >= 2 segments AND its leaf canonicalizes to this
+    entity's own name (so the chunk is that location's keyed entry, not a passing
+    mention) is the second-to-last segment returned, canonicalized and
+    lower-cased, as the site. A prose mention (leaf != name) or a top-level place
+    (< 2 segments) returns None, so a bare reference never guesses a site.
+    """
+    breadcrumb = chunk.section_hierarchy or chunk.section_path
+    if not breadcrumb:
+        return None
+    segments = breadcrumb.split(" > ")
+    if len(segments) < 2:
+        return None
+    if _canonicalize_name(segments[-1]).lower() != canonical_name.lower():
+        return None
+    return _canonicalize_name(segments[-2]).lower()
+
+
+def _pick_location_candidate(
+    candidates: list[Entity], site: str | None
+) -> Entity | None:
+    """Choose which same-book, same-name location (if any) to reuse (spec Change 1).
+
+    ``candidates`` are the same-book locations sharing this name, oldest first.
+    A room entry (site set) reuses only a candidate whose site matches, else it
+    forces a new node. A site-less reference prefers a site-less candidate, else
+    reuses the lone candidate when there is exactly one, else stays ambiguous
+    (None -> new node) so a bare "Kitchen" never guesses among several rooms.
+    """
+    if site is not None:
+        for candidate in candidates:
+            if candidate.site == site:
+                return candidate
+        return None
+    null_site = [c for c in candidates if c.site is None]
+    if null_site:
+        return null_site[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def _get_or_create_entity(
     session: Session,
     chunk: KnowledgeChunk,
     item: dict,
     local_by_name: dict[str, Entity],
+    drops: dict[str, int],
 ) -> tuple[Entity, bool] | None:
     """Resolve or create the Entity spine (+ detail row, if new) for one extracted entity.
 
     Returns ``(entity, created)`` or None if ``item`` is not a usable entity
     (missing/invalid entity_type or name).
+
+    Dedup is global by ``(entity_type, lower(name))`` for every type except
+    ``location``, which is scoped to ``source_book`` and a ``site`` key (the
+    room's parent place; see ``_room_site`` / ``_pick_location_candidate``) so
+    same-named rooms across dungeons and books do not merge.
     """
     entity_type = item.get("entity_type")
     name = item.get("name")
@@ -1415,16 +1562,37 @@ def _get_or_create_entity(
         return None
     name_key = name.lower()
 
-    existing = (
-        session.execute(
-            select(Entity).where(
-                Entity.entity_type == entity_type,
-                func.lower(Entity.name) == name_key,
+    if entity_type == "location":
+        # Book- and site-scoped dedup: a global (location, lower(name)) key would
+        # merge every "Kitchen"/"Cellar" room across dungeons and books.
+        site = _room_site(chunk, name)
+        candidates = list(
+            session.execute(
+                select(Entity)
+                .where(
+                    Entity.entity_type == "location",
+                    func.lower(Entity.name) == name_key,
+                    Entity.source_book == chunk.book_id,
+                )
+                .order_by(Entity.created_at)
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .first()
-    )
+        existing = _pick_location_candidate(candidates, site)
+    else:
+        site = None
+        existing = (
+            session.execute(
+                select(Entity).where(
+                    Entity.entity_type == entity_type,
+                    func.lower(Entity.name) == name_key,
+                )
+            )
+            .scalars()
+            .first()
+        )
+
     if existing is not None:
         entity = existing
         created = False
@@ -1436,6 +1604,7 @@ def _get_or_create_entity(
             source_type="extracted",
             is_global=True,
             source_book=chunk.book_id,
+            site=site,
         )
         session.add(entity)
         session.flush()
@@ -1451,7 +1620,9 @@ def _get_or_create_entity(
     detail = item.get("detail")
     if detail_model is not None:
         if isinstance(detail, dict) and detail:
-            _create_or_enrich_detail(session, detail_model, entity.id, name, detail)
+            _create_or_enrich_detail(
+                session, detail_model, entity.id, name, detail, chunk.content, drops
+            )
     else:
         _apply_generic_detail(entity, item)
 
@@ -1459,22 +1630,36 @@ def _get_or_create_entity(
 
 
 def _resolve_entity_name(
-    session: Session, local_by_name: dict[str, Entity], name: str
+    session: Session, local_by_name: dict[str, Entity], name: str, book_id: str
 ) -> Entity | None:
-    """Resolve a bare name to an Entity: this chunk's extraction first, then the DB.
+    """Resolve a bare name to an Entity for a mention/relationship endpoint.
 
-    Name lookup is global (not scoped to a single entity_type), matching how
-    mentions/relationships reference entities by name alone. If more than
-    one entity_type shares a name, an arbitrary match is returned; this
-    ambiguity is accepted for v1. The name is canonicalized the same way the
-    spine name is, so an endpoint referencing "The Zhentarim" resolves to the
-    "Zhentarim" node (spec #3).
+    Resolution order: this chunk's freshly-extracted entities (the local map),
+    then the oldest same-``book_id`` entity of that name, then the global first
+    match. The same-book step keeps an endpoint pointing at its own book's node
+    (e.g. a room's book-scoped keyed entry) instead of a same-named node from
+    another book. Lookup is not scoped to a single entity_type, matching how
+    mentions/relationships reference entities by name alone; an arbitrary match
+    is still accepted when several types share a name. The name is canonicalized
+    the same way the spine name is, so an endpoint referencing "The Zhentarim"
+    resolves to the "Zhentarim" node (spec #3).
     """
     name_key = _canonicalize_name(name).lower()
     if not name_key:
         return None
     if name_key in local_by_name:
         return local_by_name[name_key]
+    same_book = (
+        session.execute(
+            select(Entity)
+            .where(func.lower(Entity.name) == name_key, Entity.source_book == book_id)
+            .order_by(Entity.created_at)
+        )
+        .scalars()
+        .first()
+    )
+    if same_book is not None:
+        return same_book
     return (
         session.execute(select(Entity).where(func.lower(Entity.name) == name_key))
         .scalars()
@@ -1506,7 +1691,11 @@ def _insert_mention(
 
 
 def _insert_relationship(
-    session: Session, from_entity_id: str, to_entity_id: str, rel_type: str
+    session: Session,
+    from_entity_id: str,
+    to_entity_id: str,
+    rel_type: str,
+    chunk_id: str,
 ) -> bool:
     existing = (
         session.execute(
@@ -1520,10 +1709,15 @@ def _insert_relationship(
         .first()
     )
     if existing is not None:
+        # First writer wins: the dedup triple already exists, so its chunk_id
+        # provenance is left as-is.
         return False
     session.add(
         Relationship(
-            from_entity_id=from_entity_id, to_entity_id=to_entity_id, rel_type=rel_type
+            from_entity_id=from_entity_id,
+            to_entity_id=to_entity_id,
+            rel_type=rel_type,
+            chunk_id=chunk_id,
         )
     )
     return True
@@ -1602,6 +1796,12 @@ def _apply_extraction(
         # to reorder a backwards edge or downgrade an impossible one to RELATED_TO.
         "rel_signature_swaps": {},
         "rel_signature_downgrades": {},
+        # Per-field tally of numeric detail values dropped for not being anchored
+        # in the chunk text (creature ac/hp_avg/cr, spell level; spec Change 3).
+        "detail_ungrounded_drops": {},
+        # Edges skipped because both endpoints resolved to the same entity (a
+        # self loop, e.g. a validator downgrade produced X RELATED_TO X).
+        "rel_self_loops_dropped": 0,
     }
     with session.begin_nested():
         local_by_name: dict[str, Entity] = {}
@@ -1609,7 +1809,9 @@ def _apply_extraction(
         for item in extraction["entities"]:
             if not isinstance(item, dict):
                 continue
-            result = _get_or_create_entity(session, chunk, item, local_by_name)
+            result = _get_or_create_entity(
+                session, chunk, item, local_by_name, counts["detail_ungrounded_drops"]
+            )
             if result is None:
                 continue
             entity, created = result
@@ -1629,7 +1831,7 @@ def _apply_extraction(
             name = mention.get("entity_name")
             if not isinstance(name, str):
                 continue
-            entity = _resolve_entity_name(session, local_by_name, name)
+            entity = _resolve_entity_name(session, local_by_name, name, chunk.book_id)
             if entity is None:
                 logger.debug(
                     "grimoire extract: chunk %s unresolvable mention name %r",
@@ -1660,8 +1862,12 @@ def _apply_extraction(
             # small strict-schema leak (a provider that silently downgrades
             # json_schema), so the graph keeps a queryable closed vocabulary.
             rel_type = rel_type if rel_type in REL_TYPE_SET else RELATED_TO
-            from_entity = _resolve_entity_name(session, local_by_name, from_name)
-            to_entity = _resolve_entity_name(session, local_by_name, to_name)
+            from_entity = _resolve_entity_name(
+                session, local_by_name, from_name, chunk.book_id
+            )
+            to_entity = _resolve_entity_name(
+                session, local_by_name, to_name, chunk.book_id
+            )
             # Drop edges whose endpoints do not resolve to an emitted/known
             # entity: they would be silently lost at write time anyway, and an
             # unresolvable endpoint is the signature of a generic-type or unnamed
@@ -1695,7 +1901,16 @@ def _apply_extraction(
                     counts["rel_signature_downgrades"].get(rel_type, 0) + 1
                 )
             rel_type = new_rel_type
-            if _insert_relationship(session, from_entity.id, to_entity.id, rel_type):
+            # Self-loop guard: after resolution and any validator swap, both
+            # endpoints can be the same entity (two name variants resolving to one
+            # node, sometimes after a downgrade to RELATED_TO). An X -> X edge is
+            # never meaningful, so drop it and count it.
+            if from_entity.id == to_entity.id:
+                counts["rel_self_loops_dropped"] += 1
+                continue
+            if _insert_relationship(
+                session, from_entity.id, to_entity.id, rel_type, chunk.id
+            ):
                 counts["relationships_created"] += 1
 
     return counts
@@ -1727,6 +1942,26 @@ async def _embed_new_entities(
             session, embed_client.model, "entity", entities_only, vectors
         )
     return embedded
+
+
+def _section_context(chunk: KnowledgeChunk, kind: str | None) -> str | None:
+    """Section breadcrumb to feed the extractor for one chunk (spec Change 2).
+
+    Non-bestiary books get the full ancestry breadcrumb (``section_hierarchy``,
+    else the leaf ``section_path``), the same context the model was tuned on. But
+    the backfilled bestiary hierarchies mis-nest sibling entries under one heading
+    (a large share of a bestiary's chunks falsely nest under a neighbor), so the
+    full breadcrumb would feed the model false containment. For a bestiary we pass
+    leaf-only context instead: the 2-level ``section_path`` when set, else the last
+    " > " segment of the hierarchy.
+    """
+    if kind == "bestiary":
+        if chunk.section_path:
+            return chunk.section_path
+        if chunk.section_hierarchy:
+            return chunk.section_hierarchy.split(" > ")[-1]
+        return None
+    return chunk.section_hierarchy or chunk.section_path
 
 
 def _load_book_titles(session: Session) -> dict[str, str]:
@@ -1788,6 +2023,10 @@ async def extract_chunks(
         # merged across chunks below.
         "rel_signature_swaps": {},
         "rel_signature_downgrades": {},
+        # Per-field ungrounded numeric-detail drops (dict field -> count) and the
+        # self-loop edge drop count, merged across chunks below.
+        "detail_ungrounded_drops": {},
+        "rel_self_loops_dropped": 0,
     }
 
     for group_start in range(0, len(chunks), group_size):
@@ -1799,9 +2038,10 @@ async def extract_chunks(
             *(
                 or_client.extract(
                     chunk.content,
-                    # Prefer the full hierarchy breadcrumb; fall back to the leaf
-                    # heading when a chunk predates the section_hierarchy backfill.
-                    section_path=chunk.section_hierarchy or chunk.section_path,
+                    # Full hierarchy breadcrumb by default (leaf-only for
+                    # bestiaries, whose backfilled hierarchies mis-nest); falls
+                    # back to the leaf heading when a chunk predates the backfill.
+                    section_path=_section_context(chunk, book_kind(chunk.book_id)),
                     image_ref=chunk.image_ref,
                     book_title=book_titles.get(chunk.book_id, chunk.book_id),
                     book_kind=book_kind(chunk.book_id),
