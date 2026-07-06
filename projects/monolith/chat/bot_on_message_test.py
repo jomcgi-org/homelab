@@ -1294,13 +1294,14 @@ class TestStartAgentFlowOrchestrator:
             patch.object(
                 bot,
                 "_orchestrator_chat_reply",
-                AsyncMock(return_value="here is a friendly answer"),
+                AsyncMock(return_value=("here is a friendly answer", [])),
             ),
             patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
         ):
             outcome = await bot.start_agent_flow(channel, user, "name my boat", "")
 
         assert outcome.chat_reply == "here is a friendly answer"
+        assert outcome.generated_files == []
         assert outcome.thread is None
         channel.create_thread.assert_not_called()
         mock_start_session.assert_not_called()

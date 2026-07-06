@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -59,6 +59,34 @@ STREAM_EDIT_INTERVAL = 1.0
 # against Discord's own base-tier upload limit, not the primary control.
 RUN_PYTHON_MAX_ATTACHMENTS = 8
 RUN_PYTHON_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+
+
+def _build_run_python_attachments(generated_files: list) -> "list[discord.File]":
+    """Build discord.File objects from run_python (path, bytes) tuples.
+
+    Capped at RUN_PYTHON_MAX_ATTACHMENTS files and RUN_PYTHON_MAX_ATTACHMENT_BYTES
+    per file; anything over either cap is logged and dropped. Shared by the
+    direct concierge tool loop and the orchestrator chat-verdict reply so both
+    surface a generated chart the same way.
+    """
+    to_send = generated_files[:RUN_PYTHON_MAX_ATTACHMENTS]
+    dropped = [name for name, _ in generated_files[RUN_PYTHON_MAX_ATTACHMENTS:]]
+    files: list[discord.File] = []
+    for name, data in to_send:
+        if len(data) > RUN_PYTHON_MAX_ATTACHMENT_BYTES:
+            dropped.append(name)
+            continue
+        filename = os.path.basename(name) or "output.bin"
+        files.append(discord.File(io.BytesIO(data), filename=filename))
+    if dropped:
+        logger.info(
+            "run_python: skipping %d generated file(s) over the attachment "
+            "cap/size limit: %s",
+            len(dropped),
+            ", ".join(dropped),
+        )
+    return files
+
 
 # Fact-check (the "Get your facts STR8!" button). The result streams into a
 # thread anchored to the response so it stays out of the main channel.
@@ -175,13 +203,17 @@ class AgentFlowOutcome:
       announces it). This is today's behaviour for the failopen path.
     - ``chat_reply`` - a chat verdict produced a conversational reply for the
       caller to post on its own surface (no thread, no session, no checklist).
+      ``generated_files`` rides alongside it: (path, bytes) tuples the chat
+      reply produced via run_python (e.g. a chart PNG) for the caller to flush
+      as Discord attachments after posting the text.
 
-    Both are None when the flow could not start (thread creation / submit
-    failed), so a caller can still surface a failure.
+    Both ``thread`` and ``chat_reply`` are None when the flow could not start
+    (thread creation / submit failed), so a caller can still surface a failure.
     """
 
     thread: "discord.Thread | None" = None
     chat_reply: str | None = None
+    generated_files: list = field(default_factory=list)
 
 
 def _render_reply_guidance(verdict: "orchestrator.ChatVerdict") -> str:
@@ -977,6 +1009,15 @@ class ChatBot(discord.Client):
             # ADR 036: the orchestrator routed this to chat, so reply inline
             # instead of opening a session thread.
             await interaction.followup.send(outcome.chat_reply)
+            if outcome.generated_files:
+                try:
+                    files = _build_run_python_attachments(outcome.generated_files)
+                    if files:
+                        await interaction.followup.send(files=files)
+                except Exception:
+                    logger.exception(
+                        "run_python: failed to flush chat-verdict attachments"
+                    )
             return
         if outcome.thread is None:
             await interaction.followup.send(
@@ -1024,8 +1065,10 @@ class ChatBot(discord.Client):
         )
 
         if isinstance(verdict, orchestrator.ChatVerdict):
-            reply = await self._orchestrator_chat_reply(channel_id, prompt, verdict)
-            return AgentFlowOutcome(chat_reply=reply)
+            reply, files = await self._orchestrator_chat_reply(
+                channel_id, prompt, verdict
+            )
+            return AgentFlowOutcome(chat_reply=reply, generated_files=files)
 
         # A PlanVerdict seeds the guest with a runtime plan; FailOpen (or any
         # other non-plan verdict) keeps today's baked recipe="agent" raw path.
@@ -1204,25 +1247,38 @@ class ChatBot(discord.Client):
 
     async def _orchestrator_chat_reply(
         self, channel_id: str, prompt: str, verdict: "orchestrator.ChatVerdict"
-    ) -> str | None:
-        """Author a conversational reply for a chat verdict via local Qwen.
+    ) -> "tuple[str | None, list]":
+        """Author a chat-verdict reply through the tool-enabled concierge agent.
 
-        The raw prompt stays ground truth; the orchestrator's reply guidance is
-        supplementary context. A ``redirect`` in the guidance shapes the reply
-        (e.g. "offer to escalate") but never itself submits a session. Returns
-        None on model failure so the caller can decide how to surface it.
+        A chat verdict means "no microVM session", not "no tools": this runs the
+        same PydanticAI agent a direct mention does, so run_python (exact math,
+        a matplotlib chart) and the other concierge tools work here too. The
+        orchestrator's reply guidance is injected as a system prompt (via
+        ChatDeps.orchestrator_guidance) to keep the reply grounded; the raw
+        prompt stays ground truth. Returns (reply_text, generated_files), where
+        generated_files are (path, bytes) tuples the caller flushes as
+        attachments. Returns (None, []) on model failure so the caller fails
+        open.
         """
+        from chat.agent import ChatDeps
+
         guidance = _render_reply_guidance(verdict)
         try:
-            return await summarizer.conversational_chat_reply(
-                channel_id,
-                question=prompt,
-                guidance=guidance,
-                llm_call=summarizer.build_llm_caller(),
-            )
+            # The session must stay open for the whole agent run so store-backed
+            # tools (search_history, get_user_summary) work; the generated bytes
+            # are copied out before it closes.
+            with Session(get_engine()) as session:
+                deps = ChatDeps(
+                    channel_id=channel_id,
+                    store=MessageStore(session=session, embed_client=self.embed_client),
+                    embed_client=self.embed_client,
+                    orchestrator_guidance=guidance,
+                )
+                result = await self.agent.run(prompt, deps=deps)
+                return result.output, list(deps.generated_files)
         except Exception:
             logger.exception("orchestrator: chat reply generation failed")
-            return None
+            return None, []
 
     def _start_goosecracker_stream(
         self, artifact_id: str, message: discord.Message, kind: str = "agent"
@@ -1500,6 +1556,15 @@ class ChatBot(discord.Client):
             # than opening a session thread.
             try:
                 sent = await message.reply(outcome.chat_reply)
+                if outcome.generated_files:
+                    try:
+                        files = _build_run_python_attachments(outcome.generated_files)
+                        if files:
+                            await message.reply(files=files)
+                    except Exception:
+                        logger.exception(
+                            "run_python: failed to flush chat-verdict attachments"
+                        )
                 # Link this in-channel reply to the ambient engage decision so a
                 # reaction on it joins to the engage exactly (ADR 035 /
                 # improve-ambient). The thread-opening path has no single
@@ -1938,27 +2003,7 @@ class ChatBot(discord.Client):
             # so an attachment failure never eats the text reply already sent.
             if deps.generated_files:
                 try:
-                    to_send = deps.generated_files[:RUN_PYTHON_MAX_ATTACHMENTS]
-                    dropped = [
-                        name
-                        for name, _ in deps.generated_files[RUN_PYTHON_MAX_ATTACHMENTS:]
-                    ]
-                    discord_files = []
-                    for name, data in to_send:
-                        if len(data) > RUN_PYTHON_MAX_ATTACHMENT_BYTES:
-                            dropped.append(name)
-                            continue
-                        filename = os.path.basename(name) or "output.bin"
-                        discord_files.append(
-                            discord.File(io.BytesIO(data), filename=filename)
-                        )
-                    if dropped:
-                        logger.info(
-                            "run_python: skipping %d generated file(s) over the "
-                            "attachment cap/size limit: %s",
-                            len(dropped),
-                            ", ".join(dropped),
-                        )
+                    discord_files = _build_run_python_attachments(deps.generated_files)
                     if discord_files:
                         await message.reply(files=discord_files)
                 except Exception:
