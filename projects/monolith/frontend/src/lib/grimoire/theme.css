@@ -119,6 +119,16 @@
   --rule-2: #2a3140;
   --coral: #7d9fd0;
   --bg-elev: #1a2130;
+
+  /* tokens.css family: the private tier's topbar + Library/Entities chrome
+   * still read --fg/--bg/--muted (a separate legacy family that, like
+   * design-system.css, only flips on the site-wide body.dark). Override them
+   * here too so the whole private grimoire tree stays dark-legible under the
+   * scoped .grimoire.dark toggle instead of leaving those surfaces light. */
+  --bg: #0d1017;
+  --fg: #e8e2d0;
+  --muted: #9aa3b2;
+  --border-thin: 1px solid #2a3140;
 }
 
 /* ── Focus ────────────────────────────────────────────────────
