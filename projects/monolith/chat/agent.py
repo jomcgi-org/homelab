@@ -435,8 +435,9 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
             coerced = _coerce_username(username)
             if coerced:
                 user_id = deps.store.find_user_id_by_username(deps.channel_id, coerced)
-        results = deps.store.search_similar(
+        results = deps.store.search_hybrid(
             channel_id=deps.channel_id,
+            query_text=query,
             query_embedding=query_embedding,
             limit=min(limit, 20),
             user_id=user_id,

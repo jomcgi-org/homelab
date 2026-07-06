@@ -148,3 +148,89 @@ class TestSearchSimilar:
         params = call_kwargs[1]["params"]
         excl_keys = [k for k in params if k.startswith("excl_")]
         assert excl_keys == []
+
+
+class TestLexicalSearch:
+    def test_empty_query_returns_empty_without_querying(self, store, mock_session):
+        """A blank/whitespace query short-circuits to [] and never hits the DB."""
+        assert store.lexical_search(channel_id="ch1", query_text="  ") == []
+        mock_session.exec.assert_not_called()
+
+    def test_returns_messages_from_exec(self, store, mock_session):
+        msg = _make_message(id=1, content="deploy failed with ORA-00942")
+        mock_session.exec.return_value = [msg]
+
+        results = store.lexical_search(channel_id="ch1", query_text="ORA-00942")
+
+        assert results == [msg]
+        mock_session.exec.assert_called_once()
+
+    def test_query_text_bound_as_param(self, store, mock_session):
+        mock_session.exec.return_value = []
+
+        store.lexical_search(channel_id="ch1", query_text="bandwidth war")
+
+        params = mock_session.exec.call_args[1]["params"]
+        assert params["q"] == "bandwidth war"
+        assert params["channel_id"] == "ch1"
+
+
+class TestSearchHybrid:
+    def test_rrf_ranks_shared_hit_first(self, store, mock_session):
+        """A message returned by BOTH retrievers outranks messages in one list."""
+        m1, m2, m3, m4 = (_make_message(id=i) for i in (1, 2, 3, 4))
+        # vector order: m1, m2, m3 ; lexical order: m3, m4 -> m3 is in both.
+        mock_session.exec.side_effect = [[m1, m2, m3], [m3, m4]]
+
+        results = store.search_hybrid(
+            channel_id="ch1",
+            query_text="something",
+            query_embedding=[0.1] * 1024,
+            limit=3,
+        )
+
+        assert results[0].id == 3  # shared hit wins on fused score
+        assert results[1].id == 1  # top of the vector list next
+        assert len(results) == 3
+
+    def test_falls_back_to_vector_when_lexical_empty(self, store, mock_session):
+        """When lexical returns nothing, hybrid still yields the vector hits."""
+        m1, m2 = _make_message(id=1), _make_message(id=2)
+        mock_session.exec.side_effect = [[m1, m2], []]
+
+        results = store.search_hybrid(
+            channel_id="ch1",
+            query_text="x",
+            query_embedding=[0.0] * 1024,
+            limit=5,
+        )
+
+        assert {m.id for m in results} == {1, 2}
+
+    def test_deduplicates_across_lists(self, store, mock_session):
+        """A message in both lists appears once, not twice, in the fused output."""
+        m1 = _make_message(id=1)
+        mock_session.exec.side_effect = [[m1], [m1]]
+
+        results = store.search_hybrid(
+            channel_id="ch1",
+            query_text="x",
+            query_embedding=[0.0] * 1024,
+        )
+
+        assert [m.id for m in results] == [1]
+
+    def test_blank_query_still_returns_vector_hits(self, store, mock_session):
+        """A stop-word-only query yields no lexical hits but hybrid still works
+        off the vector list (lexical_search short-circuits, so exec is called
+        only once, for the vector query)."""
+        m1 = _make_message(id=1)
+        mock_session.exec.side_effect = [[m1]]
+
+        results = store.search_hybrid(
+            channel_id="ch1",
+            query_text="   ",
+            query_embedding=[0.0] * 1024,
+        )
+
+        assert [m.id for m in results] == [1]
