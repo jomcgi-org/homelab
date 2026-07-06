@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 # --- Recipe-shape constants copied verbatim from the guest agent.yaml. Keep in
 # sync; tests/router_render_test.py has a drift guard asserting the scaffold
 # tokens still exist in the checked-in agent.yaml.
-_RECIPE_VERSION = "1.7.2"
+_RECIPE_VERSION = "1.7.3"
 _CONTEXT_FILE = "/tmp/goose/context.md"
 
 # The per-step plan file delivered via injectedContext (Task 6): plain
@@ -122,7 +122,12 @@ Route the task to exactly one of:
   large/ambiguous change where planning must precede code. The deliverable
   is a plan document, not the change itself.
 - implement: the task is a concrete, actionable change to code, config,
-  or docs. The deliverable is a commit and a PR.
+  or docs IN THE REPO. The deliverable is a commit and a PR. A request to
+  SEE something (a chart, a visualization, a rendered page, generated sample
+  data displayed) is NOT implement, even when it says "generate": producing
+  data in order to display it is part of an artifact. Implement has no way to
+  show the user a page and must never serve one; a task with no repo change
+  is artifact or query, never implement.
 - artifact: the task asks for a thing to look at, a visualization, an
   interactive page, a chart, a small demo, a dashboard, or a report rendered
   as a web page ("make me / build me / show me a ..."). The deliverable is a
