@@ -164,9 +164,22 @@ async def test_message_emits_node_touched_for_each_passage(
     client, session, monkeypatch
 ):
     retrieved = [
-        RetrievedPassage("chunk-a", "PHB: Goblins", "goblin lore", "chunk", 0.9),
         RetrievedPassage(
-            "ent-b", "Goblin (creature)", "goblin statblock", "entity", 0.8
+            "chunk-a",
+            "PHB: Goblins",
+            "goblin lore",
+            "chunk",
+            0.9,
+            book_id="phb",
+            chunk_ref="c-goblins",
+        ),
+        RetrievedPassage(
+            "ent-b",
+            "Goblin (creature)",
+            "goblin statblock",
+            "entity",
+            0.8,
+            entity_type="creature",
         ),
     ]
     captured: list = []
@@ -189,6 +202,17 @@ async def test_message_emits_node_touched_for_each_passage(
     }
     assert types.index("node_touched") < types.index("token")
     assert {t["id"] for t in touched} == {p.ref_id for p in retrieved}
+
+    # Each frame carries kind, and the clickable fields per kind: a chunk deep-links
+    # via book_id + chunk_ref, an entity opens by entity_type.
+    by_id = {t["id"]: t for t in touched}
+    assert by_id["chunk-a"]["kind"] == "chunk"
+    assert by_id["chunk-a"]["book_id"] == "phb"
+    assert by_id["chunk-a"]["chunk_ref"] == "c-goblins"
+    assert "entity_type" not in by_id["chunk-a"]
+    assert by_id["ent-b"]["kind"] == "entity"
+    assert by_id["ent-b"]["entity_type"] == "creature"
+    assert "book_id" not in by_id["ent-b"]
 
     assert len(captured) == 1
     joined = " ".join(m["content"] for m in captured[0])
