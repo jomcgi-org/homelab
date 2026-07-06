@@ -496,11 +496,16 @@ class TestExploreGraph:
     def test_everything_scope_has_no_roster_restriction_but_still_applies_lens(
         self, session, client
     ):
-        seed_corpus(session)  # Aboleth (creature/lore), Fireball (spell/rules)
-        r = client.get("/api/grimoire/explore/graph?scope=everything&lens=world")
+        # seed_corpus: Aboleth (creature -> category lore) and Fireball (spell
+        # -> category lore, but the "rules" lens unions spells in by
+        # entity_type). "everything" scope applies no roster restriction, so
+        # the rules lens is what does the filtering: the spell is kept, the
+        # creature is dropped.
+        seed_corpus(session)
+        r = client.get("/api/grimoire/explore/graph?scope=everything&lens=rules")
         assert r.status_code == 200
         body = r.json()
-        assert {n["name"] for n in body["nodes"]} == {"Aboleth"}
+        assert {n["name"] for n in body["nodes"]} == {"Fireball"}
 
     def test_unknown_adventure_scope_returns_empty_graph(self, session, client):
         r = client.get("/api/grimoire/explore/graph?scope=adventure:nope&lens=world")
