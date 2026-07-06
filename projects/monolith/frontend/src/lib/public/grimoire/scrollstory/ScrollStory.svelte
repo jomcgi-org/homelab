@@ -518,6 +518,11 @@
     if (reduced) return; // stay on the static stacked scenes
 
     ready = true; // reveal the scrubbed stage (re-render, refs already bound)
+    // Proximity snap lives on the document scroll container: the .snap
+    // markers' scroll-snap-align does nothing without it. html is outside this
+    // component, so set it imperatively and remove it on destroy so other
+    // routes are unaffected. NEVER "mandatory": free scrubbing is the point.
+    document.documentElement.style.scrollSnapType = "y proximity";
     buildDots();
     ctx = canvasEl.getContext("2d");
     refreshTypeColors();
@@ -558,6 +563,7 @@
     });
 
     return () => {
+      document.documentElement.style.scrollSnapType = "";
       window.removeEventListener("scroll", queue);
       window.removeEventListener("resize", onResize);
       document.removeEventListener("click", onDocClick);
