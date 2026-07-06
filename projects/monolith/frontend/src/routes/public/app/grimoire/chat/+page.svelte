@@ -24,6 +24,7 @@
   } from "$lib/public/grimoire/chat/stream.js";
   import { createChatSession } from "$lib/public/grimoire/chat/admission.js";
   import { freshChatState } from "$lib/public/grimoire/chat/chat-state.js";
+  import SourceDrawer from "$lib/public/grimoire/chat/SourceDrawer.svelte";
 
   let { data } = $props();
 
@@ -52,12 +53,17 @@
   // Each committed message carries its own `touched` list (the Grimoire
   // sourcebook passages, chunks or entities, that turn grounded on), rendered
   // as "GROUNDED IN" badges directly under the reply. There is no graph view
-  // on this tier to click through to (the node_touched id can be either a
-  // chunk or an entity id with no kind tag on the wire, so a chip cannot
-  // safely deep-link), so the badges are informational only and there is no
-  // need to accumulate a cross-turn highlight set the way the notes chat's
-  // GraphView did.
+  // on this tier to click through to, but every touched item now carries a
+  // `kind` ("chunk" | "entity") plus the fields needed to fetch and deep-link
+  // it (entity_type for an entity; book_id/chunk_ref for a chunk), so a chip
+  // opens the source in a dismissable in-page drawer (SourceDrawer) instead
+  // of a full navigation. There is still no need to accumulate a cross-turn
+  // highlight set the way the notes chat's GraphView did: activeSource below
+  // just tracks whichever single chip is currently open.
   const BOT_LABEL = "THE GRIMOIRE";
+
+  // The touched item currently open in the SourceDrawer, or null when closed.
+  let activeSource = $state(null);
 
   // Starters that map to well-covered corpus material (a classic monster's
   // lair actions, a signature Curse of Strahd NPC, a core spell rule, and the
@@ -309,7 +315,13 @@
                 <div class="turn-touched">
                   <span class="turn-touched-label">GROUNDED IN</span>
                   {#each m.touched as n}
-                    <span class="touched-chip">{n.title || "untitled passage"}</span>
+                    <button
+                      type="button"
+                      class="touched-chip"
+                      onclick={() => (activeSource = n)}
+                    >
+                      {n.title || "untitled passage"}
+                    </button>
                   {/each}
                 </div>
               {/if}
@@ -381,6 +393,8 @@
     {/if}
   </section>
 </div>
+
+<SourceDrawer item={activeSource} onclose={() => (activeSource = null)} />
 
 <style>
   .sr-only {
@@ -789,9 +803,10 @@
   }
 
   /* ── grounded badges ─────────────────────────────────────────
-     Inert (no click-through): there is no graph view on this tier to focus,
-     and the touched id can be either a chunk or an entity with no kind tag
-     on the wire, so a chip cannot safely deep-link anywhere. */
+     Clickable: every touched item carries a kind ("chunk" | "entity") plus
+     enough to fetch and deep-link it, so a chip opens the SourceDrawer for
+     that item rather than sitting inert. Styled as a real button (cursor,
+     hover/focus affordance) while keeping the same pill look as before. */
   .turn-touched {
     display: flex;
     flex-wrap: wrap;
@@ -821,6 +836,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      color 120ms ease;
+  }
+  .touched-chip:hover,
+  .touched-chip:focus-visible {
+    background: var(--grim-accent-soft);
+    border-color: var(--grim-accent);
+    color: var(--grim-ink);
   }
 
   /* ── notice ─────────────────────────────────────────────────── */
