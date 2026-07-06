@@ -212,7 +212,7 @@
     font-size: 0.66rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--fg-tertiary);
+    color: var(--grim-text-faint);
   }
 
   .rel-name {
@@ -229,8 +229,8 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     padding: 0.08rem 0.35rem;
-    border: var(--border-thin);
-    color: var(--fg-secondary);
+    border: 1px solid var(--grim-line);
+    color: var(--grim-text-dim);
   }
 
   .source {
@@ -239,8 +239,8 @@
     gap: 0.2rem;
     padding: 0.6rem 0.75rem;
     border: 1px solid var(--grim-paper-line);
-    background: var(--bg);
-    color: var(--fg);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
   }
 
   .source:hover {
@@ -252,7 +252,7 @@
     font-size: 0.62rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--fg-tertiary);
+    color: var(--grim-text-faint);
   }
 
   .source-preview {
@@ -279,11 +279,11 @@
 
   .empty-help {
     font-size: 0.82rem;
-    color: var(--fg-secondary);
+    color: var(--grim-text-dim);
   }
 
   .status--error {
-    color: var(--danger);
+    color: var(--grim-type-creature);
     font-size: 0.8rem;
   }
 
@@ -291,9 +291,9 @@
     height: 18rem;
     background: linear-gradient(
       90deg,
-      var(--surface) 25%,
+      var(--grim-surface-2) 25%,
       transparent 37%,
-      var(--surface) 63%
+      var(--grim-surface-2) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;

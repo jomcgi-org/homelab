@@ -8,6 +8,7 @@
     lastViewpoint,
     libraryHref,
   } from "$lib/grimoire/api.js";
+  import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
   import "$lib/grimoire/theme.css";
 
   let campaigns = $state([]);
@@ -68,8 +69,11 @@
 
 <div class="grimoire picker">
   <header class="head">
-    <h1 class="grim-title brand">Grimoire</h1>
-    <p class="tagline">An arcane ledger for your table.</p>
+    <div class="head-text">
+      <h1 class="grim-title brand">Grimoire</h1>
+      <p class="tagline">An arcane ledger for your table.</p>
+    </div>
+    <ThemeToggle />
   </header>
 
   {#if loading}
@@ -129,8 +133,8 @@
 <style>
   .picker {
     min-height: 100dvh;
-    background: var(--bg);
-    color: var(--fg);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
     font-family: var(--font-mono);
     padding: clamp(1.5rem, 6vw, 5rem) 1.5rem;
     max-width: 46rem;
@@ -140,13 +144,20 @@
     gap: 2rem;
   }
 
+  .head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
   .brand {
     font-size: clamp(2rem, 8vw, 3rem);
     color: var(--grim-accent);
   }
 
   .tagline {
-    color: var(--muted);
+    color: var(--grim-text-dim);
     font-size: 0.85rem;
     margin-top: 0.35rem;
   }
@@ -156,7 +167,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
+    color: var(--grim-text-faint);
     margin-bottom: 0.75rem;
   }
 
@@ -174,9 +185,9 @@
     flex-direction: column;
     gap: 0.15rem;
     padding: 0.75rem 1rem;
-    background: var(--bg);
-    color: var(--fg);
-    border: var(--border-thin);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
+    border: 1px solid var(--grim-line);
     cursor: pointer;
   }
 
@@ -190,7 +201,7 @@
 
   .campaign-dm {
     font-size: 0.7rem;
-    color: var(--fg-tertiary);
+    color: var(--grim-text-faint);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
@@ -207,9 +218,9 @@
     font-size: 0.9rem;
     min-height: 2.75rem;
     padding: 0.5rem 0.65rem;
-    background: var(--bg);
-    color: var(--fg);
-    border: var(--border-thin);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
+    border: 1px solid var(--grim-line);
     flex: 1 1 12rem;
   }
 
@@ -219,7 +230,7 @@
     min-height: 2.75rem;
     padding: 0.5rem 1rem;
     background: var(--grim-accent);
-    color: #fff;
+    color: var(--grim-on-accent);
     border: none;
     cursor: pointer;
   }
@@ -230,7 +241,7 @@
   }
 
   .status--error {
-    color: var(--danger);
+    color: var(--grim-type-creature);
     font-size: 0.8rem;
   }
 
@@ -244,9 +255,9 @@
     height: 3rem;
     background: linear-gradient(
       90deg,
-      var(--surface) 25%,
+      var(--grim-surface-2) 25%,
       transparent 37%,
-      var(--surface) 63%
+      var(--grim-surface-2) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
