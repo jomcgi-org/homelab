@@ -246,7 +246,7 @@ def search(
     return public.search_public(session, q)
 
 
-# --- EXPLORE (corpus-graph canvas: subgraph endpoint) ---------------------
+# --- EXPLORE (corpus-graph canvas: subgraph + ego expansion) --------------
 
 
 @router.get("/explore/graph")
@@ -262,3 +262,13 @@ def explore_graph(
     scope can be a large payload; the frontend should default to
     gallery/adventure scope. See explore.scope_subgraph."""
     return explore.scope_subgraph(session, scope, lens)
+
+
+@router.get("/explore/ego")
+def explore_ego(
+    id: str = Query(...), session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    """Focus entity + its 1-hop is_global neighbors, same ``{nodes, edges}``
+    shape as /explore/graph, for click-to-expand ("wander"). See
+    explore.ego_subgraph."""
+    return explore.ego_subgraph(session, id)

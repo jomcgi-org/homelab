@@ -508,6 +508,36 @@ class TestExploreGraph:
         assert r.json() == {"nodes": [], "edges": []}
 
 
+class TestExploreEgo:
+    def test_drops_private_neighbor_and_its_edge(self, session, client):
+        seed_corpus(session)  # e-aboleth --knows--> e-fireball
+        secret_goblin = Entity(entity_type="npc", name="Secret Goblin", is_global=False)
+        session.add(secret_goblin)
+        session.commit()
+        session.refresh(secret_goblin)
+        session.add(
+            Relationship(
+                from_entity_id="e-aboleth",
+                to_entity_id=secret_goblin.id,
+                rel_type="knows",
+            )
+        )
+        session.commit()
+
+        r = client.get("/api/grimoire/explore/ego?id=e-aboleth")
+        assert r.status_code == 200
+        body = r.json()
+        assert {n["name"] for n in body["nodes"]} == {"Aboleth", "Fireball"}
+        assert {(e["from"], e["to"]) for e in body["edges"]} == {
+            ("e-aboleth", "e-fireball")
+        }
+
+    def test_missing_or_non_public_focus_returns_empty_graph(self, session, client):
+        r = client.get("/api/grimoire/explore/ego?id=nope")
+        assert r.status_code == 200
+        assert r.json() == {"nodes": [], "edges": []}
+
+
 class TestSearch:
     def test_search_entities_and_lore(self, session, client):
         seed_corpus(session)

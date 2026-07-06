@@ -138,3 +138,51 @@ def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
         ).all()
     ]
     return {"nodes": nodes, "edges": edges}
+
+
+def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
+    """Focus entity + its 1-hop neighbors, as the SAME ``{nodes, edges}``
+    shape ``scope_subgraph`` returns, so the canvas can merge a click-to-
+    expand ("wander") result straight into the current view.
+
+    Mirrors ``public.list_relationships_public``'s is_global gating: a
+    non-public focus entity yields an empty graph, and any neighbor that
+    isn't ``is_global`` (plus the edge to it) is dropped rather than shown,
+    exactly like the private-entity-neighbor drop in that function.
+    """
+    focus = session.get(Entity, entity_id)
+    if focus is None or not focus.is_global:
+        return {"nodes": [], "edges": []}
+
+    touching = session.exec(
+        select(Relationship).where(
+            or_(
+                Relationship.from_entity_id == entity_id,
+                Relationship.to_entity_id == entity_id,
+            )
+        )
+    ).all()
+    neighbor_ids = {
+        r.to_entity_id if r.from_entity_id == entity_id else r.from_entity_id
+        for r in touching
+    }
+    neighbor_ids.discard(entity_id)
+    neighbors_by_id = (
+        {
+            e.id: e
+            for e in session.exec(
+                select(Entity).where(Entity.id.in_(neighbor_ids), Entity.is_global)
+            ).all()
+        }
+        if neighbor_ids
+        else {}
+    )
+
+    visible_ids = {entity_id, *neighbors_by_id}
+    edges = [
+        {"from": r.from_entity_id, "to": r.to_entity_id, "rel_type": r.rel_type}
+        for r in touching
+        if r.from_entity_id in visible_ids and r.to_entity_id in visible_ids
+    ]
+    nodes = public.entity_cards(session, [focus, *neighbors_by_id.values()])
+    return {"nodes": nodes, "edges": edges}
