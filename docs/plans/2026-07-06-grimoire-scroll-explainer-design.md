@@ -21,7 +21,7 @@ scrolls. The north star is delight: "scanned image to useful data?!"
 | Copyright | A real book page excerpt is acceptable (LMoP or better candidate from curation) |
 | Scroll mechanics | Sticky pinned stage with scroll-scrubbed timeline, hand-rolled (no GSAP, no new deps) |
 
-## Story arc (five phases on one pinned stage)
+## Story arc (six phases on one pinned stage)
 
 1. **Hero.** The scanned page fills the stage, slightly tilted like it's on a desk.
    One-line value prop. Scroll cue.
@@ -34,9 +34,16 @@ scrolls. The north star is delight: "scanned image to useful data?!"
    `--grim-type-*` colors, pop out as entity chips, and edges draw between them
    until they settle into a mini knowledge graph (same visual language as the
    public Explore canvas).
-5. **Chat finale.** The graph drifts to the background; a scripted chat replay types
-   a question about this exact page; the answer streams in and its GROUNDED IN chips
-   light up the matching graph nodes. CTAs into the real `/explore` and `/chat`.
+5. **Scale pull-back.** The camera pulls back: the page's mini graph shrinks to a
+   single glowing cluster and a constellation of type-colored dots fades in around
+   it, one per entity in the corpus (sampled/capped for perf). Counters roll up:
+   N books, X chunks, Y entities. The message: you just watched one page; the whole
+   shelf got the same treatment. Counts are baked at build time (snapshot, rounded).
+6. **Chat finale.** The constellation dims to the background; a scripted chat replay
+   types a question about this exact page; the answer streams in and its GROUNDED IN
+   chips light up the matching graph nodes. Because the scale beat just landed, the
+   sage reads as grounded on the whole corpus, not one page. CTAs into the real
+   `/explore` and `/chat`.
 
 The existing landing's feature grid and roadmap remain below the finale in condensed
 form. The explainer replaces the current hero and static pipeline section.
