@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, union_all
 from sqlmodel import Session, select
 
 from grimoire.library import _iso, _PREVIEW_LEN
@@ -209,39 +209,84 @@ def list_entities_public(
     limit: int = DEFAULT_ENTITY_PAGE,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """All entities, name-ordered, paginated, no grants.
+    """All entities, paginated, no grants.
 
-    Keyset-paginated on name (unlike the private list's in-Python
-    offset slice over the grant-projected set): there is no grant
-    projection to materialise first here, so a straightforward
-    ``ORDER BY (name, id) LIMIT`` keyset page is both simpler and cheaper
-    at corpus scale. ``cursor`` packs the (name, id) of the last row on the
-    previous page. Left-joins the typed detail table per entity_type (creature,
-    spell) to add the secondary line the private list omits (it stays
-    spine-only); location/npc have no secondary fields to add.
+    Default load (no ``q``, no ``entity_type``) orders by relationship DEGREE
+    descending so the most-connected entities surface first, since that is the
+    most useful entry point into the corpus. Degree is the number of edges
+    touching an entity as either endpoint, computed by UNION ALL-ing the
+    relationship table's from/to columns and grouping. This mode paginates by
+    OFFSET (``cursor`` is a stringified integer offset), because a degree tie
+    makes a keyset cursor on (degree, name, id) more trouble than it's worth at
+    corpus scale.
+
+    When a search (``q``) or type (``entity_type``) filter is active the order
+    reverts to name, keyset-paginated on (name, id) (``cursor`` packs the
+    (name, id) of the last row on the previous page): the filtered set is small
+    and name order is what a searching user expects.
+
+    Left-joins the typed detail table per entity_type (creature, spell) to add
+    the secondary line the private list omits (it stays spine-only);
+    location/npc have no secondary fields to add.
     """
     limit = max(1, min(limit, MAX_ENTITY_PAGE))
     # is_global: only the shared corpus is public; campaign-private entities
     # (is_global false) are never listed.
-    query = select(Entity).where(Entity.is_global).order_by(Entity.name, Entity.id)
-    if entity_type is not None:
-        query = query.where(Entity.entity_type == entity_type)
-    if q:
-        query = query.where(func.lower(Entity.name).contains(q.lower()))
-    if cursor is not None:
-        cur_name, cur_id = _decode_cursor(cursor)
-        query = query.where(
-            or_(
-                Entity.name > cur_name,
-                and_(Entity.name == cur_name, Entity.id > cur_id),
-            )
-        )
-    # limit + 1 to detect whether another page follows without a second query.
-    query = query.limit(limit + 1)
-    rows = session.exec(query).all()
+    degree_mode = q is None and entity_type is None
 
-    has_more = len(rows) > limit
-    rows = rows[:limit]
+    if degree_mode:
+        # An entity's degree = count of relationship rows where it is the
+        # from- OR the to-endpoint. UNION ALL (not UNION) so both endpoints of
+        # the same edge each count; a self-loop counts twice, matching "number
+        # of edge endpoints touching this entity".
+        endpoints = union_all(
+            select(Relationship.from_entity_id.label("entity_id")),
+            select(Relationship.to_entity_id.label("entity_id")),
+        ).subquery()
+        degrees = (
+            select(
+                endpoints.c.entity_id.label("entity_id"),
+                func.count().label("degree"),
+            )
+            .group_by(endpoints.c.entity_id)
+            .subquery()
+        )
+        # LEFT JOIN + coalesce so an entity with no edges sorts as degree 0
+        # rather than dropping out of the list.
+        degree_col = func.coalesce(degrees.c.degree, 0)
+        offset = int(cursor) if cursor else 0
+        query = (
+            select(Entity)
+            .outerjoin(degrees, degrees.c.entity_id == Entity.id)
+            .where(Entity.is_global)
+            .order_by(degree_col.desc(), Entity.name, Entity.id)
+            .offset(offset)
+            .limit(limit + 1)  # +1 to detect a following page without a 2nd query.
+        )
+        rows = session.exec(query).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = str(offset + limit) if has_more else None
+    else:
+        query = select(Entity).where(Entity.is_global).order_by(Entity.name, Entity.id)
+        if entity_type is not None:
+            query = query.where(Entity.entity_type == entity_type)
+        if q:
+            query = query.where(func.lower(Entity.name).contains(q.lower()))
+        if cursor is not None:
+            cur_name, cur_id = _decode_cursor(cursor)
+            query = query.where(
+                or_(
+                    Entity.name > cur_name,
+                    and_(Entity.name == cur_name, Entity.id > cur_id),
+                )
+            )
+        # limit + 1 to detect whether another page follows without a second query.
+        query = query.limit(limit + 1)
+        rows = session.exec(query).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
 
     creature_ids = [e.id for e in rows if e.entity_type == "creature"]
     spell_ids = [e.id for e in rows if e.entity_type == "spell"]
@@ -285,7 +330,6 @@ def list_entities_public(
         count_query = count_query.where(func.lower(Entity.name).contains(q.lower()))
     total = session.exec(count_query).one()
 
-    next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
     return {"items": items, "total": total, "next_cursor": next_cursor}
 
 

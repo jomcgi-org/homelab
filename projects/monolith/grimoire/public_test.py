@@ -151,6 +151,38 @@ def seed_corpus(session):
     )
 
 
+def seed_degree_corpus(session):
+    """Three global npcs with distinct relationship degrees (Zeta=3, Mu=1,
+    Alpha=0). Names are chosen so degree order (Zeta, Mu, Alpha) is the REVERSE
+    of alphabetical order (Alpha, Mu, Zeta), so a degree-ordered list is
+    distinguishable from a name-ordered one. Zeta's degree is padded with edges
+    to two non-global neighbours, which never appear in the (is_global) list."""
+    session.add_all(
+        [
+            Entity(id="e-zeta", entity_type="npc", name="Zeta"),
+            Entity(id="e-mu", entity_type="npc", name="Mu"),
+            Entity(id="e-alpha", entity_type="npc", name="Alpha"),
+            Entity(id="e-nx", entity_type="npc", name="Nx", is_global=False),
+            Entity(id="e-ny", entity_type="npc", name="Ny", is_global=False),
+        ]
+    )
+    session.commit()
+    session.add_all(
+        [
+            Relationship(
+                from_entity_id="e-zeta", to_entity_id="e-mu", rel_type="knows"
+            ),
+            Relationship(
+                from_entity_id="e-zeta", to_entity_id="e-nx", rel_type="knows"
+            ),
+            Relationship(
+                from_entity_id="e-zeta", to_entity_id="e-ny", rel_type="knows"
+            ),
+        ]
+    )
+    session.commit()
+
+
 class TestGetChunkPublic:
     def test_full_shape_no_grants(self, session):
         seed = seed_corpus(session)
@@ -227,6 +259,41 @@ class TestListEntitiesPublic:
         body = public.list_entities_public(session, q="strahd")
         assert body["total"] == 0
         assert body["items"] == []
+
+    def test_default_orders_by_degree_desc(self, session):
+        """No q, no type filter -> most-connected first. Zeta (degree 3) leads,
+        then Mu (1), then Alpha (0), the reverse of alphabetical order."""
+        seed_degree_corpus(session)
+        body = public.list_entities_public(session)
+        assert body["total"] == 3
+        assert [item["name"] for item in body["items"]] == ["Zeta", "Mu", "Alpha"]
+        assert body["next_cursor"] is None
+
+    def test_type_filter_reverts_to_name_order(self, session):
+        """A type filter switches ordering back to alphabetical by name."""
+        seed_degree_corpus(session)
+        body = public.list_entities_public(session, entity_type="npc")
+        assert [item["name"] for item in body["items"]] == ["Alpha", "Mu", "Zeta"]
+
+    def test_search_reverts_to_name_order(self, session):
+        """A search filter switches ordering back to alphabetical by name.
+        'a' matches Alpha and Zeta (not Mu); degree order would be [Zeta, Alpha]
+        but name order is [Alpha, Zeta]."""
+        seed_degree_corpus(session)
+        body = public.list_entities_public(session, q="a")
+        assert [item["name"] for item in body["items"]] == ["Alpha", "Zeta"]
+
+    def test_degree_mode_offset_pagination(self, session):
+        """Degree mode paginates by a stringified integer offset cursor."""
+        seed_degree_corpus(session)
+        first = public.list_entities_public(session, limit=2)
+        assert [item["name"] for item in first["items"]] == ["Zeta", "Mu"]
+        assert first["next_cursor"] == "2"
+        second = public.list_entities_public(
+            session, limit=2, cursor=first["next_cursor"]
+        )
+        assert [item["name"] for item in second["items"]] == ["Alpha"]
+        assert second["next_cursor"] is None
 
     def test_pagination(self, session):
         seed_corpus(session)
