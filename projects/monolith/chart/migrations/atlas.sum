@@ -1,4 +1,4 @@
-h1:q88ywpX8LXImtUHYornHKPzMHFcRKM5JvK+8K5LSkfU=
+h1:0PMgy3K3jSKFtQsP3ErjJYlAqRwGSW7TkewY/W59+K4=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -105,4 +105,4 @@ h1:q88ywpX8LXImtUHYornHKPzMHFcRKM5JvK+8K5LSkfU=
 20260705140000_directive_autopilot.sql h1:Yo3ZBeYtbC9SCxMGQ7POv9QJtLXWnosmD6fI8AJK29I=
 20260705150000_grimoire_extraction_v4.sql h1:6jZyBNNUrqDYx4+0ZyUMbSVN8sqxA0o/wEKNXXLewYc=
 20260705160000_grimoire_adventure.sql h1:xn1/EzoHZiJs5V8AbhnKGAK/LTKm72hNEN4//1ku9FQ=
-20260705170000_grimoire_adventure_seed.sql h1:NpLGjjoxXkQXPlXz9vZetHOgglD8ZMzJIVd+wox9zkE=
+20260705170000_grimoire_adventure_seed.sql h1:Vl1WQ3RxunbWB/FmRTPGvehf0r21idknxokKIsEPZGY=

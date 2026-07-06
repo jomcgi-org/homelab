@@ -54,6 +54,8 @@ Turn a loaded book's section outline into rows in `grimoire.adventure`, delivere
 
    `seq` is the display ordinal (1..N within the book). The pre-commit hook refreshes Atlas checksums when migrations change.
 
+   The seed MUST also upsert the parent book row before the adventure INSERT (`INSERT INTO grimoire.book (id, display_name) VALUES (...) ON CONFLICT (id) DO NOTHING;`): prod already has it, but the CI test harness applies all migrations to an empty database and the adventure `book_id` FK fails without it.
+
 4. **Spot-check read-only** before committing: run the `grimoire.adventure_entity` view's join with literal bounds for one adventure and sanity-check the roster (no bleed from the neighboring adventure). If the book has no `chunk_entity_mention` rows yet (extraction drain pending), skip this; the view fills in later.
 
 5. **Ship it**: worktree + PR per repo rules, Conventional Commit (`feat(grimoire): seed adventures for <book_id>`), chart bump in the same PR (`bazel/tools/git/bump-chart.sh projects/monolith`), merge on green CI.
