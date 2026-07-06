@@ -4,14 +4,10 @@
   // (this component only mounts once `admitted` is true), so there is no
   // corpus fetch before the challenge is solved.
   //
-  // NOTE ON GROUPING: the 2026-07-05 reskin mockup groups rows by book_kind
-  // (Adventures / Anthologies / Setting Guides / Bestiaries / Spellbooks /
-  // Magic Items / Rulebooks). The public GET /books response
-  // (grimoire.library.list_books, mounted at router_public) does not carry a
-  // book_kind field today -- the Book model has no such column -- so this page
-  // deliberately renders a single flat, ungrouped list rather than inventing a
-  // client-side title->kind mapping. Add book_kind grouping here once the
-  // backend response includes it.
+  // Rows are grouped by book_kind (Adventures / Anthologies / Setting Guides /
+  // Bestiaries / Spellbooks / Magic Items / Rulebooks). book_kind is derived
+  // server-side from the slug (grimoire.extract.book_kind) and returned by GET
+  // /books; unmapped slugs fall into an "Other" bucket.
   import { onMount } from "svelte";
   import { apiFetch, bookHref } from "$lib/public/grimoire/api.js";
 
@@ -80,6 +76,40 @@
       synced: timeAgo(latest),
     };
   });
+
+  // Book-type grouping (book_kind comes from GET /books, derived from the slug).
+  const KIND_LABEL = {
+    adventure: "Adventures",
+    "adventure-anthology": "Anthologies",
+    "setting-guide": "Setting Guides",
+    bestiary: "Bestiaries",
+    spellbook: "Spellbooks",
+    "magic-items": "Magic Items",
+    rulebook: "Rulebooks",
+    other: "Other",
+  };
+  const KIND_ORDER = [
+    "adventure",
+    "adventure-anthology",
+    "setting-guide",
+    "bestiary",
+    "spellbook",
+    "magic-items",
+    "rulebook",
+    "other",
+  ];
+  const grouped = $derived.by(() => {
+    const by = {};
+    for (const b of books) {
+      const k = KIND_LABEL[b.book_kind] ? b.book_kind : "other";
+      (by[k] ??= []).push(b);
+    }
+    return KIND_ORDER.filter((k) => by[k]?.length).map((k) => ({
+      kind: k,
+      label: KIND_LABEL[k],
+      rows: by[k],
+    }));
+  });
 </script>
 
 <div class="library-page">
@@ -115,28 +145,36 @@
       <p class="empty-help">Check back once a sourcebook has been uploaded.</p>
     </div>
   {:else}
-    <ul class="book-list">
-      {#each books as book (book.book_id)}
-        <li>
-          <a class="brow" href={bookHref(book.book_id)}>
-            <span class="brow-main">
-              <span class="title">
-                {book.display_name}
-                {#if isNew(book)}<span class="pill">New</span>{/if}
-              </span>
-              <span class="meta">
-                {book.chunk_count.toLocaleString()} chunks
-                <span class="dot">/</span>
-                {book.image_count.toLocaleString()} images
-                <span class="dot">/</span>
-                {book.entity_count.toLocaleString()} entities
-              </span>
-            </span>
-            <span class="read">Read &rarr;</span>
-          </a>
-        </li>
-      {/each}
-    </ul>
+    {#each grouped as group (group.kind)}
+      <section class="lib-group">
+        <div class="gh">
+          <span class="kind">{group.label}</span>
+          <span class="kn">{group.rows.length}</span>
+        </div>
+        <ul class="book-list">
+          {#each group.rows as book (book.book_id)}
+            <li>
+              <a class="brow" href={bookHref(book.book_id)}>
+                <span class="brow-main">
+                  <span class="title">
+                    {book.display_name}
+                    {#if isNew(book)}<span class="pill">New</span>{/if}
+                  </span>
+                  <span class="meta">
+                    {book.chunk_count.toLocaleString()} chunks
+                    <span class="dot">/</span>
+                    {book.image_count.toLocaleString()} images
+                    <span class="dot">/</span>
+                    {book.entity_count.toLocaleString()} entities
+                  </span>
+                </span>
+                <span class="read">Read &rarr;</span>
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/each}
   {/if}
 </div>
 
@@ -178,9 +216,35 @@
     margin: 0 8px;
   }
 
+  .lib-group {
+    margin-top: 32px;
+  }
+
+  .gh {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 0 8px 8px;
+    border-bottom: 1px solid var(--grim-line);
+  }
+
+  .gh .kind {
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--grim-accent);
+    font-weight: 700;
+  }
+
+  .gh .kn {
+    font-size: 11px;
+    color: var(--grim-text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
   .book-list {
     list-style: none;
-    margin: 24px 0 0;
+    margin: 2px 0 0;
     padding: 0;
   }
 

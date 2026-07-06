@@ -165,6 +165,8 @@ class TestListBooks:
         book = body[0]
         assert book["book_id"] == "mm"
         assert book["display_name"] == "Monster Manual"
+        # book_kind is derived from the slug; the "mm" test slug is unmapped.
+        assert book["book_kind"] is None
         assert book["chunk_count"] == 4
         assert book["image_count"] == 1
         # c0 (ok) + c1 (empty) under the live key; the stale-key c3 excluded.
