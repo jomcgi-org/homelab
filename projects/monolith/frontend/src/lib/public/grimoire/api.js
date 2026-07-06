@@ -39,6 +39,7 @@ export async function apiFetch(path, options = {}) {
 
 export const libraryHref = () => "/app/grimoire";
 export const entitiesHref = () => "/app/grimoire/entities";
+export const exploreHref = () => "/app/grimoire/explore";
 export const entityHref = (id) =>
   `/app/grimoire/entity/${encodeURIComponent(id)}`;
 export const bookHref = (bookId) =>
