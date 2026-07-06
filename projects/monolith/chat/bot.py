@@ -831,9 +831,19 @@ class ChatBot(discord.Client):
         # run to be safe to extend.
         guild_id = message.guild.id if message.guild else None
         try:
-            is_ambient = channel_id in await asyncio.to_thread(
-                acl.ambient_channels, guild_id
-            )
+            ambient = await asyncio.to_thread(acl.ambient_channels, guild_id)
+            # A Discord thread is its own channel with its own id, distinct from
+            # its parent. Ambient grants are scoped to the parent channel, so a
+            # thread inherits ambient from its parent: check the parent id too
+            # when this is a thread. Agent/artifact threads never reach here
+            # (they return above), so this only opens ordinary user threads
+            # under a granted channel. channel_id stays the thread id, so the
+            # directive lookup, recent-tag check, and decision log all key off
+            # the thread's own history.
+            is_ambient = channel_id in ambient
+            if not is_ambient and isinstance(message.channel, discord.Thread):
+                parent_id = message.channel.parent_id
+                is_ambient = parent_id is not None and str(parent_id) in ambient
         except Exception:
             # Best-effort: if the grants read fails (DB blip), treat the channel
             # as non-ambient and fall through to normal handling rather than
