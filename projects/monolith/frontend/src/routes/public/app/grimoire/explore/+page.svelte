@@ -370,7 +370,12 @@
   .explore-page {
     max-width: 1180px;
     margin: 0 auto;
-    padding: 40px 28px 80px;
+    padding: 40px 28px 0;
+    /* Fill the viewport (minus the 58px sticky topbar) as a flex column so the
+       graph stage grows to the bottom edge with no leftover paper strip. */
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100dvh - 58px);
   }
 
   .eyebrow {
@@ -491,12 +496,11 @@
        page instead of sitting in a bordered card surrounded by whitespace. */
     margin-left: calc(-50vw + 50%);
     margin-right: calc(-50vw + 50%);
-    height: calc(100vh - 210px);
+    flex: 1 1 auto;
     min-height: 480px;
     overflow: hidden;
     background: var(--grim-surface);
     border-top: 1px solid var(--grim-line);
-    border-bottom: 1px solid var(--grim-line);
   }
 
   :global(.grimoire.dark) .ex-stage {
@@ -593,7 +597,7 @@
 
   @media (max-width: 640px) {
     .explore-page {
-      padding: 28px 20px 60px;
+      padding: 28px 20px 0;
     }
   }
 </style>
