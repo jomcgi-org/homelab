@@ -1294,7 +1294,7 @@ class TestStartAgentFlowOrchestrator:
             patch.object(
                 bot,
                 "_orchestrator_chat_reply",
-                AsyncMock(return_value=("here is a friendly answer", [])),
+                AsyncMock(return_value=("here is a friendly answer", [], [])),
             ),
             patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
         ):
