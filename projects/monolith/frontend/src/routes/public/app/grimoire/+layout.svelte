@@ -11,17 +11,23 @@
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
   import "$lib/grimoire/theme.css";
-  import { libraryHref, entitiesHref } from "$lib/public/grimoire/api.js";
+  import {
+    libraryHref,
+    entitiesHref,
+    exploreHref,
+  } from "$lib/public/grimoire/api.js";
 
   let { data, children } = $props();
 
   let admitted = $state(false);
 
   // Highlight the active topbar link: the entities index and entity detail
-  // pages both count as "entities"; everything else is the library flow.
+  // pages both count as "entities"; the EXPLORE canvas is its own section;
+  // everything else is the library flow.
   const section = $derived.by(() => {
     const id = $page.route.id ?? "";
     if (id.includes("/entities") || id.includes("/entity/")) return "entities";
+    if (id.includes("/explore")) return "explore";
     return "library";
   });
 </script>
@@ -51,6 +57,11 @@
         class="topbar-link"
         class:active={section === "entities"}
         href={entitiesHref()}>Entities</a
+      >
+      <a
+        class="topbar-link"
+        class:active={section === "explore"}
+        href={exploreHref()}>Explore</a
       >
     </nav>
     <div class="topbar-spacer"></div>
