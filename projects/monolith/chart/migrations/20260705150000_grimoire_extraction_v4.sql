@@ -7,9 +7,12 @@
 -- No data backfill: existing rows compute `category` from their entity_type via
 -- the generated column, and fresh v4 extraction populates the rest.
 
--- Expand the entity_type CHECK to the full v4 taxonomy.
-ALTER TABLE grimoire.entity DROP CONSTRAINT entity_entity_type_chk;
-ALTER TABLE grimoire.entity ADD CONSTRAINT entity_entity_type_chk CHECK (
+-- Expand the entity_type CHECK to the full v4 taxonomy. The original inline
+-- column CHECK in 20260703070000_grimoire_schema.sql was unnamed, so Postgres
+-- auto-named it entity_entity_type_check (the "_check" convention, matching
+-- entity_source_type_check); drop and re-add under that same name.
+ALTER TABLE grimoire.entity DROP CONSTRAINT entity_entity_type_check;
+ALTER TABLE grimoire.entity ADD CONSTRAINT entity_entity_type_check CHECK (
     entity_type IN (
         -- lore (unchanged from v1)
         'creature', 'spell', 'location', 'npc', 'faction', 'deity', 'item',
