@@ -901,7 +901,11 @@ class ChatBot(discord.Client):
             if decision.needs_agent:
                 await self._engage_agent(message, repo=decision.repo)
             else:
-                await self._process_message(message, force_respond=True)
+                # Explicit mention/reply renders live with buttons; a true
+                # ambient interjection renders non-live. Both skip the gate.
+                await self._process_message(
+                    message, force_respond=True, ambient=not explicit
+                )
             return
 
         await self._process_message(message)
@@ -1711,13 +1715,22 @@ class ChatBot(discord.Client):
             store.mark_completed(msg_id)
 
     async def _process_message(
-        self, message: discord.Message, force_respond: bool = False
+        self,
+        message: discord.Message,
+        force_respond: bool = False,
+        ambient: bool = False,
     ) -> None:
         """Process a message that this pod has locked.
 
         ``force_respond`` skips the ``should_respond`` gate so an ambient
         engage that the depth classify routed to chat (ADR 035 Phase 4) still
         gets a reply even though it's not a mention/reply.
+
+        ``ambient`` controls PRESENTATION, independently of the gate skip: a
+        true ambient interjection renders non-live and without buttons, while
+        an explicit mention/reply renders live (streaming edits) with the
+        thinking/fact-check buttons. Keep these decoupled -- conflating them
+        made every mention reply lose its live UI.
         """
         msg_id = str(message.id)
         channel_id = str(message.channel.id)
@@ -1768,8 +1781,8 @@ class ChatBot(discord.Client):
                 sent, response_text, thinking = await self._stream_response(
                     message,
                     attachments,
-                    with_buttons=not force_respond,
-                    live=not force_respond,
+                    with_buttons=not ambient,
+                    live=not ambient,
                 )
         except Exception:
             logger.exception("Failed to respond to message %s", msg_id)
