@@ -24,6 +24,17 @@ pkg_tar(
     package_dir = "/etc",
 )
 
+# Baked python helpers importable by executed code (ADR agents/044). Landed at
+# /opt/sandbox, which the handler puts on PYTHONPATH; outside the per-invoke
+# workdir so it is never collected as an output file. render_table lives here.
+pkg_tar(
+    name = "sandbox_tools_tar",
+    srcs = ["sandbox_tools.py"],
+    mode = "0644",
+    owner = "0.0",
+    package_dir = "/opt/sandbox",
+)
+
 # sandbox-guest-init binary, cross-compiled per arch and layered at
 # /usr/local/bin.
 platform_transition_filegroup(
@@ -64,5 +75,6 @@ apko_image(
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest",
     tars = [
         ":environment_md_tar",
+        ":sandbox_tools_tar",
     ],
 )
