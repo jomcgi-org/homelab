@@ -12,6 +12,7 @@
   } from "$lib/grimoire/api.js";
   import Omnibox from "$lib/grimoire/Omnibox.svelte";
   import Shell from "$lib/grimoire/Shell.svelte";
+  import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
   import "$lib/grimoire/theme.css";
 
   let { children } = $props();
@@ -122,25 +123,28 @@
       <Omnibox {campaignId} {viewpoint} />
     </div>
 
-    <nav class="viewpoints" aria-label="Viewpoint">
-      <span class="viewpoints-label">as</span>
-      <button
-        class="vp"
-        class:vp--active={viewpoint === "dm"}
-        onclick={() => switchViewpoint("dm")}
-      >
-        DM
-      </button>
-      {#each characters as character (character.id)}
+    <div class="viewpoints-row">
+      <nav class="viewpoints" aria-label="Viewpoint">
+        <span class="viewpoints-label">as</span>
         <button
           class="vp"
-          class:vp--active={viewpoint === character.id}
-          onclick={() => switchViewpoint(character.id)}
+          class:vp--active={viewpoint === "dm"}
+          onclick={() => switchViewpoint("dm")}
         >
-          {character.character_name}
+          DM
         </button>
-      {/each}
-    </nav>
+        {#each characters as character (character.id)}
+          <button
+            class="vp"
+            class:vp--active={viewpoint === character.id}
+            onclick={() => switchViewpoint(character.id)}
+          >
+            {character.character_name}
+          </button>
+        {/each}
+      </nav>
+      <ThemeToggle />
+    </div>
 
     <nav class="crumbs" aria-label="Sections">
       <a
@@ -215,8 +219,15 @@
     min-width: 0;
   }
 
-  .viewpoints {
+  .viewpoints-row {
     grid-area: viewpoints;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    justify-content: flex-end;
+  }
+
+  .viewpoints {
     display: flex;
     align-items: center;
     gap: 0.5rem;
