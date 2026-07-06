@@ -25,11 +25,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from grimoire.extract import current_extraction_key
 from grimoire.models import (
+    Adventure,
     Book,
     ChunkEntityMention,
     ChunkExtraction,
@@ -426,6 +427,109 @@ def list_entity_mentions(session: Session, entity_id: str) -> list[dict[str, Any
         }
         for chunk, mention_text in rows
     ]
+
+
+def _adventure_chunk_join(query):
+    """Join condition shared by list_adventures/adventure_entities: a
+    knowledge_chunk belongs to an adventure when it is in the same book and
+    its seq falls in [start_seq, end_seq] (end_seq NULL = to end of book).
+    This is the app-side mirror of grimoire.adventure_entity, computed here
+    (not against the Postgres view) so SQLite test fixtures see identical
+    behaviour: a view is invisible to SQLite's create_all.
+    """
+    return query.join(
+        KnowledgeChunk,
+        and_(
+            KnowledgeChunk.book_id == Adventure.book_id,
+            KnowledgeChunk.seq >= Adventure.start_seq,
+            or_(
+                Adventure.end_seq.is_(None),
+                KnowledgeChunk.seq <= Adventure.end_seq,
+            ),
+        ),
+    )
+
+
+def list_adventures(session: Session, book_id: str) -> list[dict[str, Any]]:
+    """Adventures in one book, seq-ordered, each with entity_count.
+
+    entity_count is COUNT(DISTINCT entity_id) over the chunks in the
+    adventure's seq range (see _adventure_chunk_join). Returns an empty list
+    for the vast majority of books, which have no adventure rows at all.
+    """
+    adventures = session.exec(
+        select(Adventure).where(Adventure.book_id == book_id).order_by(Adventure.seq)
+    ).all()
+    if not adventures:
+        return []
+
+    count_rows = session.execute(
+        _adventure_chunk_join(
+            select(
+                Adventure.id,
+                func.count(func.distinct(ChunkEntityMention.entity_id)),
+            ).where(Adventure.book_id == book_id)
+        )
+        .join(ChunkEntityMention, ChunkEntityMention.chunk_id == KnowledgeChunk.id)
+        .group_by(Adventure.id)
+    ).all()
+    entity_counts = dict(count_rows)
+
+    return [
+        {
+            "id": a.id,
+            "name": a.name,
+            "seq": a.seq,
+            "summary": a.summary,
+            "level_range": a.level_range,
+            "start_seq": a.start_seq,
+            "end_seq": a.end_seq,
+            "entity_count": entity_counts.get(a.id, 0),
+        }
+        for a in adventures
+    ]
+
+
+def adventure_entities(session: Session, adventure_id: str) -> dict[str, Any] | None:
+    """One adventure's fields plus its DISTINCT entity roster.
+
+    None if adventure_id does not exist. Entities are ordered by entity_type
+    then name so the frontend can render grouped-by-type without a client-side
+    sort. See _adventure_chunk_join for the seq-range join this mirrors from
+    grimoire.adventure_entity.
+    """
+    adventure = session.get(Adventure, adventure_id)
+    if adventure is None:
+        return None
+    book = session.get(Book, adventure.book_id)
+
+    entity_rows = session.execute(
+        _adventure_chunk_join(
+            select(Entity.id, Entity.name, Entity.entity_type, Entity.category)
+            .select_from(Adventure)
+            .where(Adventure.id == adventure_id)
+        )
+        .join(ChunkEntityMention, ChunkEntityMention.chunk_id == KnowledgeChunk.id)
+        .join(Entity, Entity.id == ChunkEntityMention.entity_id)
+        .distinct()
+        .order_by(Entity.entity_type, Entity.name)
+    ).all()
+
+    return {
+        "id": adventure.id,
+        "book_id": adventure.book_id,
+        "book_display_name": book.display_name if book else adventure.book_id,
+        "name": adventure.name,
+        "seq": adventure.seq,
+        "summary": adventure.summary,
+        "level_range": adventure.level_range,
+        "start_seq": adventure.start_seq,
+        "end_seq": adventure.end_seq,
+        "entities": [
+            {"id": eid, "name": name, "entity_type": entity_type, "category": category}
+            for eid, name, entity_type, category in entity_rows
+        ],
+    }
 
 
 def rename_book(session: Session, book_id: str, display_name: str) -> Book | None:
