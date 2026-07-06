@@ -215,3 +215,19 @@
     transform: none;
   }
 }
+
+/* ── Overscroll / viewport canvas ─────────────────────────────
+ * design-system.css sets `body { background: var(--bg) }` (cream) with no
+ * html background, so the body background propagates to the viewport canvas
+ * and shows in the rubber-band / overscroll area beyond the app content, even
+ * though .grimoire-app itself is on --grim-paper. Override the body background
+ * while a grimoire page is mounted (scoped via :has so the rest of the public
+ * site keeps its own background), and flip it with the toggle. Hardcoded
+ * because body is outside .grimoire and can't read --grim-paper; values mirror
+ * --grim-paper light/dark. */
+body:has(.grimoire) {
+  background: #f3f5f7;
+}
+body:has(.grimoire.dark) {
+  background: #0d1017;
+}
