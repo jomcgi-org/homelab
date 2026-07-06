@@ -646,6 +646,7 @@ def test_released_prompt_versions_are_frozen_by_hash():
         "v3": "1d4f924fb55bc021dddffb320461e4a93c065bd2ef1946aeca95293e25959377",
         "v4": "2437034db1f660f0b2f0f130d55d1f94c4cdd039a170af6bd269dd7264ff71c9",
         "v5": "df94db206235900ce377e50162a2678c06b000f75960d0af4c2982972e4e7459",
+        "v6": "ebd026a353b5d752ff882112842e5bbb233e8c41cdb4742e73f4561d410f0c59",
     }
     # Every released version must be pinned (a new version needs a new pin here).
     assert set(frozen) == set(PROMPT_VERSIONS)
@@ -683,12 +684,11 @@ def test_v4_extends_v3():
     assert "OCCURRED_AT" in v4_text and "SUBCLASS_OF" in v4_text
 
 
-def test_v5_is_active_and_extends_v4():
-    """v5 is the active version, carries the same schema as v4, and contains v4's
-    text verbatim (built by concatenation) plus the two mechanics clarifications
-    (condition scope, class_feature vs monster abilities). Prompt text only: same
-    schema object as v4."""
-    assert ACTIVE_PROMPT_VERSION == "v5"
+def test_v5_extends_v4():
+    """v5 carries the same schema as v4 and contains v4's text verbatim (built by
+    concatenation) plus the two mechanics clarifications (condition scope,
+    class_feature vs monster abilities). Prompt text only: same schema object as
+    v4. (v5 was the active version through v6's promotion.)"""
     assert PROMPT_VERSIONS["v5"].schema is PROMPT_VERSIONS["v4"].schema
     v5_text = PROMPT_VERSIONS["v5"].text
     assert v5_text.startswith(PROMPT_VERSIONS["v4"].text)
@@ -697,6 +697,26 @@ def test_v5_is_active_and_extends_v4():
     assert "Dancing Lights" in v5_text and "Darkvision" in v5_text
     assert "CLASS_FEATURE VS MONSTER ABILITIES" in v5_text
     assert "do not extract monster abilities as" in v5_text
+
+
+def test_v6_is_active_and_extends_v5():
+    """v6 is the active version, carries the same schema OBJECT as v4/v5 (now
+    widened with the `table` entity_type via EXTRACT_SCHEMA), and contains v5's
+    text verbatim (built by concatenation) plus the table / class_feature-heading /
+    anthology clarifications."""
+    assert ACTIVE_PROMPT_VERSION == "v6"
+    assert PROMPT_VERSIONS["v6"].schema is PROMPT_VERSIONS["v4"].schema
+    v6_text = PROMPT_VERSIONS["v6"].text
+    assert v6_text.startswith(PROMPT_VERSIONS["v5"].text)
+    # The table summary must be descriptive (it is the only text embedded for
+    # entity vector search besides the name).
+    assert "found by meaning, not just by caption" in v6_text
+    assert "TABLES ARE ONE ENTITY" in v6_text
+    assert "LEVEL N: FEATURE NAME" in v6_text
+    assert "adventure-anthology" in v6_text
+    # A table's rows live in detail (never embedded), so its summary must carry the
+    # searchable meaning; the addendum requires a genuinely descriptive summary.
+    assert "summary MUST be genuinely descriptive" in v6_text
 
 
 def test_non_enum_rel_type_mapped_to_related_to(session: Session):
@@ -2035,3 +2055,135 @@ def test_adventure_passes_full_hierarchy_section_context(session: Session):
 
     assert captured["book_kind"] == "adventure"
     assert captured["section_path"] == "Chapter 13: The Abbey > L17. Surgery"
+
+
+# --- v6 table type (one entity per table, book-scoped dedup, row merge) --------
+
+
+def _table_response(name: str, detail: dict) -> dict:
+    return {
+        "entities": [
+            {
+                "entity_type": "table",
+                "name": name,
+                "summary": "A rollable table.",
+                "detail": detail,
+            }
+        ],
+        "mentions": [],
+        "relationships": [],
+    }
+
+
+def test_table_entity_persists_with_mechanics_category_and_detail(session: Session):
+    """A table chunk yields ONE 'table' entity (not N row entities): it derives
+    category 'mechanics' and stores its structure in the generic detail JSONB."""
+    _summary, rows = _extract_entities(
+        session,
+        entities=[
+            {
+                "entity_type": "table",
+                "name": "Random Encounters",
+                "summary": "Roll for a wandering threat.",
+                "detail": {
+                    "dice": "d100",
+                    "columns": ["Roll", "Encounter"],
+                    "rows": {"01-10": "2 goblins", "11-20": "A brown bear"},
+                },
+            }
+        ],
+    )
+    assert len(rows) == 1  # one table entity, no row entities
+    table = rows[0]
+    assert table.entity_type == "table"
+    assert table.category == "mechanics"  # ELSE branch of the derived category
+    assert table.detail["dice"] == "d100"
+    assert table.detail["columns"] == ["Roll", "Encounter"]
+    assert table.detail["rows"]["01-10"] == "2 goblins"
+
+
+def test_table_same_name_different_books_stay_separate(session: Session):
+    """The same table caption in two books stays two entities (table dedup is
+    book-scoped, like locations)."""
+    c1 = _make_chunk(session, "dmg", "dmg-001", "Treasure table, DMG.")
+    c2 = _make_chunk(session, "xge", "xge-001", "Treasure table, XGE.")
+    responses = {
+        c1.content: _table_response("Random Encounters", {"rows": {"01": "A"}}),
+        c2.content: _table_response("Random Encounters", {"rows": {"01": "B"}}),
+    }
+    _run(extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient()))
+
+    tables = (
+        session.execute(select(Entity).where(Entity.entity_type == "table"))
+        .scalars()
+        .all()
+    )
+    assert len(tables) == 2
+    assert {e.source_book for e in tables} == {"dmg", "xge"}
+    # Tables carry no site (unlike locations); the spine site column stays NULL.
+    assert {e.site for e in tables} == {None}
+
+
+def test_table_same_book_reused_and_rows_key_merged(session: Session):
+    """The same table name within one book reuses the existing entity and key-merges
+    its rows: an existing row key wins on conflict, a new row key is added."""
+    c1 = _make_chunk(session, "dmg", "dmg-001", "Magic Item Table A, first half.")
+    c2 = _make_chunk(session, "dmg", "dmg-002", "Magic Item Table A, second half.")
+    responses = {
+        c1.content: _table_response(
+            "Magic Item Table A",
+            {"dice": "d100", "rows": {"01-50": "Potion of Healing"}},
+        ),
+        c2.content: _table_response(
+            # 01-50 conflicts (chunk1 must win); 51-60 is a new row key.
+            "Magic Item Table A",
+            {"rows": {"01-50": "WRONG", "51-60": "+1 Armor"}},
+        ),
+    }
+    summary = _run(
+        extract_chunks(session, FakeOpenRouterClient(responses), FakeEmbedClient())
+    )
+
+    tables = (
+        session.execute(select(Entity).where(Entity.entity_type == "table"))
+        .scalars()
+        .all()
+    )
+    assert len(tables) == 1
+    assert summary["entities_created"] == 1
+    assert summary["entities_reused"] == 1
+    detail = tables[0].detail
+    assert detail["dice"] == "d100"  # retained from chunk1
+    assert detail["rows"] == {"01-50": "Potion of Healing", "51-60": "+1 Armor"}
+
+
+def test_table_rows_merge_across_separate_runs(session: Session):
+    """A table split across chunks processed in SEPARATE runs accumulates rows: the
+    second run reuses the committed table entity and adds its new row keys without
+    clobbering the existing ones (the prompt's 'table continues from a previous
+    chunk' contract)."""
+    c1 = _make_chunk(session, "dmg", "dmg-001", "Wild Magic Surge, part 1.")
+    c2 = _make_chunk(session, "dmg", "dmg-002", "Wild Magic Surge, part 2.")
+    responses = {
+        c1.content: _table_response(
+            "Wild Magic Surge", {"dice": "d100", "rows": {"01-02": "Reroll"}}
+        ),
+        c2.content: _table_response(
+            "Wild Magic Surge", {"rows": {"03-04": "Fireball", "01-02": "CLOBBER"}}
+        ),
+    }
+    or_client = FakeOpenRouterClient(responses)
+    embed_client = FakeEmbedClient()
+    _run(extract_chunks(session, or_client, embed_client, limit=1))  # commits c1
+    _run(extract_chunks(session, or_client, embed_client, limit=1))  # reuses, merges
+
+    tables = (
+        session.execute(select(Entity).where(Entity.entity_type == "table"))
+        .scalars()
+        .all()
+    )
+    assert len(tables) == 1
+    detail = tables[0].detail
+    assert detail["dice"] == "d100"
+    # New row key added, existing key kept (chunk1 wins the 01-02 conflict).
+    assert detail["rows"] == {"01-02": "Reroll", "03-04": "Fireball"}

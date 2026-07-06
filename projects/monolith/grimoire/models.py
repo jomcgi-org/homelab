@@ -28,8 +28,9 @@ from sqlmodel import JSON, Field, SQLModel
 # Mirror of the CHECK constraint in
 # chart/migrations/20260703070000_grimoire_schema.sql, expanded by
 # 20260705150000_grimoire_extraction_v4.sql to the generic typed-extraction set
-# (lore + gameplay + mechanics) - keep in sync. Grouped by the DERIVED category:
-# lore (unchanged from v1), gameplay (event/quest), mechanics (D&D game rules).
+# (lore + gameplay + mechanics) and by 20260706010000_grimoire_table_type.sql with
+# the mechanics `table` type - keep in sync. Grouped by the DERIVED category: lore
+# (unchanged from v1), gameplay (event/quest), mechanics (D&D game rules).
 EntityType = Literal[
     # lore
     "creature",
@@ -52,6 +53,9 @@ EntityType = Literal[
     "class_feature",
     "action",
     "rule",
+    # a table/list of options captured as ONE entity (v6): a treasure or magic-item
+    # table, a spell list, a class progression, a random-encounter table.
+    "table",
 ]
 # Category is DERIVED from entity_type by a stored generated column (see
 # _ENTITY_CATEGORY_EXPR / the migration), never written by the app.
@@ -107,7 +111,7 @@ class Entity(SQLModel, table=True):
             "'creature', 'spell', 'location', 'npc', 'faction', 'deity', 'item', "
             "'event', 'quest', "
             "'condition', 'feat', 'race', 'background', 'class', 'subclass', "
-            "'class_feature', 'action', 'rule')",
+            "'class_feature', 'action', 'rule', 'table')",
             name="entity_entity_type_chk",
         ),
         CheckConstraint(
