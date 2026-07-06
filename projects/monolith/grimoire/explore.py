@@ -16,6 +16,7 @@ under SQLite's create_all too) and Postgres.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from sqlalchemy import and_, or_
@@ -186,3 +187,91 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
     ]
     nodes = public.entity_cards(session, [focus, *neighbors_by_id.values()])
     return {"nodes": nodes, "edges": edges}
+
+
+# Hop bound for shortest_path's BFS: a D&D corpus graph has a modest
+# out-degree per entity, but an unbounded BFS is still a latent runaway query
+# on a large/dense future corpus. 6 comfortably covers "six degrees of
+# separation" framing (the pathfinding feature's own pitch) while capping
+# worst-case work at a fixed number of relationship-table rows.
+_MAX_PATH_DEPTH = 6
+
+
+def shortest_path(
+    session: Session, from_id: str, to_id: str, *, max_depth: int = _MAX_PATH_DEPTH
+) -> dict[str, Any]:
+    """BFS shortest path between two entities over the relationship graph.
+
+    Traverses relationship edges in BOTH directions, restricted to
+    ``is_global`` entities only (a private entity can never appear as an
+    intermediate hop or an endpoint), bounded to ``max_depth`` hops. Returns
+    ``{"path": [...]}`` where each entry is ``{"entity": <card>, "via":
+    <rel_type used to reach this entity from the previous one, None for the
+    first entry>}``, in order from ``from_id`` to ``to_id``. Returns
+    ``{"path": []}`` if either id is missing/non-public, or no path exists
+    within the depth bound.
+
+    Kept as a plain in-process BFS (not a recursive SQL CTE): the relationship
+    table is loaded once up front and walked in Python, which is simple and
+    fast at this corpus's scale (a few thousand entities, modest out-degree).
+    ``max_depth`` is the guardrail against that assumption ever becoming
+    false: on a much bigger or denser future graph, this bounds the walk to a
+    fixed number of hops instead of degrading into an unbounded search.
+    """
+    from_entity = session.get(Entity, from_id)
+    to_entity = session.get(Entity, to_id)
+    if (
+        from_entity is None
+        or to_entity is None
+        or not from_entity.is_global
+        or not to_entity.is_global
+    ):
+        return {"path": []}
+    if from_id == to_id:
+        card = public.entity_cards(session, [from_entity])[0]
+        return {"path": [{"entity": card, "via": None}]}
+
+    global_ids = set(session.exec(select(Entity.id).where(Entity.is_global)).all())
+    adjacency: dict[str, list[tuple[str, str]]] = {}
+    for r in session.exec(select(Relationship)).all():
+        if r.from_entity_id not in global_ids or r.to_entity_id not in global_ids:
+            continue
+        adjacency.setdefault(r.from_entity_id, []).append((r.to_entity_id, r.rel_type))
+        adjacency.setdefault(r.to_entity_id, []).append((r.from_entity_id, r.rel_type))
+
+    visited = {from_id}
+    # Each queued path is a list of (entity_id, rel_type_used_to_arrive)
+    # tuples; the first entry's rel_type is always None.
+    queue: deque[list[tuple[str, str | None]]] = deque([[(from_id, None)]])
+    while queue:
+        path = queue.popleft()
+        if len(path) - 1 >= max_depth:
+            continue
+        current_id, _ = path[-1]
+        for neighbor_id, rel_type in adjacency.get(current_id, []):
+            if neighbor_id in visited:
+                continue
+            new_path = path + [(neighbor_id, rel_type)]
+            if neighbor_id == to_id:
+                ids = [eid for eid, _ in new_path]
+                entities_by_id = {
+                    e.id: e
+                    for e in session.exec(
+                        select(Entity).where(Entity.id.in_(ids))
+                    ).all()
+                }
+                cards_by_id = {
+                    c["id"]: c
+                    for c in public.entity_cards(
+                        session, [entities_by_id[eid] for eid in ids]
+                    )
+                }
+                return {
+                    "path": [
+                        {"entity": cards_by_id[eid], "via": via}
+                        for eid, via in new_path
+                    ]
+                }
+            visited.add(neighbor_id)
+            queue.append(new_path)
+    return {"path": []}

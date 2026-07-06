@@ -538,6 +538,44 @@ class TestExploreEgo:
         assert r.json() == {"nodes": [], "edges": []}
 
 
+class TestExplorePath:
+    def test_two_hop_path_found(self, session, client):
+        seed_corpus(session)  # e-aboleth --knows--> e-fireball
+        elminster = Entity(entity_type="npc", name="Elminster", is_global=True)
+        session.add(elminster)
+        session.commit()
+        session.refresh(elminster)
+        session.add(
+            Relationship(
+                from_entity_id="e-fireball",
+                to_entity_id=elminster.id,
+                rel_type="taught_by",
+            )
+        )
+        session.commit()
+
+        r = client.get(f"/api/grimoire/explore/path?from=e-aboleth&to={elminster.id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert [hop["entity"]["name"] for hop in body["path"]] == [
+            "Aboleth",
+            "Fireball",
+            "Elminster",
+        ]
+        assert [hop["via"] for hop in body["path"]] == [None, "knows", "taught_by"]
+
+    def test_no_path_between_disconnected_entities(self, session, client):
+        seed_corpus(session)
+        loner = Entity(entity_type="npc", name="Loner", is_global=True)
+        session.add(loner)
+        session.commit()
+        session.refresh(loner)
+
+        r = client.get(f"/api/grimoire/explore/path?from=e-aboleth&to={loner.id}")
+        assert r.status_code == 200
+        assert r.json() == {"path": []}
+
+
 class TestSearch:
     def test_search_entities_and_lore(self, session, client):
         seed_corpus(session)

@@ -246,7 +246,7 @@ def search(
     return public.search_public(session, q)
 
 
-# --- EXPLORE (corpus-graph canvas: subgraph + ego expansion) --------------
+# --- EXPLORE (corpus-graph canvas: subgraph, ego expansion, pathfinding) --
 
 
 @router.get("/explore/graph")
@@ -272,3 +272,16 @@ def explore_ego(
     shape as /explore/graph, for click-to-expand ("wander"). See
     explore.ego_subgraph."""
     return explore.ego_subgraph(session, id)
+
+
+@router.get("/explore/path")
+def explore_path(
+    from_: str = Query(alias="from"),
+    to: str = Query(...),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Six-degrees pathfinding between two entities: BFS over the
+    relationship graph (both directions), is_global entities only, bounded
+    to a fixed depth. See explore.shortest_path for the exact bound and the
+    ordered-chain response shape."""
+    return explore.shortest_path(session, from_, to)
