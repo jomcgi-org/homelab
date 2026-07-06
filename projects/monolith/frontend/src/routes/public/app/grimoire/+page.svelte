@@ -1,31 +1,14 @@
 <script>
-  // Public Grimoire homepage: the pitch, how the pipeline works, what exists
-  // today, a small invented demo of the grant system, and the roadmap. This
-  // page is deliberately STATIC: it makes zero /api/grimoire fetches and
-  // contains no corpus content, which is what lets the layout render it
-  // outside the Turnstile gate (the gate protects the copyrighted corpus,
-  // not the product description). Keep it that way: any corpus read added
-  // here must move behind the gate instead.
-  import { libraryHref, entitiesHref } from "$lib/public/grimoire/api.js";
-
-  const pipeline = [
-    {
-      title: "Sourcebook PDF",
-      body: "Marker extraction plus structural chunking: a monster's lore, stat block, and actions land in one chunk, in reading order.",
-    },
-    {
-      title: "Postgres + embeddings",
-      body: "Chunks land in Postgres keyed by book and section, and every chunk is embedded (pgvector) for semantic lookup.",
-    },
-    {
-      title: "LLM entity extraction",
-      body: "A frontier model reads each chunk and extracts typed entities, the chunks that mention them, and how they relate.",
-    },
-    {
-      title: "Reader + entity browser",
-      body: "Read a book chunk by chunk, or start from a creature or spell and jump straight to the passages it came from.",
-    },
-  ];
+  // Public Grimoire homepage: a scroll-scrubbed "From scan to query" explainer
+  // (ScrollStory) over the pitch, what exists today, a small invented demo of
+  // the grant system, and the roadmap. This page still makes zero /api/grimoire
+  // fetches, which is what lets the layout render it outside the Turnstile gate
+  // (the gate protects the copyrighted corpus, not the product description).
+  // The one deliberate exception: ScrollStory embeds ONE Joe-approved curated
+  // corpus page (Lost Mine of Phandelver p.50) as baked static assets to show
+  // the pipeline on real data. That single excerpt is the only corpus content
+  // allowed out here; any further corpus read must still move behind the gate.
+  import ScrollStory from "$lib/public/grimoire/scrollstory/ScrollStory.svelte";
 
   const features = [
     {
@@ -87,43 +70,9 @@
   ];
 </script>
 
+<ScrollStory />
+
 <div class="home">
-  <section class="hero">
-    <p class="eyebrow">The Grimoire</p>
-    <h1 class="grim-title hero-title">
-      Your sourcebooks, <span class="accent">read and understood.</span>
-    </h1>
-    <p class="lede">
-      Grimoire ingests D&amp;D sourcebook PDFs, chunks them along their real
-      section structure, and has an LLM extract a typed knowledge graph of
-      creatures, spells, NPCs, locations, and items. The result is a library
-      you can read cover to cover and a corpus you can query entity by
-      entity, with every fact traceable back to the page it came from.
-    </p>
-    <div class="cta-row">
-      <a class="cta cta-primary" href={libraryHref()}>Browse the library</a>
-      <a class="cta cta-ghost" href={entitiesHref()}>Explore entities</a>
-    </div>
-  </section>
-
-  <section class="block">
-    <div class="gh"><span class="kind">How it works</span></div>
-    <ol class="pipeline">
-      {#each pipeline as step, i (step.title)}
-        <li class="step">
-          <span class="step-n">{i + 1}</span>
-          <h3 class="step-title">{step.title}</h3>
-          <p class="step-body">{step.body}</p>
-        </li>
-      {/each}
-    </ol>
-    <p class="block-note">
-      Ingest runs as idempotent batch jobs: re-loading an unchanged book is a
-      no-op, and extraction prompts are versioned so the corpus can be
-      re-extracted deliberately, never accidentally.
-    </p>
-  </section>
-
   <section class="block">
     <div class="gh"><span class="kind">What's here today</span></div>
     <ul class="feature-grid">
@@ -222,71 +171,6 @@
     padding: 56px 28px 80px;
   }
 
-  .eyebrow {
-    font-size: 11px;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: var(--grim-text-faint);
-    font-weight: 600;
-    margin: 0;
-  }
-
-  .hero-title {
-    font-size: clamp(34px, 6vw, 54px);
-    margin: 10px 0 0;
-    max-width: 22ch;
-  }
-
-  .accent {
-    color: var(--grim-accent);
-  }
-
-  .lede {
-    margin-top: 18px;
-    max-width: 68ch;
-    color: var(--grim-text-dim);
-    font-size: 15.5px;
-    line-height: 1.65;
-  }
-
-  .cta-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-top: 26px;
-  }
-
-  .cta {
-    display: inline-flex;
-    align-items: center;
-    min-height: 42px;
-    padding: 8px 18px;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    text-decoration: none;
-    border-radius: 7px;
-  }
-
-  .cta-primary {
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
-  }
-
-  .cta-primary:hover {
-    background: var(--grim-accent-strong);
-  }
-
-  .cta-ghost {
-    color: var(--grim-accent);
-    border: 1px solid var(--grim-line);
-  }
-
-  .cta-ghost:hover {
-    background: var(--grim-surface-2);
-  }
-
   .block {
     margin-top: 56px;
   }
@@ -328,64 +212,6 @@
     color: var(--grim-text-faint);
     font-size: 12.5px;
     line-height: 1.6;
-  }
-
-  /* ── Pipeline diagram: numbered step cards joined by arrows ── */
-
-  .pipeline {
-    list-style: none;
-    margin: 22px 0 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 26px;
-  }
-
-  .step {
-    position: relative;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
-    padding: 16px 16px 18px;
-  }
-
-  .step:not(:last-child)::after {
-    content: "\2192";
-    position: absolute;
-    top: 50%;
-    right: -21px;
-    transform: translateY(-50%);
-    color: var(--grim-text-faint);
-    font-size: 15px;
-  }
-
-  .step-n {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: var(--grim-accent-soft);
-    color: var(--grim-accent);
-    font-size: 11px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .step-title {
-    margin: 10px 0 0;
-    font-family: var(--grim-serif);
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--grim-ink);
-  }
-
-  .step-body {
-    margin: 7px 0 0;
-    color: var(--grim-text-dim);
-    font-size: 12.5px;
-    line-height: 1.55;
   }
 
   /* ── Feature grid ── */
@@ -584,14 +410,6 @@
   /* ── Responsive ── */
 
   @media (max-width: 960px) {
-    .pipeline {
-      grid-template-columns: 1fr 1fr;
-    }
-
-    .step:not(:last-child)::after {
-      content: none;
-    }
-
     .feature-grid,
     .grant-row {
       grid-template-columns: 1fr 1fr;
@@ -603,7 +421,6 @@
       padding: 36px 20px 60px;
     }
 
-    .pipeline,
     .feature-grid,
     .grant-row {
       grid-template-columns: 1fr;
