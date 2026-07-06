@@ -25,9 +25,10 @@
       "path": "/app/grimoire/book/mm",
       "static_initial": true
     },
+    { "id": "grimoire-home", "path": "/app/grimoire" },
     {
       "id": "grimoire-library",
-      "path": "/app/grimoire",
+      "path": "/app/grimoire/library",
       "static_initial": true
     },
     {

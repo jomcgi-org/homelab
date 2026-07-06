@@ -37,7 +37,8 @@ export async function apiFetch(path, options = {}) {
 
 // ── Route builders (public URL structure: no [campaign], no ?as=) ──
 
-export const libraryHref = () => "/app/grimoire";
+export const homeHref = () => "/app/grimoire";
+export const libraryHref = () => "/app/grimoire/library";
 export const entitiesHref = () => "/app/grimoire/entities";
 export const exploreHref = () => "/app/grimoire/explore";
 export const entityHref = (id) =>
