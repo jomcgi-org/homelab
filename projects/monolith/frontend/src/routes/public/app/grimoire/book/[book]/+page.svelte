@@ -53,17 +53,17 @@
     <ul class="adventures-list">
       {#each adventures as adv (adv.id)}
         <li>
-          <a class="card-hard adventure-row" href={adventureHref(adv.id)}>
+          <a class="adventure-row" href={adventureHref(adv.id)}>
             <div class="adventure-main">
-              <span class="display adventure-name">{adv.name}</span>
+              <span class="grim-title adventure-name">{adv.name}</span>
               {#if adv.level_range}
-                <span class="mono adventure-level">LVL {adv.level_range}</span>
+                <span class="adventure-level">LVL {adv.level_range}</span>
               {/if}
             </div>
             {#if adv.summary}
               <p class="adventure-summary">{adv.summary}</p>
             {/if}
-            <span class="mono adventure-count">{adv.entity_count} ENTITIES</span>
+            <span class="adventure-count">{adv.entity_count} ENTITIES</span>
           </a>
         </li>
       {/each}
@@ -85,6 +85,15 @@
     padding: 28px 32px 0;
   }
 
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--grim-text-faint);
+    font-weight: 600;
+    margin: 0;
+  }
+
   .adventures-title {
     margin-bottom: 14px;
   }
@@ -101,6 +110,19 @@
     flex-direction: column;
     gap: 6px;
     padding: 16px 20px;
+    text-decoration: none;
+    color: inherit;
+    background: var(--grim-surface);
+    border: 1px solid var(--grim-line-soft);
+    border-radius: 8px;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
+  }
+
+  .adventure-row:hover {
+    background: var(--grim-surface-2);
+    border-color: var(--grim-line);
   }
 
   .adventure-main {
@@ -115,16 +137,19 @@
   }
 
   .adventure-level {
-    color: var(--ink-3);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--grim-text-faint);
   }
 
   .adventure-summary {
-    color: var(--ink-2);
+    color: var(--grim-text-dim);
     font-size: 13px;
   }
 
   .adventure-count {
-    color: var(--ink-3);
+    font-family: var(--font-mono);
+    color: var(--grim-text-faint);
     font-size: 11px;
   }
 </style>

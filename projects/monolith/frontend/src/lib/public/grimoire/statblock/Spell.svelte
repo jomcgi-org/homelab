@@ -30,17 +30,17 @@
   const description = $derived(normalizeBlocks(data.description));
 </script>
 
-<article class="card-hard frame">
-  <h2 class="display name">{data.name}</h2>
-  {#if strap}<p class="eyebrow strap">{strap}</p>{/if}
+<article class="spell grim-paper">
+  <h2 class="grim-title name">{data.name}</h2>
+  {#if strap}<p class="grim-smallcaps strap">{strap}</p>{/if}
 
-  <hr class="rule" />
+  <hr class="grim-rule" />
 
   {#if grid.length}
     <dl class="meta">
       {#each grid as [label, value] (label)}
         <div>
-          <dt class="eyebrow">{label}</dt>
+          <dt>{label}</dt>
           <dd>{value}</dd>
         </div>
       {/each}
@@ -48,13 +48,11 @@
   {/if}
 
   {#if classes}
-    <p class="classes">
-      <span class="eyebrow classes-label">Classes</span> {classes}
-    </p>
+    <p class="classes"><span class="classes-label">Classes:</span> {classes}</p>
   {/if}
 
   {#if description.length}
-    <hr class="rule" />
+    <hr class="grim-rule" />
     <div class="body">
       {#each description as p, i (i)}
         <p class="para">
@@ -67,54 +65,69 @@
 </article>
 
 <style>
-  .frame {
-    padding: clamp(20px, 4vw, 32px);
-    border-top: 4px solid var(--blue);
-    max-width: 640px;
+  .spell {
+    padding: clamp(1rem, 3vw, 1.5rem);
+    border: 1px solid var(--grim-paper-line);
+    border-top: 3px solid var(--grim-accent);
+    max-width: 40rem;
   }
 
   .name {
-    font-size: clamp(28px, 5vw, 40px);
+    font-size: clamp(1.4rem, 4vw, 1.9rem);
+    color: var(--grim-accent-strong);
   }
 
   .strap {
-    margin-top: 4px;
-  }
-
-  .rule {
-    border: none;
-    border-top: 2px solid var(--rule);
-    margin: 16px 0;
+    font-size: 0.85rem;
+    color: var(--grim-ink-soft);
+    font-style: italic;
   }
 
   .meta {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px 24px;
+    gap: 0.5rem 1.25rem;
+  }
+
+  .meta dt {
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--grim-ink-soft);
   }
 
   .meta dd {
+    font-family: var(--grim-serif);
     font-weight: 700;
-    font-size: 15px;
+    font-size: 0.95rem;
   }
 
   .classes {
-    margin-top: 14px;
-    font-size: 15px;
+    margin-top: 0.6rem;
+    font-family: var(--grim-serif);
+    font-size: 0.9rem;
   }
 
   .classes-label {
-    margin-right: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--grim-ink-soft);
   }
 
   .body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 0.5rem;
   }
 
   .para {
-    line-height: 1.65;
+    font-family: var(--grim-serif);
+    font-size: 0.95rem;
+    line-height: 1.55;
+    color: var(--grim-ink);
   }
 
   @media (max-width: 480px) {
