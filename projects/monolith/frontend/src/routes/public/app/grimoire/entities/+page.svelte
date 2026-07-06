@@ -195,6 +195,7 @@
         type="button"
         class="chip chip-all"
         class:on={type === ""}
+        aria-pressed={type === ""}
         onclick={() => (type = "")}
       >
         All
@@ -206,6 +207,7 @@
           type="button"
           class="chip"
           class:on={type === t.value}
+          aria-pressed={type === t.value}
           onclick={() => selectType(t.value)}
         >
           <span class="sw" style={`background: var(--grim-type-${t.value})`}
