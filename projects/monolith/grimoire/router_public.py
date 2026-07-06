@@ -61,6 +61,15 @@ def read_book(
     return library.read_page(session, book_id, cursor=cursor, limit=limit)
 
 
+@router.get("/adventures")
+def list_adventures_all(
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """All adventures across the corpus, for the EXPLORE gallery. See
+    library.list_all_adventures."""
+    return library.list_all_adventures(session)
+
+
 @router.get("/books/{book_id}/adventures")
 def list_adventures(
     book_id: str, session: Session = Depends(get_session)

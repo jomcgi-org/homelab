@@ -491,6 +491,45 @@ def list_adventures(session: Session, book_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def list_all_adventures(session: Session) -> list[dict[str, Any]]:
+    """Every adventure across all books, book-then-seq ordered, each with
+    entity_count and its book's display_name. Powers the EXPLORE gallery
+    (the corpus-wide sibling of list_adventures, which is scoped to one book).
+    """
+    count_rows = session.execute(
+        _adventure_chunk_join(
+            select(
+                Adventure.id,
+                func.count(func.distinct(ChunkEntityMention.entity_id)),
+            )
+        )
+        .join(ChunkEntityMention, ChunkEntityMention.chunk_id == KnowledgeChunk.id)
+        .group_by(Adventure.id)
+    ).all()
+    entity_counts = dict(count_rows)
+
+    rows = session.exec(
+        select(Adventure, Book.display_name)
+        .join(Book, Book.id == Adventure.book_id)
+        .order_by(Book.display_name, Adventure.seq)
+    ).all()
+    return [
+        {
+            "id": a.id,
+            "book_id": a.book_id,
+            "book_display_name": display_name,
+            "name": a.name,
+            "seq": a.seq,
+            "summary": a.summary,
+            "level_range": a.level_range,
+            "start_seq": a.start_seq,
+            "end_seq": a.end_seq,
+            "entity_count": entity_counts.get(a.id, 0),
+        }
+        for a, display_name in rows
+    ]
+
+
 def adventure_entities(session: Session, adventure_id: str) -> dict[str, Any] | None:
     """One adventure's fields plus its DISTINCT entity roster.
 
