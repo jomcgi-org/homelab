@@ -28,7 +28,7 @@
 
 ---
 
-### Task 1: Migration — `grimoire.adventure` table + entity join view
+### Task 1: Migration: `grimoire.adventure` table + entity join view
 
 **Files:**
 - Create: `projects/monolith/chart/migrations/20260705160000_grimoire_adventure.sql`
@@ -130,7 +130,7 @@ class Adventure(SQLModel, table=True):
 
 ---
 
-### Task 3: `BOOK_KIND` — add anthologies and missing adventures
+### Task 3: `BOOK_KIND`: add anthologies and missing adventures
 
 **Files:**
 - Modify: `projects/monolith/grimoire/extract.py:402-427`
@@ -219,7 +219,7 @@ git commit -m "feat(grimoire): seed adventures for all adventure books"
 
 ---
 
-### Task 5: Claude skill — classify a future book's hierarchy
+### Task 5: Claude skill: classify a future book's hierarchy
 
 **Files:**
 - Create: `.claude/skills/grimoire-classify-adventures/SKILL.md`
@@ -235,7 +235,7 @@ A repo skill capturing the procedure so the next book upload gets the same treat
 
 ---
 
-### Task 6: API — adventures per book, entities per adventure
+### Task 6: API: adventures per book, entities per adventure
 
 **Files:**
 - Modify: `projects/monolith/grimoire/library.py` (query helpers)
@@ -260,7 +260,7 @@ Watch for `bdd_completeness_test` if new public callables trip it (repo memory);
 
 ---
 
-### Task 7: Frontend — surface adventures in the public book reader
+### Task 7: Frontend: surface adventures in the public book reader
 
 **Files:**
 - Modify: the public book page (find it by following how `/grimoire/books/{book_id}` fetches `sections`)

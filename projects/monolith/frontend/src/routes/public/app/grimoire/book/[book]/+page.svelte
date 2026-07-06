@@ -30,10 +30,16 @@
   });
 
   async function loadAdventures(id) {
+    adventures = [];
     try {
-      adventures = await apiFetch(
+      const rows = await apiFetch(
         `/books/${encodeURIComponent(id)}/adventures`,
       );
+      // Only apply rows for the book currently shown, so a slow fetch for a
+      // previous book can never clobber the strip after navigation.
+      if (id === bookId) {
+        adventures = rows;
+      }
     } catch {
       // Best-effort: a failed adventures fetch must never block the reader.
       adventures = [];
