@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from app.db import get_session
-from grimoire import library, public
+from grimoire import explore, library, public
 from grimoire.models import EntityType, KnowledgeChunk
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire-public"])
@@ -244,3 +244,21 @@ def search(
     service is not reachable from the public tier's network path today).
     """
     return public.search_public(session, q)
+
+
+# --- EXPLORE (corpus-graph canvas: subgraph endpoint) ---------------------
+
+
+@router.get("/explore/graph")
+def explore_graph(
+    scope: str = Query(default="everything"),
+    lens: str = Query(default="world"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Induced subgraph ``{nodes, edges}`` for a scope + lens: the EXPLORE
+    canvas's bulk load. ``scope`` is ``"everything"``, ``"adventure:{id}"``,
+    or ``"book:{id}"``; ``lens`` is one of ``world``/``story``/``quests``/
+    ``rules`` (anything else is unconstrained). A whole-corpus "everything"
+    scope can be a large payload; the frontend should default to
+    gallery/adventure scope. See explore.scope_subgraph."""
+    return explore.scope_subgraph(session, scope, lens)

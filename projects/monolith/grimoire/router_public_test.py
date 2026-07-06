@@ -25,6 +25,7 @@ from grimoire.models import (
     ChunkEntityMention,
     Entity,
     EntityCreature,
+    EntityLocation,
     EntitySpell,
     KnowledgeChunk,
     Relationship,
@@ -431,6 +432,80 @@ class TestEntities:
         seed_corpus(session)
         r = client.get("/api/grimoire/entities/nope/relationships")
         assert r.status_code == 404
+
+
+class TestExploreGraph:
+    def test_adventure_scope_world_lens_excludes_mechanics_and_private(
+        self, session, client
+    ):
+        session.add(Book(id="cos", display_name="Curse of Strahd"))
+        chunks = [
+            _chunk(
+                session, book_id="cos", chunk_ref=f"r{i}", content=f"chunk {i}", seq=i
+            )
+            for i in range(3)
+        ]
+        strahd = Entity(entity_type="npc", name="Strahd", is_global=True)
+        barovia = Entity(entity_type="location", name="Barovia", is_global=True)
+        wizard = Entity(entity_type="class", name="Wizard", is_global=True)
+        secret_npc = Entity(entity_type="npc", name="Secret NPC", is_global=False)
+        session.add_all([strahd, barovia, wizard, secret_npc])
+        session.commit()
+        for e in (strahd, barovia, wizard, secret_npc):
+            session.refresh(e)
+        session.add(EntityLocation(entity_id=barovia.id, region="Barovia Valley"))
+        session.add_all(
+            [
+                ChunkEntityMention(chunk_id=chunks[0].id, entity_id=strahd.id),
+                ChunkEntityMention(chunk_id=chunks[1].id, entity_id=barovia.id),
+                ChunkEntityMention(chunk_id=chunks[2].id, entity_id=wizard.id),
+                # in-range but campaign-private: must never appear publicly.
+                ChunkEntityMention(chunk_id=chunks[0].id, entity_id=secret_npc.id),
+            ]
+        )
+        session.add(
+            Relationship(
+                from_entity_id=strahd.id, to_entity_id=barovia.id, rel_type="LOCATED_IN"
+            )
+        )
+        session.commit()
+        adventure = Adventure(
+            book_id="cos", name="Into the Mists", seq=0, start_seq=0, end_seq=100
+        )
+        session.add(adventure)
+        session.commit()
+        session.refresh(adventure)
+
+        r = client.get(
+            f"/api/grimoire/explore/graph?scope=adventure:{adventure.id}&lens=world"
+        )
+        assert r.status_code == 200
+        body = r.json()
+        # Wizard is in the adventure's chunk range but excluded by the world
+        # lens (mechanics category); the private NPC is in-range too but
+        # excluded because it is not is_global.
+        assert {n["name"] for n in body["nodes"]} == {"Strahd", "Barovia"}
+        assert body["edges"] == [
+            {"from": strahd.id, "to": barovia.id, "rel_type": "LOCATED_IN"}
+        ]
+        barovia_node = next(n for n in body["nodes"] if n["name"] == "Barovia")
+        assert barovia_node["entity_type"] == "location"
+        assert barovia_node["category"] == "lore"
+        assert barovia_node["region"] == "Barovia Valley"
+
+    def test_everything_scope_has_no_roster_restriction_but_still_applies_lens(
+        self, session, client
+    ):
+        seed_corpus(session)  # Aboleth (creature/lore), Fireball (spell/rules)
+        r = client.get("/api/grimoire/explore/graph?scope=everything&lens=world")
+        assert r.status_code == 200
+        body = r.json()
+        assert {n["name"] for n in body["nodes"]} == {"Aboleth"}
+
+    def test_unknown_adventure_scope_returns_empty_graph(self, session, client):
+        r = client.get("/api/grimoire/explore/graph?scope=adventure:nope&lens=world")
+        assert r.status_code == 200
+        assert r.json() == {"nodes": [], "edges": []}
 
 
 class TestSearch:
