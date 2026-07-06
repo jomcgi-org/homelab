@@ -1,10 +1,18 @@
 <script>
-  // Public Grimoire Library: every loaded book plus a static corpus stats
-  // strip at the top. Fetches AFTER the layout's TurnstileGate admits
+  // Public Grimoire Library: every loaded book, plus a quiet one-line stats
+  // summary at the top. Fetches AFTER the layout's TurnstileGate admits
   // (this component only mounts once `admitted` is true), so there is no
   // corpus fetch before the challenge is solved.
+  //
+  // NOTE ON GROUPING: the 2026-07-05 reskin mockup groups rows by book_kind
+  // (Adventures / Anthologies / Setting Guides / Bestiaries / Spellbooks /
+  // Magic Items / Rulebooks). The public GET /books response
+  // (grimoire.library.list_books, mounted at router_public) does not carry a
+  // book_kind field today -- the Book model has no such column -- so this page
+  // deliberately renders a single flat, ungrouped list rather than inventing a
+  // client-side title->kind mapping. Add book_kind grouping here once the
+  // backend response includes it.
   import { onMount } from "svelte";
-  import Sticker from "$lib/public/components/Sticker.svelte";
   import { apiFetch, bookHref } from "$lib/public/grimoire/api.js";
 
   let books = $state([]);
@@ -43,7 +51,7 @@
     return "just now";
   }
 
-  // NEW badge: a book with a chunk loaded in the last 7 days. Public visitors
+  // NEW pill: a book with a chunk loaded in the last 7 days. Public visitors
   // are anonymous, so there is no per-device "last seen" bookkeeping (that was
   // a private-app-only localStorage convenience); a fixed recency window keeps
   // this simple and stateless.
@@ -55,9 +63,8 @@
     return Date.now() - then < NEW_WINDOW_MS;
   }
 
-  // Static corpus totals for the strip at the top: aggregate across every
-  // loaded book, with the most recent sync time. Static and readable, not a
-  // scrolling marquee.
+  // Corpus totals for the one-line summary: aggregate across every loaded
+  // book, with the most recent sync time.
   const totals = $derived.by(() => {
     const sum = (key) => books.reduce((acc, b) => acc + (b[key] ?? 0), 0);
     const latest = books
@@ -75,170 +82,177 @@
   });
 </script>
 
-<div class="library-page page">
+<div class="library-page">
+  <p class="eyebrow">The Grimoire</p>
+  <h1 class="grim-title lib-title">Library</h1>
+
   {#if !loading && !error && books.length > 0}
-    <div class="stats-strip mono" role="status">
-      <span>{totals.books} {totals.books === 1 ? "BOOK" : "BOOKS"}</span>
-      <span class="strip-dot" aria-hidden="true">●</span>
-      <span>{totals.chunks} CHUNKS</span>
-      <span class="strip-dot" aria-hidden="true">●</span>
-      <span>{totals.images} IMAGES</span>
-      <span class="strip-dot" aria-hidden="true">●</span>
-      <span>{totals.entities} ENTITIES</span>
-      <span class="strip-dot" aria-hidden="true">●</span>
-      <span>SYNCED {totals.synced}</span>
-    </div>
+    <p class="summary">
+      <b>{totals.books.toLocaleString()}</b>
+      {totals.books === 1 ? "book" : "books"}
+      <span class="dot">/</span>
+      <b>{totals.chunks.toLocaleString()}</b> chunks
+      <span class="dot">/</span>
+      <b>{totals.images.toLocaleString()}</b> images
+      <span class="dot">/</span>
+      <b>{totals.entities.toLocaleString()}</b> entities
+      <span class="dot">/</span>
+      synced {totals.synced}
+    </p>
   {/if}
 
-  <div class="wrap">
-    <p class="eyebrow">THE GRIMOIRE</p>
-    <h1 class="display lib-title">Library</h1>
-
   {#if loading}
-    <div class="skeletons">
-      {#each [1, 2, 3] as n (n)}
-        <div class="card-hard skeleton-row"></div>
+    <div class="skeletons" aria-hidden="true">
+      {#each [1, 2, 3, 4, 5] as n (n)}
+        <div class="skeleton-row"></div>
       {/each}
     </div>
   {:else if error}
-    <p class="mono status-error">{error}</p>
+    <p class="status-error">{error}</p>
   {:else if books.length === 0}
     <div class="empty">
-      <p class="display empty-lead">Nothing loaded yet.</p>
-      <p class="mono empty-help">Check back once a sourcebook has been uploaded.</p>
+      <p class="grim-title empty-lead">Nothing loaded yet.</p>
+      <p class="empty-help">Check back once a sourcebook has been uploaded.</p>
     </div>
   {:else}
     <ul class="book-list">
       {#each books as book (book.book_id)}
-        <li class="card-hard book-row">
-          <div class="book-main">
-            <div class="book-name-row">
-              <span class="display book-name">{book.display_name}</span>
-              {#if isNew(book)}
-                <Sticker color="var(--accent)" rotate={-4}>NEW</Sticker>
-              {/if}
-            </div>
-
-            <div class="book-stats">
-              <span class="chip mono">{book.chunk_count} CHUNKS</span>
-              <span class="chip mono">{book.image_count} IMAGES</span>
-              <span class="chip mono">{book.entity_count} ENTITIES</span>
-              <span class="chip mono chip-muted"
-                >SYNCED {timeAgo(book.latest_chunk_at)}</span
-              >
-            </div>
-          </div>
-
-          <a class="btn btn-primary book-read" href={bookHref(book.book_id)}>
-            READ
+        <li>
+          <a class="brow" href={bookHref(book.book_id)}>
+            <span class="brow-main">
+              <span class="title">
+                {book.display_name}
+                {#if isNew(book)}<span class="pill">New</span>{/if}
+              </span>
+              <span class="meta">
+                {book.chunk_count.toLocaleString()} chunks
+                <span class="dot">/</span>
+                {book.image_count.toLocaleString()} images
+                <span class="dot">/</span>
+                {book.entity_count.toLocaleString()} entities
+              </span>
+            </span>
+            <span class="read">Read &rarr;</span>
           </a>
         </li>
       {/each}
     </ul>
   {/if}
-  </div>
 </div>
 
 <style>
-  /* Everything visual (cards, buttons, headings, highlight) comes from the
-     design system. The custom rules below are purely structural: page
-     vertical rhythm, the book-row flex layout, and two small primitives the
-     design system doesn't ship (stat chip pills, a coverage bar) built from
-     its own tokens rather than new colors. */
   .library-page {
-    padding-bottom: 96px;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 28px 80px;
   }
 
-  /* Static full-bleed stats strip: the ticker's useful numbers without the
-     scroll. Accent ground, hard rule below, wraps on small screens. */
-  .stats-strip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    column-gap: 14px;
-    row-gap: 4px;
-    padding: 10px 16px;
-    background: var(--accent);
-    border-bottom: 2px solid var(--ink);
-    color: var(--ink);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-  }
-
-  .strip-dot {
-    font-size: 8px;
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--grim-text-faint);
+    font-weight: 600;
+    margin: 0;
   }
 
   .lib-title {
-    font-size: clamp(36px, 7vw, 64px);
-    margin: 4px 0 28px;
+    font-size: clamp(36px, 6vw, 46px);
+    margin: 6px 0 0;
   }
 
-  .library-page .wrap {
-    padding-top: 40px;
+  .summary {
+    margin-top: 14px;
+    color: var(--grim-text-dim);
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .summary b {
+    color: var(--grim-ink);
+    font-weight: 600;
+  }
+
+  .dot {
+    color: var(--grim-text-faint);
+    margin: 0 8px;
   }
 
   .book-list {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+    list-style: none;
+    margin: 24px 0 0;
+    padding: 0;
   }
 
-  .book-row {
-    padding: 24px;
+  .brow {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 15px;
+    padding: 13px 8px;
+    text-decoration: none;
+    color: inherit;
+    border-bottom: 1px solid var(--grim-line-soft);
+    border-radius: 7px;
+  }
+
+  .book-list li:last-child .brow {
+    border-bottom: 0;
+  }
+
+  .brow:hover {
+    background: var(--grim-surface-2);
+  }
+
+  .brow .title {
+    font-family: var(--grim-serif);
+    font-size: 18px;
+    font-weight: 600;
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 9px;
+    color: var(--grim-ink);
   }
 
-  .book-main {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+  .brow .meta {
+    display: block;
+    margin-top: 3px;
+    color: var(--grim-text-dim);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
 
-  .book-name-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
+  .brow .meta .dot {
+    margin: 0 6px;
   }
 
-  .book-name {
-    font-size: clamp(20px, 3vw, 28px);
+  .pill {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--grim-accent);
+    background: var(--grim-accent-soft);
+    border-radius: 4px;
+    padding: 2px 6px;
   }
 
-  .book-stats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .chip {
+  .read {
     display: inline-flex;
     align-items: center;
+    gap: 5px;
+    white-space: nowrap;
     font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    padding: 5px 10px;
-    border: 2px solid var(--ink);
-    background: var(--bg-elev);
-    color: var(--ink);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--grim-accent);
+    opacity: 0;
+    transition: opacity 0.15s;
   }
 
-  .chip-muted {
-    background: transparent;
-    color: var(--ink-3);
-    border-color: var(--rule-2);
-  }
-
-  .book-read {
-    flex: none;
-    min-height: 44px;
+  .brow:hover .read {
+    opacity: 1;
   }
 
   .empty {
@@ -251,28 +265,30 @@
   }
 
   .empty-help {
-    color: var(--ink-3);
+    color: var(--grim-text-dim);
     font-size: 13px;
   }
 
   .status-error {
-    color: var(--coral);
+    color: var(--grim-type-creature);
     padding: 24px 0;
   }
 
   .skeletons {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 12px;
+    margin-top: 24px;
   }
 
   .skeleton-row {
-    height: 110px;
+    height: 62px;
+    border-radius: 7px;
     background: linear-gradient(
       90deg,
-      var(--bg-elev) 25%,
+      var(--grim-surface-2) 25%,
       transparent 37%,
-      var(--bg-elev) 63%
+      var(--grim-surface-2) 63%
     );
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
@@ -289,17 +305,7 @@
 
   @media (max-width: 640px) {
     .library-page {
-      padding-bottom: 72px;
-    }
-    .library-page .wrap {
-      padding-top: 28px;
-    }
-    .book-row {
-      flex-direction: column;
-      align-items: stretch;
-    }
-    .book-read {
-      align-self: flex-start;
+      padding: 28px 20px 60px;
     }
   }
 
