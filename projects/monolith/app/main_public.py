@@ -21,6 +21,7 @@ import campsites
 import chat_public
 import dr_jobs
 import grimoire
+import grimoire_chat
 import hikes
 import home
 import knowledge
@@ -52,6 +53,7 @@ home.register_public(app)
 chat_public.register_public(app)
 artifact.register_public(app)
 grimoire.register_public(app)
+grimoire_chat.register_public(app)
 
 
 @app.get("/healthz")
