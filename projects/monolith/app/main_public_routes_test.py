@@ -93,6 +93,10 @@ ALLOWED_PREFIXES = (
     # only in-cluster from the SSR front door over Linkerd mTLS, never directly
     # from the internet.
     "/internal/chat",
+    # Internal-only grimoire D&D chat API (mirrors /internal/chat, ADR 005):
+    # mounted on the public binary, reachable only in-cluster from the SSR front
+    # door over Linkerd mTLS, kept off the public HTTPRoute.
+    "/internal/grimoire-chat",
     # Internal-only artifact read API (ADR 024): mounted on the public binary so
     # the SSR frontend can proxy /artifact/<id>/raw + /version in-cluster, but
     # kept off the public HTTPRoute (the frontend is the sole public origin). The
