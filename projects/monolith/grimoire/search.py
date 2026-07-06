@@ -39,6 +39,7 @@ def knn_embeddings(
     query_vector: list[float],
     kinds: tuple[str, ...],
     limit: int,
+    model: str | None = None,
 ) -> list[tuple[Embedding, float]]:
     """Nearest ``embedding`` rows to ``query_vector`` among ``kinds``.
 
@@ -46,14 +47,22 @@ def knn_embeddings(
     ``limit``. Deliberately does no visibility filtering or result shaping,
     so it stays a thin, easily stubbed seam over the one pgvector-specific
     operator this module needs.
+
+    ``model``, when supplied, additionally restricts the search to rows stored
+    under that embedding model. Cosine distance is only meaningful WITHIN one
+    model's vector space, so a caller whose query vector came from a specific
+    embedding model can pass that model here to guarantee it never scores its
+    query against a vector from a different (incompatible) model. Defaults to
+    None (no filter), preserving the single-model behaviour existing callers
+    rely on.
     """
     distance = Embedding.vector.cosine_distance(query_vector)
-    stmt = (
-        select(Embedding, distance.label("distance"))
-        .where(Embedding.embeddable_kind.in_(kinds))
-        .order_by(distance.asc())
-        .limit(limit)
+    stmt = select(Embedding, distance.label("distance")).where(
+        Embedding.embeddable_kind.in_(kinds)
     )
+    if model is not None:
+        stmt = stmt.where(Embedding.model == model)
+    stmt = stmt.order_by(distance.asc()).limit(limit)
     rows = session.execute(stmt).all()
     return [(row[0], float(row[1])) for row in rows]
 
