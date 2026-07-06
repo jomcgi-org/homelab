@@ -58,7 +58,7 @@
   --grim-type-quest: #2f8f8a;
 }
 
-body.dark .grimoire {
+.grimoire.dark {
   --grim-accent: #7d9fd0;
   --grim-accent-strong: #93b0da;
   /* The dark theme's accent is a lighter blue, so on-accent text flips to dark
@@ -113,7 +113,7 @@ body.dark .grimoire {
   --grimb-serif: "Instrument Serif", Georgia, serif;
 }
 
-body.dark .grimoire {
+.grimoire.dark {
   /* Dark mode: invert cream/ink so the reader stays flat-ink-on-paper rather
    * than rendering white-on-white borders against the app's dark chrome. */
   --grimb-cream: #17130f;
