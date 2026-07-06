@@ -11,11 +11,7 @@
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
   import "$lib/grimoire/theme.css";
-  import {
-    libraryHref,
-    entitiesHref,
-    exploreHref,
-  } from "$lib/public/grimoire/api.js";
+  import { libraryHref, entitiesHref } from "$lib/public/grimoire/api.js";
 
   let { data, children } = $props();
 
@@ -26,7 +22,6 @@
   const section = $derived.by(() => {
     const id = $page.route.id ?? "";
     if (id.includes("/entities") || id.includes("/entity/")) return "entities";
-    if (id.includes("/explore")) return "explore";
     return "library";
   });
 </script>
@@ -56,11 +51,6 @@
         class="topbar-link"
         class:active={section === "entities"}
         href={entitiesHref()}>Entities</a
-      >
-      <a
-        class="topbar-link"
-        class:active={section === "explore"}
-        href={exploreHref()}>Explore</a
       >
     </nav>
     <div class="topbar-spacer"></div>
