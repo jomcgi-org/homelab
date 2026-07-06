@@ -45,3 +45,5 @@ export const bookHref = (bookId) =>
   `/app/grimoire/book/${encodeURIComponent(bookId)}`;
 export const chunkHref = (bookId, chunkId) =>
   `/app/grimoire/book/${encodeURIComponent(bookId)}/c/${encodeURIComponent(chunkId)}`;
+export const adventureHref = (id) =>
+  `/app/grimoire/adventure/${encodeURIComponent(id)}`;
