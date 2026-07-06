@@ -11,7 +11,7 @@
 // around it.
 //
 // Wire format (one frame per blank-line-terminated block, single `data:` line):
-//   data: {"type":"node_touched","data":{"id":<id>,"title":<title>}}
+//   data: {"type":"node_touched","data":{"id":<id>,"title":<title>,"kind":<"chunk"|"entity">,"entity_type"?,"book_id"?,"chunk_ref"?}}
 //   data: {"type":"token","data":{"text":<delta>}}
 //   data: {"type":"done","data":{"turn_count":<n>,"total_tokens":<n>}}
 //   data: {"type":"busy","data":{"code":"busy","message":<text>}}
@@ -95,10 +95,12 @@ export function createSseParser() {
  *
  * `status`: idle (no turn yet) | streaming (tokens arriving) | done | busy |
  * error. `touched` is the ordered, deduped set of Grimoire corpus passages
- * (chunks or entities) the turn grounded on. `assistant` is the streamed
- * reply.
+ * (chunks or entities) the turn grounded on, carrying the full node_touched
+ * shape (id, title, kind, plus entity_type for an entity or book_id/chunk_ref
+ * for a chunk) so a GROUNDED IN chip can deep-link. `assistant` is the
+ * streamed reply.
  *
- * @returns {{ status: string, assistant: string, touched: {id: any, title: string}[], error: string, turnCount: number, totalTokens: number }}
+ * @returns {{ status: string, assistant: string, touched: {id: any, title: string, kind: string, entity_type?: string, book_id?: string, chunk_ref?: string}[], error: string, turnCount: number, totalTokens: number }}
  */
 export function initialTurnState() {
   return {
@@ -126,9 +128,18 @@ export function applyFrame(state, frame) {
       const id = frame.data?.id;
       if (id === undefined || id === null) return state;
       if (state.touched.some((n) => n.id === id)) return state;
+      // Carry every field the backend sends (kind, plus entity_type or
+      // book_id/chunk_ref) so a committed GROUNDED IN chip can deep-link;
+      // undefined fields are dropped rather than kept as explicit keys.
+      const { title, kind, entity_type, book_id, chunk_ref } = frame.data ?? {};
+      const node = { id, title: title ?? "" };
+      if (kind !== undefined) node.kind = kind;
+      if (entity_type !== undefined) node.entity_type = entity_type;
+      if (book_id !== undefined) node.book_id = book_id;
+      if (chunk_ref !== undefined) node.chunk_ref = chunk_ref;
       return {
         ...state,
-        touched: [...state.touched, { id, title: frame.data?.title ?? "" }],
+        touched: [...state.touched, node],
       };
     }
     case "token":
