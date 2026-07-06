@@ -35,6 +35,7 @@
   let loadingMore = $state(false);
   let loadError = $state("");
   let scrolledToAnchor = $state(false);
+  let scrolledToSectionAnchor = $state(false);
 
   let bookMeta = $state({ displayName: bookId, chunkCount: null });
   let activeSeq = $state(initialItems[0]?.seq ?? null);
@@ -76,6 +77,17 @@
       .map((p) => p.trim())
       .filter(Boolean);
     return parts.length >= 2 ? parts[parts.length - 2] : null;
+  }
+
+  // Deep-link slug for a section heading, e.g. "Chapter 1 / Into the Mists"
+  // -> "chapter-1-into-the-mists". Callers prefix with "s-" (see the
+  // `.pub-heading` id and anchor below) so section ids can never collide
+  // with a chunk's "c-{id}" id in the same DOM.
+  function sectionSlug(sectionPath) {
+    return (sectionPath ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
   }
 
   const rows = $derived(
@@ -178,6 +190,33 @@
     ).matches;
     el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
   });
+
+  // Section-heading deep links. The host route (+page.svelte) only parses
+  // "#c-" hashes into the anchorChunkId prop above (the chunk case), so a
+  // "#s-" section link is left to the browser's own hash scroll -- which
+  // only fires on the initial hard navigation. A same-document hash change
+  // (or a hash present before this component's headings exist, e.g. while
+  // an earlier page of items is still loading) needs the same manual
+  // scrollIntoView the chunk case gets, so read the hash directly here
+  // rather than threading a second prop through the route.
+  $effect(() => {
+    void items.length;
+    if (scrolledToSectionAnchor || !containerEl) return;
+    const hash = typeof window !== "undefined" ? window.location.hash : "";
+    if (!hash.startsWith("#s-")) return;
+    let el;
+    try {
+      el = containerEl.querySelector(`#${CSS.escape(hash.slice(1))}`);
+    } catch {
+      el = null;
+    }
+    if (!el) return;
+    scrolledToSectionAnchor = true;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  });
 </script>
 
 <div class="pub-reader">
@@ -216,10 +255,18 @@
           {/if}
           <div
             class="pub-heading"
+            id={"s-" + sectionSlug(row.item.section_path)}
             data-heading
             data-seq={row.item.seq}
             data-section={row.item.section_path ?? ""}
           >
+            <a
+              class="pub-anchor"
+              href={"#s-" + sectionSlug(row.item.section_path)}
+              aria-label="Link to this section"
+            >
+              #
+            </a>
             {#if sectionParent(row.item.section_path)}
               <p class="pub-section-label grim-smallcaps">
                 {sectionParent(row.item.section_path)}
@@ -378,8 +425,13 @@
   }
 
   .pub-heading {
+    position: relative;
     max-width: 68ch;
     margin: 0 0 18px;
+  }
+
+  .pub-heading:hover .pub-anchor {
+    opacity: 1;
   }
 
   .pub-section-label {
