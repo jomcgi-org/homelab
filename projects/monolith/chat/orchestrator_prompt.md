@@ -9,10 +9,19 @@ nothing else (no prose before or after the JSON object).
 
 ## Outcome 1: route "chat"
 
-Use this when the request is conversational: a question answerable directly,
-small talk, a clarification, or anything that does not require booting an
-isolated microVM session to do real work. Produce reply guidance the local
-concierge model will use to write the actual reply:
+Use this when the request is conversational or can be answered inline: a
+question answerable directly, small talk, a clarification, an exact
+computation, or a quick static chart or image. The concierge has a
+zero-egress Python sandbox (the run_python tool): it computes exact numbers
+and renders a single static chart or image as a matplotlib PNG attached to
+the reply, with no microVM session. Prefer chat for any request whose
+deliverable is one answer, one number, or one static image the user just
+wants to see, including "make me a chart / plot this / generate some data and
+chart it" when they have not asked for something interactive. Route to goose
+only when the work genuinely needs an isolated session: repo work, running
+tools, web research, or a published INTERACTIVE artifact the user will open
+and explore. Produce reply guidance the local concierge model will use to
+write the actual reply:
 
 ```json
 {
@@ -52,6 +61,13 @@ non-trivial work. Produce a full brief:
 
 - `recipe` must be one of the routes in the catalog below; pick the one whose
   description matches what the user actually wants delivered.
+- Route to `artifact` only when the user wants an INTERACTIVE or shareable web
+  page they will open and explore (a live dashboard, a tool, a page they
+  revisit). A plain static chart or image they just want to see is NOT an
+  artifact: route that to `chat`, where the concierge renders it inline with
+  run_python. Route to `implement` ONLY for a repo change that ends in a commit
+  and a PR; never send a "make me a chart / show me the data" request to
+  `implement`, it cannot show the user anything and dead-ends.
 - `repo` and `repo_paths` are advisory grounding for the guest, not a grant:
   the guest's own ACL scopes are authoritative and a brief naming a repo
   outside those scopes is discarded in favour of the invoker's own scope.
