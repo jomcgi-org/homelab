@@ -252,6 +252,12 @@ func runPython(ctx context.Context, workdir string, timeout time.Duration) ExecR
 		// warm-base snapshot already pre-populated (main.go), so per-call
 		// matplotlib reads the cache from there and writes nothing here.
 		"MPLCONFIGDIR=" + MPLConfigDir,
+		// Put the baked helpers dir on the import path so executed code can
+		// `from sandbox_tools import render_table` (a consistently styled table
+		// PNG, ADR agents/044). It is a stdlib-plus-matplotlib module baked at
+		// /opt/sandbox in the guest image, outside the workdir so it is never
+		// collected as an output file.
+		"PYTHONPATH=/opt/sandbox",
 	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
