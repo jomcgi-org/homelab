@@ -1,10 +1,12 @@
 <script>
   // Sun/moon control for the Grimoire's light/dark theme (2026-07-05 reskin).
-  // Toggles document.body.classList("dark"), the switch the shared tokens
-  // (lib/styles/shared/tokens.css) and this app's --grim-* tokens (theme.css)
-  // both already key off; nothing else in the frontend currently drives that
-  // class, so this is the first control that flips it. Persists per-device to
-  // localStorage and falls back to the OS preference on first visit.
+  // Toggles a "dark" class on the nearest ".grimoire" ancestor (found via
+  // closest() off this button's own element), NOT document.body: the
+  // grimoire app is one tree among 10 other public apps sharing the site-wide
+  // tokens.css, and flipping a body-level class used to flip every other
+  // app's theme too. Scoping the class to .grimoire.dark (theme.css) keeps
+  // dark mode local to this app tree. Persists per-device to localStorage and
+  // falls back to the OS preference on first visit.
   // ssr = false everywhere this mounts, but the guard keeps the component
   // reusable in an ssr context without throwing on `document`/`localStorage`.
   import { onMount } from "svelte";
@@ -12,6 +14,7 @@
   const LS_KEY = "grimoire-theme";
 
   let isDark = $state(false);
+  let buttonEl;
 
   function readStoredTheme() {
     try {
@@ -30,7 +33,8 @@
   }
 
   function apply(dark) {
-    document.body.classList.toggle("dark", dark);
+    const root = buttonEl?.closest(".grimoire");
+    root?.classList.toggle("dark", dark);
   }
 
   onMount(() => {
@@ -50,6 +54,7 @@
 </script>
 
 <button
+  bind:this={buttonEl}
   type="button"
   class="grim-theme-toggle"
   onclick={toggleTheme}
