@@ -22,6 +22,7 @@
 # gazelle:exclude worldcup
 # gazelle:exclude campsites
 # gazelle:exclude grimoire
+# gazelle:exclude grimoire_chat
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
@@ -80,6 +81,7 @@ _BACKEND_SRCS = glob(
         "worldcup/**/*.py",
         "campsites/**/*.py",
         "grimoire/**/*.py",
+        "grimoire_chat/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -261,6 +263,7 @@ py_library(
             "worldcup/**/*.py",
             "campsites/**/*.py",
             "grimoire/**/*.py",
+            "grimoire_chat/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -478,6 +481,7 @@ py_library(
             # scheduler-bound jobs are never imported by the public closure
             # (main_public_imports_test enforces this).
             "grimoire/**/*.py",
+            "grimoire_chat/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -536,6 +540,7 @@ py_venv_binary(
             "worldcup/**/*.py",
             "campsites/**/*.py",
             "grimoire/**/*.py",
+            "grimoire_chat/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -585,6 +590,7 @@ py_test(
             "artifact/**/*.py",
             "chat/**/*.py",
             "chat_public/**/*.py",
+            "grimoire_chat/**/*.py",
             "knowledge/**/*.py",
             "hikes/**/*.py",
             "dr_jobs/**/*.py",
@@ -3355,6 +3361,42 @@ py_test(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (grimoire_chat is gazelle-excluded): Grimoire-corpus retrieval
+# (mocked embedding + stubbed knn_embeddings): embedding-model-space match (the
+# stored corpus model is passed to knn), is_global filtering drops campaign-private
+# entity hits, chunk/entity hits map to RetrievedPassages, blank query + embedder
+# error fail open to an ungrounded turn.
+py_test(
+    name = "grimoire_chat_retrieval_test",
+    srcs = ["grimoire_chat/retrieval_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (grimoire_chat is gazelle-excluded): router smoke tests over the
+# SQLite create_all fixture: the retrieved corpus is fenced as a <sourcebooks> DATA
+# block labelled "not instructions", the inference payload carries no tools, one
+# node_touched per retrieved passage precedes the tokens, and the D&D system prompt
+# is server-fixed + env-overridable.
+py_test(
+    name = "grimoire_chat_router_test",
+    srcs = ["grimoire_chat/router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )
