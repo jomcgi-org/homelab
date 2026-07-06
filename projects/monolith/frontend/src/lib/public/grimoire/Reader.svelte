@@ -2,11 +2,23 @@
   // Continuous book reader for the public tier. Mirrors the private tier's
   // Reader.svelte (see that file's docblock for the full design rationale:
   // flat, boundary-less chunk runs, section headings on section_path change,
-  // infinite scroll via IntersectionObserver, no entity chips). Reuses the
-  // public design-system tokens directly (--cream/--paper/--ink/--accent/
-  // --mono/--serif already ARE the brutalist palette the private reader had
-  // to introduce new tokens to match), so no new CSS variables are needed
-  // here — just flat 2px ink borders, never a box-shadow.
+  // infinite scroll via IntersectionObserver, no entity chips).
+  //
+  // Styled with the clean grimoire theme (--grim-* tokens from
+  // $lib/grimoire/theme.css, which resolve here via the ancestor
+  // `.grimoire` wrapper), not the site-wide brutalist design-system tokens
+  // this reader used before this pass: a cool-paper reading surface, serif
+  // body copy, hairline rules, small-caps section labels, no hard ink
+  // borders or mono chrome.
+  //
+  // Layout: a left section-hierarchy sidebar (desktop, >760px) alongside the
+  // reading column, per docs/plans/assets/2026-07-05-grimoire-reskin-
+  // mockup.html's Reader tab. The sidebar is ChaptersNav in its new
+  // `variant="sidebar"` mode: the same fetch + active-section-highlight
+  // logic as the original Chapters dropdown, just rendered inline and always
+  // expanded instead of behind a toggle. Below 760px the sidebar is hidden
+  // and the original dropdown affordance (`variant="dropdown"`) reappears in
+  // the sticky bar as the compact mobile chapters entry point.
   import { apiFetch } from "$lib/public/grimoire/api.js";
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
   import ChaptersNav from "$lib/public/grimoire/ChaptersNav.svelte";
@@ -169,89 +181,102 @@
 </script>
 
 <div class="pub-reader">
-  <div class="pub-bar mono">
+  <div class="pub-bar">
     <span class="pub-bar-title">{bookMeta.displayName}</span>
     <div class="pub-bar-right">
       <span class="pub-bar-pos">
-        {sectionTitle(activeSectionPath).toUpperCase()}
+        {sectionTitle(activeSectionPath)}
         {#if activeSeq != null && bookMeta.chunkCount}
           · {activeSeq + 1}/{bookMeta.chunkCount}
         {/if}
       </span>
-      <ChaptersNav {bookId} {activeSectionPath} />
+      <!-- Compact mobile-only affordance: the sidebar below is hidden under
+           760px, so the dropdown Chapters button is the only way to jump
+           sections on a phone. Hidden on desktop via CSS (the sidebar
+           replaces it there); still mounts and fetches regardless of
+           viewport, same as the sidebar instance below -- a second cheap GET
+           of /books/{bookId}/sections, not worth a JS media-query gate. -->
+      <div class="pub-bar-chapters">
+        <ChaptersNav {bookId} {activeSectionPath} variant="dropdown" />
+      </div>
     </div>
   </div>
 
-  <div class="pub-panel" bind:this={containerEl}>
-    {#each rows as row, i (row.item.id)}
-      {#if row.showHeading}
-        {#if i > 0}
-          <div class="pub-divider" aria-hidden="true">
-            <span class="pub-divider-line"></span>
-            <span class="pub-divider-mark mono">§</span>
-            <span class="pub-divider-line"></span>
+  <div class="pub-layout">
+    <aside class="pub-toc" aria-label="Sections">
+      <p class="pub-toc-label">{bookMeta.displayName}</p>
+      <ChaptersNav {bookId} {activeSectionPath} variant="sidebar" />
+    </aside>
+
+    <div class="pub-panel" bind:this={containerEl}>
+      {#each rows as row, i (row.item.id)}
+        {#if row.showHeading}
+          {#if i > 0}
+            <hr class="pub-rule" aria-hidden="true" />
+          {/if}
+          <div
+            class="pub-heading"
+            data-heading
+            data-seq={row.item.seq}
+            data-section={row.item.section_path ?? ""}
+          >
+            {#if sectionParent(row.item.section_path)}
+              <p class="pub-section-label grim-smallcaps">
+                {sectionParent(row.item.section_path)}
+              </p>
+            {/if}
+            <h2 class="pub-section-title">{sectionTitle(row.item.section_path)}</h2>
           </div>
         {/if}
-        <div
-          class="pub-heading"
-          data-heading
-          data-seq={row.item.seq}
-          data-section={row.item.section_path ?? ""}
-        >
-          {#if sectionParent(row.item.section_path)}
-            <span class="pub-chip mono">{sectionParent(row.item.section_path)}</span>
-          {/if}
-          <h2 class="display pub-section-title">{sectionTitle(row.item.section_path)}</h2>
-        </div>
-      {/if}
 
-      <div class="pub-chunk" id="c-{row.item.id}">
-        <a
-          class="pub-anchor mono"
-          href="#c-{row.item.id}"
-          aria-label="Link to this passage"
-        >
-          #
-        </a>
-        {#if row.item.kind === "image"}
-          <figure class="pub-figure">
-            {#if row.item.image_url}
-              <img
-                class="pub-image"
-                src={row.item.image_url}
-                alt={row.item.content || "sourcebook illustration"}
-              />
-            {/if}
-            {#if row.item.content}
-              <figcaption class="pub-caption">{row.item.content}</figcaption>
-            {/if}
-          </figure>
-        {:else}
-          {#each bodyBlocks(row.item) as block, bi (bi)}
-            {#if block.type === "heading"}
-              <h3 class="eyebrow pub-inline-heading">{block.text}</h3>
-            {:else if block.type === "list"}
-              <ul class="pub-list">
-                {#each block.items as li, lii (lii)}
-                  <li>{li}</li>
-                {/each}
-              </ul>
-            {:else}
-              <p>{block.text}</p>
-            {/if}
-          {/each}
+        <div class="pub-chunk" id="c-{row.item.id}">
+          <a
+            class="pub-anchor"
+            href="#c-{row.item.id}"
+            aria-label="Link to this passage"
+          >
+            #
+          </a>
+          {#if row.item.kind === "image"}
+            <figure class="pub-figure">
+              {#if row.item.image_url}
+                <img
+                  class="pub-image"
+                  src={row.item.image_url}
+                  alt={row.item.content || "sourcebook illustration"}
+                />
+              {/if}
+              {#if row.item.content}
+                <figcaption class="pub-caption">{row.item.content}</figcaption>
+              {/if}
+            </figure>
+          {:else}
+            {#each bodyBlocks(row.item) as block, bi (bi)}
+              {#if block.type === "heading"}
+                <h3 class="pub-inline-heading">{block.text}</h3>
+              {:else if block.type === "list"}
+                <ul class="pub-list">
+                  {#each block.items as li, lii (lii)}
+                    <li>{li}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <p>{block.text}</p>
+              {/if}
+            {/each}
+          {/if}
+        </div>
+      {/each}
+
+      <div class="pub-sentinel" bind:this={sentinelEl}>
+        {#if loadingMore}
+          <p class="pub-status">Loading…</p>
+        {:else if loadError}
+          <button class="pub-retry" onclick={loadMore}>Retry</button>
+        {:else if !nextCursor}
+          <p class="pub-status">— end of book —</p>
         {/if}
       </div>
-    {/each}
-
-    <div class="pub-sentinel" bind:this={sentinelEl}>
-      {#if loadingMore}
-        <p class="mono pub-status">Loading…</p>
-      {:else if loadError}
-        <button class="mono pub-retry" onclick={loadMore}>Retry</button>
-      {:else if !nextCursor}
-        <p class="mono pub-status">— end of book —</p>
-      {/if}
     </div>
   </div>
 </div>
@@ -259,116 +284,140 @@
 <style>
   .pub-reader {
     min-height: 60vh;
-    background: var(--cream);
-    color: var(--ink);
+    background: var(--grim-paper);
+    color: var(--grim-ink);
   }
 
   .pub-bar {
     position: sticky;
-    top: 0;
+    /* 58px is the app-shell topbar's own height (see the grimoire
+       +layout.svelte `.topbar`); both bars are sticky at once, so this one
+       has to park below it rather than at top:0 or they'd overlap. */
+    top: 58px;
     z-index: 5;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 12px 20px;
-    background: var(--cream);
-    border-bottom: 2px solid var(--ink);
+    padding: 10px 20px;
+    background: color-mix(in srgb, var(--grim-paper) 90%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--grim-line);
     font-size: 11px;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.12em;
   }
 
   .pub-bar-title {
     text-transform: uppercase;
-    font-weight: 700;
+    font-weight: 600;
+    color: var(--grim-ink);
   }
 
   .pub-bar-right {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 12px;
     min-width: 0;
   }
 
   .pub-bar-pos {
     text-transform: uppercase;
-    color: var(--ink-3);
+    color: var(--grim-text-faint);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .pub-panel {
-    max-width: 960px;
+  /* Sidebar covers this on desktop; only the mobile breakpoint below
+     switches it back on. */
+  .pub-bar-chapters {
+    display: none;
+  }
+
+  .pub-layout {
+    max-width: 1080px;
     margin: 0 auto;
-    padding: clamp(24px, 5vw, 48px) clamp(20px, 6vw, 48px);
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-top: none;
+    padding: clamp(24px, 5vw, 48px) clamp(20px, 6vw, 48px) 80px;
+    display: grid;
+    grid-template-columns: 244px 1fr;
+    gap: 44px;
+    align-items: start;
   }
 
-  .pub-divider {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin: 40px 0;
-    max-width: 72ch;
-    margin-inline: auto;
+  .pub-toc {
+    position: sticky;
+    /* Approx: 58px app topbar + this reader's own ~42px sticky bar. */
+    top: 100px;
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+    border-right: 1px solid var(--grim-line-soft);
+    padding-right: 20px;
   }
 
-  .pub-divider-line {
-    flex: 1;
-    height: 2px;
-    background: var(--ink);
+  .pub-toc-label {
+    margin: 0 0 14px;
+    font-family: var(--grim-serif);
+    font-weight: 700;
+    font-size: 15px;
+    line-height: 1.25;
+    color: var(--grim-ink);
+    overflow-wrap: break-word;
   }
 
-  .pub-divider-mark {
-    font-size: 14px;
-    color: var(--ink-3);
+  .pub-panel {
+    min-width: 0;
+  }
+
+  .pub-rule {
+    max-width: 68ch;
+    margin: 28px 0;
+    height: 1px;
+    border: 0;
+    background: var(--grim-line);
   }
 
   .pub-heading {
-    max-width: 72ch;
-    margin: 0 auto 20px;
+    max-width: 68ch;
+    margin: 0 0 18px;
   }
 
-  .pub-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 24px;
-    padding: 2px 8px;
-    margin-bottom: 10px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    background: var(--accent);
-    color: var(--ink);
-    border: 1px solid var(--ink);
+  .pub-section-label {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--grim-accent);
   }
 
   .pub-section-title {
-    font-size: 32px;
-    color: var(--ink);
+    margin: 0;
+    font-family: var(--grim-serif);
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+    color: var(--grim-ink);
   }
 
   .pub-chunk {
     position: relative;
-    max-width: 72ch;
-    margin: 0 auto;
-    font-family: var(--sans);
-    font-size: 18px;
+    max-width: 68ch;
+    font-family: var(--grim-serif);
+    font-size: 17px;
     line-height: 1.66;
-    color: var(--ink);
+    color: var(--grim-ink);
   }
 
   .pub-chunk p {
-    margin: 0 0 16px;
+    margin: 0 0 14px;
   }
 
   .pub-inline-heading {
-    margin: 24px 0 10px;
-    color: var(--ink);
+    margin: 26px 0 8px;
+    font-family: var(--grim-serif);
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--grim-ink);
   }
 
   .pub-inline-heading:first-child {
@@ -376,7 +425,7 @@
   }
 
   .pub-list {
-    margin: 0 0 16px 22px;
+    margin: 0 0 14px 22px;
     padding: 0;
     list-style: disc;
   }
@@ -389,8 +438,8 @@
     position: absolute;
     left: -28px;
     top: 3px;
-    font-size: 14px;
-    color: var(--ink-3);
+    font-size: 13px;
+    color: var(--grim-text-faint);
     text-decoration: none;
     opacity: 0;
     transition: opacity 120ms ease;
@@ -401,22 +450,34 @@
     opacity: 1;
   }
 
-  .pub-figure {
-    margin: 24px 0;
+  .pub-anchor:hover {
+    color: var(--grim-accent);
   }
 
+  .pub-figure {
+    margin: 24px 0;
+    max-width: 68ch;
+  }
+
+  /* Never upscale: max-width (not width) + no forced height keep small
+     illustrations at their natural size, while max-height caps oversized
+     scans so they never dominate the reading column. */
   .pub-image {
-    width: 100%;
+    display: block;
+    max-width: 100%;
     height: auto;
-    border: 2px solid var(--ink);
+    max-height: 60vh;
+    margin-inline: auto;
+    border: 1px solid var(--grim-line);
+    border-radius: 8px;
   }
 
   .pub-caption {
     margin-top: 10px;
-    font-family: var(--sans);
+    font-family: var(--grim-serif);
     font-style: italic;
-    font-size: 15px;
-    color: var(--ink-3);
+    font-size: 14px;
+    color: var(--grim-text-dim);
     text-align: center;
   }
 
@@ -424,32 +485,47 @@
     display: flex;
     justify-content: center;
     padding: 32px 0 8px;
+    max-width: 68ch;
   }
 
   .pub-status {
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--ink-3);
+    color: var(--grim-text-faint);
   }
 
   .pub-retry {
     min-height: 40px;
-    padding: 8px 16px;
-    font-size: 13px;
-    font-weight: 700;
+    padding: 8px 18px;
+    font-size: 12px;
+    font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    background: var(--paper);
-    color: var(--ink);
-    /* Flat 2px ink border only, no shadow: grimoire never uses box-shadow. */
-    border: 2px solid var(--ink);
+    background: var(--grim-surface);
+    color: var(--grim-ink);
+    border: 1px solid var(--grim-line);
+    border-radius: 9px;
     cursor: pointer;
   }
 
   .pub-retry:hover {
-    color: var(--ink);
-    background: var(--bg-elev);
+    color: var(--grim-accent);
+    border-color: var(--grim-accent);
+  }
+
+  @media (max-width: 760px) {
+    .pub-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .pub-toc {
+      display: none;
+    }
+
+    .pub-bar-chapters {
+      display: inline-flex;
+    }
   }
 
   @media (max-width: 640px) {
