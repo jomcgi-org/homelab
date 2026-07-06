@@ -13,6 +13,9 @@ integration contract that matters for a public, adversarially-hardened surface:
    compact statblock.
 4. Fail-open: a blank query embeds nothing, and an embedder error yields an
    ungrounded (empty) turn rather than an error.
+5. Hybrid retrieval: a lexical entity-name match anchors a named entity the pure
+   vector search ranked below its siblings, merged ahead of the vector hits, while
+   the same is_global gate still drops any campaign-private name match.
 """
 
 from __future__ import annotations
@@ -182,3 +185,70 @@ async def test_retrieve_fails_open_on_embedder_error(session):
         model="voyage-4-nano",
     )
     assert await retrieval.retrieve(session, "query", embed_client=client) == []
+
+
+# ---------------------------------------------------------------------------
+# 5. Hybrid retrieval: lexical entity-name match anchors a named entity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retrieve_surfaces_named_entity_via_lexical_match(session, monkeypatch):
+    # The real "who is Gundren?" miss: the named NPC exists but the pure vector
+    # search ranks his siblings above him, so he never reaches the answer.
+    gundren = Entity(entity_type="npc", name="Gundren Rockseeker", is_global=True)
+    sibling_a = Entity(entity_type="npc", name="Sildar Hallwinter", is_global=True)
+    sibling_b = Entity(entity_type="npc", name="Nundro Rockseeker", is_global=True)
+    session.add_all([gundren, sibling_a, sibling_b])
+    session.commit()
+    for e in (gundren, sibling_a, sibling_b):
+        session.refresh(e)
+
+    # Vector search returns ONLY the siblings, never Gundren himself.
+    def fake_knn(sess, vector, kinds, limit, model=None):
+        return [_hit("entity", sibling_a.id, 0.1), _hit("entity", sibling_b.id, 0.2)]
+
+    monkeypatch.setattr(retrieval, "knn_embeddings", fake_knn)
+    client = _mock_client([0.1] * 1024)
+
+    passages = await retrieval.retrieve(
+        session, "who is Gundren?", k=6, embed_client=client
+    )
+
+    ids = [p.ref_id for p in passages]
+    # The lexical anchor surfaces Gundren and ranks him first, ahead of the
+    # vector-only siblings which still appear.
+    assert gundren.id in ids
+    assert passages[0].ref_id == gundren.id
+    assert sibling_a.id in ids
+    # The anchor carries the clickable entity_type for the GROUNDED IN chip.
+    assert passages[0].entity_type == "npc"
+
+
+@pytest.mark.asyncio
+async def test_lexical_match_still_drops_non_global_entity(session, monkeypatch):
+    # A campaign-private entity whose name matches a query token is NEVER anchored:
+    # the is_global gate in the lexical path holds, same as the vector path.
+    private = Entity(entity_type="npc", name="Gundren the Secret", is_global=False)
+    session.add(private)
+    session.commit()
+    session.refresh(private)
+
+    def fake_knn(sess, vector, kinds, limit, model=None):
+        return []
+
+    monkeypatch.setattr(retrieval, "knn_embeddings", fake_knn)
+    client = _mock_client([0.1] * 1024)
+
+    passages = await retrieval.retrieve(
+        session, "who is Gundren?", k=6, embed_client=client
+    )
+    assert private.id not in [p.ref_id for p in passages]
+
+
+def test_candidate_name_tokens_drops_stopwords_keeps_proper_nouns():
+    tokens = retrieval._candidate_name_tokens("Who is Gundren? Tell me about the lair")
+    assert "gundren" in tokens
+    # Stopwords and sub-3-char tokens are dropped.
+    for dropped in ("who", "is", "tell", "me", "about", "the", "lair"):
+        assert dropped not in tokens

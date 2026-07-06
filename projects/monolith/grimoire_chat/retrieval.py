@@ -43,10 +43,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlmodel import Session
+from sqlalchemy import func, or_
+from sqlmodel import Session, select
 
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
@@ -70,6 +72,70 @@ RETRIEVAL_K = int(os.environ.get("GRIMOIRE_CHAT_RETRIEVAL_K", "6"))
 # still gets the most relevant span of each hit. Configurable, generous default.
 _MAX_PASSAGE_CHARS = int(os.environ.get("GRIMOIRE_CHAT_MAX_PASSAGE_CHARS", "1200"))
 
+# Hybrid retrieval: how many is_global entities a single lexical name-match may
+# anchor per query (kept small so name matches never crowd out the semantic
+# passages), and how many extra slots past k the merged set is allowed so the
+# lexical anchors sit ALONGSIDE the vector hits rather than evicting them.
+_LEXICAL_ENTITY_LIMIT = int(os.environ.get("GRIMOIRE_CHAT_LEXICAL_ENTITY_LIMIT", "3"))
+_MERGE_HEADROOM = int(os.environ.get("GRIMOIRE_CHAT_MERGE_HEADROOM", "3"))
+
+# A lexical name match is a strong, exact signal that the corpus contains the
+# named thing, so it is scored above any cosine hit (whose 1 - distance tops out
+# near 1.0) to mark it as the anchor. Merge order is still explicit (lexical
+# first), so this only affects any downstream score display, not ordering.
+_LEXICAL_HIT_SCORE = 2.0
+
+# Query tokens that carry no entity-name signal, dropped before the lexical
+# name match so "who is Gundren?" searches on "gundren" (not "who"/"is"). A short,
+# deliberately conservative list: proper-noun-ish tokens like "gundren" or
+# "beholder" are never in here, so they always survive as name candidates.
+_NAME_STOPWORDS = frozenset(
+    {
+        "who",
+        "what",
+        "whom",
+        "whose",
+        "which",
+        "when",
+        "where",
+        "why",
+        "how",
+        "the",
+        "and",
+        "for",
+        "are",
+        "was",
+        "were",
+        "does",
+        "did",
+        "can",
+        "could",
+        "would",
+        "should",
+        "you",
+        "your",
+        "this",
+        "that",
+        "these",
+        "those",
+        "with",
+        "from",
+        "about",
+        "tell",
+        "there",
+        "here",
+        "have",
+        "has",
+        "had",
+        "into",
+        "lair",
+        "info",
+        "please",
+        "explain",
+        "describe",
+    }
+)
+
 
 @dataclass
 class RetrievedPassage:
@@ -80,6 +146,12 @@ class RetrievedPassage:
     reference content (chunk prose, or a compact entity statblock/summary);
     ``kind`` is ``"chunk"`` or ``"entity"``. The touched-node set is exactly the
     returned passages.
+
+    ``entity_type`` is the corpus entity_type (npc/creature/spell/...) for an
+    entity hit and ``None`` for a chunk; ``book_id``/``chunk_ref`` are the chunk's
+    book and in-book ref for a chunk hit and ``None`` for an entity. They let the
+    frontend make the GROUNDED IN chip clickable (deep-link a chunk into the
+    reader, open an entity by type) without a second lookup.
     """
 
     ref_id: str
@@ -87,6 +159,9 @@ class RetrievedPassage:
     text: str
     kind: str
     score: float
+    entity_type: str | None = None
+    book_id: str | None = None
+    chunk_ref: str | None = None
 
 
 def _truncate(text: str) -> str:
@@ -112,6 +187,8 @@ def _resolve_chunk(
         text=_truncate(chunk.content),
         kind="chunk",
         score=1.0 - distance,
+        book_id=chunk.book_id,
+        chunk_ref=chunk.chunk_ref,
     )
 
 
@@ -159,6 +236,7 @@ def _resolve_entity(
         text=_truncate(_entity_statblock(entity, detail)),
         kind="entity",
         score=1.0 - distance,
+        entity_type=entity.entity_type,
     )
 
 
@@ -188,6 +266,83 @@ def _resolve_hits(
         if len(out) >= limit:
             break
     return out
+
+
+def _candidate_name_tokens(query: str) -> list[str]:
+    """Entity-name candidate tokens from a query: alphanumeric runs of length
+    >= 3 that are not question/filler stopwords, de-duplicated in order.
+
+    Splitting on non-alphanumerics and dropping the small ``_NAME_STOPWORDS`` set
+    leaves the proper-noun-ish tokens ("gundren", "beholder") that a lexical name
+    match should anchor on, so "who is Gundren?" reduces to ["gundren"].
+    """
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for raw in re.split(r"[^0-9a-zA-Z]+", query.lower()):
+        if len(raw) < 3 or raw in _NAME_STOPWORDS or raw in seen:
+            continue
+        seen.add(raw)
+        tokens.append(raw)
+    return tokens
+
+
+def _lexical_entity_hits(
+    session: Session, query: str, limit: int
+) -> list[RetrievedPassage]:
+    """is_global entities whose name contains a candidate query token.
+
+    A pure-vector search can rank a named entity below its more-typical siblings
+    (the real "who is Gundren?" miss), so this reuses grimoire.public.search_public's
+    case-insensitive name-substring approach to reliably surface a named entity in
+    the corpus. Public-safety is unchanged: the same ``Entity.is_global`` gate is
+    applied here, so a campaign-private entity can never be anchored, and each hit
+    is shaped through the same ``_resolve_entity`` (is_global + statblock) the
+    vector path uses. Shortest names first so the tightest match wins the small cap.
+    """
+    tokens = _candidate_name_tokens(query)
+    if not tokens:
+        return []
+    rows = session.exec(
+        select(Entity.id)
+        .where(
+            or_(*(func.lower(Entity.name).contains(tok) for tok in tokens)),
+            Entity.is_global,
+        )
+        .order_by(func.length(Entity.name), Entity.name, Entity.id)
+        .limit(limit)
+    ).all()
+    hits: list[RetrievedPassage] = []
+    for entity_id in rows:
+        resolved = _resolve_entity(session, entity_id, 0.0)
+        if resolved is None:
+            continue
+        # Mark as the exact-match anchor; merge order is still explicit below.
+        resolved.score = _LEXICAL_HIT_SCORE
+        hits.append(resolved)
+    return hits
+
+
+def _merge_hits(
+    lexical: list[RetrievedPassage],
+    vector: list[RetrievedPassage],
+    cap: int,
+) -> list[RetrievedPassage]:
+    """Merge lexical anchors FIRST, then vector hits, dedup by ref_id, up to cap.
+
+    Lexical name matches lead so a named entity reliably surfaces; the vector hits
+    follow so semantic passages are still present. ``cap`` is k + a small headroom
+    so a couple of anchors do not fully evict the semantic set.
+    """
+    merged: list[RetrievedPassage] = []
+    seen: set[str] = set()
+    for passage in (*lexical, *vector):
+        if passage.ref_id in seen:
+            continue
+        seen.add(passage.ref_id)
+        merged.append(passage)
+        if len(merged) >= cap:
+            break
+    return merged
 
 
 async def retrieve(
@@ -225,7 +380,14 @@ async def retrieve(
             max(1, limit) * OVERFETCH_FACTOR,
             model=model,
         )
-        passages = _resolve_hits(session, hits, limit)
+        vector_passages = _resolve_hits(session, hits, limit)
+        # Hybrid: a lexical entity-name match reliably surfaces a named entity the
+        # pure-vector search ranked below its siblings. Anchors lead, vector hits
+        # follow, deduped and capped at k + a small headroom.
+        lexical_passages = _lexical_entity_hits(session, query, _LEXICAL_ENTITY_LIMIT)
+        passages = _merge_hits(
+            lexical_passages, vector_passages, limit + _MERGE_HEADROOM
+        )
     except Exception:  # noqa: BLE001 - retrieval is best-effort; never fail a turn
         logger.exception("grimoire_chat.retrieval.failed; answering ungrounded")
         return []
