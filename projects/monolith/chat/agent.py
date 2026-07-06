@@ -239,6 +239,15 @@ def build_system_prompt() -> str:
         "live web artifact (a visualization, page, or interactive tool). When "
         "someone wants any of that, start the thread rather than trying to do "
         "it yourself inline.\n\n"
+        "FORMATTING FOR DISCORD:\n"
+        "- Discord does NOT render markdown tables: a | col | col | table shows "
+        "up as raw pipes and dashes. For tabular data, either wrap it in a "
+        "triple-backtick code block so the columns line up in monospace, or for "
+        "wide or many-row data render it as an image with run_python and let "
+        "that attach.\n"
+        "- When run_python saves a file (a chart, an image), it is attached to "
+        "your reply automatically. Never write a markdown image link or paste a "
+        "file path like /tmp/chart.png: just say what it shows.\n\n"
         "CATCHING UP:\n"
         "- If someone asks to be caught up, wants a recap, or asks "
         'something like "what happened here" or "summarize this thread," '
@@ -668,7 +677,14 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         "output, not a change."
     )
     async def run_python(ctx: RunContext[ChatDeps], code: str) -> str:
-        """Run a short Python script in an isolated sandbox and return its output. No network. Save charts/files to the working directory and they will be attached to the reply."""
+        """Run a short Python script in an isolated sandbox and return its output. No network.
+
+        To hand back a chart or file, save it with a plain relative filename
+        (for example plt.savefig("chart.png")), never an absolute path and never
+        /tmp: only files in the working directory are returned. Saved files are
+        attached to the Discord reply automatically, so do not write a markdown
+        image link or print the file path, just describe what the chart shows.
+        """
         result = await run_python_in_sandbox(code)
         if result.get("error"):
             return f"sandbox error: {result['error']}"
