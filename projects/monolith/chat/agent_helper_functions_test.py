@@ -522,7 +522,7 @@ class TestSearchHistoryQueryEmbedding:
         embed_client.embed.return_value = [0.1] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -537,14 +537,14 @@ class TestSearchHistoryQueryEmbedding:
         embed_client.embed.assert_called_once_with("deployment logs")
 
     @pytest.mark.asyncio
-    async def test_passes_embedding_and_channel_to_search_similar(self):
-        """search_history forwards embedding and channel_id to store.search_similar."""
+    async def test_passes_embedding_and_channel_to_search_hybrid(self):
+        """search_history forwards embedding and channel_id to store.search_hybrid."""
         embedding = [0.7] * 1024
         embed_client = AsyncMock()
         embed_client.embed.return_value = embedding
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client, channel_id="chan-x")
         await create_agent(base_url="http://fake:8080").run(
@@ -555,9 +555,10 @@ class TestSearchHistoryQueryEmbedding:
             deps=deps,
         )
 
-        kw = store.search_similar.call_args.kwargs
+        kw = store.search_hybrid.call_args.kwargs
         assert kw["query_embedding"] == embedding
         assert kw["channel_id"] == "chan-x"
+        assert kw["query_text"] == "foo"
 
     @pytest.mark.asyncio
     async def test_no_results_returns_sentinel(self):
@@ -566,7 +567,7 @@ class TestSearchHistoryQueryEmbedding:
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         captured: list[str] = []
         deps = _make_deps(store=store, embed_client=embed_client)
@@ -588,7 +589,7 @@ class TestSearchHistoryUsernameCoercion:
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -608,7 +609,7 @@ class TestSearchHistoryUsernameCoercion:
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = "uid-alice"
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client, channel_id="ch-t")
         await create_agent(base_url="http://fake:8080").run(
@@ -628,7 +629,7 @@ class TestSearchHistoryUsernameCoercion:
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = "uid-charlie"
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client, channel_id="ch-dict")
         await create_agent(base_url="http://fake:8080").run(
@@ -652,7 +653,7 @@ class TestSearchHistoryUsernameCoercion:
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -665,7 +666,7 @@ class TestSearchHistoryUsernameCoercion:
         )
 
         store.find_user_id_by_username.assert_not_called()
-        assert store.search_similar.call_args.kwargs.get("user_id") is None
+        assert store.search_hybrid.call_args.kwargs.get("user_id") is None
 
     @pytest.mark.asyncio
     async def test_discord_user_id_mention_dict_used_directly(self):
@@ -673,7 +674,7 @@ class TestSearchHistoryUsernameCoercion:
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(
             store=store, embed_client=embed_client, channel_id="ch-mention"
@@ -692,16 +693,16 @@ class TestSearchHistoryUsernameCoercion:
         )
 
         store.find_user_id_by_username.assert_not_called()
-        assert store.search_similar.call_args.kwargs["user_id"] == "1294788769672593501"
+        assert store.search_hybrid.call_args.kwargs["user_id"] == "1294788769672593501"
 
     @pytest.mark.asyncio
-    async def test_resolved_user_id_forwarded_to_search_similar(self):
-        """Resolved user_id from store lookup is passed to store.search_similar."""
+    async def test_resolved_user_id_forwarded_to_search_hybrid(self):
+        """Resolved user_id from store lookup is passed to store.search_hybrid."""
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = "uid-found"
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -712,18 +713,18 @@ class TestSearchHistoryUsernameCoercion:
             deps=deps,
         )
 
-        assert store.search_similar.call_args.kwargs["user_id"] == "uid-found"
+        assert store.search_hybrid.call_args.kwargs["user_id"] == "uid-found"
 
 
 class TestSearchHistoryLimit:
     @pytest.mark.asyncio
     async def test_limit_above_20_is_clamped(self):
-        """A limit > 20 is clamped to 20 when calling store.search_similar."""
+        """A limit > 20 is clamped to 20 when calling store.search_hybrid."""
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -734,7 +735,7 @@ class TestSearchHistoryLimit:
             deps=deps,
         )
 
-        assert store.search_similar.call_args.kwargs["limit"] == 20
+        assert store.search_hybrid.call_args.kwargs["limit"] == 20
 
     @pytest.mark.asyncio
     async def test_limit_exactly_20_not_capped_further(self):
@@ -743,7 +744,7 @@ class TestSearchHistoryLimit:
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -754,16 +755,16 @@ class TestSearchHistoryLimit:
             deps=deps,
         )
 
-        assert store.search_similar.call_args.kwargs["limit"] == 20
+        assert store.search_hybrid.call_args.kwargs["limit"] == 20
 
     @pytest.mark.asyncio
     async def test_limit_below_20_passed_unchanged(self):
-        """A limit below 20 is passed as-is to store.search_similar."""
+        """A limit below 20 is passed as-is to store.search_hybrid."""
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store=store, embed_client=embed_client)
         await create_agent(base_url="http://fake:8080").run(
@@ -774,7 +775,7 @@ class TestSearchHistoryLimit:
             deps=deps,
         )
 
-        assert store.search_similar.call_args.kwargs["limit"] == 3
+        assert store.search_hybrid.call_args.kwargs["limit"] == 3
 
 
 # ===========================================================================

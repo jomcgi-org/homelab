@@ -59,7 +59,7 @@ class TestSearchHistoryNoResults:
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []  # no results
+        store.search_hybrid.return_value = []  # no results
 
         deps = _make_deps(store, embed_client)
         agent = create_agent(base_url="http://fake:8080")
@@ -100,7 +100,7 @@ class TestSearchHistoryNoResults:
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store, embed_client)
         agent = create_agent(base_url="http://fake:8080")
@@ -117,15 +117,15 @@ class TestSearchHistoryNoResults:
         embed_client.embed.assert_called_once_with("python deploy")
 
     @pytest.mark.asyncio
-    async def test_search_similar_called_with_channel_id_and_embedding(self):
-        """search_history passes channel_id and query_embedding to store.search_similar."""
+    async def test_search_hybrid_called_with_channel_id_and_embedding(self):
+        """search_history passes channel_id and query_embedding to store.search_hybrid."""
         embedding = [0.5] * 1024
         embed_client = AsyncMock()
         embed_client.embed.return_value = embedding
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store, embed_client, channel_id="my-channel")
         agent = create_agent(base_url="http://fake:8080")
@@ -139,8 +139,8 @@ class TestSearchHistoryNoResults:
             deps=deps,
         )
 
-        store.search_similar.assert_called_once()
-        call_kwargs = store.search_similar.call_args
+        store.search_hybrid.assert_called_once()
+        call_kwargs = store.search_hybrid.call_args
         assert call_kwargs.kwargs.get("channel_id") == "my-channel"
         assert call_kwargs.kwargs.get("query_embedding") == embedding
 
@@ -174,7 +174,7 @@ class TestSearchHistoryWithResults:
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = [found_msg]
+        store.search_hybrid.return_value = [found_msg]
 
         deps = _make_deps(store, embed_client)
         agent = create_agent(base_url="http://fake:8080")
@@ -223,7 +223,7 @@ class TestSearchHistoryWithUsername:
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = "u-alice"
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store, embed_client)
         agent = create_agent(base_url="http://fake:8080")
@@ -240,14 +240,14 @@ class TestSearchHistoryWithUsername:
         store.find_user_id_by_username.assert_called_once_with("ch1", "alice")
 
     @pytest.mark.asyncio
-    async def test_passes_user_id_to_search_similar(self):
-        """search_history forwards the resolved user_id to store.search_similar."""
+    async def test_passes_user_id_to_search_hybrid(self):
+        """search_history forwards the resolved user_id to store.search_hybrid."""
         embed_client = AsyncMock()
         embed_client.embed.return_value = [0.0] * 1024
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = "u-alice"
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store, embed_client)
         agent = create_agent(base_url="http://fake:8080")
@@ -261,7 +261,7 @@ class TestSearchHistoryWithUsername:
             deps=deps,
         )
 
-        call_kwargs = store.search_similar.call_args.kwargs
+        call_kwargs = store.search_hybrid.call_args.kwargs
         assert call_kwargs.get("user_id") == "u-alice"
 
     @pytest.mark.asyncio
@@ -272,7 +272,7 @@ class TestSearchHistoryWithUsername:
 
         store = MagicMock()
         store.find_user_id_by_username.return_value = None
-        store.search_similar.return_value = []
+        store.search_hybrid.return_value = []
 
         deps = _make_deps(store, embed_client)
         agent = create_agent(base_url="http://fake:8080")
@@ -286,7 +286,7 @@ class TestSearchHistoryWithUsername:
             deps=deps,
         )
 
-        call_kwargs = store.search_similar.call_args.kwargs
+        call_kwargs = store.search_hybrid.call_args.kwargs
         assert call_kwargs.get("limit") == 20
 
 
