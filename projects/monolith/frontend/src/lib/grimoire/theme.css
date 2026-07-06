@@ -99,6 +99,26 @@
   --grim-type-class: #97a3b5;
   --grim-type-event: #b3a463;
   --grim-type-quest: #4fb0aa;
+
+  /* Dark safety net: the public tier's design-system.css (--ink, --cream,
+   * --paper, --bg-elev, --coral, --rule-2, ...) has no dark variant of its
+   * own -- it was built for the site's always-light brutalist pages, not for
+   * a scoped per-app toggle. Every grimoire surface has now been converted
+   * to consume --grim-* tokens directly, but this block is a backstop: any
+   * surface that still reads a design-system token (a future addition, a
+   * class from design-system.css like .eyebrow/.btn/.card-hard leaking in)
+   * gets the matching dark value here instead of silently staying
+   * light-mode-cream. Scoped to .grimoire.dark, so it can never affect the
+   * rest of the site. Values mirror the --grim-* dark tokens above exactly.
+   */
+  --cream: #0d1017;
+  --paper: #141924;
+  --ink: #e8e2d0;
+  --ink-2: #9aa3b2;
+  --ink-3: #626d7e;
+  --rule-2: #2a3140;
+  --coral: #7d9fd0;
+  --bg-elev: #1a2130;
 }
 
 /* ── Focus ────────────────────────────────────────────────────
