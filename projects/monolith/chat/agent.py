@@ -175,6 +175,11 @@ class ChatDeps:
     # The tool can't post to Discord itself; _stream_response flushes them as
     # attachments once the run completes (mirrors pending_proposal above).
     generated_files: list = field(default_factory=list)
+    # Reply guidance from the ADR 036 orchestrator on a chat verdict (the
+    # retrieved context and direction the paid model produced). Empty on the
+    # direct-mention path; set when this agent authors a chat-verdict reply, and
+    # injected as a system prompt to keep that reply grounded.
+    orchestrator_guidance: str = ""
 
 
 def build_system_prompt() -> str:
@@ -371,6 +376,13 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         except Exception:
             logger.exception("directives: failed to load for system prompt")
         return "\n\n".join(parts)
+
+    @agent.system_prompt
+    def _orchestrator_guidance(ctx: RunContext[ChatDeps]) -> str:
+        # On a chat verdict the ADR 036 orchestrator already retrieved context
+        # and framed how to answer; surface it so the reply stays grounded.
+        # Empty on the direct-mention path, so this adds nothing there.
+        return ctx.deps.orchestrator_guidance or ""
 
     @agent.tool_plain
     @signposted(
