@@ -56,6 +56,18 @@
   --grim-type-class: #556070;
   --grim-type-event: #7a6f3a;
   --grim-type-quest: #2f8f8a;
+  /* Mechanics types share the slate "class" hue (one family). Defined as
+     aliases so they resolve to the dark --grim-type-class value under
+     .grimoire.dark too, without repeating the override below. */
+  --grim-type-condition: var(--grim-type-class);
+  --grim-type-feat: var(--grim-type-class);
+  --grim-type-race: var(--grim-type-class);
+  --grim-type-background: var(--grim-type-class);
+  --grim-type-subclass: var(--grim-type-class);
+  --grim-type-class_feature: var(--grim-type-class);
+  --grim-type-action: var(--grim-type-class);
+  --grim-type-rule: var(--grim-type-class);
+  --grim-type-table: var(--grim-type-class);
 }
 
 .grimoire.dark {
