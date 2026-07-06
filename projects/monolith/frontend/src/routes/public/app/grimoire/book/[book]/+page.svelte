@@ -134,12 +134,15 @@
 
   .adventure-name {
     font-size: 20px;
+    /* Explicit color: the row is color:inherit, so without this the title
+       renders dark-on-dark in dark mode. */
+    color: var(--grim-ink);
   }
 
   .adventure-level {
     font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--grim-text-faint);
+    color: var(--grim-text-dim);
   }
 
   .adventure-summary {
@@ -149,7 +152,7 @@
 
   .adventure-count {
     font-family: var(--font-mono);
-    color: var(--grim-text-faint);
+    color: var(--grim-text-dim);
     font-size: 11px;
   }
 </style>

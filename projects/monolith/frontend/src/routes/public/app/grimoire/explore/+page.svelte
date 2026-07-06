@@ -460,12 +460,17 @@
 
   .ex-stage {
     position: relative;
-    height: calc(100vh - 300px);
-    min-height: 440px;
-    border: 1px solid var(--grim-line);
-    border-radius: 12px;
+    /* Full-bleed: break out of the centered .explore-page column to the full
+       viewport width and drop the boxed border/radius, so the graph uses the
+       page instead of sitting in a bordered card surrounded by whitespace. */
+    margin-left: calc(-50vw + 50%);
+    margin-right: calc(-50vw + 50%);
+    height: calc(100vh - 210px);
+    min-height: 480px;
     overflow: hidden;
     background: var(--grim-surface);
+    border-top: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--grim-line);
   }
 
   :global(.grimoire.dark) .ex-stage {
