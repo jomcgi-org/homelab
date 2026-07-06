@@ -35,6 +35,10 @@ async def run_python(code: str, files: list[dict] | None = None) -> dict:
     chart.png. Only files written to the working directory are returned, so an
     absolute path or a /tmp path is lost.
 
+    For tabular data there is a baked helper. Run "from sandbox_tools import
+    render_table" then render_table(headers, rows, title=None) to write a styled
+    table.png (dark header, zebra rows, numeric columns right-aligned).
+
     Args:
         code: The Python source to run. It is written to a file and executed
             with python3. Use print(...) for anything you want back as

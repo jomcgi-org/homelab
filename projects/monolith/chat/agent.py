@@ -241,10 +241,13 @@ def build_system_prompt() -> str:
         "it yourself inline.\n\n"
         "FORMATTING FOR DISCORD:\n"
         "- Discord does NOT render markdown tables: a | col | col | table shows "
-        "up as raw pipes and dashes. For tabular data, either wrap it in a "
-        "triple-backtick code block so the columns line up in monospace, or for "
-        "wide or many-row data render it as an image with run_python and let "
-        "that attach.\n"
+        "up as raw pipes and dashes. To present tabular data, render it as an "
+        "image with run_python: the sandbox has a baked helper, so `from "
+        "sandbox_tools import render_table` then render_table(headers, rows, "
+        "title=...) which saves a styled table.png that attaches automatically. "
+        "For a tiny two or three row aside a triple-backtick code block also "
+        "reads fine (monospace lines the columns up), but prefer the rendered "
+        "image for anything real.\n"
         "- When run_python saves a file (a chart, an image), it is attached to "
         "your reply automatically. Never write a markdown image link or paste a "
         "file path like /tmp/chart.png: just say what it shows.\n\n"
@@ -684,6 +687,9 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         /tmp: only files in the working directory are returned. Saved files are
         attached to the Discord reply automatically, so do not write a markdown
         image link or print the file path, just describe what the chart shows.
+        For tabular data, use the baked helper: `from sandbox_tools import
+        render_table` then render_table(headers, rows, title=None) writes a
+        styled table.png for you.
         """
         result = await run_python_in_sandbox(code)
         if result.get("error"):
