@@ -498,7 +498,12 @@ jobs:
     - name: chat-directive-autopilot
       args: ["chat-directive-autopilot"]
       schedule: "30 4 * * *"
-      concurrencyPolicy: Forbid
+      # Allow, not Forbid: a manual one-off trigger (verifying a tune, or
+      # forcing an adjustment now) must not cause the next scheduled run to be
+      # skipped on window overlap and lose that window's signal. The autopilot
+      # has no run-lock; safety comes from per-apply cooldown + self-validation
+      # + revert-on-regression, so an overlapping second run is bounded.
+      concurrencyPolicy: Allow
       activeDeadlineSeconds: 600
       suspend: false
       env:
