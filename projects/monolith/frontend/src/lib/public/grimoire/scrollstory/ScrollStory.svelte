@@ -39,6 +39,9 @@
 
   const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  // The captured answer carries "\n\n" paragraph breaks; HTML collapses raw
+  // newlines to a space, so turn them into <br> for the chat bubble.
+  const nl2br = (s) => s.replace(/\n/g, "<br>");
   const typeVar = (type) => `var(--grim-type-${type})`;
 
   // ── Pure, SSR-safe derived data (module eval; runs on the server too) ──
@@ -84,7 +87,12 @@
   // Chat answer, segmented once. The animated scene types it out by slicing
   // these segments (renderTypedAnswer); the static scene shows it whole.
   const answerSegs = segmentize(transcript.answer, PHRASES);
-  const answerHtml = segHtml(answerSegs);
+  const answerHtml = answerSegs
+    .map((s) => {
+      const frag = nl2br(esc(s.t));
+      return s.c ? `<mark data-c="${s.c}">${frag}</mark>` : frag;
+    })
+    .join("");
 
   // Grounded-in chips: resolve each cited name to a real page node so its
   // graph node can pulse when the citation appears.
@@ -230,7 +238,7 @@
     let used = 0;
     for (const s of answerSegs) {
       if (used >= chars) break;
-      const frag = esc(s.t.slice(0, chars - used));
+      const frag = nl2br(esc(s.t.slice(0, chars - used)));
       html += s.c
         ? `<span style="color:${s.c};font-weight:600">${frag}</span>`
         : frag;
