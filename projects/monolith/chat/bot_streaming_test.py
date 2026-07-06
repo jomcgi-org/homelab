@@ -1,7 +1,27 @@
 """Tests for the streaming response flow in the Discord bot."""
 
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+@pytest.fixture(autouse=True)
+def _route_mentions_to_chat():
+    """on_message now runs the depth+repo classify for every engaged message
+    (ADR 035 follow-up: unified entry points). These tests exercise the inline
+    chat reply path for a mention, so stub the classify to "chat" and the ACL
+    reads to empty, keeping routing deterministic and offline."""
+    with (
+        patch("chat.bot.acl.ambient_channels", return_value=set()),
+        patch("chat.bot.acl.allowed_scopes", return_value=set()),
+        patch(
+            "chat.bot.attention.classify_engagement",
+            AsyncMock(return_value=SimpleNamespace(needs_agent=False, repo="")),
+        ),
+    ):
+        yield
+
 
 from pydantic_ai import (
     AgentRunResultEvent,
