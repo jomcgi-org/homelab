@@ -366,48 +366,131 @@
       mo.observe(root, { attributes: true, attributeFilter: ["class"] });
     }
 
-    let down = null;
+    // Unified pointer handling (mouse, touch, pen) via Pointer Events: one
+    // active pointer pans (or, if it didn't move, taps-to-select on
+    // release); two active pointers pinch-zoom, anchored at their midpoint.
+    // Wheel-zoom (below) stays separate, it's desktop-only and orthogonal
+    // to pointer tracking.
+    let pointers = new Map(); // pointerId -> last-seen {x, y} in client coords
+    let panStart = null; // {x, y, vx, vy} baseline for the single-pointer case
+    let pinchStart = null; // {dist, k, viewX, viewY, midX, midY} for the two-pointer case
     let moved = false;
 
-    function onMouseDown(e) {
-      const rect = canvasEl.getBoundingClientRect();
-      down = {
-        x: e.clientX,
-        y: e.clientY,
-        vx: view.x,
-        vy: view.y,
-        rectLeft: rect.left,
-        rectTop: rect.top,
+    function currentRect() {
+      return canvasEl.getBoundingClientRect();
+    }
+
+    // Pinch geometry from the current pointer positions: distance between
+    // the two pointers (for scale) and their midpoint in canvas-local coords
+    // (the zoom anchor).
+    function pinchGeometry() {
+      const pts = [...pointers.values()];
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const rect = currentRect();
+      return {
+        dist,
+        midX: (pts[0].x + pts[1].x) / 2 - rect.left,
+        midY: (pts[0].y + pts[1].y) / 2 - rect.top,
       };
-      moved = false;
-      dragging = true;
     }
 
-    function onMouseUp(e) {
-      dragging = false;
-      if (down && !moved) {
-        const rect = canvasEl.getBoundingClientRect();
-        const id = hitTest(e.clientX - rect.left, e.clientY - rect.top);
-        onselect?.(id);
+    function onPointerDown(e) {
+      canvasEl.setPointerCapture(e.pointerId);
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 1) {
+        panStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+        moved = false;
+        dragging = true;
+      } else if (pointers.size === 2) {
+        panStart = null;
+        const { dist, midX, midY } = pinchGeometry();
+        pinchStart = { dist, k: view.k, viewX: view.x, viewY: view.y, midX, midY };
+        moved = true; // a pinch is never a tap, even if it started as one
       }
-      down = null;
     }
 
-    function onMouseMove(e) {
-      const rect = canvasEl.getBoundingClientRect();
-      if (down) {
-        const dx = e.clientX - down.x;
-        const dy = e.clientY - down.y;
-        if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
-        view.x = down.vx + dx;
-        view.y = down.vy + dy;
-        requestDraw();
-      } else {
+    function onPointerMove(e) {
+      if (!pointers.has(e.pointerId)) {
+        // No gesture owns this pointer: hover-only (desktop mouse moving
+        // without a button held).
+        const rect = currentRect();
         const h = hitTest(e.clientX - rect.left, e.clientY - rect.top);
         if (h !== hoverId) {
           hoverId = h;
           requestDraw();
         }
+        return;
+      }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (pointers.size >= 2 && pinchStart) {
+        const { dist, midX, midY } = pinchGeometry();
+        const k2 = Math.max(
+          0.4,
+          Math.min(3, pinchStart.k * (dist / pinchStart.dist)),
+        );
+        const wx = (pinchStart.midX - pinchStart.viewX) / pinchStart.k;
+        const wy = (pinchStart.midY - pinchStart.viewY) / pinchStart.k;
+        view.k = k2;
+        view.x = midX - wx * k2;
+        view.y = midY - wy * k2;
+        requestDraw();
+        return;
+      }
+
+      if (panStart) {
+        const dx = e.clientX - panStart.x;
+        const dy = e.clientY - panStart.y;
+        if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+        view.x = panStart.vx + dx;
+        view.y = panStart.vy + dy;
+        requestDraw();
+      }
+    }
+
+    function onPointerUp(e) {
+      const wasTap = pointers.size === 1 && panStart && !moved;
+      const rect = currentRect();
+      const tapPos = wasTap
+        ? { x: e.clientX - rect.left, y: e.clientY - rect.top }
+        : null;
+
+      pointers.delete(e.pointerId);
+      if (canvasEl.hasPointerCapture?.(e.pointerId)) {
+        canvasEl.releasePointerCapture(e.pointerId);
+      }
+
+      if (pointers.size >= 2) {
+        // Still pinching with whichever two pointers remain: rebase so the
+        // gesture continues smoothly instead of jumping.
+        const { dist, midX, midY } = pinchGeometry();
+        pinchStart = { dist, k: view.k, viewX: view.x, viewY: view.y, midX, midY };
+        panStart = null;
+      } else if (pointers.size === 1) {
+        // Dropped from a pinch to a single finger: rebase to a pan from
+        // here, not a tap (the gesture already moved the view).
+        pinchStart = null;
+        const pos = pointers.values().next().value;
+        panStart = { x: pos.x, y: pos.y, vx: view.x, vy: view.y };
+        moved = true;
+        dragging = true;
+      } else {
+        pinchStart = null;
+        panStart = null;
+        dragging = false;
+      }
+
+      if (wasTap) onselect?.(hitTest(tapPos.x, tapPos.y));
+    }
+
+    function onPointerCancel(e) {
+      pointers.delete(e.pointerId);
+      if (pointers.size === 0) {
+        panStart = null;
+        pinchStart = null;
+        dragging = false;
       }
     }
 
@@ -425,18 +508,20 @@
       requestDraw();
     }
 
-    canvasEl.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("mouseup", onMouseUp);
-    window.addEventListener("mousemove", onMouseMove);
+    canvasEl.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
     canvasEl.addEventListener("wheel", onWheel, { passive: false });
 
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
       ro.disconnect();
       mo?.disconnect();
-      canvasEl.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("mouseup", onMouseUp);
-      window.removeEventListener("mousemove", onMouseMove);
+      canvasEl.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
       canvasEl.removeEventListener("wheel", onWheel);
     };
   });
@@ -447,7 +532,7 @@
     bind:this={canvasEl}
     class:dragging
     role="application"
-    aria-label={`Entity relationship graph, ${nodes.length} entities, ${edges.length} relationships shown. Click a node to open its detail, drag to pan, scroll to zoom.`}
+    aria-label={`Entity relationship graph, ${nodes.length} entities, ${edges.length} relationships shown. Tap or click a node to open its detail, drag to pan, scroll or pinch to zoom.`}
   ></canvas>
 </div>
 
@@ -463,6 +548,9 @@
     width: 100%;
     height: 100%;
     cursor: grab;
+    /* Own all pan/pinch/tap gestures ourselves; without this the browser
+       scrolls or zooms the page instead of the canvas on touch devices. */
+    touch-action: none;
   }
 
   canvas.dragging {
