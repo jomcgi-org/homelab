@@ -256,6 +256,12 @@ class TestOnMessageGenerateReply:
             patch("chat.bot.get_engine"),
             patch("chat.bot.Session") as mock_session_cls,
             patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.acl.allowed_scopes", return_value=set()),
+            patch(
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(return_value=SimpleNamespace(needs_agent=False, repo="")),
+            ),
         ):
             ctx = MagicMock()
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
@@ -288,6 +294,12 @@ class TestOnMessageGenerateReply:
             patch("chat.bot.get_engine"),
             patch("chat.bot.Session") as mock_session_cls,
             patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.acl.allowed_scopes", return_value=set()),
+            patch(
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(return_value=SimpleNamespace(needs_agent=False, repo="")),
+            ),
         ):
             ctx = MagicMock()
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
@@ -455,10 +467,12 @@ class TestAttentionGate:
             patch("chat.bot.directives.get_active_version", return_value=0),
             patch("chat.bot.acl.feature_enabled", return_value=True),
             patch("chat.bot.acl.is_granted", return_value=True),
+            patch("chat.bot.acl.allowed_scopes", return_value=set()),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
             patch(
-                "chat.bot.attention.needs_agent", AsyncMock(return_value=True)
-            ) as mock_needs_agent,
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(return_value=SimpleNamespace(needs_agent=True, repo="")),
+            ) as mock_classify,
             patch.object(
                 bot, "start_agent_flow", AsyncMock(return_value=MagicMock())
             ) as mock_start_flow,
@@ -470,7 +484,7 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-            mock_needs_agent.assert_called_once()
+            mock_classify.assert_called_once()
             mock_start_flow.assert_called_once()
             args, kwargs = mock_start_flow.call_args
             assert kwargs.get("trigger_message") is message
@@ -508,14 +522,16 @@ class TestAttentionGate:
             patch("chat.bot.acl.ambient_channels", return_value={"99"}),
             patch("chat.bot.directives.get_active", return_value=""),
             patch("chat.bot.directives.get_active_version", return_value=0),
+            patch("chat.bot.acl.allowed_scopes", return_value=set()),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
             patch(
                 "chat.bot.attention.evaluate",
                 AsyncMock(return_value=SimpleNamespace(engage=True, confidence=0.9)),
             ),
             patch(
-                "chat.bot.attention.needs_agent", AsyncMock(return_value=False)
-            ) as mock_needs_agent,
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(return_value=SimpleNamespace(needs_agent=False, repo="")),
+            ) as mock_classify,
             patch.object(
                 bot, "_recently_tagged", MagicMock(return_value=True)
             ) as mock_recently_tagged,
@@ -533,7 +549,7 @@ class TestAttentionGate:
 
             mock_recently_tagged.assert_called_once_with("99", str(message.id))
             assert mock_evaluate.call_args.kwargs.get("recently_tagged") is True
-            mock_needs_agent.assert_called_once()
+            mock_classify.assert_called_once()
             mock_proc.assert_called_once_with(message, force_respond=True)
             mock_engage_agent.assert_not_called()
             mock_start_flow.assert_not_called()
@@ -565,7 +581,10 @@ class TestAttentionGate:
             patch("chat.bot.acl.is_granted", return_value=False),
             patch("chat.bot.acl.allowed_scopes", return_value={"homelab"}),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
-            patch("chat.bot.attention.needs_agent", AsyncMock(return_value=True)),
+            patch(
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(return_value=SimpleNamespace(needs_agent=True, repo="")),
+            ),
             patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
             patch.object(bot, "_complete_lock", MagicMock()) as mock_complete_lock,
         ):
@@ -582,12 +601,12 @@ class TestAttentionGate:
             mock_complete_lock.assert_called_once_with(str(message.id))
 
     @pytest.mark.asyncio
-    async def test_mention_in_non_ambient_channel_falls_through_to_chat(self):
-        """A mention in a NON-ambient channel is contained to today's inline
-        chat reply: the attention gate/agent flow never fires, and the message
-        goes straight to _process_message (which already replies to mentions
-        inline). Proves the Phase 3 containment fix and the DM regression fix
-        (DMs are never ambient)."""
+    async def test_mention_in_non_ambient_channel_enters_unified_loop(self):
+        """A mention in a NON-ambient channel bypasses the attention gate
+        (evaluate never runs) but enters the SAME depth+target dispatch as an
+        ambient engage: classify routes it, and here (needs_agent=False) it
+        replies inline via _process_message(force_respond=True). DMs are never
+        ambient, so this also covers the DM path."""
         bot = _make_bot()
         bot_user = bot.user
 
@@ -602,7 +621,12 @@ class TestAttentionGate:
             patch("chat.bot.Session") as mock_session_cls,
             patch("chat.bot.MessageStore", return_value=mock_store),
             patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.acl.allowed_scopes", return_value=set()),
             patch("chat.bot.attention.evaluate", AsyncMock()) as mock_evaluate,
+            patch(
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(return_value=SimpleNamespace(needs_agent=False, repo="")),
+            ) as mock_classify,
             patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
             patch.object(bot, "_process_message", AsyncMock()) as mock_proc,
         ):
@@ -612,9 +636,61 @@ class TestAttentionGate:
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
             await bot.on_message(message)
 
-            mock_evaluate.assert_not_called()
+            mock_evaluate.assert_not_called()  # gate bypassed for explicit mention
+            mock_classify.assert_called_once()  # but the depth split still runs
             mock_start_flow.assert_not_called()
-            mock_proc.assert_called_once_with(message)
+            mock_proc.assert_called_once_with(message, force_respond=True)
+
+    @pytest.mark.asyncio
+    async def test_mention_escalates_to_agent_with_selected_repo(self):
+        """A mention whose classify returns needs_agent + a granted repo (even
+        in a non-ambient channel) escalates to the agent, hydrating exactly the
+        repo the classifier selected from the ACL-granted scopes."""
+        bot = _make_bot()
+        bot_user = bot.user
+
+        message = _make_message(
+            content="fix CI in the homelab repo", mentions=[bot_user]
+        )
+        message.reference = None
+        message.guild = None
+        message.channel = MagicMock(spec=discord.TextChannel)
+        message.channel.id = 77
+
+        mock_store = _make_store()
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+            patch("chat.bot.acl.ambient_channels", return_value=set()),
+            patch("chat.bot.acl.allowed_scopes", return_value={"jomcgi/homelab"}),
+            patch("chat.bot.acl.feature_enabled", return_value=True),
+            patch("chat.bot.acl.is_granted", return_value=True) as mock_is_granted,
+            patch(
+                "chat.bot.attention.classify_engagement",
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        needs_agent=True, repo="jomcgi/homelab"
+                    )
+                ),
+            ),
+            patch.object(
+                bot, "start_agent_flow", AsyncMock(return_value=MagicMock())
+            ) as mock_start_flow,
+            patch.object(bot, "_complete_lock", MagicMock()),
+        ):
+            mock_session_cls.return_value.__enter__ = MagicMock(
+                return_value=MagicMock()
+            )
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            await bot.on_message(message)
+
+            # Grant re-checked on the SELECTED repo (defense in depth).
+            assert mock_is_granted.call_args.args[3] == "jomcgi/homelab"
+            # start_agent_flow hydrates that repo (4th positional arg).
+            mock_start_flow.assert_called_once()
+            assert mock_start_flow.call_args.args[3] == "jomcgi/homelab"
 
     @pytest.mark.asyncio
     async def test_plain_message_skips_the_gate_entirely(self):

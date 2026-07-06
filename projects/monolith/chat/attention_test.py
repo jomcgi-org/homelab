@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from chat.attention import ATTENTION_THRESHOLD, evaluate, needs_agent
+from chat.attention import ATTENTION_THRESHOLD, classify_engagement, evaluate
 
 
 def _make_message(content: str = "hey", mentions=None, reference=None):
@@ -141,37 +141,86 @@ class TestRecentTagWeighting:
         caller.assert_not_called()
 
 
-class TestNeedsAgent:
-    """ADR 035 Phase 4: the in-monolith depth classify (chat vs goose guest)."""
+class TestClassifyEngagement:
+    """ADR 035 Phase 4: the in-monolith depth+target classify (chat vs goose
+    guest, and which ACL-granted repo to hydrate)."""
 
     @pytest.mark.asyncio
     async def test_repo_work_routes_to_agent(self):
         message = _make_message(content="can you fix the bug in bot.py and push a PR")
-        caller = AsyncMock(return_value='{"needs_agent": true}')
-        result = await needs_agent(message, _caller=caller)
-        assert result is True
+        caller = AsyncMock(return_value='{"needs_agent": true, "repo": ""}')
+        result = await classify_engagement(message, [], _caller=caller)
+        assert result.needs_agent is True
+        assert result.repo == ""
         caller.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_conversation_routes_to_chat(self):
         message = _make_message(content="what's a good name for a boat?")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        result = await needs_agent(message, _caller=caller)
-        assert result is False
+        caller = AsyncMock(return_value='{"needs_agent": false, "repo": ""}')
+        result = await classify_engagement(message, [], _caller=caller)
+        assert result.needs_agent is False
 
     @pytest.mark.asyncio
     async def test_fails_closed_to_chat_on_caller_error(self):
         message = _make_message(content="anything")
         caller = AsyncMock(side_effect=RuntimeError("model unreachable"))
-        result = await needs_agent(message, _caller=caller)
-        assert result is False
+        result = await classify_engagement(message, ["jomcgi/homelab"], _caller=caller)
+        assert result.needs_agent is False
+        assert result.repo == ""
 
     @pytest.mark.asyncio
     async def test_extracts_json_from_surrounding_prose(self):
         message = _make_message(content="anything")
-        caller = AsyncMock(return_value='sure! {"needs_agent": true} ok')
-        result = await needs_agent(message, _caller=caller)
-        assert result is True
+        caller = AsyncMock(return_value='sure! {"needs_agent": true, "repo": ""} ok')
+        result = await classify_engagement(message, [], _caller=caller)
+        assert result.needs_agent is True
+
+    @pytest.mark.asyncio
+    async def test_selects_a_granted_repo(self):
+        message = _make_message(content="look at the homelab repo and fix CI")
+        caller = AsyncMock(
+            return_value='{"needs_agent": true, "repo": "jomcgi/homelab"}'
+        )
+        result = await classify_engagement(
+            message, ["jomcgi/homelab", "weave-hand/loom"], _caller=caller
+        )
+        assert result.needs_agent is True
+        assert result.repo == "jomcgi/homelab"
+
+    @pytest.mark.asyncio
+    async def test_out_of_set_repo_is_coerced_to_empty(self):
+        """A repo the model names that is NOT in the granted set is dropped:
+        the classifier can never target a repo the caller is not granted."""
+        message = _make_message(content="fix the secret internal repo")
+        caller = AsyncMock(
+            return_value='{"needs_agent": true, "repo": "someone/private"}'
+        )
+        result = await classify_engagement(message, ["jomcgi/homelab"], _caller=caller)
+        assert result.needs_agent is True
+        assert result.repo == ""
+
+    @pytest.mark.asyncio
+    async def test_no_granted_repos_forces_repo_less(self):
+        message = _make_message(content="build me a chart")
+        caller = AsyncMock(
+            return_value='{"needs_agent": true, "repo": "jomcgi/homelab"}'
+        )
+        result = await classify_engagement(message, [], _caller=caller)
+        assert result.repo == ""
+        prompt = caller.call_args[0][0].lower()
+        assert "empty string" in prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_lists_granted_repos(self):
+        message = _make_message(content="anything")
+        caller = AsyncMock(return_value='{"needs_agent": false, "repo": ""}')
+        await classify_engagement(
+            message, ["jomcgi/homelab", "weave-hand/loom"], _caller=caller
+        )
+        prompt = caller.call_args[0][0]
+        assert "jomcgi/homelab" in prompt
+        assert "weave-hand/loom" in prompt
 
     @pytest.mark.asyncio
     async def test_prompt_keeps_channel_summarization_on_chat(self):
@@ -179,8 +228,8 @@ class TestNeedsAgent:
         summarizing this conversation or pulling decisions/action items out of
         channel history must stay "chat", not route to the heavy agent."""
         message = _make_message(content="can you summarize this thread?")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        await needs_agent(message, _caller=caller)
+        caller = AsyncMock(return_value='{"needs_agent": false, "repo": ""}')
+        await classify_engagement(message, [], _caller=caller)
         prompt = caller.call_args[0][0].lower()
         assert "summarizing this conversation" in prompt
         assert "catching up" in prompt
@@ -192,8 +241,8 @@ class TestNeedsAgent:
     async def test_prompt_still_mentions_repo_artifact_and_research(self):
         """Additive change: the existing depth-classify wording must survive."""
         message = _make_message(content="anything")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        await needs_agent(message, _caller=caller)
+        caller = AsyncMock(return_value='{"needs_agent": false, "repo": ""}')
+        await classify_engagement(message, [], _caller=caller)
         prompt = caller.call_args[0][0].lower()
         assert "repository/codebase" in prompt
         assert "artifact/page" in prompt

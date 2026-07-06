@@ -24,6 +24,17 @@ class AttentionResult:
     confidence: float
 
 
+@dataclass
+class EngagementDecision:
+    """Depth + target for an engaged message: does it need the goose agent, and
+    if so which repo (if any) should it hydrate. ``repo`` is always either "" or
+    one of the ACL-granted repos passed to classify_engagement, never free-form.
+    """
+
+    needs_agent: bool
+    repo: str = ""
+
+
 async def evaluate(
     message,
     directive: str,
@@ -91,15 +102,29 @@ async def evaluate(
         return AttentionResult(False, 0.0)
 
 
-async def needs_agent(message, *, _caller=None) -> bool:
-    """Cheap depth classify: does this engaged message need the goose agent?
+async def classify_engagement(
+    message, allowed_repos: list[str] | None = None, *, _caller=None
+) -> EngagementDecision:
+    """Cheap depth + target classify for an engaged message: does it need the
+    goose agent, and if so which granted repo (if any) should it hydrate?
 
-    True for repo work, artifact/build requests, or thorough multi-source
-    research; False for conversation, general knowledge, or a simple factual
-    question (a basic web lookup is fine in chat). Fails closed to False so a
-    classify failure degrades to a fast in-monolith reply, never a surprise
-    heavy guest run. ``_caller`` is an injectable llm-caller for tests.
+    ``needs_agent`` is True for repo work, artifact/build requests, or thorough
+    multi-source research; False for conversation, general knowledge, or a
+    simple factual question (a basic web lookup is fine in chat).
+
+    ``repo`` is inferred ONLY from ``allowed_repos`` (the ACL-granted scopes for
+    this guild+user), and only when the task clearly targets that specific
+    repository; otherwise it is "" (a repo-less run: artifact/build, generic
+    investigation, or research). A value the model returns that is not in
+    ``allowed_repos`` is coerced to "" -- the model never gets to name a repo
+    the caller is not already granted.
+
+    Fails closed to ``needs_agent=False, repo=""`` so a classify failure
+    degrades to a fast in-monolith reply, never a surprise heavy or
+    wrongly-targeted guest run. ``_caller`` is an injectable llm-caller for
+    tests.
     """
+    repos = [r for r in (allowed_repos or []) if r]
     try:
         caller = _caller
         if caller is None:
@@ -107,27 +132,39 @@ async def needs_agent(message, *, _caller=None) -> bool:
 
             caller = build_llm_caller()
         text = (message.content or "")[:500]
+        repo_line = (
+            (
+                "If it needs the agent AND clearly targets one of these "
+                'repositories, set "repo" to its exact name; otherwise set '
+                '"repo" to an empty string. Repositories: ' + ", ".join(repos) + ". "
+            )
+            if repos
+            else 'Always set "repo" to an empty string. '
+        )
         prompt = (
             "You decide whether a chat message needs the heavyweight coding "
-            'agent or can be answered directly. Answer "agent" ONLY if it '
-            "needs to read, analyze, or change THIS repository/codebase, "
+            "agent or can be answered directly. Answer needs_agent=true ONLY "
+            "if it needs to read, analyze, or change a repository/codebase, "
             "build or generate an artifact/page, or do thorough multi-source "
-            'research. Answer "chat" for conversation, general knowledge, '
-            "or a simple factual question (a basic web lookup is fine in "
-            "chat). Summarizing this conversation, catching up on channel "
-            "history, or extracting decisions or action items from it is "
-            'also "chat", not "agent": the chat agent already has tools '
-            "for that. Reply with ONLY a JSON object: "
-            '{"needs_agent": true|false}. Message: ' + text
+            "research. Answer needs_agent=false for conversation, general "
+            "knowledge, or a simple factual question (a basic web lookup is "
+            "fine in chat). Summarizing this conversation, catching up on "
+            "channel history, or extracting decisions or action items from it "
+            "is also needs_agent=false: the chat agent already has tools for "
+            "that. " + repo_line + "Reply with ONLY a JSON object: "
+            '{"needs_agent": true|false, "repo": "<repo name or empty>"}. '
+            "Message: " + text
         )
         raw = await caller(prompt)
         data = json.loads(_extract_json(raw))
-        return bool(data.get("needs_agent", False))
+        needs = bool(data.get("needs_agent", False))
+        repo = data.get("repo", "") or ""
+        if not isinstance(repo, str) or repo not in repos:
+            repo = ""
+        return EngagementDecision(needs_agent=needs, repo=repo)
     except Exception:
-        logger.exception(
-            "attention: needs_agent classify failed; failing closed (chat)"
-        )
-        return False
+        logger.exception("attention: classify_engagement failed; failing closed (chat)")
+        return EngagementDecision(needs_agent=False, repo="")
 
 
 def _extract_json(raw: str) -> str:

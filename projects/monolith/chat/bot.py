@@ -822,13 +822,10 @@ class ChatBot(discord.Client):
             if await self._maybe_handle_goosecracker_reply(message):
                 return
 
-        # ADR 035 attention gate (Phase 3 rollout: contained to opted-in
-        # channels). Agent-triggering fires ONLY in ambient channels; mentions
-        # and replies in non-ambient channels keep today's inline chat reply via
-        # _process_message. Phase 4 splits an ambient engage by depth: pure
-        # conversation stays in-monolith (see needs_agent below), so
-        # server-wide "mentions always engage" no longer needs a heavy guest
-        # run to be safe to extend.
+        # ADR 035 attention gate. Ambient channels run the gate; explicit
+        # mentions/replies bypass it (below). Both feed the one depth+target
+        # dispatch, so agent-triggering is no longer ambient-only: a mention in
+        # any channel can escalate, gated by the same agent ACL.
         guild_id = message.guild.id if message.guild else None
         try:
             ambient = await asyncio.to_thread(acl.ambient_channels, guild_id)
@@ -852,7 +849,16 @@ class ChatBot(discord.Client):
                 "attention: ambient lookup failed; treating as non-ambient"
             )
             is_ambient = False
-        if is_ambient:
+        # One engage decision for every entry point. An explicit @mention or
+        # reply-to-bot always engages and skips the gate (it IS the intent
+        # signal); an ambient channel runs the attention gate. Both then enter
+        # the identical depth+target dispatch below, so a mention can escalate
+        # to the agent exactly like an ambient engage can. attention_decision
+        # rows are logged for ambient only, so the improve-ambient signal is
+        # not diluted by explicit mentions.
+        explicit = should_respond(message, self.user)
+        engage = explicit
+        if not explicit and is_ambient:
             directive = await asyncio.to_thread(directives.get_active, channel_id)
             recently_tagged = await asyncio.to_thread(
                 self._recently_tagged, channel_id, msg_id
@@ -871,16 +877,32 @@ class ChatBot(discord.Client):
                 result.confidence,
                 directive_version,
             )
-            if result.engage:
-                # Depth split (in-monolith): pure conversation and basic web
-                # lookups are answered by the in-process chat agent (low latency,
-                # SearXNG built in); only repo/build/deep-research work escalates
-                # to the goose guest. See ADR 035 (amended: chat is in-monolith).
-                if await attention.needs_agent(message):
-                    await self._engage_agent(message)
-                else:
-                    await self._process_message(message, force_respond=True)
-                return
+            engage = result.engage
+
+        if engage:
+            # Depth + target split (in-monolith): pure conversation and basic
+            # web lookups are answered by the in-process chat agent (low
+            # latency, SearXNG built in); only repo/build/deep-research work
+            # escalates to the goose guest. The same classify infers WHICH
+            # repo to hydrate, constrained to this guild+user's ACL-granted
+            # scopes (repo-less otherwise). See ADR 035 (amended: chat is
+            # in-monolith).
+            try:
+                scopes = await asyncio.to_thread(
+                    acl.allowed_scopes, guild_id, message.author.id, "agent"
+                )
+            except Exception:
+                # A grants read blip must not break the reply: degrade to
+                # repo-less (empty scope set), the classifier still routes chat
+                # vs agent.
+                logger.exception("agent: allowed_scopes lookup failed; repo-less")
+                scopes = set()
+            decision = await attention.classify_engagement(message, sorted(scopes))
+            if decision.needs_agent:
+                await self._engage_agent(message, repo=decision.repo)
+            else:
+                await self._process_message(message, force_respond=True)
+            return
 
         await self._process_message(message)
 
@@ -1561,18 +1583,22 @@ class ChatBot(discord.Client):
         await asyncio.to_thread(self._complete_lock, msg_id)
         return True
 
-    async def _engage_agent(self, message: discord.Message) -> None:
-        """A mention/reply/ambient engage: run the /agent flow (repo-less) off
-        this message, applying the same agent ACL check as ``/agent``. On a
-        missing grant, an EXPLICIT trigger (mention/reply) gets a short
-        refusal; an ambient engage stays silent (no spam in a channel nobody
-        asked the bot into). Marks the message lock completed either way.
+    async def _engage_agent(self, message: discord.Message, repo: str = "") -> None:
+        """A mention/reply/ambient engage: run the /agent flow off this message,
+        applying the same agent ACL check as ``/agent``. ``repo`` is the target
+        repo inferred by classify_engagement (already confined to this
+        guild+user's granted scopes); "" is a repo-less run. The grant is
+        re-checked here on the SELECTED repo as defense in depth, so an ambient
+        run can only ever hydrate a repo the caller is genuinely granted. On a
+        missing grant, an EXPLICIT trigger (mention/reply) gets a short refusal;
+        an ambient engage stays silent (no spam in a channel nobody asked the
+        bot into). Marks the message lock completed either way.
         """
         guild_id = message.guild.id if message.guild else None
         user = message.author
         granted = await asyncio.to_thread(
             acl.feature_enabled, guild_id, "agent"
-        ) and await asyncio.to_thread(acl.is_granted, guild_id, user.id, "agent", "")
+        ) and await asyncio.to_thread(acl.is_granted, guild_id, user.id, "agent", repo)
         explicit = should_respond(message, self.user)
         if not granted:
             if explicit:
@@ -1630,7 +1656,7 @@ class ChatBot(discord.Client):
             logger.exception("agent: failed to react queued on %s", message.id)
 
         outcome = await self.start_agent_flow(
-            channel, user, message.content, "", trigger_message=message
+            channel, user, message.content, repo, trigger_message=message
         )
         if outcome.chat_reply is not None:
             # ADR 036: routed to chat, so reply to the triggering message rather
