@@ -39,7 +39,9 @@ from chat import directives
 from chat import goosecracker
 from chat import goosecracker_progress
 from chat import orchestrator
+from chat import reply_repair_log
 from chat import summarizer
+from chat.reply_sanitize import repair_leaked_reply
 from chat.models import ReactionEvent
 from app.db import get_engine
 
@@ -59,6 +61,11 @@ STREAM_EDIT_INTERVAL = 1.0
 # against Discord's own base-tier upload limit, not the primary control.
 RUN_PYTHON_MAX_ATTACHMENTS = 8
 RUN_PYTHON_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+# Bounded model-repair passes when a chat reply leaks tool-call scaffolding
+# (chat.reply_sanitize). 0 disables repair (scrub only).
+AGENT_REPLY_REPAIR_MAX_TURNS = int(os.environ.get("AGENT_REPLY_REPAIR_MAX_TURNS", "2"))
+# Shown when the shield cannot recover any clean text but a chart was produced.
+_CHART_ONLY_CAPTION = "Here's the chart 👇"
 
 
 def _build_run_python_attachments(generated_files: list) -> "list[discord.File]":
@@ -86,6 +93,37 @@ def _build_run_python_attachments(generated_files: list) -> "list[discord.File]"
             ", ".join(dropped),
         )
     return files
+
+
+async def _deliver_chat_reply(send, text: "str | None", generated_files: list):
+    """Post a chat-route reply and any generated files as ONE message.
+
+    Discord's send/reply take ``content`` and ``files`` together, so a generated
+    chart no longer arrives as a separate second message after the text. When
+    the shield (chat.reply_sanitize) recovered no clean text but a chart exists,
+    caption it; when there is neither text nor a file, skip. ``send`` is the
+    site's send callable (``interaction.followup.send`` or ``message.reply``).
+    Returns the sent message, or None. Best-effort: on failure, falls back to a
+    text-only send so the reply is not lost entirely.
+    """
+    files = _build_run_python_attachments(generated_files) if generated_files else []
+    body = (text or "").strip()
+    if not body and files:
+        body = _CHART_ONLY_CAPTION
+    if not body and not files:
+        return None
+    try:
+        if files:
+            return await send(content=body or None, files=files)
+        return await send(body)
+    except Exception:
+        logger.exception("run_python: failed to deliver chat reply with attachments")
+        if body:
+            try:
+                return await send(body)
+            except Exception:
+                logger.exception("run_python: text-only fallback also failed")
+        return None
 
 
 # Fact-check (the "Get your facts STR8!" button). The result streams into a
@@ -1022,17 +1060,13 @@ class ChatBot(discord.Client):
         outcome = await self.start_agent_flow(channel, interaction.user, prompt, repo)
         if outcome.chat_reply is not None:
             # ADR 036: the orchestrator routed this to chat, so reply inline
-            # instead of opening a session thread.
-            await interaction.followup.send(outcome.chat_reply)
-            if outcome.generated_files:
-                try:
-                    files = _build_run_python_attachments(outcome.generated_files)
-                    if files:
-                        await interaction.followup.send(files=files)
-                except Exception:
-                    logger.exception(
-                        "run_python: failed to flush chat-verdict attachments"
-                    )
+            # instead of opening a session thread. Text + any chart go in ONE
+            # message (see _deliver_chat_reply).
+            await _deliver_chat_reply(
+                interaction.followup.send,
+                outcome.chat_reply,
+                outcome.generated_files,
+            )
             # No motivating message on the slash path, so pass "".
             await self._flush_directive_proposals(
                 outcome.pending_proposal,
@@ -1309,11 +1343,30 @@ class ChatBot(discord.Client):
                     orchestrator_guidance=guidance,
                 )
                 result = await self.agent.run(prompt, deps=deps)
-                return (
-                    result.output,
-                    list(deps.generated_files),
-                    list(deps.pending_proposal),
+                files = list(deps.generated_files)
+                proposals = list(deps.pending_proposal)
+            # Shield the reply from leaked tool-call scaffolding (a small model
+            # emitting a run_python call as plain text) and from stray markdown
+            # image tags. Always scrub; when a leak is detected, run the bounded
+            # model-repair loop and log the occurrence for later eval. Outside
+            # the session block: the repair uses its own inference seam, not the
+            # store-backed tools. Best-effort: a shield failure falls back to the
+            # raw output so a reply still ships.
+            try:
+                shielded = await repair_leaked_reply(
+                    result.output or "",
+                    llm_call=summarizer.build_llm_caller(),
+                    max_turns=AGENT_REPLY_REPAIR_MAX_TURNS,
                 )
+                if shielded.leaked:
+                    await asyncio.to_thread(
+                        reply_repair_log.log_repair, channel_id, user_id, shielded
+                    )
+                reply_text = shielded.final
+            except Exception:
+                logger.exception("orchestrator: reply shield failed")
+                reply_text = result.output
+            return reply_text, files, proposals
         except Exception:
             logger.exception("orchestrator: chat reply generation failed")
             return None, [], []
@@ -1634,18 +1687,12 @@ class ChatBot(discord.Client):
         )
         if outcome.chat_reply is not None:
             # ADR 036: routed to chat, so reply to the triggering message rather
-            # than opening a session thread.
+            # than opening a session thread. Text + any chart go in ONE message
+            # (see _deliver_chat_reply).
             try:
-                sent = await message.reply(outcome.chat_reply)
-                if outcome.generated_files:
-                    try:
-                        files = _build_run_python_attachments(outcome.generated_files)
-                        if files:
-                            await message.reply(files=files)
-                    except Exception:
-                        logger.exception(
-                            "run_python: failed to flush chat-verdict attachments"
-                        )
+                sent = await _deliver_chat_reply(
+                    message.reply, outcome.chat_reply, outcome.generated_files
+                )
                 await self._flush_directive_proposals(
                     outcome.pending_proposal,
                     str(channel.id),
@@ -1656,14 +1703,16 @@ class ChatBot(discord.Client):
                 # Link this in-channel reply to the ambient engage decision so a
                 # reaction on it joins to the engage exactly (ADR 035 /
                 # improve-ambient). The thread-opening path has no single
-                # in-channel reply, so it stays null. Best-effort.
+                # in-channel reply, so it stays null; likewise when the shield
+                # delivered nothing (sent is None). Best-effort.
                 try:
-                    await asyncio.to_thread(
-                        attention_log.set_reply_message,
-                        str(channel.id),
-                        str(message.id),
-                        str(sent.id),
-                    )
+                    if sent is not None:
+                        await asyncio.to_thread(
+                            attention_log.set_reply_message,
+                            str(channel.id),
+                            str(message.id),
+                            str(sent.id),
+                        )
                 except Exception:
                     logger.exception(
                         "attention: failed to record agent reply id for %s",
