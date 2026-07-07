@@ -21,8 +21,19 @@ import (
 	"net/http"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
+
+// tracer opens the root server span for each invocation. The global
+// TracerProvider and W3C propagator are installed in the telemetry package at
+// daemon startup.
+var tracer = otel.Tracer("fc-invoke/ingress")
 
 // defaultMaxBytes caps the request body forwarded to the guest. Workload
 // bodies are not expected to be large; capping keeps a single request from
@@ -96,12 +107,27 @@ func (h *Handler) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract the caller's W3C traceparent and open the root server span that
+	// wraps the whole invocation, so the downstream provision/boot spans nest
+	// under it and connect to the caller's trace. The new ctx carries the span
+	// down the call chain into the executor.
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	ctx, span := tracer.Start(ctx, "fc_invoke",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("fc.workload", workload),
+			attribute.String("fc.session", session),
+		))
+	defer span.End()
+
 	// Cap the body before the invoker reads it so an oversized request is
 	// rejected without consuming unbounded memory.
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxBytes)
 
-	resp, err := inv.Invoke(r.Context(), session, r.Body)
+	resp, err := inv.Invoke(ctx, session, r.Body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
