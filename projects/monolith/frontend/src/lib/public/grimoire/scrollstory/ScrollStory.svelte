@@ -39,9 +39,6 @@
 
   const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  // The captured answer carries "\n\n" paragraph breaks; HTML collapses raw
-  // newlines to a space, so turn them into <br> for the chat bubble.
-  const nl2br = (s) => s.replace(/\n/g, "<br>");
   const typeVar = (type) => `var(--grim-type-${type})`;
 
   // ── Pure, SSR-safe derived data (module eval; runs on the server too) ──
@@ -84,15 +81,34 @@
     bodyHtml: segHtml(segmentize(c.content.slice(0, 240), PHRASES)),
   }));
 
-  // Chat answer, segmented once. The animated scene types it out by slicing
-  // these segments (renderTypedAnswer); the static scene shows it whole.
-  const answerSegs = segmentize(transcript.answer, PHRASES);
-  const answerHtml = answerSegs
-    .map((s) => {
-      const frag = nl2br(esc(s.t));
-      return s.c ? `<mark data-c="${s.c}">${frag}</mark>` : frag;
-    })
-    .join("");
+  // Flyers: one per bounding box that belongs to a chunk on this page. During
+  // the chunking phase each flyer lifts OFF the page at its box's position and
+  // lands on its chunk card, so the blocks visibly become the cards instead of
+  // the two animations merely happening near each other.
+  const flyBoxes = story.bboxes
+    .map((b) => ({ ...b, card: cards.findIndex((c) => c.id === b.chunkId) }))
+    .filter((f) => f.card >= 0);
+
+  // Chat answer as PARAGRAPHS of SENTENCES, each sentence pre-rendered with
+  // its entity highlights. The chat scene fades sentences in with a stagger:
+  // character-typing was tried and felt wrong against scroll scrubbing.
+  // (unlike the chunk cards, whose marks are tinted per-frame, the answer's
+  // entity highlights are always-on: color them inline at build time)
+  const answerSents = [];
+  transcript.answer.split("\n\n").forEach((para, pi) => {
+    para.split(/(?<=[.!?])\s+/).forEach((sentence) => {
+      answerSents.push({
+        pi,
+        html: segmentize(sentence, PHRASES)
+          .map((s) =>
+            s.c
+              ? `<mark style="color:${s.c}">${esc(s.t)}</mark>`
+              : esc(s.t),
+          )
+          .join(""),
+      });
+    });
+  });
 
   // Grounded-in chips: resolve each cited name to a real page node so its
   // graph node can pulse when the citation appears.
@@ -157,9 +173,12 @@
   let scrollerEl, stageEl, canvasEl, pageWrapEl;
   let heroCopyEl, captionEl, capNumEl, capTxtEl;
   let chunksWrapEl, chipsWrapEl, edgesSvgEl, popoutEl;
-  let scalePanelEl, typeChipsEl, chatHeadEl, chatEl, bubbleAEl, groundedEl, ctasEl;
+  let scalePanelEl, typeChipsEl, chatHeadEl, chatEl, groundedEl, ctasEl;
   let boxEls = [];
   let cardEls = [];
+  let flyerEls = [];
+  let sentEls = [];
+  const cardRest = []; // each card's resting stage rect (flight destinations)
   let markEls = [];
   let chipEls = [];
   let lineEls = [];
@@ -233,20 +252,6 @@
       .sort((a, b) => a.r - b.r);
   }
 
-  function renderTypedAnswer(chars) {
-    let html = "";
-    let used = 0;
-    for (const s of answerSegs) {
-      if (used >= chars) break;
-      const frag = nl2br(esc(s.t.slice(0, chars - used)));
-      html += s.c
-        ? `<span style="color:${s.c};font-weight:600">${frag}</span>`
-        : frag;
-      used += s.t.length;
-    }
-    return html;
-  }
-
   // ── pop-out open/close ──
   function togglePopout(i, anchor = null) {
     if (popIdx === i) {
@@ -301,6 +306,20 @@
     const span = scrollerEl.offsetHeight - H;
     snapEls.forEach((s, i) => {
       if (s) s.style.top = PHASES[i].rest * span + "px";
+    });
+    // Flight destinations: each card's resting rect. The container's own
+    // translateY(-50%) shows up in its bounding rect; the cards' animated
+    // translateX does NOT affect offsetLeft/offsetTop, so this is the rect a
+    // card occupies once settled.
+    const contRect = chunksWrapEl.getBoundingClientRect();
+    cardEls.forEach((el, i) => {
+      if (!el) return;
+      cardRest[i] = {
+        x: contRect.left + el.offsetLeft,
+        y: contRect.top + el.offsetTop,
+        w: el.offsetWidth,
+        h: el.offsetHeight,
+      };
     });
   }
 
@@ -367,19 +386,49 @@
         el.style.opacity = dp;
         el.style.transform = `scaleY(${lerp(0.25, 1, dp)})`;
       } else {
-        el.style.opacity = Math.max(0, 1 - flyP * (b.chunkId ? 1.4 : 3));
-        el.style.transform = b.chunkId ? `translateX(${flyP * 60}px)` : "none";
+        // the flyers carry the motion; the in-page boxes just let go
+        el.style.opacity = Math.max(0, 1 - flyP * (b.chunkId ? 4 : 3));
+        el.style.transform = "none";
       }
     });
 
-    // chunk cards in, then out once chips have extracted
-    const pChunk = sub(t, 0.28, 0.38);
+    // flyers: each chunk's boxes lift off the page and land as its card.
+    // rot is 0 through this window, so the page's stage rect is just its base
+    // rect scaled about its center and shifted by the slide translate.
+    const rawFly = sub(t, 0.27, 0.4);
+    const pcx = W * 0.56 + px;
+    const pcy = H / 2;
+    const pw = pageW * sc;
+    const ph = pageH * sc;
+    flyBoxes.forEach((f, i) => {
+      const el = flyerEls[i];
+      if (!el) return;
+      const d = cardRest[f.card];
+      if (rawFly <= 0 || rawFly >= 1 || !d) {
+        el.style.opacity = 0;
+        return;
+      }
+      const fp = inOutCubic(sub(rawFly, f.card * 0.06, f.card * 0.06 + 0.55));
+      // visible only mid-flight: hands off from the in-page box, hands over
+      // to the card on landing
+      el.style.opacity =
+        Math.min(fp * 6, 1) * (1 - Math.max(0, (fp - 0.82) / 0.18));
+      el.style.left = lerp(pcx - pw / 2 + f.x * pw, d.x, fp) + "px";
+      el.style.top = lerp(pcy - ph / 2 + f.y * ph, d.y, fp) + "px";
+      el.style.width = lerp(f.w * pw, d.w, fp) + "px";
+      el.style.height = lerp(f.h * ph, d.h, fp) + "px";
+      el.style.borderRadius = lerp(2, 8, fp) + "px";
+    });
+
+    // chunk cards materialize where their flyers land, then out once chips
+    // have extracted
+    const pChunk = sub(t, 0.29, 0.4);
     const cardsOut = inOutCubic(sub(t, 0.5, 0.58));
     cardEls.forEach((el, i) => {
       if (!el) return;
-      const dp = outCubic(sub(pChunk, i * 0.08, i * 0.08 + 0.45));
+      const dp = outCubic(sub(pChunk, i * 0.06, i * 0.06 + 0.5));
       el.style.opacity = dp * (1 - cardsOut);
-      el.style.transform = `translateX(${lerp(80, 0, dp) + cardsOut * 60}px)`;
+      el.style.transform = `translateX(${lerp(14, 0, dp) + cardsOut * 60}px)`;
     });
     chunksWrapEl.style.visibility = cardsOut >= 1 ? "hidden" : "visible";
 
@@ -467,19 +516,18 @@
     });
     typeChipsEl.style.opacity = ease(sub(t, 0.72, 0.76));
 
-    // chat: headline fades in up top, panel rises to below it, answer types out
+    // chat: headline fades in up top, panel rises to below it, and the answer
+    // reveals sentence by sentence (staggered fades, fully scrub-reversible)
     const pChat = sub(t, 0.82, 1);
     const rise = outCubic(sub(pChat, 0, 0.14));
     chatHeadEl.style.opacity = rise * ease(sub(pChat, 0.04, 0.16));
     chatEl.style.transform = `translate(-50%, calc(-44% + ${lerp(120, 0, rise)}vh))`;
-    const typed = Math.floor(
-      transcript.answer.length * clamp((pChat - 0.18) / 0.5, 0, 1),
-    );
-    bubbleAEl.innerHTML =
-      renderTypedAnswer(typed) +
-      (typed > 0 && typed < transcript.answer.length
-        ? '<span class="caret"></span>'
-        : "");
+    const pSent = sub(pChat, 0.16, 0.66);
+    const step = answerSents.length > 1 ? 0.72 / answerSents.length : 1;
+    sentEls.forEach((el, j) => {
+      if (!el) return;
+      el.style.opacity = outCubic(sub(pSent, j * step, j * step + 0.28));
+    });
     const pG = ease(sub(pChat, 0.7, 0.8));
     groundedEl.style.opacity = pG;
     groundedNodes.forEach((n) => {
@@ -637,6 +685,13 @@
         <div class="attribution">{attribution}</div>
       </div>
 
+      <!-- stage-level flight layer: blocks lifting off the page into cards -->
+      <div class="flyers" aria-hidden="true">
+        {#each flyBoxes as f, i (f.id)}
+          <div class="flyer k-{f.kind}" bind:this={flyerEls[i]}></div>
+        {/each}
+      </div>
+
       <div class="chunks" bind:this={chunksWrapEl}>
         {#each cards as c, i (c.id)}
           <div class="chunk-card" bind:this={cardEls[i]}>
@@ -737,7 +792,15 @@
           <div class="mock-note">mock transcript</div>
         {/if}
         <div class="bubble-q">{transcript.question}</div>
-        <div class="bubble-a" bind:this={bubbleAEl}></div>
+        <div class="bubble-a">
+          {#each answerSents as s, j (j)}
+            {#if j > 0 && s.pi !== answerSents[j - 1].pi}
+              <span class="pbreak"></span>
+            {/if}
+            <span class="sent" bind:this={sentEls[j]}>{@html s.html}</span>
+            {" "}
+          {/each}
+        </div>
         <div class="grounded" bind:this={groundedEl}>
           <span class="lbl">GROUNDED IN</span>
           {#each groundedNodes as n (n.id)}
@@ -871,7 +934,15 @@
           <div class="mock-note">mock transcript</div>
         {/if}
         <div class="bubble-q">{transcript.question}</div>
-        <div class="bubble-a">{@html answerHtml}</div>
+        <div class="bubble-a">
+          {#each answerSents as s, j (j)}
+            {#if j > 0 && s.pi !== answerSents[j - 1].pi}
+              <span class="pbreak"></span>
+            {/if}
+            <span class="sent">{@html s.html}</span>
+            {" "}
+          {/each}
+        </div>
         <div class="grounded static-grounded">
           <span class="lbl">GROUNDED IN</span>
           {#each groundedNodes as n (n.id)}
@@ -962,8 +1033,9 @@
   }
   .cue {
     margin-top: 26px;
-    color: var(--grim-text-faint);
-    font-size: 11px;
+    color: var(--grim-ink-soft);
+    font-size: 12.5px;
+    font-weight: 600;
     letter-spacing: 0.18em;
     font-family: var(--font-mono);
   }
@@ -1034,30 +1106,50 @@
     will-change: transform, opacity;
   }
   /* kind classes are k- prefixed: marker emits a "caption" kind that would
-     otherwise collide with the .caption rail component */
-  .bbox.k-header {
+     otherwise collide with the .caption rail component. The rules cover both
+     the in-page boxes and the stage-level flyers. */
+  .bbox.k-header,
+  .flyer.k-header {
     border-color: var(--grim-type-creature);
     background: color-mix(in srgb, var(--grim-type-creature) 14%, transparent);
   }
   .bbox.k-text,
-  .bbox.k-caption {
+  .bbox.k-caption,
+  .flyer.k-text,
+  .flyer.k-caption {
     border-color: var(--grim-type-spell);
     background: color-mix(in srgb, var(--grim-type-spell) 10%, transparent);
   }
-  .bbox.k-aside {
+  .bbox.k-aside,
+  .flyer.k-aside {
     border-color: var(--grim-type-npc);
     background: color-mix(in srgb, var(--grim-type-npc) 14%, transparent);
   }
-  .bbox.k-art {
+  .bbox.k-art,
+  .flyer.k-art {
     border-color: var(--grim-type-faction);
     background: color-mix(in srgb, var(--grim-type-faction) 10%, transparent);
+  }
+
+  /* flight layer: blocks lifting off the page into their chunk cards */
+  .flyers {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+  }
+  .flyer {
+    position: absolute;
+    border: 1.5px solid;
+    opacity: 0;
+    will-change: left, top, width, height, opacity;
   }
   .attribution {
     position: absolute;
     left: 2px;
-    bottom: -24px;
-    font-size: 10px;
-    color: var(--grim-text-faint);
+    bottom: -26px;
+    font-size: 11px;
+    color: var(--grim-ink-soft);
     white-space: nowrap;
     font-family: var(--font-mono);
   }
@@ -1378,18 +1470,19 @@
     min-height: 8em;
     color: var(--grim-ink);
   }
-  .bubble-a :global(.caret) {
-    display: inline-block;
-    width: 7px;
-    height: 1em;
-    background: var(--grim-accent);
-    vertical-align: text-bottom;
-    animation: ss-blink 0.9s steps(1) infinite;
+  /* sentence-level reveal: the scrubbed scene drives .sent opacity per frame
+     (plain inline spans so text flow and wrapping stay natural); the static
+     scene leaves them at full opacity. .pbreak renders the paragraph gap. */
+  .scroller .sent {
+    opacity: 0;
   }
-  @keyframes ss-blink {
-    50% {
-      opacity: 0;
-    }
+  .bubble-a .pbreak {
+    display: block;
+    height: 0.8em;
+  }
+  .bubble-a :global(mark) {
+    background: transparent;
+    font-weight: 600;
   }
   .grounded {
     margin-top: 10px;
