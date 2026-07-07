@@ -19,7 +19,18 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 )
+
+// tracer spans the TokenReview round-trip. Auth is OUTER middleware that runs
+// before the ingress handler opens the root fc_invoke span, so this span cannot
+// nest under fc_invoke. Instead it is started from the context carrying the
+// caller's extracted W3C parent, so it lands in the SAME trace as fc_invoke (a
+// sibling under the caller's remote parent) rather than in a disconnected one.
+var tracer = otel.Tracer("fc-invoke/auth")
 
 // Reviewer verifies a bearer token and returns the authenticated caller's
 // username (for a ServiceAccount token this is
@@ -83,7 +94,16 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username, err := m.reviewer.Review(r.Context(), token)
+	// Start the TokenReview span from the caller's extracted trace context so it
+	// joins the same trace as the downstream fc_invoke span (see tracer doc).
+	reviewCtx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	reviewCtx, span := tracer.Start(reviewCtx, "auth_tokenreview")
+	username, err := m.reviewer.Review(reviewCtx, token)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
 	if err != nil {
 		// Do not echo the failure detail to the caller (it can carry token
 		// state); log it for operators and return a bare 401.
