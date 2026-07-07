@@ -4,6 +4,7 @@
 # gazelle:exclude chat_public
 # gazelle:exclude cluster
 # gazelle:exclude app
+# gazelle:exclude demos
 # gazelle:exclude e2e
 # gazelle:exclude knowledge
 # gazelle:exclude notes
@@ -66,6 +67,7 @@ _BACKEND_SRCS = glob(
         "chat/**/*.py",
         "chat_public/**/*.py",
         "cluster/**/*.py",
+        "demos/**/*.py",
         "goosecracker/**/*.py",
         "knowledge/**/*.py",
         "home/**/*.py",
@@ -4468,6 +4470,17 @@ py_test(
 py_test(
     name = "home_observability_traces_test",
     srcs = ["home/observability/traces_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "demos_firecracker_api_test",
+    srcs = ["demos/firecracker_api_test.py"],
     imports = ["."],
     deps = [
         ":monolith_backend",
