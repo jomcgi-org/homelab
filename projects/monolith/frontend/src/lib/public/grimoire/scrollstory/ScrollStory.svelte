@@ -1608,7 +1608,7 @@
   }
   .this-page {
     margin-top: 18px;
-    font-size: 12.5px;
+    font-size: 14px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--grim-ink);
@@ -1622,7 +1622,7 @@
   .this-page .k {
     color: var(--grim-text-dim);
     font-weight: 700;
-    font-size: 10.5px;
+    font-size: 12px;
   }
   .this-page .arrow {
     color: var(--grim-accent);
@@ -1645,11 +1645,11 @@
     color: var(--grim-ink);
   }
   .counter .l {
-    font-size: 10px;
+    font-size: 12.5px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
-    color: var(--grim-text-dim);
-    margin-top: 4px;
+    color: var(--grim-ink);
+    margin-top: 6px;
     font-family: var(--font-mono);
   }
   .type-chips {
@@ -1667,21 +1667,21 @@
     background: var(--grim-surface);
     border: 1px solid var(--grim-line);
     border-radius: 999px;
-    padding: 5px 13px 5px 8px;
-    font-size: 12.5px;
+    padding: 6px 14px 6px 9px;
+    font-size: 14px;
     font-weight: 600;
     box-shadow: 0 2px 8px rgba(10, 14, 22, 0.12);
     color: var(--grim-ink);
     font-family: var(--font-mono);
   }
   .tchip .dot {
-    width: 9px;
-    height: 9px;
+    width: 10px;
+    height: 10px;
   }
   .tchip .n {
-    color: var(--grim-text-dim);
+    color: var(--grim-ink);
     font-variant-numeric: tabular-nums;
-    font-weight: 400;
+    font-weight: 500;
   }
 
   .chat-sub {
@@ -1750,9 +1750,9 @@
     opacity: 0;
   }
   .grounded .lbl {
-    font-size: 9px;
+    font-size: 11.5px;
     letter-spacing: 0.18em;
-    color: var(--grim-text-faint);
+    color: var(--grim-text-dim);
     font-weight: 700;
     font-family: var(--font-mono);
   }
@@ -1762,8 +1762,8 @@
     gap: 5px;
     border: 1px solid var(--grim-line);
     border-radius: 999px;
-    padding: 2px 9px 2px 5px;
-    font-size: 10px;
+    padding: 3px 11px 3px 7px;
+    font-size: 12px;
     font-weight: 600;
     background: var(--grim-surface-2);
     font-family: var(--font-mono);
@@ -1771,8 +1771,8 @@
     cursor: pointer;
   }
   .gchip .dot {
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
   }
   .ctas {
     display: flex;
@@ -1783,21 +1783,23 @@
   .cta {
     flex: 1;
     text-align: center;
-    padding: 10px 8px;
+    padding: 12px 10px;
     border-radius: 7px;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     text-decoration: none;
     font-family: var(--font-mono);
   }
+  /* No accent-filled buttons: light-on-blue mono caps read poorly at button
+     sizes (Joe, 2026-07 UX pass, round 2). The primary keeps top billing via
+     a stronger tint + solid accent border; ghosts stay lighter-bordered. */
   .cta.primary {
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
+    background: color-mix(in srgb, var(--grim-accent) 12%, var(--grim-surface));
+    color: var(--grim-accent);
+    border: 1.5px solid var(--grim-accent);
   }
-  /* an accent-tinted border, not the hairline card token: buttons need a
-     border that reads as an affordance, and --grim-line all but vanished */
   .cta.ghost {
     border: 1.5px solid color-mix(in srgb, var(--grim-accent) 45%, transparent);
     color: var(--grim-accent);
@@ -2048,7 +2050,7 @@
   }
   .scrollstory.mobile .this-page {
     gap: 7px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .scrollstory.mobile .counters {
     display: grid;
