@@ -13,6 +13,7 @@ from app.log import configure_logging
 import artifact
 import campsites
 import chat
+import demos
 import dr_jobs
 import grimoire
 import hikes
@@ -272,6 +273,7 @@ dr_jobs.register(app)
 campsites.register(app)
 worldcup.register(app)
 artifact.register(app)
+demos.register(app)
 app.mount("/mcp", _mcp_app)
 
 

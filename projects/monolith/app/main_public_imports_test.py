@@ -34,6 +34,10 @@ FORBIDDEN_MODULES = [
     "agent",
     "goosecracker",
     "scheduler",
+    # Firecracker demos: an authenticated-only router that wraps the private
+    # sandbox/semgrep/goosecracker handlers; it must never enter the public
+    # closure (it is not globbed into the public binary either).
+    "demos",
     # Trips read path (models + read_router) is public; the write/heavy path
     # must stay out of the public closure (pillow/boto3/defusedxml).
     "trips.ingest_router",

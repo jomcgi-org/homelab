@@ -1,0 +1,155 @@
+"""Tests for the firecracker demos router.
+
+The router wraps the existing firecracker-backed handlers (sandbox run_python,
+semgrep scan, goosecracker submit/poll) and the SigNoz trace reader, and shapes
+their output for the authenticated demos page. These tests mount ONLY the router
+on a bare FastAPI app and stub every underlying handler, so nothing here reaches
+fc-invoke or ClickHouse. They assert the documented payload shape, that a 32-hex
+trace_id is always present on the POST endpoints, and that the trace endpoint's
+``complete`` flag tracks whether spans came back.
+"""
+
+from __future__ import annotations
+
+import re
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import demos.firecracker_api as fc
+
+_HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _client() -> TestClient:
+    app = FastAPI()
+    app.include_router(fc.router)
+    return TestClient(app)
+
+
+def test_python_returns_run_shape_with_trace_id(monkeypatch):
+    async def fake_run(code, files=None):
+        assert code == "print(1)"
+        return {
+            "stdout": "1\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 42,
+            "files": [],
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(fc, "run_python_in_sandbox", fake_run)
+
+    resp = _client().post("/api/demos/firecracker/python", json={"code": "print(1)"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stdout"] == "1\n"
+    assert body["stderr"] == ""
+    assert body["exit_code"] == 0
+    assert body["duration_ms"] == 42
+    assert _HEX32.match(body["trace_id"])
+
+
+def test_semgrep_returns_findings_shape_with_trace_id(monkeypatch):
+    async def fake_scan(files):
+        assert files == [{"path": "a.py", "content": "x = 1"}]
+        return {
+            "findings": [{"path": "a.py", "line": 1, "rule_id": "r", "message": "m"}],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(fc, "scan_files", fake_scan)
+
+    resp = _client().post(
+        "/api/demos/firecracker/semgrep",
+        json={"files": [{"path": "a.py", "content": "x = 1"}]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["findings"][0]["rule_id"] == "r"
+    assert body["errors"] == []
+    assert isinstance(body["duration_ms"], (int, float))
+    assert _HEX32.match(body["trace_id"])
+
+
+def test_goose_submit_returns_thread_id_with_trace_id(monkeypatch):
+    def fake_submit(task, *, session, recipe, tier, **kwargs):
+        assert task == "do a thing"
+        return {"session": session, "thread_id": "t-abc123", "action": "create"}
+
+    monkeypatch.setattr(fc.goosecracker, "submit", fake_submit)
+
+    resp = _client().post(
+        "/api/demos/firecracker/goose",
+        json={"task": "do a thing", "recipe": "agent", "tier": ""},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["thread_id"] == "t-abc123"
+    assert body["session"]
+    assert _HEX32.match(body["trace_id"])
+
+
+def test_goose_poll_running(monkeypatch):
+    def fake_get_run(thread_id):
+        assert thread_id == "t-abc123"
+        return {"thread_id": thread_id, "state": "RUNNING", "result": None}
+
+    monkeypatch.setattr(fc.goosecracker, "get_run", fake_get_run)
+    monkeypatch.setattr(fc.goosecracker, "serialize", lambda row: dict(row))
+
+    resp = _client().get("/api/demos/firecracker/goose/t-abc123")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "RUNNING"
+    assert body["done"] is False
+
+
+def test_goose_poll_done_carries_result(monkeypatch):
+    def fake_get_run(thread_id):
+        return {"thread_id": thread_id, "state": "COMPLETED", "result": "final answer"}
+
+    monkeypatch.setattr(fc.goosecracker, "get_run", fake_get_run)
+    monkeypatch.setattr(fc.goosecracker, "serialize", lambda row: dict(row))
+
+    resp = _client().get("/api/demos/firecracker/goose/t-xyz")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "COMPLETED"
+    assert body["done"] is True
+    assert body["result"] == "final answer"
+
+
+def test_goose_poll_unknown_thread_returns_404(monkeypatch):
+    monkeypatch.setattr(fc.goosecracker, "get_run", lambda thread_id: None)
+
+    resp = _client().get("/api/demos/firecracker/goose/t-missing")
+    assert resp.status_code == 404
+
+
+def test_trace_complete_true_when_spans_present(monkeypatch):
+    async def fake_fetch(trace_id):
+        assert trace_id == "a" * 32
+        return [{"span_id": "s1", "name": "demo.python", "start_ms": 0.0}]
+
+    monkeypatch.setattr(fc, "fetch_trace_spans", fake_fetch)
+
+    resp = _client().get(f"/api/demos/firecracker/trace/{'a' * 32}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["complete"] is True
+    assert body["spans"][0]["span_id"] == "s1"
+
+
+def test_trace_incomplete_when_no_spans(monkeypatch):
+    async def fake_fetch(trace_id):
+        return []
+
+    monkeypatch.setattr(fc, "fetch_trace_spans", fake_fetch)
+
+    resp = _client().get(f"/api/demos/firecracker/trace/{'b' * 32}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["complete"] is False
+    assert body["spans"] == []
