@@ -47,6 +47,11 @@
   }
 
   let spans = $state([]);
+  // Goose's own internal spans (service `goose-coding`), correlated to this run
+  // by the runner stamping `caller.trace_id` on them. Goose does not honor an
+  // inbound TRACEPARENT, so these live in their own trace and cannot be truly
+  // nested under the main waterfall: they render as their own sub-timeline.
+  let correlated = $state([]);
   // "waiting" (no spans yet), "live" (spans present, still polling for
   // stability), "done" (stable or timed out), "error" (repeated failures
   // with zero spans ever seen).
@@ -71,11 +76,13 @@
 
   async function pollOnce(id) {
     let newSpans = null;
+    let newCorrelated = null;
     try {
       const res = await fetch(`/api/demos/firecracker/trace/${id}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       newSpans = Array.isArray(data.spans) ? data.spans : [];
+      newCorrelated = Array.isArray(data.correlated) ? data.correlated : [];
       fetchError = null;
       consecutiveErrors = 0;
     } catch (e) {
@@ -90,6 +97,10 @@
     }
 
     if (traceId !== id) return; // traceId changed mid-flight, effect already restarted
+
+    if (newCorrelated !== null) {
+      correlated = newCorrelated;
+    }
 
     if (newSpans !== null) {
       spans = newSpans;
@@ -118,6 +129,7 @@
   $effect(() => {
     stopPolling();
     spans = [];
+    correlated = [];
     status = "waiting";
     fetchError = null;
     lastCount = -1;
@@ -133,9 +145,11 @@
 
   // Span depth by walking the parent chain, for a light indent that reads
   // as a call tree without needing a real tree layout. A span whose parent
-  // isn't in the current span set is treated as a root (depth 0).
-  let depthById = $derived.by(() => {
-    const byId = new Map(spans.map((s) => [s.span_id, s]));
+  // isn't in the given span set is treated as a root (depth 0). Scoped to the
+  // passed set so the main waterfall and the correlated goose set each get
+  // their own depth map.
+  function depthMapFor(set) {
+    const byId = new Map(set.map((s) => [s.span_id, s]));
     const depth = new Map();
     function depthOf(id, guard = 0) {
       if (depth.has(id)) return depth.get(id);
@@ -150,15 +164,31 @@
       depth.set(id, d);
       return d;
     }
-    for (const s of spans) depthOf(s.span_id);
+    for (const s of set) depthOf(s.span_id);
     return depth;
-  });
+  }
 
+  function timelineEndFor(set) {
+    return Math.max(1, ...set.map((s) => (s.start_ms ?? 0) + (s.duration_ms ?? 0)));
+  }
+
+  // Bar geometry against a set's OWN timelineEnd, so the correlated goose set
+  // renders as its own self-contained sub-timeline (its earliest span at 0).
+  function barStyleFor(span, timelineEnd) {
+    const left = (Math.max(0, span.start_ms ?? 0) / timelineEnd) * 100;
+    const width = Math.max(0.6, ((span.duration_ms ?? 0) / timelineEnd) * 100);
+    return `left: ${left}%; width: ${width}%;`;
+  }
+
+  let depthById = $derived(depthMapFor(spans));
   let sortedSpans = $derived([...spans].sort((a, b) => a.start_ms - b.start_ms));
+  let timelineEnd = $derived(timelineEndFor(spans));
 
-  let timelineEnd = $derived(
-    Math.max(1, ...spans.map((s) => (s.start_ms ?? 0) + (s.duration_ms ?? 0))),
+  let correlatedDepthById = $derived(depthMapFor(correlated));
+  let sortedCorrelated = $derived(
+    [...correlated].sort((a, b) => a.start_ms - b.start_ms),
   );
+  let correlatedTimelineEnd = $derived(timelineEndFor(correlated));
 
   let axisTicks = $derived.by(() => {
     const end = timelineEnd;
@@ -167,12 +197,6 @@
       label: `${Math.round(f * end)}ms`,
     }));
   });
-
-  function barStyle(span) {
-    const left = (Math.max(0, span.start_ms ?? 0) / timelineEnd) * 100;
-    const width = Math.max(0.6, ((span.duration_ms ?? 0) / timelineEnd) * 100);
-    return `left: ${left}%; width: ${width}%;`;
-  }
 </script>
 
 <div class="waterfall">
@@ -227,7 +251,7 @@
             <div
               class="row-bar"
               class:row-bar--error={span.error}
-              style={`${barStyle(span)} background: ${span.error ? "var(--danger)" : colorFor(span.service)};`}
+              style={`${barStyleFor(span, timelineEnd)} background: ${span.error ? "var(--danger)" : colorFor(span.service)};`}
             >
               <span class="row-duration">{span.duration_ms}ms</span>
             </div>
@@ -242,6 +266,42 @@
         updating, showing {spans.length} span{spans.length === 1 ? "" : "s"} so far
       </div>
     {/if}
+  {/if}
+
+  {#if correlated.length > 0}
+    <div class="correlated">
+      <div class="correlated-header">
+        <h4 class="correlated-title">Agent internals (goose)</h4>
+        <span class="correlated-badge">correlated</span>
+      </div>
+      <p class="correlated-note">
+        The agent's own spans, correlated to this run by trace id. Goose runs in
+        its own trace (it does not honor an inbound parent context), so these are
+        shown on their own relative timeline rather than nested above.
+      </p>
+      <div class="rows">
+        {#each sortedCorrelated as span (span.span_id)}
+          <div
+            class="row"
+            style={`padding-left: ${(correlatedDepthById.get(span.span_id) ?? 0) * 0.9}rem;`}
+          >
+            <span class="row-label" title={`${span.name} · ${span.service}`}>
+              {span.name}
+              <span class="row-service">{span.service}</span>
+            </span>
+            <div class="row-track">
+              <div
+                class="row-bar"
+                class:row-bar--error={span.error}
+                style={`${barStyleFor(span, correlatedTimelineEnd)} background: ${span.error ? "var(--danger)" : "var(--svc-goose)"};`}
+              >
+                <span class="row-duration">{span.duration_ms}ms</span>
+              </div>
+            </div>
+          </div>
+        {/each}
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -404,6 +464,47 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     text-shadow: 0 0 2px rgba(0, 0, 0, 0.35);
+  }
+
+  .correlated {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-top: 1px dashed var(--line);
+    padding-top: 12px;
+  }
+
+  .correlated-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .correlated-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    margin: 0;
+  }
+
+  .correlated-badge {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--svc-goose);
+    border: 1px solid var(--svc-goose);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+
+  .correlated-note {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    line-height: 1.4;
+    margin: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {
