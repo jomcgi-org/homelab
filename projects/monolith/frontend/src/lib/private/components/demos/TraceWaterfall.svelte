@@ -13,15 +13,21 @@
   // landed", not "fully ingested": treating it as terminal was the bug that
   // made the page get stuck "loading" or show a partial waterfall. Instead
   // we render every poll's spans immediately (progressive rendering) and
-  // keep polling until the span COUNT has been stable across 3 consecutive
-  // polls after it first went above zero (a reasonable proxy for "no more
-  // spans are arriving"), or a hard 60s timeout elapses, whichever comes
-  // first.
+  // keep polling for a full 3-minute window so late spans keep streaming in
+  // (a long async agent run emits its fc-invoke spans over minutes). We poll
+  // every 1s while the span count is still changing, then back off to every
+  // 3s once it looks stable, rather than stopping, so new spans still appear
+  // without hammering the endpoint.
   let { traceId } = $props();
 
-  const POLL_MS = 1000;
-  const STABLE_POLLS_REQUIRED = 3;
-  const HARD_TIMEOUT_MS = 60_000;
+  // Poll fast while spans are still arriving, then back off to a slower
+  // cadence once the count looks stable, but KEEP polling for the full
+  // window: long async agent runs stream their fc-invoke spans in over
+  // minutes, so stopping early (the old behavior) hid them.
+  const POLL_MS_ACTIVE = 1000;
+  const POLL_MS_IDLE = 3000;
+  const STABLE_POLLS_BEFORE_IDLE = 3;
+  const HARD_TIMEOUT_MS = 180_000;
   const MAX_CONSECUTIVE_ERRORS_WHEN_EMPTY = 3;
 
   // Stable-ish palette keyed by service name via a small string hash, so
@@ -95,15 +101,15 @@
       }
     }
 
-    if (stableStreak >= STABLE_POLLS_REQUIRED) {
-      finish();
-      return;
-    }
     if (performance.now() - pollStart >= HARD_TIMEOUT_MS) {
       finish();
       return;
     }
-    pollHandle = setTimeout(() => pollOnce(id), POLL_MS);
+    // Keep polling for the whole window so late spans (long agent runs) stream
+    // in; once the count looks stable, slow the cadence rather than stopping.
+    const interval =
+      stableStreak >= STABLE_POLLS_BEFORE_IDLE ? POLL_MS_IDLE : POLL_MS_ACTIVE;
+    pollHandle = setTimeout(() => pollOnce(id), interval);
   }
 
   $effect(() => {
