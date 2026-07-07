@@ -19,14 +19,11 @@
   // grimoire gate) and inherits directly from the root layout. That also
   // means the .grimoire token scope (normally established by the grimoire
   // +layout.svelte) isn't ambient here, so this page establishes it itself:
-  // import theme.css and put the .grimoire class on its own root element
-  // (mirrors routes/private/app/grimoire/+page.svelte, the campaign picker,
-  // which is likewise a standalone page outside any .grimoire-scoped
-  // ancestor layout and does the same thing). var(--font-mono) is used
-  // instead of the design-system.css var(--mono): it resolves from the
-  // globally-loaded tokens.css (a system stack, no webfont), so it renders
-  // correctly even without the public-tier layout that this page has reset
-  // past.
+  // import theme.css and put the .grimoire class on its own root element.
+  // var(--font-mono) is used instead of the design-system.css var(--mono):
+  // it resolves from the globally-loaded tokens.css (a system stack, no
+  // webfont), so it renders correctly even without the public-tier layout
+  // that this page has reset past.
   import { goto } from "$app/navigation";
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";

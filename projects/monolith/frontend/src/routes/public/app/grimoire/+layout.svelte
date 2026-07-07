@@ -11,7 +11,6 @@
   // admission state.
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
-  import ThemeToggle from "$lib/grimoire/ThemeToggle.svelte";
   import "$lib/grimoire/theme.css";
   import {
     homeHref,
@@ -57,7 +56,7 @@
   <meta name="robots" content="noindex, nofollow" />
 </svelte:head>
 
-<div class="grimoire-app grimoire">
+<div class="grimoire-app grimoire" class:home={isHome}>
   <header class="topbar">
     <a class="wordmark" href={homeHref()}>Grimoire</a>
     <nav class="topbar-nav" aria-label="Grimoire sections">
@@ -81,12 +80,6 @@
       >
     </nav>
     <div class="topbar-spacer"></div>
-    {#if !isHome}
-      <!-- The landing's scroll story is a light-only island, so a theme toggle
-           there would appear to do nothing; the toggle stays on every other
-           route where the dark reskin fully applies. -->
-      <ThemeToggle />
-    {/if}
   </header>
 
   <main class="grimoire-shell">
@@ -122,8 +115,8 @@
     display: flex;
     flex-direction: column;
     /* Own the page background so every grimoire page is on the clean --grim
-       paper (not the site-wide design-system cream body) AND flips to dark
-       under .grimoire.dark, instead of a cream page showing behind dark cards. */
+       paper (not the site-wide design-system cream body showing behind the
+       cards). */
     background: var(--grim-paper);
   }
 
@@ -148,6 +141,16 @@
   .grimoire-app:global(.story-immersed) .topbar {
     opacity: 0;
     pointer-events: none;
+  }
+
+  /* On phones the landing is the scroll story itself, which is its own hero and
+     ends with call-to-action buttons, so the app chrome is pure clutter (and
+     the four nav links overflow the width). Drop the whole topbar on the home
+     route below the mobile breakpoint; every other route keeps it. */
+  @media (max-width: 700px) {
+    .grimoire-app.home .topbar {
+      display: none;
+    }
   }
 
   .wordmark {

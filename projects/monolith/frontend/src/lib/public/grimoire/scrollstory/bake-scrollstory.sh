@@ -15,7 +15,8 @@
 # Requires: kubectl (cluster read access), pdftoppm, cwebp, python3.
 # Reads Postgres via the monolith-pg pod and the marker layout output from
 # SeaweedFS; renders the page scan from the local PDF. Writes:
-#   data/page.webp   the page scan (max 1200px wide)
+#   data/page.webp     the page scan (max 1200px wide)
+#   data/page-sm.webp  the same scan at 800px, for the <img> srcset
 #   data/story.js    chunks, bboxes, entities, mentions, edges, corpus totals
 #
 # The chat transcript is deliberately NOT baked here: it is hand-curated in
@@ -83,6 +84,10 @@ echo "▶ rendering page scan from $PDF"
 pdftoppm -png -f "$((PAGE + 1))" -l "$((PAGE + 1))" -r 150 "$PDF" "$TMP/scan"
 SCAN="$(ls "$TMP"/scan-*.png)"
 cwebp -quiet -q 80 -resize 1200 0 "$SCAN" -o "$OUT/page.webp"
+# Smaller variant for the <img> srcset: the scan never displays wider than
+# ~600px on either form factor, so most devices fetch this instead of the 1200px
+# asset (a real payload + LCP win). ScrollStory.svelte imports it directly.
+cwebp -quiet -q 80 -resize 800 0 "$SCAN" -o "$OUT/page-sm.webp"
 
 echo "▶ writing data/story.js"
 python3 - "$TMP/export.json" "$TMP/marker.json" "$OUT/story.js" "$BOOK" "$PAGE" <<'PY'

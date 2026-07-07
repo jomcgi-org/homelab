@@ -51,12 +51,12 @@
     typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // Resolved theme colors, re-read from computed style whenever the .grimoire
-  // root's dark class flips (see the MutationObserver in onMount) or the node
-  // set changes (a new entity_type may need its own token read). Read off
-  // `canvasEl` itself: it lives inside .grimoire, so getComputedStyle resolves
-  // the same cascaded/scoped custom properties the CSS would use, light or
-  // dark, without hunting for the .grimoire ancestor at read time.
+  // Resolved theme colors, re-read from computed style when the class list on
+  // the .grimoire root changes (see the MutationObserver in onMount) or the
+  // node set changes (a new entity_type may need its own token read). Read
+  // off `canvasEl` itself: it lives inside .grimoire, so getComputedStyle
+  // resolves the same cascaded/scoped custom properties the CSS would use,
+  // without hunting for the .grimoire ancestor at read time.
   let colors = { line: "", ink: "", dim: "", faint: "", accent: "", paper: "" };
   let typeColors = {};
 
@@ -355,10 +355,11 @@
     const ro = new ResizeObserver(() => resize());
     ro.observe(stageEl);
 
-    // Re-read colors whenever the .grimoire root's light/dark class flips
-    // (ThemeToggle.svelte toggles a "dark" class on the nearest .grimoire
-    // ancestor, not document.body), so the canvas repaints with the new
-    // palette immediately instead of on the next data change.
+    // Re-read colors if the class list on the nearest .grimoire ancestor ever
+    // changes, so the canvas repaints with the current palette immediately
+    // instead of on the next data change. There is no dark mode today; this
+    // is a harmless no-op that keeps color init robust to a future class
+    // change on that root.
     const root = canvasEl.closest(".grimoire");
     let mo = null;
     if (root) {
