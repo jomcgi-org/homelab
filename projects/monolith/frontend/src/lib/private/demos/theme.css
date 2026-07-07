@@ -20,7 +20,7 @@
   /* Per-service trace-waterfall colors: one stable, distinct hue per layer so a
    * trace reads as bands (monolith request -> fc-invoke VM management -> guest
    * agent) instead of a wall of same-ish blue. Muted to sit on the paper. */
-  --svc-monolith: #33507a; /* the request layer, matches --accent */
+  --svc-monolith: #3a72b5; /* the request layer: a clearer blue than the slate accent, tone-matched to the other service colors */
   --svc-fc: #3f7a5c; /* fc-invoke: VM lifecycle */
   --svc-goose: #a86a1f; /* goose-coding: the agent inside */
   --svc-semgrep: #8a5a9a; /* semgrep scan */

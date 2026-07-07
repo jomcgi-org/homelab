@@ -46,6 +46,16 @@
     return SERVICE_COLORS[service] ?? "var(--svc-default)";
   }
 
+  // Spans that run AFTER the response is already returned to the caller (VM
+  // teardown / bundle cleanup): real work, but off the caller's critical path,
+  // so we dim them and tag them rather than let them read as latency the caller
+  // waited on.
+  const OFF_PATH_SPANS = new Set(["guest_teardown", "vm_release", "bundle_cleanup"]);
+
+  function isOffPath(name) {
+    return OFF_PATH_SPANS.has(name);
+  }
+
   let spans = $state([]);
   // Goose's own internal spans (service `goose-coding`), correlated to this run
   // by the runner stamping `caller.trace_id` on them. Goose does not honor an
@@ -241,10 +251,12 @@
       {#each sortedSpans as span (span.span_id)}
         <div
           class="row"
+          class:row--offpath={isOffPath(span.name)}
           style={`padding-left: ${(depthById.get(span.span_id) ?? 0) * 0.9}rem;`}
         >
           <span class="row-label" title={`${span.name} · ${span.service}`}>
             {span.name}
+            {#if isOffPath(span.name)}<span class="row-tag">off critical path</span>{/if}
             <span class="row-service">{span.service}</span>
           </span>
           <div class="row-track">
@@ -436,6 +448,24 @@
     color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+
+  /* Off-critical-path spans (teardown/cleanup after the response): dimmed bar
+     plus a small tag so they do not read as latency the caller waited on. */
+  .row--offpath .row-bar {
+    opacity: 0.4;
+  }
+
+  .row-tag {
+    font-size: 9px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 0 4px;
+    margin-left: 4px;
+    white-space: nowrap;
   }
 
   .row-track {
