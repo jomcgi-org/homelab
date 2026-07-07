@@ -414,8 +414,10 @@
     const R = Math.min(W * 0.4, H * 0.42);
     let sx = cx + n.x * R;
     let sy = cy + n.y * R * 0.78;
-    // exclusion zone: keep nodes clear of the top-left caption block
-    if (sy < H * 0.32 && sx < W * 0.38) sx = W * 0.38 + (W * 0.38 - sx) * 0.2;
+    // exclusion zone: keep nodes clear of the caption block, which sits
+    // vertically centred in the left column during the entities scene
+    if (sx < W * 0.38 && sy > H * 0.26 && sy < H * 0.78)
+      sx = W * 0.38 + (W * 0.38 - sx) * 0.2;
     const kx = lerp(cx, W * 0.16, chatP);
     const ky = lerp(H * 0.78, H * 0.44, chatP);
     return [
@@ -703,13 +705,19 @@
     });
     ctasEl.style.opacity = ease(sub(pChat, 0.82, 0.92));
 
-    // caption (top-left, crossfades between phases)
+    // caption (left column, crossfades between phases). In the layout and
+    // entities scenes the left column is free, so the caption sits vertically
+    // centred beside the page, hero-style (.mid); the chunking scene keeps the
+    // top-left slot because the page itself slides into the left column. The
+    // caption is fully faded out at every phase boundary, so the position
+    // switch is never visible.
     const cap = CAPTIONS[phase.id];
     if (cap) {
       const pin = sub(t, phase.start + 0.005, phase.start + 0.025);
       const pout =
         phase.id === "chat" ? 0 : sub(t, phase.end - 0.012, phase.end);
       captionEl.style.opacity = Math.min(pin, 1 - pout);
+      captionEl.classList.toggle("mid", phase.id !== "chunks");
       capNumEl.textContent = cap[0];
       capTxtEl.textContent = cap[1];
     } else {
@@ -1293,13 +1301,14 @@
     }
   }
 
-  /* caption: top-left, clear of the page/cards/chat lanes */
+  /* caption: left column, clear of the page/cards/chat lanes. Sized as the
+     co-star of each scene (hero-like hierarchy), not a corner footnote. */
   .caption {
     position: absolute;
     left: 6vw;
     top: 6vh;
     z-index: 8;
-    max-width: 38ch;
+    max-width: 32ch;
     opacity: 0;
     pointer-events: none;
     padding: 12px 16px 14px;
@@ -1308,8 +1317,16 @@
     background: color-mix(in srgb, var(--grim-paper) 80%, transparent);
     backdrop-filter: blur(3px);
   }
+  /* layout + entities scenes: the left column is free, so the caption sits
+     vertically centred beside the page, mirroring the hero composition. The
+     chunking scene keeps the top-left slot (the page slides under it).
+     frame() toggles .mid; desktop only, mobile keeps its top band. */
+  .scrollstory:not(.mobile) .caption.mid {
+    top: 50%;
+    transform: translateY(-50%);
+  }
   .caption .num {
-    font-size: 11px;
+    font-size: 12.5px;
     color: var(--grim-accent);
     font-weight: 700;
     letter-spacing: 0.16em;
@@ -1317,9 +1334,9 @@
   }
   .caption .txt {
     font-family: var(--grim-serif);
-    font-size: clamp(15px, 1.5vw, 19px);
+    font-size: clamp(18px, 2vw, 25px);
     line-height: 1.4;
-    margin-top: 4px;
+    margin-top: 8px;
     color: var(--grim-ink);
   }
 
@@ -1591,10 +1608,10 @@
   }
   .this-page {
     margin-top: 18px;
-    font-size: 11px;
+    font-size: 12.5px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--grim-text-dim);
+    color: var(--grim-ink);
     display: flex;
     justify-content: center;
     align-items: baseline;
@@ -1603,9 +1620,9 @@
     font-family: var(--font-mono);
   }
   .this-page .k {
-    color: var(--grim-text-faint);
+    color: var(--grim-text-dim);
     font-weight: 700;
-    font-size: 9px;
+    font-size: 10.5px;
   }
   .this-page .arrow {
     color: var(--grim-accent);
@@ -1650,12 +1667,16 @@
     background: var(--grim-surface);
     border: 1px solid var(--grim-line);
     border-radius: 999px;
-    padding: 4px 12px 4px 7px;
-    font-size: 11px;
+    padding: 5px 13px 5px 8px;
+    font-size: 12.5px;
     font-weight: 600;
     box-shadow: 0 2px 8px rgba(10, 14, 22, 0.12);
     color: var(--grim-ink);
     font-family: var(--font-mono);
+  }
+  .tchip .dot {
+    width: 9px;
+    height: 9px;
   }
   .tchip .n {
     color: var(--grim-text-dim);
@@ -1684,12 +1705,16 @@
     box-shadow: 0 18px 60px rgba(10, 14, 22, 0.35);
     will-change: transform;
   }
+  /* Accent-tinted rather than accent-filled: white-on-blue at this size read
+     poorly (Joe, 2026-07 UX pass), so the bubble keeps its "user message"
+     shape while the text stays full-contrast ink on a light tint. */
   .bubble-q {
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
+    background: var(--grim-accent-soft);
+    color: var(--grim-ink);
+    border: 1px solid color-mix(in srgb, var(--grim-accent) 35%, transparent);
     border-radius: 12px 12px 3px 12px;
     padding: 9px 13px;
-    font-size: 13px;
+    font-size: 14px;
     max-width: 80%;
     margin-left: auto;
     width: fit-content;
@@ -1760,7 +1785,7 @@
     text-align: center;
     padding: 10px 8px;
     border-radius: 7px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1771,8 +1796,10 @@
     background: var(--grim-accent);
     color: var(--grim-on-accent);
   }
+  /* an accent-tinted border, not the hairline card token: buttons need a
+     border that reads as an affordance, and --grim-line all but vanished */
   .cta.ghost {
-    border: 1px solid var(--grim-line);
+    border: 1.5px solid color-mix(in srgb, var(--grim-accent) 45%, transparent);
     color: var(--grim-accent);
   }
   .mock-note {
@@ -2021,7 +2048,7 @@
   }
   .scrollstory.mobile .this-page {
     gap: 7px;
-    font-size: 10px;
+    font-size: 11px;
   }
   .scrollstory.mobile .counters {
     display: grid;
