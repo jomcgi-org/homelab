@@ -138,6 +138,11 @@ async def submit_goose(body: GooseRequest) -> dict:
             session=session,
             recipe=body.recipe,
             tier=body.tier,
+            # Default the demo to a checkout of this repo at main so the agent
+            # has something real to work on (an empty /workspace makes every
+            # "summarize this repo" task impossible). owner/repo form: the runner
+            # resolves it to <git-mirror>/jomcgi/homelab (see _effective_mirror_ref).
+            repo="jomcgi/homelab",
         )
 
     return {
