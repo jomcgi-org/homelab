@@ -47,13 +47,31 @@ while (( $# > 0 )); do
   esac
 done
 
+# Resolve one repo:tag to its manifest digest, retrying a few times. The fresh
+# tags are pushed moments earlier in this same push_all run, so a first read can
+# race ghcr propagation, and a burst of reads across all charts can hit
+# transient rate limits (observed: monolith resolved but monolith-public did not
+# in the same run under the same auth). Retry with backoff; a genuinely gone tag
+# (an old published version whose image was GC'd) still ends UNRESOLVED, which
+# the caller treats as "skip", not "fail".
+_crane_digest() {
+  local ref="$1" i d
+  for i in 1 2 3; do
+    if d=$("$CRANE" digest "$ref" 2>/dev/null) && [[ -n "$d" ]]; then
+      printf '%s' "$d"
+      return 0
+    fi
+    if [[ $i -lt 3 ]]; then sleep 3; fi
+  done
+  printf 'UNRESOLVED'
+}
+
 # Emit sorted "repo=digest" lines for each ghcr.io/jomcgi image pinned in a
 # chart. Args are passed straight to `helm show values` (a .tgz path, or
 # "REPO/NAME --version X"). The pinned tag embeds a build timestamp so it
 # changes every build even for identical content; resolving it to the manifest
-# digest via crane gives a content-stable identity to compare. A tag that fails
-# to resolve is emitted as UNRESOLVED so the caller can skip rather than
-# false-fail on a transient registry error.
+# digest gives a content-stable identity to compare. UNRESOLVED tags let the
+# caller skip rather than false-fail on a transient registry error.
 _image_digests() {
   "$HELM" show values "$@" 2>/dev/null | awk '
     /^[[:space:]]*repository:[[:space:]]*/ { repo=$2 }
@@ -61,8 +79,7 @@ _image_digests() {
     while IFS="$(printf '\t')" read -r repo tag; do
       case "$repo" in
         ghcr.io/jomcgi/*)
-          d=$("$CRANE" digest "${repo}:${tag}" 2>/dev/null) || d="UNRESOLVED"
-          printf '%s=%s\n' "$repo" "$d"
+          printf '%s=%s\n' "$repo" "$(_crane_digest "${repo}:${tag}")"
           ;;
       esac
     done | sort
