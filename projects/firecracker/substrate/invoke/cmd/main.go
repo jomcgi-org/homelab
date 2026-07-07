@@ -22,6 +22,7 @@ import (
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/auth"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/catalog"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/ingress"
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/invoke/internal/telemetry"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/invoker"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/vsockhttp"
@@ -49,6 +50,22 @@ func run(logger *slog.Logger) error {
 	// Cancel on SIGINT/SIGTERM so the HTTP server drains gracefully.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Install the global TracerProvider + OTLP exporter + W3C propagator early so
+	// the driver spans (provision_rootfs, firecracker_boot) reach SigNoz. This
+	// degrades gracefully: with no OTEL_EXPORTER_OTLP_ENDPOINT it installs a no-op
+	// provider. A real init error (endpoint set but exporter dial failed) is
+	// logged and swallowed: a tracing failure must never take the daemon down.
+	tp, err := telemetry.InitTracing(ctx)
+	if err != nil {
+		logger.Error("failed to initialize OpenTelemetry tracing; continuing without tracing", "err", err)
+		tp = nil
+	}
+	defer func() {
+		if err := telemetry.Shutdown(context.Background(), tp); err != nil {
+			logger.Error("failed to shut down OpenTelemetry tracer provider", "err", err)
+		}
+	}()
 
 	cfg, err := catalog.Load()
 	if err != nil {

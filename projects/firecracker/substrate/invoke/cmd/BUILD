@@ -9,6 +9,7 @@ go_library(
         "//projects/firecracker/substrate/cluster/auth",
         "//projects/firecracker/substrate/cluster/catalog",
         "//projects/firecracker/substrate/cluster/ingress",
+        "//projects/firecracker/substrate/invoke/internal/telemetry",
         "//projects/firecracker/substrate/node/fcvm/driver",
         "//projects/firecracker/substrate/node/invoker",
         "//projects/firecracker/substrate/node/vsockhttp",
