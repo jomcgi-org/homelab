@@ -25,10 +25,15 @@
   // pages: the page is a 100vh iframe with body overflow hidden, meant to fill
   // the viewport. The site nav both looks wrong on a standalone artifact and
   // pushes the iframe down, so suppress it like the /app/* experiences.
+  //
+  // Firecracker demos under /demos/* render their own Grimoire-style topbar
+  // (wordmark + tabs) and are a full-page tool, not a page of the portfolio
+  // site, so the global nav is suppressed here too.
   let hideNav = $derived(
     /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?demos(\/|$)/.test($page.url.pathname) ||
       $page.error != null,
   );
 

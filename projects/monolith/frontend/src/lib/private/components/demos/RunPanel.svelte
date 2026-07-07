@@ -2,13 +2,15 @@
   // Shared input -> Run -> live latency -> result panel for all three
   // firecracker demo projects. Branches on project.key for the input
   // shape, the endpoint, and the result rendering, but shares one Run
-  // button, one latency counter, and one TraceWaterfall.
+  // button, one latency counter, and one TraceWaterfall. Styled to the
+  // clean Grimoire palette (inherited --paper/--ink/etc custom properties
+  // from the page wrapper), not the old brutalist heavy-border look.
   import TraceWaterfall from "./TraceWaterfall.svelte";
 
   let { project } = $props();
 
-  // ── Inputs, seeded from the project's sample so Run works with zero
-  // edits, but everything stays editable. ──────────────────────────────
+  // Inputs, seeded from the project's sample so Run works with zero edits,
+  // but everything stays editable.
   let pythonCode = $state(project.sample.code ?? "");
   let semgrepPath = $state(project.sample.path ?? "");
   let semgrepCode = $state(project.sample.code ?? "");
@@ -16,7 +18,7 @@
   let gooseRecipe = $state("");
   let gooseTier = $state("");
 
-  // ── Run state ──────────────────────────────────────────────────────
+  // Run state
   let running = $state(false);
   let elapsedMs = $state(0);
   let finalMs = $state(null);
@@ -77,8 +79,8 @@
     return data;
   }
 
-  // Cap the poll so a stuck agent run does not spin forever. ~3 min at 1.5s;
-  // after that we hand off to SigNoz rather than blocking the modal.
+  // Cap the poll so a stuck agent run does not spin forever. ~3 min at
+  // 1.5s; after that we hand off to SigNoz rather than blocking the page.
   const MAX_GOOSE_POLLS = 120;
 
   function pollGoose(threadId) {
@@ -239,13 +241,13 @@
       {#if running}
         <span class="spinner" aria-hidden="true"></span> Running
       {:else}
-        Run &#9654;
+        Run
       {/if}
     </button>
 
     <div class="latency" aria-live="polite">
       <span class="latency-item">
-        <span class="latency-label">wall time</span>
+        <span class="latency-label">wall</span>
         <span class="latency-value">{displayMs.toFixed(0)}ms</span>
       </span>
       {#if result?.duration_ms != null}
@@ -347,99 +349,94 @@
   .run-panel {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 20px;
   }
 
   .input-area {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 6px;
   }
 
   .field-label {
-    font-size: 0.65rem;
-    font-weight: 700;
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
   }
 
   .code-input,
   .text-input {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    color: var(--ink);
     background: var(--surface);
-    border: 0.06rem solid var(--border);
-    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
     resize: vertical;
-    line-height: 1.5;
-  }
-
-  .code-input--prose {
-    resize: vertical;
+    line-height: 1.55;
   }
 
   .code-input:focus,
   .text-input:focus {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
   }
 
   .goose-extra {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-    margin-top: 0.25rem;
+    gap: 16px;
+    margin-top: 4px;
   }
 
   .run-bar {
     display: flex;
     align-items: center;
-    gap: 1.25rem;
+    gap: 20px;
     flex-wrap: wrap;
   }
 
   .run-button {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--fg);
-    background: var(--yellow);
-    border: var(--border-heavy);
-    padding: 0.55rem 1.25rem;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #fff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    padding: 9px 20px;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    transform: translate(0, 0);
+    gap: 8px;
     transition:
-      transform 0.08s ease,
-      box-shadow 0.08s ease,
-      opacity 0.1s ease;
+      opacity 0.1s ease,
+      transform 0.1s ease;
   }
 
   .run-button:hover:not(:disabled) {
-    transform: translate(-2px, -2px);
-    box-shadow: 4px 4px 0 0 var(--fg);
+    opacity: 0.9;
   }
 
   .run-button:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
   }
 
   .run-button--running {
-    background: var(--cream);
+    background: var(--text-dim);
   }
 
   .spinner {
-    width: 0.7rem;
-    height: 0.7rem;
-    border: 2px solid var(--fg);
-    border-top-color: transparent;
+    width: 11px;
+    height: 11px;
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    border-top-color: #fff; /* nosemgrep: svelte-hardcoded-color-in-style */
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
@@ -452,7 +449,7 @@
 
   .latency {
     display: flex;
-    gap: 1.25rem;
+    gap: 20px;
   }
 
   .latency-item {
@@ -462,31 +459,31 @@
   }
 
   .latency-label {
-    font-size: 0.6rem;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--fg-tertiary);
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
   }
 
   .latency-value {
-    font-size: 1rem;
-    font-weight: 700;
+    font-size: 15px;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: var(--fg);
+    color: var(--ink);
   }
 
   .goose-status {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.75rem;
-    color: var(--fg-tertiary);
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-faint);
   }
 
   .pulse-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--accent);
     animation: pulse 1.2s ease-in-out infinite;
@@ -506,69 +503,71 @@
   }
 
   .error-banner {
-    color: var(--fg);
-    background: var(--coral);
-    border: 2px solid var(--fg);
-    padding: 0.6rem 0.8rem;
-    font-size: 0.8rem;
-    font-weight: 700;
+    color: #fff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: var(--danger);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .result-pane {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    border: var(--border-heavy);
-    background: var(--bg);
-    padding: 1rem 1.25rem;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 16px 20px;
   }
 
   .result-grid {
     display: flex;
-    gap: 0.6rem;
+    gap: 10px;
     align-items: baseline;
-    font-size: 0.8rem;
+    font-size: 13px;
   }
 
   .result-key {
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 0.65rem;
-    color: var(--fg-tertiary);
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    color: var(--text-faint);
   }
 
   .result-val {
     font-variant-numeric: tabular-nums;
-    color: var(--fg);
+    color: var(--ink);
   }
 
   .result-val--bad {
     color: var(--danger);
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .result-block {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 5px;
   }
 
   .body-label {
-    font-size: 0.65rem;
-    font-weight: 700;
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--fg-tertiary);
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
   }
 
   .body-text {
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--fg);
-    background: var(--surface);
-    border: 0.04rem solid var(--border);
-    padding: 0.6rem 0.7rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
     white-space: pre-wrap;
     word-break: break-word;
     max-height: 14rem;
@@ -580,66 +579,75 @@
   }
 
   .result-empty {
-    font-size: 0.8rem;
-    color: var(--fg-tertiary);
+    font-size: 13px;
+    color: var(--text-faint);
   }
 
   .findings {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 8px;
     max-height: 16rem;
     overflow-y: auto;
+    list-style: none;
+    margin: 0;
+    padding: 0;
   }
 
   .finding {
     display: grid;
     grid-template-columns: max-content max-content 1fr;
-    gap: 0.4rem 0.6rem;
+    gap: 6px 10px;
     align-items: baseline;
-    font-size: 0.78rem;
-    padding: 0.4rem 0;
-    border-bottom: 0.04rem solid var(--border);
+    font-size: 12.5px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
   }
 
   .finding-sev {
-    font-size: 0.6rem;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    padding: 0.1rem 0.4rem;
-    border: 1px solid var(--fg);
+    letter-spacing: 0.08em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
     grid-row: 1;
   }
 
   .sev--high {
-    background: var(--coral);
+    background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
   }
 
   .sev--medium {
-    background: var(--yellow);
+    background: color-mix(in srgb, #b8860b 12%, var(--surface));
+    color: #8a6100; /* nosemgrep: svelte-hardcoded-color-in-style */
+    border-color: color-mix(in srgb, #b8860b 30%, var(--line));
   }
 
   .sev--low {
-    background: var(--surface);
+    background: var(--paper);
+    color: var(--text-dim);
   }
 
   .finding-loc {
     font-variant-numeric: tabular-nums;
-    color: var(--fg-secondary);
+    color: var(--text-dim);
     grid-row: 1;
   }
 
   .finding-rule {
-    font-weight: 700;
-    color: var(--fg-tertiary);
+    font-weight: 600;
+    color: var(--text-faint);
     grid-column: 3;
     grid-row: 1;
   }
 
   .finding-msg {
     grid-column: 1 / -1;
-    color: var(--fg);
+    color: var(--ink);
   }
 
   @media (max-width: 640px) {
