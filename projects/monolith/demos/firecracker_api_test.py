@@ -133,23 +133,58 @@ def test_trace_complete_true_when_spans_present(monkeypatch):
         assert trace_id == "a" * 32
         return [{"span_id": "s1", "name": "demo.python", "start_ms": 0.0}]
 
+    async def fake_correlated(trace_id):
+        return []
+
     monkeypatch.setattr(fc, "fetch_trace_spans", fake_fetch)
+    monkeypatch.setattr(fc, "fetch_correlated_spans", fake_correlated)
 
     resp = _client().get(f"/api/demos/firecracker/trace/{'a' * 32}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["complete"] is True
     assert body["spans"][0]["span_id"] == "s1"
+    assert body["correlated"] == []
 
 
 def test_trace_incomplete_when_no_spans(monkeypatch):
     async def fake_fetch(trace_id):
         return []
 
+    async def fake_correlated(trace_id):
+        return []
+
     monkeypatch.setattr(fc, "fetch_trace_spans", fake_fetch)
+    monkeypatch.setattr(fc, "fetch_correlated_spans", fake_correlated)
 
     resp = _client().get(f"/api/demos/firecracker/trace/{'b' * 32}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["complete"] is False
     assert body["spans"] == []
+    assert body["correlated"] == []
+
+
+def test_trace_includes_correlated_goose_spans(monkeypatch):
+    """The endpoint surfaces the agent's correlated goose spans separately.
+
+    `complete` stays keyed on the main spans only: correlated goose spans can
+    stream in before or after the main trace's spans and must not flip it.
+    """
+
+    async def fake_fetch(trace_id):
+        return []
+
+    async def fake_correlated(trace_id):
+        assert trace_id == "c" * 32
+        return [{"span_id": "g1", "name": "reply", "service": "goose-coding"}]
+
+    monkeypatch.setattr(fc, "fetch_trace_spans", fake_fetch)
+    monkeypatch.setattr(fc, "fetch_correlated_spans", fake_correlated)
+
+    resp = _client().get(f"/api/demos/firecracker/trace/{'c' * 32}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["complete"] is False
+    assert body["spans"] == []
+    assert body["correlated"][0]["span_id"] == "g1"
