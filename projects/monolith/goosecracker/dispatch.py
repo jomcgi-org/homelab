@@ -16,6 +16,8 @@ import threading
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry.propagate import inject
+
 from goosecracker import runner, threads
 
 if TYPE_CHECKING:
@@ -89,6 +91,16 @@ def submit(
         task=task,
         discord_thread=discord_thread,
     )
+    # Capture the caller's active trace context (e.g. the demo page's
+    # `demo.goose` span) as a W3C traceparent string. `submit` runs via
+    # asyncio.to_thread, which copies the caller's contextvars, so the current
+    # span is live here; the run itself executes on a fresh daemon-thread event
+    # loop with no context, so we carry the string and re-attach it as a header
+    # on the fc-invoke POST, letting the agent's fc-invoke spans nest under the
+    # caller's trace instead of forming a detached one.
+    carrier: dict[str, str] = {}
+    inject(carrier)
+    traceparent = carrier.get("traceparent", "")
     _schedule(
         runner.run_and_deliver(
             session,
@@ -100,6 +112,7 @@ def submit(
             git_ref=git_ref,
             discord_thread=discord_thread,
             plan=plan,
+            traceparent=traceparent,
         )
     )
     return {

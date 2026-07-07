@@ -531,7 +531,9 @@ async def _persist_session_db(session: str, session_db_b64: str | None) -> None:
         logger.exception("goosecracker: failed to persist session db for %s", session)
 
 
-async def _post_agent_run(url: str, payload: dict, on_retry) -> dict:
+async def _post_agent_run(
+    url: str, payload: dict, on_retry, traceparent: str = ""
+) -> dict:
     """POST a goose run to fc-invoke, retrying transient failures with backoff.
 
     Returns the parsed JSON body on the first success. Retries only failures
@@ -554,7 +556,13 @@ async def _post_agent_run(url: str, payload: dict, on_retry) -> dict:
                 # Carry this pod's ServiceAccount token so fc-invoke's
                 # TokenReview gate admits the call (read fresh per attempt to
                 # pick up kubelet token rotation).
-                resp = await client.post(url, json=payload, headers=auth_headers())
+                headers = auth_headers()
+                # Nest the agent's fc-invoke spans under the caller's trace (the
+                # demo page's `demo.goose` span) by forwarding its traceparent;
+                # fc-invoke extracts it at ingress. Empty when no caller context.
+                if traceparent:
+                    headers["traceparent"] = traceparent
+                resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 return resp.json()
         except httpx.HTTPStatusError as exc:
@@ -595,6 +603,7 @@ async def _invoke_turn(
     git_ref: str,
     discord_thread: str,
     plan: "Plan | None",
+    traceparent: str = "",
 ) -> dict:
     """POST one goose invocation to fc-invoke and return the raw AgentResult dict.
 
@@ -752,7 +761,7 @@ async def _invoke_turn(
             f"(attempt {attempt}, waiting {wait:.0f}s)…",
         )
 
-    return await _post_agent_run(url, payload, _notify_retry)
+    return await _post_agent_run(url, payload, _notify_retry, traceparent=traceparent)
 
 
 async def _deliver_result(session: str, discord_thread: str, data: dict) -> bool:
@@ -823,6 +832,7 @@ async def _run_one_turn(
     git_ref: str,
     discord_thread: str,
     plan: "Plan | None" = None,
+    traceparent: str = "",
 ) -> bool:
     """Run one goose turn (with the capped replan escape hatch) and deliver it.
 
@@ -864,6 +874,7 @@ async def _run_one_turn(
                 git_ref=git_ref,
                 discord_thread=discord_thread,
                 plan=current_plan,
+                traceparent=traceparent,
             )
             # Replan only on a plan-driven turn whose run actually produced a
             # result, and only while under the cap. The baked/fallback path
@@ -923,6 +934,7 @@ async def run_and_deliver(
     git_ref: str,
     discord_thread: str,
     plan: "Plan | None" = None,
+    traceparent: str = "",
 ) -> None:
     """Run a conversational agent thread to completion, one turn at a time.
 
@@ -972,6 +984,7 @@ async def run_and_deliver(
             git_ref=git_ref,
             discord_thread=discord_thread,
             plan=turn_plan,
+            traceparent=traceparent,
         )
         turn_plan = None  # only the first (orchestrated) turn gets the plan
 
