@@ -527,12 +527,18 @@ func (inv *Invoker) ownResponse(ctx context.Context, resp *http.Response, td inv
 			releaseSlot()
 			// (c) Remove the on-disk bundle asynchronously, off the slot. It only
 			// reclaims disk, so it must not gate the memory slot. Best-effort: it
-			// logs its own errors and cannot panic the process. On abrupt process
-			// exit a bundle may be left behind for restart-time cleanup, which is
-			// acceptable. Start bundle_cleanup from ctx so it still nests under
-			// fc_invoke.
+			// logs its own errors, and a defensive recover keeps a stray panic in
+			// this detached goroutine from taking down the single-replica daemon.
+			// On abrupt process exit a bundle may be left behind for restart-time
+			// cleanup, which is acceptable. Start bundle_cleanup from ctx so it
+			// still nests under fc_invoke.
 			threadID := td.h.ThreadID
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						inv.logger.Error("invoker: bundle_cleanup panic", "thread", threadID, "recover", r)
+					}
+				}()
 				_, bundleSpan := tracer.Start(ctx, "bundle_cleanup")
 				inv.removeGuestBundle(threadID)
 				bundleSpan.End()
