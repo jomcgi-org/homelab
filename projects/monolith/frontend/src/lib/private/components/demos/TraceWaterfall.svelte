@@ -30,17 +30,20 @@
   const HARD_TIMEOUT_MS = 180_000;
   const MAX_CONSECUTIVE_ERRORS_WHEN_EMPTY = 3;
 
-  // Stable-ish palette keyed by service name via a small string hash, so
-  // the same service always lands on the same swatch across runs.
-  const PALETTE = ["var(--accent)", "#3f7a5c", "#8a6100", "#6b7280"];
+  // One fixed, distinct color per service so the trace's layers read as bands
+  // (monolith request -> fc-invoke VM management -> guest agent) that stay
+  // consistent across runs, instead of a hash that collides several services
+  // onto the same blue. Colors are defined as CSS vars in theme.css; unknown
+  // services fall back to a neutral grey.
+  const SERVICE_COLORS = {
+    "monolith-backend": "var(--svc-monolith)",
+    "fc-invoke": "var(--svc-fc)",
+    "goose-coding": "var(--svc-goose)",
+    semgrep: "var(--svc-semgrep)",
+  };
 
   function colorFor(service) {
-    if (!service) return "#6b7280";
-    let h = 0;
-    for (let i = 0; i < service.length; i++) {
-      h = (h * 31 + service.charCodeAt(i)) | 0;
-    }
-    return PALETTE[Math.abs(h) % PALETTE.length];
+    return SERVICE_COLORS[service] ?? "var(--svc-default)";
   }
 
   let spans = $state([]);
