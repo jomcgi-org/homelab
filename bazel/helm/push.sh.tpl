@@ -21,6 +21,7 @@ else
 fi
 
 readonly HELM="$(rlocation "{{HELM}}")"
+readonly CRANE="$(rlocation "{{CRANE}}")"
 readonly CHART_TGZ="$(rlocation "{{CHART_TGZ}}")"
 REPOSITORY="{{REPOSITORY}}"
 CHART_VERSION_SH="{{CHART_VERSION_SH}}"
@@ -45,6 +46,49 @@ while (( $# > 0 )); do
       exit 1;;
   esac
 done
+
+# Emit sorted "repo=digest" lines for each ghcr.io/jomcgi image pinned in a
+# chart. Args are passed straight to `helm show values` (a .tgz path, or
+# "REPO/NAME --version X"). The pinned tag embeds a build timestamp so it
+# changes every build even for identical content; resolving it to the manifest
+# digest via crane gives a content-stable identity to compare. A tag that fails
+# to resolve is emitted as UNRESOLVED so the caller can skip rather than
+# false-fail on a transient registry error.
+_image_digests() {
+  "$HELM" show values "$@" 2>/dev/null | awk '
+    /^[[:space:]]*repository:[[:space:]]*/ { repo=$2 }
+    /^[[:space:]]*tag:[[:space:]]*/ && repo!="" { print repo"\t"$2; repo="" }' |
+    while IFS="$(printf '\t')" read -r repo tag; do
+      case "$repo" in
+        ghcr.io/jomcgi/*)
+          d=$("$CRANE" digest "${repo}:${tag}" 2>/dev/null) || d="UNRESOLVED"
+          printf '%s=%s\n' "$repo" "$d"
+          ;;
+      esac
+    done | sort
+}
+
+# Fail the push with the exact bump command. Reads CHART_NAME / CHART_VERSION /
+# ABS_CHART_DIR / CHART_DIR (all set before this is ever called). bump-chart.sh
+# takes the project dir for the deploy/ convention, or the chart dir itself when
+# application.yaml is colocated.
+_fail_missed_bump() {
+  local reason="$1" project_dir
+  if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
+    project_dir="$CHART_DIR"
+  else
+    project_dir=$(dirname "$CHART_DIR")
+  fi
+  {
+    echo "ERROR: ${CHART_NAME} ${CHART_VERSION} is already published, but ${reason}."
+    echo "This merge will NOT deploy until the chart version is bumped."
+    echo ""
+    echo "Fix: in a fresh worktree run"
+    echo "  bazel/tools/git/bump-chart.sh ${project_dir}"
+    echo "then commit and open a bump PR (auto-merge is fine)."
+  } >&2
+  exit 1
+}
 
 # --- Determine branch and workspace ---
 PUSH_TGZ="$CHART_TGZ"
@@ -83,31 +127,37 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
       set -e
       if [[ $SHOW_RC -eq 0 ]]; then
         echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published; skipping push."
-        # Missed-bump detector: if commits since this version was last set touch
-        # the chart's dependency closure, this merge deploys NOTHING until a bump
-        # lands. Fail loudly now instead of surfacing later as an OutOfSync
-        # mystery or a rollout that silently never happened.
+        # A merge that reuses an already-published chart version deploys NOTHING
+        # of its own. Two independent detectors catch that here; either failing
+        # is enough, so a missed bump surfaces in minutes instead of later as an
+        # OutOfSync mystery or a rollout that silently never happened.
+
+        # (1) Image-content detector: resolve the pinned image tags in the fresh
+        # chart and the already-published chart to their manifest digests and
+        # compare. This is INDEPENDENT of the bazel dependency query (2), which
+        # can silently under-scope when `deps(...)` drops a package under
+        # --keep_going (an image's external closure failing to preload) and then
+        # report "no bump needed" for a real image change (this is exactly how a
+        # frontend change once merged with no bump and never deployed). Digest
+        # equality is content-stable, so this fails closed on any image change.
+        if [[ -x "$CRANE" ]]; then
+          FRESH_DIGESTS=$(_image_digests "$CHART_TGZ") || FRESH_DIGESTS=""
+          PUB_DIGESTS=$(_image_digests "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}") || PUB_DIGESTS=""
+          if [[ "$FRESH_DIGESTS" == *UNRESOLVED* ]] || [[ "$PUB_DIGESTS" == *UNRESOLVED* ]]; then
+            echo "WARNING: could not resolve all image digests for ${CHART_NAME}; relying on the version-scoped detector only." >&2
+          elif [[ -n "$FRESH_DIGESTS" ]] && [[ -n "$PUB_DIGESTS" ]] && [[ "$FRESH_DIGESTS" != "$PUB_DIGESTS" ]]; then
+            _fail_missed_bump "its pinned image digests differ from the published chart (an image was rebuilt)"
+          fi
+        fi
+
+        # (2) Version-scoped detector: if conventional commits since this version
+        # was last set touch the chart's dependency closure, a bump is due. This
+        # also covers chart-template-only changes (which do not change any image
+        # digest, so detector (1) would not catch them).
         if [[ "$CAN_VERSION" == "true" ]]; then
           NEEDED_VERSION=$(cd "$WORKSPACE" && "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package") || NEEDED_VERSION=""
           if [[ -n "$NEEDED_VERSION" ]] && [[ "$NEEDED_VERSION" != "$CHART_VERSION" ]]; then
-            # bump-chart.sh takes the project dir for the deploy/ convention,
-            # or the chart dir itself when application.yaml is colocated.
-            if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
-              PROJECT_DIR="$CHART_DIR"
-            else
-              PROJECT_DIR=$(dirname "$CHART_DIR")
-            fi
-            {
-              echo "ERROR: ${CHART_NAME} ${CHART_VERSION} is already published, but commits since"
-              echo "that version touch this chart's dependency closure (computed next"
-              echo "version: ${NEEDED_VERSION}). This merge will NOT deploy until the chart"
-              echo "version is bumped."
-              echo ""
-              echo "Fix: in a fresh worktree run"
-              echo "  bazel/tools/git/bump-chart.sh ${PROJECT_DIR}"
-              echo "then commit and open a bump PR (auto-merge is fine)."
-            } >&2
-            exit 1
+            _fail_missed_bump "commits since that version touch this chart's dependency closure (computed next version: ${NEEDED_VERSION})"
           fi
         fi
         echo "No releasable changes since ${CHART_VERSION}; nothing to publish."
