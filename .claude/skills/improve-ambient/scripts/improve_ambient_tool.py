@@ -267,15 +267,19 @@ ORDER BY created_at, id
 """
 
 # EXACT match on the reply id when known, else the channel + window fallback.
-# The nullable :reply_message_id bind needs ::text casts so psycopg can type the
-# NULL in the IS NULL / IS NOT NULL branches (repo gotcha).
+# The nullable :reply_message_id bind is cast to text so psycopg can type the
+# NULL in the IS NULL / IS NOT NULL branches (repo gotcha). Use CAST(... AS text)
+# rather than the `::text` spelling: SQLAlchemy's text() lexer refuses to bind a
+# param immediately followed by `::`, leaving `:reply_message_id::text` literal
+# and tripping a Postgres "syntax error at or near :".
 _FETCH_REACTIONS_SQL = """
 SELECT message_id, emoji, reactor_id, action, created_at
 FROM chat.reaction_event
 WHERE channel_id = :channel_id
   AND (
-      (:reply_message_id::text IS NOT NULL AND message_id = :reply_message_id::text)
-   OR (:reply_message_id::text IS NULL
+      (CAST(:reply_message_id AS text) IS NOT NULL
+           AND message_id = CAST(:reply_message_id AS text))
+   OR (CAST(:reply_message_id AS text) IS NULL
            AND created_at >= :engage_at
            AND created_at <= :engage_at + make_interval(mins => :window))
   )
