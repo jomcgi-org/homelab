@@ -25,11 +25,11 @@ Two facts must be confirmed against the live cluster; both affect later tasks. R
    ```
    Use the confirmed table/columns in Task 6.
 
-2. **Private HTTPRoute allows the new API prefix.** `projects/monolith/chart/templates/httproute-private.yaml` currently passes `/private/`, `/api/knowledge`, `/api/scheduler`, `/api/grimoire`. The new backend endpoints live under `/api/demos/` — confirm whether the private HTTPRoute needs a new prefix match (Task 8) or whether `/private/` reverse-proxying already covers the frontend `+page.server.js` fetches. If the frontend calls the backend server-side (via `API_BASE` inside `+page.server.js`), no HTTPRoute change is needed; if it calls from the browser, add the `/api/demos` prefix.
+2. **Private HTTPRoute allows the new API prefix.** `projects/monolith/chart/templates/httproute-private.yaml` currently passes `/private/`, `/api/knowledge`, `/api/scheduler`, `/api/grimoire`. The new backend endpoints live under `/api/demos/`, confirm whether the private HTTPRoute needs a new prefix match (Task 8) or whether `/private/` reverse-proxying already covers the frontend `+page.server.js` fetches. If the frontend calls the backend server-side (via `API_BASE` inside `+page.server.js`), no HTTPRoute change is needed; if it calls from the browser, add the `/api/demos` prefix.
 
 ---
 
-## Track 1 — fc-invoke OTEL tracing (Go)
+## Track 1, fc-invoke OTEL tracing (Go)
 
 Reference pattern to mirror: `projects/operators/oci-model-cache/internal/telemetry/tracing.go` and its `cmd/main.go:138-160` integration. Collector endpoint (gRPC): `signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317`.
 
@@ -43,14 +43,14 @@ Reference pattern to mirror: `projects/operators/oci-model-cache/internal/teleme
 
 **Step 1: Write `tracing.go`** mirroring oci-model-cache: `InitTracing(ctx) (*sdktrace.TracerProvider, error)` that
 
-- reads `OTEL_EXPORTER_OTLP_ENDPOINT`; if empty, returns `sdktrace.NewTracerProvider()` (no-op export) and logs "tracing disabled" — graceful degrade so local/CI runs don't require a collector.
+- reads `OTEL_EXPORTER_OTLP_ENDPOINT`; if empty, returns `sdktrace.NewTracerProvider()` (no-op export) and logs "tracing disabled", graceful degrade so local/CI runs don't require a collector.
 - builds an `otlptracegrpc` exporter `WithEndpoint(endpoint)` + `WithInsecure()`.
 - builds a `resource` with `service.name` from `OTEL_SERVICE_NAME` (fallback `"fc-invoke"`) and `service.version` from `OTEL_SERVICE_VERSION` (fallback `"dev"`).
 - `sdktrace.NewTracerProvider(WithBatcher(exporter), WithResource(res), WithSampler(parentbased_always_on default))`.
 - `otel.SetTracerProvider(tp)` AND `otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))`.
 - `Shutdown(ctx, tp)` helper with a 5s timeout.
 
-**Step 2: Wire into `main.go`** — call `InitTracing` early in `run()`, `defer telemetry.Shutdown(...)` on drain. Do not `os.Exit` if the endpoint is set but export init fails transiently; log and continue with no-op (a demo page should never take the daemon down).
+**Step 2: Wire into `main.go`**, call `InitTracing` early in `run()`, `defer telemetry.Shutdown(...)` on drain. Do not `os.Exit` if the endpoint is set but export init fails transiently; log and continue with no-op (a demo page should never take the daemon down).
 
 **Step 3: Local verify**
 Run: `bazel/tools/format/fast-format.sh` (updates BUILD deps via gazelle; must succeed)
@@ -81,7 +81,7 @@ defer span.End()
 ```
 Define `var tracer = otel.Tracer("fc-invoke/ingress")` at package level. Pass the new `ctx` (not `r.Context()`) into `inv.Invoke(ctx, session, r.Body)` so the whole chain nests. On error paths call `span.RecordError(err)` and `span.SetStatus(codes.Error, ...)`.
 
-**Step 2: Local verify** — `go build ./...`, `fast-format.sh`.
+**Step 2: Local verify**, `go build ./...`, `fast-format.sh`.
 
 **Step 3: Commit**
 ```bash
@@ -93,7 +93,7 @@ git commit -am "feat(fc-invoke): extract traceparent and open root invoke span"
 **Files:**
 - Modify: `projects/firecracker/substrate/cluster/auth/auth.go` (~line 86, around `reviewer.Review`)
 - Modify: `projects/firecracker/substrate/invoke/internal/invoker/invoker.go` (acquire ~217, warm/cold branch ~231, wait-ready ~337, RoundTrip ~357)
-- Modify: `projects/firecracker/substrate/node/fcvm/driver/driver.go` (~300 warm restore branch — add `snapshot_restore` span; leave existing `provision_rootfs`/`firecracker_boot`)
+- Modify: `projects/firecracker/substrate/node/fcvm/driver/driver.go` (~300 warm restore branch, add `snapshot_restore` span; leave existing `provision_rootfs`/`firecracker_boot`)
 
 **Spans to add** (each `tracer.Start(ctx, name)` ... `span.End()`, threading the returned ctx):
 - `auth_tokenreview` around `reviewer.Review` (only reached when `FC_INVOKE_ALLOWED_CALLERS` is set).
@@ -134,15 +134,15 @@ git commit -am "build(fc-invoke): export traces to SigNoz + chart bump"
 
 ---
 
-## Track 2 — SigNoz traces query helper (Python backend)
+## Track 2, SigNoz traces query helper (Python backend)
 
 ### Task 5: ClickHouse traces query helper
 
 **Files:**
 - Create: `projects/monolith/home/observability/traces.py`
-- Test: `projects/monolith/home/observability/traces_test.py` (+ hand-add `py_test` to BUILD — see memory `reference_monolith_gazelle_pytest_targets.md`)
+- Test: `projects/monolith/home/observability/traces_test.py` (+ hand-add `py_test` to BUILD, see memory `reference_monolith_gazelle_pytest_targets.md`)
 
-**Step 1: Write the failing test** — a unit test that mocks `ClickHouseClient.query_rows` returning fake span rows and asserts `fetch_trace_spans(trace_id)` returns a normalized list of `{span_id, parent_span_id, name, service, start_ms, duration_ms}` sorted by start time, and that a root-less set still renders (parent not found -> treated as root).
+**Step 1: Write the failing test**, a unit test that mocks `ClickHouseClient.query_rows` returning fake span rows and asserts `fetch_trace_spans(trace_id)` returns a normalized list of `{span_id, parent_span_id, name, service, start_ms, duration_ms}` sorted by start time, and that a root-less set still renders (parent not found -> treated as root).
 
 **Step 2:** Implement `fetch_trace_spans` using the existing `ClickHouseClient` (mirror `home/observability/stats.py` usage). Query the confirmed table from pre-flight, e.g.:
 ```sql
@@ -153,7 +153,7 @@ ORDER BY startTimeUnixNano
 ```
 Convert nanos to ms relative to the min start so the frontend can lay out bars. Return `[]` on unknown trace (still ingesting).
 
-**Step 3: local verify** — `fast-format.sh`; type-check. Test execution deferred to CI.
+**Step 3: local verify**, `fast-format.sh`; type-check. Test execution deferred to CI.
 
 **Step 4: Commit**
 ```bash
@@ -162,7 +162,7 @@ git commit -am "feat(observability): query SigNoz trace spans by trace_id"
 
 ---
 
-## Track 3 — Demos backend endpoints (Python)
+## Track 3, Demos backend endpoints (Python)
 
 ### Task 6: Demos API router
 
@@ -172,10 +172,10 @@ git commit -am "feat(observability): query SigNoz trace spans by trace_id"
 - Test: `projects/monolith/demos/firecracker_api_test.py` (+ hand-add `py_test`)
 
 **Endpoints (all capture the current trace_id via `trace.get_current_span().get_span_context().trace_id` formatted as 32-hex):**
-- `POST /api/demos/firecracker/python` — body `{code, files?}` -> calls `sandbox.client.run_python_in_sandbox`; returns `{stdout, stderr, exit_code, duration_ms, trace_id}`.
-- `POST /api/demos/firecracker/semgrep` — body `{files:[{path,content}]}` -> calls `semgrep.mcp` scan path; returns `{findings, errors, duration_ms, trace_id}`.
-- `POST /api/demos/firecracker/goose` — body `{task, recipe?, tier?}` -> `goosecracker.submit(...)`; returns `{session, thread_id, trace_id}` (async).
-- `GET /api/demos/firecracker/goose/{thread_id}` — polls `get_agent_thread`; returns status + result when done.
+- `POST /api/demos/firecracker/python`, body `{code, files?}` -> calls `sandbox.client.run_python_in_sandbox`; returns `{stdout, stderr, exit_code, duration_ms, trace_id}`.
+- `POST /api/demos/firecracker/semgrep`, body `{files:[{path,content}]}` -> calls `semgrep.mcp` scan path; returns `{findings, errors, duration_ms, trace_id}`.
+- `POST /api/demos/firecracker/goose`, body `{task, recipe?, tier?}` -> `goosecracker.submit(...)`; returns `{session, thread_id, trace_id}` (async).
+- `GET /api/demos/firecracker/goose/{thread_id}`, polls `get_agent_thread`; returns status + result when done.
 - `GET /api/demos/firecracker/trace/{trace_id}` -> `traces.fetch_trace_spans` (Task 5) as waterfall JSON; `{spans:[...], complete:bool}` where `complete` is false while empty (still ingesting).
 
 Wrap each invocation in an explicit server span so `trace_id` is always populated and the backend's own timing is recorded even before SigNoz ingests.
@@ -187,7 +187,7 @@ git commit -am "feat(demos): firecracker invocation + trace API endpoints"
 
 ---
 
-## Track 4 — Frontend (SvelteKit, rich modals)
+## Track 4, Frontend (SvelteKit, rich modals)
 
 Load `impeccable:frontend-design` guidance for the modal polish; match the existing private-tier look (see `/private/notes`, `/private/chat`).
 
@@ -195,7 +195,7 @@ Load `impeccable:frontend-design` guidance for the modal polish; match the exist
 
 **Files:**
 - Create: `projects/monolith/frontend/src/routes/private/demos/firecracker/+page.svelte`
-- Create: `projects/monolith/frontend/src/routes/private/demos/firecracker/+page.server.js` (if server-side fetch chosen — preferred, avoids HTTPRoute change)
+- Create: `projects/monolith/frontend/src/routes/private/demos/firecracker/+page.server.js` (if server-side fetch chosen, preferred, avoids HTTPRoute change)
 - Create: `projects/monolith/frontend/src/lib/components/demos/RunPanel.svelte`, `TraceWaterfall.svelte`, `ProjectModal.svelte`
 - Note: SSR deps must be in `ssr.noExternal` (memory `feedback_vite_ssr_noexternal.md`).
 
@@ -212,7 +212,7 @@ git commit -am "feat(demos): firecracker demos page with modals and trace waterf
 
 ---
 
-## Track 5 — Wiring, deploy, CI
+## Track 5, Wiring, deploy, CI
 
 ### Task 8: Ingress prefix (if needed) + monolith chart bump
 

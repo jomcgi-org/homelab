@@ -1,12 +1,12 @@
 <script>
   // Rich modal shell for a firecracker demo project. Owns the
   // backdrop/dialog chrome (open/close, escape, backdrop click) and
-  // renders whatever is passed as children — RunPanel, in practice.
+  // renders whatever is passed as children, RunPanel in practice.
   //
   // Props:
-  //   project — { key, label, tagline, accent } | null. Modal is shown
+  //   project: { key, label, tagline, accent } | null. Modal is shown
   //             when non-null.
-  //   onClose — () => void
+  //   onClose: () => void
   import { fade, scale } from "svelte/transition";
   import { quintOut } from "svelte/easing";
 
