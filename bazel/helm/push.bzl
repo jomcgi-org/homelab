@@ -138,6 +138,7 @@ def _helm_push_impl(ctx):
         is_executable = True,
         substitutions = {
             "{{HELM}}": _rlocationpath(ctx.executable._helm, workspace_name),
+            "{{CRANE}}": _rlocationpath(ctx.executable._crane, workspace_name),
             "{{CHART_TGZ}}": _rlocationpath(ctx.file.chart, workspace_name),
             "{{REPOSITORY}}": ctx.attr.repository,
             "{{CHART_VERSION_SH}}": chart_version_sh_path,
@@ -151,6 +152,7 @@ def _helm_push_impl(ctx):
 
     runfiles = ctx.runfiles(files = runfiles_files)
     runfiles = runfiles.merge(ctx.attr._helm[DefaultInfo].default_runfiles)
+    runfiles = runfiles.merge(ctx.attr._crane[DefaultInfo].default_runfiles)
     runfiles = runfiles.merge(ctx.attr._runfiles[DefaultInfo].default_runfiles)
 
     return [DefaultInfo(
@@ -184,6 +186,11 @@ helm_push = rule(
         ),
         "_helm": attr.label(
             default = "@multitool//tools/helm",
+            executable = True,
+            cfg = "exec",
+        ),
+        "_crane": attr.label(
+            default = "@multitool//tools/crane",
             executable = True,
             cfg = "exec",
         ),
