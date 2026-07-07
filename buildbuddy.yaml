@@ -50,6 +50,12 @@ actions:
           # executable; a 644 script exits 126 in sessions and enforces nothing.
           ./bazel/tools/hooks/validate-hooks-executable.sh
 
+          # The root README's structural claims must stay real: no links to
+          # deleted projects, no new top-level projects/* dir left unmentioned.
+          # Runs on the full checkout (a sandboxed bazel test cannot list
+          # projects/* on RBE); the pure logic is pinned by a bazel test.
+          python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
+
           # Check for formatting changes
           if git diff --exit-code; then
             echo "All files formatted correctly"

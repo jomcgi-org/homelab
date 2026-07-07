@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=./schema.json
+name: Refresh Structure Docs (weekly)
+schedule:
+  cron: "0 7 * * 1" # Mondays 07:00 UTC
+enabled: true
+model: claude-sonnet-4-6
+environment: Default
+sources:
+  - https://github.com/jomcgi/homelab
+allowed_tools: []
+mcp_connectors:
+  - homelab
+prompt: |
+  Freshen the root README's structural prose against the real repository and
+  open a reviewable PR with any change. This is the judgment half of the repo's
+  structure-docs scheme: the deterministic guardrail (links to deleted
+  projects, unmentioned new projects/* dirs) is already enforced in CI by
+  bazel/tools/format/readme_structure, so do NOT re-police those, handle the
+  staleness a test cannot judge.
+
+  Follow the `refresh-structure-docs` skill in this repo
+  (.claude/skills/refresh-structure-docs/SKILL.md) for the full method. In brief:
+
+  1. Read README.md and run
+     `python3 ./bazel/tools/format/readme_structure/check_readme_structure.py`
+     for the mechanical status.
+  2. Diff each structural claim against the real tree: the Systems and
+     Applications lists (do linked paths still exist and still fit their
+     blurb?), the layout tree (any headline new project missing?), and the
+     Infrastructure patterns table (model name, serving stack, tooling names
+     drift silently, spot-check them against inference/ values and the cluster).
+  3. Make the smallest honest edit. Match the terse register. Never write an
+     em-dash (repo rule): use a comma, colon, parentheses, or split the sentence.
+  4. If nothing is stale, stop. Do NOT open an empty or cosmetic PR, a no-op
+     week is the expected common case.
+  5. If you edited something, land it as a PR against main with a body listing
+     what changed and why. NEVER auto-merge and never enable auto-merge, Joe
+     reviews README prose.
+
+  Constraints:
+    - Root README.md only. Note (do not edit) badly-wrong per-project READMEs
+      in the PR body.
+    - At most one PR per run, small diff.
+    - Do not add a project to the README just to green the coverage check, that
+      is the author's job; surface a genuinely undocumented new project instead.
