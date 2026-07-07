@@ -1313,6 +1313,19 @@ py_test(
 )
 
 py_test(
+    name = "chat_reply_sanitize_test",
+    srcs = ["chat/reply_sanitize_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_goosecracker_progress_test",
     srcs = ["chat/goosecracker_progress_test.py"],
     imports = ["."],

@@ -508,6 +508,39 @@ class ReactionEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class AgentReplyRepair(SQLModel, table=True):
+    """Log of chat-agent replies that leaked tool-call scaffolding.
+
+    One row per reply where the small model dumped ``<tool_call>``/``<arg_*>``
+    scaffolding into its answer and the shield (chat.reply_sanitize) had to
+    scrub and, when needed, run the bounded model-repair loop. Kept so the copy
+    can be evaluated later and the reply/plan prompts iterated against real
+    failures. outcome records how it resolved; raw/scrubbed/final are the text
+    at each stage (raw is what the model emitted, final is what shipped).
+    """
+
+    __tablename__ = "agent_reply_repair"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('clean_after_repair', 'still_dirty')",
+            name="agent_reply_repair_outcome_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str = Field(default="")
+    author_id: str = Field(default="")
+    route: str = Field(default="chat")
+    markers: str = Field(default="")
+    raw_text: str = Field(default="")
+    scrubbed_text: str = Field(default="")
+    final_text: str = Field(default="")
+    repair_attempts: int = Field(default=0)
+    outcome: str = Field(default="clean_after_repair")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ChannelDirective(SQLModel, table=True):
     """Living per-channel behavioural directive (ADR 035 phase 5).
 
