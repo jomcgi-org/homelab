@@ -77,6 +77,7 @@
   // per-frame mark tinting reads data-c off these same nodes.
   const cards = story.chunks.map((c) => ({
     id: c.id,
+    ref: c.ref,
     path: c.section.split("/").pop(),
     bodyHtml: segHtml(segmentize(c.content.slice(0, 240), PHRASES)),
   }));
@@ -85,8 +86,11 @@
   // the chunking phase each flyer lifts OFF the page at its box's position and
   // lands on its chunk card, so the blocks visibly become the cards instead of
   // the two animations merely happening near each other.
+  // NB a bbox's chunkId is the chunk's marker REF PATH (/page/N/Kind/M), not
+  // its UUID: match on ref. Matching on id here once made flyBoxes silently
+  // empty and the whole flight a no-op in prod.
   const flyBoxes = story.bboxes
-    .map((b) => ({ ...b, card: cards.findIndex((c) => c.id === b.chunkId) }))
+    .map((b) => ({ ...b, card: cards.findIndex((c) => c.ref === b.chunkId) }))
     // no art flyers: a full-page illustration's bbox in flight is a giant slab
     // that reads as a glitch. Its caption still flies, which carries the story.
     .filter((f) => f.card >= 0 && f.kind !== "art");
