@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
+from opentelemetry import context as otel_context
+from opentelemetry.propagate import extract
 from sqlmodel import Session
 
 from app.db import get_engine
@@ -558,11 +560,24 @@ async def _post_agent_run(
                 # pick up kubelet token rotation).
                 headers = auth_headers()
                 # Nest the agent's fc-invoke spans under the caller's trace (the
-                # demo page's `demo.goose` span) by forwarding its traceparent;
-                # fc-invoke extracts it at ingress. Empty when no caller context.
-                if traceparent:
-                    headers["traceparent"] = traceparent
-                resp = await client.post(url, json=payload, headers=headers)
+                # demo page's `demo.goose` span). This runs on a detached daemon
+                # thread with NO active OTEL context, so we reconstruct the caller
+                # context from the traceparent string and attach it AROUND the
+                # POST: the auto-instrumented httpx client span then parents under
+                # the caller span and injects the right traceparent downstream. A
+                # manual header alone does not work, HTTPXClientInstrumentor
+                # overwrites it with the current context's, which here would be a
+                # fresh root (the fc-invoke spans would form a separate trace).
+                ctx_token = (
+                    otel_context.attach(extract({"traceparent": traceparent}))
+                    if traceparent
+                    else None
+                )
+                try:
+                    resp = await client.post(url, json=payload, headers=headers)
+                finally:
+                    if ctx_token is not None:
+                        otel_context.detach(ctx_token)
                 resp.raise_for_status()
                 return resp.json()
         except httpx.HTTPStatusError as exc:
