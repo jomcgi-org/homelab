@@ -45,6 +45,7 @@
   const entById = Object.fromEntries(story.entities.map((e) => [e.id, e]));
   const nodes = graphLayout(story.entities, story.edges);
   const nById = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const idxById = Object.fromEntries(nodes.map((n, i) => [n.id, i]));
   const graphEdges = story.edges.filter((e) => nById[e.from] && nById[e.to]);
 
   // Every real highlightable phrase on the page: entity names plus recorded
@@ -156,6 +157,12 @@
   // ── Reactive state (coarse only) ──
   let ready = $state(false); // scrubbed path is live (JS on, motion allowed)
   let reduced = $state(false);
+  // Narrow/touch viewports get a dedicated portrait choreography: same phases,
+  // same data, but a single centred column instead of the desktop two-column
+  // stage (page centre, cards full width, a tall clamped constellation, a
+  // bottom dot rail). Decided at mount, re-checked on resize. See the ported
+  // reference-mockup-mobile.html for the design source.
+  let mobile = $state(false);
   let phaseId = $state("hero");
   let popIdx = $state(-1);
 
@@ -204,6 +211,11 @@
   let measured = false;
   let dots = [];
   const lastNodePos = [];
+  // mobile-only per-frame geometry: the centred page's rest centre and each
+  // chip's half-width (to clamp chips fully inside the narrow viewport)
+  let pageCX = 0;
+  let pageCY = 0;
+  let chipHalf = [];
 
   // Canvas can't read CSS custom properties, so resolve the --grim-type-*
   // tokens to concrete colors off the (in-.grimoire) canvas element, and
@@ -276,8 +288,14 @@
   function placePopout() {
     if (popIdx < 0 || !popoutEl) return;
     const [x, y] = popAnchor || lastNodePos[popIdx] || [W / 2, H / 2];
-    popoutEl.style.left = clamp(x + 16, 12, W - 300) + "px";
-    popoutEl.style.top = clamp(y + 14, 12, H - 240) + "px";
+    if (mobile) {
+      // centre the narrower card on the tapped node, kept inside the viewport
+      popoutEl.style.left = clamp(x - 130, 10, W - 270) + "px";
+      popoutEl.style.top = clamp(y + 16, 12, H - 220) + "px";
+    } else {
+      popoutEl.style.left = clamp(x + 16, 12, W - 300) + "px";
+      popoutEl.style.top = clamp(y + 14, 12, H - 240) + "px";
+    }
   }
 
   function railTo(p) {
@@ -293,16 +311,29 @@
   function layout() {
     W = window.innerWidth;
     H = window.innerHeight;
-    pageH = H * 0.76;
-    pageW = pageH * aspect;
-    if (pageW > W * 0.42) {
-      pageW = W * 0.42;
+    if (mobile) {
+      // centred, sized for portrait: fits the width with margin, tall enough
+      // to read as the scanned page
+      pageW = Math.min(W * 0.66, H * 0.46 * aspect);
       pageH = pageW / aspect;
+      const left = (W - pageW) / 2;
+      const top = H * 0.5 - pageH / 2;
+      pageWrapEl.style.left = left + "px";
+      pageWrapEl.style.top = top + "px";
+      pageCX = left + pageW / 2;
+      pageCY = top + pageH / 2;
+    } else {
+      pageH = H * 0.76;
+      pageW = pageH * aspect;
+      if (pageW > W * 0.42) {
+        pageW = W * 0.42;
+        pageH = pageW / aspect;
+      }
+      pageWrapEl.style.left = W * 0.56 - pageW / 2 + "px";
+      pageWrapEl.style.top = (H - pageH) / 2 + "px";
     }
     pageWrapEl.style.width = pageW + "px";
     pageWrapEl.style.height = pageH + "px";
-    pageWrapEl.style.left = W * 0.56 - pageW / 2 + "px";
-    pageWrapEl.style.top = (H - pageH) / 2 + "px";
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvasEl.width = W * dpr;
     canvasEl.height = H * dpr;
@@ -327,6 +358,9 @@
         h: el.offsetHeight,
       };
     });
+    chipEls.forEach((el, i) => {
+      if (el) chipHalf[i] = el.offsetWidth / 2;
+    });
   }
 
   // Graph node screen position: middle band during its phase, shrinking to a
@@ -347,6 +381,25 @@
     ];
   }
 
+  // Portrait constellation: a narrow x radius keeps chips within the width
+  // while a taller y radius spreads them down the screen. The caller clamps
+  // each chip's centre by its measured half-width so no label is ever cut off.
+  function nodePosMobile(n, shrink, chatP = 0) {
+    const cx = W * 0.5;
+    const cy = H * 0.52;
+    const Rx = W * 0.4;
+    const Ry = H * 0.32;
+    let sx = cx + n.x * Rx;
+    let sy = cy + n.y * Ry;
+    if (sy < H * 0.2) sy = H * 0.2 + (H * 0.2 - sy) * 0.3;
+    const kx = lerp(cx, W * 0.5, chatP);
+    const ky = lerp(H * 0.72, H * 0.42, chatP);
+    return [
+      lerp(sx, kx + n.x * Rx * 0.2, shrink),
+      lerp(sy, ky + n.y * Ry * 0.12, shrink),
+    ];
+  }
+
   // ── the per-frame choreography (ported verbatim from the mockup) ──
   function frame(t) {
     const phase = phaseAt(t);
@@ -361,7 +414,9 @@
     // hero copy
     const pHero = sub(t, 0.04, 0.08);
     heroCopyEl.style.opacity = 1 - pHero;
-    heroCopyEl.style.transform = `translateY(${-pHero * 30}px)`;
+    heroCopyEl.style.transform = mobile
+      ? `translateX(-50%) translateY(${-pHero * 24}px)`
+      : `translateY(${-pHero * 30}px)`;
     heroCopyEl.style.visibility = pHero >= 1 ? "hidden" : "visible";
 
     // page transform
@@ -369,11 +424,24 @@
     const slide = inOutCubic(sub(t, 0.26, 0.36));
     const recede = outCubic(sub(t, 0.44, 0.54));
     const gone = inOutCubic(sub(t, 0.66, 0.72));
-    const rot = lerp(-3.5, 0, settle);
-    const px = lerp(lerp(0, -W * 0.34, slide), -W * 0.52, gone);
-    const sc = lerp(lerp(lerp(0.94, 1, settle), 0.78, slide), 0.66, recede);
-    pageWrapEl.style.transform = `translate(${px}px,0) rotate(${rot}deg) scale(${sc})`;
-    pageWrapEl.style.opacity = lerp(lerp(1, 0.25, recede), 0, gone);
+    const rot = lerp(mobile ? -3.2 : -3.5, 0, settle);
+    let px = 0;
+    let sc;
+    let pageTY = 0;
+    if (mobile) {
+      // page settles centred, then dissolves upward as the flyers hand it off
+      // to the cards; during the hero it rides lower so the copy + cue clear it
+      const fade = inOutCubic(sub(t, 0.3, 0.44));
+      sc = lerp(lerp(0.96, 1, settle), 0.88, slide);
+      pageTY = (1 - settle) * H * 0.08 + lerp(0, -H * 0.06, slide);
+      pageWrapEl.style.transform = `translate(0,${pageTY}px) rotate(${rot}deg) scale(${sc})`;
+      pageWrapEl.style.opacity = 1 - fade;
+    } else {
+      px = lerp(lerp(0, -W * 0.34, slide), -W * 0.52, gone);
+      sc = lerp(lerp(lerp(0.94, 1, settle), 0.78, slide), 0.66, recede);
+      pageWrapEl.style.transform = `translate(${px}px,0) rotate(${rot}deg) scale(${sc})`;
+      pageWrapEl.style.opacity = lerp(lerp(1, 0.25, recede), 0, gone);
+    }
 
     // layout boxes: crisp staggered scanner strokes, then they fly to cards
     const pLay = sub(t, 0.08, 0.2);
@@ -402,8 +470,8 @@
     // rot is 0 through this window, so the page's stage rect is just its base
     // rect scaled about its center and shifted by the slide translate.
     const rawFly = sub(t, 0.27, 0.4);
-    const pcx = W * 0.56 + px;
-    const pcy = H / 2;
+    const pcx = mobile ? pageCX : W * 0.56 + px;
+    const pcy = mobile ? pageCY + pageTY : H / 2;
     const pw = pageW * sc;
     const ph = pageH * sc;
     flyBoxes.forEach((f, i) => {
@@ -434,7 +502,9 @@
       if (!el) return;
       const dp = outCubic(sub(pChunk, i * 0.06, i * 0.06 + 0.5));
       el.style.opacity = dp * (1 - cardsOut);
-      el.style.transform = `translateX(${lerp(14, 0, dp) + cardsOut * 60}px)`;
+      el.style.transform = mobile
+        ? `translateY(${lerp(12, 0, dp) - cardsOut * 26}px)`
+        : `translateX(${lerp(14, 0, dp) + cardsOut * 60}px)`;
     });
     chunksWrapEl.style.visibility = cardsOut >= 1 ? "hidden" : "visible";
 
@@ -461,24 +531,54 @@
       const raw = sub(pChip, i * 0.025, i * 0.025 + 0.4);
       const move = inOutCubic(raw);
       const pop = outBack(raw);
-      const [gx, gy] = nodePos(n, shrink, chatShift);
+      let gx;
+      let gy;
+      let fromX;
+      let fromY;
+      let opa;
+      let scl;
+      if (mobile) {
+        const [gx0, gy0] = nodePosMobile(n, shrink, chatShift);
+        const hw = chipHalf[i] || 60;
+        gx = clamp(gx0, hw + 10, W - hw - 10);
+        gy = clamp(gy0, H * 0.12, H * 0.9);
+        fromX = W * 0.5;
+        fromY = H * 0.42;
+        // during the shelf/chat phases the page's chips recede to a faint,
+        // small knot so the constellation (the whole corpus) reads as the figure
+        opa = Math.min(raw * 3, 1) * lerp(1, 0.22, Math.max(shrink, graphDim));
+        scl = lerp(0.4, 1, pop) * lerp(1, 0.5, shrink);
+      } else {
+        [gx, gy] = nodePos(n, shrink, chatShift);
+        fromX = W * 0.74;
+        fromY = H * 0.5;
+        opa =
+          Math.min(raw * 3, 1) *
+          lerp(1, 0.4, Math.max(shrink * 0.5, graphDim));
+        scl = lerp(0.4, 1, pop) * lerp(1, 0.66, shrink);
+      }
       lastNodePos[i] = [gx, gy];
-      const x = lerp(W * 0.74, gx, move);
-      const y = lerp(H * 0.5, gy, move);
-      el.style.opacity =
-        Math.min(raw * 3, 1) * lerp(1, 0.4, Math.max(shrink * 0.5, graphDim));
-      el.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%) scale(${
-        lerp(0.4, 1, pop) * lerp(1, 0.66, shrink)
-      })`;
+      const x = lerp(fromX, gx, move);
+      const y = lerp(fromY, gy, move);
+      el.style.opacity = opa;
+      el.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%) scale(${scl})`;
     });
     placePopout();
     const pEdge = outCubic(sub(t, 0.52, 0.6));
     lineEls.forEach((l, i) => {
       if (!l) return;
-      const a = nById[graphEdges[i].from];
-      const b = nById[graphEdges[i].to];
-      const [x1, y1] = nodePos(a, shrink, chatShift);
-      const [x2, y2] = nodePos(b, shrink, chatShift);
+      let x1;
+      let y1;
+      let x2;
+      let y2;
+      if (mobile) {
+        // read the clamped chip centres so edges stay attached to the pills
+        [x1, y1] = lastNodePos[idxById[graphEdges[i].from]] || [0, 0];
+        [x2, y2] = lastNodePos[idxById[graphEdges[i].to]] || [0, 0];
+      } else {
+        [x1, y1] = nodePos(nById[graphEdges[i].from], shrink, chatShift);
+        [x2, y2] = nodePos(nById[graphEdges[i].to], shrink, chatShift);
+      }
       l.setAttribute("x1", x1);
       l.setAttribute("y1", y1);
       l.setAttribute("x2", x2);
@@ -500,9 +600,16 @@
           const d = dots[i];
           const x = d.x * W;
           const y = d.y * H;
-          const edge = clamp(Math.min(x, W - x, y, H - y) / 90, 0, 1);
-          // keep the progress rail's column clear
-          if (x > W - 150 && y > H * 0.26 && y < H * 0.74) continue;
+          const edge = clamp(
+            Math.min(x, W - x, y, H - y) / (mobile ? 70 : 90),
+            0,
+            1,
+          );
+          // keep the progress rail's lane clear (right gutter on desktop, the
+          // bottom dot row on mobile)
+          if (mobile) {
+            if (y > H - 54) continue;
+          } else if (x > W - 150 && y > H * 0.26 && y < H * 0.74) continue;
           if (edge <= 0) continue;
           ctx.globalAlpha = 0.72 * alpha * edge;
           ctx.fillStyle = dotColor(d.t);
@@ -583,6 +690,9 @@
     reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduced) return; // stay on the static stacked scenes
 
+    // Narrow/touch viewports get the portrait choreography; wider ones the
+    // desktop two-column stage. Checked once here and re-checked on resize.
+    mobile = window.matchMedia("(max-width: 700px)").matches;
     ready = true; // reveal the scrubbed stage (re-render, refs already bound)
     appEl = document.querySelector(".grimoire-app");
     // Proximity snap lives on the document scroll container: the .snap
@@ -598,6 +708,8 @@
       if (!raf) raf = requestAnimationFrame(onFrame);
     };
     const onResize = () => {
+      const nowMobile = window.matchMedia("(max-width: 700px)").matches;
+      if (nowMobile !== mobile) mobile = nowMobile;
       layout();
       queue();
     };
@@ -648,7 +760,7 @@
      subtree regardless of app theme (and the canvas color resolver reads off
      this island, so the constellation follows). The story ships light-only for
      now; dark-mode art direction is a deliberate later pass. -->
-<div class="scrollstory grimoire" class:ready>
+<div class="scrollstory grimoire" class:ready class:mobile>
   <!-- ── Scrubbed stage: always in the DOM (refs bind at mount) but hidden by
        CSS until `ready` flips, so no-JS and reduced-motion never see it ── -->
   <div class="scroller" bind:this={scrollerEl}>
@@ -1737,21 +1849,119 @@
     opacity: 1;
   }
 
+  /* ── dedicated mobile (portrait) composition of the scrubbed stage ──
+     Applied only when `mobile` is set (below 700px). The frame() geometry
+     switches to a single centred column; these rules restyle the same DOM to
+     match. Ported from reference-mockup-mobile.html: keep the two in sync. */
+  .scrollstory.mobile .hero-copy {
+    left: 50%;
+    top: 12vh;
+    width: 86vw;
+    max-width: 34ch;
+    text-align: center;
+    /* frame() writes `translateX(-50%) translateY(...)` here every frame */
+  }
+  .scrollstory.mobile .hero-copy p {
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .scrollstory.mobile .caption {
+    left: 5vw;
+    top: 4vh;
+    max-width: 88vw;
+  }
+  .scrollstory.mobile .caption .txt {
+    font-size: 16px;
+    max-width: 30ch;
+  }
+  .scrollstory.mobile .attribution {
+    left: 0;
+    right: 0;
+    bottom: -34px;
+    text-align: center;
+    white-space: normal;
+    font-size: 9.5px;
+    line-height: 1.4;
+  }
+  .scrollstory.mobile .chunks {
+    left: 4vw;
+    right: 4vw;
+    top: 15vh;
+    width: auto;
+    transform: none;
+    gap: 7px;
+  }
+  .scrollstory.mobile .chunk-card {
+    padding: 8px 12px;
+  }
+  .scrollstory.mobile .chunk-card .body {
+    font-size: 12px;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+  .scrollstory.mobile .chip {
+    font-size: 10px;
+    padding: 3px 9px 3px 6px;
+  }
+  .scrollstory.mobile .popout {
+    width: 260px;
+  }
+  .scrollstory.mobile .scale-panel,
+  .scrollstory.mobile .chat-head {
+    top: 8vh;
+    width: 92vw;
+    padding: 18px;
+    border-radius: 16px;
+  }
+  .scrollstory.mobile .chat-head {
+    top: 7vh;
+  }
+  .scrollstory.mobile .this-page {
+    gap: 7px;
+    font-size: 10px;
+  }
+  .scrollstory.mobile .counters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 8px;
+  }
+  .scrollstory.mobile .type-chips {
+    max-width: 92vw;
+    gap: 6px;
+  }
+  .scrollstory.mobile .chat {
+    width: 92vw;
+    padding: 18px 18px 16px;
+  }
+  .scrollstory.mobile .ctas {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .scrollstory.mobile .cta {
+    padding: 12px 8px;
+  }
+  /* progress rail: a horizontal dot row pinned to the bottom, out of the
+     content's way (the desktop right gutter has no room on a phone) */
+  .scrollstory.mobile .rail {
+    right: auto;
+    left: 50%;
+    top: auto;
+    bottom: 12px;
+    transform: translateX(-50%);
+    flex-direction: row;
+    gap: 12px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--grim-paper) 78%, transparent);
+    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 10px rgba(10, 14, 22, 0.1);
+  }
+  .scrollstory.mobile .rail .lbl {
+    display: none;
+  }
+
   /* ── responsive ── */
   @media (max-width: 700px) {
-    .hero-copy {
-      top: 14vh;
-    }
-    .chunks {
-      width: 86vw;
-      right: 7vw;
-    }
-    .caption {
-      max-width: 70vw;
-    }
-    .type-chips {
-      max-width: 86vw;
-    }
     .static-cards {
       grid-template-columns: 1fr;
     }
