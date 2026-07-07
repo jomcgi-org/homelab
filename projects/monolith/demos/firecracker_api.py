@@ -10,11 +10,16 @@ waterfall:
 - ``GET  /goose/{thread_id}`` polls the agent run ledger for that run's state.
 - ``GET  /trace/{trace_id}``  returns the SigNoz spans for a captured trace.
 
-Each POST wraps its invocation in an explicit child span so a valid trace exists
-even before FastAPI's auto-instrumentation is consulted, and captures the trace
-id as 32 lowercase hex (matching SigNoz's ``FixedString(32)`` and the
-``traces.fetch_trace_spans`` validator). The handlers themselves are reused, not
-reimplemented: this module owns no fc-invoke or ClickHouse client of its own.
+Each POST wraps its invocation in a fresh ROOT span, detached from any inbound
+trace context, via ``context=Context()``. Browser-initiated requests arrive
+carrying a ``traceparent`` from the frontend's OTEL fetch instrumentation whose
+parent span is never exported to SigNoz; inheriting it makes SigNoz render a
+"Missing Span" root and drags the noisy ASGI receive/send spans into the
+waterfall. Rooting a new trace per run yields a clean, self-contained trace
+(``demo.<kind>`` -> fc-invoke subtree). The trace id is captured as 32 lowercase
+hex (matching SigNoz's ``FixedString(32)`` and the ``traces.fetch_trace_spans``
+validator). The handlers themselves are reused, not reimplemented: this module
+owns no fc-invoke or ClickHouse client of its own.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from opentelemetry import trace
+from opentelemetry.context import Context
 from pydantic import BaseModel
 
 import goosecracker.api as goosecracker
@@ -76,7 +82,7 @@ async def run_python(body: PythonRequest) -> dict:
     trace id of this invocation. Prefers the daemon's own duration_ms when
     present, falling back to the wall time measured here.
     """
-    with _tracer.start_as_current_span("demo.python"):
+    with _tracer.start_as_current_span("demo.python", context=Context()):
         trace_id = _current_trace_id()
         started = perf_counter()
         result = await run_python_in_sandbox(body.code, body.files)
@@ -99,7 +105,7 @@ async def run_semgrep(body: SemgrepRequest) -> dict:
     The scan path does not report its own timing, so duration_ms is the wall
     time measured around the call here.
     """
-    with _tracer.start_as_current_span("demo.semgrep"):
+    with _tracer.start_as_current_span("demo.semgrep", context=Context()):
         trace_id = _current_trace_id()
         started = perf_counter()
         result = await scan_files(body.files)
@@ -123,7 +129,7 @@ async def submit_goose(body: GooseRequest) -> dict:
     each demo submission is its own run. The submit path is synchronous DB work,
     so it runs off the event loop via ``asyncio.to_thread`` (as the MCP tool does).
     """
-    with _tracer.start_as_current_span("demo.goose"):
+    with _tracer.start_as_current_span("demo.goose", context=Context()):
         trace_id = _current_trace_id()
         session = f"demo-{uuid4().hex[:12]}"
         result = await asyncio.to_thread(
