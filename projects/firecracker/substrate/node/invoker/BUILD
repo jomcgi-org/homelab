@@ -8,6 +8,10 @@ go_library(
     deps = [
         "//projects/firecracker/substrate/node/egress",
         "//projects/firecracker/substrate/substrate",
+        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
+        "@io_opentelemetry_go_otel_trace//:trace",
         "@org_golang_x_sync//semaphore",
     ],
 )

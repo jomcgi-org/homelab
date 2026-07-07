@@ -21,11 +21,20 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/node/egress"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
 )
+
+// tracer spans the invocation lifecycle points (slot acquire, warm restore,
+// guest readiness, guest exec). Spans nest under the root fc_invoke span via the
+// ctx threaded down from the ingress handler.
+var tracer = otel.Tracer("fc-invoke/invoker")
 
 // vmDriver is the subset of fcvm/driver the invoker needs. The real
 // *driver.Driver satisfies it; tests inject a fake.
@@ -215,7 +224,16 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 //     map to 502.
 func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) (*http.Response, error) {
 	if inv.sem != nil {
-		if err := inv.sem.Acquire(ctx, 1); err != nil {
+		// acquire_slot measures queue wait: how long the request blocked on the
+		// per-workload concurrency cap before a microVM slot came free.
+		_, span := tracer.Start(ctx, "acquire_slot")
+		err := inv.sem.Acquire(ctx, 1)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+		if err != nil {
 			return nil, &GuestUnavailableError{Err: fmt.Errorf("acquire invoke slot: %w", err)}
 		}
 	}
@@ -228,7 +246,13 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 		}
 	}
 
-	if base, gen, ok := inv.currentBase(); ok {
+	base, gen, ok := inv.currentBase()
+	// Record the warm/cold decision on the root fc_invoke span so a trace shows
+	// at a glance whether it took the pool (warm restore) or a cold boot; the
+	// branch's phase spans (snapshot_restore vs provision_rootfs+firecracker_boot)
+	// then show where the time went.
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("fc.pool_hit", ok))
+	if ok {
 		warmSpec := substrate.ClaimSpec{
 			Arch:            inv.cfg.Arch,
 			BaseSnapshotRef: base,
@@ -288,9 +312,28 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	// which is where session continuity actually lives; the host thread id is
 	// purely a per-VM bundle name.
 	spec.ThreadID = newThreadID()
-	h, err := inv.driver.Claim(ctx, spec)
+	// On the warm path the Claim is a snapshot restore; wrap it in a
+	// snapshot_restore span so it is the warm-path analog of the cold path's
+	// provision_rootfs + firecracker_boot spans (emitted inside driver.Claim).
+	// The cold path adds no wrapper here so warm and cold stay symmetric in the
+	// waterfall: the pool_hit attribute plus which child spans appear tells them
+	// apart.
+	claimCtx := ctx
+	var restoreSpan trace.Span
+	if warm {
+		claimCtx, restoreSpan = tracer.Start(ctx, "snapshot_restore")
+	}
+	h, err := inv.driver.Claim(claimCtx, spec)
 	if err != nil {
+		if restoreSpan != nil {
+			restoreSpan.RecordError(err)
+			restoreSpan.SetStatus(codes.Error, err.Error())
+			restoreSpan.End()
+		}
 		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
+	}
+	if restoreSpan != nil {
+		restoreSpan.End()
 	}
 
 	uds := inv.driver.VsockUDSPath(h.ThreadID)
@@ -334,7 +377,13 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		readyTimeout = inv.cfg.RestoreReadyTimeout
 	}
 	readyCtx, cancelReady := context.WithTimeout(ctx, readyTimeout)
-	readyErr := inv.transport.WaitReady(readyCtx, uds, inv.cfg.Workload.ReadyPath)
+	waitCtx, waitSpan := tracer.Start(readyCtx, "guest_wait_ready")
+	readyErr := inv.transport.WaitReady(waitCtx, uds, inv.cfg.Workload.ReadyPath)
+	if readyErr != nil {
+		waitSpan.RecordError(readyErr)
+		waitSpan.SetStatus(codes.Error, readyErr.Error())
+	}
+	waitSpan.End()
 	cancelReady()
 	if readyErr != nil {
 		discardGuest()
@@ -354,8 +403,19 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		discardGuest()
 		return nil, nil, fmt.Errorf("invoker: build request: %w", err)
 	}
-	resp, err := inv.transport.RoundTrip(rtCtx, uds, req)
+	// guest_exec is the black-box guest-execution span: the time the guest spends
+	// handling the request. Guests emit no spans of their own (intentional; guest
+	// interior instrumentation is deferred), so this single span stands in for the
+	// whole in-guest execution.
+	execCtx, execSpan := tracer.Start(rtCtx, "guest_exec", trace.WithAttributes(
+		attribute.String("fc.workload", inv.cfg.BaseKey),
+		attribute.String("fc.session", session),
+	))
+	resp, err := inv.transport.RoundTrip(execCtx, uds, req)
 	if err != nil {
+		execSpan.RecordError(err)
+		execSpan.SetStatus(codes.Error, err.Error())
+		execSpan.End()
 		cancelRT()
 		discardGuest()
 		if warm {
@@ -371,6 +431,10 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		// No body to own, so clean up eagerly.
 		return nil, nil, err
 	}
+	// The guest returned response headers; the exec round-trip is complete. The
+	// response body still streams lazily over the live guest, but that is guest
+	// I/O owned by the caller, not part of the exec span.
+	execSpan.End()
 	// Success: the response body is a lazy stream over the still-live guest.
 	// Hand the caller a cleanup that cancels the request context and discards
 	// the VM; it will run only when the body is closed, after streaming. Cancel
