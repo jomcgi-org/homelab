@@ -185,7 +185,12 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 	}
 	// Always discard the build VM: the base lives in the snapshot bundle, not
 	// in this live VM. context.Background() so cleanup runs even if ctx fires.
-	defer inv.discard(h)
+	// No throughput concern here (no invocation slot rides on it), so tear down
+	// memory then disk synchronously.
+	defer func() {
+		inv.releaseGuest(h)
+		inv.removeGuestBundle(h.ThreadID)
+	}()
 
 	readyCtx, cancel := context.WithTimeout(ctx, inv.cfg.BootReadyTimeout)
 	defer cancel()
@@ -257,9 +262,9 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 			Arch:            inv.cfg.Arch,
 			BaseSnapshotRef: base,
 		}
-		resp, cleanup, err := inv.claimInvoke(ctx, warmSpec, session, body, true)
+		resp, td, err := inv.claimInvoke(ctx, warmSpec, session, body, true)
 		if err == nil {
-			return ownResponse(resp, cleanup, releaseSlot), nil
+			return inv.ownResponse(ctx, resp, td, releaseSlot), nil
 		}
 		// Only a *GuestUnavailableError (Claim or WaitReady failure) on the warm
 		// path triggers base invalidation and a cold-boot fallback. A raw error
@@ -279,27 +284,29 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 	coldSpec := substrate.ClaimSpec{
 		Arch: inv.cfg.Arch,
 	}
-	resp, cleanup, err := inv.claimInvoke(ctx, coldSpec, session, body, false)
+	resp, td, err := inv.claimInvoke(ctx, coldSpec, session, body, false)
 	if err != nil {
 		releaseSlot()
 		return nil, err
 	}
-	return ownResponse(resp, cleanup, releaseSlot), nil
+	return inv.ownResponse(ctx, resp, td, releaseSlot), nil
 }
 
 // claimInvoke is the shared implementation for both the warm and cold
 // invocation paths. It claims a VM from the driver using spec, waits for the
 // shim to be ready, and performs the HTTP round-trip.
 //
-// On success it returns the response and a cleanup func that discards the VM
-// and cancels the request context; the caller transfers that cleanup to the
-// response body's Close so the guest stays live while the body streams. On any
-// failure it discards the VM and cancels its context eagerly (there is no body
-// to own) and returns a nil response and nil cleanup.
+// On success it returns the response and an invokeTeardown carrying the pieces
+// the caller must run when the body closes (the guest handle, the egress-cancel,
+// and the request-context cancel); the caller (ownResponse) orders those against
+// the concurrency-slot release so the VM's memory is reclaimed before the slot is
+// freed and the on-disk bundle removal runs off the slot. On any failure it tears
+// the VM down and cancels its context eagerly (there is no body to own) and
+// returns a nil response and a zero invokeTeardown.
 //
 // A Claim or WaitReady failure returns *GuestUnavailableError. A RoundTrip
 // failure is returned as-is (the caller decides the 502/503 mapping).
-func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader, warm bool) (*http.Response, func(), error) {
+func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader, warm bool) (*http.Response, invokeTeardown, error) {
 	// Each claim gets a fresh single-use microVM, so the host bundle + vsock
 	// socket identity MUST be unique per claim, never the logical session. The
 	// egress listen socket is derived from VsockUDSPath(threadID) as
@@ -330,7 +337,7 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 			restoreSpan.SetStatus(codes.Error, err.Error())
 			restoreSpan.End()
 		}
-		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
+		return nil, invokeTeardown{}, &GuestUnavailableError{Err: fmt.Errorf("claim guest: %w", err)}
 	}
 	if restoreSpan != nil {
 		restoreSpan.End()
@@ -357,21 +364,16 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		}()
 	}
 	// discardGuest tears the VM down and stops its egress forwarder together, so
-	// the forwarder's context is cancelled exactly when the guest is discarded on
-	// every path (each eager error return below, and the success body Close).
+	// the forwarder's context is cancelled exactly when the guest is discarded.
+	// It is used only on the EAGER error paths below (there is no body to own, so
+	// throughput is irrelevant on a failed run): stop egress, reclaim VM memory,
+	// then remove the on-disk bundle, all synchronously. The success path does not
+	// use this; ownResponse orders Release, slot release, and async bundle removal
+	// itself so the slot is freed as soon as memory is reclaimed.
 	discardGuest := func() {
 		egressCancel()
-		// Wrap the VM teardown (driver Release + bundle removal) in its own span.
-		// On the success path this runs at response-body Close, AFTER the caller
-		// already has its response, so it is off the critical path. Without its
-		// own span it inflates the parent fc_invoke span past the caller's client
-		// span and reads as extra exec time. Parent under ctx (which carries the
-		// fc_invoke span) for nesting; inv.discard uses its own background context
-		// internally so cleanup still runs even if ctx is cancelled, which is
-		// independent of span parentage.
-		_, teardownSpan := tracer.Start(ctx, "guest_teardown")
-		inv.discard(h)
-		teardownSpan.End()
+		inv.releaseGuest(h)
+		inv.removeGuestBundle(h.ThreadID)
 	}
 
 	// A warm restore is already warmed in the snapshot, so it answers /shim/ready
@@ -397,7 +399,7 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	cancelReady()
 	if readyErr != nil {
 		discardGuest()
-		return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("guest readiness: %w", readyErr)}
+		return nil, invokeTeardown{}, &GuestUnavailableError{Err: fmt.Errorf("guest readiness: %w", readyErr)}
 	}
 
 	path := "/invoke"
@@ -411,7 +413,7 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 		// error, not a VM issue. No body to own, so clean up eagerly.
 		cancelRT()
 		discardGuest()
-		return nil, nil, fmt.Errorf("invoker: build request: %w", err)
+		return nil, invokeTeardown{}, fmt.Errorf("invoker: build request: %w", err)
 	}
 	// guest_exec is the black-box guest-execution span: the time the guest spends
 	// handling the request. Guests emit no spans of their own (intentional; guest
@@ -434,26 +436,23 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 			// restored guest is flaky. Surface it as unavailable so Invoke
 			// invalidates the base and retries on a cold boot rather than
 			// returning a hard 502.
-			return nil, nil, &GuestUnavailableError{Err: fmt.Errorf("warm round-trip: %w", err)}
+			return nil, invokeTeardown{}, &GuestUnavailableError{Err: fmt.Errorf("warm round-trip: %w", err)}
 		}
 		// Cold path: the guest booted and proved ready, so a round-trip failure
 		// is an HTTP-leg error (502 territory), not a guest-unavailable case.
 		// No body to own, so clean up eagerly.
-		return nil, nil, err
+		return nil, invokeTeardown{}, err
 	}
 	// The guest returned response headers; the exec round-trip is complete. The
 	// response body still streams lazily over the live guest, but that is guest
 	// I/O owned by the caller, not part of the exec span.
 	execSpan.End()
-	// Success: the response body is a lazy stream over the still-live guest.
-	// Hand the caller a cleanup that cancels the request context and discards
-	// the VM; it will run only when the body is closed, after streaming. Cancel
-	// the context AFTER discarding so an in-flight read is never aborted early.
-	cleanup := func() {
-		discardGuest()
-		cancelRT()
-	}
-	return resp, cleanup, nil
+	// Success: the response body is a lazy stream over the still-live guest. Hand
+	// the caller the teardown pieces (guest handle, egress-cancel, request-context
+	// cancel); ownResponse folds them into the body's Close so the guest stays live
+	// while the body streams, and orders VM Release ahead of the concurrency-slot
+	// release so memory is reclaimed before the slot frees.
+	return resp, invokeTeardown{h: h, egressCancel: egressCancel, cancelRT: cancelRT}, nil
 }
 
 // ownedBody wraps a response body so closing it runs a cleanup function exactly
@@ -478,10 +477,33 @@ func (b *ownedBody) Close() error {
 	return err // nosemgrep: no-bare-error-return
 }
 
-// ownResponse replaces resp.Body with an ownedBody whose Close runs the VM/ctx
-// cleanup followed by the concurrency-slot release, so the guest is torn down
-// and the slot freed only after the caller has streamed and closed the body.
-func ownResponse(resp *http.Response, cleanup, releaseSlot func()) *http.Response {
+// invokeTeardown carries the pieces claimInvoke closes over that the success
+// path must run when the response body is closed: the guest handle (to Release
+// and to remove its bundle), the egress-forwarder cancel, and the request-context
+// cancel. ownResponse orders these against the concurrency-slot release so the
+// VM's memory is reclaimed (Release) BEFORE the slot is freed, and the on-disk
+// bundle removal runs asynchronously off the freed slot.
+type invokeTeardown struct {
+	h            substrate.Handle
+	egressCancel func()
+	cancelRT     func()
+}
+
+// ownResponse replaces resp.Body with an ownedBody whose Close, in order:
+//
+//	(a) stops the egress forwarder, cancels the request context, and calls
+//	    driver.Release to kill the microVM process, reclaiming its MEMORY (the
+//	    resource the concurrency slot bounds);
+//	(b) releases the concurrency slot, so a queued invocation can start
+//	    immediately once memory is free, without waiting on disk cleanup;
+//	(c) removes the on-disk bundle asynchronously (DISK, not memory), off the
+//	    freed slot.
+//
+// The slot is therefore never freed before Release returns (the memory bound
+// holds), and the ~40ms bundle removal no longer occupies capacity. ownedBody's
+// sync.Once runs this exactly once, so Release happens once and exactly one
+// cleanup goroutine is spawned per claimed guest. The caller MUST close the body.
+func (inv *Invoker) ownResponse(ctx context.Context, resp *http.Response, td invokeTeardown, releaseSlot func()) *http.Response {
 	inner := resp.Body
 	if inner == nil {
 		inner = http.NoBody
@@ -489,25 +511,56 @@ func ownResponse(resp *http.Response, cleanup, releaseSlot func()) *http.Respons
 	resp.Body = &ownedBody{
 		ReadCloser: inner,
 		cleanup: func() {
-			cleanup()
+			// (a) Stop the egress forwarder (so it never outlives the VM), cancel
+			// the request context, then reclaim the VM's memory. Wrap Release in a
+			// vm_release span parented under ctx (the fc_invoke span); it runs at
+			// body Close, after the caller already has its response, so it is off
+			// the critical path. releaseGuest uses its own background context, so
+			// the kill runs even if ctx was cancelled.
+			td.egressCancel()
+			td.cancelRT()
+			_, releaseSpan := tracer.Start(ctx, "vm_release")
+			inv.releaseGuest(td.h)
+			releaseSpan.End()
+			// (b) VM memory reclaimed: free the slot now so the next queued
+			// invocation does not wait on disk cleanup it does not need.
 			releaseSlot()
+			// (c) Remove the on-disk bundle asynchronously, off the slot. It only
+			// reclaims disk, so it must not gate the memory slot. Best-effort: it
+			// logs its own errors and cannot panic the process. On abrupt process
+			// exit a bundle may be left behind for restart-time cleanup, which is
+			// acceptable. Start bundle_cleanup from ctx so it still nests under
+			// fc_invoke.
+			threadID := td.h.ThreadID
+			go func() {
+				_, bundleSpan := tracer.Start(ctx, "bundle_cleanup")
+				inv.removeGuestBundle(threadID)
+				bundleSpan.End()
+			}()
 		},
 	}
 	return resp
 }
 
-// discard releases a microVM and removes its on-disk bundle. It runs for every
-// guest the invoker claims: eagerly on failure paths, and from the response
-// body's Close on the success path. Best-effort: individual failures are
-// logged, not returned, so a Release hiccup does not mask the original result.
-// context.Background() ensures cleanup runs even when the request context was
-// cancelled.
-func (inv *Invoker) discard(h substrate.Handle) {
+// releaseGuest kills a microVM process, reclaiming its MEMORY (the resource the
+// concurrency slot bounds). Best-effort: a failure is logged, not returned, so a
+// Release hiccup does not mask the original result. context.Background() ensures
+// the kill runs even when the request context was cancelled.
+func (inv *Invoker) releaseGuest(h substrate.Handle) {
 	if err := inv.driver.Release(context.Background(), h); err != nil {
 		inv.logger.Warn("invoker: release guest", "thread", h.ThreadID, "err", err)
 	}
-	if err := inv.driver.RemoveBundle(h.ThreadID); err != nil {
-		inv.logger.Warn("invoker: remove guest bundle", "thread", h.ThreadID, "err", err)
+}
+
+// removeGuestBundle deletes a guest's on-disk bundle directory (its vsock/API
+// sockets and snapshot files), reclaiming DISK, not memory. It is safe to run
+// after the concurrency slot is freed because it never gates the memory bound.
+// Best-effort: a failure is logged, not returned. context.Background() is not
+// needed (it takes no context), but the same rationale applies: it runs to
+// completion regardless of the request's lifetime.
+func (inv *Invoker) removeGuestBundle(threadID string) {
+	if err := inv.driver.RemoveBundle(threadID); err != nil {
+		inv.logger.Warn("invoker: remove guest bundle", "thread", threadID, "err", err)
 	}
 }
 

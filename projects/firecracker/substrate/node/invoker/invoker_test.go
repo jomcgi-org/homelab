@@ -112,6 +112,26 @@ func (f *fakeDriver) isReleased() bool {
 	return len(f.releaseHandles) > 0
 }
 
+// waitForRemoveBundleCount polls until the fake driver has recorded want
+// RemoveBundle calls, failing the test after a short timeout. On the success
+// path RemoveBundle runs asynchronously off the freed concurrency slot (disk
+// cleanup no longer gates the memory slot), so reading the count directly after
+// body Close would race the cleanup goroutine.
+func waitForRemoveBundleCount(t *testing.T, drv *fakeDriver, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := drv.removeBundleCount(); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("RemoveBundle called %d time(s), want %d", drv.removeBundleCount(), want)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // lastClaimSpec returns the most recently recorded ClaimSpec, or zero if none.
 func (f *fakeDriver) lastClaimSpec() substrate.ClaimSpec {
 	f.mu.Lock()
@@ -212,9 +232,9 @@ func TestInvokeHappyPathRestoresAndReleases(t *testing.T) {
 	if got := drv.releaseCount(); got != 2 {
 		t.Errorf("Release called %d time(s) after body close, want 2 (BuildBase VM + Invoke VM)", got)
 	}
-	if got := drv.removeBundleCount(); got != 2 {
-		t.Errorf("RemoveBundle called %d time(s) after body close, want 2", got)
-	}
+	// The BuildBase VM's bundle was removed synchronously; the Invoke VM's runs
+	// asynchronously off the freed slot, so wait for both to land.
+	waitForRemoveBundleCount(t, drv, 2)
 }
 
 // TestInvokeReleasesVMOnTransportError verifies that when RoundTrip fails the
@@ -560,9 +580,8 @@ func TestInvokeSuccessDefersCleanupToBodyClose(t *testing.T) {
 	if c := drv.releaseCount(); c != 1 {
 		t.Errorf("Release called %d time(s) after close, want 1", c)
 	}
-	if c := drv.removeBundleCount(); c != 1 {
-		t.Errorf("RemoveBundle called %d time(s) after close, want 1", c)
-	}
+	// RemoveBundle runs asynchronously off the freed slot; wait for it.
+	waitForRemoveBundleCount(t, drv, 1)
 	if !body.closed {
 		t.Error("underlying body Close was not called")
 	}
