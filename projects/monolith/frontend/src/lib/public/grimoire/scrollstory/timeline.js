@@ -116,6 +116,25 @@ export function segmentize(text, phrases) {
   return segs;
 }
 
+// Each chunk's source footprint on the page: the union of its boxes in
+// fractional page coords, art excluded (a full-page illustration would make
+// the footprint a giant slab). Returns null for chunks with no footprint.
+// NB a bbox's chunkId is the chunk's marker REF PATH (/page/N/Kind/M), NOT its
+// UUID; matching on id once made every footprint null and the chunking flight
+// a silent no-op in prod. The test pins this.
+export function cardFootprints(chunks, bboxes) {
+  return chunks.map((c) => {
+    const bs = bboxes.filter((b) => b.chunkId === c.ref && b.kind !== "art");
+    if (!bs.length) return null;
+    return {
+      x: Math.min(...bs.map((b) => b.x)),
+      y: Math.min(...bs.map((b) => b.y)),
+      x2: Math.max(...bs.map((b) => b.x + b.w)),
+      y2: Math.max(...bs.map((b) => b.y + b.h)),
+    };
+  });
+}
+
 // Deterministic seeded PRNG (mulberry32): identical output on server and
 // client and across repeat visits, so SSR and hydration agree on the graph
 // layout and nobody sees a reflow.

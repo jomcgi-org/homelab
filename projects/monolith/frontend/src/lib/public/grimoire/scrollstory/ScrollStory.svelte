@@ -28,6 +28,7 @@
     outExpo,
     segmentize,
     graphLayout,
+    cardFootprints,
   } from "./timeline.js";
   import * as story from "./data/story.js";
   import { transcript, isPlaceholder } from "./data/transcript.js";
@@ -83,18 +84,13 @@
     bodyHtml: segHtml(segmentize(c.content.slice(0, 240), PHRASES)),
   }));
 
-  // Flyers: one per bounding box that belongs to a chunk on this page. During
-  // the chunking phase each flyer lifts OFF the page at its box's position and
-  // lands on its chunk card, so the blocks visibly become the cards instead of
-  // the two animations merely happening near each other.
-  // NB a bbox's chunkId is the chunk's marker REF PATH (/page/N/Kind/M), not
-  // its UUID: match on ref. Matching on id here once made flyBoxes silently
-  // empty and the whole flight a no-op in prod.
-  const flyBoxes = story.bboxes
-    .map((b) => ({ ...b, card: cards.findIndex((c) => c.ref === b.chunkId) }))
-    // no art flyers: a full-page illustration's bbox in flight is a giant slab
-    // that reads as a glitch. Its caption still flies, which carries the story.
-    .filter((f) => f.card >= 0 && f.kind !== "art");
+  // Each card's source footprint on the page: the chunking scene flies the
+  // card itself from this footprint to its column slot, text aboard.
+  const cardSrc = cardFootprints(cards, story.bboxes);
+  // ...and each bbox's owning card, so a chunk's outlines vanish with its lift
+  const bboxCard = story.bboxes.map((b) =>
+    cards.findIndex((c) => c.ref === b.chunkId),
+  );
 
   // Chat answer as PARAGRAPHS of SENTENCES, each sentence pre-rendered with
   // its entity highlights. The chat scene fades sentences in with a stagger:
@@ -189,7 +185,6 @@
   let scalePanelEl, typeChipsEl, chatHeadEl, chatEl, groundedEl, ctasEl;
   let boxEls = [];
   let cardEls = [];
-  let flyerEls = [];
   let sentEls = [];
   const cardRest = []; // each card's resting stage rect (flight destinations)
   let markEls = [];
@@ -429,7 +424,7 @@
     let sc;
     let pageTY = 0;
     if (mobile) {
-      // page settles centred, then dissolves upward as the flyers hand it off
+      // page settles centred, then dissolves upward as the cards lift off
       // to the cards; during the hero it rides lower so the copy + cue clear it
       const fade = inOutCubic(sub(t, 0.3, 0.44));
       sc = lerp(lerp(0.96, 1, settle), 0.88, slide);
@@ -443,9 +438,22 @@
       pageWrapEl.style.opacity = lerp(lerp(1, 0.25, recede), 0, gone);
     }
 
-    // layout boxes: crisp staggered scanner strokes, then they fly to cards
+    // Flight timing first: each card's lift progress drives BOTH the card and
+    // the disappearance of its own boxes, so a chunk's outlines vanish exactly
+    // as ITS card lifts off (not on a global fade).
+    const rawFly = sub(t, 0.27, 0.42);
+    const flyP = inOutCubic(sub(t, 0.27, 0.38)); // global fallback (orphans)
+    const cardFp = cards.map((_, i) =>
+      inOutCubic(sub(rawFly, i * 0.07, i * 0.07 + 0.55)),
+    );
+    const pcx = mobile ? pageCX : W * 0.56 + px;
+    const pcy = mobile ? pageCY + pageTY : H / 2;
+    const pw = pageW * sc;
+    const ph = pageH * sc;
+
+    // layout boxes: crisp staggered scanner strokes, then each chunk's boxes
+    // are taken by its lifting card
     const pLay = sub(t, 0.08, 0.2);
-    const flyP = inOutCubic(sub(t, 0.27, 0.38));
     story.bboxes.forEach((b, i) => {
       const el = boxEls[i];
       if (!el) return;
@@ -456,55 +464,46 @@
           (i / story.bboxes.length) * 0.7 + 0.22,
         ),
       );
-      if (flyP <= 0) {
+      if (rawFly <= 0) {
         el.style.opacity = dp;
         el.style.transform = `scaleY(${lerp(0.25, 1, dp)})`;
       } else {
-        // the flyers carry the motion; the in-page boxes just let go
-        el.style.opacity = Math.max(0, 1 - flyP * (b.chunkId ? 7 : 4));
+        const ci = bboxCard[i];
+        const lift = ci >= 0 ? cardFp[ci] : flyP;
+        el.style.opacity = Math.max(0, 1 - lift * 3);
         el.style.transform = "none";
       }
     });
 
-    // flyers: each chunk's boxes lift off the page and land as its card.
-    // rot is 0 through this window, so the page's stage rect is just its base
-    // rect scaled about its center and shifted by the slide translate.
-    const rawFly = sub(t, 0.27, 0.4);
-    const pcx = mobile ? pageCX : W * 0.56 + px;
-    const pcy = mobile ? pageCY + pageTY : H / 2;
-    const pw = pageW * sc;
-    const ph = pageH * sc;
-    flyBoxes.forEach((f, i) => {
-      const el = flyerEls[i];
-      if (!el) return;
-      const d = cardRest[f.card];
-      if (rawFly <= 0 || rawFly >= 1 || !d) {
-        el.style.opacity = 0;
-        return;
-      }
-      const fp = inOutCubic(sub(rawFly, f.card * 0.06, f.card * 0.06 + 0.55));
-      // visible only mid-flight: hands off from the in-page box, hands over
-      // to the card on landing
-      el.style.opacity =
-        Math.min(fp * 6, 1) * (1 - Math.max(0, (fp - 0.82) / 0.18));
-      el.style.left = lerp(pcx - pw / 2 + f.x * pw, d.x, fp) + "px";
-      el.style.top = lerp(pcy - ph / 2 + f.y * ph, d.y, fp) + "px";
-      el.style.width = lerp(f.w * pw, d.w, fp) + "px";
-      el.style.height = lerp(f.h * ph, d.h, fp) + "px";
-      el.style.borderRadius = lerp(2, 8, fp) + "px";
-    });
-
-    // chunk cards materialize where their flyers land, then out once chips
-    // have extracted
-    const pChunk = sub(t, 0.29, 0.4);
+    // The cards THEMSELVES lift off the page: each card starts as its chunk's
+    // footprint on the scan (union of its non-art boxes), flying text-aboard
+    // to its resting slot. One object per chunk, no chip-to-card handoff.
+    // Works on both compositions: pcx/pcy above are mobile-aware, and the
+    // extraction exit keeps the mobile direction (up) vs desktop (right).
     const cardsOut = inOutCubic(sub(t, 0.5, 0.58));
+    const outX = mobile ? 0 : cardsOut * 60;
+    const outY = mobile ? -cardsOut * 26 : 0;
     cardEls.forEach((el, i) => {
       if (!el) return;
-      const dp = outCubic(sub(pChunk, i * 0.06, i * 0.06 + 0.5));
-      el.style.opacity = dp * (1 - cardsOut);
-      el.style.transform = mobile
-        ? `translateY(${lerp(12, 0, dp) - cardsOut * 26}px)`
-        : `translateX(${lerp(14, 0, dp) + cardsOut * 60}px)`;
+      const s = cardSrc[i];
+      const d = cardRest[i];
+      if (!s || !d) {
+        const dp = outCubic(sub(rawFly, i * 0.07, i * 0.07 + 0.5));
+        el.style.opacity = dp * (1 - cardsOut);
+        el.style.transform = `translate(${outX}px,${outY}px)`;
+        return;
+      }
+      const fp = cardFp[i];
+      const srcX = pcx - pw / 2 + s.x * pw;
+      const srcY = pcy - ph / 2 + s.y * ph;
+      const srcW = (s.x2 - s.x) * pw;
+      const scale = lerp(srcW / d.w, 1, fp);
+      const tx = lerp(srcX, d.x, fp) - d.x + outX;
+      const ty = lerp(srcY, d.y, fp) - d.y + outY;
+      el.style.transformOrigin = "top left";
+      el.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+      // fade in as it lifts, fade out toward the extraction handover
+      el.style.opacity = Math.min(fp * 3, 1) * (1 - cardsOut);
     });
     chunksWrapEl.style.visibility = cardsOut >= 1 ? "hidden" : "visible";
 
@@ -700,6 +699,12 @@
     // component, so set it imperatively and remove it on destroy so other
     // routes are unaffected. NEVER "mandatory": free scrubbing is the point.
     document.documentElement.style.scrollSnapType = "y proximity";
+    // The story scrubs the DOCUMENT scroll, so body must be allowed to
+    // overflow. Two stylesheets disagree about body overflow (design-system
+    // says auto, the global reset says hidden) and which wins depends on
+    // bundle order: prod happens to pick auto, vite dev picks hidden (frozen
+    // page). Assert what we need instead of gambling on cascade order.
+    document.body.style.overflow = "auto";
     buildDots();
     ctx = canvasEl.getContext("2d");
     refreshTypeColors();
@@ -744,6 +749,7 @@
     return () => {
       setImmersed(false);
       document.documentElement.style.scrollSnapType = "";
+      document.body.style.overflow = "";
       window.removeEventListener("scroll", queue);
       window.removeEventListener("resize", onResize);
       document.removeEventListener("click", onDocClick);
@@ -775,13 +781,10 @@
       <div class="hero-copy" bind:this={heroCopyEl}>
         <h1 class="grim-title">
           <span class="line">Grimoire.</span><span class="line accent"
-            >From scan to query.</span
+            >Who is the Black Spider, and what does he actually want?</span
           >
         </h1>
-        <p>
-          Watch one page of Lost Mine of Phandelver become structured, queryable
-          knowledge: layout, chunks, entities, and a grounded answer.
-        </p>
+        <p>The answer is buried in this page. Scroll to watch Grimoire dig it out.</p>
         <div class="cue">SCROLL <span class="arrow">&darr;</span></div>
       </div>
 
@@ -801,13 +804,6 @@
           {/each}
         </div>
         <div class="attribution">{attribution}</div>
-      </div>
-
-      <!-- stage-level flight layer: blocks lifting off the page into cards -->
-      <div class="flyers" aria-hidden="true">
-        {#each flyBoxes as f, i (f.id)}
-          <div class="flyer k-{f.kind}" bind:this={flyerEls[i]}></div>
-        {/each}
       </div>
 
       <div class="chunks" bind:this={chunksWrapEl}>
@@ -963,12 +959,13 @@
     <section class="static-hero">
       <h1 class="grim-title">
         <span class="line">Grimoire.</span><span class="line accent"
-          >From scan to query.</span
+          >Who is the Black Spider, and what does he actually want?</span
         >
       </h1>
       <p>
-        One page of Lost Mine of Phandelver, turned into structured, queryable
-        knowledge: layout, chunks, entities, a graph, and a grounded answer.
+        The answer is buried in this page of Lost Mine of Phandelver. Grimoire
+        digs it out below: layout, chunks, entities, a graph, and a grounded
+        answer.
       </p>
     </section>
 
@@ -1123,8 +1120,9 @@
   .hero-copy {
     position: absolute;
     left: 6vw;
-    top: 26vh;
-    max-width: 34ch;
+    top: 24vh;
+    /* use the whitespace: the page lane starts at ~35vw */
+    max-width: 28vw;
     z-index: 6;
     will-change: transform, opacity;
   }
@@ -1144,10 +1142,9 @@
   }
   .hero-copy p {
     color: var(--grim-text-dim);
-    font-size: 14px;
+    font-size: 14.5px;
     line-height: 1.6;
     margin-top: 16px;
-    max-width: 38ch;
   }
   .cue {
     margin-top: 26px;
@@ -1224,28 +1221,22 @@
     will-change: transform, opacity;
   }
   /* kind classes are k- prefixed: marker emits a "caption" kind that would
-     otherwise collide with the .caption rail component. Borders are shared
-     with the flyers; the translucent tint fill is bbox-only (flyers are
-     opaque paper chips, see below). */
-  .bbox.k-header,
-  .flyer.k-header {
+     otherwise collide with the .caption rail component */
+  .bbox.k-header {
     border-color: var(--grim-type-creature);
   }
   .bbox.k-header {
     background: color-mix(in srgb, var(--grim-type-creature) 14%, transparent);
   }
   .bbox.k-text,
-  .bbox.k-caption,
-  .flyer.k-text,
-  .flyer.k-caption {
+  .bbox.k-caption {
     border-color: var(--grim-type-spell);
   }
   .bbox.k-text,
   .bbox.k-caption {
     background: color-mix(in srgb, var(--grim-type-spell) 10%, transparent);
   }
-  .bbox.k-aside,
-  .flyer.k-aside {
+  .bbox.k-aside {
     border-color: var(--grim-type-npc);
   }
   .bbox.k-aside {
@@ -1256,23 +1247,6 @@
     background: color-mix(in srgb, var(--grim-type-faction) 10%, transparent);
   }
 
-  /* flight layer: blocks lifting off the page into their chunk cards. Flyers
-     are OPAQUE paper chips (surface fill, tinted border, real shadow) so they
-     read as pieces of the page in the air, not translucent ghosts. */
-  .flyers {
-    position: absolute;
-    inset: 0;
-    z-index: 3;
-    pointer-events: none;
-  }
-  .flyer {
-    position: absolute;
-    border: 1.5px solid;
-    background: var(--grim-surface);
-    box-shadow: 0 10px 28px rgba(10, 14, 22, 0.22);
-    opacity: 0;
-    will-change: left, top, width, height, opacity;
-  }
   .attribution {
     position: absolute;
     left: 2px;
