@@ -11,6 +11,7 @@ import {
   outBack,
   outExpo,
   segmentize,
+  cardFootprints,
 } from "./timeline.js";
 
 describe("timeline phases", () => {
@@ -120,5 +121,74 @@ describe("segmentize", () => {
       { phrase: "dragon", color: red },
     ]);
     expect(segs).toEqual([{ t: "nothing to see here" }]);
+  });
+});
+
+describe("cardFootprints", () => {
+  // Mirrors the baked data's shape: chunks carry BOTH a uuid id and a marker
+  // ref path; bboxes point at their chunk via the REF PATH in chunkId. A
+  // uuid-based lookup silently produced zero footprints in prod once; these
+  // pins make that failure loud.
+  const chunks = [
+    { id: "uuid-a", ref: "/page/49/SectionHeader/4" },
+    { id: "uuid-b", ref: "/page/49/Picture/0" },
+  ];
+  const bboxes = [
+    {
+      id: "b1",
+      kind: "header",
+      chunkId: "/page/49/SectionHeader/4",
+      x: 0.1,
+      y: 0.1,
+      w: 0.2,
+      h: 0.05,
+    },
+    {
+      id: "b2",
+      kind: "text",
+      chunkId: "/page/49/SectionHeader/4",
+      x: 0.1,
+      y: 0.16,
+      w: 0.3,
+      h: 0.1,
+    },
+    {
+      id: "b3",
+      kind: "art",
+      chunkId: "/page/49/Picture/0",
+      x: 0.0,
+      y: 0.0,
+      w: 0.5,
+      h: 0.6,
+    },
+    {
+      id: "b4",
+      kind: "caption",
+      chunkId: "/page/49/Picture/0",
+      x: 0.2,
+      y: 0.61,
+      w: 0.15,
+      h: 0.02,
+    },
+  ];
+  it("matches boxes to chunks by marker ref, unioning their rects", () => {
+    const fp = cardFootprints(chunks, bboxes);
+    expect(fp[0]).toEqual({ x: 0.1, y: 0.1, x2: 0.4, y2: 0.26 });
+  });
+
+  it("excludes art boxes but keeps their captions", () => {
+    const fp = cardFootprints(chunks, bboxes);
+    expect(fp[1]).toEqual({ x: 0.2, y: 0.61, x2: 0.35, y2: 0.63 });
+  });
+
+  it("yields NO footprints when matched by uuid (the prod no-op regression)", () => {
+    const byUuid = chunks.map((c) => ({ ...c, ref: c.id }));
+    expect(cardFootprints(byUuid, bboxes).every((f) => f === null)).toBe(true);
+  });
+
+  it("returns null for chunks with no boxes", () => {
+    expect(
+      cardFootprints([{ id: "x", ref: "/page/1/Text/9" }], bboxes),
+    ).toEqual([null]);
   });
 });
