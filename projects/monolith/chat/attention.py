@@ -94,11 +94,15 @@ async def evaluate(
 async def needs_agent(message, *, _caller=None) -> bool:
     """Cheap depth classify: does this engaged message need the goose agent?
 
-    True for repo work, artifact/build requests, or thorough multi-source
-    research; False for conversation, general knowledge, or a simple factual
-    question (a basic web lookup is fine in chat). Fails closed to False so a
-    classify failure degrades to a fast in-monolith reply, never a surprise
-    heavy guest run. ``_caller`` is an injectable llm-caller for tests.
+    True only for repo work, a standalone interactive webpage/app, or thorough
+    multi-source research; False for conversation, general knowledge, a simple
+    factual question, OR anything the chat agent's own tools already cover -
+    including charting/plotting data (run_python renders a chart that attaches
+    to Discord) and computing this channel's activity stats (counts, rankings,
+    per-user/per-day breakdowns). The bright line for a chart request: a Python
+    image stays chat; only a click-around webpage is agent. Fails closed to
+    False so a classify failure degrades to a fast in-monolith reply, never a
+    surprise heavy guest run. ``_caller`` is an injectable llm-caller for tests.
     """
     try:
         caller = _caller
@@ -109,15 +113,34 @@ async def needs_agent(message, *, _caller=None) -> bool:
         text = (message.content or "")[:500]
         prompt = (
             "You decide whether a chat message needs the heavyweight coding "
-            'agent or can be answered directly. Answer "agent" ONLY if it '
-            "needs to read, analyze, or change THIS repository/codebase, "
-            "build or generate an artifact/page, or do thorough multi-source "
-            'research. Answer "chat" for conversation, general knowledge, '
-            "or a simple factual question (a basic web lookup is fine in "
-            "chat). Summarizing this conversation, catching up on channel "
-            "history, or extracting decisions or action items from it is "
-            'also "chat", not "agent": the chat agent already has tools '
-            "for that. Reply with ONLY a JSON object: "
+            "agent (a sandboxed microVM that reads/writes THIS "
+            "repository/codebase and builds standalone interactive webpages) "
+            "or can be answered right here in chat. Default to chat: the chat "
+            "assistant already has strong tools, so prefer chat whenever they "
+            "suffice. Chat tools include:\n"
+            "- search and read this channel's message history (semantic + "
+            "keyword)\n"
+            "- counts, rankings, and per-user or per-day breakdowns of this "
+            "channel's own activity (who posted most, messages per day)\n"
+            "- run_python: run code to compute results AND draw "
+            "charts/graphs/plots with matplotlib; the resulting image "
+            "attaches directly here in the chat\n"
+            "- render tables, and look things up on the web\n"
+            "Summarizing this conversation, catching up on channel history, or "
+            'extracting decisions or action items from it is also "chat", '
+            'not "agent": the chat agent already has tools for that. Answer '
+            '"agent" ONLY if the message truly needs one of: (a) reading, '
+            "analyzing, or changing THIS repository/codebase; (b) a "
+            "standalone, interactive webpage, dashboard, or app - an "
+            "artifact/page you click around in, not a single image; or (c) "
+            "thorough multi-source research. KEY RULE: if the ask is to chart, "
+            "graph, plot, or visualize DATA (including this channel's own "
+            "stats, e.g. 'messages per user per day'), that is \"chat\" - "
+            "run_python makes the chart and it attaches here. Do NOT choose "
+            '"agent" just because a chart or visualization was requested; '
+            'choose "agent" for a chart only if the user explicitly asked for '
+            "an interactive or standalone webpage rather than an image. Reply "
+            "with ONLY a JSON object: "
             '{"needs_agent": true|false}. Message: ' + text
         )
         raw = await caller(prompt)
