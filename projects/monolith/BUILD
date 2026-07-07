@@ -451,6 +451,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "home/observability/topology_query.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
+    "home/observability/traces.py",
     # Grimoire: only the public read path ships. The daily ingest/extract jobs
     # import the scheduler (a forbidden public module), so they stay out of the
     # public binary; the read path (public/router_public/library/models/
@@ -4461,6 +4462,17 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "home_observability_traces_test",
+    srcs = ["home/observability/traces_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
