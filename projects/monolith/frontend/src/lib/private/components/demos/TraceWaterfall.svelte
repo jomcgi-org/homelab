@@ -5,7 +5,7 @@
   // arithmetic, not worth an SSR dependency.
   //
   // Props:
-  //   traceId — string | null. When it changes, polling restarts.
+  //   traceId: string | null. When it changes, polling restarts.
   //
   // Polls GET /api/demos/firecracker/trace/{traceId} every 1.5s for up to
   // ~10s (7 attempts) until `complete` is true. Ingestion into SigNoz lags
@@ -51,7 +51,7 @@
       complete = Boolean(data.complete);
       fetchError = null;
     } catch (e) {
-      // A single flaky poll shouldn't kill the whole waterfall — keep
+      // A single flaky poll shouldn't kill the whole waterfall, keep
       // retrying until MAX_ATTEMPTS, only surface the error if we never
       // got a usable response.
       if (spans.length === 0) fetchError = e?.message ?? String(e);

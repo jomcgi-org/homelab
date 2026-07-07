@@ -77,11 +77,21 @@
     return data;
   }
 
+  // Cap the poll so a stuck agent run does not spin forever. ~3 min at 1.5s;
+  // after that we hand off to SigNoz rather than blocking the modal.
+  const MAX_GOOSE_POLLS = 120;
+
   function pollGoose(threadId) {
     return new Promise((resolve) => {
+      let attempts = 0;
       const poll = async () => {
+        attempts += 1;
         try {
           const res = await fetch(`/api/demos/firecracker/goose/${threadId}`);
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+          }
           const data = await res.json();
           gooseStatus = data.status;
           if (data.done) {
@@ -91,6 +101,11 @@
           }
         } catch (e) {
           errorMsg = e?.message ?? String(e);
+          resolve();
+          return;
+        }
+        if (attempts >= MAX_GOOSE_POLLS) {
+          gooseStatus = "still running, check the trace in SigNoz";
           resolve();
           return;
         }

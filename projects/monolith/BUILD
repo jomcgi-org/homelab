@@ -250,6 +250,7 @@ py_library(
             "chat/**/*.py",
             "chat_public/**/*.py",
             "cluster/**/*.py",
+            "demos/**/*.py",
             "goosecracker/**/*.py",
             "knowledge/**/*.py",
             "home/**/*.py",
