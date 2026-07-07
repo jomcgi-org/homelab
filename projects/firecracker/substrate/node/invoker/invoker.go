@@ -361,7 +361,17 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	// every path (each eager error return below, and the success body Close).
 	discardGuest := func() {
 		egressCancel()
+		// Wrap the VM teardown (driver Release + bundle removal) in its own span.
+		// On the success path this runs at response-body Close, AFTER the caller
+		// already has its response, so it is off the critical path. Without its
+		// own span it inflates the parent fc_invoke span past the caller's client
+		// span and reads as extra exec time. Parent under ctx (which carries the
+		// fc_invoke span) for nesting; inv.discard uses its own background context
+		// internally so cleanup still runs even if ctx is cancelled, which is
+		// independent of span parentage.
+		_, teardownSpan := tracer.Start(ctx, "guest_teardown")
 		inv.discard(h)
+		teardownSpan.End()
 	}
 
 	// A warm restore is already warmed in the snapshot, so it answers /shim/ready
