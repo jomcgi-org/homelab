@@ -11,7 +11,7 @@
   // Faithful port of the approved reference mockup
   // (./reference-mockup.html, 9 iterations with the reviewer). Two deliberate
   // forks for the repo: colors come from --grim-type-* tokens (not the mockup's
-  // hard-coded hexes) so dark mode works, and the graph layout is computed at
+  // hard-coded hexes) so the theme owns them, and the graph layout is computed at
   // module eval (pure, no DOM) so the no-JS / reduced-motion static scene can
   // render the same graph server-side.
   import { onMount } from "svelte";
@@ -31,6 +31,11 @@
     cardFootprints,
   } from "./timeline.js";
   import * as story from "./data/story.js";
+  // Smaller (800px) variant of the page scan for a srcset: the full asset is
+  // 1200px but the scan never displays wider than ~600px on either form factor,
+  // so most devices download less than half the bytes (a real LCP + payload
+  // win). bake-scrollstory.sh emits both. See the <img> srcset below.
+  import pageImageSm from "./data/page-sm.webp";
   import { transcript, isPlaceholder } from "./data/transcript.js";
   import {
     libraryHref,
@@ -121,6 +126,33 @@
     )
     .filter(Boolean);
 
+  // On a phone a whole page's worth of entity pills (a dozen-plus) cannot fit
+  // legibly on the narrow stage: they spill off the edges and pile up on the
+  // clamp lines. So the mobile entity graph renders a smaller, high-signal
+  // subset laid out on its own: the grounded (answer) nodes first, then the
+  // highest-degree others, capped at MOBILE_GRAPH_NODES. Desktop keeps all of
+  // them. The subset is force-laid separately so the few nodes spread to fill
+  // the space instead of huddling where the full graph happened to place them.
+  const MOBILE_GRAPH_NODES = 7;
+  const degreeById = {};
+  for (const e of story.edges) {
+    degreeById[e.from] = (degreeById[e.from] || 0) + 1;
+    degreeById[e.to] = (degreeById[e.to] || 0) + 1;
+  }
+  const groundedIds = new Set(groundedNodes.map((n) => n.id));
+  const mobileEntities = [
+    ...story.entities.filter((e) => groundedIds.has(e.id)),
+    ...story.entities
+      .filter((e) => !groundedIds.has(e.id))
+      .sort((a, b) => (degreeById[b.id] || 0) - (degreeById[a.id] || 0)),
+  ].slice(0, MOBILE_GRAPH_NODES);
+  const mobileIds = new Set(mobileEntities.map((e) => e.id));
+  const mobileEdges = story.edges.filter(
+    (e) => mobileIds.has(e.from) && mobileIds.has(e.to),
+  );
+  const mobileNodes = graphLayout(mobileEntities, mobileEdges);
+  const mobileNById = Object.fromEntries(mobileNodes.map((n) => [n.id, n]));
+
   const COUNTS = [
     ["books", story.corpus.books],
     ["chunks", story.corpus.chunks],
@@ -162,16 +194,28 @@
   let phaseId = $state("hero");
   let popIdx = $state(-1);
 
+  // The entity graph binds its chip/edge elements and all per-frame math to
+  // these "view" collections, so switching mobile <-> desktop swaps the whole
+  // rendered graph (fewer nodes on a phone) without special-casing every read.
+  // Declared after `mobile` so the deriveds can read it.
+  const viewNodes = $derived(mobile ? mobileNodes : nodes);
+  const viewEdges = $derived(mobile ? mobileEdges : graphEdges);
+  const viewNById = $derived(mobile ? mobileNById : nById);
+  const viewIdxById = $derived(
+    Object.fromEntries(viewNodes.map((n, i) => [n.id, i])),
+  );
+
   // Pop-out card content follows popIdx reactively; its screen position is set
   // imperatively every frame (placePopout) so it tracks the moving node.
   const popData = $derived.by(() => {
     if (popIdx < 0) return null;
-    const n = nodes[popIdx];
-    const rels = graphEdges
+    const n = viewNodes[popIdx];
+    if (!n) return null;
+    const rels = viewEdges
       .filter((e) => e.from === n.id || e.to === n.id)
       .slice(0, 6)
       .map((e) => {
-        const other = nById[e.from === n.id ? e.to : e.from];
+        const other = viewNById[e.from === n.id ? e.to : e.from];
         return { rel: e.type.replace(/_/g, " "), name: other?.name ?? "?" };
       });
     const nMentions = story.mentions.filter((m) => m.entity === n.id).length;
@@ -307,12 +351,16 @@
     W = window.innerWidth;
     H = window.innerHeight;
     if (mobile) {
-      // centred, sized for portrait: fits the width with margin, tall enough
-      // to read as the scanned page
-      pageW = Math.min(W * 0.66, H * 0.46 * aspect);
+      // Portrait composition: as large as fits the width with a small margin,
+      // and sat a little above centre so it tucks under the scene heading
+      // instead of floating in the middle with dead bands top and bottom (the
+      // "poor use of vertical height" on phones). A 0.77-aspect page can only
+      // fill about half a tall phone, so the remaining space is pooled at the
+      // bottom where the dot rail lives, not split awkwardly in two.
+      pageW = Math.min(W * 0.78, H * 0.54 * aspect);
       pageH = pageW / aspect;
       const left = (W - pageW) / 2;
-      const top = H * 0.5 - pageH / 2;
+      const top = H * 0.46 - pageH / 2;
       pageWrapEl.style.left = left + "px";
       pageWrapEl.style.top = top + "px";
       pageCX = left + pageW / 2;
@@ -426,9 +474,11 @@
     if (mobile) {
       // page settles centred, then dissolves upward as the cards lift off
       // to the cards; during the hero it rides lower so the copy + cue clear it
+      // (the offset is sized to clear the taller, higher resting page: at the
+      // hero the whole scan sits below the SCROLL cue, then rises into place).
       const fade = inOutCubic(sub(t, 0.3, 0.44));
       sc = lerp(lerp(0.96, 1, settle), 0.88, slide);
-      pageTY = (1 - settle) * H * 0.08 + lerp(0, -H * 0.06, slide);
+      pageTY = (1 - settle) * H * 0.17 + lerp(0, -H * 0.06, slide);
       pageWrapEl.style.transform = `translate(0,${pageTY}px) rotate(${rot}deg) scale(${sc})`;
       pageWrapEl.style.opacity = 1 - fade;
     } else {
@@ -524,7 +574,7 @@
     const shrink = inOutCubic(sub(t, 0.66, 0.74));
     const graphDim = outCubic(sub(t, 0.82, 0.88));
     const chatShift = inOutCubic(sub(t, 0.82, 0.9));
-    nodes.forEach((n, i) => {
+    viewNodes.forEach((n, i) => {
       const el = chipEls[i];
       if (!el) return;
       const raw = sub(pChip, i * 0.025, i * 0.025 + 0.4);
@@ -572,11 +622,11 @@
       let y2;
       if (mobile) {
         // read the clamped chip centres so edges stay attached to the pills
-        [x1, y1] = lastNodePos[idxById[graphEdges[i].from]] || [0, 0];
-        [x2, y2] = lastNodePos[idxById[graphEdges[i].to]] || [0, 0];
+        [x1, y1] = lastNodePos[viewIdxById[viewEdges[i].from]] || [0, 0];
+        [x2, y2] = lastNodePos[viewIdxById[viewEdges[i].to]] || [0, 0];
       } else {
-        [x1, y1] = nodePos(nById[graphEdges[i].from], shrink, chatShift);
-        [x2, y2] = nodePos(nById[graphEdges[i].to], shrink, chatShift);
+        [x1, y1] = nodePos(viewNById[viewEdges[i].from], shrink, chatShift);
+        [x2, y2] = nodePos(viewNById[viewEdges[i].to], shrink, chatShift);
       }
       l.setAttribute("x1", x1);
       l.setAttribute("y1", y1);
@@ -643,8 +693,11 @@
     const pG = ease(sub(pChat, 0.7, 0.8));
     groundedEl.style.opacity = pG;
     groundedNodes.forEach((n) => {
-      const i = nodes.indexOf(n);
-      if (!chipEls[i]) return;
+      // grounded nodes come from the full layout; map by id to the current
+      // view (a grounded node may sit at a different index, or be absent, in
+      // the mobile subset).
+      const i = viewIdxById[n.id];
+      if (i == null || !chipEls[i]) return;
       chipEls[i].classList.toggle("lit", pG > 0.5);
       if (pG > 0.5) chipEls[i].style.opacity = 0.95;
     });
@@ -675,14 +728,32 @@
     appEl?.classList.toggle("story-immersed", next);
   }
 
+  // Displayed timeline fraction, eased toward the scroll-derived target every
+  // frame. Native scroll stays 1:1 with the document (scroll position, proximity
+  // snap and keyboard are all untouched); only the ANIMATION interpolation is
+  // smoothed. A mouse wheel moves scroll in big discrete notches, so without
+  // this the choreography jumps a notch at a time; easing renders each notch as
+  // a short glide. A trackpad already scrolls in small steps, so its already-
+  // fluid feel is unchanged. (Joe-approved for the 2026-07 mobile-polish pass;
+  // distinct from the rejected timed key-glides, which hijacked scroll itself.)
+  let shownT = 0;
+  const SCRUB_SMOOTH = 0.2; // per-frame approach fraction; higher = snappier
   function onFrame() {
     raf = 0;
     if (!measured) return; // wait for the first layout() before scrubbing
     const r = scrollerEl.getBoundingClientRect();
     const span = r.height - H;
-    lastT = span > 0 ? clamp(-r.top / span, 0, 1) : 0;
-    setImmersed(lastT > 0.03 && lastT < 0.97);
-    frame(lastT);
+    const target = span > 0 ? clamp(-r.top / span, 0, 1) : 0;
+    lastT = target;
+    const d = target - shownT;
+    if (Math.abs(d) < 0.0004) {
+      shownT = target;
+    } else {
+      shownT += d * SCRUB_SMOOTH;
+      raf = requestAnimationFrame(onFrame); // keep gliding until settled
+    }
+    setImmersed(shownT > 0.03 && shownT < 0.97);
+    frame(shownT);
   }
 
   onMount(() => {
@@ -698,7 +769,15 @@
     // markers' scroll-snap-align does nothing without it. html is outside this
     // component, so set it imperatively and remove it on destroy so other
     // routes are unaffected. NEVER "mandatory": free scrubbing is the point.
-    document.documentElement.style.scrollSnapType = "y proximity";
+    // Desktop only: on a phone the snap fights touch-fling momentum and makes
+    // the anchors feel like they catch and stutter, so mobile keeps pure native
+    // momentum scrolling (applySnap tracks the mobile flag on resize too).
+    const applySnap = () => {
+      document.documentElement.style.scrollSnapType = mobile
+        ? ""
+        : "y proximity";
+    };
+    applySnap();
     // The story scrubs the DOCUMENT scroll, so body must be allowed to
     // overflow. Two stylesheets disagree about body overflow (design-system
     // says auto, the global reset says hidden) and which wins depends on
@@ -715,6 +794,7 @@
     const onResize = () => {
       const nowMobile = window.matchMedia("(max-width: 700px)").matches;
       if (nowMobile !== mobile) mobile = nowMobile;
+      applySnap();
       layout();
       queue();
     };
@@ -760,12 +840,27 @@
   });
 </script>
 
-<!-- The extra `grimoire` class is a LIGHT ISLAND: the theme tokens are declared
-     on .grimoire and only overridden by .grimoire.dark, so re-applying the bare
-     class here resets every --grim-* token to its light value for the story
-     subtree regardless of app theme (and the canvas color resolver reads off
-     this island, so the constellation follows). The story ships light-only for
-     now; dark-mode art direction is a deliberate later pass. -->
+<!-- Preload the page scan as the LCP image. Under slow connections the scan was
+     not painting before the static->scrubbed swap hid it, so Lighthouse recorded
+     NO_LCP (which also voided TBT and the minify/unused diagnostics). Preloading
+     with the same srcset/sizes as the <img> and high priority makes the bytes
+     land early, so the LCP fires within the trace window. Pure loading hint, no
+     effect on the choreography. -->
+<svelte:head>
+  <link
+    rel="preload"
+    as="image"
+    href={story.image}
+    imagesrcset={`${pageImageSm} 800w, ${story.image} 1200w`}
+    imagesizes="(max-width: 700px) 88vw, 560px"
+    fetchpriority="high"
+  />
+</svelte:head>
+
+<!-- The extra `grimoire` class scopes the --grim-* theme tokens onto the story
+     subtree, so every surface here (and the canvas color resolver, which reads
+     computed styles off this element) resolves the same palette the rest of the
+     app uses. -->
 <div class="scrollstory grimoire" class:ready class:mobile>
   <!-- ── Scrubbed stage: always in the DOM (refs bind at mount) but hidden by
        CSS until `ready` flips, so no-JS and reduced-motion never see it ── -->
@@ -791,6 +886,11 @@
       <div class="page-wrap" bind:this={pageWrapEl}>
         <img
           src={story.image}
+          srcset={`${pageImageSm} 800w, ${story.image} 1200w`}
+          sizes="(max-width: 700px) 88vw, 560px"
+          width="1200"
+          height="1553"
+          fetchpriority="high"
           alt="Scanned book page: Nezznar the Black Spider"
         />
         <div class="overlay">
@@ -817,12 +917,12 @@
 
       <div class="graph">
         <svg class="edges" bind:this={edgesSvgEl} aria-hidden="true">
-          {#each graphEdges as e, i (i)}
+          {#each viewEdges as e, i (i)}
             <line bind:this={lineEls[i]} />
           {/each}
         </svg>
         <div class="chips" bind:this={chipsWrapEl}>
-          {#each nodes as n, i (n.id)}
+          {#each viewNodes as n, i (n.id)}
             <button
               class="chip"
               class:open={popIdx === i}
@@ -923,7 +1023,7 @@
               onclick={(ev) => {
                 ev.stopPropagation();
                 const r = ev.currentTarget.getBoundingClientRect();
-                togglePopout(nodes.indexOf(n), [r.left, r.top - 250]);
+                togglePopout(viewIdxById[n.id] ?? -1, [r.left, r.top - 250]);
               }}
             >
               <span class="dot" style="background:{typeVar(n.type)}"></span
@@ -947,7 +1047,15 @@
 
   <nav class="rail" aria-label="Story sections">
     {#each PHASES as p (p.id)}
-      <button class:on={phaseId === p.id} onclick={() => railTo(p)}>
+      <!-- The visible .lbl is display:none on mobile, and display:none text is
+           dropped from the a11y tree, so the dot-only button would be nameless
+           there. aria-label names it on every form factor. -->
+      <button
+        class:on={phaseId === p.id}
+        aria-label={p.label}
+        aria-current={phaseId === p.id ? "true" : undefined}
+        onclick={() => railTo(p)}
+      >
         <span class="lbl">{p.label}</span>
       </button>
     {/each}
@@ -972,7 +1080,15 @@
     <section class="static-scene">
       <p class="static-cap"><b>1 / Layout detection.</b> Marker reads the scanned page and finds its structure: headers, columns, asides, art.</p>
       <div class="static-page" style="aspect-ratio:{aspect}">
-        <img src={story.image} alt="Scanned book page: Nezznar the Black Spider" />
+        <img
+          src={story.image}
+          srcset={`${pageImageSm} 800w, ${story.image} 1200w`}
+          sizes="(max-width: 700px) 88vw, 560px"
+          width="1200"
+          height="1553"
+          fetchpriority="high"
+          alt="Scanned book page: Nezznar the Black Spider"
+        />
         <div class="overlay">
           {#each story.bboxes as b (b.id)}
             <div
@@ -1078,8 +1194,15 @@
 </div>
 
 <style>
-  /* All colors are --grim-* tokens so light/dark both work; the scoped
-     .grimoire ancestor (the app shell) resolves them. */
+  /* All colors are --grim-* tokens; the scoped .grimoire ancestor (the app
+     shell) resolves them. */
+
+  /* Never let a scene element widen the document on a phone. `clip` (not
+     `hidden`) does not create a scroll container, so the sticky .stage inside
+     still sticks to the viewport; it just trims any horizontal spill. */
+  .scrollstory {
+    overflow-x: clip;
+  }
 
   /* By default (no JS, or reduced motion) the scrubbed stage is hidden and the
      static scenes show. onMount flips .ready only when motion is allowed. */
@@ -1112,6 +1235,12 @@
     position: sticky;
     top: 0;
     height: 100vh;
+    /* dvh tracks the *visible* viewport as the mobile URL bar shows/hides, so
+       the sticky stage always matches what the per-frame geometry measures with
+       window.innerHeight. With plain vh the stage stayed large-viewport tall
+       while innerHeight shrank, so the bottom of each scene fell off screen as
+       the bar animated (the "janky, scrolls things off" feel on phones). */
+    height: 100dvh;
     overflow: hidden;
     background: var(--grim-paper);
   }
@@ -1932,6 +2061,14 @@
   }
   .scrollstory.mobile .rail .lbl {
     display: none;
+  }
+  /* The visible dot stays 7px, but the tap target grows to a comfortable 28px
+     square (over the 24px min) so the dots are not a fiddly hit on a phone. */
+  .scrollstory.mobile .rail button {
+    min-width: 28px;
+    min-height: 28px;
+    justify-content: center;
+    gap: 0;
   }
 
   /* ── responsive ── */

@@ -49,7 +49,7 @@
 <div class="home">
   <section class="block">
     <div class="gh">
-      <span class="kind">At the table</span>
+      <h2 class="kind">At the table</h2>
       <span class="kn">demo</span>
     </div>
     <p class="block-lede">
@@ -100,7 +100,7 @@
   </section>
 
   <section class="block">
-    <div class="gh"><span class="kind">Roadmap</span></div>
+    <div class="gh"><h2 class="kind">Roadmap</h2></div>
     <ul class="roadmap">
       {#each roadmap as item (item.title)}
         <li class="roadmap-row">
@@ -146,6 +146,7 @@
   }
 
   .gh .kind {
+    margin: 0;
     font-size: 11px;
     letter-spacing: 0.18em;
     text-transform: uppercase;

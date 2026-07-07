@@ -503,10 +503,6 @@
     border-top: 1px solid var(--grim-line);
   }
 
-  :global(.grimoire.dark) .ex-stage {
-    background: var(--grim-paper);
-  }
-
   .ex-legend {
     position: absolute;
     top: 14px;

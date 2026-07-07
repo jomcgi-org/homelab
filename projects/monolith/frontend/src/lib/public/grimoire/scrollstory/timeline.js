@@ -42,9 +42,13 @@ export const PHASES = [
   {
     id: "chunks",
     start: 0.26,
+    // The chunk cards keep flying to their resting slots until rawFly ends at
+    // t~=0.42 (see cardFp in ScrollStory.frame), so hold/rest sit at the tail
+    // of that window. The old rest of 0.40 snapped ~0.02 early, catching the
+    // reader before the last cards had landed ("scroll past the animation").
     end: 0.44,
-    hold: 0.38,
-    rest: 0.4,
+    hold: 0.42,
+    rest: 0.43,
     label: "CHUNKS",
   },
   {
