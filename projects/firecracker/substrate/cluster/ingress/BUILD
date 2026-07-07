@@ -5,7 +5,14 @@ go_library(
     srcs = ["server.go"],
     importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/ingress",
     visibility = ["//projects/firecracker/substrate:__subpackages__"],
-    deps = ["//projects/firecracker/substrate/substrate"],
+    deps = [
+        "//projects/firecracker/substrate/substrate",
+        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
+        "@io_opentelemetry_go_otel//propagation",
+        "@io_opentelemetry_go_otel_trace//:trace",
+    ],
 )
 
 go_test(
