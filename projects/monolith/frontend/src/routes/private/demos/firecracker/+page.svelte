@@ -1,12 +1,14 @@
 <script>
-  // /demos/firecracker (private tier): a tabbed launcher for the three
-  // firecracker-backed projects (Python sandbox, Semgrep diff scan, Goose
-  // agent). Each card opens a rich modal with a shared RunPanel that runs
-  // a real invocation against the /api/demos/firecracker/* endpoints
-  // (Task 6), shows live latency, and polls the real SigNoz trace for
-  // that invocation into a waterfall.
-  import ProjectModal from "$lib/private/components/demos/ProjectModal.svelte";
+  // /demos/firecracker (private tier): a full-page, Grimoire-style tabbed
+  // tool for the three firecracker-backed projects (Python sandbox, Semgrep
+  // diff scan, Goose agent). Each tab renders its own RunPanel full-page,
+  // no modal: a modal close used to break mid-run because the dialog kept
+  // its own escape/backdrop-click lifecycle independent of an in-flight
+  // request, so we dropped the modal entirely in favor of a plain tabbed
+  // page (mirrors the Grimoire app topbar in
+  // src/routes/public/app/grimoire/+layout.svelte).
   import RunPanel from "$lib/private/components/demos/RunPanel.svelte";
+  import "$lib/private/demos/theme.css";
 
   const PYTHON_SAMPLE = `import math
 
@@ -24,7 +26,7 @@ print(f"sqrt(2) = {math.sqrt(2):.6f}")
 
 
 def run_backup(filename):
-    # Builds a shell command from an unsanitised argument -- a classic
+    # Builds a shell command from an unsanitised argument, a classic
     # command-injection pattern that semgrep's python.lang.security
     # rules flag.
     cmd = f"tar czf backup.tar.gz {filename}"
@@ -42,170 +44,161 @@ def load_config(raw):
   const PROJECTS = [
     {
       key: "python",
-      label: "Python Sandbox",
+      label: "Sandbox",
       tagline: "Runs arbitrary Python inside a Firecracker microVM.",
-      accent: "var(--yellow)",
       sample: { code: PYTHON_SAMPLE },
     },
     {
       key: "semgrep",
-      label: "Semgrep Diff Scan",
+      label: "Semgrep",
       tagline: "Static-analysis scan of a file, run in the sandbox.",
-      accent: "var(--coral)",
       sample: { path: "app/backup.py", code: SEMGREP_SAMPLE },
     },
     {
       key: "goose",
-      label: "Goose Agent",
+      label: "Goose",
       tagline: "Kicks off an async agent task and polls it to completion.",
-      accent: "var(--green)",
       sample: { task: GOOSE_TASK_SAMPLE },
     },
   ];
 
-  let openProject = $state(null);
+  let activeKey = $state("python");
 
-  function openModal(project) {
-    openProject = project;
-  }
-
-  function closeModal() {
-    openProject = null;
-  }
+  let activeProject = $derived(
+    PROJECTS.find((p) => p.key === activeKey) ?? PROJECTS[0],
+  );
 </script>
 
-<svelte:head><title>Firecracker demos · private.jomcgi.dev</title></svelte:head>
+<svelte:head><title>Firecracker Demos · private.jomcgi.dev</title></svelte:head>
 
-<section class="demos">
-  <header class="demos-header">
-    <h1 class="demos-title">Firecracker demos</h1>
-    <p class="demos-lede">
-      Three projects run for real inside Firecracker microVMs. Pick one,
-      run it, and watch the live latency and the actual SigNoz trace come
-      back for that invocation.
-    </p>
+<div class="demos">
+  <header class="topbar">
+    <span class="wordmark">Firecracker Demos</span>
+    <nav class="topbar-nav" aria-label="Demo projects">
+      {#each PROJECTS as project (project.key)}
+        <button
+          type="button"
+          class="topbar-link"
+          class:active={activeKey === project.key}
+          onclick={() => (activeKey = project.key)}
+        >
+          {project.label}
+        </button>
+      {/each}
+    </nav>
+    <div class="topbar-spacer"></div>
   </header>
 
-  <div class="cards">
-    {#each PROJECTS as project (project.key)}
-      <button
-        type="button"
-        class="card"
-        style={`--accent-swatch: ${project.accent}`}
-        onclick={() => openModal(project)}
-      >
-        <span class="card-swatch" aria-hidden="true"></span>
-        <h2 class="card-title">{project.label}</h2>
-        <p class="card-tagline">{project.tagline}</p>
-        <span class="card-cta">Open &rarr;</span>
-      </button>
-    {/each}
-  </div>
-</section>
-
-<ProjectModal project={openProject} onClose={closeModal}>
-  {#if openProject}
-    <RunPanel project={openProject} />
-  {/if}
-</ProjectModal>
+  <main class="demos-shell">
+    <div class="demos-intro">
+      <p class="demos-tagline">{activeProject.tagline}</p>
+    </div>
+    {#key activeProject.key}
+      <RunPanel project={activeProject} />
+    {/key}
+  </main>
+</div>
 
 <style>
   .demos {
-    padding: 1.5rem 2.5rem 2.5rem;
-    font-family: var(--font-mono);
-    color: var(--fg);
-    background: var(--bg);
-    min-height: calc(100vh - 4rem);
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100vh;
+    font-family: var(--font-sans, system-ui, sans-serif);
   }
 
-  .demos-header {
-    max-width: 46rem;
-    margin-bottom: 2rem;
-  }
-
-  .demos-title {
-    font-size: 1.6rem;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    margin: 0 0 0.5rem 0;
-  }
-
-  .demos-lede {
-    font-size: 0.9rem;
-    line-height: 1.6;
-    color: var(--fg-secondary);
-    margin: 0;
-  }
-
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-    gap: 1.25rem;
-    max-width: 60rem;
-  }
-
-  .card {
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.5rem;
-    text-align: left;
-    background: var(--bg);
-    color: var(--fg);
-    border: var(--border-heavy);
-    padding: 1.25rem 1.4rem;
-    cursor: pointer;
-    font-family: var(--font-mono);
-    transform: translate(0, 0);
-    transition:
-      transform 0.1s ease,
-      box-shadow 0.1s ease;
+    align-items: center;
+    gap: 20px;
+    padding: 0 28px;
+    height: 58px;
+    background: color-mix(in srgb, var(--paper) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
   }
 
-  .card:hover,
-  .card:focus-visible {
-    transform: translate(-3px, -3px);
-    box-shadow: 6px 6px 0 0 var(--fg);
-  }
-
-  .card:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  .card-swatch {
-    width: 1.4rem;
-    height: 0.4rem;
-    background: var(--accent-swatch, var(--accent));
-    border: 1px solid var(--fg);
-  }
-
-  .card-title {
-    font-size: 1.05rem;
+  .wordmark {
     font-weight: 700;
-    margin: 0;
-  }
-
-  .card-tagline {
-    font-size: 0.8rem;
-    color: var(--fg-secondary);
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .card-cta {
-    margin-top: auto;
-    padding-top: 0.5rem;
-    font-size: 0.7rem;
-    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.28em;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--fg-tertiary);
+    color: var(--ink);
+    flex: none;
+  }
+
+  .topbar-nav {
+    display: flex;
+    gap: 4px;
+    margin-left: 8px;
+  }
+
+  .topbar-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 6px 12px;
+    margin-bottom: -1px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+
+  .topbar-link:hover {
+    color: var(--text-dim);
+  }
+
+  .topbar-link.active {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
+  }
+
+  .topbar-spacer {
+    flex: 1;
+  }
+
+  .demos-shell {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 28px 28px 64px;
+  }
+
+  .demos-intro {
+    margin-bottom: 20px;
+  }
+
+  .demos-tagline {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    margin: 0;
   }
 
   @media (max-width: 640px) {
-    .demos {
-      padding: 1.25rem 1.25rem 2rem;
+    .topbar {
+      padding: 0 16px;
+      gap: 12px;
+    }
+    .wordmark {
+      font-size: 12px;
+      letter-spacing: 0.2em;
+    }
+    .topbar-link {
+      padding: 6px 8px;
+      font-size: 10px;
+    }
+    .demos-shell {
+      padding: 20px 16px 48px;
     }
   }
 </style>

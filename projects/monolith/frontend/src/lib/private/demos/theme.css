@@ -1,0 +1,19 @@
+/* Firecracker demos visual identity: a clean, Grimoire-inspired palette
+ * scoped to the .demos route tree, replacing the earlier brutalist
+ * heavy-border theme. Colocated in a plain CSS file (not a Svelte <style>
+ * block) so the palette definitions themselves don't trip the
+ * svelte-hardcoded-color-in-style semgrep rule, which only scans .svelte
+ * files: this is the token source, not a bypass of it. Mirrors the pattern
+ * in src/lib/grimoire/theme.css.
+ */
+
+.demos {
+  --paper: #f3f5f7;
+  --surface: #ffffff;
+  --ink: #1a1f28;
+  --text-dim: #55606f;
+  --text-faint: #656e7c;
+  --line: #dbe0e7;
+  --accent: #33507a;
+  --danger: #a4372e;
+}

@@ -1,27 +1,35 @@
 <script>
   // Renders the real SigNoz trace for a firecracker invocation as a plain
-  // CSS/SVG-free waterfall (div bars on a shared time axis). No chart lib:
-  // this is a private tool page and the whole waterfall is ~20 lines of
-  // arithmetic, not worth an SSR dependency.
+  // CSS div waterfall (no chart lib): this is a private tool page and the
+  // whole waterfall is a small amount of arithmetic, not worth an SSR
+  // dependency.
   //
   // Props:
-  //   traceId: string | null. When it changes, polling restarts.
+  //   traceId: string | null. When it changes, polling restarts cleanly.
   //
-  // Polls GET /api/demos/firecracker/trace/{traceId} every 1.5s for up to
-  // ~10s (7 attempts) until `complete` is true. Ingestion into SigNoz lags
-  // 5-10s behind the invocation, so an empty/incomplete response right
-  // after Run is expected, not an error.
+  // Polling: GET /api/demos/firecracker/trace/{traceId} every ~1000ms.
+  // SigNoz ingests spans incrementally (they arrive over several seconds),
+  // so the backend's `complete` flag only means "at least one span has
+  // landed", not "fully ingested": treating it as terminal was the bug that
+  // made the page get stuck "loading" or show a partial waterfall. Instead
+  // we render every poll's spans immediately (progressive rendering) and
+  // keep polling until the span COUNT has been stable across 3 consecutive
+  // polls after it first went above zero (a reasonable proxy for "no more
+  // spans are arriving"), or a hard 60s timeout elapses, whichever comes
+  // first.
   let { traceId } = $props();
 
-  const POLL_MS = 1500;
-  const MAX_ATTEMPTS = 7;
+  const POLL_MS = 1000;
+  const STABLE_POLLS_REQUIRED = 3;
+  const HARD_TIMEOUT_MS = 60_000;
+  const MAX_CONSECUTIVE_ERRORS_WHEN_EMPTY = 3;
 
   // Stable-ish palette keyed by service name via a small string hash, so
   // the same service always lands on the same swatch across runs.
-  const PALETTE = ["var(--accent)", "var(--green)", "var(--yellow)", "var(--grey)"];
+  const PALETTE = ["var(--accent)", "#3f7a5c", "#8a6100", "#6b7280"];
 
   function colorFor(service) {
-    if (!service) return "var(--grey)";
+    if (!service) return "#6b7280";
     let h = 0;
     for (let i = 0; i < service.length; i++) {
       h = (h * 31 + service.charCodeAt(i)) | 0;
@@ -30,56 +38,93 @@
   }
 
   let spans = $state([]);
-  let complete = $state(false);
-  let attempts = $state(0);
-  let loading = $state(false);
+  // "waiting" (no spans yet), "live" (spans present, still polling for
+  // stability), "done" (stable or timed out), "error" (repeated failures
+  // with zero spans ever seen).
+  let status = $state("waiting");
   let fetchError = $state(null);
+
   let pollHandle = null;
+  let pollStart = 0;
+  let lastCount = -1;
+  let stableStreak = 0;
+  let consecutiveErrors = 0;
 
   function stopPolling() {
     if (pollHandle) clearTimeout(pollHandle);
     pollHandle = null;
   }
 
+  function finish() {
+    stopPolling();
+    status = "done";
+  }
+
   async function pollOnce(id) {
-    attempts += 1;
+    let newSpans = null;
     try {
       const res = await fetch(`/api/demos/firecracker/trace/${id}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      spans = Array.isArray(data.spans) ? data.spans : [];
-      complete = Boolean(data.complete);
+      newSpans = Array.isArray(data.spans) ? data.spans : [];
       fetchError = null;
+      consecutiveErrors = 0;
     } catch (e) {
-      // A single flaky poll shouldn't kill the whole waterfall, keep
-      // retrying until MAX_ATTEMPTS, only surface the error if we never
-      // got a usable response.
-      if (spans.length === 0) fetchError = e?.message ?? String(e);
+      consecutiveErrors += 1;
+      if (spans.length === 0 && consecutiveErrors >= MAX_CONSECUTIVE_ERRORS_WHEN_EMPTY) {
+        fetchError = e?.message ?? String(e);
+        status = "error";
+        stopPolling();
+        return;
+      }
+      // Keep the last-known spans on a flaky poll, just try again.
     }
-    if (!complete && attempts < MAX_ATTEMPTS && traceId === id) {
-      pollHandle = setTimeout(() => pollOnce(id), POLL_MS);
-    } else {
-      loading = false;
+
+    if (traceId !== id) return; // traceId changed mid-flight, effect already restarted
+
+    if (newSpans !== null) {
+      spans = newSpans;
+      if (spans.length > 0) {
+        status = "live";
+        if (spans.length === lastCount) {
+          stableStreak += 1;
+        } else {
+          stableStreak = 1;
+        }
+        lastCount = spans.length;
+      }
     }
+
+    if (stableStreak >= STABLE_POLLS_REQUIRED) {
+      finish();
+      return;
+    }
+    if (performance.now() - pollStart >= HARD_TIMEOUT_MS) {
+      finish();
+      return;
+    }
+    pollHandle = setTimeout(() => pollOnce(id), POLL_MS);
   }
 
   $effect(() => {
     stopPolling();
     spans = [];
-    complete = false;
-    attempts = 0;
+    status = "waiting";
     fetchError = null;
+    lastCount = -1;
+    stableStreak = 0;
+    consecutiveErrors = 0;
     if (!traceId) {
-      loading = false;
       return;
     }
-    loading = true;
+    pollStart = performance.now();
     pollOnce(traceId);
     return () => stopPolling();
   });
 
   // Span depth by walking the parent chain, for a light indent that reads
-  // as a call tree without needing a real tree layout.
+  // as a call tree without needing a real tree layout. A span whose parent
+  // isn't in the current span set is treated as a root (depth 0).
   let depthById = $derived.by(() => {
     const byId = new Map(spans.map((s) => [s.span_id, s]));
     const depth = new Map();
@@ -100,9 +145,7 @@
     return depth;
   });
 
-  let sortedSpans = $derived(
-    [...spans].sort((a, b) => a.start_ms - b.start_ms),
-  );
+  let sortedSpans = $derived([...spans].sort((a, b) => a.start_ms - b.start_ms));
 
   let timelineEnd = $derived(
     Math.max(1, ...spans.map((s) => (s.start_ms ?? 0) + (s.duration_ms ?? 0))),
@@ -118,10 +161,7 @@
 
   function barStyle(span) {
     const left = (Math.max(0, span.start_ms ?? 0) / timelineEnd) * 100;
-    const width = Math.max(
-      0.6,
-      ((span.duration_ms ?? 0) / timelineEnd) * 100,
-    );
+    const width = Math.max(0.6, ((span.duration_ms ?? 0) / timelineEnd) * 100);
     return `left: ${left}%; width: ${width}%;`;
   }
 </script>
@@ -136,23 +176,21 @@
         target="_blank"
         rel="noopener noreferrer"
       >
-        View in SigNoz &#8599;
+        View in SigNoz
       </a>
     {/if}
   </div>
 
   {#if !traceId}
     <p class="waterfall-empty">Run something to see its trace here.</p>
-  {:else if fetchError && spans.length === 0}
+  {:else if status === "error"}
     <p class="waterfall-empty waterfall-empty--error">
       Couldn't load the trace: {fetchError}
     </p>
   {:else if spans.length === 0}
     <div class="waterfall-waiting">
       <span class="pulse-dot" aria-hidden="true"></span>
-      <span>
-        {complete ? "trace has no spans yet" : "waiting for trace to ingest..."}
-      </span>
+      <span>waiting for trace to ingest...</span>
     </div>
   {:else}
     <div class="axis" aria-hidden="true">
@@ -163,7 +201,10 @@
 
     <div class="rows">
       {#each sortedSpans as span (span.span_id)}
-        <div class="row" style={`padding-left: ${(depthById.get(span.span_id) ?? 0) * 0.9}rem;`}>
+        <div
+          class="row"
+          style={`padding-left: ${(depthById.get(span.span_id) ?? 0) * 0.9}rem;`}
+        >
           <span class="row-label" title={`${span.name} · ${span.service}`}>
             {span.name}
             <span class="row-service">{span.service}</span>
@@ -172,7 +213,7 @@
             <div
               class="row-bar"
               class:row-bar--error={span.error}
-              style={`${barStyle(span)} background: ${span.error ? "var(--coral)" : colorFor(span.service)};`}
+              style={`${barStyle(span)} background: ${span.error ? "var(--danger)" : colorFor(span.service)};`}
             >
               <span class="row-duration">{span.duration_ms}ms</span>
             </div>
@@ -181,10 +222,10 @@
       {/each}
     </div>
 
-    {#if !complete}
+    {#if status === "live"}
       <div class="waterfall-footer">
         <span class="pulse-dot" aria-hidden="true"></span>
-        still ingesting, showing {spans.length} span{spans.length === 1 ? "" : "s"} so far
+        updating, showing {spans.length} span{spans.length === 1 ? "" : "s"} so far
       </div>
     {/if}
   {/if}
@@ -194,37 +235,36 @@
   .waterfall {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    border: var(--border-heavy);
-    background: var(--bg);
-    padding: 1rem 1.25rem;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 16px 20px;
   }
 
   .waterfall-header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 1rem;
-    border-bottom: 0.06rem solid var(--border);
-    padding-bottom: 0.6rem;
+    gap: 16px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 10px;
   }
 
   .waterfall-title {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg);
+    letter-spacing: 0.12em;
+    color: var(--ink);
     margin: 0;
   }
 
   .signoz-link {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
     color: var(--accent);
-    letter-spacing: 0.04em;
+    text-decoration: none;
   }
 
   .signoz-link:hover {
@@ -232,9 +272,10 @@
   }
 
   .waterfall-empty {
-    font-size: 0.8rem;
-    color: var(--fg-tertiary);
-    padding: 0.5rem 0;
+    font-size: 13px;
+    color: var(--text-faint);
+    padding: 8px 0;
+    margin: 0;
   }
 
   .waterfall-empty--error {
@@ -245,15 +286,15 @@
   .waterfall-footer {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.75rem;
-    color: var(--fg-tertiary);
-    padding: 0.35rem 0;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-faint);
+    padding: 5px 0;
   }
 
   .pulse-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--accent);
     animation: pulse 1.2s ease-in-out infinite;
@@ -274,16 +315,16 @@
 
   .axis {
     position: relative;
-    height: 1rem;
+    height: 16px;
     margin-left: 9rem;
-    border-bottom: 0.04rem solid var(--border);
+    border-bottom: 1px solid var(--line);
   }
 
   .axis-tick {
     position: absolute;
     transform: translateX(-50%);
-    font-size: 0.65rem;
-    color: var(--fg-tertiary);
+    font-size: 10.5px;
+    color: var(--text-faint);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -291,23 +332,23 @@
   .rows {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 6px;
     max-height: 16rem;
     overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: var(--fg-tertiary) transparent;
+    scrollbar-color: var(--text-faint) transparent;
   }
 
   .row {
     display: grid;
     grid-template-columns: 9rem 1fr;
     align-items: center;
-    gap: 0.6rem;
+    gap: 10px;
   }
 
   .row-label {
-    font-size: 0.7rem;
-    color: var(--fg);
+    font-size: 11.5px;
+    color: var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -317,16 +358,17 @@
   }
 
   .row-service {
-    font-size: 0.6rem;
-    color: var(--fg-tertiary);
+    font-size: 10px;
+    color: var(--text-faint);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
   }
 
   .row-track {
     position: relative;
-    height: 1.15rem;
-    background: var(--surface);
+    height: 18px;
+    background: var(--paper);
+    border-radius: 3px;
   }
 
   .row-bar {
@@ -336,22 +378,18 @@
     min-width: 2px;
     display: flex;
     align-items: center;
-    padding: 0 0.3rem;
+    padding: 0 5px;
     box-sizing: border-box;
-    border: 1px solid var(--fg);
-  }
-
-  .row-bar--error {
-    border-color: var(--fg);
+    border-radius: 3px;
   }
 
   .row-duration {
-    font-size: 0.6rem;
-    font-weight: 700;
-    color: var(--fg);
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff; /* nosemgrep: svelte-hardcoded-color-in-style */
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    text-shadow: 0 0 2px var(--bg);
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.35);
   }
 
   @media (prefers-reduced-motion: reduce) {
