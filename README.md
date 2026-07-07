@@ -22,6 +22,10 @@ Public apps served by the monolith at [jomcgi.dev/app](https://jomcgi.dev/app):
 - [**Campsites**](projects/monolith/frontend/src/routes/public/app/campsites/): BC Parks availability crossed with weather.
 - [**World Cup 2026 odds**](projects/monolith/frontend/src/routes/public/app/wc2026/): Scotland's qualification odds via an Elo Monte Carlo model.
 - [**Hiking routes**](projects/monolith/frontend/src/routes/public/app/hikes/): Scottish route finder with weather-based recommendations.
+- [**Grimoire**](projects/monolith/frontend/src/routes/public/app/grimoire/): Postgres-first D&D campaign manager with a public rules and lore explorer.
+- [**Notes**](projects/monolith/frontend/src/routes/public/app/notes/): Anonymous chat over an on-cluster Qwen model on a shared public scratchpad.
+- [**LLM Leaderboard**](projects/monolith/frontend/src/routes/public/app/llm-leaderboard/): Agentic coding benchmark results across models, from the model-bench harness.
+- [**NHS jobs**](projects/monolith/frontend/src/routes/public/app/dr-jobs/): NHS Scotland anaesthetics consultant vacancy aggregator.
 
 ## Infrastructure patterns
 
