@@ -876,10 +876,10 @@
       <div class="hero-copy" bind:this={heroCopyEl}>
         <h1 class="grim-title">
           <span class="line">Grimoire.</span><span class="line accent"
-            >Who is the Black Spider, and what does he actually want?</span
+            >Who is the Black Spider?</span
           >
         </h1>
-        <p>The answer is buried in this page. Scroll to watch Grimoire dig it out.</p>
+        <p>Scroll to watch Grimoire extract the answer.</p>
         <div class="cue">SCROLL <span class="arrow">&darr;</span></div>
       </div>
 
@@ -1271,7 +1271,7 @@
   }
   .hero-copy p {
     color: var(--grim-text-dim);
-    font-size: 14.5px;
+    font-size: 16px;
     line-height: 1.6;
     margin-top: 16px;
   }
