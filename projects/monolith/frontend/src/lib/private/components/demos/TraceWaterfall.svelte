@@ -187,6 +187,11 @@
     <p class="waterfall-empty waterfall-empty--error">
       Couldn't load the trace: {fetchError}
     </p>
+  {:else if spans.length === 0 && status === "done"}
+    <p class="waterfall-empty">
+      No spans landed for this trace within 60s. It may not have been sampled,
+      or ingestion is lagging. Try "View in SigNoz" above.
+    </p>
   {:else if spans.length === 0}
     <div class="waterfall-waiting">
       <span class="pulse-dot" aria-hidden="true"></span>
