@@ -87,7 +87,9 @@
   // the two animations merely happening near each other.
   const flyBoxes = story.bboxes
     .map((b) => ({ ...b, card: cards.findIndex((c) => c.id === b.chunkId) }))
-    .filter((f) => f.card >= 0);
+    // no art flyers: a full-page illustration's bbox in flight is a giant slab
+    // that reads as a glitch. Its caption still flies, which carries the story.
+    .filter((f) => f.card >= 0 && f.kind !== "art");
 
   // Chat answer as PARAGRAPHS of SENTENCES, each sentence pre-rendered with
   // its entity highlights. The chat scene fades sentences in with a stagger:
@@ -387,7 +389,7 @@
         el.style.transform = `scaleY(${lerp(0.25, 1, dp)})`;
       } else {
         // the flyers carry the motion; the in-page boxes just let go
-        el.style.opacity = Math.max(0, 1 - flyP * (b.chunkId ? 4 : 3));
+        el.style.opacity = Math.max(0, 1 - flyP * (b.chunkId ? 7 : 4));
         el.style.transform = "none";
       }
     });
@@ -1106,11 +1108,14 @@
     will-change: transform, opacity;
   }
   /* kind classes are k- prefixed: marker emits a "caption" kind that would
-     otherwise collide with the .caption rail component. The rules cover both
-     the in-page boxes and the stage-level flyers. */
+     otherwise collide with the .caption rail component. Borders are shared
+     with the flyers; the translucent tint fill is bbox-only (flyers are
+     opaque paper chips, see below). */
   .bbox.k-header,
   .flyer.k-header {
     border-color: var(--grim-type-creature);
+  }
+  .bbox.k-header {
     background: color-mix(in srgb, var(--grim-type-creature) 14%, transparent);
   }
   .bbox.k-text,
@@ -1118,20 +1123,26 @@
   .flyer.k-text,
   .flyer.k-caption {
     border-color: var(--grim-type-spell);
+  }
+  .bbox.k-text,
+  .bbox.k-caption {
     background: color-mix(in srgb, var(--grim-type-spell) 10%, transparent);
   }
   .bbox.k-aside,
   .flyer.k-aside {
     border-color: var(--grim-type-npc);
+  }
+  .bbox.k-aside {
     background: color-mix(in srgb, var(--grim-type-npc) 14%, transparent);
   }
-  .bbox.k-art,
-  .flyer.k-art {
+  .bbox.k-art {
     border-color: var(--grim-type-faction);
     background: color-mix(in srgb, var(--grim-type-faction) 10%, transparent);
   }
 
-  /* flight layer: blocks lifting off the page into their chunk cards */
+  /* flight layer: blocks lifting off the page into their chunk cards. Flyers
+     are OPAQUE paper chips (surface fill, tinted border, real shadow) so they
+     read as pieces of the page in the air, not translucent ghosts. */
   .flyers {
     position: absolute;
     inset: 0;
@@ -1141,6 +1152,8 @@
   .flyer {
     position: absolute;
     border: 1.5px solid;
+    background: var(--grim-surface);
+    box-shadow: 0 10px 28px rgba(10, 14, 22, 0.22);
     opacity: 0;
     will-change: left, top, width, height, opacity;
   }
