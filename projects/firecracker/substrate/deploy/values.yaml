@@ -40,6 +40,15 @@ linkerdPolicy:
 imagePullSecret:
   enabled: true
 
+# In-cluster SigNoz OTLP endpoint for fc-invoke's own lifecycle spans (auth,
+# acquire, snapshot_restore, wait_ready, guest_exec). Chart default is "" (no-op
+# exporter); setting it here turns tracing on for this deployment. gRPC (4317),
+# not HTTP (4318) like the monolith/goose exporters: the daemon's exporter is
+# otlptracegrpc (see invoke/internal/telemetry).
+tracing:
+  endpoint: signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317
+  serviceName: fc-invoke
+
 # Egress-proxy sidecar (ADR 023 phase 6a). ON: the agent (goosecracker) workload
 # runs with egress enabled and reaches the network only through this sidecar.
 # Policy is allowlist (fail closed): the sidecar denies any destination whose
