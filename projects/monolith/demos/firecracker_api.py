@@ -35,7 +35,7 @@ from opentelemetry.context import Context
 from pydantic import BaseModel
 
 import goosecracker.api as goosecracker
-from home.observability.traces import fetch_trace_spans
+from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
 from sandbox.client import run_python_in_sandbox
 from semgrep.client import scan_files
 
@@ -182,6 +182,13 @@ async def get_trace(trace_id: str) -> dict:
     ``complete`` is false while the trace is still ingesting (spans lag emission
     by ~5-10s) or if the trace id is malformed; the frontend polls until spans
     appear.
+
+    ``correlated`` carries the goose agent's own internal spans (service
+    `goose-coding`). Goose does not honor an inbound TRACEPARENT, so those spans
+    live in their own trace; the runner stamps `caller.trace_id=<trace_id>` onto
+    them so we recover them here and render them as their own sub-timeline.
+    ``complete`` stays keyed on the main ``spans`` only.
     """
     spans = await fetch_trace_spans(trace_id)
-    return {"spans": spans, "complete": len(spans) > 0}
+    correlated = await fetch_correlated_spans(trace_id)
+    return {"spans": spans, "correlated": correlated, "complete": len(spans) > 0}

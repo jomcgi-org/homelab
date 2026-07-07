@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 # from Helm values; never hardcoded.
 FC_INVOKE_URL = os.environ.get("FC_INVOKE_URL", "")
 
+# The trace-id field of a W3C traceparent (00-<32hex traceID>-<16hex spanID>-<flags>)
+# is 32 lowercase hex chars. We validate it before stamping it onto the goose run
+# env as `caller.trace_id`, so a malformed traceparent never injects a bad value.
+_CALLER_TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
 # The monolith's own in-cluster progress endpoint base, reached by the guest
 # through the fc-invoke egress funnel. The runner appends "/{session}" so the
 # guest's id-less {"chunk": ...} posts land in the right per-session buffer.
@@ -743,6 +748,25 @@ async def _invoke_turn(
             "router.yaml": render_fallback_router(),
         }
         effective_recipe = "/injected-context/router.yaml"
+    # Goose trace correlation: goose (v1.39.0) does NOT honor an inbound
+    # TRACEPARENT, so its OTEL spans (service `goose-coding`) land in their own
+    # trace, unnestable under this run. But goose DOES honor
+    # OTEL_RESOURCE_ATTRIBUTES, stamping them as resource attributes on every
+    # span. So we stamp the caller's trace id onto every goose span as
+    # `caller.trace_id`, and the demos backend recovers them by that key to
+    # render the agent's own internals under the demo waterfall. Merge, don't
+    # overwrite: a tier may already set OTEL_RESOURCE_ATTRIBUTES (service.* etc),
+    # so append. `env` here is a fresh per-run dict (env_for_tier returns a copy
+    # and the steering path already rebuilt it with {**env}), but rebuild once
+    # more with {**env} so this stays mutation-safe regardless of that history.
+    if traceparent:
+        parts = traceparent.split("-")
+        caller_trace_id = parts[1] if len(parts) >= 2 else ""
+        if _CALLER_TRACE_ID_RE.match(caller_trace_id):
+            attr = f"caller.trace_id={caller_trace_id}"
+            existing = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
+            merged = f"{existing},{attr}" if existing else attr
+            env = {**env, "OTEL_RESOURCE_ATTRIBUTES": merged}
     payload = {
         "recipe": effective_recipe,
         "task": task,
