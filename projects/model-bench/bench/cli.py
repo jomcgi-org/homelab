@@ -518,6 +518,14 @@ def _report(args) -> None:
     results_root = Path(args.results)
     cells: list[ResultCell] = []
     stale = 0
+    superseded = 0
+    # Keep only the NEWEST cell per (model, task). A cell's cache key includes the fixture
+    # hash, so changing a task's fixture (e.g. migrating it to a bigger snapshot) writes a
+    # NEW cell file next to the old one under the same harness version. Both would be
+    # aggregated and the model's task would be double/triple-counted with stale data. The
+    # freshest file on disk is the current fixture's result, so newest-wins dedup keeps the
+    # board and the public page showing only current results without deleting anything.
+    newest: dict[tuple[str, str], tuple[float, ResultCell]] = {}
     if results_root.exists():
         for json_path in results_root.rglob("*.json"):
             try:
@@ -532,7 +540,16 @@ def _report(args) -> None:
             if cell.harness_version != HARNESS_VERSION:
                 stale += 1
                 continue
-            cells.append(cell)
+            mtime = json_path.stat().st_mtime
+            key = (cell.model_id, cell.task_id)
+            prev = newest.get(key)
+            if prev is None or mtime > prev[0]:
+                if prev is not None:
+                    superseded += 1
+                newest[key] = (mtime, cell)
+            else:
+                superseded += 1
+    cells = [c for _, c in newest.values()]
 
     if stale:
         logger.warning(
@@ -540,6 +557,12 @@ def _report(args) -> None:
             "run `python -m bench prune-stale` to delete them",
             stale,
             HARNESS_VERSION,
+        )
+    if superseded:
+        logger.warning(
+            "ignored %d superseded cell(s) (older fixture for a (model, task) that was "
+            "re-run); newest-on-disk wins",
+            superseded,
         )
 
     # Single-shot and agentic are separate contracts: only single-shot cells feed the
@@ -616,10 +639,15 @@ def _report(args) -> None:
         )
 
     # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model,
-    # under the gate model. easy + standard tasks form the qualification FLOOR: a model
-    # must pass all of them to be viable. hard tasks differentiate the qualified;
+    # under the gate model. easy + standard tasks form the qualification FLOOR: pointed,
+    # basic-viability tasks that ~90%+ of candidates clear. A model qualifies if it misses
+    # at most FLOOR_MISS_TOLERANCE of them, so one flaky floor miss does not exclude an
+    # otherwise-strong model while a model that fails several basics is still gated out.
+    # hard tasks (real-tree navigation / net-new building) differentiate the qualified;
     # perf/efficiency is the value axis among them.
     from statistics import mean
+
+    FLOOR_MISS_TOLERANCE = 1
 
     # Only count cells for tasks that are still in the current task set. Cells for a
     # task that was later removed or renamed linger in the durable results cache; the
@@ -656,8 +684,8 @@ def _report(args) -> None:
             "floor_n": len(floor),
             "floor_pass": sum(1 for c in floor if c.first_attempt_passed),
             "floor_failed": floor_failed,
-            # Qualified iff it cleared every floor task it was run on (and ran on some).
-            "qualified": bool(floor) and not floor_failed,
+            # Qualified iff it ran floor tasks and missed at most the tolerance.
+            "qualified": bool(floor) and len(floor_failed) <= FLOOR_MISS_TOLERANCE,
             "hard_n": len(hard),
             "hard_pass": sum(1 for c in hard if c.first_attempt_passed),
             # Mean (not median) per task: the tasks vary ~5x in size, and a model can

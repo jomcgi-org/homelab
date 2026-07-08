@@ -1,7 +1,9 @@
 id: hikes-walkhighlands-dom-01
 version: v1
 class: code-fix
-tier: standard
+# hard: on the full backend this is a real needle-in-160-files navigation task (~71% of
+# candidates pass), a differentiator rather than a viability floor.
+tier: hard
 mode: agentic
 source_commit: d7837d59819adc0fdad068993604d8e3a342edf8
 snapshot:

@@ -1,6 +1,8 @@
 id: null-content-fix-01
 version: v1
 class: code-fix
+# standard (floor): a pointed single-function null-guard fix (~92% pass) — basic viability.
+tier: standard
 mode: agentic
 # Real fix bc6f81dfb (to this very harness): openrouter.py coerced a present-but-null
 # `content` field to None instead of "". Snapshot the model-bench harness source at the

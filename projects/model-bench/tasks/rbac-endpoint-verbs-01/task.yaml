@@ -1,6 +1,7 @@
 id: rbac-endpoint-verbs-01
 version: v1
 class: config-plumbing
+tier: standard
 prompt: |
   handler.py calls both list and get on argoproj.io/applications, but
   clusterrole.yaml only grants get, so list calls will fail with Forbidden in
