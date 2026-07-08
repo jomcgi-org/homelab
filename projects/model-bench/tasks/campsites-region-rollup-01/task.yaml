@@ -10,12 +10,23 @@ mode: agentic
 snapshot:
   commit: 40e36a2c2c142aade3a4f95e8e85e85ac6ade943
   strip_components: 2
-  # Keep the fixture Python-focused: drop the hidden test files (the grader is injected)
-  # and the multi-MB data seeds/manifests that no imported module touches at test time.
+  # Python-only fixture: drop the hidden test files (the grader is injected) and every
+  # non-.py file. The task only needs importable Python, and repo-wide tooling globs
+  # other extensions out of the fixture with real side effects (the docs-manifest
+  # generator treats fixture *.md as published docs and surfaces them on the public docs
+  # page; prettier would reformat json/md). No imported module reads these at test time.
   exclude:
     - "*_test.py"
+    - "*.md"
+    - "*.json"
     - "*.ndjson"
     - "*.sql"
+    - "*.sh"
+    - "*.jpg"
+    - "*.jpeg"
+    - "*.png"
+    - "*.yaml"
+    - "*.yml"
   paths:
     - projects/monolith/agent
     - projects/monolith/app
