@@ -1,2 +1,0 @@
-image: ghcr.io/jomcgi/homelab/projects/firecracker/fc-invoke:latest
-poolSize: 8

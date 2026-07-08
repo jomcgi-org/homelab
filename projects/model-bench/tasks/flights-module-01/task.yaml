@@ -3,21 +3,47 @@ version: v1
 class: code-fix
 tier: standard
 mode: agentic
+# Full monolith backend snapshot: the model adds a brand-new feature domain to the real
+# tree, mirroring how real domains (campsites, ships, ...) expose register(app). The gold
+# test mounts only the new router on a minimal app (never app.main, which pulls OTEL/MCP/
+# Discord and is not import-safe), exactly like campsites-region-rollup-01.
+snapshot:
+  preset: monolith-backend
+  commit: 40e36a2c2c142aade3a4f95e8e85e85ac6ade943
+agent:
+  max_turns: 40
 prompt: |
-  This app serves feature domains. Each domain is a top-level package that exposes a
-  register(app) function mounting its APIRouter, and app/main.py's create_app() wires the
-  domains together. Study the worked `health` example (health/__init__.py +
-  health/router.py) and how create_app() registers it. Build a new `flights` domain the
-  same way and wire it in.
+  You are working in a snapshot of a real FastAPI monolith backend. Every feature is a
+  top-level Python package that exposes a register(app) function mounting its APIRouter,
+  and app/main.py's create_app() wires the domains together. Study a worked example, e.g.
+  the campsites domain (campsites/__init__.py exposes register(app); campsites/router.py
+  defines an APIRouter), and how create_app() in app/main.py registers domains.
 
-  A mock flight feed is provided at flights/mock_data.py as FLIGHTS: a list of dicts, each
-  with flight_no, origin and dest (IATA codes), scheduled_dep and actual_dep (ISO 8601
-  datetime strings; actual_dep is None for a cancelled flight), and status ("scheduled" or
-  "cancelled").
+  Build a NEW `flights` domain the same way and wire it in. Create:
+    - flights/mock_data.py exposing FLIGHTS, the exact list below (a mock flight feed).
+    - flights/router.py with an APIRouter at prefix /api/flights.
+    - flights/__init__.py exposing register(app) that mounts the router, following the
+      campsites example.
+  Then register the flights domain in app/main.py's create_app(). Do not change or break
+  any existing domain.
 
-  Add an endpoint GET /api/flights/delays that returns per-ORIGIN-airport delay statistics
-  as a JSON list. Define a flight's delay in minutes as (actual_dep - scheduled_dep)
-  rounded to whole minutes. For each origin airport compute:
+  FLIGHTS (put this verbatim in flights/mock_data.py):
+
+      FLIGHTS = [
+          {"flight_no": "BA100", "origin": "LHR", "dest": "JFK", "scheduled_dep": "2026-07-01T09:00:00", "actual_dep": "2026-07-01T09:05:00", "status": "scheduled"},
+          {"flight_no": "BA101", "origin": "LHR", "dest": "CDG", "scheduled_dep": "2026-07-01T10:00:00", "actual_dep": "2026-07-01T10:30:00", "status": "scheduled"},
+          {"flight_no": "BA102", "origin": "LHR", "dest": "AMS", "scheduled_dep": "2026-07-01T11:00:00", "actual_dep": None, "status": "cancelled"},
+          {"flight_no": "U201", "origin": "EDI", "dest": "LHR", "scheduled_dep": "2026-07-01T08:00:00", "actual_dep": "2026-07-01T08:00:00", "status": "scheduled"},
+          {"flight_no": "U202", "origin": "EDI", "dest": "DUB", "scheduled_dep": "2026-07-01T09:00:00", "actual_dep": "2026-07-01T09:20:00", "status": "scheduled"},
+          {"flight_no": "FR301", "origin": "GLA", "dest": "STN", "scheduled_dep": "2026-07-01T07:00:00", "actual_dep": "2026-07-01T07:10:00", "status": "scheduled"},
+      ]
+
+  Each record has flight_no, origin and dest (IATA codes), scheduled_dep and actual_dep
+  (ISO 8601 datetime strings; actual_dep is None for a cancelled flight), and status.
+
+  Add GET /api/flights/delays returning per-ORIGIN-airport delay statistics as a JSON
+  list. Define a flight's delay in minutes as (actual_dep - scheduled_dep) rounded to
+  whole minutes. For each origin airport compute:
     - airport: the IATA code.
     - flights: total number of flights from that origin.
     - cancelled: number with no actual departure (actual_dep is None).
@@ -28,22 +54,20 @@ prompt: |
     - avg_delay_min: the mean delay in minutes over the non-cancelled flights, rounded to
       1 decimal place; 0.0 if there are none.
   Return the airports sorted by flights descending, then airport code ascending.
-
-  Mount the endpoint on an APIRouter at prefix /api/flights, expose register(app) from the
-  flights package following the health example, and register the flights domain in
-  app/main.py's create_app() so the running app serves /api/flights/delays. Do not change
-  the health domain or break its existing route.
-agent:
-  max_turns: 40
 verifier:
   kind: pytest
   args:
     tests:
       flights_test.py: |
+        # Mount ONLY the new flights router on a minimal app. Never import app.main: in
+        # the real monolith it pulls OTEL / the /mcp app / Discord and is not import-safe.
+        from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from app.main import app
+        from flights.router import router
 
+        app = FastAPI()
+        app.include_router(router)
         client = TestClient(app)
 
         EXPECTED = [
@@ -59,10 +83,6 @@ verifier:
 
         def test_delays_aggregate_matches_mock():
             assert client.get("/api/flights/delays").json() == EXPECTED
-
-
-        def test_existing_health_domain_still_works():
-            assert client.get("/api/health").json() == {"status": "ok"}
 
     targets: ["flights_test.py"]
     timeout_s: 180
