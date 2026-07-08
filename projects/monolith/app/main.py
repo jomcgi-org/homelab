@@ -152,6 +152,16 @@ async def _start_singletons(app: FastAPI) -> None:
                         store = MessageStore(session=session, embed_client=embed_client)
                         expired = store.reclaim_expired(ttl_seconds=30, limit=5)
                         for lock in expired:
+                            # Reclaim-and-reprocess is Discord-specific:
+                            # reprocess_message re-fetches the message by int()
+                            # channel/message snowflake. A WhatsApp lock carries a
+                            # string group JID (e.g. "...@g.us"), processed inline
+                            # by the inbound handler (not re-fetchable via the
+                            # Discord bot), so skip it -- otherwise a single
+                            # non-numeric lock raises ValueError and poisons the
+                            # whole sweep, blocking Discord reclaim + cleanup too.
+                            if not str(lock.channel_id).isdigit():
+                                continue
                             logger.info(
                                 "Reclaiming expired lock for message %s",
                                 lock.discord_message_id,
