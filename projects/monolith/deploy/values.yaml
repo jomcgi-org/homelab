@@ -262,7 +262,10 @@ goosecracker:
       # placeholder string MUST match that catalog entry -- kloak_placeholder_drift_
       # test.py fails CI on drift. repo and cluster tools stay denied at dispatch
       # (goosecracker.tiers.household), so no GitHub token or kubeconfig is here.
-      OPENAI_HOST: https://openrouter.ai/api/v1
+      # NOTE: no /v1 suffix -- goose's OpenAI provider appends /v1/chat/completions
+      # to OPENAI_HOST, so the base must end at /api or the request path doubles to
+      # /api/v1/v1/chat/completions and OpenRouter 404s.
+      OPENAI_HOST: https://openrouter.ai/api
       OPENAI_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
       GOOSE_PROVIDER: openai
       GOOSE_MODEL: deepseek/deepseek-v4-flash
