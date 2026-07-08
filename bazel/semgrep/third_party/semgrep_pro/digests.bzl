@@ -14,7 +14,7 @@ SEMGREP_PRO_DIGESTS = {
     "rules_javascript": "sha256:d9789e2eba75c0cb1317a4a1b1838bae6a571e6bf83c87992f762221b95ba69c",
     "rules_kubernetes": "sha256:eaeeeff194bad2f8ab7433a172e6968b853a2cf3be358563b1134f0b4a447602",
     "rules_rust": "sha256:14f66ffe8d3250b8855a0fced76de01942bb30b52d7be40d123e874ab337a7d7",
-    "rules_sca_golang": "sha256:9f0c04ee52feda21372b3143605434c10c71e286195d83587c1076c54822a5c2",
-    "rules_sca_python": "sha256:7912f1410363567753515c9afed7ea917cab824e27067e4c98765741eb240353",
-    "rules_sca_javascript": "sha256:90b1145234c14ae5f7a28a151717637321f5e5ed99e09b3fc5632b9713673414",
+    "rules_sca_golang": "sha256:7e8b682b8c57425bfcd599ebad70963ad436e50dc4172d29d0a1c05b61a7a030",
+    "rules_sca_python": "sha256:9377797723ad0fee8cda0a3ce571f613f8392fc62b89d31dba14381065d39a60",
+    "rules_sca_javascript": "sha256:fde29c5e8e728ab5bcc100851c2172d20a4f211877dd96d7f03559b63af5c4c9",
 }
