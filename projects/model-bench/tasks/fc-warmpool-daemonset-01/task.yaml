@@ -1,31 +1,64 @@
 id: fc-warmpool-daemonset-01
-version: v1
+version: v2
 class: code-fix
 tier: hard
 mode: agentic
 prompt: |
-  This is the firecracker invoke daemon ("fc-invoke"), which keeps a pool of warm
-  microVM slots and hands them to concurrent invocations. It ships as a node DaemonSet.
-  Three things are wrong and all must be fixed.
+  This is a real snapshot of the firecracker invoke daemon ("fc-invoke") from this
+  repo. The daemon keeps a warm base snapshot per workload and restores fresh
+  single-use microVMs from it (the fast path), falling back to a cold boot when no
+  base is available. The warm-pool orchestration lives in package `invoker` at
+  node/invoker/invoker.go; its supporting types (Workload, ClaimSpec, Handle,
+  SnapshotRef) live in package `substrate` under substrate/.
 
-  The Go code is a module with no go.mod yet. Its import paths use the prefix
-  `example.com/fcpool` (see pool/pool.go importing example.com/fcpool/vsock), and it
-  depends on the external package github.com/google/uuid. Initialise the module
-  (go mod init example.com/fcpool) and pull dependencies (go mod tidy) so it builds.
+  The code is a Go module with no go.mod yet. Its import prefix is
+  `github.com/jomcgi/homelab/projects/firecracker/substrate` (see node/invoker
+  importing .../substrate and .../node/egress). Initialise the module with that
+  exact path (`go mod init github.com/jomcgi/homelab/projects/firecracker/substrate`)
+  and pull dependencies (`go mod tidy`) so it builds; it depends on
+  go.opentelemetry.io/otel and golang.org/x/sync.
 
-  1. Concurrency bug. pool.Pool.Acquire and Release read and mutate the pool's `free`
-     slice and `conns` map with no synchronisation. Under concurrent use this both races
-     on that shared state and can hand the same slot to two callers at once. Make the pool
-     safe for concurrent use so that `go test -race ./...` passes.
+  Your task: add a NEW observability accessor to the warm-pool daemon. The Invoker
+  tracks its warm base internally (whether one is loaded, how many times it has been
+  built, whether a build is in flight) but exposes none of it, so a status endpoint
+  or readiness probe cannot tell "serving warm restores" apart from "cold-booting
+  until the base builds". Add:
 
-  2. DaemonSet cannot reach KVM. chart/templates/daemonset.yaml runs the daemon
-     privileged but gives it no access to the host's /dev/kvm device, so firecracker
-     cannot launch microVMs. Expose /dev/kvm to the container (a hostPath volume mounted
-     at /dev/kvm is the usual approach) so it appears in the rendered manifest.
+    1. An exported `PoolStatus` struct with these fields:
+         - `WarmBaseEnabled bool`   : whether this workload opts into the warm base
+                                       at all (its Workload.WarmBase).
+         - `WarmBaseReady bool`     : whether a usable warm base is currently loaded,
+                                       i.e. the next Invoke can take the fast restore
+                                       path rather than a cold boot.
+         - `Building bool`          : whether a base build is in flight right now.
+         - `BaseGeneration uint64`  : the number of successful base builds so far
+                                       (advances by one per captured base).
 
-  You have a `run` tool: use it to set up the module, run `go test -race ./...`, and
-  render the chart with `helm template` to check your work. When everything passes, call
-  done.
+    2. An exported method `func (inv *Invoker) PoolStatus() PoolStatus` that returns
+       a consistent snapshot of that state. It must read the base fields under the
+       same lock the build/invalidate paths mutate them, so the returned fields never
+       tear against a concurrent build. Study how BuildBase, invalidateBase, and
+       currentBase already read and mutate that state, and mirror their locking.
+
+  Do NOT change existing behaviour; this is purely additive. Leave the rest of the
+  daemon untouched.
+
+  You have a `run` tool: use it to `go mod init` / `go mod tidy`, and to
+  `go test ./node/invoker/` to check your work. When it builds and the daemon
+  behaves as described, call done.
+snapshot:
+  commit: 019b3ffb829700df0a0cf950e502d3d828147985
+  paths:
+    - projects/firecracker/substrate/node/invoker
+    - projects/firecracker/substrate/node/egress
+    - projects/firecracker/substrate/substrate
+    - projects/firecracker/substrate/vsockproto
+  strip_components: 3
+  exclude:
+    - "*_test.go"
+    - "BUILD"
+    - "BUILD.bazel"
+    - "*.bzl"
 agent:
   max_turns: 45
   exec: true
@@ -33,86 +66,141 @@ verifier:
   kind: command
   args:
     write_files:
+      node/invoker/poolstatus_test.go: |
+        package invoker
+
+        import (
+        	"context"
+        	"net/http"
+        	"testing"
+        	"time"
+
+        	"github.com/jomcgi/homelab/projects/firecracker/substrate/substrate"
+        )
+
+        // stubDriver is a minimal vmDriver good enough for the warm-base build path:
+        // Claim/SnapshotBase succeed, everything else no-ops. Self-contained so the
+        // gold test does not depend on the fixture's own (hidden) test helpers.
+        type stubDriver struct{ seq int }
+
+        func (d *stubDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
+        	tid := spec.ThreadID
+        	if tid == "" {
+        		d.seq++
+        		tid = "stub-thread"
+        	}
+        	return substrate.Handle{ThreadID: tid, ID: "vm-" + tid}, nil
+        }
+
+        func (d *stubDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey string) (substrate.SnapshotRef, error) {
+        	return substrate.SnapshotRef{ID: baseKey, Base: true}, nil
+        }
+
+        func (d *stubDriver) Release(_ context.Context, _ substrate.Handle) error { return nil }
+        func (d *stubDriver) RemoveBundle(_ string) error                         { return nil }
+        func (d *stubDriver) VsockUDSPath(threadID string) string {
+        	return "/stub/" + threadID + "/vsock.sock"
+        }
+
+        // stubTransport reports the guest ready immediately; RoundTrip is unused by
+        // these tests but present to satisfy the transport interface.
+        type stubTransport struct{}
+
+        func (stubTransport) WaitReady(_ context.Context, _, _ string) error { return nil }
+        func (stubTransport) RoundTrip(_ context.Context, _ string, _ *http.Request) (*http.Response, error) {
+        	return &http.Response{StatusCode: http.StatusOK}, nil
+        }
+
+        func warmConfig() Config {
+        	return Config{
+        		Workload: substrate.Workload{
+        			WarmBase:       true,
+        			Concurrency:    4,
+        			ReadyPath:      "/shim/ready",
+        			RequestTimeout: 5 * time.Second,
+        		},
+        		BaseKey:          "test-base",
+        		Arch:             "amd64",
+        		BootReadyTimeout: 5 * time.Second,
+        	}
+        }
+
+        // TestPoolStatusReflectsWarmBaseLifecycle drives an Invoker through the
+        // warm-base lifecycle and asserts PoolStatus reports each stage. A workload
+        // with WarmBase enabled starts with no base loaded (cold path only); after a
+        // successful BuildBase a usable base is loaded (fast restore path) and the
+        // build generation has advanced exactly once.
+        func TestPoolStatusReflectsWarmBaseLifecycle(t *testing.T) {
+        	inv := New(&stubDriver{}, stubTransport{}, warmConfig(), nil)
+
+        	before := inv.PoolStatus()
+        	if !before.WarmBaseEnabled {
+        		t.Fatalf("WarmBaseEnabled: want true (warmConfig enables WarmBase), got false")
+        	}
+        	if before.WarmBaseReady {
+        		t.Errorf("WarmBaseReady before BuildBase: want false, got true")
+        	}
+        	if before.Building {
+        		t.Errorf("Building before BuildBase: want false, got true")
+        	}
+        	if before.BaseGeneration != 0 {
+        		t.Errorf("BaseGeneration before BuildBase: want 0, got %d", before.BaseGeneration)
+        	}
+
+        	if err := inv.BuildBase(context.Background()); err != nil {
+        		t.Fatalf("BuildBase: %v", err)
+        	}
+
+        	after := inv.PoolStatus()
+        	if !after.WarmBaseReady {
+        		t.Errorf("WarmBaseReady after BuildBase: want true, got false")
+        	}
+        	if after.Building {
+        		t.Errorf("Building after BuildBase returns: want false, got true")
+        	}
+        	if after.BaseGeneration != 1 {
+        		t.Errorf("BaseGeneration after one BuildBase: want 1, got %d", after.BaseGeneration)
+        	}
+        }
+
+        // TestPoolStatusWarmBaseDisabled checks that a workload that opts out of the
+        // warm base reports it: WarmBaseEnabled is false and, because BuildBase
+        // no-ops, no base is ever loaded and the generation stays zero.
+        func TestPoolStatusWarmBaseDisabled(t *testing.T) {
+        	cfg := warmConfig()
+        	cfg.Workload.WarmBase = false
+        	inv := New(&stubDriver{}, stubTransport{}, cfg, nil)
+
+        	if err := inv.BuildBase(context.Background()); err != nil {
+        		t.Fatalf("BuildBase (disabled): %v", err)
+        	}
+        	st := inv.PoolStatus()
+        	if st.WarmBaseEnabled {
+        		t.Errorf("WarmBaseEnabled: want false, got true")
+        	}
+        	if st.WarmBaseReady {
+        		t.Errorf("WarmBaseReady with warm base disabled: want false, got true")
+        	}
+        	if st.BaseGeneration != 0 {
+        		t.Errorf("BaseGeneration with warm base disabled: want 0, got %d", st.BaseGeneration)
+        	}
+        }
+
       _check.sh: |
         #!/bin/sh
-        # The task is graded on all three axes at once.
-        # 1) The Go concurrency fix, under the race detector (also catches double-acquire).
-        if ! go test -race ./... 1>&2; then
-          echo "go test -race failed: the pool concurrency bug is not fixed" 1>&2
-          exit 1
+        # Set up the Go module if the model did not already (idempotent), pull deps,
+        # then run the injected gold test for the warm-pool accessor. The test FAILS
+        # on the unmodified fixture (PoolStatus absent) and PASSES once the additive
+        # accessor is implemented.
+        set -e
+        if [ ! -f go.mod ]; then
+          go mod init github.com/jomcgi/homelab/projects/firecracker/substrate 1>&2
         fi
-        # 2) The DaemonSet must expose the host KVM device to the container.
-        if ! helm template rel ./chart 2>&1 | grep -q '/dev/kvm'; then
-          echo "the rendered DaemonSet does not expose /dev/kvm" 1>&2
+        GOFLAGS=-mod=mod go mod tidy 1>&2
+        if ! GOFLAGS=-mod=mod go test ./node/invoker/ 1>&2; then
+          echo "go test ./node/invoker/ failed: the PoolStatus warm-pool accessor is not implemented correctly" 1>&2
           exit 1
         fi
         echo ok
-
-      pool/pool_test.go: |
-        package pool
-
-        import (
-        	"sync"
-        	"testing"
-        )
-
-        // TestConcurrentAcquireReleaseNoDouble hammers the pool from many goroutines. A
-        // correct pool never hands the same slot to two callers at once; an unsynchronised
-        // one both races on its internal state (caught by `go test -race`) and can pop the
-        // same slot twice (caught by the held-set check below).
-        func TestConcurrentAcquireReleaseNoDouble(t *testing.T) {
-        	p := New(8)
-
-        	var mu sync.Mutex
-        	held := make(map[int]bool)
-        	var wg sync.WaitGroup
-        	for i := 0; i < 64; i++ {
-        		wg.Add(1)
-        		go func() {
-        			defer wg.Done()
-        			for j := 0; j < 300; j++ {
-        				c, err := p.Acquire()
-        				if err != nil {
-        					continue // exhaustion under contention is expected and fine
-        				}
-        				mu.Lock()
-        				if held[c.Slot] {
-        					mu.Unlock()
-        					t.Errorf("slot %d handed out to two callers at once", c.Slot)
-        					return
-        				}
-        				held[c.Slot] = true
-        				mu.Unlock()
-
-        				mu.Lock()
-        				delete(held, c.Slot)
-        				mu.Unlock()
-        				p.Release(c)
-        			}
-        		}()
-        	}
-        	wg.Wait()
-        }
-
-        // TestAcquireExhaustsAndRecovers checks the basic single-threaded contract still
-        // holds: New(n) yields exactly n slots, then ErrExhausted, and a Release frees one.
-        func TestAcquireExhaustsAndRecovers(t *testing.T) {
-        	p := New(2)
-        	a, err := p.Acquire()
-        	if err != nil {
-        		t.Fatalf("first acquire: %v", err)
-        	}
-        	if _, err := p.Acquire(); err != nil {
-        		t.Fatalf("second acquire: %v", err)
-        	}
-        	if _, err := p.Acquire(); err != ErrExhausted {
-        		t.Fatalf("third acquire: want ErrExhausted, got %v", err)
-        	}
-        	p.Release(a)
-        	if _, err := p.Acquire(); err != nil {
-        		t.Fatalf("acquire after release: %v", err)
-        	}
-        }
-
     cmd: ["sh", "_check.sh"]
     timeout_s: 300

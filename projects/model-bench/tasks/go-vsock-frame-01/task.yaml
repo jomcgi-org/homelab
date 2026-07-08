@@ -3,23 +3,60 @@ version: v1
 class: code-fix
 tier: standard
 mode: agentic
+source_commit: 019b3ffb829700df0a0cf950e502d3d828147985
+snapshot:
+  commit: 019b3ffb829700df0a0cf950e502d3d828147985
+  paths:
+    - projects/firecracker/substrate/vsockproto
+  strip_components: 4
+  exclude:
+    - "*_test.go"
+    - "*_test.py"
+    - "*.md"
+    - "*.yaml"
+    - "*.yml"
+    - "*.png"
+    - "*.jpg"
+    - "*.svg"
+    - "BUILD"
+    - "BUILD.bazel"
+    - "*.bzl"
 prompt: |
-  frame.go implements the length-prefixed wire framing used over the firecracker vsock
-  transport: a 4-byte big-endian payload length, then that many payload bytes. ReadFrame
-  reads one frame from an io.Reader.
+  proto.go is the real vsockproto package from the firecracker substrate: the wire
+  contract the in-microVM wrapper (fc-agent-init) speaks to the host controller
+  (fc-agentd) over the Firecracker vsock control channel. Messages are
+  newline-delimited JSON over any io.ReadWriteCloser, so the same code runs over a
+  real vsock connection in the guest and over a pipe in tests.
 
-  It has two problems:
-    1. Short reads. The payload is read with a single r.Read(buf), but an io.Reader (and a
-       streamed vsock connection in particular) may return fewer than len(buf) bytes per
-       call, so a payload delivered in chunks is left partly unfilled and the frame is
-       silently truncated. Read the payload in full.
-    2. No size guard. n is taken straight off the wire and used to allocate the buffer with
-       no bound, so a malformed or hostile peer can drive an unbounded allocation. When the
-       declared length exceeds MaxFrame, return an error before allocating or reading the
-       payload.
+  Conn is that framed channel. Read how it works:
+    - NewConn(rw) wraps an io.ReadWriteCloser with a bufio.Reader and a json.Encoder.
+    - Send(m) writes one Message followed by a newline (json.Encoder appends it).
+    - Recv() reads the next newline-delimited Message with c.r.ReadBytes('\n').
+
+  Recv has an unbounded-read weakness that is fine on a trusted pipe but risky on a
+  hostile channel: bufio.Reader.ReadBytes('\n') grows its buffer without limit, so a
+  peer that sends a very long line (or never sends a newline at all) can drive an
+  unbounded allocation on the control channel.
+
+  Add a new method to *Conn, alongside Recv:
+
+      func (c *Conn) RecvLimited(max int) (Message, error)
+
+  It reads the next newline-delimited Message exactly like Recv, but caps how many
+  bytes it will buffer for one frame at max. Requirements:
+    - A normal, in-bounds message decodes and returns just as Recv would.
+    - If the line grows past max bytes before its terminating newline, return a
+      non-nil error and do NOT attempt to decode the oversized bytes into a Message.
+    - A non-positive max (<= 0) means "no limit": RecvLimited(0) is a drop-in Recv,
+      returning the full message even when it is large.
+
+  Match the existing style in the file (the vsockproto: error prefix, the same
+  Message/decode shape as Recv). Do not change Send, Recv, NewConn, the Message type,
+  or any other existing behavior. Only add the new method (plus any small helper it
+  needs).
 
   This package has no go.mod, so `go test` will not run yet. Set up a Go module for it
-  (go mod init), fix both problems in frame.go, and make `go test ./...` pass. You have a
+  (go mod init), add RecvLimited to proto.go, and make `go test ./...` pass. You have a
   `run` tool for shell commands (go mod init, go test, etc.).
 agent:
   max_turns: 30
@@ -28,81 +65,94 @@ verifier:
   kind: command
   args:
     write_files:
-      frame_test.go: |
-        package frame
+      proto_gold_test.go: |
+        package vsockproto
 
         import (
         	"bytes"
-        	"encoding/binary"
+        	"encoding/json"
         	"io"
+        	"net"
+        	"strings"
         	"testing"
+        	"time"
         )
 
-        // chunkReader returns at most `chunk` bytes per Read, the way a streamed vsock
-        // connection delivers a payload in several pieces.
-        type chunkReader struct {
-        	data  []byte
-        	chunk int
+        // TestRecvLimitedAcceptsSmall confirms a normal in-bounds message
+        // round-trips through RecvLimited exactly as Recv would.
+        func TestRecvLimitedAcceptsSmall(t *testing.T) {
+        	guest, host := net.Pipe()
+        	gc := NewConn(guest)
+        	hc := NewConn(host)
+
+        	go func() {
+        		_ = gc.Send(Message{Kind: KindHello, ThreadID: "t1"})
+        	}()
+
+        	done := make(chan Message, 1)
+        	errc := make(chan error, 1)
+        	go func() {
+        		m, err := hc.RecvLimited(4096)
+        		if err != nil {
+        			errc <- err
+        			return
+        		}
+        		done <- m
+        	}()
+
+        	select {
+        	case m := <-done:
+        		if m.Kind != KindHello || m.ThreadID != "t1" {
+        			t.Fatalf("unexpected message: %+v", m)
+        		}
+        	case err := <-errc:
+        		t.Fatalf("RecvLimited returned error for in-bounds message: %v", err)
+        	case <-time.After(2 * time.Second):
+        		t.Fatal("timed out waiting for message")
+        	}
         }
 
-        func (c *chunkReader) Read(p []byte) (int, error) {
-        	if len(c.data) == 0 {
-        		return 0, io.EOF
-        	}
-        	n := c.chunk
-        	if n > len(p) {
-        		n = len(p)
-        	}
-        	if n > len(c.data) {
-        		n = len(c.data)
-        	}
-        	copy(p, c.data[:n])
-        	c.data = c.data[n:]
-        	return n, nil
-        }
-
-        func encodeFrame(payload []byte) []byte {
-        	hdr := make([]byte, 4)
-        	binary.BigEndian.PutUint32(hdr, uint32(len(payload)))
-        	return append(hdr, payload...)
-        }
-
-        func TestReadFrameSmall(t *testing.T) {
-        	payload := []byte("hello vsock")
-        	got, err := ReadFrame(bytes.NewReader(encodeFrame(payload)))
+        // TestRecvLimitedRejectsOversized confirms that a line whose length
+        // exceeds the limit is rejected with an error, and that the rejected
+        // bytes are not decoded into a Message. A hostile peer must not be able
+        // to drive an unbounded ReadBytes allocation on the control channel.
+        func TestRecvLimitedRejectsOversized(t *testing.T) {
+        	big := Message{Kind: KindHello, Reason: strings.Repeat("x", 8192)}
+        	raw, err := json.Marshal(big)
         	if err != nil {
-        		t.Fatalf("unexpected error: %v", err)
+        		t.Fatalf("marshal: %v", err)
         	}
-        	if !bytes.Equal(got, payload) {
-        		t.Fatalf("got %q, want %q", got, payload)
+        	line := append(raw, '\n')
+        	hc := NewConn(readNopCloser{bytes.NewReader(line)})
+
+        	if _, err := hc.RecvLimited(1024); err == nil {
+        		t.Fatal("expected an error for a message longer than the limit, got nil")
         	}
         }
 
-        func TestReadFrameChunked(t *testing.T) {
-        	// A 4000-byte payload delivered 7 bytes at a time forces the payload read to
-        	// span many Reads; a single Read would return a truncated frame.
-        	payload := bytes.Repeat([]byte("abcd"), 1000)
-        	r := &chunkReader{data: encodeFrame(payload), chunk: 7}
-        	got, err := ReadFrame(r)
+        // TestRecvLimitedZeroMeansUnbounded documents that a non-positive limit
+        // falls back to the unbounded Recv behaviour, so RecvLimited(0) is a
+        // drop-in Recv.
+        func TestRecvLimitedZeroMeansUnbounded(t *testing.T) {
+        	big := Message{Kind: KindHello, Reason: strings.Repeat("y", 8192)}
+        	raw, _ := json.Marshal(big)
+        	line := append(raw, '\n')
+        	hc := NewConn(readNopCloser{bytes.NewReader(line)})
+
+        	m, err := hc.RecvLimited(0)
         	if err != nil {
-        		t.Fatalf("unexpected error: %v", err)
+        		t.Fatalf("RecvLimited(0) should be unbounded, got error: %v", err)
         	}
-        	if !bytes.Equal(got, payload) {
-        		t.Fatalf("payload mismatch: a short read left the frame partly unfilled "+
-        			"(returned %d bytes, not all equal to the %d sent)", len(got), len(payload))
-        	}
-        }
-
-        func TestReadFrameRejectsOversized(t *testing.T) {
-        	// A length header above MaxFrame must be rejected with an error before the
-        	// (bogus) payload is consumed, so a malformed peer cannot drive a huge read.
-        	hdr := make([]byte, 4)
-        	binary.BigEndian.PutUint32(hdr, uint32(MaxFrame+1))
-        	r := bytes.NewReader(append(hdr, 1, 2, 3))
-        	if _, err := ReadFrame(r); err == nil {
-        		t.Fatal("expected an error for a frame larger than MaxFrame, got nil")
+        	if m.Kind != KindHello {
+        		t.Fatalf("unexpected message: %+v", m)
         	}
         }
 
+        // readNopCloser adapts an io.Reader to the io.ReadWriteCloser NewConn
+        // wants. Only Read is exercised by these tests.
+        type readNopCloser struct{ io.Reader }
+
+        func (readNopCloser) Write(p []byte) (int, error) { return len(p), nil }
+        func (readNopCloser) Close() error                { return nil }
     cmd: ["go", "test", "./..."]
     timeout_s: 240

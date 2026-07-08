@@ -1,19 +1,49 @@
 id: helm-values-plumbing-01
 version: v1
 class: config-plumbing
-source_commit: null
+tier: standard
+source_commit: 019b3ffb829700df0a0cf950e502d3d828147985
+# Real snapshot of the firecracker substrate ("fc-invoke") Helm chart. The chart
+# dir is materialized as the fixture root (strip_components=4 drops the
+# projects/firecracker/substrate/chart prefix), so the helm-template verifier's
+# chart="." + values="values.yaml" point straight at it. BUILD is a Bazel-only
+# file the model never needs, so it is excluded; every *.yaml / *.tpl the render
+# needs (Chart.yaml, values.yaml, templates/) is kept.
+snapshot:
+  commit: 019b3ffb829700df0a0cf950e502d3d828147985
+  paths:
+    - projects/firecracker/substrate/chart
+  exclude:
+    - BUILD
+  strip_components: 4
 prompt: |
-  The Helm chart at chart/ renders a Deployment whose container image tag comes
-  from .Values.image.tag in chart/values.yaml, which is currently empty. Set the
-  image tag to 1.4.2 by returning the complete updated contents of
-  chart/values.yaml. Return only the file, prefixed with a line "FILE chart/values.yaml".
+  This is the Helm chart for the firecracker "fc-invoke" daemon. Its Deployment
+  already plumbs several OpenTelemetry settings from the `tracing:` block in
+  values.yaml into container env vars: `tracing.endpoint` -> OTEL_EXPORTER_OTLP_ENDPOINT,
+  `tracing.serviceName` -> OTEL_SERVICE_NAME, `tracing.serviceVersion` -> OTEL_SERVICE_VERSION
+  (see templates/deployment.yaml, the `env:` list of the `fc-invoke` container).
+
+  Add a new configurable head-based trace sampling ratio, mirroring that existing
+  pattern:
+
+  1. In values.yaml, add a `sampleRatio` field under the `tracing:` block with a
+     sensible default.
+  2. In templates/deployment.yaml, wire it into a new container env var named
+     `OTEL_TRACES_SAMPLER_ARG` whose value is `.Values.tracing.sampleRatio`,
+     alongside the other OTEL_* env vars on the `fc-invoke` container.
+
+  The env var must ALWAYS render (like OTEL_SERVICE_NAME, not gated behind a
+  `with`/`if`). Return the complete updated contents of BOTH files, each prefixed
+  with a line "FILE <path>" (e.g. "FILE values.yaml" and
+  "FILE templates/deployment.yaml").
 target_files:
-  - chart/values.yaml
+  - values.yaml
+  - templates/deployment.yaml
 verifier:
   kind: helm-template
   args:
-    release: demo
-    chart: chart
-    values: chart/values.yaml
+    release: fc-invoke
+    chart: .
+    values: values.yaml
     assert_contains:
-      - "myrepo/demo:1.4.2"
+      - "OTEL_TRACES_SAMPLER_ARG"
