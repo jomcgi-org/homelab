@@ -3,56 +3,14 @@ version: v1
 class: code-fix
 tier: hard
 mode: agentic
-# Whole-monolith-backend snapshot (all Python top-level packages, no frontend) at a
-# pinned main commit. The model must navigate the real 248-file tree, find the campsites
-# domain, and mirror the subtle semantics of the existing /snapshot endpoint. Regenerate
-# with: bench snapshot campsites-region-rollup-01 (git archive of the paths below).
+# Full monolith backend snapshot via the shared `monolith-backend` preset (see
+# _SNAPSHOT_PRESETS in bench/cli.py): the whole real backend tree at a pinned commit,
+# minus frontend/chart/deploy/tests/non-.py. The model must navigate the real tree, find
+# the campsites domain, and mirror the subtle semantics of the existing /snapshot
+# endpoint. Regenerate with: bench snapshot campsites-region-rollup-01.
 snapshot:
+  preset: monolith-backend
   commit: 40e36a2c2c142aade3a4f95e8e85e85ac6ade943
-  strip_components: 2
-  # Python-only fixture: drop the hidden test files (the grader is injected) and every
-  # non-.py file. The task only needs importable Python, and repo-wide tooling globs
-  # other extensions out of the fixture with real side effects (the docs-manifest
-  # generator treats fixture *.md as published docs and surfaces them on the public docs
-  # page; prettier would reformat json/md). No imported module reads these at test time.
-  exclude:
-    - "*_test.py"
-    - "*.md"
-    - "*.json"
-    - "*.ndjson"
-    - "*.sql"
-    - "*.sh"
-    - "*.jpg"
-    - "*.jpeg"
-    - "*.png"
-    - "*.yaml"
-    - "*.yml"
-  paths:
-    - projects/monolith/agent
-    - projects/monolith/app
-    - projects/monolith/artifact
-    - projects/monolith/campsites
-    - projects/monolith/chat
-    - projects/monolith/chat_public
-    - projects/monolith/cluster
-    - projects/monolith/demos
-    - projects/monolith/dr_jobs
-    - projects/monolith/e2e
-    - projects/monolith/goosecracker
-    - projects/monolith/grimoire
-    - projects/monolith/grimoire_chat
-    - projects/monolith/hikes
-    - projects/monolith/home
-    - projects/monolith/knowledge
-    - projects/monolith/sandbox
-    - projects/monolith/scheduler
-    - projects/monolith/scripts
-    - projects/monolith/semgrep
-    - projects/monolith/shared
-    - projects/monolith/ships
-    - projects/monolith/stars
-    - projects/monolith/trips
-    - projects/monolith/worldcup
 agent:
   max_turns: 50
 prompt: |
