@@ -67,7 +67,7 @@ func testLogger() *slog.Logger {
 func TestStartNoSessionEntersPairingAndDeliversCodeOnce(t *testing.T) {
 	session := &fakeSession{loggedIn: false, pairingCode: "ABCD1234"}
 	notifier := &fakeNotifier{}
-	gw := NewGateway(Config{BotNumber: "+447700900123"}, testLogger(), session, notifier, nil)
+	gw := NewGateway(Config{BotNumber: "+447700900123"}, testLogger(), session, notifier, nil, nil)
 
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -94,7 +94,7 @@ func TestStartNoSessionEntersPairingAndDeliversCodeOnce(t *testing.T) {
 func TestStartWithStoredSessionResumesWithoutPairing(t *testing.T) {
 	session := &fakeSession{loggedIn: true}
 	notifier := &fakeNotifier{}
-	gw := NewGateway(Config{BotNumber: "+447700900123"}, testLogger(), session, notifier, nil)
+	gw := NewGateway(Config{BotNumber: "+447700900123"}, testLogger(), session, notifier, nil, nil)
 
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -109,7 +109,7 @@ func TestStartWithStoredSessionResumesWithoutPairing(t *testing.T) {
 
 func TestConnectedEventSetsConnected(t *testing.T) {
 	session := &fakeSession{loggedIn: true}
-	gw := NewGateway(Config{}, testLogger(), session, &fakeNotifier{}, nil)
+	gw := NewGateway(Config{}, testLogger(), session, &fakeNotifier{}, nil, nil)
 
 	gw.handleEvent(&events.Connected{})
 
@@ -130,7 +130,7 @@ func TestParkedTransition(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			session := &fakeSession{loggedIn: true}
 			notifier := &fakeNotifier{}
-			gw := NewGateway(Config{}, testLogger(), session, notifier, nil)
+			gw := NewGateway(Config{}, testLogger(), session, notifier, nil, nil)
 
 			// Fire the parking event twice: the alert must still fire exactly once
 			// and the gateway must disconnect (work stops) exactly once.
@@ -158,7 +158,7 @@ func TestParkedStaysParkedOnLaterConnected(t *testing.T) {
 	// A stray Connected after parking must not resurrect the gateway: parked is
 	// terminal until an operator re-pairs.
 	session := &fakeSession{loggedIn: true}
-	gw := NewGateway(Config{}, testLogger(), session, &fakeNotifier{}, nil)
+	gw := NewGateway(Config{}, testLogger(), session, &fakeNotifier{}, nil, nil)
 
 	gw.handleEvent(&events.LoggedOut{})
 	gw.handleEvent(&events.Connected{})
@@ -191,7 +191,7 @@ func TestGroupMessageAllowList(t *testing.T) {
 	// allow-list filter.
 	session := &fakeSession{loggedIn: true}
 	fwd := &fakeForwarder{}
-	gw := NewGateway(Config{GroupJIDs: []string{"allowed@g.us"}}, testLogger(), session, &fakeNotifier{}, fwd)
+	gw := NewGateway(Config{GroupJIDs: []string{"allowed@g.us"}}, testLogger(), session, &fakeNotifier{}, fwd, nil)
 	gw.handleEvent(&events.Connected{})
 
 	dropped := &events.Message{}

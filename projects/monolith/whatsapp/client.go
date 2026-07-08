@@ -60,8 +60,18 @@ type Gateway struct {
 	// unbounded Postgres INSERT cannot wedge the whatsmeow event loop.
 	baseCtx context.Context
 
+	// db is the base-DSN Postgres handle (no search_path, same one the outbox
+	// drain uses) for reading the chat.whatsapp_group allow-list registry. Nil in
+	// tests, which fall back to the cfg.GroupJIDs seed only.
+	db *sql.DB
+
+	// allowMu guards allow: the event goroutine reads it in onMessage while the
+	// refresh loop rebuilds it from chat.whatsapp_group.
+	allowMu sync.RWMutex
 	// allow is the set of group JIDs whose messages are forwarded; everything
-	// else is dropped without forwarding.
+	// else is dropped without forwarding. Loaded from chat.whatsapp_group (the DB
+	// registry, so no group JID -- which embeds a phone number -- lands in git)
+	// and refreshed on a ticker, seeded by the optional cfg.GroupJIDs.
 	allow map[string]bool
 
 	// parkOnce guards the parked-state transition so the alert fires exactly once
@@ -69,11 +79,15 @@ type Gateway struct {
 	parkOnce sync.Once
 }
 
+// allowlistRefreshInterval is how often the gateway reloads chat.whatsapp_group,
+// so a group inserted out-of-band is observed without a redeploy.
+const allowlistRefreshInterval = 30 * time.Second
+
 // NewGateway builds a gateway over the given session, notifier, and forwarder. It
 // starts in the pairing state; Start drives the transition to connected (or
 // parked). A nil forwarder disables forwarding (the message is only logged), used
 // by tests that do not exercise the inbound path.
-func NewGateway(cfg Config, log *slog.Logger, session Session, notifier Notifier, forwarder Forwarder) *Gateway {
+func NewGateway(cfg Config, log *slog.Logger, session Session, notifier Notifier, forwarder Forwarder, db *sql.DB) *Gateway {
 	allow := make(map[string]bool, len(cfg.GroupJIDs))
 	for _, jid := range cfg.GroupJIDs {
 		allow[jid] = true
@@ -84,8 +98,76 @@ func NewGateway(cfg Config, log *slog.Logger, session Session, notifier Notifier
 		session:   session,
 		notifier:  notifier,
 		forwarder: forwarder,
+		db:        db,
 		state:     newStateHolder(StatePairing),
 		allow:     allow,
+	}
+}
+
+// allowed reports whether a group's messages should be forwarded, under the read
+// lock so it is safe against a concurrent allow-list refresh.
+func (g *Gateway) allowed(groupJID string) bool {
+	g.allowMu.RLock()
+	defer g.allowMu.RUnlock()
+	return g.allow[groupJID]
+}
+
+// refreshAllowlist reloads the forwarding allow-list from chat.whatsapp_group
+// (the DB registry of household groups, populated out-of-band so no group JID
+// leaks into the public repo). The optional cfg.GroupJIDs seed is always kept, so
+// tests and env overrides still work. A nil db (tests) is a no-op. The rebuilt
+// map is swapped under the write lock so onMessage never reads a half-built set.
+func (g *Gateway) refreshAllowlist(ctx context.Context) error {
+	if g.db == nil {
+		return nil
+	}
+	rows, err := g.db.QueryContext(ctx, "SELECT group_jid FROM chat.whatsapp_group")
+	if err != nil {
+		return fmt.Errorf("load whatsapp_group allow-list: %w", err)
+	}
+	defer rows.Close()
+	next := make(map[string]bool)
+	for _, jid := range g.cfg.GroupJIDs {
+		next[jid] = true
+	}
+	for rows.Next() {
+		var jid string
+		if err := rows.Scan(&jid); err != nil {
+			return fmt.Errorf("scan whatsapp_group row: %w", err)
+		}
+		next[jid] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate whatsapp_group rows: %w", err)
+	}
+	g.allowMu.Lock()
+	changed := len(next) != len(g.allow)
+	g.allow = next
+	g.allowMu.Unlock()
+	if changed {
+		g.log.Info("whatsapp allow-list refreshed from chat.whatsapp_group", "groups", len(next))
+	}
+	return nil
+}
+
+// runAllowlistRefresh reloads the allow-list on a ticker until ctx is cancelled,
+// so a group inserted into chat.whatsapp_group after the gateway started is
+// picked up without a redeploy. No-op without a db (tests).
+func (g *Gateway) runAllowlistRefresh(ctx context.Context) {
+	if g.db == nil {
+		return
+	}
+	ticker := time.NewTicker(allowlistRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := g.refreshAllowlist(ctx); err != nil {
+				g.log.Warn("allow-list refresh failed; keeping the previous set", "err", err)
+			}
+		}
 	}
 }
 
@@ -100,6 +182,14 @@ func (g *Gateway) State() State { return g.state.get() }
 func (g *Gateway) Start(ctx context.Context) error {
 	g.baseCtx = ctx
 	g.session.AddEventHandler(g.handleEvent)
+
+	// Load the forwarding allow-list from chat.whatsapp_group and keep it fresh,
+	// so a household group added to the registry later is observed without a
+	// redeploy. A load failure is non-fatal (the refresh tick retries).
+	if err := g.refreshAllowlist(ctx); err != nil {
+		g.log.Warn("initial allow-list load failed; will retry on the refresh tick", "err", err)
+	}
+	go g.runAllowlistRefresh(ctx)
 
 	if g.session.IsLoggedIn() {
 		g.log.Info("resuming stored whatsapp session")
@@ -168,7 +258,13 @@ func (g *Gateway) onMessage(e *events.Message) {
 		return
 	}
 	groupJID := e.Info.Chat.String()
-	if !g.allow[groupJID] {
+	if !g.allowed(groupJID) {
+		// Not (yet) an allow-listed household group. Log the JID at info so an
+		// operator can discover it and add it to chat.whatsapp_group; the message
+		// itself is dropped, never forwarded. (Group JIDs are not in git, so this
+		// log line is the intended way to learn a new group's id.)
+		g.log.Info("dropped message from non-allow-listed group; add its group_jid to chat.whatsapp_group to enable it",
+			"group_jid", groupJID)
 		return
 	}
 	g.log.Info("group message",

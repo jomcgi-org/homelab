@@ -345,16 +345,23 @@ orchestrator:
 # point. The whatsmeow session reuses the monolith CNPG cluster under a dedicated
 # `whatsapp` schema.
 whatsapp:
-  enabled: false
+  enabled: true
   # Household content model (in-monolith concierge reply + WhatsApp chat agent).
   # DeepSeek V4 Flash on OpenRouter; the goose guest model is in
   # goosecracker.tiers.household.
   model: "deepseek/deepseek-v4-flash"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/whatsapp"
-  botNumber: ""
-  groupJids: ""
-  alertChannelId: ""
+  # PII stays out of git:
+  #   - botNumber lives in the "whatsapp" 1Password item (WHATSAPP_BOT_NUMBER field),
+  #     mirrored into the monolith-whatsapp Secret and read by secretKeyRef.
+  #   - group JIDs (which embed a phone number) live in chat.whatsapp_group; the
+  #     gateway loads its allow-list from there and refreshes on a ticker. Insert a
+  #     row per household group (tier=household, ambient=true). The gateway logs the
+  #     JID of any message from a not-yet-registered group so it can be discovered.
+  # alertChannelId is a Discord channel id (not personal data): where the pairing
+  # code and logout/ban alerts are posted.
+  alertChannelId: "1501965852969402517"
   # Monolith backend inbound endpoint (release "monolith", service "monolith").
   # The WHATSAPP_INBOUND_TOKEN field of the 1Password "whatsapp" item authorizes
   # the forward; populate it before enabling the gateway.

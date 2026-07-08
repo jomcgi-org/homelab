@@ -49,10 +49,20 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-pg-app
                   key: uri
+            # The bot number is PII (a real phone number), so it is NOT in git:
+            # it lives in the "whatsapp" 1Password item and is mirrored into this
+            # Secret, read here by key. Add a WHATSAPP_BOT_NUMBER field to that
+            # item before enabling the gateway.
             - name: WHATSAPP_BOT_NUMBER
-              value: {{ .Values.whatsapp.botNumber | quote }}
-            - name: WHATSAPP_GROUP_JIDS
-              value: {{ .Values.whatsapp.groupJids | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-whatsapp
+                  key: WHATSAPP_BOT_NUMBER
+            # No WHATSAPP_GROUP_JIDS env: the forwarding allow-list is loaded from
+            # chat.whatsapp_group (a group JID embeds a phone number, so it must not
+            # sit in the public repo). Insert household groups into that table; the
+            # gateway refreshes on a ticker. WHATSAPP_GROUP_JIDS remains an optional
+            # test/override seed the config still reads, just not set here.
             - name: WHATSAPP_ALERT_CHANNEL_ID
               value: {{ .Values.whatsapp.alertChannelId | quote }}
             # The gateway forwards allow-listed group messages to the monolith
