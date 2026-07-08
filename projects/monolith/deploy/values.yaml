@@ -266,6 +266,11 @@ goosecracker:
       OPENAI_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
       GOOSE_PROVIDER: openai
       GOOSE_MODEL: deepseek/deepseek-v4-flash
+      # Artifact/chart builds publish the HTML here and get a capability URL back
+      # (delivered to WhatsApp as text, sidestepping the text-only outbox). Same
+      # in-cluster monolith sinks the artifact tier uses, reached via the funnel.
+      ARTIFACT_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/artifact
+      PROGRESS_PUBLISH_URL: http://monolith.monolith.svc.cluster.local:8000/internal/goosecracker/progress
       # DeepSeek V4 Flash serves a large window; tell goose the real size so it
       # compacts proactively at ~80% rather than assuming 128k and overrunning.
       GOOSE_CONTEXT_LIMIT: "131072"
@@ -346,6 +351,10 @@ orchestrator:
 # `whatsapp` schema.
 whatsapp:
   enabled: true
+  # Heavy-agent path ON: charts/artifacts/full tasks dispatch the household goose
+  # agent (recipe=agent, tier=household, DeepSeek). Charts come back as an artifact
+  # URL (deliverable as text), sidestepping the text-only outbox media limit.
+  agentEnabled: true
   # Household content model (in-monolith concierge reply + WhatsApp chat agent).
   # DeepSeek V4 Flash on OpenRouter; the goose guest model is in
   # goosecracker.tiers.household.

@@ -135,6 +135,11 @@ spec:
             # the goose guest model is carried in the GOOSECRACKER_TIERS env instead.
             - name: HOUSEHOLD_LLM_MODEL
               value: {{ .Values.whatsapp.model | quote }}
+            # Gate the WhatsApp heavy-agent path (goose household dispatch for
+            # charts/artifacts/full tasks). Off -> a heavy request gets the "not
+            # wired up yet" reply; on -> it dispatches the household goose agent.
+            - name: WHATSAPP_AGENT_ENABLED
+              value: {{ .Values.whatsapp.agentEnabled | quote }}
             - name: EMBEDDING_URL
               value: {{ .Values.chat.embeddingUrl | quote }}
             - name: SEARXNG_URL

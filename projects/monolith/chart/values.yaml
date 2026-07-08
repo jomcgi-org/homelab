@@ -834,6 +834,10 @@ orchestrator:
 # chart BUILD images map); never hand-set a digest here.
 whatsapp:
   enabled: false
+  # Heavy-agent path (goose household dispatch for charts/artifacts/full tasks).
+  # Off by default: a heavy request replies "not wired up yet" instead of
+  # dispatching. Set true in deploy values to wire it on.
+  agentEnabled: false
   # Pinned OpenRouter model for household CONTENT generation in the monolith: the
   # concierge agent-result reply and the WhatsApp chat agent both author on this
   # (strong but cheap). The goose GUEST model is set separately in

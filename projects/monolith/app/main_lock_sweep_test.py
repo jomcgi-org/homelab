@@ -520,6 +520,71 @@ class TestLockSweepLoopWithExpiredLocks:
         mock_bot.reprocess_message.assert_any_await(222, 888)
 
     @pytest.mark.asyncio
+    async def test_sweep_loop_skips_non_discord_locks(self):
+        """A lock whose channel_id is not a numeric snowflake (a WhatsApp group
+        JID) is skipped, never reprocessed via the Discord bot -- and it does not
+        poison the sweep, so a Discord lock in the same batch still reprocesses."""
+        coros, capture_fn, mock_bot = _capture_sweep_coro()
+        mock_bot.reprocess_message = AsyncMock()
+
+        wa_lock = _make_lock(
+            discord_message_id="3B331C180B2C166EE82A",
+            channel_id="120363412404798712@g.us",
+        )
+        discord_lock = _make_lock(discord_message_id=222, channel_id=888)
+
+        mock_store = MagicMock()
+        mock_store.reclaim_expired.return_value = [wa_lock, discord_lock]
+        mock_store.cleanup_completed.return_value = 0
+
+        mock_session_obj = MagicMock()
+        mock_session_obj.__enter__ = MagicMock(return_value=mock_session_obj)
+        mock_session_obj.__exit__ = MagicMock(return_value=False)
+
+        patches = _lifespan_patches_with_discord(mock_bot)
+        with (
+            patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "fake-token"}),
+            patch("asyncio.create_task", side_effect=capture_fn),
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+        ):
+            await _start_singletons(app)
+
+        assert len(coros) == 1
+
+        sleep_count = [0]
+
+        async def controlled_sleep(_secs):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                raise asyncio.CancelledError()
+
+        with (
+            patch("asyncio.sleep", side_effect=controlled_sleep),
+            patch("app.db.get_engine", return_value=MagicMock()),
+            patch("sqlmodel.Session", return_value=mock_session_obj),
+            patch("chat.store.MessageStore", return_value=mock_store),
+            patch("shared.embedding.EmbeddingClient", return_value=MagicMock()),
+            patch("app.main.logger"),
+        ):
+            try:
+                await coros[0]
+            except asyncio.CancelledError:
+                pass
+
+        # Only the Discord lock is reprocessed; the WhatsApp JID lock is skipped.
+        assert mock_bot.reprocess_message.await_count == 1
+        mock_bot.reprocess_message.assert_awaited_once_with(222, 888)
+        # cleanup still ran (the sweep was not poisoned by the WhatsApp lock).
+        mock_store.cleanup_completed.assert_called_once_with(max_age_seconds=3600)
+
+    @pytest.mark.asyncio
     async def test_sweep_loop_logs_info_for_each_reclaimed_lock(self):
         """_lock_sweep_loop calls logger.info with the lock's discord_message_id for each reclaimed lock."""
         coros, capture_fn, mock_bot = _capture_sweep_coro()
