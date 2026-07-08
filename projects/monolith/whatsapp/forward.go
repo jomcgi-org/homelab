@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,14 +26,45 @@ type InboundPayload struct {
 	Timestamp       string `json:"timestamp"`
 }
 
-// Forwarder delivers a forwarded message to the monolith. It is an interface so
-// the gateway can be unit-tested with a fake (no HTTP); the production
-// implementation is HTTPForwarder.
+// ReactionPayload is a human reaction on one of Bosun's own messages, forwarded
+// to the monolith reaction endpoint as the /improve-ambient ground-truth signal.
+// The gateway only forwards reactions whose target was a bot-sent message; an
+// empty Emoji is WhatsApp's representation of a removed reaction. The JSON tags
+// are the wire contract the monolith's ReactionInbound model reads.
+type ReactionPayload struct {
+	GroupJID        string `json:"group_jid"`
+	ReactorJID      string `json:"reactor_jid"`
+	TargetMessageID string `json:"target_message_id"`
+	Emoji           string `json:"emoji"`
+	Timestamp       string `json:"timestamp"`
+}
+
+// Forwarder delivers forwarded events to the monolith. It is an interface so the
+// gateway can be unit-tested with a fake (no HTTP); the production implementation
+// is HTTPForwarder.
 type Forwarder interface {
-	// Forward hands off a payload for delivery. It must preserve per-group
-	// ordering and must not block the caller (the whatsmeow event goroutine) on
-	// the network; delivery, retry, and backoff happen on a per-group worker.
+	// Forward hands off a message payload for delivery. It must preserve
+	// per-group ordering and must not block the caller (the whatsmeow event
+	// goroutine) on the network; delivery, retry, and backoff happen on a
+	// per-group worker.
 	Forward(payload InboundPayload)
+	// ForwardReaction hands off a reaction payload for delivery, through the same
+	// per-group ordered worker as Forward so a react/un-react pair keeps its
+	// order relative to the group's other traffic.
+	ForwardReaction(payload ReactionPayload)
+}
+
+// queuedPost is one authenticated POST bound to a group's ordered worker. Both
+// message and reaction deliveries flow through the same per-group queue (keyed by
+// groupJID) so a group's events keep their WhatsApp order end to end; each post
+// carries its own target URL and pre-marshalled body.
+type queuedPost struct {
+	groupJID string
+	url      string
+	body     []byte
+	// logKind/logID label retry warnings without re-decoding body.
+	logKind string
+	logID   string
 }
 
 // HTTPForwarder POSTs payloads to the monolith inbound endpoint with a bearer
@@ -42,11 +74,12 @@ type Forwarder interface {
 // cancelled, and does not advance to the group's next message until the current
 // one lands (ordering over throughput; the monolith dedupes replays).
 type HTTPForwarder struct {
-	ctx    context.Context
-	url    string
-	token  string
-	client *http.Client
-	log    *slog.Logger
+	ctx         context.Context
+	inboundURL  string
+	reactionURL string
+	token       string
+	client      *http.Client
+	log         *slog.Logger
 
 	// Backoff bounds for the per-message retry loop. Defaults are set by
 	// NewHTTPForwarder; tests set small values directly.
@@ -54,7 +87,7 @@ type HTTPForwarder struct {
 	maxBackoff     time.Duration
 
 	mu     sync.Mutex
-	queues map[string]chan InboundPayload
+	queues map[string]chan queuedPost
 }
 
 // forwardQueueDepth buffers a group's pending payloads so a brief monolith blip
@@ -71,50 +104,96 @@ func NewHTTPForwarder(ctx context.Context, url, token string, client *http.Clien
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &HTTPForwarder{
-		ctx:            ctx,
-		url:            url,
-		token:          token,
-		client:         client,
-		log:            log,
+		ctx:         ctx,
+		inboundURL:  url,
+		reactionURL: reactionURLFrom(url),
+		token:       token,
+		client:      client,
+		log:         log,
+
 		initialBackoff: 1 * time.Second,
 		maxBackoff:     30 * time.Second,
-		queues:         make(map[string]chan InboundPayload),
+		queues:         make(map[string]chan queuedPost),
 	}
 }
 
-// Forward enqueues the payload onto its group's ordered queue, spawning the
-// group's worker on first use. The send blocks only if the group's buffer is
-// full (a sustained monolith outage), which is intentional backpressure.
+// reactionURLFrom derives the sibling reaction endpoint from the inbound URL. The
+// monolith mounts both under the same /internal/whatsapp prefix (.../inbound and
+// .../reaction), so swapping the trailing path segment keeps the two in lockstep
+// without a second env var to plumb and validate. A URL that does not end in
+// /inbound (e.g. a test server root) just gets /reaction appended.
+func reactionURLFrom(inboundURL string) string {
+	return strings.TrimSuffix(inboundURL, "/inbound") + "/reaction"
+}
+
+// Forward enqueues a message payload onto its group's ordered queue.
 func (f *HTTPForwarder) Forward(payload InboundPayload) {
-	ch := f.queueFor(payload.GroupJID)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		// String-only structs never fail to marshal; drop rather than spin.
+		f.log.Error("whatsapp forward: drop unmarshalable message",
+			"group_jid", payload.GroupJID, "message_id", payload.MessageID, "err", err)
+		return
+	}
+	f.enqueue(queuedPost{
+		groupJID: payload.GroupJID,
+		url:      f.inboundURL,
+		body:     body,
+		logKind:  "message",
+		logID:    payload.MessageID,
+	})
+}
+
+// ForwardReaction enqueues a reaction payload onto its group's ordered queue.
+func (f *HTTPForwarder) ForwardReaction(payload ReactionPayload) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		f.log.Error("whatsapp forward: drop unmarshalable reaction",
+			"group_jid", payload.GroupJID, "target_message_id", payload.TargetMessageID, "err", err)
+		return
+	}
+	f.enqueue(queuedPost{
+		groupJID: payload.GroupJID,
+		url:      f.reactionURL,
+		body:     body,
+		logKind:  "reaction",
+		logID:    payload.TargetMessageID,
+	})
+}
+
+// enqueue puts a post onto its group's ordered queue, spawning the group's worker
+// on first use. The send blocks only if the group's buffer is full (a sustained
+// monolith outage), which is intentional backpressure.
+func (f *HTTPForwarder) enqueue(post queuedPost) {
+	ch := f.queueFor(post.groupJID)
 	select {
-	case ch <- payload:
+	case ch <- post:
 	case <-f.ctx.Done():
 	}
 }
 
 // queueFor returns the group's channel, lazily creating it and its worker.
-func (f *HTTPForwarder) queueFor(groupJID string) chan InboundPayload {
+func (f *HTTPForwarder) queueFor(groupJID string) chan queuedPost {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if ch, ok := f.queues[groupJID]; ok {
 		return ch
 	}
-	ch := make(chan InboundPayload, forwardQueueDepth)
+	ch := make(chan queuedPost, forwardQueueDepth)
 	f.queues[groupJID] = ch
 	go f.worker(ch)
 	return ch
 }
 
-// worker delivers a single group's payloads sequentially, so the group's WhatsApp
+// worker delivers a single group's posts sequentially, so the group's WhatsApp
 // order is preserved end to end.
-func (f *HTTPForwarder) worker(ch chan InboundPayload) {
+func (f *HTTPForwarder) worker(ch chan queuedPost) {
 	for {
 		select {
 		case <-f.ctx.Done():
 			return
-		case payload := <-ch:
-			f.deliver(payload)
+		case post := <-ch:
+			f.deliver(post)
 		}
 	}
 }
@@ -122,16 +201,17 @@ func (f *HTTPForwarder) worker(ch chan InboundPayload) {
 // deliver POSTs one payload, retrying with capped exponential backoff until the
 // monolith accepts it (2xx) or the context is cancelled. It blocks the group's
 // worker until then, which is what preserves ordering under a partial outage.
-func (f *HTTPForwarder) deliver(payload InboundPayload) {
+func (f *HTTPForwarder) deliver(post queuedPost) {
 	backoff := f.initialBackoff
 	for attempt := 1; ; attempt++ {
-		err := f.postOnce(payload)
+		err := f.postOnce(post)
 		if err == nil {
 			return
 		}
 		f.log.Warn("whatsapp forward failed; will retry",
-			"group_jid", payload.GroupJID,
-			"message_id", payload.MessageID,
+			"group_jid", post.groupJID,
+			"kind", post.logKind,
+			"id", post.logID,
 			"attempt", attempt,
 			"err", err,
 		)
@@ -151,14 +231,8 @@ func (f *HTTPForwarder) deliver(payload InboundPayload) {
 
 // postOnce performs a single authenticated POST. A non-2xx status is an error so
 // deliver retries it (the monolith dedupes replays).
-func (f *HTTPForwarder) postOnce(payload InboundPayload) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		// A marshal failure is not retryable, but returning an error keeps deliver
-		// retrying; in practice a struct with string fields never fails to marshal.
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-	req, err := http.NewRequestWithContext(f.ctx, http.MethodPost, f.url, bytes.NewReader(body))
+func (f *HTTPForwarder) postOnce(post queuedPost) error {
+	req, err := http.NewRequestWithContext(f.ctx, http.MethodPost, post.url, bytes.NewReader(post.body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

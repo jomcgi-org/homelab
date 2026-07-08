@@ -97,6 +97,74 @@ func TestForwardOrderedAuthenticatedRetried(t *testing.T) {
 	}
 }
 
+func TestReactionURLFrom(t *testing.T) {
+	// The reaction endpoint is the inbound URL's sibling: swap the trailing path
+	// segment. A non-/inbound URL just gets /reaction appended.
+	cases := map[string]string{
+		"http://monolith/internal/whatsapp/inbound": "http://monolith/internal/whatsapp/reaction",
+		"http://localhost:8080":                     "http://localhost:8080/reaction",
+	}
+	for in, want := range cases {
+		if got := reactionURLFrom(in); got != want {
+			t.Errorf("reactionURLFrom(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestForwardReactionHitsReactionPath(t *testing.T) {
+	// A forwarded reaction is POSTed to the derived reaction endpoint with the
+	// bearer and the reaction body, going through the same ordered per-group
+	// worker as messages.
+	var (
+		mu    sync.Mutex
+		path  string
+		auth  string
+		body  ReactionPayload
+		gotIt = make(chan struct{})
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		path = r.URL.Path
+		auth = r.Header.Get("Authorization")
+		_ = json.Unmarshal(raw, &body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		close(gotIt)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// srv.URL has no /inbound suffix, so the reaction URL is srv.URL + "/reaction".
+	fwd := newTestForwarder(ctx, srv.URL+"/inbound", "tok")
+
+	fwd.ForwardReaction(ReactionPayload{
+		GroupJID:        "fam@g.us",
+		ReactorJID:      "alice@s.whatsapp.net",
+		TargetMessageID: "BOT_MSG_1",
+		Emoji:           "👍",
+	})
+
+	select {
+	case <-gotIt:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reaction delivery")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if path != "/reaction" {
+		t.Errorf("reaction POSTed to %q, want /reaction", path)
+	}
+	if auth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want %q", auth, "Bearer tok")
+	}
+	if body.TargetMessageID != "BOT_MSG_1" || body.Emoji != "👍" || body.ReactorJID != "alice@s.whatsapp.net" {
+		t.Errorf("reaction body = %+v, want target BOT_MSG_1 / 👍 / alice", body)
+	}
+}
+
 func TestForwardPerGroupWorkersAreIndependent(t *testing.T) {
 	// Two groups deliver concurrently; both messages must arrive regardless of
 	// order across groups (per-group order is the only guarantee).

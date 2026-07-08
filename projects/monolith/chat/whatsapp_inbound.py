@@ -44,7 +44,7 @@ from sqlmodel import Session, select
 
 from app.db import get_engine
 from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
-from chat.models import Message, WhatsappGroup, WhatsappOutbox
+from chat.models import Message, ReactionEvent, WhatsappGroup, WhatsappOutbox
 from chat.whatsapp_outbox import enqueue_media, enqueue_message, enqueue_reaction
 
 logger = logging.getLogger(__name__)
@@ -103,6 +103,21 @@ class InboundMessage(BaseModel):
     message_id: str = Field(min_length=1, max_length=128)
     text: str = Field(default="", max_length=8192)
     quoted_message_id: str | None = Field(default=None, max_length=128)
+    timestamp: str | None = Field(default=None, max_length=64)
+
+
+class ReactionInbound(BaseModel):
+    """A human reaction on one of Bosun's messages, forwarded by the gateway.
+
+    The gateway only forwards reactions whose target was a bot-sent message; an
+    empty ``emoji`` is WhatsApp's representation of a removed reaction (a user has
+    at most one reaction per message).
+    """
+
+    group_jid: str = Field(min_length=1, max_length=128)
+    reactor_jid: str = Field(min_length=1, max_length=128)
+    target_message_id: str = Field(min_length=1, max_length=128)
+    emoji: str = Field(default="", max_length=64)
     timestamp: str | None = Field(default=None, max_length=64)
 
 
@@ -480,6 +495,137 @@ async def _enqueue_bot_reply(
             content=reply_text,
             is_bot=True,
         )
+
+
+@router.post("/reaction")
+async def reaction(
+    body: ReactionInbound,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Persist a human reaction on one of Bosun's WhatsApp messages as an
+    /improve-ambient ground-truth signal (mirrors the Discord reaction path).
+
+    The gateway forwards only reactions whose target was a bot-sent message, but
+    we re-verify here against the outbox (defense in depth): the reacted id must
+    match a message/edit row the bot actually sent to this group. An empty emoji
+    is WhatsApp's removed-reaction representation, stored as an ``action='remove'``
+    row that cancels the reactor's earlier add.
+
+    Always 200 for accepted-then-dropped outcomes (unknown group, non-bot target,
+    a removal with no prior add) so the at-least-once gateway does not retry a
+    reaction the monolith deliberately did not persist. Only auth failures are
+    non-2xx.
+    """
+    _require_bearer(authorization)
+
+    group = _lookup_enabled_group(body.group_jid)
+    if group is None:
+        return {"status": "dropped"}
+
+    persisted = await asyncio.to_thread(
+        _record_whatsapp_reaction,
+        body.group_jid,
+        body.target_message_id,
+        body.reactor_jid,
+        body.emoji,
+    )
+    return {"status": "recorded" if persisted else "dropped"}
+
+
+def _current_reaction(
+    session: Session, group_jid: str, target_message_id: str, reactor_jid: str
+) -> str | None:
+    """The reactor's current active reaction emoji on a message, or None.
+
+    WhatsApp allows one reaction per user per message: reacting again replaces the
+    previous emoji, an empty reaction removes it. Replaying the reactor's stored
+    add/remove rows in order therefore yields exactly one current emoji (or none),
+    which the caller uses to model replace/remove without double-counting under
+    the gateway's at-least-once delivery.
+    """
+    # Order by (created_at, id): a replace records its cancel + add in one commit,
+    # so the two rows can share a timestamp; the autoincrement id breaks the tie in
+    # insertion order (on both SQLite and Postgres) so the replay never inverts.
+    rows = session.exec(
+        select(ReactionEvent)
+        .where(
+            ReactionEvent.channel_id == group_jid,
+            ReactionEvent.message_id == target_message_id,
+            ReactionEvent.reactor_id == reactor_jid,
+        )
+        .order_by(ReactionEvent.created_at, ReactionEvent.id)
+    ).all()
+    active: str | None = None
+    for r in rows:
+        active = r.emoji if r.action == "add" else None
+    return active
+
+
+def _record_whatsapp_reaction(
+    group_jid: str,
+    target_message_id: str,
+    reactor_jid: str,
+    emoji: str,
+) -> bool:
+    """Persist one WhatsApp reaction on a bot message; return True if a row landed.
+
+    Sync (opens its own Session); call via ``asyncio.to_thread``. Mirrors
+    ``chat.bot._record_reaction`` adapted to WhatsApp's single-reaction-per-message
+    model:
+
+    - Bot-target check is against the outbox (the reacted id is the REAL WhatsApp
+      id the bot sent under, on ``whatsapp_outbox.sent_message_id``), not the
+      synthetic ``wa-bot:`` id the messages table stores.
+    - An empty emoji is a removal: cancel the reactor's current reaction (a remove
+      row carrying that emoji, so ``_reaction_valence`` negates the matching sign).
+      A removal with nothing active is a no-op, which also absorbs a replayed
+      removal.
+    - A non-empty emoji that matches the current reaction is a replay and is
+      dropped; one that differs is a replace: cancel the old (remove) then add the
+      new, so a user changing 👍 to ❤️ nets to just ❤️.
+
+    Correctness of the replay depends on the gateway delivering a group's
+    reactions in order (chat.whatsapp forward.go blocks a group's worker until
+    each POST gets a 2xx, so an earlier event never lands after a later one). If
+    that per-group ordering is ever relaxed, this replace/replay logic would need
+    an explicit sequence number instead.
+    """
+    with Session(get_engine()) as session:
+        # Only reactions on a message the bot actually sent are a signal about
+        # Bosun's reply. Reuses the outbox lookup the directedness check uses.
+        if not _is_bot_sent_message(session, group_jid, target_message_id):
+            return False
+
+        current = _current_reaction(session, group_jid, target_message_id, reactor_jid)
+        remove = emoji == ""
+
+        def _add(row_emoji: str, action: str) -> None:
+            session.add(
+                ReactionEvent(
+                    channel_id=group_jid,
+                    message_id=target_message_id,
+                    target_is_bot=True,
+                    emoji=row_emoji,
+                    reactor_id=reactor_jid,
+                    action=action,
+                )
+            )
+
+        if remove:
+            if current is None:
+                return False
+            _add(current, "remove")
+        elif current == emoji:
+            # Same reaction already active: a replayed delivery, nothing to do.
+            return False
+        else:
+            if current is not None:
+                # Replace: cancel the prior reaction before recording the new one.
+                _add(current, "remove")
+            _add(emoji, "add")
+
+        session.commit()
+        return True
 
 
 class _MessageAdapter:

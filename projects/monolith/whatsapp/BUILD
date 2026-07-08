@@ -39,6 +39,9 @@ go_test(
     embed = [":whatsapp"],
     deps = [
         "@fi_mau_go_whatsmeow//:whatsmeow",
+        "@fi_mau_go_whatsmeow//proto/waCommon",
+        "@fi_mau_go_whatsmeow//proto/waE2E",
+        "@fi_mau_go_whatsmeow//types",
         "@fi_mau_go_whatsmeow//types/events",
     ],
 )

@@ -267,6 +267,14 @@ func (g *Gateway) onMessage(e *events.Message) {
 			"group_jid", groupJID)
 		return
 	}
+	// A reaction arrives as a Message carrying a ReactionMessage (this whatsmeow
+	// build has no distinct events.Reaction). Route it to the reaction path and
+	// stop: it has no conversation text, so falling through would forward an empty
+	// message to the inbound endpoint.
+	if e.Message.GetReactionMessage() != nil {
+		g.onReaction(e)
+		return
+	}
 	g.log.Info("group message",
 		"group_jid", groupJID,
 		"sender_jid", e.Info.Sender.String(),
@@ -283,6 +291,42 @@ func (g *Gateway) onMessage(e *events.Message) {
 		MessageID:       e.Info.ID,
 		Text:            messageText(e),
 		QuotedMessageID: quotedMessageID(e),
+		Timestamp:       e.Info.Timestamp.UTC().Format(time.RFC3339),
+	})
+}
+
+// onReaction forwards a human reaction on one of Bosun's own messages to the
+// monolith reaction endpoint (the /improve-ambient ground-truth signal). Only
+// reactions targeting a bot-sent message are forwarded: the reaction's target
+// key carries FromMe, so a reaction on someone else's message (not a signal about
+// Bosun) is dropped here at the gateway, matching the Discord path's bot-target
+// filter. WhatsApp represents a removed reaction as an empty reaction string,
+// forwarded verbatim so the monolith can cancel the earlier signal.
+func (g *Gateway) onReaction(e *events.Message) {
+	rm := e.Message.GetReactionMessage()
+	key := rm.GetKey()
+	if !key.GetFromMe() {
+		// Reaction on a human's message; carries no signal about Bosun's reply.
+		return
+	}
+	targetID := key.GetID()
+	if targetID == "" {
+		return
+	}
+	g.log.Info("group reaction",
+		"group_jid", e.Info.Chat.String(),
+		"reactor_jid", e.Info.Sender.String(),
+		"target_message_id", targetID,
+		"emoji", rm.GetText(),
+	)
+	if g.forwarder == nil {
+		return
+	}
+	g.forwarder.ForwardReaction(ReactionPayload{
+		GroupJID:        e.Info.Chat.String(),
+		ReactorJID:      e.Info.Sender.String(),
+		TargetMessageID: targetID,
+		Emoji:           rm.GetText(),
 		Timestamp:       e.Info.Timestamp.UTC().Format(time.RFC3339),
 	})
 }
