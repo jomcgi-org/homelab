@@ -4,32 +4,38 @@ class: code-fix
 tier: easy
 mode: agentic
 snapshot:
+  preset: monolith-backend
   commit: ba5b4d39afcb67e2581d87836a6c9d98221499d6
-  paths:
-    - projects/monolith/home/observability/slo.py
-  strip_components: 4
 prompt: |
-  slo.py computes SLO status and error-budget figures for the observability
-  dashboard. aggregate_group() rolls a group's children up into a single status,
-  currently taking the worst child status. But it ignores the group's own error
-  budget: a group can show "healthy" even when its aggregated availability has
-  fully consumed the error budget for the window. Fix aggregate_group so that when
-  the group has an SLO (current is not None) and its error budget is fully consumed
-  (the "consumed" value from compute_budget is >= 100), the group's status is at
-  least "degraded" (never "healthy" or "warning"), while still respecting a worse
-  child status if one exists. Do not change the other functions' behavior or any
-  signature. Return the complete updated slo.py.
+  This is a snapshot of a real FastAPI monolith backend. The observability dashboard's
+  SLO logic lives in home/observability/slo.py. aggregate_group() rolls a group's
+  children up into a single status, currently taking the worst child status. But it
+  ignores the group's own error budget: a group can show "healthy" even when its
+  aggregated availability has fully consumed the error budget for the window. Fix
+  aggregate_group so that when the group has an SLO (current is not None) and its error
+  budget is fully consumed (the "consumed" value from compute_budget is >= 100), the
+  group's status is at least "degraded" (never "healthy" or "warning"), while still
+  respecting a worse child status if one exists. Do not change the other functions'
+  behavior or any signature, and edit only home/observability/slo.py.
 target_files:
-  - slo.py
+  - home/observability/slo.py
 verifier:
   kind: command
   args:
     cmd: ["python3", "_check.py"]
     write_files:
       _check.py: |
-        import sys
-        sys.path.insert(0, ".")
-        import slo
+        import importlib.util
+
+        # Load slo.py directly by path, NOT via `import home.observability.slo`: the
+        # package __init__ imports fastapi (absent from the bare python3 the command
+        # verifier runs), while slo.py itself only needs the stdlib. This mirrors how
+        # the pytest gold tests mount a single module without importing app.main.
+        _spec = importlib.util.spec_from_file_location(
+            "slo", "home/observability/slo.py"
+        )
+        slo = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(slo)
 
         # A single child, healthy child-status, but availability far below target
         # over a full window -> budget fully consumed -> group must be >= degraded.
