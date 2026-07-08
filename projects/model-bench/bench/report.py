@@ -22,8 +22,9 @@ def render_leaderboard(
                  primary contract of this benchmark. Optional/back-compatible.
         agentic_anchor_ids: set of model_ids in `agentic` that are anchors. They are
                  pulled out of the cost-ranked candidate tables and shown in the frontier
-                 CEILING section (pass + wall-time only), since they run via Claude Code
-                 (own harness, free under Max) and their cost=0 would otherwise dominate.
+                 CEILING section (the capability + cost/wall ceiling to match and beat),
+                 since they run via Claude Code (own harness) and are a reference, not a
+                 ranked competitor.
 
     Returns:
         Markdown string with sections: Agentic, Frontier ceiling, Budget tier, Anchors,
@@ -105,14 +106,16 @@ def render_leaderboard(
 
     # Frontier ceiling: anchors (Claude via Claude Code) run the same agentic tasks under
     # their own harness. This calibrates task difficulty ("can the frontier even do it")
-    # without pretending to be a cost-ranked candidate. Pass + wall-time only; no cost,
-    # no turns/tokens (a different harness, not comparable to the OpenRouter rows).
+    # AND sets the decision targets: match this hard-pass, beat this cost/wall. The cost is
+    # the CLI's representative rental price (Joe pays $0 via Max); turns/tokens are omitted
+    # (a different harness, not comparable to the OpenRouter rows).
     lines.append("## Frontier ceiling (agentic)")
     lines.append("")
     lines.append(
-        "Claude anchors run via Claude Code (Max subscription, free), graded by the same "
-        "verifier. A capability ceiling, not a ranked competitor: no cost or token/turn "
-        "columns, since the harness differs from the candidate rows."
+        "Claude anchors run via Claude Code (Joe pays $0 via the Max subscription), graded "
+        "by the same verifier. The capability + cost/wall-time ceiling to match and beat, "
+        "not a ranked competitor. Cost is the representative API rental price; turns/tokens "
+        "are omitted since the harness differs from the candidate rows."
     )
     lines.append("")
     ceiling_rows = [
@@ -124,13 +127,16 @@ def render_leaderboard(
         ceiling_rows.sort(
             key=lambda r: (-r.get("hard_pass", 0), r.get("mean_latency_ms", 0.0))
         )
-        lines.append("| Model | hard | pass rate | wall-time (s) | tasks |")
-        lines.append("| --- | --- | --- | --- | --- |")
+        lines.append(
+            "| Model | hard | pass rate | wall-time (s) | rental ($) | tasks |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- |")
         for r in ceiling_rows:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
                 f"| {r.get('pass_rate', 0.0):.2f} "
-                f"| {r.get('mean_latency_ms', 0) / 1000:.1f} | {r.get('n', 0)} |"
+                f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
+                f"| {r.get('cost', 0.0):.4f} | {r.get('n', 0)} |"
             )
     else:
         lines.append("No anchor ceiling results yet.")
