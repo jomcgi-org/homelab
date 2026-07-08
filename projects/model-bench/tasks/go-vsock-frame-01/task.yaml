@@ -1,7 +1,9 @@
 id: go-vsock-frame-01
 version: v1
 class: code-fix
-tier: standard
+# hard: real Go on the firecracker vsock protocol trips ~1 in 5 candidates; a
+# differentiator, not a basic-viability floor task.
+tier: hard
 mode: agentic
 source_commit: 019b3ffb829700df0a0cf950e502d3d828147985
 snapshot:

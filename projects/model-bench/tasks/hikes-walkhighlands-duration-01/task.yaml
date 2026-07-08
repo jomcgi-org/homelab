@@ -1,7 +1,8 @@
 id: hikes-walkhighlands-duration-01
 version: v1
 class: code-fix
-tier: standard
+# hard: full-backend navigation (~71% pass), a differentiator not a viability floor.
+tier: hard
 mode: agentic
 source_commit: 00d549e9e6f31847dc1e103f2eef7408529c578c
 snapshot:

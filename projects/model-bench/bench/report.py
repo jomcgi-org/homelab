@@ -54,7 +54,8 @@ def render_leaderboard(
     lines.append("## Agentic leaderboard: qualified")
     lines.append("")
     lines.append(
-        "Cleared the easy+standard floor. Ranked by hard-task pass, then cost."
+        "Cleared the easy+standard viability floor (at most one miss). Ranked by "
+        "hard-task pass, then cost."
     )
     lines.append("")
     if qualified:
@@ -84,7 +85,9 @@ def render_leaderboard(
 
     lines.append("## Agentic leaderboard: disqualified")
     lines.append("")
-    lines.append("Failed one or more floor (easy/standard) tasks, so not yet viable.")
+    lines.append(
+        "Missed more than one floor (easy/standard) viability task, so not yet viable."
+    )
     lines.append("")
     if disqualified:
         disqualified.sort(key=lambda r: -r.get("floor_pass", 0))
