@@ -50,3 +50,15 @@ models:
     status: experimental
   - id: qwen/qwen3-coder:free
     status: experimental
+  # Free code/general models (zero OpenRouter cost, so pure capability signal). Both
+  # advertise tool-calling, so they should drive the agentic loop; watch for the free-tier
+  # provider tool-call 4xx failure mode that retired qwen-2.5-coder.
+  - id: cohere/north-mini-code:free
+    display_name: north-mini-code
+    status: active
+  - id: tencent/hy3:free
+    display_name: hy3
+    status: active
+  # Cheap cloud reference: $0.32/$1.28 per 1M, 1M context, tool-calling.
+  - id: qwen/qwen3.7-plus
+    status: active
