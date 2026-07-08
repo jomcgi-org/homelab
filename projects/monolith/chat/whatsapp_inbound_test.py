@@ -167,14 +167,19 @@ class TestAttentionRouting:
         )
         # "bosun" is the default trigger name, so this is directed (no classifier).
         resp = _post(client, text="hey bosun what's the ferry plan?", message_id="Q1")
-        assert resp.json()["status"] == "replied"
+        # Fast-ack: the reply is authored in a background task, so the request
+        # returns "accepted" while the reply lands via the outbox.
+        assert resp.json()["status"] == "accepted"
         rows = _outbox(engine)
-        assert len(rows) == 1
-        assert rows[0].kind == "message"
-        assert rows[0].group_jid == _GROUP
-        assert rows[0].content == "the ferry leaves at 9"
+        # The ⏳ working reaction, the reply message, then the ⏳ clear.
+        msgs = [r for r in rows if r.kind == "message"]
+        assert len(msgs) == 1
+        assert msgs[0].group_jid == _GROUP
+        assert msgs[0].content == "the ferry leaves at 9"
         # The reply quotes the triggering message.
-        assert rows[0].quoted_message_id == "Q1"
+        assert msgs[0].quoted_message_id == "Q1"
+        # An instant working reaction was enqueued on the triggering message.
+        assert any(r.kind == "reaction" and r.target_message_id == "Q1" for r in rows)
 
     def test_directed_agent_gets_honest_deferred_reply(
         self, client, engine, monkeypatch
@@ -222,7 +227,7 @@ class TestAttentionRouting:
             message_id="R1",
             quoted_message_id="wamid.BOTSENT",
         )
-        assert resp.json()["status"] == "replied"
+        assert resp.json()["status"] == "accepted"
         replies = [
             r for r in _outbox(engine) if r.content == "you asked about the ferry"
         ]

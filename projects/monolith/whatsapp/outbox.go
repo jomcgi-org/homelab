@@ -28,7 +28,10 @@ const (
 	// Discord drain's _BATCH.
 	outboxBatch = 20
 	// outboxPollInterval is how often the drain wakes to look for pending rows.
-	outboxPollInterval = 3 * time.Second
+	// Kept short so the bot's reactions and replies leave with minimal lag after
+	// the monolith enqueues them (the drain query is a light indexed lookup on the
+	// whatsapp_outbox_pending partial index, so frequent polling is cheap).
+	outboxPollInterval = 500 * time.Millisecond
 )
 
 // sender translates an outbox row into a whatsmeow send. It is an interface so
