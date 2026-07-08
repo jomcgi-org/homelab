@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 import yaml
 
+from bench import claude_code
 from bench.agent import run_agent_cell
 from bench.cache import (
     HARNESS_VERSION,
@@ -206,9 +207,6 @@ def build_parser() -> argparse.ArgumentParser:
 async def _run(args) -> None:
     """Run benchmark cells for every active (task, model) pair."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        print("Error: OPENROUTER_API_KEY environment variable is not set")
-        return
 
     tasks = load_tasks(Path(args.tasks))
     reg = load_registry(Path(args.models))
@@ -224,8 +222,18 @@ async def _run(args) -> None:
         print("Nothing to run after filtering (check --task / --model).")
         return
 
-    client = OpenRouterClient(api_key=api_key)
-    await client.load_prices()
+    # OpenRouter is only needed for openrouter-backed candidates. An anchors-only run
+    # (provider=claude-code) uses the local `claude` CLI and needs no key, so we only
+    # demand the key and open a client when a candidate actually requires it.
+    needs_openrouter = any(m.provider == "openrouter" for m in models)
+    if needs_openrouter and not api_key:
+        print("Error: OPENROUTER_API_KEY environment variable is not set")
+        return
+
+    client = None
+    if needs_openrouter:
+        client = OpenRouterClient(api_key=api_key)
+        await client.load_prices()
 
     sem = asyncio.Semaphore(args.concurrency)
 
@@ -240,9 +248,19 @@ async def _run(args) -> None:
             cleanup = True
 
         try:
+            if model.provider == "claude-code":
+                complete = claude_code.complete
 
-            async def complete(**kw):
-                return await client.complete(**kw)
+                def cost_fn(p, c):
+                    return 0.0  # free under Max
+
+            else:
+
+                async def complete(**kw):
+                    return await client.complete(**kw)
+
+                def cost_fn(p, c):
+                    return client.cost_usd(model.id, p, c)
 
             verify = get_verifier(task.verifier.kind)
             return await run_cell(
@@ -256,7 +274,7 @@ async def _run(args) -> None:
                 complete=complete,
                 verify=verify,
                 verifier_args=task.verifier.args,
-                cost_fn=lambda p, c: client.cost_usd(model.id, p, c),
+                cost_fn=cost_fn,
                 max_tokens=model.params.max_tokens,
             )
         finally:
@@ -297,10 +315,27 @@ async def _run(args) -> None:
                 tool_use_ok=False,
             )
 
+        verify = get_verifier(task.verifier.kind)
+
+        # Anchors run agentically inside Claude Code's own harness (its native tools),
+        # not the bench's OpenRouter tool loop, and are graded by the same verifier. It
+        # blocks on a subprocess, so run it off the event loop.
+        if model.provider == "claude-code":
+            return await asyncio.to_thread(
+                claude_code.run_anchor_agent_cell,
+                task_id=task.id,
+                task_version=task.version,
+                model_id=model.id,
+                content_hash=key,
+                fixture_dir=fixture_dir,
+                task_prompt=task.prompt,
+                verify=verify,
+                verifier_args=task.verifier.args,
+            )
+
         async def chat(**kw):
             return await client.chat(**kw)
 
-        verify = get_verifier(task.verifier.kind)
         return await run_agent_cell(
             task_id=task.id,
             task_version=task.version,
@@ -318,37 +353,32 @@ async def _run(args) -> None:
         )
 
     async def _judge_cell(task: TaskSpec, model, key: str) -> ResultCell | None:
-        """Run a single-shot judge cell: candidate from the model, verdict from judge."""
-        c1 = await client.complete(
-            model=model.id,
-            messages=[{"role": "user", "content": task.prompt}],
-            temperature=0.0,
-        )
+        """Run a single-shot judge cell: candidate from the model, verdict from judge.
+
+        The candidate uses its own provider (an openrouter model still bills for its one
+        completion); the judge always runs via the local `claude` CLI, so judging is free
+        and no longer an OpenRouter cost.
+        """
+        if model.provider == "claude-code":
+            c1 = await claude_code.complete(
+                model=model.id,
+                messages=[{"role": "user", "content": task.prompt}],
+                temperature=0.0,
+            )
+            candidate_cost = 0.0
+        else:
+            c1 = await client.complete(
+                model=model.id,
+                messages=[{"role": "user", "content": task.prompt}],
+                temperature=0.0,
+            )
+            candidate_cost = client.cost_usd(
+                model.id, c1.prompt_tokens, c1.completion_tokens
+            )
         cfg = JudgeConfig(
             judge_model=task.verifier.args["judge_model"],
             criteria=task.verifier.args["criteria"],
         )
-
-        # Synchronous caller for the judge model, required by judge_free_text's
-        # Callable[[str], str] signature. Using httpx.Client (sync) here avoids
-        # nesting asyncio.run inside a running loop.
-        def sync_caller(prompt: str) -> str:
-            import httpx as _httpx
-
-            with _httpx.Client(timeout=120.0) as hc:
-                resp = hc.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": cfg.judge_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.0,
-                        "max_tokens": int(os.environ.get("JUDGE_MAX_TOKENS", "256")),
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"]
 
         try:
             result = await asyncio.to_thread(
@@ -356,7 +386,7 @@ async def _run(args) -> None:
                 candidate=_strip_code_fence(c1.text),
                 task_prompt=task.prompt,
                 cfg=cfg,
-                caller=sync_caller,
+                caller=claude_code.judge_caller,
                 candidate_model=model.id,
             )
         except ValueError as exc:
@@ -372,7 +402,7 @@ async def _run(args) -> None:
             prompt_tokens=c1.prompt_tokens,
             completion_tokens=c1.completion_tokens,
         )
-        cost = client.cost_usd(model.id, c1.prompt_tokens, c1.completion_tokens)
+        cost = candidate_cost
         return ResultCell(
             task_id=task.id,
             task_version=task.version,
@@ -401,6 +431,11 @@ async def _run(args) -> None:
             )
         else:
             params_repr = f"{model.params.temperature}:{model.params.max_tokens}"
+        # Fold the provider into the key: a model switched from openrouter to claude-code
+        # (an anchor moving to the free Claude Code harness) produces a materially
+        # different cell (different harness, cost=0), so its stale openrouter result must
+        # not be reused.
+        params_repr = f"{params_repr}:provider={model.provider}"
         src_hash = (
             verifier_source_hash(task.verifier.kind)
             if task.verifier.kind != "judge"
@@ -468,7 +503,8 @@ async def _run(args) -> None:
     for r in results:
         if isinstance(r, Exception):
             logger.warning("unhandled gather exception: %s", r)
-    await client.aclose()
+    if client is not None:
+        await client.aclose()
 
 
 def _report(args) -> None:
@@ -648,6 +684,10 @@ def _report(args) -> None:
         frontier=frontier,
         retired=retired,
         agentic=agentic,
+        # Anchors live in the same `agentic` dict (so the page JSON still lists them),
+        # but the markdown splits them into a ceiling section instead of the cost-ranked
+        # candidate tables, where their free (cost=0) rows would otherwise dominate.
+        agentic_anchor_ids=anchor_ids,
     )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

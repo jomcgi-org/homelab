@@ -87,6 +87,36 @@ def test_agentic_section_present_when_empty():
     md = render_leaderboard(per_class={}, anchors={}, frontier={}, retired=[])
     assert "## Agentic leaderboard: qualified" in md
     assert "No qualified models yet." in md
+    # The ceiling section header is fixed and emitted even with no anchors.
+    assert "## Frontier ceiling (agentic)" in md
+    assert "No anchor ceiling results yet." in md
+
+
+def test_anchors_go_to_ceiling_not_candidate_tables():
+    md = render_leaderboard(
+        per_class={},
+        anchors={},
+        frontier={},
+        retired=[],
+        agentic={
+            "cheap/strong": _agentic_stats(hard_pass=2, cost=0.0009),
+            # An anchor: cost 0 (free), would top the cost-ranked candidate table if not
+            # split out. It must live in the ceiling section instead.
+            "anthropic/claude-opus-4.8": _agentic_stats(
+                hard_pass=2, cost=0.0, cost_per_solve=0.0, mean_latency_ms=42000
+            ),
+        },
+        agentic_anchor_ids={"anthropic/claude-opus-4.8"},
+    )
+    ceiling = md.index("## Frontier ceiling (agentic)")
+    budget = md.index("## Budget tier")
+    # The anchor appears only in the ceiling section, after the candidate tables.
+    assert md.index("anthropic/claude-opus-4.8") > ceiling
+    assert ceiling < md.index("anthropic/claude-opus-4.8") < budget
+    # The candidate stays in the qualified table above the ceiling.
+    assert md.index("cheap/strong") < ceiling
+    # Wall-time shown for the ceiling row (42000ms -> 42.0s); no cost column.
+    assert "42.0" in md
 
 
 def test_all_results_shows_non_qualifiers():
