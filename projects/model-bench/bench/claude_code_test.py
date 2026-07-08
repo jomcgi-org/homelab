@@ -10,6 +10,8 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+import pytest  # noqa: F401 - keeps gazelle's @pip//pytest dep on the py_test target
+
 from bench import claude_code
 
 
