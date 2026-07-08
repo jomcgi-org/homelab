@@ -47,6 +47,9 @@ type sender interface {
 	SendText(ctx context.Context, groupJID, content, quotedMessageID string) (string, error)
 	// SendEdit edits targetMessageID in groupJID to newContent.
 	SendEdit(ctx context.Context, groupJID, targetMessageID, newContent string) error
+	// SendImage uploads data (an image of the given mime) to groupJID and sends
+	// it as an ImageMessage with an optional caption, returning the sent id.
+	SendImage(ctx context.Context, groupJID string, data []byte, mime, caption string) (string, error)
 	// SendReaction reacts to targetMessageID (whose sender is targetSenderJID)
 	// with reaction; an empty reaction clears a previous one.
 	SendReaction(ctx context.Context, groupJID, targetMessageID, targetSenderJID, reaction string) error
@@ -65,6 +68,8 @@ type outboxRow struct {
 	targetSenderJID sql.NullString
 	reaction        sql.NullString
 	reactionRemove  bool
+	mediaBytes      []byte // NULL -> nil; the image for a kind='media' row
+	mediaMime       sql.NullString
 }
 
 // store is the drain's persistence seam. Production is pgStore over a *sql.DB;
@@ -254,6 +259,27 @@ func (d *OutboxDrain) processRow(ctx context.Context, row outboxRow) bool {
 		d.post(ctx, row.id, "")
 		return false
 
+	case "media":
+		if len(row.mediaBytes) == 0 || !row.mediaMime.Valid {
+			// Malformed (the CHECK should prevent this); park rather than loop.
+			d.fail(ctx, row.id, fmt.Errorf("media row missing bytes or mime"))
+			return true
+		}
+		id, err := d.sender.SendImage(ctx, row.groupJID, row.mediaBytes, row.mediaMime.String, row.content.String)
+		if err != nil {
+			if transient(err) {
+				// Socket down: leave pending, block the group, retry in order.
+				d.log.Warn("whatsapp image deferred; socket not ready", "id", row.id, "err", err)
+				return true
+			}
+			d.fail(ctx, row.id, err)
+			return true
+		}
+		if d.post(ctx, row.id, id) {
+			return true
+		}
+		return false
+
 	default:
 		// Unknown kind (the CHECK should prevent this); park it.
 		d.fail(ctx, row.id, fmt.Errorf("unknown kind %q", row.kind))
@@ -303,7 +329,8 @@ type pgStore struct {
 func (s *pgStore) claimPending(ctx context.Context) ([]outboxRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, group_jid, kind, content, quoted_message_id, edit_of,
-		       target_message_id, target_sender_jid, reaction, reaction_remove
+		       target_message_id, target_sender_jid, reaction, reaction_remove,
+		       media_bytes, media_mime
 		FROM chat.whatsapp_outbox
 		WHERE posted_at IS NULL AND attempts < $1
 		ORDER BY group_jid, created_at, id
@@ -316,7 +343,8 @@ func (s *pgStore) claimPending(ctx context.Context) ([]outboxRow, error) {
 	for rows.Next() {
 		var r outboxRow
 		if err := rows.Scan(&r.id, &r.groupJID, &r.kind, &r.content, &r.quotedMessageID,
-			&r.editOf, &r.targetMessageID, &r.targetSenderJID, &r.reaction, &r.reactionRemove); err != nil {
+			&r.editOf, &r.targetMessageID, &r.targetSenderJID, &r.reaction, &r.reactionRemove,
+			&r.mediaBytes, &r.mediaMime); err != nil {
 			return nil, fmt.Errorf("scan pending: %w", err)
 		}
 		out = append(out, r)
@@ -407,6 +435,36 @@ func (w *whatsmeowSender) SendText(ctx context.Context, groupJID, content, quote
 		msg = &waE2E.Message{Conversation: strptr(content)}
 	}
 	resp, err := w.client.SendMessage(ctx, chat, msg)
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+func (w *whatsmeowSender) SendImage(ctx context.Context, groupJID string, data []byte, mime, caption string) (string, error) {
+	chat, err := types.ParseJID(groupJID)
+	if err != nil {
+		return "", fmt.Errorf("parse group jid: %w", err)
+	}
+	// Encrypt-and-upload to WhatsApp's media servers; the returned handles go into
+	// the ImageMessage so recipients can fetch and decrypt it.
+	up, err := w.client.Upload(ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return "", fmt.Errorf("upload image: %w", err)
+	}
+	img := &waE2E.ImageMessage{
+		Mimetype:      strptr(mime),
+		URL:           strptr(up.URL),
+		DirectPath:    strptr(up.DirectPath),
+		MediaKey:      up.MediaKey,
+		FileEncSHA256: up.FileEncSHA256,
+		FileSHA256:    up.FileSHA256,
+		FileLength:    &up.FileLength,
+	}
+	if caption != "" {
+		img.Caption = strptr(caption)
+	}
+	resp, err := w.client.SendMessage(ctx, chat, &waE2E.Message{ImageMessage: img})
 	if err != nil {
 		return "", err
 	}

@@ -1,4 +1,4 @@
-h1:Hv2MCy3MNOq7ABCYov/4eiwEbPRp/5nWD5nLrzLTOqM=
+h1:m2GVEyR1hIRZVRuISJXxFmb5MDqp96nBItJqt7q88HY=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -119,3 +119,4 @@ h1:Hv2MCy3MNOq7ABCYov/4eiwEbPRp/5nWD5nLrzLTOqM=
 20260708060000_chat_whatsapp_calendar_draft.sql h1:H1GaNtiU4ULrR2Hgy/OonNmtMZNWuFIZnSqDb5GuqSA=
 20260708070000_whatsapp_group_last_digest.sql h1:75c0fl9OX8mPKcQ5XYMruM8uACd4sDbwiEQv3EVCyy0=
 20260708080000_whatsapp_outbox_sent_idx.sql h1:rjLtavPiIJg73SeUGkfq2COZz0YISX+5Zni73AV1tpo=
+20260708090000_whatsapp_outbox_media.sql h1:N1dQ0mGx2Uk23QMNsbXLq0YqVwy/JuY5VLq5LNNDHGk=

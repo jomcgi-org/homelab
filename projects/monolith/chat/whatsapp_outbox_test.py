@@ -15,7 +15,12 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from chat.models import WhatsappOutbox
-from chat.whatsapp_outbox import enqueue_edit, enqueue_message, enqueue_reaction
+from chat.whatsapp_outbox import (
+    enqueue_edit,
+    enqueue_media,
+    enqueue_message,
+    enqueue_reaction,
+)
 
 
 @pytest.fixture(name="engine")
@@ -50,6 +55,44 @@ def test_enqueue_message_adds_row():
     assert row.kind == "message"
     assert row.content == "hello"
     assert row.quoted_message_id is None
+
+
+def test_enqueue_media_adds_row():
+    session = MagicMock()
+    enqueue_media(session, "g@wa", data=b"\x89PNG...", mime="image/png", caption="hi")
+    row = session.add.call_args.args[0]
+    assert row.group_jid == "g@wa"
+    assert row.kind == "media"
+    assert row.media_bytes == b"\x89PNG..."
+    assert row.media_mime == "image/png"
+    assert row.content == "hi"
+
+
+def test_enqueue_media_rejects_empty_data():
+    with pytest.raises(ValueError):
+        enqueue_media(MagicMock(), "g@wa", data=b"", mime="image/png")
+
+
+def test_enqueue_media_rejects_empty_mime():
+    with pytest.raises(ValueError):
+        enqueue_media(MagicMock(), "g@wa", data=b"x", mime="")
+
+
+def test_media_check_accepts_valid_row(engine):
+    with Session(engine) as session:
+        enqueue_media(session, "g@wa", data=b"x", mime="image/png")
+        session.commit()
+        assert session.query(WhatsappOutbox).count() == 1
+
+
+def test_media_check_rejects_missing_bytes(engine):
+    # The mirrored CHECK must reject a media row with no bytes (SQLite fixture).
+    with Session(engine) as session:
+        session.add(
+            WhatsappOutbox(group_jid="g@wa", kind="media", media_mime="image/png")
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 def test_enqueue_message_with_quote():

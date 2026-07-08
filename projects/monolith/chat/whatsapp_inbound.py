@@ -45,9 +45,24 @@ from sqlmodel import Session, select
 from app.db import get_engine
 from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
 from chat.models import Message, WhatsappGroup, WhatsappOutbox
-from chat.whatsapp_outbox import enqueue_message
+from chat.whatsapp_outbox import enqueue_media, enqueue_message
 
 logger = logging.getLogger(__name__)
+
+# Cap how many run_python-generated images ride one reply, and the per-image byte
+# size (chart PNGs are tens of KB; this guards a runaway sandbox output from
+# bloating an outbox row). WhatsApp itself accepts far larger, but the household
+# reply never needs it.
+_MEDIA_MAX_FILES = 4
+_MEDIA_MAX_BYTES = 8 * 1024 * 1024
+# Filename-extension -> mime for the image types run_python emits.
+_MEDIA_MIME_BY_EXT = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
 
 # /internal so it stays off the public HTTPRoute (in-cluster only, reached by the
 # gateway across the cluster network), like the goosecracker progress sink.
@@ -182,8 +197,49 @@ async def _generate_reply(
     # in-cluster Qwen the Discord concierge uses (ADR 039, amended).
     agent = create_household_agent()
     result = await agent.run(prompt, deps=deps)
+    # Deliver any images run_python generated (charts, etc.) as inline media, the
+    # same files the Discord path attaches. Best-effort: a media failure must not
+    # drop the text reply.
+    await _enqueue_generated_media(group_jid, getattr(deps, "generated_files", []))
     output = result.output
     return output if isinstance(output, str) and output else ""
+
+
+def _enqueue_media_sync(group_jid: str, files: list) -> int:
+    """Enqueue up to _MEDIA_MAX_FILES run_python images as media outbox rows.
+
+    ``files`` are (filename, bytes) tuples (chat.agent.ChatDeps.generated_files).
+    Returns the count enqueued. Sync (opens its own Session); call via to_thread.
+    """
+    sent = 0
+    with Session(get_engine()) as session:
+        for filename, data in files[:_MEDIA_MAX_FILES]:
+            if not data or len(data) > _MEDIA_MAX_BYTES:
+                continue
+            ext = str(filename).rsplit(".", 1)[-1].lower() if filename else ""
+            mime = _MEDIA_MIME_BY_EXT.get(ext)
+            if mime is None:
+                # Not an image type we know how to send; skip (never guess a mime).
+                continue
+            enqueue_media(session, group_jid, data=data, mime=mime)
+            sent += 1
+        if sent:
+            session.commit()
+    return sent
+
+
+async def _enqueue_generated_media(group_jid: str, files: list) -> None:
+    """Enqueue run_python-generated images to the group. Best-effort."""
+    if not files:
+        return
+    try:
+        n = await asyncio.to_thread(_enqueue_media_sync, group_jid, list(files))
+        if n:
+            logger.info("whatsapp: enqueued %d media file(s) for %s", n, group_jid)
+    except Exception:
+        logger.exception(
+            "whatsapp: failed to enqueue generated media for %s", group_jid
+        )
 
 
 def _compute_directed(
