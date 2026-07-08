@@ -183,9 +183,29 @@ class ChatDeps:
     orchestrator_guidance: str = ""
 
 
-def build_system_prompt() -> str:
-    """Build the system prompt for the chat agent."""
-    return (
+def build_system_prompt(channel: str = "discord") -> str:
+    """Build the system prompt for the chat agent.
+
+    ``channel`` reframes the venue for a non-Discord agent. The behaviour is
+    shared across channels; only the channel-specific wording differs. Rather
+    than fork the whole prompt, a short READ-FIRST header corrects the
+    Discord-specific framing below when the agent is elsewhere (e.g. WhatsApp),
+    so the model is never told it is on Discord when it is not.
+    """
+    header = ""
+    if channel == "whatsapp":
+        header = (
+            "CHANNEL -- READ FIRST: You are in a WhatsApp group, NOT Discord. "
+            "There are no threads, no server, and no Discord <@id> mentions here. "
+            "Wherever the guidance below says 'Discord', 'server', or 'thread', "
+            "read it as 'this WhatsApp group' and 'heavier work runs in the "
+            "background and replies back here'. Messages are plain WhatsApp text "
+            "(no Discord markdown); an image you generate is sent as a normal "
+            "WhatsApp image, not a Discord attachment. When someone says 'Bosun' "
+            "or 'the bot', or replies to you, they mean YOU. Never mention "
+            "Discord.\n\n"
+        )
+    return header + (
         "You are a friend hanging out in a Discord server, and you're also "
         "genuinely useful. You talk like a real person: casual, direct, and "
         "natural. But people also come here to get real help, and helping "
@@ -213,11 +233,19 @@ def build_system_prompt() -> str:
         "articulate the answer clearly and completely. Getting it right and "
         "being easy to follow matters MORE than sounding breezy. A short list "
         "or a few steps is good when it makes the answer easier to act on.\n"
-        "- Exact numbers are never casual. If a reply turns on a computed "
-        "value (arithmetic beyond one digit, a percentage, date or unit math, "
-        "a statistic), run the python sandbox and report what it returns, even "
-        "mid-banter. Do not eyeball it to stay breezy: a wrong number said "
-        "confidently is worse than a one-second pause to compute it.\n\n"
+        "- Reach for the python sandbox (run_python) by DEFAULT for anything "
+        "computational, and do the work here rather than escalating. That "
+        "covers: exact math (arithmetic beyond one digit, a percentage, date "
+        "or unit math, a statistic), crunching / transforming / analyzing "
+        "data, and any chart, graph, plot, or table. Do not eyeball a number "
+        "or describe a chart you did not actually draw: run the code and "
+        "report or attach what it returns, even mid-banter. A wrong number "
+        "said confidently, or a 'chart' that is really just prose, is worse "
+        "than a few seconds to compute the real thing. The ONLY jobs to hand "
+        "off to an agent thread instead of doing inline are: reading or "
+        "changing a repo, thorough multi-source research, or building a "
+        "standalone interactive webpage. Everything else, do it right here "
+        "with run_python.\n\n"
         "WHAT YOU CAN DO (say this plainly when someone asks how you can help "
         "or what you can do, give the concrete rundown, not a vague 'anything!'):\n"
         "- Answer questions and hold a conversation.\n"
@@ -327,6 +355,7 @@ def create_agent(
     api_key: str | None = None,
     provider_base_url: str | None = None,
     model_settings: ModelSettings | None = None,
+    channel: str = "discord",
 ) -> Agent[ChatDeps]:
     """Create a PydanticAI agent (same tools and prompts for every tier).
 
@@ -374,7 +403,7 @@ def create_agent(
 
     agent: Agent[ChatDeps] = Agent(
         model,
-        system_prompt=build_system_prompt(),
+        system_prompt=build_system_prompt(channel),
         model_settings=model_settings
         or ModelSettings(
             temperature=1.0,
@@ -850,6 +879,7 @@ def create_household_agent() -> Agent[ChatDeps]:
     from chat.summarizer import household_model
 
     return create_agent(
+        channel="whatsapp",
         provider_base_url=_OPENROUTER_BASE_URL,
         api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         model_name=household_model(),

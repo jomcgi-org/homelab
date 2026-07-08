@@ -38,14 +38,14 @@ import hmac
 import logging
 import os
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.db import get_engine
 from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
 from chat.models import Message, WhatsappGroup, WhatsappOutbox
-from chat.whatsapp_outbox import enqueue_media, enqueue_message
+from chat.whatsapp_outbox import enqueue_media, enqueue_message, enqueue_reaction
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +275,7 @@ _EMBED_CLIENT = None
 @router.post("/inbound")
 async def inbound(
     body: InboundMessage,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ) -> dict:
     """Authenticate, dedupe, gate attention, and reply (spec sections 2/4).
@@ -394,18 +395,59 @@ async def inbound(
         # refused: a one-line explanation was already enqueued (household ACL).
         return {"status": outcome.get("action", "dispatched")}
 
-    # Chat path: a full conversational reply, enqueued as a single outbox message.
+    # Chat path: acknowledge fast, then author the reply OFF the request path.
+    # Generating a reply is a full model round-trip (seconds to minutes); doing it
+    # inline would hold the gateway's per-group forward worker open the whole time,
+    # serializing the group's other messages behind it. Instead drop an instant
+    # reaction so the group sees the bot is working, and hand the reply to a
+    # background task (FastAPI sends the 200 first, freeing the forward worker).
+    await asyncio.to_thread(_enqueue_ack_reaction, body)
+    background_tasks.add_task(_deliver_chat_reply, embed_client, body)
+    return {"status": "accepted"}
+
+
+def _enqueue_ack_reaction(body: InboundMessage, remove: bool = False) -> None:
+    """Enqueue (or clear) the ⏳ working reaction on the triggering message."""
     with Session(get_engine()) as session:
-        reply_text = await _generate_reply(
-            session, embed_client, body.group_jid, body.sender_name, body.text
+        enqueue_reaction(
+            session,
+            body.group_jid,
+            body.message_id,
+            body.sender_jid,
+            "⏳",
+            remove=remove,
         )
-    if not reply_text:
-        reply_text = (
-            "Sorry, I'm having trouble formulating a response right now. "
-            "Please try again in a moment."
-        )
-    await _enqueue_bot_reply(embed_client, body, reply_text)
-    return {"status": "replied"}
+        session.commit()
+
+
+async def _deliver_chat_reply(embed_client, body: InboundMessage) -> None:
+    """Author the conversational reply and enqueue it, then clear the ⏳ reaction.
+
+    Runs as a background task after the inbound 200, so the model round-trip never
+    blocks the gateway. Best-effort: any failure still clears the reaction and, on
+    a failed generation, enqueues an honest fallback so the group is never left on
+    a bare ⏳.
+    """
+    try:
+        with Session(get_engine()) as session:
+            reply_text = await _generate_reply(
+                session, embed_client, body.group_jid, body.sender_name, body.text
+            )
+        if not reply_text:
+            reply_text = (
+                "Sorry, I'm having trouble formulating a response right now. "
+                "Please try again in a moment."
+            )
+        await _enqueue_bot_reply(embed_client, body, reply_text)
+    except Exception:
+        logger.exception("whatsapp: chat reply delivery failed for %s", body.group_jid)
+    finally:
+        try:
+            await asyncio.to_thread(_enqueue_ack_reaction, body, True)
+        except Exception:
+            logger.exception(
+                "whatsapp: failed to clear ack reaction for %s", body.group_jid
+            )
 
 
 async def _enqueue_bot_reply(
