@@ -28,7 +28,7 @@ from chat import (
     whatsapp_session,
 )
 from chat.attention import AttentionResult
-from chat.models import WhatsappGroup, WhatsappOutbox
+from chat.models import ReactionEvent, WhatsappGroup, WhatsappOutbox
 
 _TOKEN = "s3cret-token"
 _GROUP = "12345-67890@g.us"
@@ -310,3 +310,127 @@ class TestAgentDispatch:
         rows = _outbox(engine)
         assert len(rows) == 1
         assert rows[0].content == whatsapp_inbound._AGENT_DEFERRED_REPLY
+
+
+def _seed_bot_sent(engine, sent_message_id="wamid.BOTSENT"):
+    """Record a message the bot actually sent (a reactable bot target)."""
+    with Session(engine) as session:
+        session.add(
+            WhatsappOutbox(
+                group_jid=_GROUP,
+                kind="message",
+                content="earlier bot reply",
+                sent_message_id=sent_message_id,
+            )
+        )
+        session.commit()
+
+
+def _post_reaction(client, *, token=_TOKEN, **overrides):
+    body = {
+        "group_jid": _GROUP,
+        "reactor_jid": "alice@s.whatsapp.net",
+        "target_message_id": "wamid.BOTSENT",
+        "emoji": "👍",
+        "timestamp": "2026-07-03T10:00:00Z",
+    }
+    body.update(overrides)
+    headers = {}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    return client.post("/internal/whatsapp/reaction", json=body, headers=headers)
+
+
+def _reactions(engine):
+    with Session(engine) as session:
+        return session.exec(select(ReactionEvent).order_by(ReactionEvent.id)).all()
+
+
+class TestReaction:
+    """The /reaction endpoint: the WhatsApp half of the /improve-ambient signal."""
+
+    def test_missing_bearer_is_401(self, client, engine):
+        _seed_group(engine)
+        assert _post_reaction(client, token=None).status_code == 401
+        assert _reactions(engine) == []
+
+    def test_unknown_group_is_dropped(self, client, engine):
+        # No group seeded.
+        resp = _post_reaction(client)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "dropped"
+        assert _reactions(engine) == []
+
+    def test_reaction_on_non_bot_message_is_dropped(self, client, engine):
+        # No outbox row for the target: it was not a message the bot sent, so it
+        # is not a signal about Bosun (defense in depth behind the gateway gate).
+        _seed_group(engine)
+        resp = _post_reaction(client, target_message_id="wamid.HUMAN")
+        assert resp.json()["status"] == "dropped"
+        assert _reactions(engine) == []
+
+    def test_add_on_bot_message_is_recorded(self, client, engine):
+        _seed_group(engine)
+        _seed_bot_sent(engine)
+        resp = _post_reaction(client, emoji="👍")
+        assert resp.json()["status"] == "recorded"
+        rows = _reactions(engine)
+        assert len(rows) == 1
+        assert rows[0].channel_id == _GROUP
+        assert rows[0].message_id == "wamid.BOTSENT"
+        assert rows[0].reactor_id == "alice@s.whatsapp.net"
+        assert rows[0].emoji == "👍"
+        assert rows[0].action == "add"
+        assert rows[0].target_is_bot is True
+
+    def test_duplicate_add_is_a_noop(self, client, engine):
+        # The gateway is at-least-once; a replayed identical add must not double
+        # the signal.
+        _seed_group(engine)
+        _seed_bot_sent(engine)
+        assert _post_reaction(client, emoji="👍").json()["status"] == "recorded"
+        assert _post_reaction(client, emoji="👍").json()["status"] == "dropped"
+        assert len(_reactions(engine)) == 1
+
+    def test_removal_cancels_the_add(self, client, engine):
+        # WhatsApp sends an empty reaction to remove; it cancels whatever the
+        # reactor's current reaction was (an add + a remove of the same emoji).
+        _seed_group(engine)
+        _seed_bot_sent(engine)
+        _post_reaction(client, emoji="👍")
+        resp = _post_reaction(client, emoji="")
+        assert resp.json()["status"] == "recorded"
+        rows = _reactions(engine)
+        assert [r.action for r in rows] == ["add", "remove"]
+        # The remove carries the cancelled emoji so valence scoring negates it.
+        assert rows[1].emoji == "👍"
+
+    def test_removal_with_no_active_reaction_is_dropped(self, client, engine):
+        _seed_group(engine)
+        _seed_bot_sent(engine)
+        resp = _post_reaction(client, emoji="")
+        assert resp.json()["status"] == "dropped"
+        assert _reactions(engine) == []
+
+    def test_replace_cancels_old_and_adds_new(self, client, engine):
+        # Changing 👍 to ❤️ (WhatsApp's one-reaction-per-message replace) nets to
+        # just ❤️: a remove of 👍 then an add of ❤️.
+        _seed_group(engine)
+        _seed_bot_sent(engine)
+        _post_reaction(client, emoji="👍")
+        resp = _post_reaction(client, emoji="❤️")
+        assert resp.json()["status"] == "recorded"
+        rows = _reactions(engine)
+        assert [(r.action, r.emoji) for r in rows] == [
+            ("add", "👍"),
+            ("remove", "👍"),
+            ("add", "❤️"),
+        ]
+        # The reactor's current reaction is now ❤️.
+        with Session(engine) as session:
+            assert (
+                whatsapp_inbound._current_reaction(
+                    session, _GROUP, "wamid.BOTSENT", "alice@s.whatsapp.net"
+                )
+                == "❤️"
+            )

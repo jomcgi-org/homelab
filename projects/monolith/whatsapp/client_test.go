@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
@@ -170,8 +173,9 @@ func TestParkedStaysParkedOnLaterConnected(t *testing.T) {
 
 // fakeForwarder records forwarded payloads in call order.
 type fakeForwarder struct {
-	mu       sync.Mutex
-	payloads []InboundPayload
+	mu        sync.Mutex
+	payloads  []InboundPayload
+	reactions []ReactionPayload
 }
 
 func (f *fakeForwarder) Forward(p InboundPayload) {
@@ -180,10 +184,85 @@ func (f *fakeForwarder) Forward(p InboundPayload) {
 	f.payloads = append(f.payloads, p)
 }
 
+func (f *fakeForwarder) ForwardReaction(p ReactionPayload) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reactions = append(f.reactions, p)
+}
+
 func (f *fakeForwarder) snapshot() []InboundPayload {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]InboundPayload(nil), f.payloads...)
+}
+
+func (f *fakeForwarder) reactionSnapshot() []ReactionPayload {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ReactionPayload(nil), f.reactions...)
+}
+
+// reactionEvent builds an allow-listed group reaction: reactor reacts with emoji
+// to a message keyed by targetID; fromMe marks whether that target was a bot-sent
+// message. An empty emoji is WhatsApp's removed-reaction representation.
+func reactionEvent(group, reactor, targetID, emoji string, fromMe bool) *events.Message {
+	e := &events.Message{}
+	e.Info.IsGroup = true
+	e.Info.Chat = types.NewJID(group, types.GroupServer)
+	e.Info.Sender = types.NewJID(reactor, types.DefaultUserServer)
+	fm := fromMe
+	tid := targetID
+	txt := emoji
+	e.Message = &waE2E.Message{
+		ReactionMessage: &waE2E.ReactionMessage{
+			Key:  &waCommon.MessageKey{FromMe: &fm, ID: &tid},
+			Text: &txt,
+		},
+	}
+	return e
+}
+
+func TestGroupReactionOnBotMessageForwarded(t *testing.T) {
+	// A human 👍 on one of Bosun's messages (FromMe target) is forwarded to the
+	// reaction path, not the message path, carrying the target id and reactor.
+	session := &fakeSession{loggedIn: true}
+	fwd := &fakeForwarder{}
+	gw := NewGateway(Config{GroupJIDs: []string{"fam@g.us"}}, testLogger(), session, &fakeNotifier{}, fwd, nil)
+	gw.handleEvent(&events.Connected{})
+
+	gw.handleEvent(reactionEvent("fam", "alice", "BOT_MSG_1", "👍", true))
+
+	if got := len(fwd.snapshot()); got != 0 {
+		t.Errorf("forwarded %d messages for a reaction, want 0 (reactions take the reaction path)", got)
+	}
+	rs := fwd.reactionSnapshot()
+	if len(rs) != 1 {
+		t.Fatalf("forwarded %d reactions, want 1", len(rs))
+	}
+	if rs[0].GroupJID != "fam@g.us" || rs[0].TargetMessageID != "BOT_MSG_1" || rs[0].Emoji != "👍" {
+		t.Errorf("reaction payload = %+v, want group fam@g.us, target BOT_MSG_1, emoji 👍", rs[0])
+	}
+	if rs[0].ReactorJID != "alice@s.whatsapp.net" {
+		t.Errorf("reactor = %q, want alice@s.whatsapp.net", rs[0].ReactorJID)
+	}
+}
+
+func TestGroupReactionOnHumanMessageDropped(t *testing.T) {
+	// A reaction on a human's message (FromMe=false) is not a signal about Bosun;
+	// it is dropped at the gateway and never forwarded.
+	session := &fakeSession{loggedIn: true}
+	fwd := &fakeForwarder{}
+	gw := NewGateway(Config{GroupJIDs: []string{"fam@g.us"}}, testLogger(), session, &fakeNotifier{}, fwd, nil)
+	gw.handleEvent(&events.Connected{})
+
+	gw.handleEvent(reactionEvent("fam", "alice", "HUMAN_MSG_1", "👍", false))
+
+	if got := len(fwd.reactionSnapshot()); got != 0 {
+		t.Errorf("forwarded %d reactions on a human message, want 0", got)
+	}
+	if got := len(fwd.snapshot()); got != 0 {
+		t.Errorf("forwarded %d messages for a reaction, want 0", got)
+	}
 }
 
 func TestGroupMessageAllowList(t *testing.T) {
