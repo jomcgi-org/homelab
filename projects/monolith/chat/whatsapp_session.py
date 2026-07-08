@@ -43,8 +43,10 @@ from goosecracker.api import tier_allows
 
 logger = logging.getLogger(__name__)
 
-# The household tier for WhatsApp group sessions (ADR 039). Denied repo, cluster,
-# and artifact tools; granted knowledge, calendar, reminders (goosecracker.tiers).
+# The household tier for WhatsApp group sessions (ADR 039, amended). Granted every
+# LOCAL capability (knowledge, calendar, reminders, artifact/chart builds); only
+# repo and cluster stay denied, being the credentialed families the partner-phone
+# guest must not hold (goosecracker.tiers).
 HOUSEHOLD_TIER = "household"
 AGENT_RECIPE = "agent"
 

@@ -130,6 +130,11 @@ spec:
                   key: DISCORD_BOT_TOKEN
             - name: LLAMA_CPP_URL
               value: {{ .Values.chat.llamaCppUrl | quote }}
+            # Pinned OpenRouter model for household (WhatsApp) content generation.
+            # The in-monolith concierge reply and the WhatsApp chat agent read this;
+            # the goose guest model is carried in the GOOSECRACKER_TIERS env instead.
+            - name: HOUSEHOLD_LLM_MODEL
+              value: {{ .Values.whatsapp.model | quote }}
             - name: EMBEDDING_URL
               value: {{ .Values.chat.embeddingUrl | quote }}
             - name: SEARXNG_URL
