@@ -173,7 +173,10 @@ py_test(
     name = "claude_code_test",
     srcs = ["claude_code_test.py"],
     imports = [".."],
-    deps = [":bench"],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
