@@ -49,7 +49,11 @@
     for (const m of models) {
       let x, y;
       if (isAll) {
-        y = m.pass_rate ?? 0;
+        // Y is HARD-task pass, the discriminator the board ranks by and the axis on
+        // which "matching frontier capability" means reaching the Claude anchors' level.
+        // Overall pass_rate blurs the good models together (the floor tasks saturate) and
+        // even sinks the best-value pick below pricier peers over one floor miss.
+        y = m.hard_n ? m.hard_pass / m.hard_n : 0;
         x = cfg.get(m);
       } else {
         const c = cellOf(m, taskSel);
@@ -170,8 +174,8 @@
   {#if !points.length}
     <p class="empty">No data to plot for this view.</p>
   {:else}
-    <svg viewBox="0 0 {W} {H}" role="img" aria-label="Pass rate versus {cfg.axis}">
-      <text class="ylab" x={M.l} y={M.t - 8}>pass rate</text>
+    <svg viewBox="0 0 {W} {H}" role="img" aria-label="Hard-task pass versus {cfg.axis}">
+      <text class="ylab" x={M.l} y={M.t - 8}>{isAll ? "hard-task pass" : "pass"}</text>
       <text class="eff" x={M.l + iw} y={M.t - 8} text-anchor="end">most efficient ↗</text>
 
       {#each yticks as tv}
@@ -215,7 +219,8 @@
     </svg>
 
     <div class="cap">
-      {cfg.label} · {isAll ? "mean over all tasks" : taskSel} · pass rate up, {cfg.label.toLowerCase()} decreasing right
+      {cfg.label} · {isAll ? "hard-task pass, mean over all tasks" : taskSel} · match the
+      frontier (top), beat its {cfg.label.toLowerCase()} ceiling (right)
     </div>
     <div class="key">
       {#each providersShown as pv}

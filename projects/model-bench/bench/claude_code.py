@@ -49,6 +49,11 @@ class ClaudeResult:
     num_turns: int
     is_error: bool
     wall_ms: int
+    # The CLI's own API-equivalent cost for this run (list-price $ it WOULD cost to rent
+    # this model via the API). Joe pays $0 for it via the Max subscription, but this is the
+    # representative "rental cost" that lets an anchor plot as the cost CEILING on the
+    # leaderboard: the frontier's price a candidate must beat while matching its capability.
+    cost_usd: float = 0.0
 
 
 def _invoke(
@@ -93,6 +98,7 @@ def _invoke(
         num_turns=int(data.get("num_turns", 0)),
         is_error=bool(data.get("is_error", False)),
         wall_ms=wall_ms,
+        cost_usd=float(data.get("total_cost_usd", 0.0) or 0.0),
     )
 
 
@@ -169,13 +175,15 @@ def run_anchor_agent_cell(
 
     This is deliberately NOT the bench's OpenRouter tool loop: the anchor uses Claude
     Code's native harness. Turns come from the CLI (`num_turns`); wall-time is measured;
-    cost is 0 (free under Max). tool_use_ok is True because Claude Code drives its own
+    cost is the CLI's representative rental price (Joe pays $0 via Max, but the number is
+    the frontier's cost ceiling). tool_use_ok is True because Claude Code drives its own
     reliable tool loop, so the candidate flaky-tool-caller signal does not apply.
     """
     workdir = Path(tempfile.mkdtemp())
     shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
     turns = 0
     wall_ms = 0
+    rental_cost = 0.0
     try:
         res = _invoke(
             task_prompt,
@@ -185,6 +193,7 @@ def run_anchor_agent_cell(
         )
         turns = res.num_turns
         wall_ms = res.wall_ms
+        rental_cost = res.cost_usd
         if res.is_error:
             passed, feedback = False, "[claude CLI reported is_error] " + res.text[:500]
         else:
@@ -209,7 +218,9 @@ def run_anchor_agent_cell(
         content_hash=content_hash,
         outcome="pass@1" if passed else "fail",
         attempts=[attempt],
-        cost_usd=0.0,
+        # Representative rental cost from the CLI (list-price $ to run this via the API),
+        # so the anchor plots as the cost ceiling. 0 if the run errored before reporting.
+        cost_usd=rental_cost,
         harness_version=HARNESS_VERSION,
         prompt_template_hash="agent",
         turns=turns,
