@@ -100,11 +100,19 @@ egress:
     #
     # INVARIANT: the placeholder set here must equal the set of kloak: placeholders
     # the monolith goose tiers hand to guests. kloak_placeholder_drift_test.py
-    # (in projects/monolith) fails CI if they drift. The artifact tier's former
-    # OpenRouter swap (kloak:or:...) was removed when that tier migrated onto the
-    # in-cluster Qwen model (free, keyless); re-adding an OpenRouter guest tier
-    # means restoring both the tier env and the catalog entry together.
+    # (in projects/monolith) fails CI if they drift.
     - env: GITHUB_TOKEN
       placeholder: "kloak:gh:01JZX8K3N7Q2M5R9W4T6Y0F1B8"
       egressTo: [api.github.com]
       secretRef: { name: monolith-chat-secrets, key: GITHUB_TOKEN }
+    # The household tier's OpenRouter key (ADR 039, amended): the WhatsApp guest
+    # runs on DeepSeek V4 Flash, so it holds this placeholder as OPENAI_API_KEY
+    # (goosecracker.tiers.household). The sidecar swaps it for the real key only on
+    # openrouter.ai; external:allow already reaches that host. The real value is the
+    # OPENROUTER_API_KEY field of the "goosecracker" Secret (synced from 1Password,
+    # referenced by that exact name). placeholder MUST match
+    # tiers.household.OPENAI_API_KEY in the monolith deploy values.
+    - env: OPENROUTER_KEY
+      placeholder: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
+      egressTo: [openrouter.ai]
+      secretRef: { name: goosecracker, key: OPENROUTER_API_KEY }

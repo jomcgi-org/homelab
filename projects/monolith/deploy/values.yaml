@@ -255,11 +255,20 @@ goosecracker:
     # per-principal capability ACL (goosecracker.tiers.tier_allows), NOT here in
     # the guest env; the env only carries the model endpoint and generation caps.
     household:
-      OPENAI_HOST: http://inference.inference.svc.cluster.local:8080
-      OPENAI_API_KEY: sk-noauth
+      # ADR 039 (amended): the household goose guest runs on DeepSeek V4 Flash via
+      # OpenRouter (strong but cheap), not in-cluster Qwen. The guest holds ONLY the
+      # kloak:or: placeholder; the fc-invoke egress sidecar swaps it for the real
+      # OPENROUTER_API_KEY on openrouter.ai (substrate egress.secrets catalog). The
+      # placeholder string MUST match that catalog entry -- kloak_placeholder_drift_
+      # test.py fails CI on drift. repo and cluster tools stay denied at dispatch
+      # (goosecracker.tiers.household), so no GitHub token or kubeconfig is here.
+      OPENAI_HOST: https://openrouter.ai/api/v1
+      OPENAI_API_KEY: "kloak:or:B5BKP27T2KSDN6QW70N34H8DP6"
       GOOSE_PROVIDER: openai
-      GOOSE_MODEL: qwen3.6-27b
-      GOOSE_CONTEXT_LIMIT: "32768"
+      GOOSE_MODEL: deepseek/deepseek-v4-flash
+      # DeepSeek V4 Flash serves a large window; tell goose the real size so it
+      # compacts proactively at ~80% rather than assuming 128k and overrunning.
+      GOOSE_CONTEXT_LIMIT: "131072"
       GOOSE_MAX_TOOL_RESPONSE_SIZE: "10000"
       GOOSE_MAX_TOKENS: "8000"
       GOOSE_TOOL_CALL_CUTOFF: "5"
@@ -337,6 +346,10 @@ orchestrator:
 # `whatsapp` schema.
 whatsapp:
   enabled: false
+  # Household content model (in-monolith concierge reply + WhatsApp chat agent).
+  # DeepSeek V4 Flash on OpenRouter; the goose guest model is in
+  # goosecracker.tiers.household.
+  model: "deepseek/deepseek-v4-flash"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/whatsapp"
   botNumber: ""

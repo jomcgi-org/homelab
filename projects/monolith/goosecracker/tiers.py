@@ -38,10 +38,14 @@ _DEFAULT_TIER = "default"
 # tier -> allowed-feature mapping the dispatch-time check consults. ADR 034's
 # enforced guest-facing MCP endpoint (bearer -> toolset) is not built yet, so
 # nothing calls this at guest-MCP dispatch time today: Phase 4 wires the
-# session-dispatch check to it. The household tier (ADR 039) is deliberately
-# restricted to knowledge, calendar, and reminders and is denied repo, cluster,
-# and artifact tools.
-_HOUSEHOLD_FEATURES = frozenset({"knowledge", "calendar", "reminders"})
+# session-dispatch check to it. The household tier (ADR 039, amended) gets every
+# LOCAL capability (knowledge, calendar, reminders, and artifact/chart builds);
+# only repo and cluster stay denied, because those are the two families that
+# would need external credentials (a GitHub token, a kubeconfig) in the guest,
+# and the household channel deliberately carries none. The boundary is the
+# channel, not the toolset: household does everything the trusted tiers do that
+# does not require a credential the partner-phone guest must not hold.
+_HOUSEHOLD_FEATURES = frozenset({"knowledge", "calendar", "reminders", "artifact"})
 
 # The full capability set. Any tier not named in _TIER_FEATURES (default,
 # artifact) is unrestricted: it gets everything. Named here so a household-tier

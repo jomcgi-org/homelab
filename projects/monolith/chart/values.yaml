@@ -834,6 +834,12 @@ orchestrator:
 # chart BUILD images map); never hand-set a digest here.
 whatsapp:
   enabled: false
+  # Pinned OpenRouter model for household CONTENT generation in the monolith: the
+  # concierge agent-result reply and the WhatsApp chat agent both author on this
+  # (strong but cheap). The goose GUEST model is set separately in
+  # goosecracker.tiers.household. Kept as a value (never :auto) so replies stay
+  # attributable; the monolith reaches openrouter.ai directly with OPENROUTER_API_KEY.
+  model: "deepseek/deepseek-v4-flash"
   image:
     repository: ""
     tag: ""

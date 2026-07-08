@@ -535,3 +535,96 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
         raise last_exc  # type: ignore[misc]
 
     return call_llm
+
+
+# Household (ADR 039, amended): all generated CONTENT for the WhatsApp channel is
+# authored by a strong-but-cheap hosted model (DeepSeek V4 Flash on OpenRouter),
+# while the in-cluster Qwen is reserved for the activation classifier. The model
+# is pinned (never :auto) so replies stay attributable; the default here is the
+# floor, and HOUSEHOLD_LLM_MODEL (set from Helm values) is the source of truth in
+# a real deployment. This runs IN the monolith, which already holds
+# OPENROUTER_API_KEY for the orchestrator, so it reaches openrouter.ai directly
+# (no egress swap; that is only for the sandboxed goose guest).
+_HOUSEHOLD_MODEL_DEFAULT = "deepseek/deepseek-v4-flash"
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def household_model() -> str:
+    """The pinned OpenRouter model id for household content generation."""
+    return os.environ.get("HOUSEHOLD_LLM_MODEL", "").strip() or _HOUSEHOLD_MODEL_DEFAULT
+
+
+def build_openrouter_caller(
+    model: str | None = None, base_url: str | None = None
+) -> Callable[[str], Awaitable[str]]:
+    """Async caller that sends a prompt to an OpenRouter-hosted model.
+
+    Mirrors ``build_llm_caller`` (same retry contract, same ``str -> str`` shape)
+    but targets OpenRouter with ``OPENROUTER_API_KEY`` and a pinned model. Used
+    for household-tier content so the WhatsApp channel answers on DeepSeek V4
+    Flash while Discord stays on in-cluster Qwen.
+    """
+    url = (base_url or _OPENROUTER_BASE_URL).rstrip("/")
+    model_id = model or household_model()
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    client = httpx.AsyncClient(timeout=httpx.Timeout(600.0))
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    async def call_llm(prompt: str, *, max_retries: int = 3) -> str:
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await client.post(
+                    f"{url}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model_id,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": _LLM_MAX_TOKENS,
+                    },
+                )
+                resp.raise_for_status()
+                try:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, ValueError) as e:
+                    raise RuntimeError(f"unexpected LLM response shape: {e}") from e
+                if not content:
+                    raise RuntimeError("OpenRouter returned empty content")
+                return content
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in _RETRYABLE_STATUS_CODES:
+                    raise
+                last_exc = exc
+            except httpx.ConnectError as exc:
+                last_exc = exc
+
+            if attempt < max_retries:
+                delay = 2**attempt  # 1s, 2s, 4s
+                logger.warning(
+                    "OpenRouter call failed (attempt %d/%d): %s — retrying in %ds",
+                    attempt + 1,
+                    max_retries + 1,
+                    last_exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+        raise last_exc  # type: ignore[misc]
+
+    return call_llm
+
+
+def concierge_caller_for_tier(
+    tier: str,
+) -> Callable[[str], Awaitable[str]] | None:
+    """The content-generation caller for a tier, or None to use the default.
+
+    The household tier (WhatsApp) authors content on DeepSeek V4 Flash; every
+    other tier returns None so the caller keeps its existing default (in-cluster
+    Qwen via ``build_llm_caller``). Returning None rather than the Qwen caller
+    keeps the Discord path byte-identical (it never builds a caller it would not
+    have built before).
+    """
+    if tier == "household":
+        return build_openrouter_caller()
+    return None

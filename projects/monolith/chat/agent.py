@@ -320,15 +320,38 @@ def format_context_messages(
     return "\n".join(lines)
 
 
-def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
-    """Create a PydanticAI agent configured for Qwen via llama.cpp."""
-    url = base_url or LLAMA_CPP_URL
+def create_agent(
+    base_url: str | None = None,
+    *,
+    model_name: str | None = None,
+    api_key: str | None = None,
+    provider_base_url: str | None = None,
+    model_settings: ModelSettings | None = None,
+) -> Agent[ChatDeps]:
+    """Create a PydanticAI agent (same tools and prompts for every tier).
+
+    Defaults to in-cluster Qwen via llama.cpp. Pass ``provider_base_url`` +
+    ``api_key`` + ``model_name`` to back it with a hosted OpenAI-compatible model
+    instead (the household/WhatsApp tier -> DeepSeek V4 Flash on OpenRouter); the
+    Qwen path is untouched when those are absent. ``provider_base_url`` is used
+    verbatim (it already includes the API path, e.g. ``.../api/v1``), unlike the
+    llama.cpp ``base_url`` which gets ``/v1`` appended.
+    """
+    if provider_base_url:
+        prov_url = provider_base_url
+        key = api_key or ""
+        name = model_name or "qwen3.6-27b"
+    else:
+        url = base_url or LLAMA_CPP_URL
+        prov_url = f"{url}/v1"
+        key = api_key or "not-needed"
+        name = model_name or "qwen3.6-27b"
 
     model = OpenAIChatModel(
-        "qwen3.6-27b",
+        name,
         provider=OpenAIProvider(
-            base_url=f"{url}/v1",
-            api_key="not-needed",
+            base_url=prov_url,
+            api_key=key,
         ),
     )
 
@@ -352,7 +375,8 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
     agent: Agent[ChatDeps] = Agent(
         model,
         system_prompt=build_system_prompt(),
-        model_settings=ModelSettings(
+        model_settings=model_settings
+        or ModelSettings(
             temperature=1.0,
             top_p=0.95,
             extra_body={
@@ -805,6 +829,34 @@ def create_agent(base_url: str | None = None) -> Agent[ChatDeps]:
         return "\n".join(parts)
 
     return agent
+
+
+# OpenRouter API path for the household tier's hosted model. Used verbatim as the
+# provider base_url (it already ends in the API version segment).
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def create_household_agent() -> Agent[ChatDeps]:
+    """The WhatsApp/household chat agent (ADR 039, amended).
+
+    Same tools, system prompt, and signposts as the default concierge, but backed
+    by DeepSeek V4 Flash on OpenRouter (strong but cheap) rather than in-cluster
+    Qwen: every generated reply on the WhatsApp channel is authored by the hosted
+    model, while Qwen is reserved for the activation classifier. Runs in the
+    monolith, which already holds ``OPENROUTER_API_KEY``, so it reaches
+    openrouter.ai directly (no egress swap; that is only for the goose guest). The
+    model id is pinned via ``household_model()`` (HOUSEHOLD_LLM_MODEL from values).
+    """
+    from chat.summarizer import household_model
+
+    return create_agent(
+        provider_base_url=_OPENROUTER_BASE_URL,
+        api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        model_name=household_model(),
+        # DeepSeek does not take the Qwen-specific top_k / presence_penalty
+        # extra_body; keep sampling simple and let the model apply its defaults.
+        model_settings=ModelSettings(temperature=0.7, top_p=0.95),
+    )
 
 
 def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":

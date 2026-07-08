@@ -454,13 +454,18 @@ def _agent_narrative(result: str) -> str:
     return body or "(no output)"
 
 
-async def _agent_reply_message(session: str, summary: str, details: str) -> str:
+async def _agent_reply_message(
+    session: str, summary: str, details: str, provider: str = "discord"
+) -> str:
     """Compose the conversational reply for a coding-agent run.
 
     Rephrases goose's typed ``summary`` (+ optional ``details``) in the bot's own
     voice, grounded in the parent channel's context (recent messages + rolling
     summaries), so the reply reads like the bot talking to the channel rather than
     a raw tool dump. The result URL is appended by the caller, never by the model.
+
+    ``provider`` selects the authoring model: WhatsApp (household) rephrases on
+    DeepSeek V4 Flash, Discord stays on in-cluster Qwen (ADR 039, amended).
 
     Fail-open: the reply must always go out, so any missing channel id, model
     outage, or error yields the deterministic ``summary``/``details`` composition
@@ -469,13 +474,25 @@ async def _agent_reply_message(session: str, summary: str, details: str) -> str:
     """
     deterministic = summary + (f"\n\n{details}" if details else "")
     try:
-        from chat.api import conversational_agent_reply, parent_channel_for_thread
+        from chat.api import (
+            build_openrouter_caller,
+            conversational_agent_reply,
+            parent_channel_for_thread,
+        )
 
         # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
         parent = await asyncio.to_thread(parent_channel_for_thread, session)
         if not parent:
             return deterministic
-        reply = (await conversational_agent_reply(parent, summary, details)).strip()
+        # Household content is authored by DeepSeek; other tiers keep the default
+        # in-cluster Qwen caller (llm_call=None leaves conversational_agent_reply
+        # byte-identical to the Discord path).
+        llm_call = build_openrouter_caller() if provider == "whatsapp" else None
+        reply = (
+            await conversational_agent_reply(
+                parent, summary, details, llm_call=llm_call
+            )
+        ).strip()
         return reply or deterministic
     except Exception:
         logger.exception(
@@ -485,8 +502,8 @@ async def _agent_reply_message(session: str, summary: str, details: str) -> str:
         return deterministic
 
 
-async def _delivery_message(session: str, data: dict) -> str:
-    """Build the Discord message for a successful run.
+async def _delivery_message(session: str, data: dict, provider: str = "discord") -> str:
+    """Build the channel message for a successful run.
 
     A run that produced artifact HTML (an agent run the router took down the
     artifact-build path) publishes it and posts a clean ``Artifact ready: <url>``
@@ -526,7 +543,7 @@ async def _delivery_message(session: str, data: dict) -> str:
             details = str(structured.get("details", "") or "").strip()
             # Rephrase the typed summary conversationally (channel-scoped context),
             # then append the URL deterministically so it can never be mangled.
-            msg = await _agent_reply_message(session, summary, details)
+            msg = await _agent_reply_message(session, summary, details, provider)
             url = str(structured.get("url", "") or "").strip()
             if url.startswith("http"):
                 msg += f"\n{url}"
@@ -865,7 +882,7 @@ async def _deliver_result(
         # nosemgrep: no-session-in-to-thread  # `session` is the fc-invoke session-id string, not a SQLAlchemy Session
         await asyncio.to_thread(threads.mark_completed, session, result)
         await _settle_result(
-            discord_thread, await _delivery_message(session, data), provider
+            discord_thread, await _delivery_message(session, data, provider), provider
         )
         return True
     err = data.get("error", "") or "goose run failed with no detail"

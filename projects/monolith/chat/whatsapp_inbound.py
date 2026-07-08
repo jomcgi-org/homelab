@@ -164,7 +164,7 @@ async def _generate_reply(
     unlike the Discord path which live-streams. Recent group history is loaded
     for context exactly as the Discord concierge does.
     """
-    from chat.agent import ChatDeps, create_agent, format_context_messages
+    from chat.agent import ChatDeps, create_household_agent, format_context_messages
     from chat.store import MessageStore
 
     store = MessageStore(session=session, embed_client=embed_client)
@@ -178,7 +178,9 @@ async def _generate_reply(
         author_id=group_jid,
     )
     prompt = f"{context}\n\nCurrent message from {sender_name or 'someone'}: {text}"
-    agent = create_agent()
+    # Household content is authored by DeepSeek V4 Flash on OpenRouter, not the
+    # in-cluster Qwen the Discord concierge uses (ADR 039, amended).
+    agent = create_household_agent()
     result = await agent.run(prompt, deps=deps)
     output = result.output
     return output if isinstance(output, str) and output else ""
