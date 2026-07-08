@@ -1,38 +1,112 @@
 id: null-content-fix-01
 version: v1
 class: code-fix
+mode: agentic
+# Real fix bc6f81dfb (to this very harness): openrouter.py coerced a present-but-null
+# `content` field to None instead of "". Snapshot the model-bench harness source at the
+# fix's PARENT (buggy state); the model must find and fix the real extraction.
 source_commit: bc6f81dfb
+snapshot:
+  commit: ea95507be96cab02c547b4915529e1b11fa0dc33
+  paths:
+    - projects/model-bench/bench
+  strip_components: 2
+  exclude:
+    - "*_test.py"
+    - "*.md"
+    - "*.json"
+    - "*.yaml"
+    - "*.txt"
+    - "*.bzl"
+    - "BUILD"
+agent:
+  max_turns: 30
 prompt: |
-  extract_text() pulls the assistant text out of a chat-completions API response.
+  This is the source tree of a model-benchmarking harness. bench/openrouter.py talks to
+  the OpenRouter chat-completions API; its OpenRouterClient.complete() pulls the assistant
+  text out of the JSON response.
+
   In production it intermittently crashes a downstream caller with
-  "AttributeError: 'NoneType' object has no attribute ...": some models (reasoning
-  or "thinking" models) return a response whose message "content" field is present
-  but JSON null while they are still reasoning. Fix extract_text so it always
-  returns a string for every response shape, without changing its name or
-  signature. Return the complete updated contents of extract_text.py.
+  "AttributeError: 'NoneType' object has no attribute ...": some reasoning ("thinking")
+  models return a response whose message "content" field is PRESENT but JSON null while
+  they are still reasoning, and the current extraction (`.get("content", "")`) returns
+  that null (None) rather than a string.
+
+  Fix the extraction in bench/openrouter.py so complete() always returns a string for
+  every response shape (normal content, null content, missing content). Do not change the
+  complete() signature or any other behavior, and edit only bench/openrouter.py.
 target_files:
-  - extract_text.py
+  - bench/openrouter.py
 verifier:
   kind: command
   args:
-    cmd:
-      - python3
-      - -c
-      - |
+    cmd: ["python3", "_check.py"]
+    timeout_s: 60
+    write_files:
+      _check.py: |
+        # Exercise the REAL OpenRouterClient.complete() against a stubbed transport, so a
+        # present-but-null content field is driven through the actual extraction path.
+        # httpx is stubbed (the bare python3 the command runner uses has no httpx) and
+        # __init__ is bypassed so no real client/network is constructed.
+        import asyncio
+        import importlib.util
         import sys
-        sys.path.insert(0, ".")
-        try:
-            from extract_text import extract_text
-        except Exception as e:
-            sys.stderr.write(f"could not import extract_text: {e}\n"); sys.exit(1)
+        import types
+
+        _httpx = types.ModuleType("httpx")
+        _httpx.AsyncClient = lambda *a, **k: None
+        _httpx.Response = type("Response", (), {})
+        _httpx.Timeout = lambda *a, **k: None
+        _httpx.Limits = lambda *a, **k: None
+        sys.modules["httpx"] = _httpx
+
+        spec = importlib.util.spec_from_file_location("orclient", "bench/openrouter.py")
+        mod = importlib.util.module_from_spec(spec)
+        # Register before exec so the module's @dataclass can resolve its own module.
+        sys.modules["orclient"] = mod
+        spec.loader.exec_module(mod)
+
+        class _Resp:
+            def __init__(self, payload):
+                self._p = payload
+                self.status_code = 200
+
+            def json(self):
+                return self._p
+
+            def raise_for_status(self):
+                pass
+
+        class _Client:
+            def __init__(self, payload):
+                self._p = payload
+
+            async def post(self, *a, **k):
+                return _Resp(self._p)
+
+        def _complete(payload):
+            client = mod.OpenRouterClient.__new__(mod.OpenRouterClient)
+            client._client = _Client(payload)
+            return asyncio.run(
+                client.complete(model="m", messages=[], temperature=0.0)
+            )
+
         cases = {
             "normal content": ({"choices": [{"message": {"content": "hello"}}]}, "hello"),
-            "null content (thinking model)": ({"choices": [{"message": {"content": None}}]}, ""),
+            "null content (thinking model)": (
+                {"choices": [{"message": {"content": None}}]},
+                "",
+            ),
             "missing content": ({"choices": [{"message": {}}]}, ""),
         }
-        for name, (data, want) in cases.items():
-            got = extract_text(data)
+        for name, (payload, want) in cases.items():
+            got = _complete(payload).text
             if not isinstance(got, str):
-                sys.stderr.write(f"{name}: expected a str, got {type(got).__name__} ({got!r})\n"); sys.exit(1)
+                sys.stderr.write(
+                    f"{name}: expected a str, got {type(got).__name__} ({got!r})\n"
+                )
+                sys.exit(1)
             if got != want:
-                sys.stderr.write(f"{name}: expected {want!r}, got {got!r}\n"); sys.exit(1)
+                sys.stderr.write(f"{name}: expected {want!r}, got {got!r}\n")
+                sys.exit(1)
+        print("ok")
