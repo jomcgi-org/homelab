@@ -846,12 +846,13 @@ whatsapp:
     pullPolicy: IfNotPresent
   onepassword:
     itemPath: ""
-  # Bot's own WhatsApp number in E.164 (e.g. +447700900123).
-  botNumber: ""
-  # Comma-separated allow-list of group JIDs the gateway observes.
-  groupJids: ""
+  # PII is NOT configured here (the repo is public):
+  #   - the bot number lives in the "whatsapp" 1Password item (WHATSAPP_BOT_NUMBER),
+  #     read by secretKeyRef in the gateway Deployment.
+  #   - group JIDs (which embed a phone number) live in chat.whatsapp_group; the
+  #     gateway loads its allow-list from that table and refreshes on a ticker.
   # Discord channel id ops alerts (pairing code, logout/ban) are posted to via
-  # the shared chat.discord_outbox drain.
+  # the shared chat.discord_outbox drain (a channel id, not personal data).
   alertChannelId: ""
   # In-cluster URL of the monolith backend inbound endpoint the gateway forwards
   # group messages to (ADR 039 spec section 2). Set in deploy values; never

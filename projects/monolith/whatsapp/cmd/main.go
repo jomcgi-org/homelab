@@ -62,7 +62,9 @@ func run(logger *slog.Logger) error {
 	// bound to ctx so its retry loops stop on shutdown.
 	forwarder := whatsapp.NewHTTPForwarder(ctx, cfg.MonolithInboundURL, cfg.InboundToken, nil, logger)
 
-	gw := whatsapp.NewGateway(cfg, logger, session, notifier, forwarder)
+	// The notifier's base-DSN db handle also backs the gateway's allow-list
+	// refresh (chat.whatsapp_group), the same handle the outbox drain uses below.
+	gw := whatsapp.NewGateway(cfg, logger, session, notifier, forwarder, db)
 	if err := gw.Start(ctx); err != nil {
 		return err
 	}
