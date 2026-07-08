@@ -46,7 +46,21 @@ Two interpreters are involved:
   The `pytest` verifier resolves this venv from `$MODEL_BENCH_VENV` (default
   `~/.cache/model-bench-venv`).
 
-`OPENROUTER_API_KEY` must be set; model calls are billed (cents per task).
+### Providers: candidates vs the Claude ceiling
+
+Each model in `models.yaml` has a `provider`:
+
+- `openrouter` (default, `role: candidate`) rents the model per-token and records real
+  cost / turns / tokens. These are the models you would actually deploy, so their cost is
+  the point. `OPENROUTER_API_KEY` must be set to run any of them; calls are billed (cents
+  per task).
+- `claude-code` (`role: anchor`, the Claude models) runs through the local `claude` CLI
+  under the Max subscription. It is a **capability ceiling**, not a cost-ranked competitor:
+  free, so cost is 0, and it uses Claude Code's own agent harness (not the bench tool
+  loop), so its turns/tokens are not comparable to candidates. The judge also runs this
+  way. Anchors need the `claude` CLI on PATH and no OpenRouter key.
+
+An anchors-only run (`--model claude`) needs no `OPENROUTER_API_KEY` at all.
 
 ## Result cells (billed output — kept out of the worktree)
 

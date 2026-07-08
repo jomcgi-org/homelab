@@ -26,6 +26,18 @@ semgrep_test(
 )
 
 semgrep_test(
+    name = "claude_code_semgrep_test",
+    srcs = ["claude_code.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "claude_code_test_semgrep_test",
+    srcs = ["claude_code_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
     name = "cli_semgrep_test",
     srcs = ["cli.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
@@ -127,6 +139,7 @@ py_library(
         "__init__.py",
         "agent.py",
         "cache.py",
+        "claude_code.py",
         "cli.py",
         "judge.py",
         "openrouter.py",
@@ -149,6 +162,16 @@ py_library(
 py_test(
     name = "cache_test",
     srcs = ["cache_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "claude_code_test",
+    srcs = ["claude_code_test.py"],
     imports = [".."],
     deps = [
         ":bench",

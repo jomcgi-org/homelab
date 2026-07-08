@@ -8,6 +8,7 @@ def render_leaderboard(
     frontier: dict,
     retired: list,
     agentic: dict | None = None,
+    agentic_anchor_ids: set | None = None,
 ) -> str:
     """Render a markdown leaderboard report.
 
@@ -19,10 +20,15 @@ def render_leaderboard(
         agentic: model_id -> dict with keys n, pass_rate, mean_tokens, mean_turns,
                  cost, tool_ok_rate. The agentic tool-calling leaderboard: the
                  primary contract of this benchmark. Optional/back-compatible.
+        agentic_anchor_ids: set of model_ids in `agentic` that are anchors. They are
+                 pulled out of the cost-ranked candidate tables and shown in the frontier
+                 CEILING section (pass + wall-time only), since they run via Claude Code
+                 (own harness, free under Max) and their cost=0 would otherwise dominate.
 
     Returns:
-        Markdown string with sections: Agentic, Budget tier, Anchors, Pareto frontier,
-        Retired. Section headers are fixed and always emitted even when inputs are empty.
+        Markdown string with sections: Agentic, Frontier ceiling, Budget tier, Anchors,
+        Pareto frontier, Retired. Section headers are fixed and always emitted even when
+        inputs are empty.
     """
     lines: list[str] = []
     lines.append("# model-bench leaderboard")
@@ -32,7 +38,12 @@ def render_leaderboard(
     # FLOOR to qualify; the qualified are ranked by hard-task pass then cost, with the
     # perf/efficiency columns as the value axis. The disqualified are listed with the
     # floor task(s) they missed.
-    rows = [{"model": mid, **stats} for mid, stats in (agentic or {}).items()]
+    _anchor_ids = agentic_anchor_ids or set()
+    rows = [
+        {"model": mid, **stats}
+        for mid, stats in (agentic or {}).items()
+        if mid not in _anchor_ids
+    ]
     qualified = [r for r in rows if r.get("qualified")]
     disqualified = [r for r in rows if not r.get("qualified")]
 
@@ -87,6 +98,39 @@ def render_leaderboard(
             )
     else:
         lines.append("No disqualified models.")
+    lines.append("")
+
+    # Frontier ceiling: anchors (Claude via Claude Code) run the same agentic tasks under
+    # their own harness. This calibrates task difficulty ("can the frontier even do it")
+    # without pretending to be a cost-ranked candidate. Pass + wall-time only; no cost,
+    # no turns/tokens (a different harness, not comparable to the OpenRouter rows).
+    lines.append("## Frontier ceiling (agentic)")
+    lines.append("")
+    lines.append(
+        "Claude anchors run via Claude Code (Max subscription, free), graded by the same "
+        "verifier. A capability ceiling, not a ranked competitor: no cost or token/turn "
+        "columns, since the harness differs from the candidate rows."
+    )
+    lines.append("")
+    ceiling_rows = [
+        {"model": mid, **stats}
+        for mid, stats in (agentic or {}).items()
+        if mid in _anchor_ids
+    ]
+    if ceiling_rows:
+        ceiling_rows.sort(
+            key=lambda r: (-r.get("hard_pass", 0), r.get("mean_latency_ms", 0.0))
+        )
+        lines.append("| Model | hard | pass rate | wall-time (s) | tasks |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for r in ceiling_rows:
+            lines.append(
+                f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
+                f"| {r.get('pass_rate', 0.0):.2f} "
+                f"| {r.get('mean_latency_ms', 0) / 1000:.1f} | {r.get('n', 0)} |"
+            )
+    else:
+        lines.append("No anchor ceiling results yet.")
     lines.append("")
 
     # Budget tier: qualifying candidates sorted by cost ascending

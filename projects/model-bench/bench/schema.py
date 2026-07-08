@@ -44,6 +44,12 @@ class ModelSpec(BaseModel):
     status: Literal["active", "experimental", "retired"] = "active"
     params: ModelParams = Field(default_factory=ModelParams)
     role: Literal["candidate", "anchor"] = "candidate"
+    # Completion backend. "openrouter" (default) rents the model per-token and records
+    # real cost/turns/tokens. "claude-code" runs the model through the local `claude`
+    # CLI under the Max subscription: free, but a CEILING reference (its own harness),
+    # so cost is 0 and turns/tokens are not comparable to OpenRouter candidates. Anchors
+    # are claude-code; candidates are openrouter.
+    provider: Literal["openrouter", "claude-code"] = "openrouter"
     retired_reason: str | None = None
     retired_date: str | None = None
     # Short display name for the leaderboard UI. Falls back to the id (minus the

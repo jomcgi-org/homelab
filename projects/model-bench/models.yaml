@@ -1,9 +1,15 @@
 models:
+  # Frontier ceiling. Run via the local `claude` CLI under the Max subscription
+  # (provider: claude-code), not OpenRouter: renting Claude per-token to produce a
+  # "cloud cost" row is spend that would never actually happen, so anchors are a free
+  # capability ceiling (pass + wall-time), not a ranked, cost-bearing competitor.
   - id: anthropic/claude-opus-4.8
     role: anchor
+    provider: claude-code
     status: active
   - id: anthropic/claude-sonnet-4.6
     role: anchor
+    provider: claude-code
     status: active
   - id: qwen/qwen3.6-27b
     status: active
@@ -37,7 +43,10 @@ models:
     status: active
   - id: z-ai/glm-5.2
     status: active
+  # Cloud-API reference (not self-hostable). Demoted pending a cost re-check: it billed
+  # ~$3.14 in a single agentic run, i.e. Opus-tier spend despite the "flash" tier, which
+  # smells like a token blow-up in the 50-turn loop. Re-promote once that is understood.
   - id: google/gemini-3.5-flash
-    status: active
+    status: experimental
   - id: qwen/qwen3-coder:free
     status: experimental
