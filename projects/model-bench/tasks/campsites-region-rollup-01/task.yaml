@@ -6,7 +6,7 @@ mode: agentic
 # Whole-monolith-backend snapshot (all Python top-level packages, no frontend) at a
 # pinned main commit. The model must navigate the real 248-file tree, find the campsites
 # domain, and mirror the subtle semantics of the existing /snapshot endpoint. Regenerate
-# with: bench snapshot --task campsites-region-rollup-01 (git archive of the paths below).
+# with: bench snapshot campsites-region-rollup-01 (git archive of the paths below).
 snapshot:
   commit: 40e36a2c2c142aade3a4f95e8e85e85ac6ade943
   strip_components: 2
