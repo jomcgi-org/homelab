@@ -5,10 +5,8 @@ tier: standard
 mode: agentic
 source_commit: d7837d59819adc0fdad068993604d8e3a342edf8
 snapshot:
+  preset: monolith-backend
   commit: 3f668a0ae54a7ba55ab33b7dd0b390d14f1f3bd0
-  paths:
-    - projects/monolith/hikes
-  strip_components: 2
 agent:
   max_turns: 30
 prompt: |

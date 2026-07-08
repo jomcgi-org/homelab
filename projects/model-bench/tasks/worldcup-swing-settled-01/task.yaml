@@ -5,11 +5,8 @@ tier: hard
 mode: agentic
 source_commit: 10e5c849c95f3fd2de02f0c0cf39b10e89f1d64d
 snapshot:
+  preset: monolith-backend
   commit: f5aeea925a5016ac856aa85fd07a47540f3864ef
-  paths:
-    - projects/monolith/worldcup/sim.py
-    - projects/monolith/worldcup/outcome.py
-  strip_components: 2
 agent:
   max_turns: 30
 prompt: |

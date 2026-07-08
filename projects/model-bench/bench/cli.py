@@ -881,6 +881,67 @@ def _prune_stale(args) -> None:
     )
 
 
+# Named fixture presets: the single source of truth for a "real repo subtree" fixture,
+# so tasks that share a fixture shape don't each repeat a long paths+exclude block (the
+# duplication this whole migration removes). A task references one with
+# `snapshot: {preset: monolith-backend, commit: <sha>}` and may still override any field.
+# Each preset snapshots a whole real project dir and prunes it to the language of interest,
+# so it works at ANY commit (no per-commit package list): `git archive` grabs whatever
+# existed then, and the excludes drop the rest.
+_SNAPSHOT_PRESETS: dict[str, dict] = {
+    # The full monolith Python backend: every feature domain + shared infra, minus the
+    # frontend, Helm chart, deploy manifests, tests (the gold test is injected), and all
+    # non-.py data. The model must navigate the real tree to find the domain it edits.
+    "monolith-backend": {
+        "paths": ["projects/monolith"],
+        "strip_components": 2,
+        "exclude": [
+            "frontend/",
+            "chart/",
+            "deploy/",
+            "node_modules/",
+            "e2e/",
+            "*_test.py",
+            "*.md",
+            "*.json",
+            "*.ndjson",
+            "*.sql",
+            "*.sh",
+            "*.jpg",
+            "*.jpeg",
+            "*.png",
+            "*.yaml",
+            "*.yml",
+            "*.txt",
+            "*.lock",
+            "*.bzl",
+            "BUILD",
+        ],
+    },
+}
+
+
+def _resolve_snapshot_preset(snap: dict) -> dict:
+    """Expand a `preset` into concrete paths/strip_components/exclude.
+
+    A task's own keys win over the preset (so a task can override the commit, add an
+    extra exclude, etc.). Unknown preset names raise so a typo fails loudly rather than
+    silently snapshotting nothing.
+    """
+    preset_name = snap.get("preset")
+    if not preset_name:
+        return snap
+    if preset_name not in _SNAPSHOT_PRESETS:
+        raise ValueError(
+            f"unknown snapshot preset {preset_name!r}; "
+            f"known: {sorted(_SNAPSHOT_PRESETS)}"
+        )
+    return {
+        **_SNAPSHOT_PRESETS[preset_name],
+        **{k: v for k, v in snap.items() if k != "preset"},
+    }
+
+
 def _snapshot(args) -> None:
     """Materialize task fixtures from a pinned git commit.
 
@@ -903,6 +964,7 @@ def _snapshot(args) -> None:
         snap = mapping.get("snapshot")
         if not isinstance(snap, dict):
             continue
+        snap = _resolve_snapshot_preset(snap)
         commit, paths = snap.get("commit"), snap.get("paths", [])
         if not commit or not paths:
             print(f"{mapping.get('id')}: snapshot needs commit + paths; skipping")
@@ -923,16 +985,27 @@ def _snapshot(args) -> None:
         if strip:
             tar_cmd.append(f"--strip-components={strip}")
         subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
-        # Prune excluded globs (default: the parent's own *_test.py). The model never
-        # needs them (the gold test is injected by the verifier), they bloat the
-        # fixture, and committing real test files trips the repo's pre-commit semgrep
-        # hook (generic-test-filename / hardcoded-timestamp rules).
+        # Prune excludes (default: the parent's own *_test.py). The model never needs
+        # them (the gold test is injected by the verifier), they bloat the fixture, and
+        # committing real test files trips the repo's pre-commit semgrep hook.
+        #
+        # Two exclude forms: a plain glob matches a file BASENAME (`*_test.py`, `*.json`);
+        # an entry ending in `/` is a DIRECTORY exclude that drops everything under any
+        # directory of that name (`frontend/`, `chart/`). The directory form is what makes
+        # `paths: [projects/monolith]` viable as one commit-agnostic "full backend" spec:
+        # snapshot the whole tree, then drop the non-backend subtrees.
         import fnmatch
 
         excludes = snap.get("exclude", ["*_test.py"])
+        dir_excludes = {e.rstrip("/") for e in excludes if e.endswith("/")}
+        name_globs = [e for e in excludes if not e.endswith("/")]
         for path in sorted(fixture.rglob("*"), reverse=True):
-            if path.is_file() and any(fnmatch.fnmatch(path.name, g) for g in excludes):
-                path.unlink()
+            if path.is_file():
+                parents = set(path.relative_to(fixture).parts[:-1])
+                if (dir_excludes & parents) or any(
+                    fnmatch.fnmatch(path.name, g) for g in name_globs
+                ):
+                    path.unlink()
             elif path.is_dir() and not any(path.iterdir()):
                 path.rmdir()
         n = sum(1 for _ in fixture.rglob("*") if _.is_file())

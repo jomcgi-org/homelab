@@ -5,10 +5,8 @@ tier: standard
 mode: agentic
 source_commit: 10cb9aea1d0aec3245387667927fe6af744a8316
 snapshot:
+  preset: monolith-backend
   commit: e13cf75a7f0f91dbcea1a58562d2a3689b71fdc9
-  paths:
-    - projects/monolith/worldcup
-  strip_components: 2
 agent:
   max_turns: 25
 prompt: |

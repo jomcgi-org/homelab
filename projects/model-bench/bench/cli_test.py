@@ -4,8 +4,37 @@ import json
 import pytest  # noqa: F401
 
 from bench.cache import HARNESS_VERSION
-from bench.cli import _prune_stale, _write_leaderboard_json, build_parser, load_tasks
+from bench.cli import (
+    _prune_stale,
+    _resolve_snapshot_preset,
+    _write_leaderboard_json,
+    build_parser,
+    load_tasks,
+)
 from bench.schema import Attempt, ResultCell, TaskSpec, VerifierSpec
+
+
+def test_resolve_snapshot_preset_expands_and_lets_task_override():
+    # A bare preset expands to the canonical full-backend paths/exclude.
+    resolved = _resolve_snapshot_preset({"preset": "monolith-backend", "commit": "abc"})
+    assert resolved["paths"] == ["projects/monolith"]
+    assert resolved["commit"] == "abc"
+    assert "frontend/" in resolved["exclude"]
+    assert "*_test.py" in resolved["exclude"]
+    assert "preset" not in resolved
+    # A task key wins over the preset (here: a custom strip_components).
+    over = _resolve_snapshot_preset(
+        {"preset": "monolith-backend", "commit": "x", "strip_components": 9}
+    )
+    assert over["strip_components"] == 9
+    # No preset: returned unchanged.
+    plain = {"commit": "z", "paths": ["a"]}
+    assert _resolve_snapshot_preset(plain) == plain
+
+
+def test_resolve_snapshot_preset_unknown_raises():
+    with pytest.raises(ValueError, match="unknown snapshot preset"):
+        _resolve_snapshot_preset({"preset": "nope", "commit": "x"})
 
 
 def test_parser_has_subcommands():

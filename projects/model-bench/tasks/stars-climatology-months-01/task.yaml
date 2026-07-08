@@ -5,12 +5,8 @@ tier: hard
 mode: agentic
 source_commit: 52e97ed330ebc4d11a06402c48371da19bc27f17
 snapshot:
+  preset: monolith-backend
   commit: b4e4b12e17ca53223cf6c61083da47af3ffd23ea
-  paths:
-    - projects/monolith/stars
-    - projects/monolith/shared
-    - projects/monolith/app
-  strip_components: 2
 agent:
   max_turns: 35
 prompt: |
