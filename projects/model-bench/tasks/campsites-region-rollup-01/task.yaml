@@ -1,0 +1,269 @@
+id: campsites-region-rollup-01
+version: v1
+class: code-fix
+tier: hard
+mode: agentic
+# Whole-monolith-backend snapshot (all Python top-level packages, no frontend) at a
+# pinned main commit. The model must navigate the real 248-file tree, find the campsites
+# domain, and mirror the subtle semantics of the existing /snapshot endpoint. Regenerate
+# with: bench snapshot --task campsites-region-rollup-01 (git archive of the paths below).
+snapshot:
+  commit: 40e36a2c2c142aade3a4f95e8e85e85ac6ade943
+  strip_components: 2
+  # Keep the fixture Python-focused: drop the hidden test files (the grader is injected)
+  # and the multi-MB data seeds/manifests that no imported module touches at test time.
+  exclude:
+    - "*_test.py"
+    - "*.ndjson"
+    - "*.sql"
+  paths:
+    - projects/monolith/agent
+    - projects/monolith/app
+    - projects/monolith/artifact
+    - projects/monolith/campsites
+    - projects/monolith/chat
+    - projects/monolith/chat_public
+    - projects/monolith/cluster
+    - projects/monolith/demos
+    - projects/monolith/dr_jobs
+    - projects/monolith/e2e
+    - projects/monolith/goosecracker
+    - projects/monolith/grimoire
+    - projects/monolith/grimoire_chat
+    - projects/monolith/hikes
+    - projects/monolith/home
+    - projects/monolith/knowledge
+    - projects/monolith/sandbox
+    - projects/monolith/scheduler
+    - projects/monolith/scripts
+    - projects/monolith/semgrep
+    - projects/monolith/shared
+    - projects/monolith/ships
+    - projects/monolith/stars
+    - projects/monolith/trips
+    - projects/monolith/worldcup
+agent:
+  max_turns: 50
+prompt: |
+  You are working in a snapshot of a real FastAPI monolith backend. Every feature is a
+  top-level Python package (campsites, ships, stars, worldcup, ...). The campsites domain
+  serves BC Parks campground availability merged with a clear-sky weather forecast.
+
+  Study the existing campsites domain, especially campsites/router.py (the
+  GET /api/campsites/snapshot endpoint) and campsites/models.py (the Campground,
+  Availability and Weather SQLModel tables). The snapshot endpoint already computes
+  per-PARK metrics; your job is to add a per-REGION rollup on the SAME router.
+
+  Add a new endpoint GET /api/campsites/regions that aggregates every campground by its
+  `region` string and returns JSON:
+
+    {
+      "count": <number of distinct regions>,
+      "regions": [ {region, parks, open_parks, best_score, good_days}, ... ]
+    }
+
+  Use the SAME 14-day date window as /snapshot: include only rows whose date is between
+  (UTC today - 1 day) and (UTC today + 13 days) inclusive. For each campground build its
+  per-day view exactly as /snapshot does: a day is `available` when its Availability row
+  has has_availability true (false when there is no Availability row); `sunny_score` and
+  `is_good` come from the Weather row (0 and false when there is no Weather row).
+
+  For each region compute:
+    - region: the region string.
+    - parks: total number of campgrounds in that region (regardless of data).
+    - best_score: the maximum sunny_score over park-days that are AVAILABLE, across all
+      parks in the region; 0 if the region has no available park-days. (Days that are not
+      available never contribute, exactly as /snapshot's per-park best_score works.)
+    - good_days: the total count of park-days that are BOTH available AND is_good, across
+      all parks in the region.
+    - open_parks: the number of campgrounds in the region that have at least one park-day
+      that is BOTH available AND is_good.
+
+  Return the regions sorted by best_score descending, then region ascending. Return HTTP
+  503 with detail "campsites data unavailable" when there are no campgrounds at all, just
+  like /snapshot. Caching/ETag support is NOT required for this endpoint.
+
+  Add the new route as another @router.get handler on the existing campsites APIRouter so
+  it is served at /api/campsites/regions. Do not change or break the existing
+  GET /api/campsites/snapshot endpoint. The campsites package is already registered with
+  the app, so no app/main.py change is needed; if you add a test target for the new code,
+  mirror the existing campsites py_test targets in projects/monolith/BUILD.
+verifier:
+  kind: pytest
+  args:
+    tests:
+      campsites/region_rollup_test.py: |
+        """Hidden grader for GET /api/campsites/regions.
+
+        Minimal FastAPI app mounting only the campsites router, backed by in-memory
+        SQLite with the Postgres schema= overrides stripped, and get_session overridden.
+        Mirrors campsites/router_test.py. The region rollup expected values are computed
+        by hand from the seeded scenario (see comments).
+        """
+
+        from __future__ import annotations
+
+        import datetime
+        from datetime import timezone
+
+        import pytest
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from sqlmodel import Session, SQLModel, create_engine
+        from sqlmodel.pool import StaticPool
+
+        from app.db import get_session
+        from campsites.models import Availability, Campground, Weather
+        from campsites.router import router
+
+        _NOW = datetime.datetime.now(timezone.utc)
+        _TODAY = _NOW.date()
+        _D_OLD = _TODAY - datetime.timedelta(days=2)  # before window_start (today - 1)
+        _D0 = _TODAY
+        _D1 = _TODAY + datetime.timedelta(days=1)
+
+
+        @pytest.fixture(name="session")
+        def session_fixture():
+            engine = create_engine(
+                "sqlite://",
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+            original_schemas = {}
+            for table in SQLModel.metadata.tables.values():
+                if table.schema is not None:
+                    original_schemas[table.name] = table.schema
+                    table.schema = None
+            try:
+                SQLModel.metadata.create_all(engine)
+                with Session(engine) as session:
+                    yield session
+            finally:
+                for table in SQLModel.metadata.tables.values():
+                    if table.name in original_schemas:
+                        table.schema = original_schemas[table.name]
+
+
+        @pytest.fixture(name="client")
+        def client_fixture(session):
+            app = FastAPI()
+            app.include_router(router)
+            app.dependency_overrides[get_session] = lambda: session
+            yield TestClient(app)
+            app.dependency_overrides.clear()
+
+
+        def _cg(rid: int, name: str, region: str) -> Campground:
+            return Campground(
+                resource_location_id=rid,
+                park_map_id=rid * 10,
+                name=name,
+                region=region,
+                latitude=50.0,
+                longitude=-120.0,
+            )
+
+
+        def _av(rid: int, date, avail: bool) -> Availability:
+            return Availability(
+                resource_location_id=rid,
+                date=date,
+                has_availability=avail,
+                scraped_at=_NOW,
+            )
+
+
+        def _wx(rid: int, date, score: int, good: bool) -> Weather:
+            return Weather(
+                resource_location_id=rid,
+                date=date,
+                sunny_score=score,
+                is_good=good,
+                fetched_at=_NOW,
+            )
+
+
+        def _seed_scenario(session):
+            # Region "Coast": parks 1 and 2. Region "Interior": park 3.
+            session.add(_cg(1, "Alpha", "Coast"))
+            session.add(_cg(2, "Bravo", "Coast"))
+            session.add(_cg(3, "Charlie", "Interior"))
+
+            # Park 1: an out-of-window star day that MUST be excluded (avail+good, 100),
+            # an in-window avail+good day (90), and an unavailable high day (95).
+            session.add(_av(1, _D_OLD, True))
+            session.add(_wx(1, _D_OLD, 100, True))
+            session.add(_av(1, _D0, True))
+            session.add(_wx(1, _D0, 90, True))
+            session.add(_av(1, _D1, False))
+            session.add(_wx(1, _D1, 95, True))
+
+            # Park 2: avail+good (70) and avail-but-not-good (50).
+            session.add(_av(2, _D0, True))
+            session.add(_wx(2, _D0, 70, True))
+            session.add(_av(2, _D1, True))
+            session.add(_wx(2, _D1, 50, False))
+
+            # Park 3: good-but-not-available (80) and avail-but-not-good (40).
+            session.add(_av(3, _D0, False))
+            session.add(_wx(3, _D0, 80, True))
+            session.add(_av(3, _D1, True))
+            session.add(_wx(3, _D1, 40, False))
+            session.commit()
+
+
+        # Hand-computed from the scenario, applying the /snapshot semantics per region:
+        #   Coast: best_score = max avail score = 90 (100 out of window, 95 not available);
+        #          good_days = avail&good = P1@D0 + P2@D0 = 2;
+        #          open_parks = P1, P2 = 2; parks = 2.
+        #   Interior: best_score = max avail score = 40 (80 not available);
+        #          good_days = 0; open_parks = 0; parks = 1.
+        # Sorted by best_score desc, then region asc.
+        EXPECTED = {
+            "count": 2,
+            "regions": [
+                {
+                    "region": "Coast",
+                    "parks": 2,
+                    "open_parks": 2,
+                    "best_score": 90,
+                    "good_days": 2,
+                },
+                {
+                    "region": "Interior",
+                    "parks": 1,
+                    "open_parks": 0,
+                    "best_score": 40,
+                    "good_days": 0,
+                },
+            ],
+        }
+
+
+        def test_regions_route_is_wired(client, session):
+            _seed_scenario(session)
+            assert client.get("/api/campsites/regions").status_code == 200
+
+
+        def test_region_rollup_matches_expected(client, session):
+            _seed_scenario(session)
+            assert client.get("/api/campsites/regions").json() == EXPECTED
+
+
+        def test_503_when_no_campgrounds(client):
+            r = client.get("/api/campsites/regions")
+            assert r.status_code == 503
+            assert "unavailable" in r.json()["detail"]
+
+
+        def test_existing_snapshot_endpoint_still_works(client, session):
+            session.add(_cg(1, "Alpha", "Coast"))
+            session.add(_av(1, _TODAY, True))
+            session.add(_wx(1, _TODAY, 70, True))
+            session.commit()
+            r = client.get("/api/campsites/snapshot")
+            assert r.status_code == 200
+            assert r.json()["count"] == 1
+    targets: ["campsites/region_rollup_test.py"]
+    timeout_s: 180
