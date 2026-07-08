@@ -63,18 +63,20 @@ def test_explicit_tier_ca_wins_over_process_env(monkeypatch):
 # --- Per-tier capability (tool) subset (ADR 034, ADR 039 household) ---------
 
 
-def test_household_tier_grants_only_household_features():
+def test_household_tier_grants_all_local_features():
+    # ADR 039 (amended): household gets every LOCAL capability; only the
+    # credentialed families (repo, cluster) are withheld.
     granted = tiers.features_for_tier("household")
-    assert granted == {"knowledge", "calendar", "reminders"}
+    assert granted == {"knowledge", "calendar", "reminders", "artifact"}
 
 
-def test_household_tier_allows_its_three_families():
-    for feature in ("knowledge", "calendar", "reminders"):
+def test_household_tier_allows_its_local_families():
+    for feature in ("knowledge", "calendar", "reminders", "artifact"):
         assert tiers.tier_allows("household", feature) is True
 
 
-def test_household_tier_denies_repo_cluster_artifact():
-    for feature in ("repo", "cluster", "artifact"):
+def test_household_tier_denies_repo_and_cluster():
+    for feature in ("repo", "cluster"):
         assert tiers.tier_allows("household", feature) is False
 
 

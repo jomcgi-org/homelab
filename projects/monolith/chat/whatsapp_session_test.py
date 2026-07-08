@@ -81,15 +81,18 @@ class TestSessionKey:
 
 
 class TestHouseholdAcl:
-    def test_repo_cluster_artifact_denied(self):
+    def test_repo_cluster_denied(self):
+        # Only the credentialed families stay denied (ADR 039, amended): a
+        # GitHub token / kubeconfig must not reach the partner-phone guest.
         assert whatsapp_session.household_allows("repo") is False
         assert whatsapp_session.household_allows("cluster") is False
-        assert whatsapp_session.household_allows("artifact") is False
 
-    def test_knowledge_calendar_reminders_allowed(self):
+    def test_local_capabilities_allowed(self):
+        # Household gets every LOCAL capability, including artifact/chart builds.
         assert whatsapp_session.household_allows("knowledge") is True
         assert whatsapp_session.household_allows("calendar") is True
         assert whatsapp_session.household_allows("reminders") is True
+        assert whatsapp_session.household_allows("artifact") is True
 
 
 # --- Dispatch ---------------------------------------------------------------
