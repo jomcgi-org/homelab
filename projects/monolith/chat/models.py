@@ -163,7 +163,10 @@ class WhatsappOutbox(SQLModel, table=True):
     (edit_of -> the original send's sent_message_id, with new content), reaction
     (on target_message_id; whatsmeow's reaction build needs target_sender_jid, the
     JID of that message's sender, which the row must carry). reaction_remove sends
-    an empty reaction to clear it.
+    an empty reaction to clear it. media (an image: media_bytes + media_mime, with
+    content as the optional caption) -- the gateway uploads the bytes to WhatsApp
+    and sends an ImageMessage, so a chart/image reaches the group inline (ADR 039,
+    amended).
 
     The combined CHECK mirrors the DB constraint so the SQLite test fixtures
     enforce the per-kind shape too (create_all does not see migration-only
@@ -177,7 +180,9 @@ class WhatsappOutbox(SQLModel, table=True):
             "(kind = 'message' AND content IS NOT NULL)"
             " OR (kind = 'edit' AND content IS NOT NULL AND edit_of IS NOT NULL)"
             " OR (kind = 'reaction' AND target_message_id IS NOT NULL"
-            " AND target_sender_jid IS NOT NULL AND reaction IS NOT NULL)",
+            " AND target_sender_jid IS NOT NULL AND reaction IS NOT NULL)"
+            " OR (kind = 'media' AND media_bytes IS NOT NULL"
+            " AND media_mime IS NOT NULL)",
             name="whatsapp_outbox_kind_valid",
         ),
         {"schema": "chat", "extend_existing": True},
@@ -193,6 +198,10 @@ class WhatsappOutbox(SQLModel, table=True):
     target_sender_jid: str | None = Field(default=None)
     reaction: str | None = Field(default=None)
     reaction_remove: bool = Field(default=False)
+    # media kind: the raw image bytes + its mime type (content is the caption).
+    # bytes -> LargeBinary (BYTEA on Postgres, BLOB on the SQLite test fixtures).
+    media_bytes: bytes | None = Field(default=None)
+    media_mime: str | None = Field(default=None)
     sent_message_id: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     posted_at: datetime | None = Field(default=None)

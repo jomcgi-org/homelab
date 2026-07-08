@@ -15,6 +15,36 @@ from sqlmodel import Session
 from chat.models import WhatsappOutbox
 
 
+def enqueue_media(
+    session: Session,
+    group_jid: str,
+    *,
+    data: bytes,
+    mime: str,
+    caption: str | None = None,
+) -> None:
+    """Enqueue an image to ``group_jid`` (ADR 039, amended).
+
+    The gateway uploads ``data`` to WhatsApp and sends an ImageMessage with
+    ``caption`` as the optional text, so a chart/image reaches the group inline.
+    Raises ValueError on empty bytes or mime (the DB CHECK also rejects it, but
+    failing here gives the caller a clear error instead of an IntegrityError).
+    """
+    if not data:
+        raise ValueError("enqueue_media requires non-empty data")
+    if not mime:
+        raise ValueError("enqueue_media requires a mime type")
+    session.add(
+        WhatsappOutbox(
+            group_jid=group_jid,
+            kind="media",
+            media_bytes=data,
+            media_mime=mime,
+            content=caption,
+        )
+    )
+
+
 def enqueue_message(
     session: Session,
     group_jid: str,

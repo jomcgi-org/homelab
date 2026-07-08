@@ -47,6 +47,18 @@ func (f *fakeSender) SendText(_ context.Context, groupJID, content, quotedMessag
 	return id, nil
 }
 
+func (f *fakeSender) SendImage(_ context.Context, groupJID string, data []byte, mime, caption string) (string, error) {
+	f.calls = append(f.calls, sendCall{"image", groupJID, mime, caption, ""})
+	if f.textErr != nil && (f.failGroup == "" || f.failGroup == groupJID) {
+		return "", f.textErr
+	}
+	id := f.sentID
+	if id == "" {
+		id = "wamid.SENT"
+	}
+	return id, nil
+}
+
 func (f *fakeSender) SendEdit(_ context.Context, groupJID, targetMessageID, newContent string) error {
 	f.calls = append(f.calls, sendCall{"edit", groupJID, targetMessageID, newContent, ""})
 	return f.editErr
