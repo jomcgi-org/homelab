@@ -1217,24 +1217,41 @@
   /* ---------- short-viewport (laptop / low-res) compaction ---------- */
   /* Separate concern from the mobile bug below: the desktop three-region
      spread (caption left, machine right, track bottom, zoom inset lower-right)
-     was laid out for a TALL viewport. On any shorter window the machine's disk
-     shelf and the .zoom magnifier both want the lower-right and overlap. These
-     are HEIGHT breakpoints (not width) because the failure is purely vertical,
-     so they fire the same on a 4K monitor zoomed in as on a small laptop. */
+     was laid out for a TALL viewport. On any shorter window three things on the
+     right column collide vertically: the centered machine's disk shelf reaches
+     the bottom timing track (base.vmstate lands on the cold total), and the
+     .zoom inset overlaps the disk shelf. This is a HEIGHT breakpoint (not
+     width) because the failure is purely vertical, so it fires the same on a 4K
+     monitor zoomed in as on a small laptop. One threshold covers the whole
+     band: piecemeal cutoffs left a gap just above them (e.g. a 14" MacBook
+     window at ~880px cleared an 840px cutoff yet still collided).
 
-  /* The zoom inset only fits on tall displays. Below that it collides with the
-     disk shelf; the replay console further down the page shows the exact same
-     per-phase breakdown, so hiding it here loses no information (mobile already
-     drops it for the same reason). */
-  @media (max-height: 1100px) {
+     Below the threshold we compact the entire right column: a smaller, higher
+     machine so its disk shelf clears the track; a track pulled tight to the
+     bottom with shorter rows; and the zoom dropped (its per-phase breakdown is
+     reproduced verbatim by the replay console below the fold, exactly as mobile
+     already does, so hiding it loses no information). */
+
+  /* The zoom inset needs MORE headroom than the rest: it sits below the disk
+     shelf and only clears it on a genuinely tall display (~1400px+, i.e. a
+     1440p/4K monitor). Its own, higher threshold; between here and 1100px the
+     full machine already sits high enough that the disk shelf clears the track
+     on its own, so only the zoom needs dropping in that band. */
+  @media (max-height: 1400px) {
     .zoom {
       display: none;
     }
   }
 
-  /* Very short windows: pull the timing track tight against the bottom and
-     shrink its rows so it clears the vertically-centered caption. */
-  @media (max-height: 840px) {
+  @media (max-height: 1100px) {
+    /* smaller + higher machine so the disk shelf sits well above the track */
+    .machine {
+      top: 40%;
+    }
+    .ram {
+      height: clamp(140px, 26vh, 300px);
+    }
+    /* track pulled tight to the bottom with shorter rows */
     .track {
       bottom: 3vh;
     }
