@@ -135,6 +135,63 @@ const (
 	waitReadyBackoff = 20 * time.Millisecond
 )
 
+// primeAttempt bounds a single prime probe. It is deliberately far tighter than
+// waitReadyAttempt: the whole point of priming is to abandon a wedged
+// post-restore connection FAST and re-roll, so the RX-queue race is shaken out
+// in tens of milliseconds rather than the ~150ms a readiness attempt would burn
+// on the same wedge. primeBackoff is the pause between probes.
+const (
+	primeAttempt = 30 * time.Millisecond
+	primeBackoff = 10 * time.Millisecond
+)
+
+// Prime forces the post-restore vsock path open BEFORE the readiness poll runs,
+// absorbing Firecracker's post-restore RX-queue race off the readiness path.
+//
+// A freshly restored guest can wedge its first host-initiated vsock connection
+// (see WaitReady for the mechanism). Prime repeatedly issues a cheap liveness
+// probe against the shim's /shim/healthz, each bounded by the tight primeAttempt
+// deadline, until one exchange completes or ctx fires. /shim/healthz answers 200
+// the moment the shim serves, so ANY completed HTTP exchange -- whatever its
+// status -- proves the vsock path drained. The connection is thrown away; Prime
+// exists only so the subsequent WaitReady and exec dials land on an already
+// drained queue and answer on their first attempt.
+//
+// Prime is best-effort: on ctx expiry it returns an error the caller may log and
+// ignore, since WaitReady still retries past the race as before. Callers should
+// bound ctx by the same short restore budget used for the readiness wait.
+func (t *Transport) Prime(ctx context.Context, udsPath string) error {
+	for {
+		if err := t.primeProbe(ctx, udsPath); err == nil {
+			return nil
+		}
+		// Retriable: back off briefly, stop only when the outer ctx fires.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("vsockhttp: timed out priming vsock at %s: %w", udsPath, ctx.Err())
+		case <-time.After(primeBackoff):
+		}
+	}
+}
+
+// primeProbe performs one liveness probe bounded by primeAttempt (capped by the
+// outer ctx). It returns nil once an HTTP exchange completes, regardless of the
+// response status: a completed exchange means the vsock path is open.
+func (t *Transport) primeProbe(ctx context.Context, udsPath string) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, primeAttempt)
+	defer cancel()
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, "http://vsock/shim/healthz", nil)
+	if err != nil {
+		return fmt.Errorf("vsockhttp: build prime request: %w", err)
+	}
+	resp, err := t.RoundTrip(attemptCtx, udsPath, req)
+	if err != nil {
+		return err // nosemgrep: no-bare-error-return
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // readyAttempt performs one readiness probe bounded by waitReadyAttempt (capped
 // by the outer ctx). It returns nil only on a 200 response.
 func (t *Transport) readyAttempt(ctx context.Context, udsPath, readyPath string) error {
