@@ -23,19 +23,28 @@ print(f"sqrt(2) = {math.sqrt(2):.6f}")
 `;
 
   const SEMGREP_SAMPLE = `import subprocess
+from flask import Flask, request
+
+app = Flask(__name__)
 
 
-def run_backup(filename):
-    # Builds a shell command from an unsanitised argument, a classic
-    # command-injection pattern that semgrep's python.lang.security
-    # rules flag.
-    cmd = f"tar czf backup.tar.gz {filename}"
-    subprocess.call(cmd, shell=True)
+def read_target():
+    # Taint SOURCE: an attacker-controlled query parameter.
+    return request.args.get("host")
 
 
-def load_config(raw):
-    # eval() on untrusted input.
-    return eval(raw)
+def ping(target):
+    # Taint SINK: a shell command built from untrusted input.
+    subprocess.run(f"ping -c1 {target}", shell=True)
+
+
+@app.route("/ping")
+def handle():
+    # Source and sink live in different functions. Only Semgrep Pro's
+    # interprocedural taint analysis connects them across this call; the
+    # open-source engine sees each function alone and misses the flow.
+    ping(read_target())
+    return "ok"
 `;
 
   const GOOSE_TASK_SAMPLE =
@@ -51,8 +60,9 @@ def load_config(raw):
     {
       key: "semgrep",
       label: "Semgrep",
-      tagline: "Static-analysis scan of a file, run in the sandbox.",
-      sample: { path: "app/backup.py", code: SEMGREP_SAMPLE },
+      tagline:
+        "Pro interprocedural taint scan: a source and sink in different functions, caught in the sandbox.",
+      sample: { path: "app/ping.py", code: SEMGREP_SAMPLE },
     },
     {
       key: "goose",
