@@ -145,7 +145,13 @@
   function cap(elm, t, a, b) {
     const { opacity, entrance } = captionOpacity(t, a, b);
     elm.style.opacity = opacity;
-    elm.style.transform = `translateY(calc(-50% + ${(1 - entrance) * 24}px))`;
+    // Write ONLY the dynamic entrance offset as a custom property; the base
+    // transform (translateY(-50%) when the caption is vertically centered on
+    // desktop, vs 0 for the mobile bottom-sheet) is owned by CSS so the media
+    // query can differ. Writing element.style.transform directly here would be
+    // an inline style that overrides the mobile `transform: none` rule and lift
+    // the bottom sheet up over the timing track.
+    elm.style.setProperty("--cap-enter", `${(1 - entrance) * 24}px`);
   }
 
   function frame(t) {
@@ -724,7 +730,9 @@
     position: absolute;
     left: 4vw;
     top: 50%;
-    transform: translateY(-50%);
+    /* base = vertical centering; --cap-enter is the per-frame entrance offset
+       written by cap() (defaults to 0 before JS runs / for SSR). */
+    transform: translateY(calc(-50% + var(--cap-enter, 0px)));
     width: min(36vw, 560px);
     opacity: 0;
     z-index: 10;
@@ -864,7 +872,10 @@
 
   .ram {
     position: relative;
-    height: clamp(250px, 36vh, 400px);
+    /* Height scales with the viewport so the whole machine (panel + disk
+       shelf) gets shorter on a laptop window and the disk cards do not push
+       down into the timing track / zoom inset. */
+    height: clamp(150px, 30vh, 400px);
     border-radius: 8px;
     overflow: hidden;
     background: var(--fc-ram-bg);
@@ -1203,30 +1214,79 @@
     }
   }
 
+  /* ---------- short-viewport (laptop / low-res) compaction ---------- */
+  /* Separate concern from the mobile bug below: the desktop three-region
+     spread (caption left, machine right, track bottom, zoom inset lower-right)
+     was laid out for a TALL viewport. On any shorter window the machine's disk
+     shelf and the .zoom magnifier both want the lower-right and overlap. These
+     are HEIGHT breakpoints (not width) because the failure is purely vertical,
+     so they fire the same on a 4K monitor zoomed in as on a small laptop. */
+
+  /* The zoom inset only fits on tall displays. Below that it collides with the
+     disk shelf; the replay console further down the page shows the exact same
+     per-phase breakdown, so hiding it here loses no information (mobile already
+     drops it for the same reason). */
+  @media (max-height: 1100px) {
+    .zoom {
+      display: none;
+    }
+  }
+
+  /* Very short windows: pull the timing track tight against the bottom and
+     shrink its rows so it clears the vertically-centered caption. */
+  @media (max-height: 840px) {
+    .track {
+      bottom: 3vh;
+    }
+    .track .row {
+      margin-bottom: 12px;
+    }
+    .track .row-head {
+      margin-bottom: 6px;
+    }
+    .barwrap {
+      height: 36px;
+    }
+    .caption h2 {
+      font-size: clamp(26px, 3.2vw, 40px);
+      margin-bottom: 12px;
+    }
+  }
+
   /* ---------- mobile ---------- */
   /* A phone has one column, not three, so the desktop caption-left /
      machine-right / track-bottom spread collapses into overlap. Stack the
      story into three horizontal bands with VIEWPORT-RELATIVE regions that
      cannot overlap whatever the content does:
-       - machine / chips: top 2vh, its band ending by ~43vh
-       - timing track:    top 46vh (always below the machine band)
-       - narration:       bottom sheet, at most 34vh tall (top edge >= 66vh)
+       - machine / chips: top 2svh, its band ending above the track
+       - timing track:    top 42svh (always below the machine band)
+       - narration:       bottom sheet, at most 32svh tall, pinned to bottom
      The old layout anchored the machine from the top (height driven by the
-     disk shelf that fades in mid-story) and the track from the bottom, so
-     when the disk cards appeared the two bands met in the middle. Anchoring
-     every band to the viewport removes that content-dependent collision.
-     The machine is also compacted (smaller RAM, description-free disk cards)
-     so it fits its band even on short phones. */
+     disk shelf that fades in mid-story) and the track from the bottom, so when
+     the disk cards appeared the two bands met in the middle. Anchoring every
+     band to the viewport removes that content-dependent collision.
+
+     The bands MUST use the same viewport unit as the .stage they live inside.
+     The stage is sized in dvh (it grows/shrinks with the url bar); anchoring
+     the bands in plain `vh` (which many mobile browsers resolve to the LARGE,
+     url-bar-hidden viewport) positioned them as if the screen were taller than
+     the visible stage, so the track and the bottom caption sheet collided
+     whenever the url bar was showing. `svh` is the SMALL (url-bar-visible)
+     viewport, so the bands fit the worst case; when the bar hides there is just
+     extra slack at the bottom instead of an overlap. The machine is also
+     compacted (smaller RAM, description-free disk cards) so it fits its band
+     even on short phones. */
   @media (max-width: 820px) {
     .hero h1 {
       font-size: 44px;
     }
 
-    /* visual (machine / chips) band: top 2vh, compacted to fit by ~43vh */
+    /* visual (machine / chips) band: top 2svh, compacted to fit above the
+       timing track's 42svh top edge */
     .machine {
       right: 5vw;
       left: 5vw;
-      top: 2vh;
+      top: 2svh;
       transform: none;
       width: auto;
     }
@@ -1237,7 +1297,7 @@
       margin-bottom: 10px;
     }
     .ram {
-      height: clamp(88px, 11vh, 132px);
+      height: clamp(80px, 10svh, 120px);
     }
     .vm-foot {
       margin-top: 10px;
@@ -1259,7 +1319,7 @@
     .chips {
       right: 5vw;
       left: 5vw;
-      top: 2vh;
+      top: 2svh;
       transform: none;
       width: auto;
       grid-template-columns: repeat(3, 1fr);
@@ -1272,13 +1332,19 @@
 
     /* timing track: fixed band below the machine, clear of the caption sheet */
     .track {
-      top: 46vh;
+      top: 42svh;
       bottom: auto;
       left: 5vw;
       right: 5vw;
     }
     .track .row {
       margin-bottom: 10px;
+    }
+    /* the warm (second) row's trailing margin is dead space that only eats into
+       the caption sheet's clearance on the shortest phones (:last-of-type would
+       match the hidden .zoom div, not this row) */
+    .track .row + .row {
+      margin-bottom: 0;
     }
     .track .row-head .total {
       font-size: 17px;
@@ -1300,11 +1366,14 @@
       right: 0;
       bottom: 0;
       top: auto;
-      transform: none;
+      /* bottom sheet: no centering, only the per-frame entrance offset. This
+         overrides the desktop translateY(-50%) so the sheet stays pinned to the
+         bottom instead of being lifted up over the timing track. */
+      transform: translateY(var(--cap-enter, 0px));
       width: auto;
-      max-height: 34vh;
+      max-height: 32svh;
       overflow: hidden;
-      padding: 40px 5vw calc(3vh + 6px);
+      padding: 40px 5vw calc(3svh + 6px);
       background: linear-gradient(
         180deg,
         transparent 0%,
