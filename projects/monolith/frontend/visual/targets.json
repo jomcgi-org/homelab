@@ -36,6 +36,7 @@
       "path": "/app/grimoire/entities",
       "static_initial": true
     },
+    { "id": "firecracker", "path": "/app/firecracker" },
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },
     { "id": "cv", "path": "/cv" },
