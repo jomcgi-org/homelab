@@ -117,3 +117,15 @@ export const TRIPS_CACHE_CONTROL =
 // projects/monolith/campsites/router.py, keep in sync.
 export const CAMPSITES_SNAPSHOT_CACHE_CONTROL =
   "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400";
+
+// /app/grimoire read API (the api/[...path] catch-all JSON + binary image proxy
+// and the book/read pagination proxy). The corpus is a read-only, near-static
+// D&D book library, so it takes an aggressive 1 h edge cache: this is the CDN
+// offload that keeps a share-driven traffic spike off the origin. max-age=0 keeps
+// the browser revalidating so a redeploy (new coverage while extraction runs) is
+// visible within the hour, while s-maxage lets Cloudflare fan warm copies out to
+// viewers. 1 d SWR (background refresh) and 1 d SIE (serve-stale on origin error)
+// preserve offload and resilience. Note the sibling book/read proxy signs
+// image_key -> image_url per response, but the signature is deterministic for a
+// given key so the signed page is safe to edge-cache.
+export const GRIMOIRE_READ_CACHE_CONTROL = `public, max-age=0, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_DAY}`;
