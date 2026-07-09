@@ -15,7 +15,17 @@ export async function GET({ params, url, fetch }) {
     { signal: AbortSignal.timeout(15_000) },
   );
   if (!res.ok) {
-    throw error(res.status === 404 ? 404 : 503, "grimoire unavailable");
+    // Forward the backend's own 404/403 rather than masking them as a generic
+    // 503: 403 is the deliberate license gate on copyrighted books (see
+    // router_public.read_book), and reporting it as "unavailable" reads like an
+    // outage and trips 5xx alerting. 503 stays for real upstream failures.
+    const status = res.status === 404 ? 404 : res.status === 403 ? 403 : 503;
+    throw error(
+      status,
+      status === 403
+        ? "this book is not available to read publicly"
+        : "grimoire unavailable",
+    );
   }
   return new Response(res.body, {
     status: res.status,

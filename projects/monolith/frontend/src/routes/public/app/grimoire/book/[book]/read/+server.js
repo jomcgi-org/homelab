@@ -20,7 +20,15 @@ export async function GET({ params, url, fetch }) {
     { signal: AbortSignal.timeout(15_000) },
   );
   if (!res.ok) {
-    throw error(res.status === 404 ? 404 : 503, "grimoire unavailable");
+    // Forward the backend's 404/403 (403 = the copyrighted-book license gate)
+    // instead of collapsing to a misleading 503. See the api/[...path] proxy.
+    const status = res.status === 404 ? 404 : res.status === 403 ? 403 : 503;
+    throw error(
+      status,
+      status === 403
+        ? "this book is not available to read publicly"
+        : "grimoire unavailable",
+    );
   }
   const page = signReadPage(await res.json());
   return new Response(JSON.stringify(page), {
