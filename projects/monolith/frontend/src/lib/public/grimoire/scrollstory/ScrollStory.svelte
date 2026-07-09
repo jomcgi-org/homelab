@@ -559,16 +559,34 @@
     });
     chunksWrapEl.style.visibility = cardsOut >= 1 ? "hidden" : "visible";
 
-    // mention marks tint at the start of the entities phase
-    const pMark = ease(sub(t, 0.44, 0.48));
-    markEls.forEach((m) => {
+    // Marks highlight like a hand sweeping a marker across each phrase: a
+    // left-to-right fill wipe, staggered in DOM order (top-to-bottom, then
+    // left-to-right down the cards) so the whole page reads as being
+    // highlighted by hand. The tail of the sweep overlaps the card lift-off
+    // (cardsOut, 0.5-0.58) on purpose: the lower phrases are still being
+    // marked as their cards begin to fly away.
+    const HL_START = 0.435; // first phrase begins
+    const HL_STAGGER = 0.085; // spread of start times across all marks
+    const HL_FILL = 0.05; // each phrase's own swipe duration
+    const nMark = markEls.length;
+    markEls.forEach((m, i) => {
       const c = m.dataset.c;
-      m.style.background =
-        pMark > 0
-          ? `color-mix(in srgb, ${c} ${Math.round(pMark * 22)}%, transparent)`
-          : "transparent";
-      m.style.color = pMark > 0.5 ? c : "inherit";
-      m.style.fontWeight = pMark > 0.5 ? "700" : "inherit";
+      const frac = nMark > 1 ? i / (nMark - 1) : 0;
+      const from = HL_START + frac * HL_STAGGER;
+      const pen = sub(t, from, from + HL_FILL); // 0..1 swipe for this phrase
+      if (pen <= 0) {
+        m.style.background = "transparent";
+        m.style.color = "inherit";
+        m.style.fontWeight = "inherit";
+        return;
+      }
+      const pct = pen * 100;
+      const tint = `color-mix(in srgb, ${c} 26%, transparent)`;
+      // hard trailing edge with a small feather ahead of it = a marker tip
+      // leading the fill from the left
+      m.style.background = `linear-gradient(90deg, ${tint} ${pct.toFixed(1)}%, transparent ${Math.min(100, pct + 5).toFixed(1)}%)`;
+      m.style.color = pen > 0.55 ? c : "inherit";
+      m.style.fontWeight = pen > 0.55 ? "700" : "inherit";
     });
 
     // chips fly from the card column to their graph nodes; edges draw in
@@ -974,14 +992,16 @@
       </div>
 
       <div class="scale-panel" bind:this={scalePanelEl}>
-        <div class="scale-head grim-title">One page in. The whole shelf follows.</div>
+        <div class="scale-head grim-title">One page in. Here's everything behind it.</div>
         <div class="this-page">
-          <span class="k">THIS PAGE</span>
+          <span class="k">THIS PAGE EXTRACTED</span>
           <span>{story.bboxes.length} blocks</span><span class="k">/</span>
           <span>{story.chunks.length} chunks</span><span class="k">/</span>
           <span>{story.entities.length} entities</span><span class="k">/</span>
           <span>{graphEdges.length} relationships</span>
-          <span class="arrow">&darr;</span><span class="k">THE SHELF</span>
+        </div>
+        <div class="project-lead">
+          <span class="arrow">&darr;</span> Our project contains
         </div>
         <div class="counters">
           {#each COUNTS as [label], i (label)}
@@ -1147,7 +1167,7 @@
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>4 / The whole shelf.</b> You just watched one page. Every book on the shelf gets the same treatment.</p>
+      <p class="static-cap"><b>4 / The whole project.</b> You just watched one page. Every book in the corpus gets the same treatment.</p>
       <div class="static-counters">
         {#each COUNTS as [label, value] (label)}
           <div class="counter">
@@ -1592,8 +1612,10 @@
     width: min(92vw, 860px);
     padding: 24px 28px 22px;
     border-radius: 18px;
-    background: color-mix(in srgb, var(--grim-paper) 78%, transparent);
-    backdrop-filter: blur(3px);
+    background: color-mix(in srgb, var(--grim-paper) 94%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--grim-line);
+    box-shadow: 0 12px 44px rgba(10, 14, 22, 0.16);
     pointer-events: none;
   }
   .chat-head {
@@ -1609,6 +1631,7 @@
   .this-page {
     margin-top: 18px;
     font-size: 14px;
+    font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--grim-ink);
@@ -1624,9 +1647,18 @@
     font-weight: 700;
     font-size: 12px;
   }
-  .this-page .arrow {
+  .project-lead {
+    margin-top: 14px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--grim-ink);
+  }
+  .project-lead .arrow {
     color: var(--grim-accent);
-    font-size: 14px;
+    margin-right: 4px;
   }
   .counters {
     display: flex;
@@ -1645,8 +1677,9 @@
     color: var(--grim-ink);
   }
   .counter .l {
-    font-size: 12.5px;
-    letter-spacing: 0.2em;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--grim-ink);
     margin-top: 6px;
@@ -1681,7 +1714,7 @@
   .tchip .n {
     color: var(--grim-ink);
     font-variant-numeric: tabular-nums;
-    font-weight: 500;
+    font-weight: 700;
   }
 
   .chat-sub {
