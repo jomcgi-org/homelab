@@ -207,6 +207,24 @@
       label: `${Math.round(f * end)}ms`,
     }));
   });
+
+  // "setup" is the daemon-side pre-exec latency: from the request landing in the
+  // fc-invoke daemon (its earliest span) to the workload starting to execute
+  // (guest_exec.start). That window is the sandbox envelope BEFORE the code runs:
+  // slot wait + snapshot restore + vsock prime + readiness. It is the number this
+  // demo exists to show, so we derive it from the same spans as the waterfall.
+  // Keyed only on the guest_exec span and its (daemon) service, so it is robust
+  // to the warm/cold paths and to phase-span renames. null until guest_exec has
+  // ingested.
+  let setupMs = $derived.by(() => {
+    const exec = spans.find((s) => s.name === "guest_exec");
+    if (!exec) return null;
+    const daemonStarts = spans
+      .filter((s) => s.service === exec.service)
+      .map((s) => s.start_ms ?? 0);
+    if (daemonStarts.length === 0) return null;
+    return Math.max(0, exec.start_ms - Math.min(...daemonStarts));
+  });
 </script>
 
 <div class="waterfall">
@@ -223,6 +241,19 @@
       </a>
     {/if}
   </div>
+
+  {#if setupMs != null}
+    <!-- Headline metric: the daemon's pre-exec setup, i.e. how long from the
+         request landing in fc-invoke to the workload actually executing. This is
+         the cost of the sandbox before any user code runs. -->
+    <div
+      class="setup-stat"
+      title="From the request landing in the fc-invoke daemon to the workload starting to execute: slot wait + snapshot restore + vsock prime + readiness. The sandbox's cost before your code runs."
+    >
+      <span class="setup-label">setup · landing → exec</span>
+      <span class="setup-value">{setupMs.toFixed(1)}ms</span>
+    </div>
+  {/if}
 
   {#if !traceId}
     <p class="waterfall-empty">Run something to see its trace here.</p>
@@ -355,6 +386,36 @@
 
   .signoz-link:hover {
     text-decoration: underline;
+  }
+
+  /* The setup metric is the headline number this trace exists to expose, so it
+     gets a tinted pill with the value in the accent color and a help cursor for
+     the explanatory tooltip. */
+  .setup-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    align-self: flex-start;
+    padding: 5px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    border-radius: 6px;
+    cursor: help;
+  }
+
+  .setup-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
+  }
+
+  .setup-value {
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
   }
 
   .waterfall-empty {
