@@ -143,12 +143,13 @@ workloads:
     rootfsPath: /disks/nvme-02/fc-invoke/semgrep/rootfs.ext4
     harnessInit: /usr/local/bin/semgrep-guest-init
     # Right-sized from measured per-invocation stats (fc.guest.* span attrs):
-    # single-file scans (the diff-hook usage) run single-core, and peak RSS is
-    # ~394Mi (dominated by the resident warmed LSP + rules, not file size). 1
-    # vcpu matches the observed 1 core; 768Mi is ~2x the scan peak, padded above
-    # 512 to cover the unmeasured rule-compile peak during base build.
+    # single-file scans (the diff-hook usage) run single-core, so 1 vcpu matches
+    # the observed 1 core. Memory is NOT sized to the steady scan (~394Mi): the
+    # high-water is the rule-compile during base build, where semgrep-core peaked
+    # at ~697Mi anon-rss (768Mi OOM-killed it in-guest on 0.4.49). 1536Mi clears
+    # that peak plus guest-OS overhead with headroom, still a 25% cut from 2048.
     vcpus: 1
-    memMib: 768
+    memMib: 1536
     concurrency: 2
     egressEnabled: false
     warmBase: true
@@ -200,8 +201,8 @@ workloads:
 
 # The limit must hold the capped peak of every workload's guests plus the
 # daemon. After right-sizing from measured stats: semgrep caps at concurrency
-# 2 * 768Mi = 1.5Gi; agent at concurrency 2 * 4Gi = 8Gi; sandbox at concurrency
-# 2 * 512Mi = 1Gi; plus ~1Gi daemon overhead = ~11.5Gi if all three run at full
+# 2 * 1536Mi = 3Gi; agent at concurrency 2 * 4Gi = 8Gi; sandbox at concurrency
+# 2 * 512Mi = 1Gi; plus ~1Gi daemon overhead = ~13Gi if all three run at full
 # tilt, so 14Gi leaves headroom. Bursty: request a small floor, let the limit
 # cover the admission-capped peak (the firecracker guests are child processes in
 # this container's cgroup, so they count against this limit, not the request).
