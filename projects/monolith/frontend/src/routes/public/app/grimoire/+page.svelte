@@ -120,9 +120,9 @@
   </section>
 
   <p class="foot-note">
-    The library itself sits behind a quick human check: the corpus is
-    copyrighted source material, so the reader is link-shareable but kept out
-    of search engines and away from bots.
+    The library is free to browse. The interactive tools sit behind a quick
+    human check to keep bots out, and the whole app stays out of search
+    engines.
   </p>
 </div>
 
