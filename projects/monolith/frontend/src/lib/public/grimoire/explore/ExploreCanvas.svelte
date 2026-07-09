@@ -93,19 +93,32 @@
     return typeColors[n.entity_type] ?? colors.faint;
   }
 
+  // Deterministic id-hash placement: gives every node a stable initial
+  // position (independent of its index in the incoming array), so the
+  // settled layout looks the same across visits instead of reshuffling
+  // whenever the fetch order changes.
+  function hashOf(id) {
+    const s = String(id);
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h;
+  }
+
   // ── layout rebuild: runs whenever the parent hands us a new nodes/edges
   // pair (a scope/lens change, an ego merge, ...). Existing node ids keep
   // their current x/y/vx/vy (continuity across a merge); new ids get an
-  // initial ring placement identical to the mockup's bootstrap layout.
+  // initial hash-based placement and are tagged `isNew` so startSim() knows
+  // to fade them in once settled.
   $effect(() => {
     const nextNodes = nodes;
     const nextEdges = edges;
     const prevById = byId;
     const nextById = new Map();
-    const nextSim = nextNodes.map((n, i) => {
+    const nextSim = nextNodes.map((n) => {
       const prev = prevById.get(n.id);
-      const angle = (i / Math.max(nextNodes.length, 1)) * Math.PI * 2;
-      const radius = 108 + (i % 4) * 34;
+      const h = hashOf(n.id);
+      const angle = ((h % 3600) / 3600) * Math.PI * 2;
+      const radius = 108 + ((h >>> 12) % 4) * 34;
       const node = {
         ...n,
         x: prev?.x ?? Math.cos(angle) * radius,
@@ -113,6 +126,7 @@
         vx: prev?.vx ?? 0,
         vy: prev?.vy ?? 0,
         deg: 0,
+        isNew: !prev,
       };
       nextById.set(n.id, node);
       return node;
@@ -192,8 +206,18 @@
     });
   }
 
+  // Fade-in factor for a node that just settled: 0 right when it's born, 1
+  // once 280ms have passed. Nodes without a `bornAt` (already settled, or
+  // reduced-motion) are always fully opaque. Clamped so `performance.now()`
+  // jitter that puts `bornAt` slightly in the future never goes negative.
+  function fadeOf(n, now) {
+    if (!n.bornAt) return 1;
+    return Math.max(0, Math.min(1, (now - n.bornAt) / 280));
+  }
+
   function draw() {
     if (!ctx) return;
+    const now = performance.now();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
@@ -206,12 +230,19 @@
       : null;
 
     // Edges: quiet line color, incident-to-focus edges promoted to accent.
+    // Alpha is further scaled by the fade of whichever endpoint is still
+    // fading in (min of the two), so an edge never appears ahead of either
+    // node it connects.
     visEdges.forEach((e) => {
-      const a = toScreen(byId.get(e.from));
-      const b = toScreen(byId.get(e.to));
+      const a0 = byId.get(e.from);
+      const b0 = byId.get(e.to);
+      const fade = Math.min(fadeOf(a0, now), fadeOf(b0, now));
+      if (fade <= 0) return;
+      const a = toScreen(a0);
+      const b = toScreen(b0);
       const incident = focusId && (e.from === focusId || e.to === focusId);
       ctx.strokeStyle = incident ? colors.accent : colors.line;
-      ctx.globalAlpha = focusId ? (incident ? 0.9 : 0.35) : 0.7;
+      ctx.globalAlpha = (focusId ? (incident ? 0.9 : 0.35) : 0.7) * fade;
       ctx.lineWidth = incident ? 1.8 : 1;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
@@ -220,12 +251,18 @@
     });
     ctx.globalAlpha = 1;
 
-    // Nodes.
+    // Nodes. A fading-in node also scales its radius from 0.6x to 1x with an
+    // ease-out cubic, so it appears to grow into place rather than travel
+    // (position is never animated, only opacity and scale).
     sim.forEach((n) => {
+      const fade = fadeOf(n, now);
+      if (fade <= 0) return;
       const p = toScreen(n);
-      const r = radiusOf(n);
+      const rFull = radiusOf(n);
+      const scale = 0.6 + 0.4 * (1 - Math.pow(1 - fade, 3));
+      const r = rFull * scale;
       const dim = focusId && n.id !== focusId && !focusAdj?.has(n.id);
-      ctx.globalAlpha = dim ? 0.32 : 1;
+      ctx.globalAlpha = (dim ? 0.32 : 1) * fade;
       ctx.shadowColor = "rgba(20,30,50,0.25)";
       ctx.shadowBlur = dim ? 0 : 6;
       ctx.shadowOffsetY = dim ? 0 : 1;
@@ -242,14 +279,14 @@
       ctx.stroke();
 
       if (n.id === focusId) {
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = fade;
         ctx.strokeStyle = colors.accent;
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
         ctx.stroke();
       } else if (n.id === hoverId) {
-        ctx.globalAlpha = 0.85;
+        ctx.globalAlpha = 0.85 * fade;
         ctx.strokeStyle = colors.ink;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -259,7 +296,7 @@
       // Guest ring: a node pulled in from outside the current scope/lens by
       // following a cross-lens edge (dashed accent ring).
       if (guestIds.has(n.id) && n.id !== focusId) {
-        ctx.globalAlpha = 0.9;
+        ctx.globalAlpha = 0.9 * fade;
         ctx.setLineDash([3, 3]);
         ctx.strokeStyle = colors.accent;
         ctx.lineWidth = 1.5;
@@ -271,10 +308,12 @@
     });
 
     // Labels, always on (readability over declutter, per the mockup).
-    ctx.globalAlpha = 1;
+    // Fade with the node so a label never appears before its node does.
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     sim.forEach((n) => {
+      const fade = fadeOf(n, now);
+      if (fade <= 0) return;
       const p = toScreen(n);
       const r = radiusOf(n);
       const isFocus = n.id === focusId;
@@ -286,42 +325,66 @@
       const ty = p.y + r + 5;
       ctx.lineWidth = 3.5;
       ctx.strokeStyle = colors.paper;
+      ctx.globalAlpha = fade;
       ctx.strokeText(n.name, p.x, ty);
       ctx.fillStyle = dim ? colors.faint : isFocus ? colors.ink : colors.dim;
       ctx.fillText(n.name, p.x, ty);
     });
+    ctx.globalAlpha = 1;
   }
 
   function requestDraw() {
-    // If the sim loop is already driving frames, it will draw on its next
+    // If the fade loop is already driving frames, it will draw on its next
     // tick; otherwise (settled / reduced-motion) draw once, right now.
     if (!rafId) draw();
   }
 
-  function loopFrame() {
-    if (energy > 0.001) {
-      tick();
-      energy *= 0.992;
-    } else {
-      energy = 0;
-    }
-    draw();
-    rafId = energy > 0 ? requestAnimationFrame(loopFrame) : null;
+  let fadeUntil = 0;
+
+  // Run the physics forward a fixed number of steps synchronously, off
+  // screen, so the layout is already at rest before anything is drawn: the
+  // user never watches the simulation converge, only new nodes fade in
+  // afterward (see startSim/fadeFrame below).
+  function settleNow() {
+    energy = 1;
+    for (let i = 0; i < 220; i++) tick();
+    energy = 0;
   }
 
   function startSim() {
+    settleNow();
     if (REDUCED_MOTION) {
-      // Settle instantly (no visible motion): run the physics forward a
-      // fixed number of steps synchronously, then draw the resting layout
-      // once and never start the animation loop.
-      energy = 1;
-      for (let i = 0; i < 220; i++) tick();
-      energy = 0;
+      // No fades: everything is visible at full alpha from the first draw.
+      sim.forEach((n) => delete n.bornAt);
       draw();
       return;
     }
-    energy = 1;
-    if (!rafId) rafId = requestAnimationFrame(loopFrame);
+    // Stamp newly-added nodes with a staggered birth time, then run a short
+    // rAF loop that only drives the opacity/scale fade (draw() reads
+    // `bornAt` to compute each node's fade factor). The layout itself is
+    // already settled, so this loop never moves anything, it only redraws
+    // while nodes are still fading in.
+    const now = performance.now();
+    let i = 0;
+    sim.forEach((n) => {
+      if (n.isNew) {
+        n.bornAt = now + Math.min(i * 14, 350);
+        i++;
+      }
+    });
+    fadeUntil = now + 320 + Math.min(i * 14, 350);
+    if (!rafId) rafId = requestAnimationFrame(fadeFrame);
+  }
+
+  function fadeFrame() {
+    draw();
+    if (performance.now() < fadeUntil) {
+      rafId = requestAnimationFrame(fadeFrame);
+    } else {
+      rafId = null;
+      sim.forEach((n) => delete n.bornAt);
+      draw();
+    }
   }
 
   function hitTest(mx, my) {
