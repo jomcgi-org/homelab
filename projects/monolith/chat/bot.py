@@ -97,6 +97,23 @@ FACT_CHECK_PLACEHOLDER = "\U0001f50d Fact-checking..."
 # lead, and SearXNG handles a long query fine; this just bounds it).
 FACT_CHECK_SEARCH_SEED_CHARS = 500
 
+# Degenerate "I have nothing to add" outputs the model sometimes emits verbatim
+# instead of real text -- typically when the channel directive tells it to stay
+# quiet on banter but an ambient engage forced a turn anyway. Posting one reads
+# as a broken "(empty)" message and draws negative reactions (/improve-ambient
+# episodes 168, 170). Compared case-insensitively against the stripped reply so
+# it never reaches Discord. See _stream_response's no-content handling.
+_EMPTY_REPLY_MARKERS = frozenset(
+    {"(empty)", "(no response)", "(none)", "(no reply)", "(silence)"}
+)
+
+
+def _is_empty_reply(text: str) -> bool:
+    """A reply with no real content: blank, whitespace-only, or a bare
+    placeholder marker the model emits when it has nothing to say."""
+    stripped = text.strip()
+    return not stripped or stripped.lower() in _EMPTY_REPLY_MARKERS
+
 
 def _truncate_thinking(thinking: str) -> str:
     """Truncate thinking text if it exceeds Discord's message limit."""
@@ -1759,6 +1776,16 @@ class ChatBot(discord.Client):
                 store.mark_completed(msg_id)
             return
 
+        if sent is None:
+            # Ambient reply suppressed: the model had nothing worth saying, so
+            # _stream_response stayed silent rather than posting a placeholder.
+            # Nothing was posted, so there is no bot message to store or link
+            # back to the engage decision; just close out the trigger message.
+            with Session(get_engine()) as session:
+                store = MessageStore(session=session, embed_client=self.embed_client)
+                store.mark_completed(msg_id)
+            return
+
         # Store bot response separately, including thinking for button persistence
         try:
             with Session(get_engine()) as session:
@@ -1805,7 +1832,7 @@ class ChatBot(discord.Client):
         *,
         with_buttons: bool = True,
         live: bool = True,
-    ) -> tuple[discord.Message, str, str | None]:
+    ) -> tuple[discord.Message | None, str, str | None]:
         """Build context and stream the PydanticAI agent response.
 
         When ``live`` is True (a mention/reply the user is waiting on), sends an
@@ -2019,8 +2046,17 @@ class ChatBot(discord.Client):
                         if live:
                             await _edit_if_due(_search_content(), force=True)
 
-            # Fallback if no events arrived or no text was produced
-            if not had_events or not response_text:
+            # No real content: no events arrived, or the reply is blank /
+            # whitespace / a bare placeholder the model emits when it has nothing
+            # to add. For an ambient interjection (not live) nothing has been
+            # posted yet, so the right outcome is silence: return no message
+            # rather than leaking a literal "(empty)" or an apology nobody asked
+            # for (/improve-ambient episodes 168, 170). For a live reply someone
+            # is actively waiting on, keep the visible apology instead of going
+            # dark.
+            if not had_events or _is_empty_reply(response_text):
+                if not live and sent is None:
+                    return None, "", None
                 fallback = (
                     "Sorry, I'm having trouble formulating a response. "
                     "Please try again."

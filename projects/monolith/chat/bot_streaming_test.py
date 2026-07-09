@@ -788,6 +788,95 @@ class TestAmbientNonStreaming:
         assert text == "Nah, fable's holding up fine."
 
     @pytest.mark.asyncio
+    async def test_ambient_placeholder_reply_is_suppressed(self):
+        """live=False: a model output that is a bare '(empty)' placeholder must
+        post NOTHING (stay silent) rather than leaking the literal marker to the
+        channel. Regression for /improve-ambient episodes 168, 170."""
+        bot = _make_bot()
+        message = _make_message(content="you mean muse is cheaper?")
+        mock_store = _make_store()
+
+        # The model, told to stay quiet on banter, emits a no-content marker.
+        events = [
+            _thinking_delta("directive says skip banter"),
+            _text_delta("\n\n(empty)"),
+        ]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=False, live=False
+            )
+
+        # Nothing posted, no message returned: the reply was suppressed.
+        message.reply.assert_not_called()
+        assert sent is None
+        assert text == ""
+
+    @pytest.mark.asyncio
+    async def test_ambient_whitespace_only_reply_is_suppressed(self):
+        """live=False: a whitespace-only model output is also treated as
+        no-content and suppressed rather than posting a blank message."""
+        bot = _make_bot()
+        message = _make_message(content="lol")
+        mock_store = _make_store()
+
+        events = [_text_delta("   \n\n  ")]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=False, live=False
+            )
+
+        message.reply.assert_not_called()
+        assert sent is None
+
+    @pytest.mark.asyncio
+    async def test_live_placeholder_reply_falls_back_not_silent(self):
+        """live=True: a '(empty)' placeholder on a reply someone is waiting on
+        must NOT go silent -- the user gets the visible apology instead."""
+        bot = _make_bot()
+        message = _make_message(content="hey bot")
+        mock_store = _make_store()
+
+        events = [
+            _thinking_delta("hmm"),
+            _text_delta("(empty)"),
+        ]
+        bot.agent.run_stream_events = MagicMock(return_value=_async_iter(events))
+
+        with (
+            patch("chat.bot.get_engine"),
+            patch("chat.bot.Session") as mock_session_cls,
+            patch("chat.bot.MessageStore", return_value=mock_store),
+        ):
+            ctx = MagicMock()
+            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            sent, text, _thinking = await bot._stream_response(
+                message, None, with_buttons=True, live=True
+            )
+
+        assert sent is not None
+        assert "Sorry" in text
+        assert "trouble" in text
+
+    @pytest.mark.asyncio
     async def test_live_true_still_streams_placeholder_and_edits(self):
         """Regression guard: the explicit (live=True) path keeps the initial
         placeholder-then-edit behavior so mentions still get live feedback."""
