@@ -142,9 +142,14 @@ workloads:
     image: semgrep-guest
     rootfsPath: /disks/nvme-02/fc-invoke/semgrep/rootfs.ext4
     harnessInit: /usr/local/bin/semgrep-guest-init
-    vcpus: 4
-    memMib: 2048
-    concurrency: 4
+    # Right-sized from measured per-invocation stats (fc.guest.* span attrs):
+    # single-file scans (the diff-hook usage) run single-core, and peak RSS is
+    # ~394Mi (dominated by the resident warmed LSP + rules, not file size). 1
+    # vcpu matches the observed 1 core; 768Mi is ~2x the scan peak, padded above
+    # 512 to cover the unmeasured rule-compile peak during base build.
+    vcpus: 1
+    memMib: 768
+    concurrency: 2
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -181,8 +186,11 @@ workloads:
     image: sandbox-guest
     rootfsPath: /disks/nvme-02/fc-invoke/sandbox/rootfs.ext4
     harnessInit: /usr/local/bin/sandbox-guest-init
-    vcpus: 2
-    memMib: 2048
+    # Right-sized from measured per-invocation stats (fc.guest.* span attrs): a
+    # 600k-row pandas workload peaked at ~227Mi and stayed ~1 core, so 1 vcpu /
+    # 512Mi keeps ~2x headroom over the heaviest observed run.
+    vcpus: 1
+    memMib: 512
     concurrency: 2
     egressEnabled: false
     warmBase: true
@@ -191,18 +199,20 @@ workloads:
     requestTimeout: 30s
 
 # The limit must hold the capped peak of every workload's guests plus the
-# daemon. semgrep caps at concurrency 4 * 2Gi = 8Gi; agent caps at concurrency
-# 2 * 4Gi = 8Gi; sandbox caps at concurrency 2 * 2Gi = 4Gi; plus ~1Gi daemon
-# overhead = 21Gi if all three run at full tilt. Bursty: request a small floor,
-# let the limit cover the admission-capped peak. The per-workload concurrency
-# cap guarantees the cgroup never exceeds it, and oom_score_adj guarantees a
-# guest dies first if it nears (ADR platform/010).
+# daemon. After right-sizing from measured stats: semgrep caps at concurrency
+# 2 * 768Mi = 1.5Gi; agent at concurrency 2 * 4Gi = 8Gi; sandbox at concurrency
+# 2 * 512Mi = 1Gi; plus ~1Gi daemon overhead = ~11.5Gi if all three run at full
+# tilt, so 14Gi leaves headroom. Bursty: request a small floor, let the limit
+# cover the admission-capped peak (the firecracker guests are child processes in
+# this container's cgroup, so they count against this limit, not the request).
+# The per-workload concurrency cap guarantees the cgroup never exceeds it, and
+# oom_score_adj guarantees a guest dies first if it nears (ADR platform/010).
 resources:
   requests:
     cpu: 50m
     memory: 2Gi
   limits:
-    memory: 22Gi
+    memory: 14Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the
