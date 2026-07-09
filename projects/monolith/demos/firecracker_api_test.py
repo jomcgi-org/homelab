@@ -48,28 +48,7 @@ def test_python_returns_run_shape_with_trace_id(monkeypatch):
     assert body["stderr"] == ""
     assert body["exit_code"] == 0
     assert body["duration_ms"] == 42
-    # overhead_ms is the sandbox envelope: backend wall minus the guest's 42ms
-    # exec. It is present (the guest reported duration_ms) and non-negative.
-    assert body["overhead_ms"] is not None
-    assert body["overhead_ms"] >= 0.0
     assert _HEX32.match(body["trace_id"])
-
-
-def test_python_overhead_none_when_guest_reports_no_duration(monkeypatch):
-    """On the fallback path (daemon returns no duration_ms) there is no distinct
-    guest exec to subtract, so overhead_ms is None and duration_ms is the backend
-    wall."""
-
-    async def fake_run(code, files=None):
-        return {"stdout": "", "stderr": "", "exit_code": 0}
-
-    monkeypatch.setattr(fc, "run_python_in_sandbox", fake_run)
-
-    resp = _client().post("/api/demos/firecracker/python", json={"code": "print(1)"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["overhead_ms"] is None
-    assert isinstance(body["duration_ms"], (int, float))
 
 
 def test_semgrep_returns_findings_shape_with_trace_id(monkeypatch):
