@@ -349,6 +349,28 @@ func TestInvokeSamplesGuestStatsBeforeRelease(t *testing.T) {
 	}
 }
 
+// TestBuildBaseSamplesGuestStatsBeforeRelease verifies the base-build path also
+// samples the guest's /proc high-water marks (fc.guest.peak_rss_mib) before it
+// tears the build VM down. The base build's transient rule-compile peak is what
+// dictates memMib, so leaving it unsampled is the blind spot this closes.
+func TestBuildBaseSamplesGuestStatsBeforeRelease(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &funcTransport{}
+	inv := New(drv, tr, defaultConfig(), nil)
+
+	if err := inv.BuildBase(context.Background()); err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	// The base build releases its VM synchronously in a defer; Stats is sampled
+	// in that same defer, just before releaseGuest.
+	if got := drv.statsCount(); got < 1 {
+		t.Errorf("Stats called %d time(s) during BuildBase, want >= 1 (base peak sampled)", got)
+	}
+	if drv.statsAfterRelease {
+		t.Error("Stats was called after Release in BuildBase; it must sample the live guest first")
+	}
+}
+
 // TestInvokeReleasesVMOnTransportError verifies that when RoundTrip fails the
 // VM is still Released and RemoveBundle is still called (defer fires), and that
 // the returned error is NOT a *GuestUnavailableError (it is a raw 502 error).
