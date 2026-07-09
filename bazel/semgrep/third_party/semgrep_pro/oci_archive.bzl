@@ -184,22 +184,20 @@ def _oci_archive_impl(rctx):
     # Step 2: Fetch OCI manifest by digest
     manifest = _fetch_manifest(rctx, bearer_token, image, digest)
 
-    # Step 3: Parse layer info from manifest
-    layer = manifest["layers"][0]
-    layer_digest = layer["digest"]
-    media_type = layer["mediaType"]
-    ext = _archive_extension(media_type)
-    archive_file = "layer" + ext
-
-    # Step 4: Download the layer blob
-    _download_layer(rctx, bearer_token, image, layer_digest, archive_file)
-
-    # Step 5: Extract and clean up
-    rctx.extract(
-        archive = archive_file,
-        stripPrefix = rctx.attr.strip_prefix,
-    )
-    rctx.delete(archive_file)
+    # Steps 3-5: Download and extract EVERY layer, in order. An OCI image is the
+    # union of its layers; a multi-layer engine image (e.g. one binary per layer)
+    # would otherwise lose everything past the first. Single-layer artifacts (the
+    # semgrep-pro engine, the rule packs) loop exactly once, so this is a no-op for
+    # them. Later layers overlay earlier ones, matching image-assembly order.
+    for i, layer in enumerate(manifest["layers"]):
+        ext = _archive_extension(layer["mediaType"])
+        archive_file = "layer_{}{}".format(i, ext)
+        _download_layer(rctx, bearer_token, image, layer["digest"], archive_file)
+        rctx.extract(
+            archive = archive_file,
+            stripPrefix = rctx.attr.strip_prefix,
+        )
+        rctx.delete(archive_file)
 
     # Step 6: Write BUILD file
     build_content = rctx.attr.build_file_content or _DEFAULT_BUILD_FILE_CONTENT
@@ -230,8 +228,8 @@ oci_archive = repository_rule(
 This repository rule implements a minimal OCI Distribution client:
 1. Exchanges a GitHub token for a GHCR bearer token
 2. Fetches the OCI manifest by digest
-3. Downloads the layer blob (using curl -L to follow CDN redirects)
-4. Extracts the tarball and generates a BUILD file
+3. Downloads every layer blob (using curl -L to follow CDN redirects)
+4. Extracts the layers in order and generates a BUILD file
 
 Both GHCR_TOKEN (or GITHUB_TOKEN) and a pinned digest are required.
 Missing credentials or empty digests are build errors.
