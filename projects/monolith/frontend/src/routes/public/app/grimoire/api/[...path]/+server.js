@@ -1,4 +1,5 @@
 import { error } from "@sveltejs/kit";
+import { GRIMOIRE_READ_CACHE_CONTROL } from "$lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
@@ -20,9 +21,11 @@ export async function GET({ params, url, fetch }) {
     status: res.status,
     headers: {
       "content-type": res.headers.get("content-type") ?? "application/json",
-      // The corpus is near-static; a minute of edge caching keeps origin hits
-      // low without stalling coverage updates while extraction runs.
-      "cache-control": "public, max-age=60",
+      // The corpus is a read-only, near-static book library, so it takes an
+      // aggressive 1 h edge cache (CDN offload that keeps a share-driven spike
+      // off the origin). max-age=0 keeps the browser revalidating so new
+      // coverage lands within the hour. See GRIMOIRE_READ_CACHE_CONTROL.
+      "cache-control": GRIMOIRE_READ_CACHE_CONTROL,
     },
   });
 }
