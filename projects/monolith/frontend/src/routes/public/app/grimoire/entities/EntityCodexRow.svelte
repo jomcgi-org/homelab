@@ -15,7 +15,7 @@
   } from "$lib/public/grimoire/api.js";
   import MiniConstellation from "$lib/public/grimoire/MiniConstellation.svelte";
 
-  let { entityId, onnavigatehint = null } = $props();
+  let { entityId } = $props();
 
   let currentId = $state(entityId);
   $effect(() => {
@@ -84,7 +84,6 @@
 
   function retarget(peerId) {
     currentId = peerId;
-    onnavigatehint?.(peerId);
   }
 
   function typeLabel(entityType) {
