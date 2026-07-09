@@ -93,6 +93,7 @@ ADRs document significant architectural decisions and their context.
 | [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                              | User-space kernel isolation for agent sandbox pods via runsc                                                                               |
 | [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets                                                     |
 | [005 - Public Chat Adversarial Hardening](security/005-public-chat-adversarial-hardening.md)   | Defense-in-depth for anonymous GPU-backed chat: Turnstile sessions, reserved-headroom semaphore, server-side limits, DB-confined retrieval |
+| [006 - Read-Only Cluster Devtools Sandbox as an MCP Endpoint](security/006-cluster-devtools-sandbox-mcp.md) | One sandboxed kubectl/argocd/psql shell over MCP; read-only enforced at the credential (RBAC + replica), per-tier scoped, guest holds no standing creds |
 
 ## Services
 
