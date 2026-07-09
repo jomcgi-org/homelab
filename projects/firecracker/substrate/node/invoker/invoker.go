@@ -217,6 +217,22 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 	// No throughput concern here (no invocation slot rides on it), so tear down
 	// memory then disk synchronously.
 	defer func() {
+		// Sample the build guest's /proc high-water marks BEFORE releaseGuest
+		// kills the process (afterwards /proc/<pid> is gone). VmHWM is a peak, so
+		// this captures the transient rule-compile spike (the number that dictates
+		// memMib), not just the post-compile resident set the Invoke path sees.
+		// Stamp it on base_snapshot_build, which is still open here (this defer
+		// runs before buildSpan.End() by LIFO). Best-effort; a read failure just
+		// omits the attributes. Closes the base-build sampling blind spot so the
+		// next right-sizing reads the peak instead of discovering it via an OOM.
+		if stats, err := inv.driver.Stats(h); err == nil {
+			buildSpan.SetAttributes(
+				attribute.Int64("fc.guest.cpu_ms", stats.CPUMillis),
+				attribute.Int64("fc.guest.peak_rss_mib", stats.PeakRSSMib),
+			)
+		} else {
+			inv.logger.Debug("invoker: base build guest stats unavailable", "thread", h.ThreadID, "err", err)
+		}
 		inv.releaseGuest(h)
 		inv.removeGuestBundle(h.ThreadID)
 	}()
