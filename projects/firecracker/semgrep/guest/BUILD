@@ -3,12 +3,13 @@ load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
-# The semgrep scanner microVM image: a Wolfi apko base with the pysemgrep CLI
-# (`semgrep lsp`) plus the Pro engine and merged rule set layered in, and
-# semgrep-guest-init as PID 1. The init keeps a `semgrep lsp` process warm (rules
-# compiled once) and serves whole-file scan requests over vsock. Offline LSP env
-# defaults are set in apko.yaml (SEMGREP_BIN/CORE_BIN/RULES_DIR); the OFFLINE token
-# and isolated HOME/settings are force-set by the init at runtime.
+# The semgrep scanner microVM image: a Wolfi apko base with the offline-Pro
+# scan-server engine (osemgrep-pro + co-located semgrep-core) and merged rule set
+# layered in, and semgrep-guest-init as PID 1. The init keeps the scan-server
+# (osemgrep-pro mcp --experimental --pro) warm — parsers warmed and rules compiled
+# once — and serves scan requests over vsock. Engine path and rules dir are set in
+# apko.yaml (OSEMGREP_PRO_BIN/SEMGREP_SCAN_RULES); the offline placeholder-token
+# settings file and isolated HOME are written by the init at runtime.
 
 # semgrep-guest-init (PID 1), cross-compiled per arch, layered at /usr/local/bin.
 platform_transition_filegroup(

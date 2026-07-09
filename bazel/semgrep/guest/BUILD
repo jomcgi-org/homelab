@@ -1,42 +1,47 @@
 # gazelle:ignore
 #
-# Tar layers for the semgrep-guest microVM image (Task 1.1):
-#   - engine_tar:  the per-arch Semgrep Pro engine at
-#                  /opt/semgrep/semgrep-core-proprietary (SEMGREP_CORE_BIN).
+# Tar layers for the semgrep-guest microVM image:
+#   - engine_tar:  the offline-Pro scan-server engine — the proprietary binary at
+#                  /opt/semgrep/osemgrep-pro (invoked via argv[0] dispatch) plus
+#                  the OSS /opt/semgrep/semgrep-core it shells out to. amd64 only.
 #   - rules_tar:   the merged rule set (local rules + the 5 Pro packs) flattened
 #                  under /etc/semgrep/rules/, structure-preserved to avoid the
 #                  basename collisions that exist across the local rule subdirs.
-#
-# The OSS semgrep-core is NOT baked here: the pysemgrep CLI installed in the image
-# (the Wolfi `semgrep` package) ships its own OSS core, and SEMGREP_CORE_BIN
-# overrides it to the Pro engine for actual scanning. So only the Pro engine is
-# layered.
+#                  The scan-server reads this via SEMGREP_SCAN_RULES.
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
 package(default_visibility = ["//visibility:public"])
 
-# --- Pro engine layer (arch-specific) -------------------------------------------
+# --- Offline-Pro engine layer (amd64 only) --------------------------------------
 #
-# The engine binaries are prebuilt per-arch OCI artifacts from PRIVATE GHCR (fetched
-# with GHCR_TOKEN in CI), so they are referenced by their arch-specific repos
-# directly rather than via the platform-selecting alias (the alias resolves on the
-# build/exec platform, which would pick the wrong arch when cross-building the image).
-# apko_image's multiarch_tars uses the _amd64 / _arm64 suffixes.
+# The engine is a prebuilt OCI artifact from PRIVATE GHCR (fetched with GHCR_TOKEN
+# in CI). It roots two binaries which MUST be co-located: semgrep-core-proprietary
+# (placed as osemgrep-pro so `osemgrep-pro mcp --experimental --pro` selects the
+# OCaml scan-server) and semgrep-core (the OSS core the proprietary engine shells
+# to). apko_image's multiarch_tars uses the _amd64 / _arm64 suffixes.
 tar(
     name = "engine_tar_amd64",
-    srcs = ["@semgrep_pro_engine_amd64//:engine"],
+    srcs = [
+        "@semgrep_experimental_engine_amd64//:osemgrep_pro",
+        "@semgrep_experimental_engine_amd64//:semgrep_core",
+    ],
     mtree = [
-        "./opt/semgrep/semgrep-core-proprietary type=file content=$(execpath @semgrep_pro_engine_amd64//:engine) mode=0755 uid=0 gid=0",
+        "./opt/semgrep/osemgrep-pro type=file content=$(execpath @semgrep_experimental_engine_amd64//:osemgrep_pro) mode=0755 uid=0 gid=0",
+        "./opt/semgrep/semgrep-core type=file content=$(execpath @semgrep_experimental_engine_amd64//:semgrep_core) mode=0755 uid=0 gid=0",
     ],
 )
 
+# arm64 is unsupported: there is no arm64 engine build and no arm64 Firecracker
+# nodes. The shared apko_image macro always emits a two-platform index, so an
+# arm64 image is still built and pushed — but it carries no engine (only an empty
+# /opt/semgrep dir) and is never pulled (the substrate rootfs-builder pulls the
+# amd64 manifest on node-4). Booting it would fail at scandriver.Start.
 tar(
     name = "engine_tar_arm64",
-    srcs = ["@semgrep_pro_engine_arm64//:engine"],
     mtree = [
-        "./opt/semgrep/semgrep-core-proprietary type=file content=$(execpath @semgrep_pro_engine_arm64//:engine) mode=0755 uid=0 gid=0",
+        "./opt/semgrep type=dir mode=0755 uid=0 gid=0",
     ],
 )
 
