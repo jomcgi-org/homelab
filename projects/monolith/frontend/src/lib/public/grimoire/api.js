@@ -35,6 +35,24 @@ export async function apiFetch(path, options = {}) {
   return body;
 }
 
+// Attribution the open licenses (CC BY 4.0 / ORC) require whenever a book's
+// verbatim text is redistributed. Keyed by book_id and kept in sync with the
+// backend's ingest.OPEN_LICENSE_BOOK_IDS: only these books are Reader-readable,
+// so a missing key (copyrighted book) simply yields no credit line. Shown at
+// the end of the continuous Reader.
+export const BOOK_ATTRIBUTION = {
+  "system-reference-doc-5-1":
+    "Includes material from the System Reference Document 5.1, © Wizards of the Coast LLC, licensed under CC BY 4.0.",
+  "system-reference-doc-5-2":
+    "Includes material from the System Reference Document 5.2, © Wizards of the Coast LLC, licensed under CC BY 4.0.",
+  "black-flag-reference-document":
+    "Includes material from the Black Flag Reference Document, © Kobold Press, licensed under the ORC License and CC BY 4.0.",
+  "a5e-srd":
+    "Includes material from the Advanced 5e SRD (Level Up), © EN Publishing, licensed under the ORC License and CC BY 4.0.",
+};
+
+export const bookAttribution = (bookId) => BOOK_ATTRIBUTION[bookId] ?? "";
+
 // ── Route builders (public URL structure: no [campaign], no ?as=) ──
 
 export const homeHref = () => "/app/grimoire";

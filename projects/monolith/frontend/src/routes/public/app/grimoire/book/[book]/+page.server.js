@@ -18,9 +18,21 @@ export async function load({ params, url, fetch }) {
     `${apiBase()}/api/grimoire/books/${encodeURIComponent(bookId)}/read${qs}`,
     { signal: AbortSignal.timeout(15_000) },
   );
+  // 403 = a copyrighted book: the Reader is locked, not broken. Return a locked
+  // marker so the page renders the "full text isn't public" notice instead of a
+  // generic error. The Library already renders these rows non-clickable; this
+  // covers direct URLs and entity-mention deep links.
+  if (res.status === 403) {
+    return { bookId, locked: true, items: [], nextCursor: null };
+  }
   if (!res.ok) {
     throw error(res.status === 404 ? 404 : 503, "grimoire unavailable");
   }
   const page = signReadPage(await res.json());
-  return { bookId, items: page.items, nextCursor: page.next_cursor };
+  return {
+    bookId,
+    locked: false,
+    items: page.items,
+    nextCursor: page.next_cursor,
+  };
 }

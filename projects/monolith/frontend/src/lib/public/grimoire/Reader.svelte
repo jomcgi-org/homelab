@@ -19,7 +19,7 @@
   // expanded instead of behind a toggle. Below 760px the sidebar is hidden
   // and the original dropdown affordance (`variant="dropdown"`) reappears in
   // the sticky bar as the compact mobile chapters entry point.
-  import { apiFetch } from "$lib/public/grimoire/api.js";
+  import { apiFetch, bookAttribution } from "$lib/public/grimoire/api.js";
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
   import ChaptersNav from "$lib/public/grimoire/ChaptersNav.svelte";
 
@@ -322,6 +322,9 @@
           <button class="pub-retry" onclick={loadMore}>Retry</button>
         {:else if !nextCursor}
           <p class="pub-status">— end of book —</p>
+          {#if bookAttribution(bookId)}
+            <p class="pub-attribution">{bookAttribution(bookId)}</p>
+          {/if}
         {/if}
       </div>
     </div>
@@ -544,6 +547,17 @@
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    color: var(--grim-text-faint);
+  }
+
+  /* License attribution required by CC BY 4.0 / ORC for the open books that
+     are readable in full. Quiet, but always present at the end of the text. */
+  .pub-attribution {
+    max-width: 640px;
+    margin: 14px auto 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    text-align: center;
     color: var(--grim-text-faint);
   }
 

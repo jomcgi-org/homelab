@@ -15,6 +15,12 @@ export async function load({ params, fetch }) {
     `${apiBase()}/api/grimoire/chunks/${encodeURIComponent(chunkId)}`,
     { signal: AbortSignal.timeout(10_000) },
   );
+  // 403 = the chunk belongs to a copyrighted book (an entity-mention "Sources"
+  // link can point here). Redirect to the book page, which renders the locked
+  // notice, rather than erroring on a broken-looking deep link.
+  if (res.status === 403) {
+    throw redirect(307, `/app/grimoire/book/${encodeURIComponent(bookId)}`);
+  }
   if (!res.ok) {
     throw error(res.status === 404 ? 404 : 503, "chunk not found");
   }

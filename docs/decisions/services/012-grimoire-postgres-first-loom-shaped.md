@@ -122,6 +122,42 @@ Baseline per `docs/security.md`. Specifics:
 2. Entity resolution across books (alias merging) once multiple books are loaded: v1 extracts per-chunk with name-based dedup; a proper resolve stage is a follow-up Transform-shaped job.
 3. Exact trigger for the Iceberg migration (corpus size, multi-campaign scale, or Loom hosting the personal KG first).
 
+## Amendment (2026-07-09): public tier serves open-licensed books in full, copyrighted books derived-only
+
+The original decision above kept the whole corpus private-tier-only, on the
+premise that all chunk content is licensed book text. A public read-only
+Grimoire tier was subsequently built (see
+`docs/plans/2026-07-03-grimoire-public-readonly.md`), which served every book's
+verbatim text behind Turnstile plus `noindex` as an accepted demo-period
+compromise. That compromise does not hold up for wider sharing: reconstructing
+copyrighted sourcebooks in full is a takedown risk regardless of a robots hint.
+
+The refined policy draws the line by license, not by tier:
+
+- **Open-licensed books are readable in full on the public tier.** Only books
+  released under a redistribution license (Creative Commons CC BY 4.0 or the
+  ORC License) may serve verbatim text and page images publicly: the two D&D
+  System Reference Documents (5.1, 5.2), and once ingested, the Black Flag
+  Reference Document (Kobold Press) and the A5E SRD (EN Publishing). The public
+  Reader shows the license attribution these licenses require.
+- **Copyrighted books are listed but Reader-locked.** They still appear in the
+  public Library (the breadth of the corpus is the showcase) and still power
+  the transformative surfaces (Entities, Explore, Chat: derived data, graph
+  structure, and synthesized answers with short cited snippets, not verbatim
+  reproduction). Their full text and page scans are never served publicly.
+- **The gate is a data flag, fail-closed.** `grimoire.book.copyrighted_content`
+  (default TRUE) is the authoritative gate, enforced in `grimoire.router_public`
+  on the three reproduction endpoints (`/books/{id}/read`, `/chunks/{id}`,
+  `/chunks/{id}/image`) with a 403. A newly ingested, unclassified book is
+  copyrighted until proven open, so a forgotten classification locks the Reader
+  rather than leaking text. `ingest.OPEN_LICENSE_BOOK_IDS` classifies the known
+  open slugs at load time so future open-book ingests self-unlock.
+
+This narrows, but does not remove, the "licensed text leaks to public tier"
+risk in the table above: the leak surface is now exactly the copyrighted-book
+Reader endpoints, and they are gated by construction and by test
+(`grimoire/router_public_test.py::TestCopyrightGate`).
+
 ## References
 
 | Resource                                                                | Relevance                                                |

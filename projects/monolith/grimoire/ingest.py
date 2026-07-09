@@ -46,6 +46,24 @@ def _default_display_name(book_id: str) -> str:
     return book_id.replace("-", " ").replace("_", " ").title()
 
 
+# Book slugs whose full text is under an open license that permits public
+# redistribution (Creative Commons CC BY 4.0 and/or the ORC License), so the
+# public tier may serve their verbatim Reader. Everything else is treated as
+# copyrighted and Reader-locked (grimoire.book.copyrighted_content defaults
+# TRUE). Keeping this list here — the one place _upsert_book classifies a
+# freshly seen book — means a future BFRD / A5E ingest self-classifies as open
+# without a manual DB flip. The DB column stays the authoritative gate; this
+# only seeds the default at first insert.
+OPEN_LICENSE_BOOK_IDS = frozenset(
+    {
+        "system-reference-doc-5-1",  # D&D SRD 5.1, WotC, CC BY 4.0
+        "system-reference-doc-5-2",  # D&D SRD 5.2, WotC, CC BY 4.0
+        "black-flag-reference-document",  # Kobold Press BFRD, ORC + CC BY 4.0
+        "a5e-srd",  # Level Up: Advanced 5e SRD, EN Publishing, ORC + CC BY 4.0
+    }
+)
+
+
 DEFAULT_PREFIX = "books/"
 _MANIFEST_SUFFIX = ".ndjson"
 # Manifests live under ``<prefix><book_id>/chunks/``; this segment both filters
@@ -275,7 +293,13 @@ def _upsert_book(session: Session, book_id: str) -> None:
     """
     with session.begin_nested():
         if session.get(Book, book_id) is None:
-            session.add(Book(id=book_id, display_name=_default_display_name(book_id)))
+            session.add(
+                Book(
+                    id=book_id,
+                    display_name=_default_display_name(book_id),
+                    copyrighted_content=book_id not in OPEN_LICENSE_BOOK_IDS,
+                )
+            )
 
 
 def _upsert_book_chunks(

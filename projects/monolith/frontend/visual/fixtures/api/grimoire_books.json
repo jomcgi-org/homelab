@@ -1,5 +1,17 @@
 [
   {
+    "book_id": "system-reference-doc-5-1",
+    "display_name": "System Reference Document 5.1",
+    "book_kind": "rulebook",
+    "chunk_count": 1960,
+    "image_count": 0,
+    "extracted_count": 1960,
+    "entity_count": 820,
+    "copyrighted_content": false,
+    "latest_chunk_at": "2024-01-20T12:00:00Z",
+    "last_loaded_at": "2024-01-18T12:00:00Z"
+  },
+  {
     "book_id": "curse-of-strahd",
     "display_name": "Curse of Strahd",
     "book_kind": "adventure",
@@ -7,6 +19,7 @@
     "image_count": 180,
     "extracted_count": 1057,
     "entity_count": 412,
+    "copyrighted_content": true,
     "latest_chunk_at": "2024-01-10T12:00:00Z",
     "last_loaded_at": "2024-01-05T12:00:00Z"
   },
@@ -18,6 +31,7 @@
     "image_count": 44,
     "extracted_count": 210,
     "entity_count": 96,
+    "copyrighted_content": true,
     "latest_chunk_at": "2023-06-01T12:00:00Z",
     "last_loaded_at": "2023-06-01T12:00:00Z"
   },
@@ -29,6 +43,7 @@
     "image_count": 131,
     "extracted_count": 400,
     "entity_count": 0,
+    "copyrighted_content": true,
     "latest_chunk_at": "2024-01-15T12:00:00Z",
     "last_loaded_at": "2024-01-12T12:00:00Z"
   },
@@ -40,6 +55,7 @@
     "image_count": 280,
     "extracted_count": 1310,
     "entity_count": 640,
+    "copyrighted_content": true,
     "latest_chunk_at": "2023-06-01T12:00:00Z",
     "last_loaded_at": "2023-06-01T12:00:00Z"
   },
@@ -51,6 +67,7 @@
     "image_count": 380,
     "extracted_count": 1200,
     "entity_count": 2412,
+    "copyrighted_content": true,
     "latest_chunk_at": "2023-06-01T12:00:00Z",
     "last_loaded_at": "2023-06-01T12:00:00Z"
   },
@@ -62,6 +79,7 @@
     "image_count": 210,
     "extracted_count": 1440,
     "entity_count": 1806,
+    "copyrighted_content": true,
     "latest_chunk_at": "2023-06-01T12:00:00Z",
     "last_loaded_at": "2023-06-01T12:00:00Z"
   }

@@ -13,6 +13,7 @@ from typing import Literal
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     Computed,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -301,6 +303,16 @@ class Book(SQLModel, table=True):
     # generated surrogate, so the string id is the primary key directly.
     id: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
     display_name: str
+    # Gates the public full-text Reader: copyrighted books are listed on the
+    # public Library and power the transformative surfaces (Entities/Chat/
+    # Explore), but their verbatim text/images are never served publicly. See
+    # library.is_book_copyrighted and 20260709120000_grimoire_book_copyrighted.sql.
+    # Defaults TRUE so a newly ingested book fails closed (Reader locked) until
+    # explicitly classified open (ingest.OPEN_LICENSE_BOOK_IDS).
+    copyrighted_content: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
