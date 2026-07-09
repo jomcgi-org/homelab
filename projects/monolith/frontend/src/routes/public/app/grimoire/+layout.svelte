@@ -104,7 +104,7 @@
         solve to <span class="gate-accent">explore.</span>
       </h1>
       <p class="gate-copy">
-        One quick check to keep the bots out. Everything loads right after.
+        Bots? <em>Get outta here!</em>
       </p>
       <TurnstileGate
         siteKey={data.turnstileSiteKey}
