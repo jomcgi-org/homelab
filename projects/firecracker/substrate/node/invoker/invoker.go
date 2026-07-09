@@ -65,6 +65,11 @@ type transport interface {
 	// WaitReady polls readyPath on the guest shim until it responds 200 or
 	// ctx fires. It is bounded by BootReadyTimeout in the caller.
 	WaitReady(ctx context.Context, udsPath, readyPath string) error
+	// Prime shakes out Firecracker's post-restore vsock RX-queue race with a
+	// tight-deadline liveness probe, so the following WaitReady and exec dials
+	// land on a drained queue. Warm path only; best-effort and bounded by the
+	// caller's restore budget.
+	Prime(ctx context.Context, udsPath string) error
 	// RoundTrip sends req to the guest shim reachable via udsPath and
 	// returns its HTTP response. The caller is responsible for closing the
 	// response body.
@@ -344,6 +349,27 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	}
 
 	uds := inv.driver.VsockUDSPath(h.ThreadID)
+
+	// Warm restores can wedge their first host-initiated vsock connection on
+	// Firecracker's post-restore RX-queue race (see vsockhttp.WaitReady). Shake
+	// it out HERE, off the readiness path, with a tight-deadline primer so the
+	// WaitReady and exec dials below land on a drained queue and answer on their
+	// first attempt. Its own vsock_prime span makes the drain cost measurable and
+	// self-diagnosing (a tight cluster means the tight retries win; a floor at the
+	// restore budget would point at a guest-side drain-window instead). Cold boots
+	// do not restore, so they never hit this race; prime only on the warm path.
+	// Best-effort: a prime failure just leaves WaitReady to pay the race as before.
+	if warm {
+		primeCtx, cancelPrime := context.WithTimeout(ctx, inv.cfg.RestoreReadyTimeout)
+		primeSpanCtx, primeSpan := tracer.Start(primeCtx, "vsock_prime")
+		if perr := inv.transport.Prime(primeSpanCtx, uds); perr != nil {
+			primeSpan.RecordError(perr)
+			primeSpan.SetStatus(codes.Error, perr.Error())
+			inv.logger.Warn("invoker: vsock prime did not complete; readiness poll will retry past the race", "thread", h.ThreadID, "err", perr)
+		}
+		primeSpan.End()
+		cancelPrime()
+	}
 
 	// Egress (ADR 023 phase 6a): when this workload has egress enabled, forward
 	// the guest's vsock egress connections to the pod-local egress-proxy sidecar.

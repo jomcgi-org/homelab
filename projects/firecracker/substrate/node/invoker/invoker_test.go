@@ -148,11 +148,19 @@ func (f *fakeDriver) lastClaimSpec() substrate.ClaimSpec {
 type funcTransport struct {
 	waitReadyFn func(ctx context.Context, udsPath, readyPath string) error
 	roundTripFn func(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error)
+	primeFn     func(ctx context.Context, udsPath string) error
 }
 
 func (f *funcTransport) WaitReady(ctx context.Context, udsPath, readyPath string) error {
 	if f.waitReadyFn != nil {
 		return f.waitReadyFn(ctx, udsPath, readyPath) // nosemgrep: no-bare-error-return
+	}
+	return nil
+}
+
+func (f *funcTransport) Prime(ctx context.Context, udsPath string) error {
+	if f.primeFn != nil {
+		return f.primeFn(ctx, udsPath) // nosemgrep: no-bare-error-return
 	}
 	return nil
 }
@@ -235,6 +243,58 @@ func TestInvokeHappyPathRestoresAndReleases(t *testing.T) {
 	// The BuildBase VM's bundle was removed synchronously; the Invoke VM's runs
 	// asynchronously off the freed slot, so wait for both to land.
 	waitForRemoveBundleCount(t, drv, 2)
+}
+
+// TestInvokeWarmPathPrimesVsock asserts the warm restore path shakes out the
+// Firecracker post-restore vsock RX-queue race by calling transport.Prime before
+// the readiness wait. Prime is invoked synchronously on the Invoke goroutine, so
+// a plain counter is race-free here.
+func TestInvokeWarmPathPrimesVsock(t *testing.T) {
+	drv := &fakeDriver{}
+	primeCount := 0
+	tr := &funcTransport{primeFn: func(_ context.Context, _ string) error {
+		primeCount++
+		return nil
+	}}
+	inv := New(drv, tr, defaultConfig(), nil)
+
+	if err := inv.BuildBase(context.Background()); err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	resp, err := inv.Invoke(context.Background(), "sess-1", strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if primeCount < 1 {
+		t.Errorf("Prime called %d time(s) on the warm path, want >= 1", primeCount)
+	}
+}
+
+// TestInvokeColdPathSkipsPrime asserts a cold boot never primes: it does not
+// restore a snapshot, so there is no post-restore race to shed. This locks the
+// warm-only invariant so the cold path stays untouched.
+func TestInvokeColdPathSkipsPrime(t *testing.T) {
+	drv := &fakeDriver{}
+	primeCount := 0
+	tr := &funcTransport{primeFn: func(_ context.Context, _ string) error {
+		primeCount++
+		return nil
+	}}
+	cfg := defaultConfig()
+	cfg.Workload.WarmBase = false // cold boot only; no restore, so nothing to prime
+	inv := New(drv, tr, cfg, nil)
+
+	resp, err := inv.Invoke(context.Background(), "sess-1", strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if primeCount != 0 {
+		t.Errorf("Prime called %d time(s) on the cold path, want 0", primeCount)
+	}
 }
 
 // TestInvokeReleasesVMOnTransportError verifies that when RoundTrip fails the

@@ -167,6 +167,55 @@ func TestWaitReadyRetriesPastWedgedFirstConnection(t *testing.T) {
 	}
 }
 
+// TestPrimeShedsWedgedFirstConnection verifies that Prime absorbs the
+// post-restore RX-queue race off the readiness path: the first vsock connection
+// wedges, and Prime's tight per-attempt deadline abandons it and re-rolls,
+// completing well under the generous outer budget so the subsequent WaitReady
+// lands clean.
+func TestPrimeShedsWedgedFirstConnection(t *testing.T) {
+	udsPath := t.TempDir() + "/shim.sock"
+	base, err := net.Listen("unix", udsPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	ln := &hangFirstListener{Listener: base, stop: stop}
+	srv := shim.NewServer(echoHandler, shim.WithReady(func() bool { return true }))
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { _ = srv.Close() })
+
+	tr := NewTransport(WithDirectDial())
+	// Outer budget is deliberately generous: the value comes from Prime shedding
+	// the wedged first connection at its tight per-attempt cap, not from the ctx.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if err := tr.Prime(ctx, udsPath); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("Prime took %v; the tight per-attempt cap should shed the wedged connection and re-roll fast", elapsed)
+	}
+}
+
+// TestPrimeTimesOutWhenNeverReachable asserts Prime returns a non-nil error when
+// the vsock path never opens before ctx expires, so the caller can log it and
+// fall through to WaitReady.
+func TestPrimeTimesOutWhenNeverReachable(t *testing.T) {
+	// A path with no listener: every dial fails, so no probe ever completes.
+	udsPath := t.TempDir() + "/absent.sock"
+	tr := NewTransport(WithDirectDial())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := tr.Prime(ctx, udsPath); err == nil {
+		t.Error("Prime: want non-nil error when the vsock path never opens, got nil")
+	}
+}
+
 // TestRoundTripContextCancel verifies that a context cancelled before the call
 // causes RoundTrip to return promptly with an error.
 func TestRoundTripContextCancel(t *testing.T) {
