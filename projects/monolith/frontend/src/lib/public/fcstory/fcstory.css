@@ -1,0 +1,68 @@
+/* Design tokens for the public /app/firecracker scroll story. Ported 1:1
+ * from the approved reference mockup's `:root` block (./reference-mockup.html).
+ * All literal hex values live here, scoped under .fcstory, so
+ * FcScrollStory.svelte and ReplayWidget.svelte's <style> blocks can reference
+ * var(--fc-*) exclusively (semgrep rule svelte-hardcoded-color-in-style flags
+ * bare hex literals inside a .svelte <style> block).
+ */
+
+.fcstory {
+  --fc-ground: #f7f5f0;
+  --fc-panel: #ffffff;
+  --fc-line: #e3dfd5;
+  --fc-line-soft: #ece8df;
+  --fc-ink: #20222a;
+  --fc-muted: #525965;
+  --fc-faint: #7d838e;
+  --fc-ember: #e05c26;
+  --fc-ember-deep: #b7461a;
+  --fc-ember-dim: #f0c4ae;
+  --fc-frost: #3d7ec2;
+  --fc-frost-dim: #b9d2ea;
+  --fc-mono:
+    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --fc-sans:
+    -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --fc-shadow:
+    0 2px 6px rgba(32, 34, 42, 0.04), 0 18px 44px rgba(32, 34, 42, 0.09);
+
+  /* Timing-bar segment colors (mockup .seg.boot / .seg.wait / .seg.save /
+   * .seg.restore). */
+  --fc-seg-boot: #f2b04e;
+  --fc-seg-wait-a: #c94e1d;
+  --fc-seg-wait-b: #e05c26;
+  --fc-seg-save: var(--fc-frost);
+  --fc-seg-restore: var(--fc-ember);
+
+  /* Per-phase colors for the replay console / zoom legend (mockup
+   * PHASE_COLORS). Keyed to the real span names in data/trace.js. */
+  --fc-phase-auth-tokenreview: #8e77c9;
+  --fc-phase-acquire-slot: #9aa0aa;
+  --fc-phase-snapshot-restore: #e05c26;
+  --fc-phase-guest-wait-ready: #f2b04e;
+  --fc-phase-guest-exec: #3d7ec2;
+
+  /* Memory-cell hue ranges (mockup buildCells: hsl(16..25) hot / hsl(208..220)
+   * cold, plus saturation/lightness jitter ranges). Exposed as tokens so the
+   * jitter math in FcScrollStory.svelte never writes a literal hex or hsl
+   * base into a computed style string. */
+  --fc-cell-hot-hue-base: 16;
+  --fc-cell-hot-hue-span: 9;
+  --fc-cell-hot-sat-base: 72;
+  --fc-cell-hot-sat-span: 12;
+  --fc-cell-hot-light-base: 46;
+  --fc-cell-hot-light-span: 14;
+  --fc-cell-cold-hue-base: 208;
+  --fc-cell-cold-hue-span: 12;
+  --fc-cell-cold-sat-base: 46;
+  --fc-cell-cold-sat-span: 14;
+  --fc-cell-cold-light-base: 64;
+  --fc-cell-cold-light-span: 12;
+  --fc-cell-idle-bg: #e6e2d7;
+  --fc-ram-bg: #eeebe3;
+  --fc-bar-track-bg: #eceade;
+
+  /* VM state pill (frozen) and bar-note text-on-color. */
+  --fc-frozen-text: #2b628f;
+  --fc-on-color: #ffffff;
+}
