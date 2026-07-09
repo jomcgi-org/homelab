@@ -26,6 +26,8 @@ export async function load({ params, url, fetch }) {
     return { bookId, locked: true, items: [], nextCursor: null };
   }
   if (!res.ok) {
+    // 403 is already handled above (locked marker); anything else is a real
+    // failure. 404 stays a 404; the rest surface as a 503.
     throw error(res.status === 404 ? 404 : 503, "grimoire unavailable");
   }
   const page = signReadPage(await res.json());
