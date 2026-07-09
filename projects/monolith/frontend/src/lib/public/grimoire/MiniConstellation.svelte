@@ -5,10 +5,14 @@
   // only, never position), tuned for a ~300px stage and shared by the
   // entities codex and the chat constellation panel.
   //
-  // Unlike ExploreCanvas this component owns no pan/zoom/tap interaction: it
-  // fits its content once after settling and never moves again. Callers that
-  // need an accessible equivalent (pill list, node names) provide it
-  // themselves; this canvas is `aria-hidden`.
+  // Unlike ExploreCanvas this component owns no pan/zoom/tap interaction. It
+  // fits its content after settling; when a growing graph (the chat panel)
+  // needs more room, the camera EASES to the new fit instead of hard
+  // cutting, so nodes never move relative to each other on screen (the one
+  // sanctioned position change is the whole frame gliding, the landing
+  // page's pull-back gesture). Callers that need an accessible equivalent
+  // (pill list, node names) provide it themselves; this canvas is
+  // `aria-hidden`.
   import { onMount } from "svelte";
 
   let {
@@ -34,6 +38,11 @@
 
   let view = { x: 0, y: 0, k: 1 };
   let rafId = null;
+  // Camera state: the first fit (and any container resize) snaps; later
+  // fits ease from `viewAnim.from` to `viewAnim.to` inside fadeFrame.
+  let hasFit = false;
+  let viewAnim = null;
+  const CAMERA_MS = 300;
 
   const REDUCED_MOTION =
     typeof window !== "undefined" &&
@@ -191,8 +200,10 @@
 
   // Run the physics forward off-screen, then fit the view to the settled
   // bounding box with 28px padding, clamped so a single node or a huge
-  // cluster both stay legible.
-  function settleAndFit() {
+  // cluster both stay legible. The first fit (and `snap` callers: resize,
+  // reduced motion) applies instantly; later fits ease the camera so nodes
+  // already on screen never jump when a new arrival grows the cluster.
+  function settleAndFit(snap = false) {
     for (let i = 0; i < 220; i++) tick();
     if (!sim.length) return;
     let minX = Infinity;
@@ -213,7 +224,25 @@
     const k = Math.max(0.5, Math.min(1.4, Math.min(availW / w, availH / h)));
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    view = { k, x: width / 2 - cx * k, y: height / 2 - cy * k };
+    const target = { k, x: width / 2 - cx * k, y: height / 2 - cy * k };
+    if (snap || !hasFit || REDUCED_MOTION) {
+      view = target;
+      viewAnim = null;
+      hasFit = true;
+      return;
+    }
+    // Skip imperceptible refits so a same-size rebuild does not start a
+    // pointless camera glide.
+    if (
+      Math.abs(target.k - view.k) < 0.01 &&
+      Math.abs(target.x - view.x) < 1 &&
+      Math.abs(target.y - view.y) < 1
+    ) {
+      return;
+    }
+    viewAnim = { from: { ...view }, to: target, start: performance.now() };
+    fadeUntil = Math.max(fadeUntil, viewAnim.start + CAMERA_MS);
+    if (!rafId) rafId = requestAnimationFrame(fadeFrame);
   }
 
   function fadeOf(n, now) {
@@ -326,7 +355,7 @@
         i++;
       }
     });
-    fadeUntil = now + 320 + Math.min(i * 14, 350);
+    fadeUntil = Math.max(fadeUntil, now + 320 + Math.min(i * 14, 350));
     if (i > 0) {
       if (!rafId) rafId = requestAnimationFrame(fadeFrame);
     } else {
@@ -335,8 +364,21 @@
   }
 
   function fadeFrame() {
+    if (viewAnim) {
+      const p = Math.min(
+        1,
+        (performance.now() - viewAnim.start) / CAMERA_MS,
+      );
+      const e = 1 - Math.pow(1 - p, 3);
+      view = {
+        k: viewAnim.from.k + (viewAnim.to.k - viewAnim.from.k) * e,
+        x: viewAnim.from.x + (viewAnim.to.x - viewAnim.from.x) * e,
+        y: viewAnim.from.y + (viewAnim.to.y - viewAnim.from.y) * e,
+      };
+      if (p >= 1) viewAnim = null;
+    }
     draw();
-    if (performance.now() < fadeUntil) {
+    if (performance.now() < fadeUntil || viewAnim) {
       rafId = requestAnimationFrame(fadeFrame);
     } else {
       rafId = null;
@@ -352,7 +394,9 @@
     height = canvasEl.clientHeight;
     canvasEl.width = width * dpr;
     canvasEl.height = height * dpr;
-    settleAndFit();
+    // Container geometry changed: re-fit instantly (a resize is not a
+    // content change, easing here would look like lag).
+    settleAndFit(true);
     requestDraw();
   }
 

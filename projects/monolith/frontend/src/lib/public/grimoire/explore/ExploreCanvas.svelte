@@ -372,8 +372,14 @@
         i++;
       }
     });
-    fadeUntil = now + 320 + Math.min(i * 14, 350);
-    if (!rafId) rafId = requestAnimationFrame(fadeFrame);
+    if (i > 0) {
+      fadeUntil = now + 320 + Math.min(i * 14, 350);
+      if (!rafId) rafId = requestAnimationFrame(fadeFrame);
+    } else {
+      // Rebuild with no new nodes (an edges-only change): nothing fades, so
+      // skip the fade loop and just draw the settled layout once.
+      draw();
+    }
   }
 
   function fadeFrame() {
