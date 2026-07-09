@@ -57,6 +57,14 @@ func (p *execProcess) Kill() error {
 
 func (p *execProcess) Wait() error { return p.cmd.Wait() }
 
+// Pid returns the OS pid of the firecracker process, or 0 before Start.
+func (p *execProcess) Pid() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
 // Launch starts firecracker with its API socket at socketPath and blocks until
 // the socket is connectable (or the timeout/context fires).
 func (l *ExecLauncher) Launch(ctx context.Context, vmID, socketPath string) (Process, error) {

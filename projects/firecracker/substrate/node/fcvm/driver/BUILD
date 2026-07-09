@@ -4,6 +4,7 @@ go_library(
     name = "driver",
     srcs = [
         "driver.go",
+        "gueststats.go",
         "launcher.go",
         "mountns_linux.go",
         "mountns_other.go",
@@ -22,6 +23,7 @@ go_test(
     name = "driver_test",
     srcs = [
         "driver_test.go",
+        "gueststats_test.go",
         "provisioner_test.go",
     ],
     embed = [":driver"],
