@@ -65,7 +65,7 @@ export const PHASES = [
     end: 0.82,
     hold: 0.76,
     rest: 0.79,
-    label: "PROJECT",
+    label: "COMPENDIUM",
   },
   { id: "chat", start: 0.82, end: 1.0, hold: 0.97, rest: 1.0, label: "ASK" },
 ];

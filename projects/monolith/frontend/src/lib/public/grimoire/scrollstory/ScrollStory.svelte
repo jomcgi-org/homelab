@@ -582,7 +582,7 @@
         return;
       }
       const pct = pen * 100;
-      const tint = `color-mix(in srgb, ${c} 26%, transparent)`;
+      const tint = `color-mix(in srgb, ${c} 34%, transparent)`;
       // hard trailing edge with a small feather ahead of it = a marker tip
       // leading the fill from the left
       m.style.background = `linear-gradient(90deg, ${tint} ${pct.toFixed(1)}%, transparent ${Math.min(100, pct + 5).toFixed(1)}%)`;
@@ -992,16 +992,15 @@
       </div>
 
       <div class="scale-panel" bind:this={scalePanelEl}>
-        <div class="scale-head grim-title">One page in. Here's everything behind it.</div>
+        <div class="scale-head grim-title section-head">Unearthed from this page</div>
         <div class="this-page">
-          <span class="k">THIS PAGE EXTRACTED</span>
           <span>{story.bboxes.length} blocks</span><span class="k">/</span>
           <span>{story.chunks.length} chunks</span><span class="k">/</span>
           <span>{story.entities.length} entities</span><span class="k">/</span>
           <span>{graphEdges.length} relationships</span>
         </div>
-        <div class="project-lead">
-          <span class="arrow">&darr;</span> Our project contains
+        <div class="scale-head grim-title section-head compendium-head">
+          The entire compendium contains
         </div>
         <div class="counters">
           {#each COUNTS as [label], i (label)}
@@ -1167,7 +1166,7 @@
     </section>
 
     <section class="static-scene">
-      <p class="static-cap"><b>4 / The whole project.</b> You just watched one page. Every book in the corpus gets the same treatment.</p>
+      <p class="static-cap"><b>4 / The entire compendium.</b> You just watched a single page unearthed. Every book in the compendium gets the same treatment.</p>
       <div class="static-counters">
         {#each COUNTS as [label, value] (label)}
           <div class="counter">
@@ -1628,8 +1627,18 @@
     text-wrap: balance;
     color: var(--grim-ink);
   }
+  /* The two panel hooks ("Unearthed from this page" / "The entire compendium
+     contains") are one matched pair: a repeated [heading -> counts] rhythm.
+     Sized below the 40px hero scale so both headings can breathe and the big
+     corpus numbers stay the loudest element. */
+  .section-head {
+    font-size: clamp(21px, 2.6vw, 32px);
+  }
+  .compendium-head {
+    margin-top: 34px;
+  }
   .this-page {
-    margin-top: 18px;
+    margin-top: 10px;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 0.14em;
@@ -1647,24 +1656,11 @@
     font-weight: 700;
     font-size: 12px;
   }
-  .project-lead {
-    margin-top: 14px;
-    font-family: var(--font-mono);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--grim-ink);
-  }
-  .project-lead .arrow {
-    color: var(--grim-accent);
-    margin-right: 4px;
-  }
   .counters {
     display: flex;
     justify-content: center;
     gap: clamp(18px, 4.5vw, 58px);
-    margin-top: 18px;
+    margin-top: 14px;
   }
   .counter {
     text-align: center;

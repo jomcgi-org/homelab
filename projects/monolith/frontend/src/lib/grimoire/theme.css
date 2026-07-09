@@ -50,16 +50,16 @@
 
   /* Entity-type accent colors: used by Entities rows, statblocks, and the
    * Explore canvas to give each entity type a stable, distinct hue. */
-  --grim-type-location: #2f8f6b;
-  --grim-type-creature: #c0492b;
-  --grim-type-npc: #b07d1e;
-  --grim-type-faction: #7a52b0;
-  --grim-type-deity: #a8811f;
-  --grim-type-item: #b83f7a;
-  --grim-type-spell: #2f7fbf;
-  --grim-type-class: #556070;
-  --grim-type-event: #7a6f3a;
-  --grim-type-quest: #2f8f8a;
+  --grim-type-location: #0f9e63;
+  --grim-type-creature: #db3b1c;
+  --grim-type-npc: #c98a08;
+  --grim-type-faction: #8636d4;
+  --grim-type-deity: #c1920c;
+  --grim-type-item: #d92878;
+  --grim-type-spell: #1487e0;
+  --grim-type-class: #566484;
+  --grim-type-event: #9a7d10;
+  --grim-type-quest: #0f9e97;
   /* Mechanics types share the slate "class" hue (one family). Defined as
      aliases so they resolve to --grim-type-class without repeating the
      value below. */
