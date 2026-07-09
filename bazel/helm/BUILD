@@ -2,14 +2,22 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files([
     "chart-version.sh",
+    "check-missed-bump.sh",
     "helm-assert-annotations.sh",
     "helm-template-test.sh",
     "push.sh.tpl",
     "render-manifests.sh",
 ])
+
+sh_test(
+    name = "check_missed_bump_test",
+    srcs = ["check-missed-bump_test.sh"],
+    data = [":check-missed-bump.sh"],
+)
 
 sh_binary(
     name = "validate_manifests",
