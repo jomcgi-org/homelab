@@ -82,7 +82,11 @@ def _chunk(
 
 
 def seed_corpus(session):
-    session.add(Book(id="mm", display_name="Monster Manual"))
+    # The reader-path tests (read/chunk/image) need an open-licensed book: the
+    # public Reader endpoints 403 copyrighted books. Mark this fixture open so
+    # those tests exercise the happy path; the gate itself is covered by
+    # TestCopyrightGate below with a separate copyrighted book.
+    session.add(Book(id="mm", display_name="Monster Manual", copyrighted_content=False))
     c0 = _chunk(
         session,
         book_id="mm",
@@ -377,6 +381,60 @@ class TestChunkImage:
         seed = seed_corpus(session)
         r = client.get(f"/api/grimoire/chunks/{seed.c0.id}/image")
         assert r.status_code == 404
+
+
+class TestCopyrightGate:
+    """The public Reader (text + images) must refuse copyrighted books; only
+    open-licensed books are readable in full. Entities/Chat/Explore stay
+    corpus-wide and are unaffected (covered by the other classes)."""
+
+    def _seed_copyrighted(self, session):
+        # Default copyrighted_content=True: an unclassified book is copyrighted.
+        session.add(Book(id="cos", display_name="Curse of Strahd"))
+        text = _chunk(
+            session, book_id="cos", chunk_ref="r0", content="Strahd broods.", seq=0
+        )
+        image = _chunk(
+            session,
+            book_id="cos",
+            chunk_ref="r1",
+            content="Castle Ravenloft, a map.",
+            seq=1,
+            image_ref="s3://grimoire/books/cos/img/castle.png",
+        )
+        return SimpleNamespace(text=text, image=image)
+
+    def test_read_page_403(self, session, client):
+        self._seed_copyrighted(session)
+        r = client.get("/api/grimoire/books/cos/read")
+        assert r.status_code == 403
+
+    def test_get_chunk_403(self, session, client):
+        seed = self._seed_copyrighted(session)
+        r = client.get(f"/api/grimoire/chunks/{seed.text.id}")
+        assert r.status_code == 403
+
+    def test_chunk_image_403(self, session, client):
+        seed = self._seed_copyrighted(session)
+        r = client.get(f"/api/grimoire/chunks/{seed.image.id}/image")
+        assert r.status_code == 403
+
+    def test_missing_book_row_fails_closed(self, session, client):
+        # A chunk whose book has no grimoire.book row (unclassified upload) must
+        # be treated as copyrighted, never leaked.
+        orphan = _chunk(
+            session, book_id="ghost", chunk_ref="r0", content="unclassified", seq=0
+        )
+        assert client.get("/api/grimoire/books/ghost/read").status_code == 403
+        assert client.get(f"/api/grimoire/chunks/{orphan.id}").status_code == 403
+
+    def test_list_books_exposes_flag(self, session, client):
+        # Open fixture (mm, copyrighted_content=False) + copyrighted (cos).
+        seed_corpus(session)
+        self._seed_copyrighted(session)
+        rows = {b["book_id"]: b for b in client.get("/api/grimoire/books").json()}
+        assert rows["mm"]["copyrighted_content"] is False
+        assert rows["cos"]["copyrighted_content"] is True
 
 
 class TestEntities:

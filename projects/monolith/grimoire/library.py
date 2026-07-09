@@ -80,6 +80,18 @@ def _kind(chunk: KnowledgeChunk) -> str:
     return "image" if chunk.image_ref else "text"
 
 
+def is_book_copyrighted(session: Session, book_id: str) -> bool:
+    """Whether ``book_id``'s full text is copyrighted and so must never be
+    served on the public Reader (/books/{id}/read, /chunks/{id}, .../image).
+
+    The grimoire.book.copyrighted_content column is the authoritative gate.
+    A missing book row returns True (fail closed: an unknown book is treated
+    as copyrighted, so a not-yet-classified upload can never leak its text).
+    """
+    book = session.get(Book, book_id)
+    return book is None or book.copyrighted_content
+
+
 def list_books(session: Session) -> list[dict[str, Any]]:
     """Per-book coverage rows for the Library.
 
@@ -139,6 +151,9 @@ def list_books(session: Session) -> list[dict[str, Any]]:
             {
                 "book_id": book_id,
                 "display_name": book.display_name if book else book_id,
+                # Fail closed: a chunk-only book with no metadata row (book is
+                # None) is treated as copyrighted, matching is_book_copyrighted.
+                "copyrighted_content": book.copyrighted_content if book else True,
                 "book_kind": book_kind(book_id),
                 "chunk_count": chunks.chunk_count if chunks else 0,
                 "image_count": chunks.image_count if chunks else 0,

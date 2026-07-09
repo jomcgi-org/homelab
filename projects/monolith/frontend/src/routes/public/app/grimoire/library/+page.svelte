@@ -129,6 +129,11 @@
       <span class="dot">/</span>
       synced {totals.synced}
     </p>
+    <p class="legend">
+      Open-licensed books are readable in full. Copyrighted books are listed and
+      power the Entities, Explore, and Chat features, but their full text stays
+      locked.
+    </p>
   {/if}
 
   {#if loading}
@@ -154,11 +159,15 @@
         <ul class="book-list">
           {#each group.rows as book (book.book_id)}
             <li>
-              <a class="brow" href={bookHref(book.book_id)}>
+              {#snippet body()}
                 <span class="brow-main">
                   <span class="title">
                     {book.display_name}
-                    {#if isNew(book)}<span class="pill">New</span>{/if}
+                    {#if book.copyrighted_content}
+                      <span class="pill pill-locked">Copyrighted</span>
+                    {:else if isNew(book)}
+                      <span class="pill">New</span>
+                    {/if}
                   </span>
                   <span class="meta">
                     {book.chunk_count.toLocaleString()} chunks
@@ -168,8 +177,27 @@
                     {book.entity_count.toLocaleString()} entities
                   </span>
                 </span>
-                <span class="read">Read &rarr;</span>
-              </a>
+              {/snippet}
+              {#if book.copyrighted_content}
+                <!-- Full text is copyrighted: listed (breadth of the corpus is
+                     the showcase, and its entities still power Entities/Chat/
+                     Explore) but the Reader is locked. Not a link; the backend
+                     also 403s the read endpoints. -->
+                <div
+                  class="brow locked"
+                  title="Copyrighted: full text isn't available on the public library. Its entities and chat still work."
+                >
+                  {@render body()}
+                  <span class="read read-locked" aria-label="Reader locked">
+                    Locked
+                  </span>
+                </div>
+              {:else}
+                <a class="brow" href={bookHref(book.book_id)}>
+                  {@render body()}
+                  <span class="read">Read &rarr;</span>
+                </a>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -209,6 +237,14 @@
   .summary b {
     color: var(--grim-ink);
     font-weight: 600;
+  }
+
+  .legend {
+    margin-top: 8px;
+    max-width: 620px;
+    color: var(--grim-text-faint);
+    font-size: 12px;
+    line-height: 1.5;
   }
 
   .dot {
@@ -301,6 +337,23 @@
     padding: 2px 6px;
   }
 
+  /* Copyrighted books are listed but Reader-locked: dim the whole row and drop
+     the hover affordance so it reads as inert, not clickable. */
+  .brow.locked {
+    cursor: default;
+    opacity: 0.62;
+  }
+
+  .brow.locked:hover {
+    background: transparent;
+  }
+
+  .pill-locked {
+    color: var(--grim-text-dim);
+    background: var(--grim-surface-2);
+    border: 1px solid var(--grim-line);
+  }
+
   .read {
     display: inline-flex;
     align-items: center;
@@ -317,6 +370,12 @@
 
   .brow:hover .read {
     opacity: 1;
+  }
+
+  /* The lock label stays visible (there is no hover on a non-link row). */
+  .read-locked {
+    opacity: 1;
+    color: var(--grim-text-faint);
   }
 
   .empty {

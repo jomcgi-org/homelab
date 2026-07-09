@@ -17,6 +17,7 @@
 
   let { data } = $props();
 
+  const locked = $derived(data.locked);
   const bookId = $derived(decodeURIComponent($page.params.book));
   const fromCursor = $derived($page.url.searchParams.get("from"));
   const anchorChunkId = $derived(
@@ -26,7 +27,7 @@
   let adventures = $state([]);
 
   $effect(() => {
-    loadAdventures(bookId);
+    if (!locked) loadAdventures(bookId);
   });
 
   async function loadAdventures(id) {
@@ -47,7 +48,25 @@
   }
 </script>
 
-{#if adventures.length > 0}
+{#if locked}
+  <section class="wrap locked-notice">
+    <p class="eyebrow">The Grimoire</p>
+    <h1 class="grim-title locked-title">This book is copyrighted</h1>
+    <p class="locked-body">
+      The full text of this sourcebook isn't available on the public library.
+      Its characters, monsters, spells, and locations still power the
+      <a href="/app/grimoire/entities">Entities</a>,
+      <a href="/app/grimoire/explore">Explore</a>, and
+      <a href="/app/grimoire/chat">Chat</a> features.
+    </p>
+    <p class="locked-body">
+      The full-text reader is open only for freely licensed books.
+      <a href="/app/grimoire/library">Back to the Library &rarr;</a>
+    </p>
+  </section>
+{/if}
+
+{#if !locked && adventures.length > 0}
   <section class="wrap adventures-strip">
     <h2 class="eyebrow adventures-title">Adventures</h2>
     <ul class="adventures-list">
@@ -71,16 +90,45 @@
   </section>
 {/if}
 
-{#key `${bookId}:${fromCursor ?? ""}`}
-  <Reader
-    {bookId}
-    items={data.items}
-    nextCursor={data.nextCursor}
-    {anchorChunkId}
-  />
-{/key}
+{#if !locked}
+  {#key `${bookId}:${fromCursor ?? ""}`}
+    <Reader
+      {bookId}
+      items={data.items}
+      nextCursor={data.nextCursor}
+      {anchorChunkId}
+    />
+  {/key}
+{/if}
 
 <style>
+  .locked-notice {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 72px 32px 96px;
+  }
+
+  .locked-title {
+    font-size: clamp(30px, 5vw, 40px);
+    margin: 6px 0 18px;
+  }
+
+  .locked-body {
+    color: var(--grim-text-dim);
+    font-size: 15px;
+    line-height: 1.65;
+    margin: 0 0 14px;
+  }
+
+  .locked-body a {
+    color: var(--grim-accent);
+    text-decoration: none;
+  }
+
+  .locked-body a:hover {
+    text-decoration: underline;
+  }
+
   .adventures-strip {
     padding: 28px 32px 0;
   }

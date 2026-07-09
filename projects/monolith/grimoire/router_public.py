@@ -57,7 +57,13 @@ def read_book(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Seq-ordered page of full chunks for the continuous public reader
-    (corpus-global; same shape as the private endpoint)."""
+    (corpus-global; same shape as the private endpoint).
+
+    Copyrighted books are Reader-locked: their verbatim text is never served
+    on the public tier (only the transformative Entities/Chat/Explore
+    surfaces are corpus-wide). See library.is_book_copyrighted."""
+    if library.is_book_copyrighted(session, book_id):
+        raise HTTPException(status_code=403, detail="book text is not public")
     return library.read_page(session, book_id, cursor=cursor, limit=limit)
 
 
@@ -98,7 +104,16 @@ def get_adventure(
 @router.get("/chunks/{chunk_id}")
 def get_chunk(chunk_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
     """One chunk with full content, image URL, seq neighbours, and every
-    on-page entity mention, unfiltered (no campaign, no grants)."""
+    on-page entity mention, unfiltered (no campaign, no grants).
+
+    Reader-locked for copyrighted books (see read_book): the book lookup here
+    is an identity-map hit that get_chunk_public reuses, so it costs one PK
+    fetch, not a second content query."""
+    row = session.get(KnowledgeChunk, chunk_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="chunk not found")
+    if library.is_book_copyrighted(session, row.book_id):
+        raise HTTPException(status_code=403, detail="book text is not public")
     chunk = public.get_chunk_public(session, chunk_id)
     if chunk is None:
         raise HTTPException(status_code=404, detail="chunk not found")
@@ -146,6 +161,10 @@ def get_chunk_image(
     chunk = session.get(KnowledgeChunk, chunk_id)
     if chunk is None or not chunk.image_ref:
         raise HTTPException(status_code=404, detail="chunk image not found")
+    # Reader-locked for copyrighted books: page scans are verbatim reproduction,
+    # gated exactly like the text endpoints (read_book / get_chunk).
+    if library.is_book_copyrighted(session, chunk.book_id):
+        raise HTTPException(status_code=403, detail="book text is not public")
     parsed = _parse_s3_uri(chunk.image_ref)
     if parsed is None:
         raise HTTPException(status_code=404, detail="chunk image not found")
