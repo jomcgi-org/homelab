@@ -98,9 +98,22 @@
     "rulebook",
     "other",
   ];
+  // Filter: "all" shows the whole corpus; "readable" collapses to just the
+  // open-licensed books you can actually open in full. Only a couple of books
+  // are readable, so this is the shortcut that surfaces them out of the
+  // otherwise-long locked list.
+  let filter = $state("all");
+  const readableCount = $derived(
+    books.filter((b) => !b.copyrighted_content).length,
+  );
+
   const grouped = $derived.by(() => {
+    const visible =
+      filter === "readable"
+        ? books.filter((b) => !b.copyrighted_content)
+        : books;
     const by = {};
-    for (const b of books) {
+    for (const b of visible) {
       const k = KIND_LABEL[b.book_kind] ? b.book_kind : "other";
       (by[k] ??= []).push(b);
     }
@@ -130,10 +143,30 @@
       synced {totals.synced}
     </p>
     <p class="legend">
-      Open-licensed books are readable in full. Copyrighted books are listed and
-      power the Entities, Explore, and Chat features, but their full text stays
-      locked.
+      Open-licensed books are readable in full. Others are listed for reference.
     </p>
+    {#if readableCount > 0 && readableCount < totals.books}
+      <div class="filter" role="tablist" aria-label="Filter books">
+        <button
+          class="filter-btn"
+          class:active={filter === "all"}
+          role="tab"
+          aria-selected={filter === "all"}
+          onclick={() => (filter = "all")}
+        >
+          All <span class="filter-n">{totals.books}</span>
+        </button>
+        <button
+          class="filter-btn"
+          class:active={filter === "readable"}
+          role="tab"
+          aria-selected={filter === "readable"}
+          onclick={() => (filter = "readable")}
+        >
+          Readable <span class="filter-n">{readableCount}</span>
+        </button>
+      </div>
+    {/if}
   {/if}
 
   {#if loading}
@@ -163,9 +196,7 @@
                 <span class="brow-main">
                   <span class="title">
                     {book.display_name}
-                    {#if book.copyrighted_content}
-                      <span class="pill pill-locked">Copyrighted</span>
-                    {:else if isNew(book)}
+                    {#if !book.copyrighted_content && isNew(book)}
                       <span class="pill">New</span>
                     {/if}
                   </span>
@@ -179,17 +210,35 @@
                 </span>
               {/snippet}
               {#if book.copyrighted_content}
-                <!-- Full text is copyrighted: listed (breadth of the corpus is
-                     the showcase, and its entities still power Entities/Chat/
-                     Explore) but the Reader is locked. Not a link; the backend
-                     also 403s the read endpoints. -->
-                <div
-                  class="brow locked"
-                  title="Copyrighted: full text isn't available on the public library. Its entities and chat still work."
-                >
+                <!-- Listed for reference (breadth of the corpus is the
+                     showcase) but not readable in full: a quiet lock, no loud
+                     label. Not a link; the backend also 403s the read
+                     endpoints. -->
+                <div class="brow locked" title="Not available to read here">
                   {@render body()}
-                  <span class="read read-locked" aria-label="Reader locked">
-                    Locked
+                  <span class="lock" aria-label="Locked">
+                    <svg
+                      viewBox="0 0 16 16"
+                      width="14"
+                      height="14"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <rect
+                        x="3"
+                        y="7"
+                        width="10"
+                        height="7"
+                        rx="1.5"
+                        stroke="currentColor"
+                        stroke-width="1.3"
+                      />
+                      <path
+                        d="M5 7V5a3 3 0 0 1 6 0v2"
+                        stroke="currentColor"
+                        stroke-width="1.3"
+                      />
+                    </svg>
                   </span>
                 </div>
               {:else}
@@ -245,6 +294,55 @@
     color: var(--grim-text-faint);
     font-size: 12px;
     line-height: 1.5;
+  }
+
+  /* Segmented All / Readable filter: a quiet pill pair on a hairline track. */
+  .filter {
+    display: inline-flex;
+    margin-top: 16px;
+    padding: 3px;
+    gap: 3px;
+    background: var(--grim-surface-2);
+    border: 1px solid var(--grim-line);
+    border-radius: 8px;
+  }
+
+  .filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--grim-text-dim);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+
+  .filter-btn:hover {
+    color: var(--grim-ink);
+  }
+
+  .filter-btn.active {
+    background: var(--grim-paper);
+    color: var(--grim-ink);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  }
+
+  .filter-n {
+    font-variant-numeric: tabular-nums;
+    color: var(--grim-text-faint);
+  }
+
+  .filter-btn.active .filter-n {
+    color: var(--grim-accent);
   }
 
   .dot {
@@ -348,10 +446,12 @@
     background: transparent;
   }
 
-  .pill-locked {
-    color: var(--grim-text-dim);
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
+  /* Quiet lock on locked rows: the single, low-key marker (no "Copyrighted"
+     pill, no "Locked" label). Sits where "Read ->" would be on open rows. */
+  .lock {
+    display: inline-flex;
+    align-items: center;
+    color: var(--grim-text-faint);
   }
 
   .read {
@@ -370,12 +470,6 @@
 
   .brow:hover .read {
     opacity: 1;
-  }
-
-  /* The lock label stays visible (there is no hover on a non-link row). */
-  .read-locked {
-    opacity: 1;
-    color: var(--grim-text-faint);
   }
 
   .empty {

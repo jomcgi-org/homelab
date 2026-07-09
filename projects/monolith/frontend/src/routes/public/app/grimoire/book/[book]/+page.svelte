@@ -51,16 +51,12 @@
 {#if locked}
   <section class="wrap locked-notice">
     <p class="eyebrow">The Grimoire</p>
-    <h1 class="grim-title locked-title">This book is copyrighted</h1>
+    <h1 class="grim-title locked-title">Not available to read here</h1>
     <p class="locked-body">
-      The full text of this sourcebook isn't available on the public library.
-      Its characters, monsters, spells, and locations still power the
-      <a href="/app/grimoire/entities">Entities</a>,
-      <a href="/app/grimoire/explore">Explore</a>, and
-      <a href="/app/grimoire/chat">Chat</a> features.
+      This book isn't part of the readable library. Browse the freely licensed
+      books instead.
     </p>
     <p class="locked-body">
-      The full-text reader is open only for freely licensed books.
       <a href="/app/grimoire/library">Back to the Library &rarr;</a>
     </p>
   </section>

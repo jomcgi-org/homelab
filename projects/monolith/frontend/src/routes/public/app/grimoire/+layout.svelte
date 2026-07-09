@@ -1,13 +1,14 @@
 <script>
   // Public Grimoire app shell: a slim app-own topbar (wordmark + Library /
-  // Entities nav) and a Turnstile gate around the app content. The gate is a
-  // real admission boundary, not decoration: children (and therefore every
-  // /api/grimoire fetch) only mount after onAdmitted fires, so the WotC-
-  // copyrighted corpus never reaches an unsolved visitor or a crawler. The
-  // one exception is the static homepage at the app root (see isHome below),
-  // which carries no corpus content and no fetches. No site Nav/Footer: this
-  // is a standalone shareable app, not a page of the portfolio site. noindex
-  // keeps it out of search entirely (copyright mitigation) regardless of
+  // Entities nav) and a Turnstile gate around the derived-corpus surfaces
+  // (Entities, Explore, Chat, adventure detail): those only mount after
+  // onAdmitted fires. The gate no longer wraps the Library or the reader:
+  // the Library serves only book metadata plus open-licensed full text, and
+  // the reader serves only open-licensed books (copyrighted books 403 and
+  // show a locked notice), so neither carries gated corpus (see isUngated
+  // below). The static homepage at the app root is ungated too. No site
+  // Nav/Footer: this is a standalone shareable app, not a page of the
+  // portfolio site. noindex keeps the whole tree out of search regardless of
   // admission state.
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
@@ -25,10 +26,22 @@
   let admitted = $state(false);
 
   // The homepage at the app root is a static pitch page: no corpus content,
-  // no /api/grimoire fetches, so it renders OUTSIDE the Turnstile gate. The
-  // gate exists to keep the copyrighted corpus from bots, not the product
-  // description; every other route (library, reader, entities) stays gated.
+  // no /api/grimoire fetches, so it renders OUTSIDE the Turnstile gate.
   const isHome = $derived(($page.route.id ?? "") === "/public/app/grimoire");
+
+  // Routes that render outside the gate: the homepage, the Library (book list
+  // + counts + open-licensed reader links), and the reader itself under
+  // /book/* (serves only open-licensed text; copyrighted books 403). The gate
+  // now protects only the derived-corpus surfaces (Entities, Explore, Chat,
+  // adventure detail), which is where the whole corpus is surfaced.
+  const isUngated = $derived.by(() => {
+    const id = $page.route.id ?? "";
+    return (
+      isHome ||
+      id === "/public/app/grimoire/library" ||
+      id.startsWith("/public/app/grimoire/book/")
+    );
+  });
 
   // Highlight the active topbar link: the entities index and entity detail
   // pages both count as "entities"; the EXPLORE canvas is its own section;
@@ -50,9 +63,8 @@
     name="description"
     content="A read-only, link-shareable D&D sourcebook library: browse loaded books, read chunk by chunk, and look up creatures and lore."
   />
-  <!-- Link-shareable, not crawlable: the corpus is WotC-copyrighted, so this
-       route is deliberately excluded from indexing and never added to
-       sitemap.xml or a robots.txt allow. -->
+  <!-- Link-shareable, not crawlable: the whole app tree is kept out of search
+       and off sitemap.xml / a robots.txt allow, regardless of admission. -->
   <meta name="robots" content="noindex, nofollow" />
 </svelte:head>
 
@@ -83,17 +95,16 @@
   </header>
 
   <main class="grimoire-shell">
-  {#if isHome || admitted}
+  {#if isUngated || admitted}
     {@render children()}
   {:else}
     <div class="wrap-narrow gate">
       <p class="gate-eyebrow">Grimoire Access</p>
       <h1 class="grim-title gate-title">
-        solve to <span class="gate-accent">read.</span>
+        solve to <span class="gate-accent">explore.</span>
       </h1>
       <p class="gate-copy">
-        One quick check keeps the bots out of a copyrighted sourcebook. The
-        library loads right after.
+        One quick check to keep the bots out. Everything loads right after.
       </p>
       <TurnstileGate
         siteKey={data.turnstileSiteKey}
