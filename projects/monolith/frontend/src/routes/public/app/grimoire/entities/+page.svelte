@@ -3,6 +3,7 @@
   // campaign/grants -- everything is visible). Results page via next_cursor.
   import { onMount } from "svelte";
   import { apiFetch, libraryHref, entityHref } from "$lib/public/grimoire/api.js";
+  import EntityCodexRow from "./EntityCodexRow.svelte";
 
   // Color-coded filter chips: only the 10 entity types theme.css assigns a
   // --grim-type-* hue to (the 7 lore types plus event/quest/class -- see the
@@ -44,6 +45,50 @@
   let loading = $state(true);
   let loadingMore = $state(false);
   let error = $state("");
+
+  // The in-place codex row: at most one card is open at a time. A filter or
+  // search reload invalidates whatever was open (see load() below), so a
+  // stale codex can never dangle under a card that scrolled out of the
+  // result set.
+  let openId = $state(null);
+
+  function onCardClick(e, id) {
+    // Any modified click (new tab, new window, middle-click) must still
+    // navigate to the full entity page -- only a plain click expands.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1) {
+      return;
+    }
+    e.preventDefault();
+    openId = openId === id ? null : id;
+  }
+
+  function onWindowKeydown(e) {
+    if (e.key === "Escape" && openId != null) openId = null;
+  }
+
+  const REDUCED_MOTION =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Custom max-height/opacity transition for the codex row (Svelte's
+  // built-in `slide` animates height directly, which is a position change
+  // for everything below it every frame; max-height + opacity keeps this to
+  // the two properties the mockup allows). The row only exists in the DOM
+  // while open or animating, so `.grid`'s row gap never applies to a closed
+  // row and the collapsed layout stays pixel-identical to before this
+  // feature shipped.
+  function codexExpand(node) {
+    if (REDUCED_MOTION) return { duration: 0 };
+    const maxHeight = 480;
+    return {
+      duration: 340,
+      css: (t) => {
+        const eased = 1 - Math.pow(1 - t, 3);
+        return `max-height: ${eased * maxHeight}px; opacity: ${t};`;
+      },
+    };
+  }
 
   // Corpus-wide per-type counts for the chip badges. Fetched once on mount,
   // independent of the live search/type filter above (limit=1 -- only the
@@ -112,6 +157,7 @@
     items = [];
     total = 0;
     nextCursor = null;
+    openId = null;
     try {
       const res = await apiFetch(`/entities?${buildQuery()}`);
       items = res.items ?? [];
@@ -158,6 +204,8 @@
     return "";
   }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="entities-page">
   <a class="eyebrow back-link" href={libraryHref()}>&larr; Library</a>
@@ -239,8 +287,11 @@
       {#each items as ent (ent.id)}
         <a
           class="ent"
+          class:sel={openId === ent.id}
           href={entityHref(ent.id)}
           style={`--ec: ${typeColorVar(ent.entity_type)}`}
+          aria-expanded={openId === ent.id}
+          onclick={(e) => onCardClick(e, ent.id)}
         >
           <span class="ent-main">
             <span class="nm">{ent.name}</span>
@@ -249,6 +300,11 @@
           </span>
           <span class="ty">{typeLabel(ent.entity_type)}</span>
         </a>
+        {#if openId === ent.id}
+          <div class="codex-row" transition:codexExpand>
+            <EntityCodexRow entityId={ent.id} />
+          </div>
+        {/if}
       {/each}
     </div>
 
@@ -421,6 +477,25 @@
     background: var(--grim-surface-2);
     border-color: var(--grim-line);
     border-left-color: var(--ec, var(--grim-text-faint));
+  }
+
+  .ent.sel {
+    border-color: var(--grim-accent);
+    background: var(--grim-accent-soft);
+  }
+
+  /* Spans the whole grid row directly under the matching card. The row only
+     exists in the DOM while open or animating (see the codexExpand
+     transition in the script), so `.grid`'s `gap: 8px` never applies to a
+     closed row and the collapsed layout stays pixel-identical to before
+     this feature shipped, which the grimoire-entities visual-regression
+     baseline depends on. */
+  .codex-row {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    background: var(--grim-surface);
+    border: 1px solid var(--grim-line-soft);
+    border-radius: 8px;
   }
 
   .ent-main {
