@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Push a packaged Helm chart to an OCI registry
-# Template substitutions: {{HELM}}, {{CHART_TGZ}}, {{REPOSITORY}}, {{CHART_VERSION_SH}}, {{CHART_DIR}}
+# Template substitutions: {{HELM}}, {{CRANE}}, {{CHART_TGZ}}, {{REPOSITORY}}, {{CHART_VERSION_SH}}, {{CHART_DIR}}, {{CHECK_MISSED_BUMP}}
 
 set -o errexit -o nounset -o pipefail
 
@@ -23,6 +23,7 @@ fi
 readonly HELM="$(rlocation "{{HELM}}")"
 readonly CRANE="$(rlocation "{{CRANE}}")"
 readonly CHART_TGZ="$(rlocation "{{CHART_TGZ}}")"
+readonly CHECK_MISSED_BUMP="$(rlocation "{{CHECK_MISSED_BUMP}}")"
 REPOSITORY="{{REPOSITORY}}"
 CHART_VERSION_SH="{{CHART_VERSION_SH}}"
 CHART_DIR="{{CHART_DIR}}"
@@ -234,6 +235,27 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
     echo "Version bump committed and pushed to ${CURRENT_BRANCH}"
   else
     echo "Chart version unchanged at ${CURRENT_VERSION}"
+    # PR-time missed-bump guard. The version-scoped auto-bump above declined to
+    # bump, but an image can be rebuilt to a new digest without touching the
+    # bazel dependency closure that detector queries (a shared base-image change
+    # under --keep_going), which then merges and only fails main's Push images
+    # post-merge, wedging the NEXT person's deploy. Run the content-stable digest
+    # check now so the PR cannot merge un-bumped. The guard fails OPEN on any
+    # registry/resolution hiccup, so it never false-blocks a PR; when it does
+    # fail it exits non-zero and errexit aborts the push with the bump command.
+    if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]] && \
+       [[ -n "$ABS_CHART_DIR" ]] && [[ -f "${ABS_CHART_DIR}/Chart.yaml" ]]; then
+      GUARD_CHART_NAME=$(grep '^name:' "${ABS_CHART_DIR}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+      if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
+        GUARD_PROJECT_DIR="$CHART_DIR"
+      else
+        GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
+      fi
+      if [[ -n "$GUARD_CHART_NAME" ]]; then
+        HELM="$HELM" CRANE="$CRANE" REPOSITORY="$REPOSITORY" \
+          bash "$CHECK_MISSED_BUMP" "$GUARD_CHART_NAME" "$CURRENT_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"
+      fi
+    fi
   fi
 
   # Re-package chart with semver-compatible pre-release tag for OCI push (PRs use ephemeral tags).

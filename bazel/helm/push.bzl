@@ -143,10 +143,11 @@ def _helm_push_impl(ctx):
             "{{REPOSITORY}}": ctx.attr.repository,
             "{{CHART_VERSION_SH}}": chart_version_sh_path,
             "{{CHART_DIR}}": ctx.attr.chart_dir,
+            "{{CHECK_MISSED_BUMP}}": _rlocationpath(ctx.file._check_missed_bump, workspace_name),
         },
     )
 
-    runfiles_files = [ctx.file.chart]
+    runfiles_files = [ctx.file.chart, ctx.file._check_missed_bump]
     if ctx.file._chart_version_sh:
         runfiles_files.append(ctx.file._chart_version_sh)
 
@@ -178,6 +179,10 @@ helm_push = rule(
         ),
         "_chart_version_sh": attr.label(
             default = "//bazel/helm:chart-version.sh",
+            allow_single_file = True,
+        ),
+        "_check_missed_bump": attr.label(
+            default = "//bazel/helm:check-missed-bump.sh",
             allow_single_file = True,
         ),
         "_push_template": attr.label(
