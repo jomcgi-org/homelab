@@ -55,8 +55,10 @@
     ) / restores.length;
 
   // ── Reactive state (coarse only; the per-frame path never touches these) ──
-  let ready = $state(false);
-  let reduced = $state(false);
+  // Motion preference is read once in onMount; display of the scrubbed vs
+  // static stage is driven entirely by the prefers-reduced-motion CSS media
+  // query, so there is no reactive `ready` flag flipping layout after paint.
+  let reduced = false;
 
   // ── Plain (non-reactive) per-frame refs ──
   let scrollerEl, stageEl, machineEl, cellsEl, ramGlowEl;
@@ -122,12 +124,22 @@
     }
   }
 
+  let lastCellW = 0;
   function measure() {
     vh = window.innerHeight;
     span = scrollerEl.offsetHeight - vh;
     machineW = machineEl.offsetWidth;
     machineH = machineEl.offsetHeight;
-    buildCells();
+    // buildCells() clears and rebuilds the whole memory-cell grid via
+    // innerHTML, which is expensive. On mobile the URL bar showing/hiding
+    // fires `resize` constantly *during* scroll, so rebuild only when the
+    // grid's width actually changed; a height-only change (the URL-bar case)
+    // leaves the 1fr rows to stretch and skips the churn that caused jank.
+    const cw = cellsEl ? cellsEl.clientWidth : 0;
+    if (cw !== lastCellW) {
+      lastCellW = cw;
+      buildCells();
+    }
   }
 
   function cap(elm, t, a, b) {
@@ -274,43 +286,54 @@
     });
   }
 
+  let resizing = false;
+  function onResize() {
+    if (resizing) return;
+    resizing = true;
+    requestAnimationFrame(() => {
+      measure();
+      frame(clamp(window.scrollY / span, 0, 1));
+      resizing = false;
+    });
+  }
+
   onMount(() => {
     reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) return; // stay on the static stacked scenes
+    if (reduced) return; // CSS media query already shows the static scenes
 
-    ready = true; // reveal the scrubbed stage (re-render, refs already bound)
-    // Proximity snap on the document scroll container, desktop-and-mobile
-    // alike (the fcstory choreography has no mobile/desktop fork, unlike
-    // grimoire's ScrollStory). Never "mandatory": free scrubbing is the
-    // point.
-    document.documentElement.style.scrollSnapType = "y proximity";
+    // The scrubbed stage is the SSR default now (see the .scroller /
+    // .static-story rules), so there is no display swap on mount and thus no
+    // layout shift: we only wire up interactivity here.
+    //
+    // No scroll-snap. The story has zero scroll-snap-align targets, so the
+    // old `scrollSnapType = "y proximity"` on <html> snapped nothing on
+    // purpose yet still grabbed momentum scrolling on mobile ("locks in
+    // place"). Free scrubbing is the whole point, so it is simply gone.
+    //
     // The story scrubs the DOCUMENT scroll, so body must be allowed to
     // overflow. Two stylesheets disagree about body overflow and which wins
     // depends on bundle order, so assert it instead of gambling on cascade.
     document.body.style.overflow = "auto";
 
-    window.addEventListener("resize", measure, { passive: true });
+    window.addEventListener("resize", onResize, { passive: true });
     window.addEventListener("scroll", onScroll, { passive: true });
-    // `ready` just flipped .scroller from display:none to display:block;
-    // measure() reads scrollerEl.offsetHeight, which is still 0 until the
-    // browser has painted that layout change. Defer to the next frame (same
-    // fix grimoire's ScrollStory.svelte uses) so span is never captured as 0
-    // and the scrub math doesn't silently no-op for the rest of the visit.
+    // measure() reads scrollerEl.offsetHeight; defer one frame so the initial
+    // layout is painted and span is never captured as 0 (same guard grimoire's
+    // ScrollStory.svelte uses).
     requestAnimationFrame(() => {
       measure();
       frame(0);
     });
 
     return () => {
-      document.documentElement.style.scrollSnapType = "";
       document.body.style.overflow = "";
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onScroll);
     };
   });
 </script>
 
-<div class="fcstory" class:ready>
+<div class="fcstory">
   <header class="topbar" bind:this={topbarEl}>
     <span><strong>jomcgi.dev</strong> / firecracker</span>
   </header>
@@ -608,21 +631,30 @@
   .frost-text {
     color: var(--fc-frost);
   }
+  /* Inline ember text sits on the cream --fc-ground; the brand --fc-ember
+     (#e05c26) is only ~3.3:1 there and fails WCAG AA. --fc-ember-deep
+     (#b7461a) is ~4.8:1, still unmistakably the warm accent. Ember stays the
+     brand color for fills (segments, chips) where it is not body text. */
   .ember-text {
-    color: var(--fc-ember);
+    color: var(--fc-ember-deep);
   }
 
-  /* By default (no JS, or reduced motion) the scrubbed stage is hidden and
-     the static scenes show. onMount flips .ready only when motion is
-     allowed. */
-  .scroller {
+  /* The scrubbed stage is the default, so the server render and the
+     JS-enabled first paint are identical: no post-hydration display swap
+     means no layout shift and no "static story flashes first" flicker. The
+     static stacked fallback shows only for reduced-motion (the browser
+     resolves the media query at first paint, so still no shift) or for no-JS
+     (the <noscript> reveal in +page.svelte). */
+  .static-story {
     display: none;
   }
-  .fcstory.ready .scroller {
-    display: block;
-  }
-  .fcstory.ready .static-story {
-    display: none;
+  @media (prefers-reduced-motion: reduce) {
+    .scroller {
+      display: none;
+    }
+    .static-story {
+      display: block;
+    }
   }
 
   /* ---------- topbar ---------- */
@@ -744,7 +776,9 @@
     font-size: 11.5px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--fc-faint);
+    /* --fc-faint (#7d838e) is only ~3.4:1 on the cream ground and fails AA;
+       --fc-muted (#525965) is ~6.3:1. The cue also pulses to full opacity. */
+    color: var(--fc-muted);
     animation: fc-cue 2.2s ease-in-out infinite;
   }
   @keyframes fc-cue {
@@ -1147,39 +1181,60 @@
   /* ---------- mobile ---------- */
   /* A phone has one column, not three, so the desktop caption-left /
      machine-right / track-bottom spread collapses into overlap. Stack the
-     story into three clear horizontal bands instead: the visual (machine or
-     chips) pinned to the top, the timing bars in the middle, and the
-     narration as a scrim'd bottom sheet so text never lands on top of the
-     machine or the bars behind it. */
+     story into three horizontal bands with VIEWPORT-RELATIVE regions that
+     cannot overlap whatever the content does:
+       - machine / chips: top 2vh, its band ending by ~43vh
+       - timing track:    top 46vh (always below the machine band)
+       - narration:       bottom sheet, at most 34vh tall (top edge >= 66vh)
+     The old layout anchored the machine from the top (height driven by the
+     disk shelf that fades in mid-story) and the track from the bottom, so
+     when the disk cards appeared the two bands met in the middle. Anchoring
+     every band to the viewport removes that content-dependent collision.
+     The machine is also compacted (smaller RAM, description-free disk cards)
+     so it fits its band even on short phones. */
   @media (max-width: 820px) {
     .hero h1 {
       font-size: 44px;
     }
 
-    /* visual (machine / chips) pinned to the top band */
+    /* visual (machine / chips) band: top 2vh, compacted to fit by ~43vh */
     .machine {
       right: 5vw;
       left: 5vw;
-      top: 3vh;
+      top: 2vh;
       transform: none;
       width: auto;
     }
+    .vm {
+      padding: 16px 16px 14px;
+    }
+    .vm-head {
+      margin-bottom: 10px;
+    }
     .ram {
-      height: clamp(118px, 14vh, 160px);
+      height: clamp(88px, 11vh, 132px);
+    }
+    .vm-foot {
+      margin-top: 10px;
     }
     .disk {
-      margin-top: 16px;
+      margin-top: 12px;
     }
     .files {
       gap: 12px;
     }
     .file {
-      padding: 11px 14px;
+      padding: 9px 12px;
+    }
+    /* the description line is desktop polish; drop it on mobile so the disk
+       shelf stays inside the machine band */
+    .file .fdesc {
+      display: none;
     }
     .chips {
       right: 5vw;
       left: 5vw;
-      top: 3vh;
+      top: 2vh;
       transform: none;
       width: auto;
       grid-template-columns: repeat(3, 1fr);
@@ -1190,21 +1245,21 @@
       font-size: 13px;
     }
 
-    /* timing track sits below the machine, clear of the caption sheet */
+    /* timing track: fixed band below the machine, clear of the caption sheet */
     .track {
-      top: auto;
-      bottom: 33vh;
+      top: 46vh;
+      bottom: auto;
       left: 5vw;
       right: 5vw;
     }
     .track .row {
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .track .row-head .total {
       font-size: 17px;
     }
     .barwrap {
-      height: 34px;
+      height: 30px;
     }
 
     /* the magnifier inset has no room on a phone; the replay console below
@@ -1222,13 +1277,13 @@
       top: auto;
       transform: none;
       width: auto;
-      max-height: 27vh;
+      max-height: 34vh;
       overflow: hidden;
-      padding: 44px 5vw calc(4vh + 6px);
+      padding: 40px 5vw calc(3vh + 6px);
       background: linear-gradient(
         180deg,
         transparent 0%,
-        var(--fc-ground) 24%,
+        var(--fc-ground) 22%,
         var(--fc-ground) 100%
       );
     }
