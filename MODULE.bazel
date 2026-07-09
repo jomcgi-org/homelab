@@ -437,6 +437,12 @@ use_repo(
     "semgrep_sca_rules_python",
 )
 
+# Semgrep experimental offline-Pro engine — osemgrep-pro warm scan-server.
+# amd64 only; digest pinned manually in semgrep_experimental/digests.bzl (not the
+# update-semgrep-pro workflow). Consumed by the Firecracker semgrep guest.
+semgrep_experimental = use_extension("//bazel/semgrep/third_party/semgrep_experimental:extensions.bzl", "semgrep_experimental")
+use_repo(semgrep_experimental, "semgrep_experimental_engine_amd64")
+
 # Semgrep OSS — semgrep-core binary from GHCR (extracted from PyPI wheels)
 # Digests auto-updated by .github/workflows/update-semgrep-pro.yaml
 semgrep = use_extension("//bazel/semgrep/third_party/semgrep:extensions.bzl", "semgrep")

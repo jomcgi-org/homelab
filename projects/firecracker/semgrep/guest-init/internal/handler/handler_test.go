@@ -17,8 +17,8 @@ type fakeScanner struct {
 	err      error
 }
 
-func (f *fakeScanner) Scan(_ context.Context, _ []vsockproto.ScanFile) ([]vsockproto.Finding, error) {
-	return f.findings, f.err
+func (f *fakeScanner) Scan(_ vsockproto.ScanRequest) (vsockproto.ScanResult, error) {
+	return vsockproto.ScanResult{Findings: f.findings}, f.err
 }
 
 // call is a test helper that invokes h with a string body.

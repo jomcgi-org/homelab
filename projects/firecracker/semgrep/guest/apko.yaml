@@ -14,15 +14,16 @@ contents:
     - coreutils
     - ca-certificates-bundle
     - git
-    # Runtime libs the Pro engine (semgrep-core-proprietary, a native binary baked
-    # by engine_tar) dynamically links (libstdc++.so.6, libgcc_s.so.1,
+    # Runtime libs the Pro engine (osemgrep-pro / semgrep-core, native binaries
+    # baked by engine_tar) dynamically links (libstdc++.so.6, libgcc_s.so.1,
     # libgomp.so.1); without them the engine exits 127 at load.
     - libgcc
     - libgomp
     - libstdc++
-    # pysemgrep CLI: provides `semgrep lsp` and bundles its own OSS semgrep-core.
-    # The Pro engine is layered separately and selected via SEMGREP_CORE_BIN.
-    # This pulls python3 transitively, so no separate python3/py3-pip is needed.
+    # pysemgrep CLI. No longer used at runtime: the offline-Pro scan-server
+    # (osemgrep-pro) is self-contained and replaced the old resident `semgrep lsp`.
+    # Retained for now to avoid an apko.lock regeneration; slated for removal in a
+    # follow-up to shrink the image (drops python3 too).
     - semgrep
 
 archs:
@@ -38,11 +39,10 @@ entrypoint:
   command: /usr/local/bin/semgrep-guest-init
 
 environment:
-  # The Wolfi `semgrep` package installs the CLI at /usr/bin/semgrep; the guest
-  # init defaults to /opt/semgrep-venv/bin/semgrep, so point it at the package.
-  SEMGREP_BIN: /usr/bin/semgrep
-  # Pro engine baked by engine_tar; guest-init also defaults this, set explicitly
-  # for self-documentation.
-  SEMGREP_CORE_BIN: /opt/semgrep/semgrep-core-proprietary
-  # Merged rules dir baked by rules_tar; matches the guest-init default.
-  SEMGREP_RULES_DIR: /etc/semgrep/rules
+  # The offline-Pro scan-server binary, baked by engine_tar. It is the
+  # proprietary engine placed as osemgrep-pro (argv[0] dispatch) with semgrep-core
+  # co-located in the same dir. guest-init also defaults this path.
+  OSEMGREP_PRO_BIN: /opt/semgrep/osemgrep-pro
+  # Rule dir the scan-server loads (SEMGREP_SCAN_RULES), baked by rules_tar;
+  # matches the guest-init default.
+  SEMGREP_SCAN_RULES: /etc/semgrep/rules
