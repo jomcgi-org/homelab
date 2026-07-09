@@ -32,6 +32,9 @@ type fakeDriver struct {
 	removedBundles   []string
 	snapshotBaseKeys []string
 
+	statsCalls        int  // number of Stats calls
+	statsAfterRelease bool // set if Stats was called after Release for a handle (a bug)
+
 	seq int // monotonic counter for generated threadIDs
 }
 
@@ -81,6 +84,27 @@ func (f *fakeDriver) RemoveBundle(threadID string) error {
 
 func (f *fakeDriver) VsockUDSPath(threadID string) string {
 	return "/fake/" + threadID + "/vsock.sock"
+}
+
+func (f *fakeDriver) Stats(h substrate.Handle) (substrate.GuestStats, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statsCalls++
+	// Stats must be sampled while the guest is alive, i.e. BEFORE Release. Flag a
+	// violation if this handle was already released.
+	for _, r := range f.releaseHandles {
+		if r.ID == h.ID {
+			f.statsAfterRelease = true
+		}
+	}
+	return substrate.GuestStats{CPUMillis: 20, PeakRSSMib: 128}, nil
+}
+
+// statsCount returns the number of Stats calls recorded so far.
+func (f *fakeDriver) statsCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.statsCalls
 }
 
 // claimCount returns the number of Claim calls recorded so far.
@@ -294,6 +318,34 @@ func TestInvokeColdPathSkipsPrime(t *testing.T) {
 
 	if primeCount != 0 {
 		t.Errorf("Prime called %d time(s) on the cold path, want 0", primeCount)
+	}
+}
+
+// TestInvokeSamplesGuestStatsBeforeRelease verifies the teardown reads the
+// guest's resource counters (for the fc.guest.* span attributes) while the VM
+// is still alive, i.e. before Release kills the process. Sampling after Release
+// would read a dead /proc entry, so ordering is the correctness point.
+func TestInvokeSamplesGuestStatsBeforeRelease(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &funcTransport{}
+	inv := New(drv, tr, defaultConfig(), nil)
+
+	if err := inv.BuildBase(context.Background()); err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	resp, err := inv.Invoke(context.Background(), "sess-1", strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	// Stats is sampled in the body-close teardown, just before Release.
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("resp.Body.Close: %v", err)
+	}
+	if got := drv.statsCount(); got < 1 {
+		t.Errorf("Stats called %d time(s), want >= 1 (sampled at teardown)", got)
+	}
+	if drv.statsAfterRelease {
+		t.Error("Stats was called after Release; it must sample the live guest before teardown")
 	}
 }
 

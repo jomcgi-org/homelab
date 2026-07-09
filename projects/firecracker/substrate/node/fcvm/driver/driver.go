@@ -91,6 +91,10 @@ func (c Config) withDefaults() Config {
 type Process interface {
 	Kill() error
 	Wait() error
+	// Pid returns the OS process id of the firecracker process, or 0 if it has
+	// not started. Used to read the process's /proc resource counters for
+	// per-invocation stats before teardown.
+	Pid() int
 }
 
 // Launcher starts a Firecracker process whose API socket is at socketPath and

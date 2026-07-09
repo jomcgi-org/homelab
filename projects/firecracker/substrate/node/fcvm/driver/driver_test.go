@@ -25,10 +25,12 @@ type fakeLauncher struct {
 type fakeProcess struct {
 	srv    *http.Server
 	killed bool
+	pid    int
 }
 
 func (p *fakeProcess) Kill() error { p.killed = true; return p.srv.Close() }
 func (p *fakeProcess) Wait() error { return nil }
+func (p *fakeProcess) Pid() int    { return p.pid }
 
 func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (Process, error) {
 	l.mu.Lock()

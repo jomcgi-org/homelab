@@ -57,6 +57,11 @@ type vmDriver interface {
 	// vsock device; the transport addresses the guest shim HTTP port relative
 	// to it.
 	VsockUDSPath(threadID string) string
+	// Stats reads the guest's host-side resource counters (whole-invocation CPU
+	// and peak RSS) from /proc. It must be called while the guest is still
+	// alive, i.e. before Release. Best-effort: the caller records the values on
+	// a span and continues on error.
+	Stats(h substrate.Handle) (substrate.GuestStats, error)
 }
 
 // transport is the host-side HTTP-over-vsock client. The real
@@ -546,6 +551,20 @@ func (inv *Invoker) ownResponse(ctx context.Context, resp *http.Response, td inv
 			td.egressCancel()
 			td.cancelRT()
 			_, releaseSpan := tracer.Start(ctx, "vm_release")
+			// Sample the guest's whole-invocation resource use from /proc BEFORE
+			// Release kills the process (afterwards /proc/<pid> is gone). Record
+			// it on vm_release: it is the live span here (fc_invoke and guest_exec
+			// have already ended by body Close), and it is where the values are
+			// queryable per invocation. Best-effort; a read failure just omits the
+			// attributes. These describe the whole invocation, not the release.
+			if stats, err := inv.driver.Stats(td.h); err == nil {
+				releaseSpan.SetAttributes(
+					attribute.Int64("fc.guest.cpu_ms", stats.CPUMillis),
+					attribute.Int64("fc.guest.peak_rss_mib", stats.PeakRSSMib),
+				)
+			} else {
+				inv.logger.Debug("invoker: guest stats unavailable", "thread", td.h.ThreadID, "err", err)
+			}
 			inv.releaseGuest(td.h)
 			releaseSpan.End()
 			// (b) VM memory reclaimed: free the slot now so the next queued

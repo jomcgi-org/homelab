@@ -58,6 +58,23 @@ type Handle struct {
 	Node string
 }
 
+// GuestStats is a host-side resource sample for one guest's firecracker
+// process, read from /proc just before the VM is torn down. Because each
+// invocation is a fresh single-use process (its CPU counter starts at zero at
+// Launch and its RSS high-water-mark accumulates over its whole life), these are
+// whole-invocation totals, not a windowed delta:
+//   - CPUMillis is the total user+system CPU consumed across all the process's
+//     threads (every vCPU plus VMM housekeeping) since Launch. CPUMillis/wall
+//     approximates the average cores used, so a value well above the wall time
+//     means the guest ran multi-core and a value near it means single-core.
+//   - PeakRSSMib is the kernel's peak resident set (VmHWM) for the process, an
+//     upper bound on the VM's host memory footprint (it blends per-VM dirtied
+//     pages with copy-on-write pages faulted in from the shared base snapshot).
+type GuestStats struct {
+	CPUMillis  int64
+	PeakRSSMib int64
+}
+
 // Request is a unit of work to run inside a claimed environment. Exec runs an
 // opaque process and streams its output; the harness (Claude CLI, Goose recipe)
 // is a property of the workload image, not the platform (ADR 019).
