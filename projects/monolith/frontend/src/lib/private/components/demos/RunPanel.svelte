@@ -250,7 +250,22 @@
         <span class="latency-label">wall</span>
         <span class="latency-value">{displayMs.toFixed(0)}ms</span>
       </span>
-      {#if result?.duration_ms != null}
+      {#if result?.overhead_ms != null}
+        <!-- When the guest reports its own exec time we can split the two: the
+             code's runtime vs the sandbox envelope around it. The sandbox
+             number is the point of the demo, so it is emphasised. -->
+        <span class="latency-item">
+          <span class="latency-label">exec</span>
+          <span class="latency-value">{result.duration_ms}ms</span>
+        </span>
+        <span
+          class="latency-item latency-item--hero"
+          title="Sandbox envelope: the whole invoke minus your code's exec (snapshot restore, vsock prime, readiness, teardown). Measured in-cluster, so the browser round-trip is excluded."
+        >
+          <span class="latency-label">sandbox</span>
+          <span class="latency-value">{result.overhead_ms}ms</span>
+        </span>
+      {:else if result?.duration_ms != null}
         <span class="latency-item">
           <span class="latency-label">invocation</span>
           <span class="latency-value">{result.duration_ms}ms</span>
@@ -471,6 +486,17 @@
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: var(--ink);
+  }
+
+  /* The sandbox overhead is the headline metric this demo exists to show, so
+     tint its value with the accent and give its label a cursor hint for the
+     explanatory tooltip. */
+  .latency-item--hero {
+    cursor: help;
+  }
+
+  .latency-item--hero .latency-value {
+    color: var(--accent);
   }
 
   .goose-status {

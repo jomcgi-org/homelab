@@ -78,9 +78,18 @@ class GooseRequest(BaseModel):
 async def run_python(body: PythonRequest) -> dict:
     """Run a Python script in the zero-egress sandbox microVM.
 
-    Returns stdout/stderr/exit_code plus a backend-measured duration and the
-    trace id of this invocation. Prefers the daemon's own duration_ms when
-    present, falling back to the wall time measured here.
+    Returns stdout/stderr/exit_code plus two timings and the trace id of this
+    invocation:
+
+    - ``duration_ms`` is the guest's own exec time (the ``cmd.Run()`` of the
+      script) when the daemon reports it, else the backend wall as a fallback.
+    - ``overhead_ms`` is the sandbox envelope: the invoke total (backend wall
+      around the whole fc-invoke call) minus the guest exec, i.e. everything the
+      microVM costs beyond running the code (slot wait + snapshot restore + vsock
+      prime + readiness + teardown). It is the cleanest single number for the
+      cost of isolation, measured in-cluster so the browser round-trip is
+      excluded. It is None on the fallback path, where there is no distinct guest
+      exec to subtract.
     """
     with _tracer.start_as_current_span("demo.python", context=Context()):
         trace_id = _current_trace_id()
@@ -88,11 +97,17 @@ async def run_python(body: PythonRequest) -> dict:
         result = await run_python_in_sandbox(body.code, body.files)
         elapsed_ms = (perf_counter() - started) * 1000
 
+    guest_ms = result.get("duration_ms")
+    overhead_ms = (
+        None if guest_ms is None else max(0.0, round(elapsed_ms - guest_ms, 1))
+    )
+
     return {
         "stdout": result.get("stdout", ""),
         "stderr": result.get("stderr", ""),
         "exit_code": result.get("exit_code"),
-        "duration_ms": result.get("duration_ms", elapsed_ms),
+        "duration_ms": guest_ms if guest_ms is not None else round(elapsed_ms, 1),
+        "overhead_ms": overhead_ms,
         "error": result.get("error"),
         "trace_id": trace_id,
     }
