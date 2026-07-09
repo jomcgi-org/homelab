@@ -137,7 +137,11 @@
   }
 
   function frame(t) {
-    topbarEl.classList.toggle("dim", t > 0.04 && t < 0.97);
+    // Fade the branding out the moment the reader scrolls off the hero, and
+    // keep it gone for the rest of the story and the replay section (it used
+    // to only dim to 0.3, then snap back to full opacity near the end and
+    // collide with the "Feel it. Restore one now." heading).
+    topbarEl.style.opacity = 1 - sub(t, 0.02, 0.06);
 
     const ho = 1 - sub(t, PHASES.heroOut[0], PHASES.heroOut[1]);
     heroEl.style.opacity = ho;
@@ -640,11 +644,6 @@
     color: var(--fc-ink);
     font-weight: 600;
   }
-  /* toggled imperatively via classList.toggle in frame(), not Svelte
-     class:, so the selector needs :global to survive scoped-CSS pruning */
-  .topbar:global(.dim) {
-    opacity: 0.3;
-  }
 
   /* ---------- scroll story ---------- */
   .scroller {
@@ -1146,48 +1145,101 @@
   }
 
   /* ---------- mobile ---------- */
+  /* A phone has one column, not three, so the desktop caption-left /
+     machine-right / track-bottom spread collapses into overlap. Stack the
+     story into three clear horizontal bands instead: the visual (machine or
+     chips) pinned to the top, the timing bars in the middle, and the
+     narration as a scrim'd bottom sheet so text never lands on top of the
+     machine or the bars behind it. */
   @media (max-width: 820px) {
-    .caption {
-      left: 6vw;
-      right: 6vw;
-      top: auto;
-      bottom: 18vh;
-      transform: none;
-      width: auto;
+    .hero h1 {
+      font-size: 44px;
     }
-    .caption h2 {
-      font-size: 26px;
-    }
+
+    /* visual (machine / chips) pinned to the top band */
     .machine {
-      right: 6vw;
-      left: 6vw;
-      top: 12vh;
+      right: 5vw;
+      left: 5vw;
+      top: 3vh;
       transform: none;
       width: auto;
     }
     .ram {
-      height: clamp(160px, 24vh, 240px);
+      height: clamp(118px, 14vh, 160px);
+    }
+    .disk {
+      margin-top: 16px;
+    }
+    .files {
+      gap: 12px;
+    }
+    .file {
+      padding: 11px 14px;
     }
     .chips {
-      right: 6vw;
-      left: 6vw;
-      top: 14vh;
+      right: 5vw;
+      left: 5vw;
+      top: 3vh;
       transform: none;
       width: auto;
       grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
     }
+    .chip {
+      padding: 11px 12px;
+      font-size: 13px;
+    }
+
+    /* timing track sits below the machine, clear of the caption sheet */
     .track {
-      bottom: 3vh;
-      left: 6vw;
-      right: 6vw;
+      top: auto;
+      bottom: 33vh;
+      left: 5vw;
+      right: 5vw;
     }
+    .track .row {
+      margin-bottom: 12px;
+    }
+    .track .row-head .total {
+      font-size: 17px;
+    }
+    .barwrap {
+      height: 34px;
+    }
+
+    /* the magnifier inset has no room on a phone; the replay console below
+       shows the same per-phase breakdown */
     .zoom {
-      bottom: 104px;
-      right: 0;
-      width: min(340px, 88vw);
+      display: none;
     }
-    .hero h1 {
-      font-size: 44px;
+
+    /* caption becomes a bottom sheet with a scrim, so the narration never
+       collides with the machine or the bars behind it */
+    .caption {
+      left: 0;
+      right: 0;
+      bottom: 0;
+      top: auto;
+      transform: none;
+      width: auto;
+      max-height: 27vh;
+      overflow: hidden;
+      padding: 44px 5vw calc(4vh + 6px);
+      background: linear-gradient(
+        180deg,
+        transparent 0%,
+        var(--fc-ground) 24%,
+        var(--fc-ground) 100%
+      );
+    }
+    .caption h2 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+    .caption p {
+      font-size: 14.5px;
+      line-height: 1.45;
+      max-width: none;
     }
   }
 </style>
