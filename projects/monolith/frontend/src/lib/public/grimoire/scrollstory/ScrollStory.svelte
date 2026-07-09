@@ -561,13 +561,15 @@
 
     // Marks highlight like a hand sweeping a marker across each phrase: a
     // left-to-right fill wipe, staggered in DOM order (top-to-bottom, then
-    // left-to-right down the cards) so the whole page reads as being
-    // highlighted by hand. The tail of the sweep overlaps the card lift-off
-    // (cardsOut, 0.5-0.58) on purpose: the lower phrases are still being
-    // marked as their cards begin to fly away.
-    const HL_START = 0.435; // first phrase begins
-    const HL_STAGGER = 0.085; // spread of start times across all marks
-    const HL_FILL = 0.05; // each phrase's own swipe duration
+    // left-to-right down the cards). The whole sweep is compressed to finish
+    // by ~0.515, just as the cards begin to lift off (cardsOut starts at 0.5),
+    // so every phrase is fully marked before its card flies away. We only
+    // animate paint properties (background + color): font-weight is NOT
+    // touched, because changing weight reflows the glyphs and makes the text
+    // visibly jump/grow as each word highlights.
+    const HL_START = 0.44; // first phrase begins
+    const HL_STAGGER = 0.045; // spread of start times across all marks
+    const HL_FILL = 0.03; // each phrase's own (fast) swipe duration
     const nMark = markEls.length;
     markEls.forEach((m, i) => {
       const c = m.dataset.c;
@@ -577,7 +579,6 @@
       if (pen <= 0) {
         m.style.background = "transparent";
         m.style.color = "inherit";
-        m.style.fontWeight = "inherit";
         return;
       }
       const pct = pen * 100;
@@ -585,8 +586,7 @@
       // hard trailing edge with a small feather ahead of it = a marker tip
       // leading the fill from the left
       m.style.background = `linear-gradient(90deg, ${tint} ${pct.toFixed(1)}%, transparent ${Math.min(100, pct + 5).toFixed(1)}%)`;
-      m.style.color = pen > 0.55 ? c : "inherit";
-      m.style.fontWeight = pen > 0.55 ? "700" : "inherit";
+      m.style.color = pen > 0.5 ? c : "inherit";
     });
 
     // chips fly from the card column to their graph nodes; edges draw in
