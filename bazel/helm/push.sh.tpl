@@ -252,7 +252,11 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
         GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
       fi
       if [[ -n "$GUARD_CHART_NAME" ]]; then
-        HELM="$HELM" CRANE="$CRANE" REPOSITORY="$REPOSITORY" \
+        # Pass HELM/CRANE via `env`, not a command prefix: both are readonly in
+        # this shell, and a `HELM=... cmd` prefix is a shell assignment that
+        # bash rejects with "HELM: readonly variable". `env` sets them only in
+        # the child's environment.
+        env HELM="$HELM" CRANE="$CRANE" REPOSITORY="$REPOSITORY" \
           bash "$CHECK_MISSED_BUMP" "$GUARD_CHART_NAME" "$CURRENT_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"
       fi
     fi
