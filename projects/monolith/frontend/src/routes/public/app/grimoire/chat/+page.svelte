@@ -14,6 +14,7 @@
   // cookie) because it opens a distinct budgeted backend session, exactly
   // mirroring how a shared-snapshot fork is a separate admission from a fresh
   // session on the notes surface.
+  import { onMount } from "svelte";
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import {
@@ -24,7 +25,15 @@
   } from "$lib/public/grimoire/chat/stream.js";
   import { createChatSession } from "$lib/public/grimoire/chat/admission.js";
   import { freshChatState } from "$lib/public/grimoire/chat/chat-state.js";
+  import {
+    emptyConstellation,
+    withTouched,
+    withEgo,
+  } from "$lib/public/grimoire/chat/constellation-state.js";
+  import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
+  import { exploreEgo } from "$lib/public/grimoire/api.js";
   import SourceDrawer from "$lib/public/grimoire/chat/SourceDrawer.svelte";
+  import MiniConstellation from "$lib/public/grimoire/MiniConstellation.svelte";
 
   let { data } = $props();
 
@@ -65,6 +74,31 @@
   // The touched item currently open in the SourceDrawer, or null when closed.
   let activeSource = $state(null);
 
+  // ── session constellation ────────────────────────────────────────
+  // A live graph of every grounded entity this conversation has touched,
+  // rendered as the side panel (MiniConstellation). Nodes come from
+  // node_touched frames; edges only ever come from real exploreEgo(id)
+  // responses intersected with the session's node set (constellation-state.js
+  // guarantees no fabricated relationship). Reset on NEW CHAT, seeded in full
+  // from history on a reloaded session (see onMount below).
+  let constellation = $state(emptyConstellation());
+
+  // Fold one touched entity into `constellation` and, if it is genuinely new,
+  // fire a best-effort ego fetch for it. The `.then` reads `constellation`
+  // (not a captured local) at resolve time, so two concurrent ego fetches
+  // each fold into whatever the other has already produced instead of one
+  // clobbering the other.
+  function ingestTouched(item) {
+    const next = withTouched(constellation, item);
+    if (next === constellation) return;
+    constellation = next;
+    exploreEgo(item.id)
+      .then((ego) => {
+        constellation = withEgo(constellation, item.id, ego);
+      })
+      .catch(() => {});
+  }
+
   // Starters that map to well-covered corpus material (a classic monster's
   // lair actions, a signature Curse of Strahd NPC, a core spell rule, and the
   // Death House introductory adventure), so they retrieve and ground well.
@@ -89,7 +123,7 @@
     autoScroll();
   });
 
-  function renderReply(text) {
+  function renderReply(text, touched) {
     // Model output is untrusted (ADR 005 layer 8, applied identically to the
     // Grimoire sage persona). renderMarkdown HTML-escapes &<> on every path
     // and emits no raw HTML, links, or javascript:/data: URLs, so injected
@@ -99,7 +133,11 @@
     // escaping is the protection that matters. An empty title map means
     // [[wikilinks]] (which the model never has reason to emit here) render as
     // inert text.
-    return renderMarkdown(text ?? "", new Map());
+    //
+    // highlightMentions runs on the FRESH renderMarkdown output only (never
+    // on its own return value, per its header contract), underlining any
+    // touched entity's name in its type color.
+    return highlightMentions(renderMarkdown(text ?? "", new Map()), touched);
   }
 
   async function send(text) {
@@ -120,6 +158,9 @@
         signal: controller.signal,
         onFrame: (frame) => {
           turn = applyFrame(turn, frame);
+          if (frame.type === "node_touched" && frame.data?.kind === "entity") {
+            ingestTouched(frame.data);
+          }
         },
       });
     } catch {
@@ -156,7 +197,23 @@
     notice = s.notice;
     input = s.input;
     lastUserMessage = s.lastUserMessage;
+    // NEW CHAT opens a brand-new server session (see newChat's comment), so
+    // any grounded entities belong to a conversation that no longer exists.
+    constellation = emptyConstellation();
   }
+
+  // A reloaded session hydrates with its full transcript already committed
+  // (see `messages` above), so fold every already-touched entity through the
+  // same ingest path used for a live stream. The constellation panel then
+  // renders fully revealed on first paint instead of replaying the reveal
+  // animation for a conversation that already happened.
+  onMount(() => {
+    for (const m of messages) {
+      for (const item of m.touched ?? []) {
+        if (item.kind === "entity") ingestTouched(item);
+      }
+    }
+  });
 
   function newChat() {
     // Abort any in-flight turn, clear the transcript + grounding set, and
@@ -266,6 +323,7 @@
       {/if}
     </div>
 
+    <div class="chat-main">
     <div class="chat-transcript" bind:this={transcriptEl}>
       {#if !admitted}
         <div class="chat-gate">
@@ -310,7 +368,7 @@
           {:else}
             <article class="turn turn-bot">
               <p class="bot-label">{BOT_LABEL}</p>
-              <div class="turn-md">{@html renderReply(m.content)}</div>
+              <div class="turn-md">{@html renderReply(m.content, m.touched)}</div>
               {#if m.touched && m.touched.length}
                 <div class="turn-touched">
                   <span class="turn-touched-label">GROUNDED IN</span>
@@ -334,7 +392,9 @@
             <p class="bot-label">{BOT_LABEL}</p>
             {#if turn.assistant}
               <div class="turn-md">
-                {@html renderReply(turn.assistant)}<span class="caret"></span>
+                {@html renderReply(turn.assistant, turn.touched)}<span
+                  class="caret"
+                ></span>
               </div>
             {:else}
               <p class="turn-thinking">
@@ -347,6 +407,21 @@
           </article>
         {/if}
       {/if}
+    </div>
+
+    {#if constellation.nodes.length > 0}
+      <aside
+        class="constellation"
+        aria-label="Entities this conversation has drawn on"
+      >
+        <span class="constellation-cap">SESSION CONSTELLATION</span>
+        <MiniConstellation
+          nodes={constellation.nodes}
+          edges={constellation.edges}
+          revealedIds={new Set(constellation.ids)}
+        />
+      </aside>
+    {/if}
     </div>
 
     {#if notice}
@@ -537,7 +612,16 @@
     white-space: nowrap;
   }
 
-  /* ── transcript ─────────────────────────────────────────────── */
+  /* ── transcript + constellation row ────────────────────────────
+     .chat-main sits between the panel head and the notice/input dock.
+     flex:1/min-height:0 on both this row and .chat-transcript keeps the
+     input dock pinned to the bottom of .chat-box while the transcript (and
+     only the transcript) scrolls. */
+  .chat-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   .chat-transcript {
     flex: 1;
     min-height: 0;
@@ -547,6 +631,59 @@
     flex-direction: column;
     gap: 22px;
     background: var(--grim-paper);
+  }
+
+  /* ── session constellation panel ───────────────────────────────
+     A live graph of every entity the conversation has grounded on so far.
+     Appears once (a single slide-in), then only individual node reveals
+     animate (MiniConstellation's job, driven by revealedIds growing). */
+  .constellation {
+    flex: 0 0 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 14px;
+    border-left: 1px solid var(--grim-line);
+    background: var(--grim-paper);
+    overflow: hidden;
+    animation: constel-in 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes constel-in {
+    from {
+      width: 0;
+      opacity: 0;
+      padding-left: 0;
+      padding-right: 0;
+    }
+    to {
+      width: 280px;
+      opacity: 1;
+      padding-left: 14px;
+      padding-right: 14px;
+    }
+  }
+  .constellation-cap {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    color: var(--grim-text-faint);
+  }
+  .constellation :global(.mini-stage) {
+    flex: 1;
+    min-height: 0;
+  }
+  /* GROUNDED IN chips remain the mobile grounding surface: the constellation
+     panel needs width the small viewport does not have. */
+  @media (max-width: 900px) {
+    .constellation {
+      display: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .constellation {
+      animation: none;
+    }
   }
 
   /* ── gate ───────────────────────────────────────────────────── */
@@ -751,6 +888,13 @@
     font-size: 10px;
     letter-spacing: 0.06em;
     font-family: var(--font-mono);
+  }
+  /* Grounded entity mentions (highlightMentions): the color rides in via the
+     inline text-decoration-color the module sets per span. */
+  .turn-md :global(.gmark) {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
   }
 
   .caret {
