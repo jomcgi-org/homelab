@@ -179,18 +179,37 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 		inv.baseMu.Unlock()
 	}()
 
+	// Wrap the whole build in a root span so the startup base build is a single
+	// trace instead of the driver's orphan provision_rootfs/firecracker_boot
+	// spans. Claim, WaitReady, and SnapshotBase all read their span from the ctx
+	// argument, so threading buildCtx down parents the existing driver spans
+	// under this root with no driver changes. This span is created off the daemon
+	// ctx (which outlives the build), and the daemon keeps running afterwards, so
+	// the batch processor flushes it on its normal interval. Span names/durations
+	// only; no secrets in attributes.
+	buildCtx, buildSpan := tracer.Start(ctx, "base_snapshot_build", trace.WithAttributes(
+		attribute.String("fc.workload", inv.cfg.BaseKey),
+	))
+	defer buildSpan.End()
+
 	// The build guest counts against the concurrency cap so K*MemMib stays a
 	// true bound on microVM memory even while a rebuild runs alongside invocations.
 	if inv.sem != nil {
-		if err := inv.sem.Acquire(ctx, 1); err != nil {
+		if err := inv.sem.Acquire(buildCtx, 1); err != nil {
+			buildSpan.RecordError(err)
+			buildSpan.SetStatus(codes.Error, err.Error())
 			return fmt.Errorf("base build: acquire slot: %w", err)
 		}
 		defer inv.sem.Release(1)
 	}
 
 	start := time.Now()
-	h, err := inv.driver.Claim(ctx, substrate.ClaimSpec{Arch: inv.cfg.Arch})
+	// Claim cold-boots the build guest; its provision_rootfs and firecracker_boot
+	// spans nest under base_snapshot_build via buildCtx.
+	h, err := inv.driver.Claim(buildCtx, substrate.ClaimSpec{Arch: inv.cfg.Arch})
 	if err != nil {
+		buildSpan.RecordError(err)
+		buildSpan.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("base build: cold boot: %w", err)
 	}
 	// Always discard the build VM: the base lives in the snapshot bundle, not
@@ -202,15 +221,33 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 		inv.removeGuestBundle(h.ThreadID)
 	}()
 
-	readyCtx, cancel := context.WithTimeout(ctx, inv.cfg.BootReadyTimeout)
+	readyCtx, cancel := context.WithTimeout(buildCtx, inv.cfg.BootReadyTimeout)
 	defer cancel()
-	if err := inv.transport.WaitReady(readyCtx, inv.driver.VsockUDSPath(h.ThreadID), inv.cfg.Workload.ReadyPath); err != nil {
-		return fmt.Errorf("base build: guest readiness: %w", err)
+	waitCtx, waitSpan := tracer.Start(readyCtx, "guest_wait_ready")
+	readyErr := inv.transport.WaitReady(waitCtx, inv.driver.VsockUDSPath(h.ThreadID), inv.cfg.Workload.ReadyPath)
+	if readyErr != nil {
+		waitSpan.RecordError(readyErr)
+		waitSpan.SetStatus(codes.Error, readyErr.Error())
 	}
-	ref, err := inv.driver.SnapshotBase(ctx, h, inv.cfg.BaseKey)
+	waitSpan.End()
+	if readyErr != nil {
+		buildSpan.RecordError(readyErr)
+		buildSpan.SetStatus(codes.Error, readyErr.Error())
+		return fmt.Errorf("base build: guest readiness: %w", readyErr)
+	}
+	// snapshot_save wraps the pause + snapshot write + resume + publish; the warm
+	// base bundle write is the second big cost of a startup build after the boot.
+	saveCtx, saveSpan := tracer.Start(buildCtx, "snapshot_save")
+	ref, err := inv.driver.SnapshotBase(saveCtx, h, inv.cfg.BaseKey)
 	if err != nil {
+		saveSpan.RecordError(err)
+		saveSpan.SetStatus(codes.Error, err.Error())
+		saveSpan.End()
+		buildSpan.RecordError(err)
+		buildSpan.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("base build: snapshot: %w", err)
 	}
+	saveSpan.End()
 	inv.baseMu.Lock()
 	inv.baseRef = ref
 	inv.baseGen++
