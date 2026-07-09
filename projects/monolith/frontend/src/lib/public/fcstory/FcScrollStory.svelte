@@ -45,8 +45,8 @@
   const restoreTotalMax = Math.max(...restores.map((r) => r.total));
   // "Every sandbox since" is a claim about all restores, not just run #1, so
   // the hero and static fallback use the mean snapshot_restore duration
-  // across every baked run (matches the mockup's "23 milliseconds", which
-  // was itself the rounded average, not a single run's figure).
+  // across every baked run (22.46 ms over the 12 runs, rendered as 22 ms;
+  // the mockup's "23 milliseconds" was the rounded 180-run ClickHouse average).
   const meanSnapshotRestoreMs =
     restores.reduce(
       (sum, r) =>
@@ -70,6 +70,8 @@
 
   let vh = 0;
   let span = 1;
+  let machineW = 0;
+  let machineH = 0;
   let cells = [];
 
   function buildCells() {
@@ -123,6 +125,8 @@
   function measure() {
     vh = window.innerHeight;
     span = scrollerEl.offsetHeight - vh;
+    machineW = machineEl.offsetWidth;
+    machineH = machineEl.offsetHeight;
     buildCells();
   }
 
@@ -216,7 +220,7 @@
         0.08 +
         ((i * 37) % 84) / 100 +
         Math.sin(p * Math.PI) * 0.02 * (i % 2 ? 1 : -1);
-      d.style.transform = `translate(${x * machineEl.offsetWidth}px,${y * machineEl.offsetHeight}px)`;
+      d.style.transform = `translate(${x * machineW}px,${y * machineH}px)`;
       d.style.opacity = Math.sin(p * Math.PI);
       d.className = "page-dot" + (dir === -1 ? " hot" : "");
     });
