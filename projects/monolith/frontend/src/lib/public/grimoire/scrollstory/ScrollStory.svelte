@@ -584,9 +584,10 @@
       const pct = pen * 100;
       const tint = `color-mix(in srgb, ${c} 34%, transparent)`;
       // hard trailing edge with a small feather ahead of it = a marker tip
-      // leading the fill from the left
+      // leading the fill from the left. The text stays ink (never recoloured to
+      // the entity hue): a real highlighter is dark text on a colour fill, and
+      // same-hue text on a same-hue tint is low-contrast and hard to read.
       m.style.background = `linear-gradient(90deg, ${tint} ${pct.toFixed(1)}%, transparent ${Math.min(100, pct + 5).toFixed(1)}%)`;
-      m.style.color = pen > 0.5 ? c : "inherit";
     });
 
     // chips fly from the card column to their graph nodes; edges draw in
