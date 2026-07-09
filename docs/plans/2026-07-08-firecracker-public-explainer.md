@@ -169,6 +169,37 @@ git commit -m "feat(fcstory): bake script and real fc-invoke trace data"
 
 ---
 
+### Task 1 addendum (2026-07-09): the daemon never cold boots per request
+
+Reality check from live ClickHouse data + the substrate source: fc-invoke
+builds one warm base snapshot per workload at daemon startup, then serves
+every request as a snapshot restore (~23ms avg, 29ms max over 180 recorded
+runs). Per-request cold boots do not happen unless the base fails, so the
+demo API cannot produce a cold trace and "raise the run count" does nothing.
+Also: the substrate lives at `projects/firecracker/substrate` (not
+`projects/substrate`), `provision_rootfs` no longer exists as a span, and the
+current warm-path vocabulary is `auth_tokenreview`, `acquire_slot`,
+`snapshot_restore`, `vsock_prime`, `guest_wait_ready`, `guest_exec` (plus
+post-response `vm_release`, `bundle_cleanup`, `guest_teardown`, all excluded).
+
+Decisions (approved by Joe):
+
+- **Narrative change**: the cold beat becomes "built once at startup": the
+  daemon boots a VM the slow way once, freezes it to disk, and every request
+  after that is a restore. This is more honest and a stronger story than the
+  pool-exhaustion framing.
+- **New prerequisite (Task 1a)**: an fc-invoke PR wraps the startup
+  base-snapshot build in a proper span tree (root `base_snapshot_build` with
+  the real build steps as children, tracing initialized before the build).
+  The rollout that deploys it produces the real cold trace.
+- **Bake script change**: the cold run is fetched from SigNoz ClickHouse
+  directly (kubectl exec on the clickhouse pod, query
+  `signoz_traces.distributed_signoz_index_v3` for the latest
+  `base_snapshot_build` tree, service `fc-invoke`), since the demo trace
+  endpoint can only see demo-rooted traces. Restores still come from the demo
+  API path. `data/trace.js` schema gains `cold.label = "measured at daemon
+  startup"` context but is otherwise unchanged.
+
 ### Task 2: Static HTML mockup with the full choreography
 
 **Files:**
