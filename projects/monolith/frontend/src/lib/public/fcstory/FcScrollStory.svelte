@@ -62,7 +62,7 @@
 
   // ── Plain (non-reactive) per-frame refs ──
   let scrollerEl, stageEl, machineEl, cellsEl, ramGlowEl;
-  let heroEl, topbarEl;
+  let heroEl, topbarEl, brandEl;
   let capBootEl, capFreezeEl, capRestoreEl, capRepeatEl;
   let vmEl, vmstateEl, diskEl, fileMemEl, fileVmsEl, fillMemEl, fillVmsEl;
   let trackEl, coldBarEl, coldTotalEl, restoreRowEl, restoreBarEl, zoomEl;
@@ -153,7 +153,12 @@
     // keep it gone for the rest of the story and the replay section (it used
     // to only dim to 0.3, then snap back to full opacity near the end and
     // collide with the "Feel it. Restore one now." heading).
-    topbarEl.style.opacity = 1 - sub(t, 0.02, 0.06);
+    const topbarO = 1 - sub(t, 0.02, 0.06);
+    topbarEl.style.opacity = topbarO;
+    // The home link is the only interactive thing in the (pointer-events:none)
+    // topbar; disable it once the bar has faded so it is never an invisible
+    // click target over the story.
+    brandEl.style.pointerEvents = topbarO > 0.5 ? "auto" : "none";
 
     const ho = 1 - sub(t, PHASES.heroOut[0], PHASES.heroOut[1]);
     heroEl.style.opacity = ho;
@@ -335,7 +340,11 @@
 
 <div class="fcstory">
   <header class="topbar" bind:this={topbarEl}>
-    <span><strong>jomcgi.dev</strong> / firecracker</span>
+    <span
+      ><a class="brand" href="/" bind:this={brandEl}
+        ><strong>jomcgi.dev</strong></a
+      > / firecracker</span
+    >
   </header>
 
   <!-- ==================== SCROLL STORY ==================== -->
@@ -675,6 +684,22 @@
   .topbar strong {
     color: var(--fc-ink);
     font-weight: 600;
+  }
+  /* The wordmark links home. The topbar itself stays pointer-events:none so it
+     never intercepts the scroll story; only this link opts back in. */
+  .topbar .brand {
+    pointer-events: auto;
+    color: inherit;
+    text-decoration: none;
+    border-radius: 4px;
+  }
+  .topbar .brand:hover strong {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .topbar .brand:focus-visible {
+    outline: 2px solid var(--fc-ember-deep);
+    outline-offset: 3px;
   }
 
   /* ---------- scroll story ---------- */
