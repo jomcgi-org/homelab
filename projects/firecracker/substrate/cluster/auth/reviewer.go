@@ -34,11 +34,22 @@ func NewClusterReviewer() (Reviewer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
 	}
+	// client-go's default client-side rate limiter is 5 QPS / burst 10. Since
+	// every /invoke does one TokenReview, that default bucket silently capped the
+	// daemon's whole throughput at ~5 invokes/s (a saturating drain queued for
+	// seconds in this limiter, upstream of the concurrency semaphore and every
+	// span but auth_tokenreview). Raise it well above the invoke rate; the
+	// caching wrapper below keeps the actual TokenReview call rate near zero, so
+	// this is headroom for cache misses (hourly token rotation), not sustained
+	// API-server load.
+	restCfg.QPS = 100
+	restCfg.Burst = 200
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes client: %w", err)
 	}
-	return &clusterReviewer{reviews: clientset.AuthenticationV1().TokenReviews()}, nil
+	cluster := &clusterReviewer{reviews: clientset.AuthenticationV1().TokenReviews()}
+	return newCachingReviewer(cluster, defaultReviewTTL), nil
 }
 
 // Review submits token to the TokenReview API and returns the authenticated
