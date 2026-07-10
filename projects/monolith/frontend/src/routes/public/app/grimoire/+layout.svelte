@@ -86,15 +86,23 @@
   const showDock = $derived(!($page.route.id ?? "").includes("/chat"));
 </script>
 
+<!-- The landing page (isHome) sets its own title, description, and robots
+     meta in its +page.svelte: Svelte does not let a page override a layout's
+     svelte:head tags, it only appends, so duplicating a conflicting title or
+     robots tag here would leave two of each in the rendered head with no
+     well-defined winner. Every other route in this tree stays link-shareable
+     but not crawlable (kept out of search and off any sitemap/robots allow,
+     regardless of admission), which is what this block covers. svelte:head
+     itself cannot sit inside an {#if}, so the condition is on its children. -->
 <svelte:head>
-  <title>Grimoire · jomcgi.dev</title>
-  <meta
-    name="description"
-    content="A read-only, link-shareable D&D sourcebook library: browse loaded books, read chunk by chunk, and look up creatures and lore."
-  />
-  <!-- Link-shareable, not crawlable: the whole app tree is kept out of search
-       and off sitemap.xml / a robots.txt allow, regardless of admission. -->
-  <meta name="robots" content="noindex, nofollow" />
+  {#if !isHome}
+    <title>Grimoire · jomcgi.dev</title>
+    <meta
+      name="description"
+      content="A read-only, link-shareable D&D sourcebook library: browse loaded books, read chunk by chunk, and look up creatures and lore."
+    />
+    <meta name="robots" content="noindex, nofollow" />
+  {/if}
 </svelte:head>
 
 <div class="grimoire-app grimoire" class:home={isHome}>
