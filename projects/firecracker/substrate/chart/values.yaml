@@ -150,7 +150,7 @@ workloads:
     # that peak plus guest-OS overhead with headroom, still a 25% cut from 2048.
     vcpus: 1
     memMib: 1536
-    concurrency: 2
+    concurrency: 15
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -200,12 +200,13 @@ workloads:
     requestTimeout: 30s
 
 # The limit must hold the capped peak of every workload's guests plus the
-# daemon. After right-sizing from measured stats: semgrep caps at concurrency
-# 2 * 1536Mi = 3Gi; agent at concurrency 2 * 4Gi = 8Gi; sandbox at concurrency
-# 2 * 512Mi = 1Gi; plus ~1Gi daemon overhead = ~13Gi if all three run at full
-# tilt, so 14Gi leaves headroom. Bursty: request a small floor, let the limit
-# cover the admission-capped peak (the firecracker guests are child processes in
-# this container's cgroup, so they count against this limit, not the request).
+# daemon. Sized for the semgrep load test: semgrep caps at concurrency
+# 15 * 1536Mi = ~22.5Gi at max drain (this assumes agent and sandbox sit idle
+# during a load test, which is how the semgrep load test is run); plus ~1Gi
+# daemon overhead. 26Gi covers that peak and leaves node-4 headroom (16c / 62Gi,
+# ~35Gi free). Bursty: request a small floor, let the limit cover the
+# admission-capped peak (the firecracker guests are child processes in this
+# container's cgroup, so they count against this limit, not the request).
 # The per-workload concurrency cap guarantees the cgroup never exceeds it, and
 # oom_score_adj guarantees a guest dies first if it nears (ADR platform/010).
 resources:
@@ -213,7 +214,7 @@ resources:
     cpu: 50m
     memory: 2Gi
   limits:
-    memory: 14Gi
+    memory: 26Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the
