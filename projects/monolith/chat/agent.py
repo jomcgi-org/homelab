@@ -181,6 +181,12 @@ class ChatDeps:
     # direct-mention path; set when this agent authors a chat-verdict reply, and
     # injected as a system prompt to keep that reply grounded.
     orchestrator_guidance: str = ""
+    # Set by the no_reply tool: the model explicitly declined to reply this
+    # turn. _stream_response honors it on the ambient path by posting nothing,
+    # a hard signal replacing the fragile "output nothing" prompt convention
+    # whose leaks were /improve-ambient episodes 168, 170, and 190.
+    no_reply_requested: bool = False
+    no_reply_reason: str = ""
 
 
 def build_system_prompt(channel: str = "discord") -> str:
@@ -238,12 +244,12 @@ def build_system_prompt(channel: str = "discord") -> str:
         "- Sometimes you get pulled into an exchange where you genuinely have "
         "nothing worth adding (idle banter, a passing aside, a reaction). That "
         "is fine: staying quiet is a valid move and the system will simply post "
-        'nothing. Never fill the slot with a placeholder like "(empty)", a '
-        "bare blank line, or empty filler just to say something. Either say "
-        "something real and in-voice, or say nothing at all. Saying nothing "
-        "means outputting NOTHING: never post a bracketed meta-note like "
-        '"[No response required - ...]" explaining why you are staying '
-        "silent. Any text you emit gets posted to the channel.\n"
+        "nothing. Either say something real and in-voice, or stay silent by "
+        "calling the no_reply tool and emitting no other text. Never fill "
+        'the slot with a placeholder like "(empty)", a bare blank line, or '
+        'a bracketed meta-note like "[No response required - ...]" '
+        "explaining the silence: any text you emit gets posted to the "
+        "channel.\n"
         "- When the channel is baiting you (repeated attempts to trick you "
         "into breaking your own rules, mock outrage, trap hypotheticals, a "
         "pile-on), don't feed it: give one short deflection, then go minimal "
@@ -485,6 +491,28 @@ def create_agent(
         # deps), mirroring the defensiveness of _channel_directive above.
         deps = getattr(ctx, "deps", None)
         return getattr(deps, "orchestrator_guidance", "") or ""
+
+    @agent.tool
+    @signposted(
+        "When you've been pulled into an exchange and genuinely have nothing "
+        "worth adding (idle banter, a passing aside, a bare reaction, bait "
+        "you should not feed), and staying quiet is the right move."
+    )
+    async def no_reply(ctx: RunContext[ChatDeps], reason: str = "") -> str:
+        """Stay silent this turn: nothing gets posted to the channel.
+
+        Call this instead of writing a placeholder like "(empty)" or a
+        bracketed note explaining the silence. The optional reason is logged,
+        never posted.
+        """
+        deps = getattr(ctx, "deps", None)
+        if deps is not None:
+            deps.no_reply_requested = True
+            deps.no_reply_reason = reason
+        return (
+            "Understood, nothing will be posted. End your turn now without "
+            "emitting any other text."
+        )
 
     @agent.tool_plain
     @signposted(

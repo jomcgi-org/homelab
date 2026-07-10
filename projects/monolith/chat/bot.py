@@ -2057,6 +2057,19 @@ class ChatBot(discord.Client):
                         if live:
                             await _edit_if_due(_search_content(), force=True)
 
+            # The model explicitly declined via the no_reply tool. Honored only
+            # on the ambient path where nothing has been posted yet: any text it
+            # emitted alongside the call is presumed meta-leakage and discarded.
+            # A live reply someone is actively waiting on ignores the flag and
+            # falls through to the normal handling below.
+            if deps.no_reply_requested and not live and sent is None:
+                logger.info(
+                    "no_reply tool: suppressing ambient reply in channel %s (%s)",
+                    message.channel.id,
+                    deps.no_reply_reason or "no reason given",
+                )
+                return None, "", None
+
             # No real content: no events arrived, or the reply is blank /
             # whitespace / a bare placeholder the model emits when it has nothing
             # to add. For an ambient interjection (not live) nothing has been
