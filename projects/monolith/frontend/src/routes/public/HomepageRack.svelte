@@ -1,9 +1,14 @@
 <script>
-  // The Agent Platform callout describes the same restore path as the
-  // /app/firecracker explainer, so it quotes the same trace-derived
-  // sandbox restore figure rather than a hardcoded literal.
+  // Two different Firecracker figures, both from metrics.js so neither is a
+  // hardcoded literal. The FIRECRACKER featured card advertises the sandbox
+  // demo it links to, so it quotes the trace-derived sandbox restore
+  // (sandboxRestoreMs). The AGENT PLATFORM card describes the agent request
+  // path, a separate measurement, so it quotes the agent restore
+  // (agentRestoreColdMs) to match the engineering deep-dive and the
+  // AgentPlatform diagram; using the sandbox figure here would understate it.
   import {
     sandboxRestoreMs,
+    agentRestoreColdMs,
     agentFirstModelCallMs,
   } from "$lib/public/fcstory/metrics.js";
   import { apps } from "$lib/public/apps.js";
@@ -84,7 +89,7 @@
         </div>
         <p>
           A stateless daemon serves <code>POST /invoke/&#123;workload&#125;</code>: restore a
-          copy-on-write snapshot in <b>{sandboxRestoreMs}ms</b> (~{agentFirstModelCallMs}ms cold start
+          copy-on-write snapshot in <b>{agentRestoreColdMs}ms</b> (~{agentFirstModelCallMs}ms cold start
           to first model call), reverse-proxy over vsock into the microVM. The guest never holds
           a real secret; an egress proxy swaps placeholder tokens for credentials at the network
           hop. Coding agents and Semgrep scans run as peers on the same substrate.
