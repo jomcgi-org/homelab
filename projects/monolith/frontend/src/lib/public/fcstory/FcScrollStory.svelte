@@ -23,6 +23,7 @@
     captionOpacity,
   } from "./timeline.js";
   import { cold, restores } from "./data/trace.js";
+  import { sandboxRestoreMs } from "./metrics.js";
   import ReplayWidget from "./ReplayWidget.svelte";
   import "./fcstory.css";
 
@@ -47,12 +48,9 @@
   // the hero and static fallback use the mean snapshot_restore duration
   // across every baked run (22.46 ms over the 12 runs, rendered as 22 ms;
   // the mockup's "23 milliseconds" was the rounded 180-run ClickHouse average).
-  const meanSnapshotRestoreMs =
-    restores.reduce(
-      (sum, r) =>
-        sum + r.phases.find((p) => p.name === "snapshot_restore").ms,
-      0,
-    ) / restores.length;
+  // Derived once in metrics.js, the single source of truth for this figure
+  // across the whole public site.
+  const meanSnapshotRestoreMs = sandboxRestoreMs;
 
   // ── Reactive state (coarse only; the per-frame path never touches these) ──
   // Motion preference is read once in onMount; display of the scrubbed vs

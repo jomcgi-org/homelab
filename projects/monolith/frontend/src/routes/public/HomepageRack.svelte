@@ -1,3 +1,13 @@
+<script>
+  // The Agent Platform callout describes the same restore path as the
+  // /app/firecracker explainer, so it quotes the same trace-derived
+  // sandbox restore figure rather than a hardcoded literal.
+  import {
+    sandboxRestoreMs,
+    agentFirstModelCallMs,
+  } from "$lib/public/fcstory/metrics.js";
+</script>
+
 <section class="rack-section" id="homelab" aria-label="Homelab hardware and systems">
   <p class="rack-eyebrow">4 nodes &middot; 52 CPUs &middot; 112 GB &middot; one RTX 4090</p>
   <h2>HOMELAB</h2>
@@ -39,10 +49,10 @@
         </div>
         <p>
           A stateless daemon serves <code>POST /invoke/&#123;workload&#125;</code>: restore a
-          copy-on-write snapshot in <b>28ms</b> (~140ms cold start to first model call),
-          reverse-proxy over vsock into the microVM. The guest never holds a real secret; an
-          egress proxy swaps placeholder tokens for credentials at the network hop. Coding
-          agents and Semgrep scans run as peers on the same substrate.
+          copy-on-write snapshot in <b>{sandboxRestoreMs}ms</b> (~{agentFirstModelCallMs}ms cold start
+          to first model call), reverse-proxy over vsock into the microVM. The guest never holds
+          a real secret; an egress proxy swaps placeholder tokens for credentials at the network
+          hop. Coding agents and Semgrep scans run as peers on the same substrate.
           <a class="more" href="/docs/agents">how &rarr;</a>
         </p>
       </div>
