@@ -192,7 +192,11 @@ workloads:
     # 512Mi keeps ~2x headroom over the heaviest observed run.
     vcpus: 1
     memMib: 512
-    concurrency: 2
+    # Raised 2 -> 15 for the sandbox load test (peer to the semgrep load test).
+    # CPU-bound like semgrep, so useful concurrency tracks node-4 cores (~15);
+    # at 512Mi that is ~7.5Gi, well inside the 26Gi limit below. Load tests run
+    # one workload at a time, so this never stacks with the semgrep 22.5Gi peak.
+    concurrency: 15
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -200,11 +204,12 @@ workloads:
     requestTimeout: 30s
 
 # The limit must hold the capped peak of every workload's guests plus the
-# daemon. Sized for the semgrep load test: semgrep caps at concurrency
-# 15 * 1536Mi = ~22.5Gi at max drain (this assumes agent and sandbox sit idle
-# during a load test, which is how the semgrep load test is run); plus ~1Gi
-# daemon overhead. 26Gi covers that peak and leaves node-4 headroom (16c / 62Gi,
-# ~35Gi free). Bursty: request a small floor, let the limit cover the
+# daemon. Sized for the load tests, which run one workload at a time: semgrep
+# caps at concurrency 15 * 1536Mi = ~22.5Gi, sandbox at 15 * 512Mi = ~7.5Gi, so
+# the peak is the larger semgrep case (~22.5Gi) plus ~1Gi daemon overhead. A
+# load test assumes the other workloads sit idle (the global one-run-at-a-time
+# guard enforces this). 26Gi covers that peak and leaves node-4 headroom (16c /
+# 62Gi, ~35Gi free). Bursty: request a small floor, let the limit cover the
 # admission-capped peak (the firecracker guests are child processes in this
 # container's cgroup, so they count against this limit, not the request).
 # The per-workload concurrency cap guarantees the cgroup never exceeds it, and
