@@ -25,4 +25,14 @@
   --svc-goose: #a86a1f; /* goose-coding: the agent inside */
   --svc-semgrep: #8a5a9a; /* semgrep scan */
   --svc-default: #6b7280; /* any other/unknown service */
+
+  /* Load test panel: a warm highlight for the extrapolation card (the most
+   * important number on the summary view) and a progress-bar fill distinct
+   * from --accent so the live progress bar reads separately from buttons. */
+  --loadtest-highlight: #b5762a;
+  --loadtest-progress: #3f7a5c;
+
+  /* Medium-severity finding color, shared by RunPanel and LoadTestPanel's
+   * receipts drill-down (both render the same semgrep findings markup). */
+  --sev-medium: #8a6100;
 }

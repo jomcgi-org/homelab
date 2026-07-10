@@ -6,8 +6,25 @@
   // clean Grimoire palette (inherited --paper/--ink/etc custom properties
   // from the page wrapper), not the old brutalist heavy-border look.
   import TraceWaterfall from "./TraceWaterfall.svelte";
+  import LoadTestPanel from "./LoadTestPanel.svelte";
 
   let { project } = $props();
+
+  // Sub-tab: python and semgrep projects offer a Single/Load Test switch;
+  // goose does not (an active agent run and a load test both hold node-4
+  // capacity, so the backend refuses to run them together, and the demo
+  // simply doesn't offer the load-test path for goose at all). Resets to
+  // "single" whenever the active project changes so switching tabs on the
+  // page never leaves a stale sub-tab selected.
+  let subTab = $state("single");
+
+  $effect(() => {
+    project.key;
+    subTab = "single";
+  });
+
+  let showsLoadTestTab = $derived(project.key === "python" || project.key === "semgrep");
+  let loadTestWorkload = $derived(project.key === "python" ? "sandbox" : "semgrep");
 
   // Inputs, seeded from the project's sample so Run works with zero edits,
   // but everything stays editable.
@@ -173,6 +190,30 @@
 </script>
 
 <div class="run-panel">
+  {#if showsLoadTestTab}
+    <nav class="sub-tabs" aria-label="Run mode">
+      <button
+        type="button"
+        class="sub-tab"
+        class:active={subTab === "single"}
+        onclick={() => (subTab = "single")}
+      >
+        {project.key === "python" ? "Single Run" : "Single Scan"}
+      </button>
+      <button
+        type="button"
+        class="sub-tab"
+        class:active={subTab === "load"}
+        onclick={() => (subTab = "load")}
+      >
+        Load Test
+      </button>
+    </nav>
+  {/if}
+
+  {#if showsLoadTestTab && subTab === "load"}
+    <LoadTestPanel workload={loadTestWorkload} />
+  {:else}
   <div class="input-area">
     {#if project.key === "python"}
       <label class="field-label" for="python-code">code.py</label>
@@ -343,6 +384,7 @@
   {/if}
 
   <TraceWaterfall {traceId} />
+  {/if}
 </div>
 
 <style>
@@ -350,6 +392,36 @@
     display: flex;
     flex-direction: column;
     gap: 20px;
+  }
+
+  .sub-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sub-tab {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 8px 12px;
+    margin-bottom: -1px;
+    cursor: pointer;
+  }
+
+  .sub-tab:hover {
+    color: var(--text-dim);
+  }
+
+  .sub-tab.active {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
   }
 
   .input-area {
