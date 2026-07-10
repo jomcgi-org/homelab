@@ -462,9 +462,33 @@ git commit -m "feat(demos): Single Scan / Load Test sub-tab with live counters a
 
 ---
 
+---
+
+## Addendum: generalize to both workloads (semgrep + sandbox)
+
+Decision (2026-07-09, Joe): the load test covers **both** the semgrep workload and the python **sandbox** workload as peers, via one workload-parametric harness rather than two copies. This amends Tasks 1-7 as follows. The daemon changes (Tasks 1-2) already cover it: Task 2's header stamping is workload-agnostic (fires on any 2xx invoke), and Task 1 now also raises `workloads.sandbox.concurrency: 2 -> 15` in the same substrate PR (sandbox is 512Mi/VM, so 15 = ~7.5Gi, inside the 26Gi limit; load tests run one workload at a time so this never stacks with semgrep's 22.5Gi peak).
+
+**Global one-run-at-a-time guard:** at most one load test runs at any moment across ALL workloads. This keeps each test's "other workloads idle" resource assumption honest and bounds the cgroup to a single workload's peak. Enforce in the create endpoint (if any run row is `running`, return it instead of starting a new one).
+
+**Task 3 (corpus) becomes two corpora under `projects/monolith/demos/loadtest_corpus/`:**
+- `semgrep/` : the 5 Pro-triggering `.sample` files (unchanged from Task 3 above), sent to `/invoke/semgrep` as `{"files":[{path,content}]}`.
+- `sandbox/` : a handful (5-8) of varied Python scripts as `.sample` files, sent to `/invoke/sandbox` (run_python). The sandbox guest has a warm scientific-library page cache (pandas/numpy available, per the workload comment), so mix light and heavy: e.g. a tight numeric loop, a sort/merge, a regex/text pass, a small pandas dataframe aggregation, a json round-trip, a recursive fib. Vary runtime deliberately so the latency distribution is meaningful. Each 30-200 lines. The loader returns `{workload, lang_or_name, payload}` where payload is the workload-correct request shape.
+
+**Task 4 (schema) uses workload-generic tables:** name them `demo.load_run` and `demo.load_scan` with a `workload text NOT NULL` column on both. Replace the semgrep-specific `findings`/`findings_count` with a generic `result jsonb` (findings for semgrep; `{stdout, exit, error, output_bytes}` for sandbox) plus a nullable `result_count int` (finding count for semgrep, null for sandbox). Everything else (latency_ms, queue_wait_ms, cpu_ms, peak_rss_mib, seq, status) is identical and workload-agnostic. Index `demo.load_scan(run_id, seq)`.
+
+**Task 5 (drain) is parametrized by a workload registry** (a dict keyed by workload name) providing: the `/invoke/<workload>` endpoint, a payload-builder (semgrep wraps in `{"files":[...]}`; sandbox sends the run_python shape), a result-parser (extract `result` + `result_count`), and the corpus list. `run_load_test(run_id, workload, ...)` round-robins that workload's corpus. The over-subscription factor (client concurrency 20 vs daemon 15) and 2-minute duration are the same for both. The endpoints gain a `workload` path/param: `POST .../load-test/{workload}` (semgrep|sandbox).
+
+**Task 6 (summary)** is workload-agnostic already (resources come from headers). `result_count` stats only populate for semgrep; the sandbox summary reports output/exit distribution instead. The extrapolation block is identical in shape for both.
+
+**Task 7 (UI):** the same `LoadTestPanel.svelte` is reused, parametrized by `workload`. Add the Single / Load Test sub-tab under **both** the Sandbox and Semgrep top-level tabs (sandbox's "Single Scan" is its existing single-run UI). The "See Receipts" tab applies to both; the per-scan drill-down renders findings for semgrep and stdout/exit for sandbox.
+
+---
+
 ## Out of scope (explicit YAGNI)
 
 - SCA packs (sca_golang/python/javascript) and manifest corpus files.
+- Load testing the **agent** (goose) workload (minutes-long model-bound runs; not a throughput drain, and warmBase:false).
+- Running two load tests concurrently (global one-run guard forbids it by design).
 - Making the load test public-tier.
 - Multi-node execution (the feature only *models* the extrapolation; it does not run across nodes).
 - A configurable duration or concurrency in the UI (fixed 2 minutes; concurrency is the daemon chart value).
