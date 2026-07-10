@@ -1,6 +1,21 @@
 // Engineering page content, the single source of truth for the expo grid
 // and the deep-dive sections. Facts were checked against the repo and CV
 // at migration time (2026-06). When a system changes, edit it here.
+//
+// Firecracker timing figures (ms literals) are NOT edited here: they are
+// imported from fcstory/metrics.js, the single source of truth for those
+// numbers across the whole public site.
+
+import {
+  agentRestoreColdMs,
+  agentRestoreWarmMs,
+  agentFirstModelCallMs,
+  goosecrackerDispatchMs,
+  goosecrackerRootfsMs,
+  goosecrackerBootMs,
+  goosecrackerGuestInitMs,
+  goosecrackerAgentUpMs,
+} from "../../../lib/public/fcstory/metrics.js";
 
 export const intro = {
   title: "Engineering",
@@ -54,7 +69,7 @@ export const projects = [
       },
       {
         k: "Snapshot / restore",
-        v: "An idle agent thread is paused and snapshotted (memory plus rootfs), releasing all compute, then restored on the next turn. Measured restore is 28ms cold, 6ms warm; trigger to first model call is ~140ms. A thin Postgres-reconcile controller owns the lifecycle, porting E2B's open-source snapshot architecture onto the Firecracker primitive.",
+        v: `An idle agent thread is paused and snapshotted (memory plus rootfs), releasing all compute, then restored on the next turn. Measured restore is ${agentRestoreColdMs}ms cold, ${agentRestoreWarmMs}ms warm; trigger to first model call is ~${agentFirstModelCallMs}ms. A thin Postgres-reconcile controller owns the lifecycle, porting E2B's open-source snapshot architecture onto the Firecracker primitive.`,
       },
       {
         k: "Secret-swap egress",
@@ -80,14 +95,15 @@ export const projects = [
     id: "goosecracker",
     category: "agents",
     title: "Goosecracker",
-    oneLiner:
-      "A Discord command that boots a fresh Firecracker microVM, runs a coding agent inside it to build a self-contained web artifact, and serves the result sandboxed, with the whole cold start landing in ~144ms.",
+    oneLiner: `A Discord command that boots a fresh Firecracker microVM, runs a coding agent inside it to build a self-contained web artifact, and serves the result sandboxed, with the whole cold start landing in ~${agentFirstModelCallMs}ms.`,
     motivation:
       "I wanted a make-me-a-thing button: type a prompt in Discord, get back a working hosted mini-app. The hard part is doing it both safely and fast. The agent writes and runs untrusted code, so it has to be strongly isolated, but a fresh microVM per request must not feel slow. Goosecracker is the proof that per-request hardware isolation and sub-second cold start are not a trade-off.",
     facts: [
       {
         k: "Cold start",
-        v: "Dispatch to first model call is ~144ms: 10ms dispatch, an 84ms copy-on-write microVM cold start (35ms rootfs, 28ms Firecracker boot, ~20ms guest init), then 50ms to bring the agent up. A fresh VM per request, not a warm pool.",
+        v: `Dispatch to first model call is ~${agentFirstModelCallMs}ms: ${goosecrackerDispatchMs}ms dispatch, a ${
+          goosecrackerRootfsMs + goosecrackerBootMs + goosecrackerGuestInitMs
+        }ms copy-on-write microVM cold start (${goosecrackerRootfsMs}ms rootfs, ${goosecrackerBootMs}ms Firecracker boot, ~${goosecrackerGuestInitMs}ms guest init), then ${goosecrackerAgentUpMs}ms to bring the agent up. A fresh VM per request, not a warm pool.`,
       },
       {
         k: "Isolation",

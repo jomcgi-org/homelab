@@ -3,6 +3,7 @@
   import DGroup from "$lib/public/components/diagrams/DGroup.svelte";
   import DBox from "$lib/public/components/diagrams/DBox.svelte";
   import DArrow from "$lib/public/components/diagrams/DArrow.svelte";
+  import { agentRestoreColdMs } from "$lib/public/fcstory/metrics.js";
 </script>
 
 <Diagram label="Agent platform">
@@ -13,7 +14,7 @@
   </DGroup>
   <DArrow label="dispatch" />
   <DBox role="process" sub="Postgres reconcile">Controller</DBox>
-  <DArrow label="restore 28ms" />
+  <DArrow label="restore {agentRestoreColdMs}ms" />
   <DGroup label="Firecracker microVM" stack>
     <DBox role="process" sub="vsock-only guest">Agent</DBox>
     <DBox role="output" sub="snapshot / restore">Clean VM per task</DBox>
