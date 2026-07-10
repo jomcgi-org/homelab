@@ -447,6 +447,13 @@ async def start_load_test(workload: str) -> dict:
     ``already_running``); an active goose agent run refuses with HTTP 409.
     Otherwise inserts a load_run row and dispatches ``run_load_test`` on a
     detached task, returning the new run id immediately.
+
+    The one-run guard is best-effort: the running-check and the insert are
+    separate round-trips, so two POSTs racing inside the same ~millisecond could
+    both start. That is acceptable for this single-operator demo; if it ever
+    needs to be airtight, add a partial unique index on
+    ``demo.load_run (status) WHERE status = 'running'`` and treat the
+    unique-violation as "already running".
     """
     if workload not in loadtest.WORKLOADS:
         raise HTTPException(status_code=404, detail=f"unknown workload: {workload}")

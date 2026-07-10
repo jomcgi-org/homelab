@@ -55,6 +55,13 @@ SAMPLE_NODE = "node-4"
 # Auto-flush the scan buffer once it reaches this many rows (one INSERT).
 _FLUSH_THRESHOLD = 200
 
+# Grace window past the drain deadline for in-flight invokes to finish before
+# stragglers are cancelled. A normal scan is ~1s, so this lets legitimately
+# in-flight scans complete while bounding a wedged run (the run row is the
+# one-run lock, so an unbounded drain would block the next run for up to a full
+# read_timeout). Total drain is thus capped at duration_s + _DRAIN_GRACE_S.
+_DRAIN_GRACE_S = 10
+
 
 def _parse_semgrep_result(resp: dict) -> tuple[dict, int | None]:
     findings = resp.get("findings", []) or []
@@ -589,7 +596,19 @@ async def run_load_test(
 
     workers = [asyncio.create_task(worker()) for _ in range(client_concurrency)]
     try:
-        await asyncio.gather(*workers)
+        # Workers stop starting scans at the deadline, but an in-flight invoke can
+        # run up to read_timeout past it. Cap the overrun with a grace window, then
+        # cancel any straggler so the run always finalizes promptly (a wedged drain
+        # would otherwise hold the 'running' one-run lock and block the next run).
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*workers, return_exceptions=True),
+                timeout=duration_s + _DRAIN_GRACE_S,
+            )
+        except asyncio.TimeoutError:
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
     finally:
         stop_event.set()
         try:
