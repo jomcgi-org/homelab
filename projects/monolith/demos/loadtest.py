@@ -330,7 +330,13 @@ def build_summary(workload: str, rows: list[dict], sampler_series: list[dict]) -
     run_wall_s = observed_wall if observed_wall and observed_wall > 0 else wall_s
     throughput = (total / run_wall_s) if run_wall_s and run_wall_s > 0 else 0.0
 
-    lat_vals = [float(v) for v in latencies]
+    # Headline latency is the fc-invoke WALL per scan (client wall minus the
+    # time spent queued for a daemon slot): the real per-scan cost, not the
+    # oversubscription queue. The queue is reported separately in queue_wait_ms.
+    def _exec_ms(r: dict) -> float:
+        return max(float(r["latency_ms"]) - float(r.get("queue_wait_ms") or 0), 0.0)
+
+    lat_vals = [_exec_ms(r) for r in rows if r.get("latency_ms") is not None]
     queue_vals = [
         float(r["queue_wait_ms"]) for r in rows if r.get("queue_wait_ms") is not None
     ]
@@ -343,9 +349,7 @@ def build_summary(workload: str, rows: list[dict], sampler_series: list[dict]) -
     names = {r.get("name") for r in rows if r.get("name") is not None}
     for name in names:
         group = [r for r in rows if r.get("name") == name]
-        g_lat = sorted(
-            float(r["latency_ms"]) for r in group if r.get("latency_ms") is not None
-        )
+        g_lat = sorted(_exec_ms(r) for r in group if r.get("latency_ms") is not None)
         g_cpu = sorted(float(r["cpu_ms"]) for r in group if r.get("cpu_ms") is not None)
         per_lang[name] = {
             "count": len(group),
