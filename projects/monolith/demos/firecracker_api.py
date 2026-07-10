@@ -56,6 +56,12 @@ _WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox": 512}
 # node-4 capacity, so a load test must not run concurrently with one.
 _AGENT_BUSY_STATES = ("RUNNING",)
 
+# Only a RUNNING row this recent counts as a live run. A goose run cannot
+# outlive its ~600s requestTimeout, but a crashed run leaves a permanent
+# RUNNING tombstone in the ledger; without this bound one orphan would block
+# every future load test. 30 minutes is a generous margin over the timeout.
+_AGENT_ACTIVE_WINDOW_MIN = 30
+
 # Detached drain tasks are stashed here so the event loop keeps a strong
 # reference (an unreferenced task can be GC'd mid-run).
 _RUNNING_DRAINS: set[asyncio.Task] = set()
@@ -239,15 +245,21 @@ def _agent_is_busy() -> bool:
     ``claude_agent.agent_threads``. In the current model the runner only ever
     writes RUNNING (at dispatch) then COMPLETED or FAILED; the older
     PENDING/IDLE lifecycle states are vestigial and never set, so RUNNING is the
-    sole active state that matters here. Sync; call via to_thread.
+    sole active state that matters here.
+
+    Only a RUNNING row updated within ``_AGENT_ACTIVE_WINDOW_MIN`` counts: a
+    crashed run leaves a permanent RUNNING tombstone, and without the time bound
+    a single orphan would block every future load test. Sync; call via to_thread.
     """
     with Session(get_engine()) as session:
         row = session.execute(
             text(
                 "SELECT 1 FROM claude_agent.agent_threads "
-                "WHERE state = ANY(:states) LIMIT 1"
+                "WHERE state = ANY(:states) "
+                "AND last_active_at > now() - make_interval(mins => :window) "
+                "LIMIT 1"
             ),
-            {"states": list(_AGENT_BUSY_STATES)},
+            {"states": list(_AGENT_BUSY_STATES), "window": _AGENT_ACTIVE_WINDOW_MIN},
         ).fetchone()
     return row is not None
 
