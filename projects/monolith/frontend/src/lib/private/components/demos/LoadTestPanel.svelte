@@ -22,8 +22,12 @@
   //     _dispatch_drain in firecracker_api.py)
   let { workload } = $props();
 
+  // Sandbox executes scripts ("runs"); semgrep scans files ("scans").
+  let noun = $derived(workload === "sandbox" ? "run" : "scan");
+  let nounPlural = $derived(workload === "sandbox" ? "runs" : "scans");
+
   const RUN_DURATION_S = 120;
-  const DAEMON_CONCURRENCY = 15;
+  const DAEMON_CONCURRENCY = 6;
   const POLL_MS = 1000;
   const HARD_TIMEOUT_MS = 150_000;
   const SCANS_PAGE_SIZE = 50;
@@ -304,7 +308,7 @@
       <div class="lt-live">
         <div class="throughput-hero">
           <span class="throughput-value">{fmt(rollup.throughput_per_s, 2)}</span>
-          <span class="throughput-unit">scans/s</span>
+          <span class="throughput-unit">{nounPlural}/s</span>
         </div>
 
         <div class="progress-track" aria-hidden="true">
@@ -317,7 +321,7 @@
 
         <div class="stat-grid">
           <div class="stat">
-            <span class="stat-label">total scans</span>
+            <span class="stat-label">total {nounPlural}</span>
             <span class="stat-value">{rollup.total_scans ?? 0}</span>
           </div>
           <div class="stat">
@@ -368,11 +372,11 @@
             <div class="extrap-figures">
               <div class="extrap-figure">
                 <span class="extrap-value">{fmt(s.extrapolation?.per_node_throughput_per_s, 2)}</span>
-                <span class="extrap-unit">scans/s per node</span>
+                <span class="extrap-unit">{nounPlural}/s per node</span>
               </div>
               <div class="extrap-figure">
                 <span class="extrap-value">{fmt(s.extrapolation?.scans_per_core_s, 3)}</span>
-                <span class="extrap-unit">scans/core/s</span>
+                <span class="extrap-unit">{nounPlural}/core/s</span>
               </div>
             </div>
             <p class="extrap-note">{s.extrapolation?.note}</p>
@@ -415,7 +419,7 @@
           </div>
 
           <div class="summary-section">
-            <span class="section-title">latency + per-scan resources</span>
+            <span class="section-title">latency + per-{noun} resources</span>
             <div class="stat-grid">
               <div class="stat">
                 <span class="stat-label">latency p50/p95/max</span>
@@ -430,13 +434,13 @@
                 >
               </div>
               <div class="stat">
-                <span class="stat-label">per-scan cpu p50/p95</span>
+                <span class="stat-label">per-{noun} cpu p50/p95</span>
                 <span class="stat-value"
                   >{fmt(s.per_scan_cpu_ms?.p50, 0)} / {fmt(s.per_scan_cpu_ms?.p95, 0)}ms</span
                 >
               </div>
               <div class="stat">
-                <span class="stat-label">per-scan peak rss p50/p95</span>
+                <span class="stat-label">per-{noun} peak rss p50/p95</span>
                 <span class="stat-value"
                   >{fmt(s.per_scan_peak_rss_mib?.p50, 0)} / {fmt(s.per_scan_peak_rss_mib?.p95, 0)} MiB</span
                 >
@@ -458,7 +462,7 @@
                 </div>
               {/if}
               <div class="stat">
-                <span class="stat-label">total scans / errors</span>
+                <span class="stat-label">total {nounPlural} / errors</span>
                 <span class="stat-value">{s.total_scans ?? 0} / {s.errors ?? 0}</span>
               </div>
             </div>
@@ -497,7 +501,7 @@
           {:else}
             <div class="scan-detail">
               <div class="result-grid">
-                <span class="result-key">scan</span>
+                <span class="result-key">{noun}</span>
                 <span class="result-val">#{selectedScan.seq} · {selectedScan.name}</span>
               </div>
               <div class="result-grid">
