@@ -21,8 +21,11 @@ def test_semgrep_corpus_covers_all_five_packs():
     assert names == _EXPECTED_SEMGREP_NAMES
 
     for entry in entries:
+        # Lower bound is deliberately loose: samples are sized to exercise the
+        # Pro rules, not to pad scan time (python was trimmed 179 -> ~80 lines
+        # because scan wall time scales with file size).
         line_count = len(entry["content"].splitlines())
-        assert 100 <= line_count <= 400, (entry["name"], line_count)
+        assert 40 <= line_count <= 400, (entry["name"], line_count)
 
         extension = entry["path"].rsplit(".", 1)[-1]
         assert extension in _EXPECTED_EXTENSIONS, (entry["name"], entry["path"])

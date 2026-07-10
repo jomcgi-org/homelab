@@ -150,16 +150,17 @@ workloads:
     # that peak plus guest-OS overhead with headroom, still a 25% cut from 2048.
     vcpus: 1
     memMib: 1536
-    # Concurrency is bounded by PHYSICAL cores, not logical. node-4 is 8 physical
-    # cores + hyperthreading = 16 logical. A CPU-bound 1-vcpu scan gets real
-    # parallelism only up to 8 (one physical core each); past that, VMs land on HT
-    # siblings where compute-bound work gets ~no extra throughput and scheduler
-    # contention INVERTS it (measured: ~40 scans/s at 8 concurrent collapsing to
-    # ~5/s at 15). 6 leaves ~2 physical cores for the daemon + co-tenants
-    # (clickhouse/signoz), which keeps us reliably left of the collapse cliff even
-    # when a co-tenant momentarily grabs a core. See the cpu request below, which
-    # weight-protects these 6 cores under contention.
-    concurrency: 6
+    # node-4 is 8 physical cores + hyperthreading = 16 logical. Full parallelism
+    # for CPU-bound 1-vcpu scans holds up to 8 (one physical core each); HT
+    # siblings beyond that typically add a partial (~20-30%) gain, not another
+    # full core. NOTE: the earlier "collapse to ~5/s at 15" measurement that
+    # justified concurrency 6 was NOT an HT cliff: it was the client-go default
+    # 5 QPS auth-TokenReview throttle in the daemon (fixed on main), so the
+    # HT-collapse claim is unproven. 12 probes the HT upside while leaving 4
+    # logical cores for the daemon + co-tenants (clickhouse/signoz); re-measure
+    # via the demos load test before pushing further. See the cpu request
+    # below, which weight-protects the scan cores under contention.
+    concurrency: 12
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -201,11 +202,10 @@ workloads:
     # 512Mi keeps ~2x headroom over the heaviest observed run.
     vcpus: 1
     memMib: 512
-    # Same physical-core bound as semgrep (see its comment): 6 concurrent 1-vcpu
-    # VMs on node-4's 8 physical cores, leaving ~2 for the daemon + co-tenants.
-    # Measured: sandbox throughput peaks ~40-50/s at 6-8 concurrent and collapses
-    # to ~5/s at 15 (HT-sibling contention), so 6 is the reliable operating point.
-    concurrency: 6
+    # Same core reasoning as semgrep (see its comment): the old "collapse at 15"
+    # datum was the auth throttle, not HT contention, so 12 probes the HT upside.
+    # Clean pre-throttle measurement: ~40-50 runs/s at 6-8 concurrent.
+    concurrency: 12
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -213,29 +213,29 @@ workloads:
     requestTimeout: 30s
 
 # Memory limit holds the capped peak of every workload's guests plus the daemon.
-# A load test drives ONE workload to concurrency 6: semgrep 6 * 1536Mi = ~9Gi or
-# sandbox 6 * 512Mi = ~3Gi (a monolith one-run guard serializes load tests, so
-# they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi) plus
-# ~1Gi daemon overhead the peak is ~18Gi, so 26Gi keeps comfortable margin.
+# A load test drives ONE workload to concurrency 12: semgrep 12 * 1536Mi = ~18Gi
+# or sandbox 12 * 512Mi = ~6Gi (a monolith one-run guard serializes load tests,
+# so they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi) plus
+# ~1Gi daemon overhead the peak is ~27Gi, so 32Gi keeps comfortable margin
+# (node-4 has 64Gi).
 # Firecracker guests are child processes in this cgroup, so they count against
 # this limit; oom_score_adj makes a guest die first if it is ever breached, never
 # the daemon or a node-critical tenant (ADR platform/010).
 #
 # The CPU REQUEST is load-bearing, not a floor. The guest VMs are 1 vcpu each and
-# CPU-bound; at concurrency 6 a load test wants ~6 physical cores. cpu.weight is
-# proportional to the request, so a tiny request (the old 50m) let co-tenants
-# (clickhouse/signoz) out-compete the VMs for cores under contention, sliding the
-# throughput cliff left (measured: the collapse knee moved 8 -> 6 as tenants
-# woke). Requesting 6000m (matched to concurrency) both reserves the cores
-# schedulably and gives the cgroup weight to hold its 6 physical cores under
-# contention. Keep this EQUAL to concurrency: reserving fewer cores than VMs
-# reintroduces the collapse. node-4 has ~6.5 cores of request headroom for this.
+# CPU-bound. cpu.weight is proportional to the request, so a tiny request (the
+# old 50m) let co-tenants (clickhouse/signoz) out-compete the VMs for cores
+# under contention. 6000m holds ~6 cores of weight under contention and stays
+# schedulable on node-4 (~91% requested already); it is deliberately BELOW the
+# new concurrency 12: there is no CPU limit, so load tests burst to all idle
+# cores regardless, and the request only decides who wins when co-tenants are
+# busy. Raising it to 12000m would overcommit node-4's requests past 100%.
 resources:
   requests:
     cpu: 6000m
     memory: 2Gi
   limits:
-    memory: 26Gi
+    memory: 32Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the

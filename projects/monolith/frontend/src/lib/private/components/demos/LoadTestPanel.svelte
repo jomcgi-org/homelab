@@ -3,22 +3,26 @@
   // workload (semgrep or sandbox). Three peer views: Live (1s poll while
   // running), Summary (once status is "done"), and Receipts (a lazily
   // fetched, paginated table of individual scans with a row drill-down).
+  // Every non-resource time shown here is the fc-invoke EXECUTION wall
+  // (client wall minus the drain's own oversubscription queue): the load is
+  // artificial, so queueing is a property of the test, not the daemon, and is
+  // deliberately not displayed (raw latency/queue stay in demo.load_scan).
   // Field names below are quoted from the backend as read, not guessed:
   //   - demos/firecracker_api.py _load_run_rollup(): run_id, workload,
   //     status, elapsed_s, total_scans, errors, throughput_per_s,
-  //     in_flight_estimate, latency_p50, latency_p95, per_lang_counts,
-  //     cpu_ms_mean, peak_rss_mib_mean, summary (set once status=="done")
+  //     in_flight_estimate, latency_p50, latency_p95 (both exec wall),
+  //     per_lang_counts, cpu_ms_mean, peak_rss_mib_mean, summary (set once
+  //     status=="done")
   //   - demos/loadtest.py build_summary(): total_scans, errors, wall_s,
-  //     throughput_per_s, latency_ms{p50,p95,max}, queue_wait_ms{p50,p95},
+  //     throughput_per_s, latency_ms{p50,p95,max} (exec wall),
   //     per_scan_cpu_ms{p50,p95}, per_scan_peak_rss_mib{p50,p95}, per_lang,
   //     daemon{pod_cpu_m,pod_rss_mib,source}, node{cpu_m,rss_mib},
   //     extrapolation{per_node_throughput_per_s,scans_per_core_s,
   //     vm_seconds,note}
   //   - demos/firecracker_api.py _load_scans_page(): total, offset, limit,
-  //     scans[]{id,seq,name,status,latency_ms,queue_wait_ms,cpu_ms,
-  //     peak_rss_mib,result_count}
+  //     scans[]{id,seq,name,status,scan_ms,cpu_ms,peak_rss_mib,result_count}
   //   - demos/firecracker_api.py _load_scan_detail(): adds result, error
-  //   - demos/loadtest.py DAEMON_CONCURRENCY=15, run duration_s=120 (see
+  //   - demos/loadtest.py DAEMON_CONCURRENCY=12, run duration_s=60 (see
   //     _dispatch_drain in firecracker_api.py)
   let { workload } = $props();
 
@@ -27,7 +31,7 @@
   let nounPlural = $derived(workload === "sandbox" ? "runs" : "scans");
 
   const RUN_DURATION_S = 60;
-  const DAEMON_CONCURRENCY = 6;
+  const DAEMON_CONCURRENCY = 12;
   const POLL_MS = 1000;
   const HARD_TIMEOUT_MS = 150_000;
   const SCANS_PAGE_SIZE = 50;
@@ -343,10 +347,6 @@
             <span class="stat-value">{fmt(rollup.latency_p95, 0)}ms</span>
           </div>
           <div class="stat">
-            <span class="stat-label">queue wait p50</span>
-            <span class="stat-value">{fmt(rollup.queue_p50, 0)}ms</span>
-          </div>
-          <div class="stat">
             <span class="stat-label">mean cpu</span>
             <span class="stat-value">{fmt(rollup.cpu_ms_mean, 0)}ms</span>
           </div>
@@ -423,18 +423,12 @@
           </div>
 
           <div class="summary-section">
-            <span class="section-title">latency + per-{noun} resources</span>
+            <span class="section-title">{noun} time + per-{noun} resources</span>
             <div class="stat-grid">
               <div class="stat">
                 <span class="stat-label">{noun} time p50/p95/max</span>
                 <span class="stat-value"
                   >{fmt(s.latency_ms?.p50, 0)} / {fmt(s.latency_ms?.p95, 0)} / {fmt(s.latency_ms?.max, 0)}ms</span
-                >
-              </div>
-              <div class="stat">
-                <span class="stat-label">queue wait p50/p95</span>
-                <span class="stat-value"
-                  >{fmt(s.queue_wait_ms?.p50, 0)} / {fmt(s.queue_wait_ms?.p95, 0)}ms</span
                 >
               </div>
               <div class="stat">
@@ -515,10 +509,10 @@
                 >
               </div>
               <div class="result-grid">
-                <span class="result-key">latency / queue / cpu / rss</span>
+                <span class="result-key">{noun} time / cpu / rss</span>
                 <span class="result-val"
-                  >{selectedScan.latency_ms ?? "-"}ms / {selectedScan.queue_wait_ms ?? "-"}ms
-                  / {selectedScan.cpu_ms ?? "-"}ms / {selectedScan.peak_rss_mib ?? "-"} MiB</span
+                  >{selectedScan.scan_ms ?? "-"}ms / {selectedScan.cpu_ms ?? "-"}ms
+                  / {selectedScan.peak_rss_mib ?? "-"} MiB</span
                 >
               </div>
 
@@ -596,7 +590,7 @@
                   <th>seq</th>
                   <th>name</th>
                   <th>status</th>
-                  <th>latency</th>
+                  <th>{noun} time</th>
                   <th>cpu</th>
                   <th>peak rss</th>
                   <th>results</th>
@@ -612,7 +606,7 @@
                         >{scan.status}</span
                       >
                     </td>
-                    <td>{scan.latency_ms ?? "-"}ms</td>
+                    <td>{scan.scan_ms ?? "-"}ms</td>
                     <td>{scan.cpu_ms ?? "-"}ms</td>
                     <td>{scan.peak_rss_mib ?? "-"} MiB</td>
                     <td>{scan.result_count ?? "-"}</td>

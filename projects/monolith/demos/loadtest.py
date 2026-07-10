@@ -5,7 +5,7 @@ sandbox workload) as fast as the daemon's per-workload semaphore allows, for a
 fixed run duration. It:
 
 - oversubscribes the daemon (``client_concurrency`` = 20 > daemon concurrency
-  15) so the daemon's semaphore stays saturated and throughput is daemon-bound;
+  12) so the daemon's semaphore stays saturated and throughput is daemon-bound;
 - buffers per-scan rows and writes them to ``demo.load_scan`` in batched
   multi-row INSERTs (via a sync engine off the event loop);
 - samples the fc-invoke pod and node-4 resource footprint every ~2s
@@ -44,8 +44,11 @@ logger = logging.getLogger(__name__)
 
 FC_INVOKE_URL = os.environ.get("FC_INVOKE_URL", "")
 
-# The daemon runs each workload at concurrency 15 on node-4, one vcpu per VM.
-DAEMON_CONCURRENCY = 15
+# The daemon runs each workload at concurrency 12 on node-4, one vcpu per VM.
+# MUST match `workloads.{semgrep,sandbox}.concurrency` in
+# projects/firecracker/substrate/chart/values.yaml: this constant feeds the
+# scans/core/s extrapolation, so drift silently skews that number.
+DAEMON_CONCURRENCY = 12
 VCPUS_PER_SCAN = 1
 FC_INVOKE_NAMESPACE = "monolith"
 # The fc-invoke pod name carries this prefix; pod-metrics lookup matches on it.
@@ -520,7 +523,7 @@ async def run_load_test(
     """Drain ``corpus`` through the daemon for ``duration_s`` seconds.
 
     ``client_concurrency`` (20) intentionally EXCEEDS the daemon's per-workload
-    concurrency (15), so the daemon's semaphore stays saturated and the drain
+    concurrency (12), so the daemon's semaphore stays saturated and the drain
     runs as fast as the daemon allows. Each of ``client_concurrency`` worker
     tasks loops until the deadline, pulling the next corpus item round-robin,
     invoking the daemon, timing wall latency, and recording the row. A resource
