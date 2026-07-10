@@ -17,5 +17,5 @@ export function load({ url }) {
   if (scope && scope !== "everything") next.searchParams.set("scope", scope);
   const lens = url.searchParams.get("lens");
   if (lens && lens !== "world") next.searchParams.set("lens", lens);
-  redirect(301, next.pathname + next.search);
+  throw redirect(301, next.pathname + next.search);
 }
