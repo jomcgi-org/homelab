@@ -150,17 +150,16 @@ workloads:
     # that peak plus guest-OS overhead with headroom, still a 25% cut from 2048.
     vcpus: 1
     memMib: 1536
-    # node-4 is 8 physical cores + hyperthreading = 16 logical. Full parallelism
-    # for CPU-bound 1-vcpu scans holds up to 8 (one physical core each); HT
-    # siblings beyond that typically add a partial (~20-30%) gain, not another
-    # full core. NOTE: the earlier "collapse to ~5/s at 15" measurement that
-    # justified concurrency 6 was NOT an HT cliff: it was the client-go default
-    # 5 QPS auth-TokenReview throttle in the daemon (fixed on main), so the
-    # HT-collapse claim is unproven. 12 probes the HT upside while leaving 4
-    # logical cores for the daemon + co-tenants (clickhouse/signoz); re-measure
-    # via the demos load test before pushing further. See the cpu request
-    # below, which weight-protects the scan cores under contention.
-    concurrency: 12
+    # node-4 is 8 physical cores + hyperthreading = 16 logical. Measured at
+    # concurrency 12 (post auth-throttle fix): semgrep 15.8/s (+76% over 6),
+    # exec p50 ~flat, node peaking at 16.1 cores, so HT siblings DO contribute
+    # (the earlier "collapse at 15" datum was the client-go 5 QPS TokenReview
+    # throttle, not HT contention). 16 = all logical cores: node-4's co-tenants
+    # idle at ~0.4 cores and a load test is a 60s burst, so briefly out-weighing
+    # them is an accepted trade for absolute throughput. Past 16 there is no
+    # silicon left, only queue depth. See the cpu request below, which
+    # weight-protects the scan cores under contention.
+    concurrency: 16
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -202,10 +201,10 @@ workloads:
     # 512Mi keeps ~2x headroom over the heaviest observed run.
     vcpus: 1
     memMib: 512
-    # Same core reasoning as semgrep (see its comment): the old "collapse at 15"
-    # datum was the auth throttle, not HT contention, so 12 probes the HT upside.
-    # Clean pre-throttle measurement: ~40-50 runs/s at 6-8 concurrent.
-    concurrency: 12
+    # Same core reasoning as semgrep (see its comment). Measured at 12:
+    # 52.4/s (+31% over 6), run p50 198ms. Short runs have non-CPU phases
+    # (restore, vsock I/O), so 16 also fills scheduler gaps.
+    concurrency: 16
     egressEnabled: false
     warmBase: true
     readyPath: /shim/ready
@@ -213,11 +212,11 @@ workloads:
     requestTimeout: 30s
 
 # Memory limit holds the capped peak of every workload's guests plus the daemon.
-# A load test drives ONE workload to concurrency 12: semgrep 12 * 1536Mi = ~18Gi
-# or sandbox 12 * 512Mi = ~6Gi (a monolith one-run guard serializes load tests,
+# A load test drives ONE workload to concurrency 16: semgrep 16 * 1536Mi = ~24Gi
+# or sandbox 16 * 512Mi = ~8Gi (a monolith one-run guard serializes load tests,
 # so they never stack). Even with a concurrent agent run (2 * 4096Mi = 8Gi) plus
-# ~1Gi daemon overhead the peak is ~27Gi, so 32Gi keeps comfortable margin
-# (node-4 has 64Gi).
+# ~1Gi daemon overhead the peak is ~33Gi, so 36Gi keeps margin (node-4 has
+# 64Gi and idles ~29Gi used).
 # Firecracker guests are child processes in this cgroup, so they count against
 # this limit; oom_score_adj makes a guest die first if it is ever breached, never
 # the daemon or a node-critical tenant (ADR platform/010).
@@ -227,15 +226,15 @@ workloads:
 # old 50m) let co-tenants (clickhouse/signoz) out-compete the VMs for cores
 # under contention. 6000m holds ~6 cores of weight under contention and stays
 # schedulable on node-4 (~91% requested already); it is deliberately BELOW the
-# new concurrency 12: there is no CPU limit, so load tests burst to all idle
+# concurrency 16: there is no CPU limit, so load tests burst to all idle
 # cores regardless, and the request only decides who wins when co-tenants are
-# busy. Raising it to 12000m would overcommit node-4's requests past 100%.
+# busy. Raising it further would overcommit node-4's requests past 100%.
 resources:
   requests:
     cpu: 6000m
     memory: 2Gi
   limits:
-    memory: 32Gi
+    memory: 36Gi
 
 # Firecracker substrate paths on node-4. Driving real microVMs (privileged +
 # these host mounts) is gated behind `firecracker.enabled`; until then the
