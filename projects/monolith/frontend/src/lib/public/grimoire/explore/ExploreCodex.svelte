@@ -180,7 +180,7 @@
           {#each groups as g (g.rel_type)}
             <div class="rel-group">
               <p class="rel-type-label">{relLabel(g.rel_type)}</p>
-              {#each g.items as r, i (r.peer.id + "|" + r.rel_type + "|" + i)}
+              {#each g.items as r (r.peer.id + "|" + r.rel_type + "|" + r.edge.from + "|" + r.edge.to)}
                 {@const p = relPhrase(r)}
                 <p class="rel-line">
                   {#if p.pre}<span class="rel-word">{p.pre}</span>{/if}<button
