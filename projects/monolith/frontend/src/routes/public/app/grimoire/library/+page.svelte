@@ -1,15 +1,17 @@
 <script>
-  // Public Grimoire Library: every loaded book, plus a quiet one-line stats
-  // summary at the top. Fetches AFTER the layout's TurnstileGate admits
-  // (this component only mounts once `admitted` is true), so there is no
-  // corpus fetch before the challenge is solved.
+  // Public Grimoire Library: a shelf of every loaded book, plus a quiet
+  // one-line stats summary at the top. Fetches AFTER the layout's
+  // TurnstileGate admits (this component only mounts once `admitted` is
+  // true), so there is no corpus fetch before the challenge is solved.
   //
-  // Rows are grouped by book_kind (Adventures / Anthologies / Setting Guides /
-  // Bestiaries / Spellbooks / Magic Items / Rulebooks). book_kind is derived
-  // server-side from the slug (grimoire.extract.book_kind) and returned by GET
-  // /books; unmapped slugs fall into an "Other" bucket.
+  // Books as objects: each book renders as a cover card (real page image
+  // when one exists, a generated typographic cover otherwise), grouped by
+  // book_kind (Adventures / Anthologies / Setting Guides / Bestiaries /
+  // Spellbooks / Magic Items / Rulebooks). book_kind is derived server-side
+  // from the slug (grimoire.extract.book_kind) and returned by GET /books;
+  // unmapped slugs fall into an "Other" bucket.
   import { onMount } from "svelte";
-  import { apiFetch, bookHref } from "$lib/public/grimoire/api.js";
+  import { apiFetch, bookHref, API } from "$lib/public/grimoire/api.js";
 
   let books = $state([]);
   let loading = $state(true);
@@ -123,6 +125,40 @@
       rows: by[k],
     }));
   });
+
+  // Generated-cover hue: a tiny deterministic hash of book_id picked into a
+  // small palette of muted, parchment-compatible tokens (see theme.css). Not
+  // cryptographic, just a stable pick per book so the same book always gets
+  // the same tint.
+  const COVER_HUES = [
+    "--grim-cover-1",
+    "--grim-cover-2",
+    "--grim-cover-3",
+    "--grim-cover-4",
+    "--grim-cover-5",
+    "--grim-cover-6",
+  ];
+  function hashHue(bookId) {
+    let h = 0;
+    for (let i = 0; i < bookId.length; i++) {
+      h = (h * 31 + bookId.charCodeAt(i)) | 0;
+    }
+    return COVER_HUES[Math.abs(h) % COVER_HUES.length];
+  }
+
+  // Up to 3 initials from the display name, for the generated cover.
+  function initials(name) {
+    const words = name.split(/\s+/).filter(Boolean);
+    if (words.length === 0) return "?";
+    return words
+      .slice(0, 3)
+      .map((w) => w[0].toUpperCase())
+      .join("");
+  }
+
+  function coverImageUrl(book) {
+    return `${API}/chunks/${encodeURIComponent(book.cover_chunk_id)}/image`;
+  }
 </script>
 
 <div class="library-page">
@@ -130,16 +166,9 @@
 
   {#if !loading && !error && books.length > 0}
     <p class="summary">
-      <b>{totals.books.toLocaleString()}</b>
-      {totals.books === 1 ? "book" : "books"}
-      <span class="dot">/</span>
-      <b>{totals.chunks.toLocaleString()}</b> chunks
-      <span class="dot">/</span>
-      <b>{totals.images.toLocaleString()}</b> images
-      <span class="dot">/</span>
-      <b>{totals.entities.toLocaleString()}</b> entities
-      <span class="dot">/</span>
-      synced {totals.synced}
+      {totals.books.toLocaleString()}
+      {totals.books === 1 ? "book" : "books"}, {totals.chunks.toLocaleString()}
+      pages of lore, {totals.entities.toLocaleString()} entities, synced {totals.synced}
     </p>
     <p class="legend">
       Open-licensed books are readable in full. Others are listed for reference.
@@ -170,8 +199,8 @@
 
   {#if loading}
     <div class="skeletons" aria-hidden="true">
-      {#each [1, 2, 3, 4, 5] as n (n)}
-        <div class="skeleton-row"></div>
+      {#each [1, 2, 3, 4, 5, 6] as n (n)}
+        <div class="skeleton-card"></div>
       {/each}
     </div>
   {:else if error}
@@ -188,38 +217,38 @@
           <span class="kind">{group.label}</span>
           <span class="kn">{group.rows.length}</span>
         </div>
-        <ul class="book-list">
+        <div class="shelf">
           {#each group.rows as book (book.book_id)}
-            <li>
-              {#snippet body()}
-                <span class="brow-main">
-                  <span class="title">
-                    {book.display_name}
-                    {#if !book.copyrighted_content && isNew(book)}
-                      <span class="pill">New</span>
-                    {/if}
+            <a
+              class="card"
+              class:locked={book.copyrighted_content}
+              href={bookHref(book.book_id)}
+              aria-disabled={book.copyrighted_content}
+              title={book.copyrighted_content
+                ? "Reference only, not available to read here"
+                : undefined}
+            >
+              <span class="cover" class:muted={book.copyrighted_content}>
+                {#if book.cover_chunk_id}
+                  <img
+                    src={coverImageUrl(book)}
+                    alt="{book.display_name} cover"
+                    loading="lazy"
+                  />
+                {:else}
+                  <span
+                    class="cover-generated"
+                    style={`background: var(${hashHue(book.book_id)})`}
+                  >
+                    {initials(book.display_name)}
                   </span>
-                  <span class="meta">
-                    {book.chunk_count.toLocaleString()} chunks
-                    <span class="dot">/</span>
-                    {book.image_count.toLocaleString()} images
-                    <span class="dot">/</span>
-                    {book.entity_count.toLocaleString()} entities
-                  </span>
-                </span>
-              {/snippet}
-              {#if book.copyrighted_content}
-                <!-- Listed for reference (breadth of the corpus is the
-                     showcase) but not readable in full: a quiet lock, no loud
-                     label. Not a link; the backend also 403s the read
-                     endpoints. -->
-                <div class="brow locked" title="Not available to read here">
-                  {@render body()}
-                  <span class="lock" aria-label="Locked">
+                {/if}
+                {#if book.copyrighted_content}
+                  <span class="badge locked-badge">
                     <svg
                       viewBox="0 0 16 16"
-                      width="14"
-                      height="14"
+                      width="10"
+                      height="10"
                       fill="none"
                       aria-hidden="true"
                     >
@@ -238,17 +267,34 @@
                         stroke-width="1.3"
                       />
                     </svg>
+                    <span>Reference only</span>
                   </span>
-                </div>
-              {:else}
-                <a class="brow" href={bookHref(book.book_id)}>
-                  {@render body()}
-                  <span class="read">Read &rarr;</span>
-                </a>
-              {/if}
-            </li>
+                {:else}
+                  <span class="badge read-badge" aria-hidden="true">
+                    Read &rarr;
+                  </span>
+                {/if}
+              </span>
+              <span class="card-body">
+                <span class="title">
+                  {book.display_name}
+                  {#if !book.copyrighted_content && isNew(book)}
+                    <span class="pill">New</span>
+                  {/if}
+                </span>
+                <span class="kind-label grim-smallcaps">{group.label}</span>
+                <span class="chips">
+                  <span class="chip"
+                    >{book.entity_count.toLocaleString()} entities</span
+                  >
+                  <span class="chip"
+                    >{book.image_count.toLocaleString()} images</span
+                  >
+                </span>
+              </span>
+            </a>
           {/each}
-        </ul>
+        </div>
       </section>
     {/each}
   {/if}
@@ -271,11 +317,6 @@
     color: var(--grim-text-dim);
     font-size: 13.5px;
     font-variant-numeric: tabular-nums;
-  }
-
-  .summary b {
-    color: var(--grim-ink);
-    font-weight: 600;
   }
 
   .legend {
@@ -335,11 +376,6 @@
     color: var(--grim-accent);
   }
 
-  .dot {
-    color: var(--grim-text-faint);
-    margin: 0 8px;
-  }
-
   .lib-group {
     margin-top: 32px;
   }
@@ -366,52 +402,162 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .book-list {
-    list-style: none;
-    margin: 2px 0 0;
-    padding: 0;
+  /* Shelf grid: cover cards, responsive columns, no horizontal overflow even
+     on a 390px mobile viewport. */
+  .shelf {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 20px;
+    margin-top: 16px;
   }
 
-  .brow {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: 15px;
-    padding: 13px 8px;
+  @media (min-width: 900px) {
+    .shelf {
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 24px;
+    }
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
     text-decoration: none;
     color: inherit;
-    border-bottom: 1px solid var(--grim-line-soft);
-    border-radius: 7px;
+    border-radius: 10px;
   }
 
-  .book-list li:last-child .brow {
-    border-bottom: 0;
-  }
-
-  .brow:hover {
+  .cover {
+    position: relative;
+    display: block;
+    aspect-ratio: 2 / 3;
+    border-radius: 8px;
+    overflow: hidden;
     background: var(--grim-surface-2);
+    border: 1px solid var(--grim-line);
+    transition:
+      transform 0.16s ease-out,
+      box-shadow 0.16s ease-out;
   }
 
-  .brow .title {
-    font-family: var(--grim-serif);
-    font-size: 18px;
-    font-weight: 600;
+  .cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .cover.muted img {
+    filter: saturate(0.6) opacity(0.85);
+  }
+
+  .cover-generated {
     display: flex;
     align-items: center;
-    gap: 9px;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-family: var(--grim-serif);
+    font-size: clamp(22px, 5vw, 30px);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--grim-on-accent);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+
+  .cover.muted .cover-generated {
+    filter: saturate(0.6) opacity(0.85);
+  }
+
+  /* Readable books get a page-lift on hover: transform/shadow only. */
+  .card:not(.locked):hover .cover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 18px rgba(0, 0, 0, 0.14);
+  }
+
+  .card.locked {
+    cursor: default;
+  }
+
+  .badge {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-radius: 5px;
+    padding: 3px 6px;
+    line-height: 1.3;
+  }
+
+  .locked-badge {
+    top: 6px;
+    left: 6px;
+    color: var(--grim-ink);
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid var(--grim-line);
+  }
+
+  .read-badge {
+    right: 6px;
+    bottom: 6px;
+    left: 6px;
+    justify-content: center;
+    color: var(--grim-on-accent);
+    background: var(--grim-accent);
+    opacity: 0;
+    transform: translateY(4px);
+    transition:
+      opacity 0.15s,
+      transform 0.15s;
+  }
+
+  .card:not(.locked):hover .read-badge {
+    opacity: 1;
+    transform: none;
+  }
+
+  .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .title {
+    font-family: var(--grim-serif);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.25;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
     color: var(--grim-ink);
   }
 
-  .brow .meta {
-    display: block;
-    margin-top: 3px;
-    color: var(--grim-text-dim);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
+  .kind-label {
+    font-size: 10px;
+    color: var(--grim-text-faint);
   }
 
-  .brow .meta .dot {
-    margin: 0 6px;
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .chip {
+    font-size: 10.5px;
+    color: var(--grim-text-dim);
+    background: var(--grim-surface-2);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .pill {
@@ -423,43 +569,6 @@
     background: var(--grim-accent-soft);
     border-radius: 4px;
     padding: 2px 6px;
-  }
-
-  /* Copyrighted books are listed but Reader-locked: dim the whole row and drop
-     the hover affordance so it reads as inert, not clickable. */
-  .brow.locked {
-    cursor: default;
-    opacity: 0.62;
-  }
-
-  .brow.locked:hover {
-    background: transparent;
-  }
-
-  /* Quiet lock on locked rows: the single, low-key marker (no "Copyrighted"
-     pill, no "Locked" label). Sits where "Read ->" would be on open rows. */
-  .lock {
-    display: inline-flex;
-    align-items: center;
-    color: var(--grim-text-faint);
-  }
-
-  .read {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    white-space: nowrap;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--grim-accent);
-    opacity: 0;
-    transition: opacity 0.15s;
-  }
-
-  .brow:hover .read {
-    opacity: 1;
   }
 
   .empty {
@@ -482,15 +591,15 @@
   }
 
   .skeletons {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 20px;
     margin-top: 24px;
   }
 
-  .skeleton-row {
-    height: 62px;
-    border-radius: 7px;
+  .skeleton-card {
+    aspect-ratio: 2 / 3;
+    border-radius: 8px;
     background: linear-gradient(
       90deg,
       var(--grim-surface-2) 25%,
@@ -514,11 +623,25 @@
     .library-page {
       padding: 28px 20px 60px;
     }
+
+    .shelf {
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 14px;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .skeleton-row {
+    .skeleton-card {
       animation: none;
+    }
+
+    .cover,
+    .read-badge {
+      transition: none;
+    }
+
+    .card:not(.locked):hover .cover {
+      transform: none;
     }
   }
 </style>
