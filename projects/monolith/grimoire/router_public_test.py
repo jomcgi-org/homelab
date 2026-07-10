@@ -331,7 +331,18 @@ class TestBooksAndSections:
         r = client.get("/api/grimoire/books/mm/sections")
         assert r.status_code == 200
         sections = r.json()
-        assert sections[0]["section_path"] == "Monsters/Aboleth"
+        # section_hierarchy is unset on this fixture, so list_sections falls
+        # back to splitting the raw section_path ("Monsters/Aboleth") into a
+        # two-level breadcrumb: a "Monsters" chapter node, then its "Aboleth"
+        # child, joined with " > " (the section_hierarchy separator).
+        assert [s["section_path"] for s in sections] == [
+            "Monsters",
+            "Monsters > Aboleth",
+        ]
+        assert sections[1]["title"] == "Aboleth"
+        assert sections[1]["depth"] == 1
+        assert sections[1]["parent_path"] == "Monsters"
+        assert sections[1]["raw_section_paths"] == ["Monsters/Aboleth"]
 
     def test_read_page_full_content(self, session, client):
         seed = seed_corpus(session)

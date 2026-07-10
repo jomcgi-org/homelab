@@ -1,93 +1,74 @@
 import { describe, it, expect } from "vitest";
 import { buildSectionTree } from "./section-tree.js";
 
+// Rows mirror the backend's shape: one row per distinct breadcrumb node,
+// carrying section_path (the full " > "-joined breadcrumb), title (the
+// node's own last segment), depth, and parent_path (the parent's
+// section_path, or null at depth 0).
+function row(section_path, title, depth, parent_path = null) {
+  return {
+    section_path,
+    title,
+    depth,
+    parent_path,
+    first_chunk_id: "c-" + title,
+  };
+}
+
 describe("buildSectionTree", () => {
   it("returns an empty array for an empty list", () => {
     expect(buildSectionTree([])).toEqual([]);
   });
 
-  it("treats a path with no slash as a top-level leaf", () => {
-    const flat = [{ section_path: "Introduction", title: "Introduction" }];
+  it("treats a depth-0 row with no children as a top-level leaf", () => {
+    const flat = [row("Introduction", "Introduction", 0)];
     const tree = buildSectionTree(flat);
     expect(tree).toEqual([
-      {
-        title: "Introduction",
-        section: flat[0],
-        children: [],
-      },
+      { title: "Introduction", section: flat[0], children: [] },
     ]);
   });
 
-  it("nests a two-level path under its chapter", () => {
+  it("nests a depth-1 row under its depth-0 parent", () => {
     const flat = [
-      { section_path: "Chapter 1/Traps", title: "Traps" },
-      { section_path: "Chapter 1/Doors", title: "Doors" },
-    ];
-    const tree = buildSectionTree(flat);
-    expect(tree).toEqual([
-      {
-        title: "Chapter 1",
-        section: null,
-        children: [
-          { title: "Traps", section: flat[0], children: [] },
-          { title: "Doors", section: flat[1], children: [] },
-        ],
-      },
-    ]);
-  });
-
-  it("splits only on the FIRST slash, so a slash-bearing leaf title stays intact", () => {
-    const flat = [
-      { section_path: "Chapter 1/Traps/Pits", title: "Traps/Pits" },
-    ];
-    const tree = buildSectionTree(flat);
-    expect(tree).toEqual([
-      {
-        title: "Chapter 1",
-        section: null,
-        children: [{ title: "Traps/Pits", section: flat[0], children: [] }],
-      },
-    ]);
-  });
-
-  it("merges consecutive rows that share the same chapter into one node", () => {
-    const flat = [
-      { section_path: "Chapter 1/Traps", title: "Traps" },
-      { section_path: "Chapter 1/Doors", title: "Doors" },
-      { section_path: "Chapter 1/Locks", title: "Locks" },
+      row("Chapter 1", "Chapter 1", 0),
+      row("Chapter 1 > Traps", "Traps", 1, "Chapter 1"),
+      row("Chapter 1 > Doors", "Doors", 1, "Chapter 1"),
     ];
     const tree = buildSectionTree(flat);
     expect(tree).toHaveLength(1);
     expect(tree[0].title).toBe("Chapter 1");
-    expect(tree[0].children).toHaveLength(3);
+    expect(tree[0].children).toEqual([
+      { title: "Traps", section: flat[1], children: [] },
+      { title: "Doors", section: flat[2], children: [] },
+    ]);
   });
 
-  it("keeps non-consecutive duplicate chapter names as separate nodes (reading order wins)", () => {
+  it("nests three levels deep", () => {
     const flat = [
-      { section_path: "Chapter 1/Traps", title: "Traps" },
-      { section_path: "Chapter 2/Intro", title: "Intro" },
-      { section_path: "Chapter 1/Doors", title: "Doors" },
+      row("Chapter 1", "Chapter 1", 0),
+      row("Chapter 1 > Armor", "Armor", 1, "Chapter 1"),
+      row(
+        "Chapter 1 > Armor > Armor of Vulnerability",
+        "Armor of Vulnerability",
+        2,
+        "Chapter 1 > Armor",
+      ),
     ];
     const tree = buildSectionTree(flat);
-    expect(tree).toHaveLength(3);
-    expect(tree.map((n) => n.title)).toEqual([
-      "Chapter 1",
-      "Chapter 2",
-      "Chapter 1",
-    ]);
-    expect(tree[0].children).toEqual([
-      { title: "Traps", section: flat[0], children: [] },
-    ]);
-    expect(tree[2].children).toEqual([
-      { title: "Doors", section: flat[2], children: [] },
+    expect(tree).toHaveLength(1);
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children[0].title).toBe("Armor");
+    expect(tree[0].children[0].children).toEqual([
+      { title: "Armor of Vulnerability", section: flat[2], children: [] },
     ]);
   });
 
   it("keeps reading order across a mix of top-level leaves and chapters", () => {
     const flat = [
-      { section_path: "Foreword", title: "Foreword" },
-      { section_path: "Chapter 1/Traps", title: "Traps" },
-      { section_path: "Afterword", title: "Afterword" },
+      row("Foreword", "Foreword", 0),
+      row("Chapter 1", "Chapter 1", 0),
+      row("Chapter 1 > Traps", "Traps", 1, "Chapter 1"),
+      row("Afterword", "Afterword", 0),
     ];
     const tree = buildSectionTree(flat);
     expect(tree.map((n) => n.title)).toEqual([
@@ -97,18 +78,18 @@ describe("buildSectionTree", () => {
     ]);
     expect(tree[0].section).toBe(flat[0]);
     expect(tree[0].children).toEqual([]);
-    expect(tree[2].section).toBe(flat[2]);
+    expect(tree[2].section).toBe(flat[3]);
   });
 
   it("handles a single flat section list with no nesting at all", () => {
-    const flat = [{ section_path: "Only Section", title: "Only Section" }];
+    const flat = [row("Only Section", "Only Section", 0)];
     expect(buildSectionTree(flat)).toEqual([
       { title: "Only Section", section: flat[0], children: [] },
     ]);
   });
 
-  it("treats a null/empty section_path as a top-level leaf", () => {
-    const flat = [{ section_path: null, title: "(no section)" }];
+  it("treats the (no section) placeholder as a depth-0 leaf", () => {
+    const flat = [row("(no section)", "(no section)", 0)];
     const tree = buildSectionTree(flat);
     expect(tree).toEqual([
       { title: "(no section)", section: flat[0], children: [] },

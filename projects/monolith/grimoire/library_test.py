@@ -61,13 +61,22 @@ def client_fixture(session):
 
 
 def _chunk(
-    session, *, book_id, chunk_ref, content, seq, section_path=None, image_ref=None
+    session,
+    *,
+    book_id,
+    chunk_ref,
+    content,
+    seq,
+    section_path=None,
+    section_hierarchy=None,
+    image_ref=None,
 ):
     row = KnowledgeChunk(
         book_id=book_id,
         chunk_ref=chunk_ref,
         content=content,
         section_path=section_path,
+        section_hierarchy=section_hierarchy,
         image_ref=image_ref,
         seq=seq,
     )
@@ -233,17 +242,97 @@ class TestCoverChunk:
 
 class TestSections:
     def test_ordered_by_reading_order(self, session, client):
+        """seed_book sets only section_path (no section_hierarchy), so every
+        chunk falls back to splitting it on "/", collapsing "Monsters/Aboleth"
+        and "Monsters/Beholder" under a shared "Monsters" chapter node."""
         seed = seed_book(session)
         body = client.get("/api/grimoire/books/mm/sections").json()
         assert [s["section_path"] for s in body] == [
-            "Monsters/Aboleth",
-            "Monsters/Beholder",
+            "Monsters",
+            "Monsters > Aboleth",
+            "Monsters > Beholder",
         ]
-        aboleth = body[0]
+        chapter, aboleth, beholder = body
+        assert chapter["depth"] == 0
+        assert chapter["parent_path"] is None
+        # The chapter node has no chunks tagged with its OWN full breadcrumb
+        # (nothing is section_path="Monsters" alone), but still gets a
+        # first_chunk_id (the earliest descendant chunk) so it's clickable.
+        assert chapter["chunk_count"] == 0
+        assert chapter["first_chunk_id"] == seed.c0.id
+
         assert aboleth["title"] == "Aboleth"
+        assert aboleth["depth"] == 1
+        assert aboleth["parent_path"] == "Monsters"
         assert aboleth["chunk_count"] == 3
         assert aboleth["image_count"] == 1
         assert aboleth["first_chunk_id"] == seed.c0.id
+        assert aboleth["raw_section_paths"] == ["Monsters/Aboleth"]
+
+        assert beholder["title"] == "Beholder"
+        assert beholder["first_chunk_id"] == seed.c3.id
+
+    def test_nests_from_section_hierarchy_when_present(self, session, client):
+        """A chunk with section_hierarchy set is grouped by its full breadcrumb
+        (split on " > "), not by section_path, and can nest deeper than two
+        levels."""
+        session.add(Book(id="deep", display_name="Deep Book"))
+        c0 = _chunk(
+            session,
+            book_id="deep",
+            chunk_ref="d0",
+            content="Vulnerability details.",
+            seq=0,
+            section_path="Chapter 3/Armor",
+            section_hierarchy="Chapter 3: Magic Items > Armor > Armor of Vulnerability",
+        )
+        body = client.get("/api/grimoire/books/deep/sections").json()
+        assert [s["section_path"] for s in body] == [
+            "Chapter 3: Magic Items",
+            "Chapter 3: Magic Items > Armor",
+            "Chapter 3: Magic Items > Armor > Armor of Vulnerability",
+        ]
+        leaf = body[2]
+        assert leaf["title"] == "Armor of Vulnerability"
+        assert leaf["depth"] == 2
+        assert leaf["parent_path"] == "Chapter 3: Magic Items > Armor"
+        assert leaf["first_chunk_id"] == c0.id
+        # raw_section_paths tracks the chunk-level column for the reader's
+        # scroll-highlight match, independent of the section_hierarchy nesting.
+        assert leaf["raw_section_paths"] == ["Chapter 3/Armor"]
+
+    def test_falls_back_per_chunk_when_hierarchy_missing(self, session, client):
+        """Within one book, chunks with section_hierarchy nest by breadcrumb
+        while chunks missing it (pre-backfill) fall back to section_path,
+        matching the mixed-coverage case (e.g. monster-manual, 1222/2028)."""
+        session.add(Book(id="mixed", display_name="Mixed Coverage"))
+        with_hierarchy = _chunk(
+            session,
+            book_id="mixed",
+            chunk_ref="m0",
+            content="Has hierarchy.",
+            seq=0,
+            section_path="Ch1/Intro",
+            section_hierarchy="Chapter 1 > Introduction",
+        )
+        without_hierarchy = _chunk(
+            session,
+            book_id="mixed",
+            chunk_ref="m1",
+            content="Missing hierarchy.",
+            seq=1,
+            section_path="Ch2/Setup",
+            section_hierarchy=None,
+        )
+        body = client.get("/api/grimoire/books/mixed/sections").json()
+        paths = [s["section_path"] for s in body]
+        assert "Chapter 1 > Introduction" in paths
+        assert "Ch2 > Setup" in paths
+        by_path = {s["section_path"]: s for s in body}
+        assert (
+            by_path["Chapter 1 > Introduction"]["first_chunk_id"] == with_hierarchy.id
+        )
+        assert by_path["Ch2 > Setup"]["first_chunk_id"] == without_hierarchy.id
 
 
 class TestListChunks:

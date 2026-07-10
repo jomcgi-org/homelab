@@ -1,72 +1,86 @@
 <script>
   // Section list for the public reader. Mirrors the private tier's
   // ChaptersNav.svelte (see that file's docblock for the full rationale):
-  // fetches the book's section hierarchy once, then folds the flat
-  // {section_path, title, ...} rows into a two-level chapter/leaf tree via
-  // section-tree.js's buildSectionTree (pure, unit-tested separately).
+  // takes the book's already-fetched, already-nested section tree (see
+  // Reader.svelte, which fetches /sections once and builds the tree via
+  // section-tree.js's buildSectionTree for both mounts of this component) and
+  // renders it recursively, since the backend now groups by the full
+  // section_hierarchy breadcrumb rather than a fixed chapter/leaf split, so a
+  // node can nest arbitrarily deep (typically 1-4 levels).
   //
-  // Two variants, one fetch/highlight/tree implementation:
+  // Two variants, one highlight/render implementation:
   //  - "sidebar" (default reading surface, desktop >900px): the tree is
-  //    rendered as Reader.svelte's left TOC column. Chapter rows are
-  //    collapsible buttons (chevron, aria-expanded); every chapter starts
-  //    collapsed except the one containing the current section, which
+  //    rendered as Reader.svelte's left TOC column. Branch rows are
+  //    collapsible buttons (chevron, aria-expanded); every branch starts
+  //    collapsed except the ancestor chain of the current section, which
   //    auto-expands. Leaf rows carry no chunk-count number (removed per the
   //    showcase redesign: the count was noise, not a reading aid).
   //  - "dropdown" (mobile <=900px, where the sidebar is hidden): the same
   //    tree, same collapse behavior, in a floating panel behind a "Chapters"
   //    toggle button in the sticky bar.
   // Styled with the clean grimoire theme (--grim-* tokens).
-  import { apiFetch, chunkHref } from "$lib/public/grimoire/api.js";
-  import { buildSectionTree } from "$lib/public/grimoire/book/section-tree.js";
+  import { chunkHref } from "$lib/public/grimoire/api.js";
 
-  let { bookId, activeSectionPath = null, variant = "dropdown" } = $props();
+  let {
+    bookId,
+    tree = [],
+    loading = false,
+    error = "",
+    activeSectionPath = null,
+    variant = "dropdown",
+  } = $props();
 
   let open = $state(false);
-  let sections = $state([]);
-  let loading = $state(true);
-  let error = $state("");
-  // Chapter titles currently expanded. Recomputed (not just initialized)
-  // whenever the active section moves into a different chapter, so scrolling
-  // into a new chapter auto-opens it without clobbering a chapter the visitor
-  // opened by hand elsewhere in the tree.
+  // Node section_paths (the synthesized breadcrumb key, unique per node)
+  // currently expanded. Recomputed (not just initialized) whenever the active
+  // section moves into a different branch, so scrolling into a new branch
+  // auto-opens it without clobbering a branch the visitor opened by hand
+  // elsewhere in the tree.
   let expanded = $state(new Set());
   let rootEl;
 
-  const tree = $derived(buildSectionTree(sections));
-
-  $effect(() => {
-    load(bookId);
-  });
-
-  // Auto-expand the chapter containing the active section. Runs whenever
-  // activeSectionPath or the tree changes; adds (never removes) so a manual
-  // toggle elsewhere in the tree survives scroll-driven updates.
-  $effect(() => {
+  // A node is "active" when the reader's scroll-driven activeSectionPath (a
+  // raw chunk-level section_path) is one of the raw section_path values that
+  // rolled up into this node -- not string equality on the node's own
+  // synthesized breadcrumb (see library.list_sections' raw_section_paths).
+  function isActive(node) {
     const path = activeSectionPath;
-    if (!path) return;
-    const chapterTitle = path.includes("/") ? path.split("/")[0] : null;
-    if (!chapterTitle) return;
-    if (!expanded.has(chapterTitle)) {
-      expanded = new Set(expanded).add(chapterTitle);
-    }
-  });
-
-  async function load(id) {
-    loading = true;
-    error = "";
-    try {
-      sections = await apiFetch(`/books/${encodeURIComponent(id)}/sections`);
-    } catch (e) {
-      error = e.message;
-    } finally {
-      loading = false;
-    }
+    return !!path && (node.section?.raw_section_paths ?? []).includes(path);
   }
 
-  function toggleChapter(title) {
+  // Every ancestor branch of the currently-active leaf, so switching section
+  // auto-expands the full chain down to it (adds, never removes, so a manual
+  // toggle elsewhere in the tree survives scroll-driven updates).
+  function collectActiveAncestors(nodes, path, acc) {
+    for (const node of nodes) {
+      if (node.children.length === 0) {
+        if (isActive(node)) return true;
+        continue;
+      }
+      if (collectActiveAncestors(node.children, path, acc)) {
+        acc.add(node.section.section_path);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  $effect(() => {
+    if (!activeSectionPath) return;
+    const acc = new Set();
+    collectActiveAncestors(tree, activeSectionPath, acc);
+    if (acc.size === 0) return;
+    let next = expanded;
+    for (const path of acc) {
+      if (!next.has(path)) next = new Set(next).add(path);
+    }
+    if (next !== expanded) expanded = next;
+  });
+
+  function toggleBranch(path) {
     const next = new Set(expanded);
-    if (next.has(title)) next.delete(title);
-    else next.add(title);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
     expanded = next;
   }
 
@@ -77,6 +91,62 @@
     if (e.key === "Escape") open = false;
   }
 </script>
+
+{#snippet branch(nodes)}
+  <ul class="pub-chapters-list">
+    {#each nodes as node (node.section ? node.section.section_path : node.title)}
+      {#if node.children.length === 0}
+        <li>
+          <a
+            class="pub-chapters-row"
+            class:pub-chapters-row--h1={node.section?.depth === 0}
+            class:pub-chapters-row--active={isActive(node)}
+            href={chunkHref(bookId, node.section?.first_chunk_id)}
+            onclick={() => (open = false)}
+          >
+            <span class="pub-chapters-row-title">{node.title}</span>
+          </a>
+        </li>
+      {:else}
+        {@const nodePath = node.section?.section_path ?? node.title}
+        {@const isOpen = expanded.has(nodePath)}
+        <li>
+          <button
+            type="button"
+            class="pub-chapters-chapter"
+            aria-expanded={isOpen}
+            aria-controls={"pub-chapter-" + nodePath}
+            onclick={() => toggleBranch(nodePath)}
+          >
+            <svg
+              class="pub-chapters-chevron"
+              class:pub-chapters-chevron--open={isOpen}
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              aria-hidden="true"
+            >
+              <path
+                d="M2 1 L7 5 L2 9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="pub-chapters-row-title">{node.title}</span>
+          </button>
+          {#if isOpen}
+            <div class="pub-chapters-list--nested" id={"pub-chapter-" + nodePath}>
+              {@render branch(node.children)}
+            </div>
+          {/if}
+        </li>
+      {/if}
+    {/each}
+  </ul>
+{/snippet}
 
 <svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown} />
 
@@ -103,75 +173,7 @@
       {:else if tree.length === 0}
         <p class="pub-chapters-status">This book has no chunks yet.</p>
       {:else}
-        <ul class="pub-chapters-list">
-          {#each tree as node (node.section ? node.section.section_path : node.title)}
-            {#if node.children.length === 0}
-              <li>
-                <a
-                  class="pub-chapters-row pub-chapters-row--h1"
-                  class:pub-chapters-row--active={node.section?.section_path ===
-                    activeSectionPath}
-                  href={chunkHref(bookId, node.section?.first_chunk_id)}
-                  onclick={() => (open = false)}
-                >
-                  <span class="pub-chapters-row-title">{node.title}</span>
-                </a>
-              </li>
-            {:else}
-              {@const isOpen = expanded.has(node.title)}
-              <li>
-                <button
-                  type="button"
-                  class="pub-chapters-chapter"
-                  aria-expanded={isOpen}
-                  aria-controls={"pub-chapter-" + node.title}
-                  onclick={() => toggleChapter(node.title)}
-                >
-                  <svg
-                    class="pub-chapters-chevron"
-                    class:pub-chapters-chevron--open={isOpen}
-                    width="10"
-                    height="10"
-                    viewBox="0 0 10 10"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M2 1 L7 5 L2 9"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                  <span class="pub-chapters-row-title">{node.title}</span>
-                </button>
-                {#if isOpen}
-                  <ul
-                    class="pub-chapters-list pub-chapters-list--nested"
-                    id={"pub-chapter-" + node.title}
-                  >
-                    {#each node.children as child (child.section.section_path)}
-                      <li>
-                        <a
-                          class="pub-chapters-row"
-                          class:pub-chapters-row--active={child.section
-                            .section_path === activeSectionPath}
-                          href={chunkHref(bookId, child.section.first_chunk_id)}
-                          onclick={() => (open = false)}
-                        >
-                          <span class="pub-chapters-row-title"
-                            >{child.title}</span
-                          >
-                        </a>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </li>
-            {/if}
-          {/each}
-        </ul>
+        {@render branch(tree)}
       {/if}
     </div>
   {/if}
