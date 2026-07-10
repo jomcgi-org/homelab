@@ -343,6 +343,41 @@ class TestBooksAndSections:
         assert page["items"][0]["content"] == seed.c0.content
         assert page["next_cursor"] is None
 
+    def test_read_page_includes_global_entity_mentions(self, session, client):
+        """Each item carries its is_global entity mentions (name, entity_type,
+        mention_text), batched across the page rather than per chunk."""
+        seed = seed_corpus(session)
+        r = client.get("/api/grimoire/books/mm/read")
+        assert r.status_code == 200
+        page = r.json()
+        c0_item = next(item for item in page["items"] if item["id"] == seed.c0.id)
+        assert {e["name"] for e in c0_item["entities"]} == {"Aboleth"}
+        assert c0_item["entities"][0]["entity_type"] == "creature"
+        assert c0_item["entities"][0]["mention_text"] == "Aboleth"
+        # A chunk with no mentions still gets an (empty) entities list.
+        c1_item = next(item for item in page["items"] if item["id"] == seed.c1.id)
+        assert c1_item["entities"] == []
+
+    def test_read_page_excludes_non_global_entity_mentions(self, session, client):
+        """A campaign-private entity (is_global=False) mentioned on a chunk
+        must NOT appear in the public reader's per-chunk entities."""
+        seed = seed_corpus(session)
+        session.add(
+            Entity(id="e-strahd", entity_type="npc", name="Strahd", is_global=False)
+        )
+        session.commit()
+        session.add(
+            ChunkEntityMention(
+                chunk_id=seed.c0.id, entity_id="e-strahd", mention_text="Strahd"
+            )
+        )
+        session.commit()
+        r = client.get("/api/grimoire/books/mm/read")
+        assert r.status_code == 200
+        page = r.json()
+        c0_item = next(item for item in page["items"] if item["id"] == seed.c0.id)
+        assert {e["name"] for e in c0_item["entities"]} == {"Aboleth"}
+
 
 class TestGetChunk:
     def test_no_campaign_or_as_required(self, session, client):

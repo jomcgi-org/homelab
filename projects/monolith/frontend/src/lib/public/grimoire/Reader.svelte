@@ -23,6 +23,7 @@
   // slim floating toggle, since the sticky bar itself is gone).
   import { apiFetch, bookAttribution } from "$lib/public/grimoire/api.js";
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
+  import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
   import ChaptersNav from "$lib/public/grimoire/ChaptersNav.svelte";
 
   let {
@@ -121,6 +122,39 @@
       return blocks.slice(1);
     }
     return blocks;
+  }
+
+  // Chunk content is book text straight from the DB: it must be HTML-escaped
+  // before any {@html} render. Mirrors mention-highlight.js's own escapeHtml
+  // (that module isn't exported for reuse, its contract is "call on fresh
+  // renderMarkdown output only", so this is a deliberate small duplicate
+  // rather than reaching into its internals).
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Backend entities are {id, name, entity_type, mention_text}; highlightMentions
+  // expects {id, title, kind: "entity", entity_type}. Also dedupes by name: a
+  // chunk can carry more than one mention row for the same entity (e.g. two
+  // mention_text spellings), and highlightMentions only needs one per name.
+  function touchedEntities(entities) {
+    if (!entities?.length) return [];
+    const seen = new Set();
+    const touched = [];
+    for (const e of entities) {
+      if (seen.has(e.name)) continue;
+      seen.add(e.name);
+      touched.push({ id: e.id, title: e.name, kind: "entity", entity_type: e.entity_type });
+    }
+    return touched;
+  }
+
+  // Mention-linkified HTML for one block of plain text, escaping first so
+  // book text can never inject markup (the {@html} XSS boundary), then
+  // wrapping any touched entity names in the same type-colored links the
+  // chat surface uses.
+  function markText(text, touched) {
+    return highlightMentions(escapeHtml(text ?? ""), touched);
   }
 
   async function loadMore() {
@@ -352,15 +386,26 @@
               {/if}
             </figure>
           {:else}
+            {@const touched = touchedEntities(row.item.entities)}
             {#each bodyBlocks(row.item) as block, bi (bi)}
               {#if block.type === "heading"}
-                <h3 class="pub-inline-heading">{block.text}</h3>
+                {#if touched.length}
+                  <h3 class="pub-inline-heading">{@html markText(block.text, touched)}</h3>
+                {:else}
+                  <h3 class="pub-inline-heading">{block.text}</h3>
+                {/if}
               {:else if block.type === "list"}
                 <ul class="pub-list">
                   {#each block.items as li, lii (lii)}
-                    <li>{li}</li>
+                    {#if touched.length}
+                      <li>{@html markText(li, touched)}</li>
+                    {:else}
+                      <li>{li}</li>
+                    {/if}
                   {/each}
                 </ul>
+              {:else if touched.length}
+                <p>{@html markText(block.text, touched)}</p>
               {:else}
                 <p>{block.text}</p>
               {/if}
@@ -537,6 +582,29 @@
 
   .pub-list li {
     margin-bottom: 6px;
+  }
+
+  /* Entity mentions (highlightMentions): matches the chat surface's .gmark
+     treatment (routes/public/app/grimoire/chat/+page.svelte) so a mention
+     reads the same whether it's in a reply or the book text. The color rides
+     in via the inline `color` style the module sets per anchor; the pill
+     background and underline both derive from it (currentColor) via
+     color-mix, so a new entity type never needs a new rule here. */
+  .pub-chunk :global(.gmark) {
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
+    border-radius: 4px;
+    padding: 0.5px 4px;
+    margin: 0 -1px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    transition: background 120ms ease;
+  }
+
+  .pub-chunk :global(.gmark:hover),
+  .pub-chunk :global(.gmark:focus-visible) {
+    background: color-mix(in srgb, currentColor 20%, transparent);
   }
 
   .pub-anchor {

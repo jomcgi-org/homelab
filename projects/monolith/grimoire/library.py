@@ -330,6 +330,41 @@ def _image_object_key(image_ref: str | None) -> str | None:
     return key or None
 
 
+def _global_mentions_by_chunk(
+    session: Session, chunk_ids: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """is_global entity mentions for a set of chunks, ONE query grouped in
+    Python (not N+1 per chunk). Mirrors public.get_chunk_public's per-chunk
+    mention query (same fields, same is_global filter, same name order), just
+    batched across a whole reader page. Empty dict for an empty chunk_ids.
+    """
+    if not chunk_ids:
+        return {}
+    rows = session.exec(
+        select(
+            ChunkEntityMention.chunk_id,
+            Entity.id,
+            Entity.name,
+            Entity.entity_type,
+            ChunkEntityMention.mention_text,
+        )
+        .join(Entity, Entity.id == ChunkEntityMention.entity_id)
+        .where(ChunkEntityMention.chunk_id.in_(chunk_ids), Entity.is_global)
+        .order_by(Entity.name)
+    ).all()
+    by_chunk: dict[str, list[dict[str, Any]]] = {}
+    for chunk_id, entity_id, name, entity_type, mention_text in rows:
+        by_chunk.setdefault(chunk_id, []).append(
+            {
+                "id": entity_id,
+                "name": name,
+                "entity_type": entity_type,
+                "mention_text": mention_text,
+            }
+        )
+    return by_chunk
+
+
 def read_page(
     session: Session,
     book_id: str,
@@ -344,6 +379,11 @@ def read_page(
     key plus the caption as ``content``. Keyset paginated on ``seq`` exactly
     like ``list_chunks`` (cursor = last seq returned; NULL-seq boundary rows
     end the page rather than emitting a "None" cursor).
+
+    Each item also carries ``entities``: the is_global entity mentions on that
+    chunk (same fields as public.get_chunk_public's mention chips), so the
+    reader can linkify mentions inline. Fetched with one batched query across
+    the whole page (see _global_mentions_by_chunk), not per chunk.
     """
     limit = max(1, min(limit, MAX_READ_PAGE))
     query = select(KnowledgeChunk).where(KnowledgeChunk.book_id == book_id)
@@ -359,6 +399,7 @@ def read_page(
 
     has_more = len(rows) > limit
     rows = rows[:limit]
+    mentions_by_chunk = _global_mentions_by_chunk(session, [chunk.id for chunk in rows])
     items = [
         {
             "id": chunk.id,
@@ -367,6 +408,7 @@ def read_page(
             "kind": _kind(chunk),
             "content": chunk.content,
             "image_key": _image_object_key(chunk.image_ref),
+            "entities": mentions_by_chunk.get(chunk.id, []),
         }
         for chunk in rows
     ]
