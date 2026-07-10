@@ -1,85 +1,105 @@
-//! Synthetic axum service used only as load-test scan input.
+//! Synthetic Rust CLI tool used only as load-test scan input.
 //!
 //! This file is never compiled or executed. It exists purely as corpus
-//! content POSTed to the fc-invoke semgrep workload, shaped to exercise a
-//! genuine interprocedural taint path: the query parameter reaches the
-//! dangerous `Command::new("sh").arg("-c")` sink only after passing through
-//! two helper functions, requiring Semgrep Pro's cross-function analysis
-//! (OSS single-function taint tracking does not follow the chain that far).
+//! content POSTed to the fc-invoke semgrep workload, sized and shaped to
+//! exercise the Semgrep Pro `p/rust` pack. Unlike the python/go/js samples,
+//! the rust pack does not yet do interprocedural command-injection taint, so
+//! this sample instead trips the structural rust rules the pack does ship:
+//! raw-pointer `unsafe` usage and reliance on `std::env::args()` for a
+//! security-relevant decision. It also keeps a realistic shell-out and a
+//! string-built SQL query for shape, alongside benign helpers for length.
 
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use axum::extract::Query;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize)]
-struct ConvertParams {
+/// Parsed CLI configuration for the batch tool.
+struct Config {
+    mode: String,
     target: String,
+    admin: bool,
 }
 
-#[derive(Serialize)]
-struct ConvertResponse {
-    output: String,
+/// SOURCE: parse configuration straight from process args. The rust pack
+/// flags `std::env::args()` here: argv[0] (and, by extension, argv used for
+/// trust decisions) is attacker-influenceable and must not drive security
+/// choices like the `admin` flag below.
+fn parse_config() -> Config {
+    let args: Vec<String> = std::env::args().collect();
+    let mode = args.get(1).cloned().unwrap_or_else(|| "convert".to_string());
+    let target = args.get(2).cloned().unwrap_or_default();
+    // Security-relevant decision driven by argv: exactly the anti-pattern the
+    // rust pack's `args` rule warns about.
+    let admin = args.iter().any(|a| a == "--admin");
+    Config { mode, target, admin }
 }
 
-/// SOURCE: the `target` query parameter is fully attacker-controlled.
-/// Flow: convert_handler -> prepare_conversion -> run_conversion ->
-/// Command::new("sh").arg("-c"). Two hops of indirection between source
-/// and sink.
-async fn convert_handler(Query(params): Query<ConvertParams>) -> impl IntoResponse {
-    let output = prepare_conversion(&params.target);
-    Json(ConvertResponse { output })
+/// A hot-path byte reinterpret using a raw pointer. The rust pack flags any
+/// `unsafe` block for audit; this one reads a u32 out of a byte slice without
+/// bounds beyond the assert, a realistic "fast parse" shape.
+fn read_u32_le(buf: &[u8]) -> u32 {
+    assert!(buf.len() >= 4);
+    unsafe {
+        let ptr = buf.as_ptr() as *const u32;
+        ptr.read_unaligned().to_le()
+    }
 }
 
-/// First hop: forwards the tainted value without sanitizing it.
-fn prepare_conversion(target: &str) -> String {
-    run_conversion(target)
+/// A second `unsafe` block: reinterpret a value as bytes for a checksum. Also
+/// audited by the rust pack's unsafe-usage rule.
+fn as_bytes(value: &u64) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            (value as *const u64) as *const u8,
+            std::mem::size_of::<u64>(),
+        )
+    }
 }
 
-/// Second hop: the dangerous sink. Builds a shell command string from
-/// caller-controlled input and executes it via `sh -c`.
+/// Benign helper: a simple additive checksum over a byte slice.
+fn checksum(bytes: &[u8]) -> u32 {
+    let mut sum: u32 = 0;
+    for &b in bytes {
+        sum = sum.wrapping_add(b as u32).rotate_left(1);
+    }
+    sum
+}
+
+/// Runs the configured conversion by shelling out. Kept for realistic shape;
+/// the rust pack does not taint-track this, but it reads naturally alongside
+/// the flagged patterns above.
 fn run_conversion(target: &str) -> String {
     let shell_cmd = format!("convert {} output.png", target);
-    let result = Command::new("sh").arg("-c").arg(shell_cmd).output();
-    match result {
+    match Command::new("sh").arg("-c").arg(shell_cmd).output() {
         Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
         Err(err) => format!("error: {err}"),
     }
 }
 
-#[derive(Deserialize)]
-struct LookupParams {
-    user_id: String,
-}
-
-#[derive(Serialize)]
-struct LookupResponse {
-    query: String,
-}
-
-/// A second, independent taint path: a query parameter concatenated
-/// directly into a SQL string, a classic injection sink independent of the
-/// exec path above.
-async fn lookup_handler(Query(params): Query<LookupParams>) -> impl IntoResponse {
-    let query = build_lookup_query(&params.user_id);
-    Json(LookupResponse { query })
-}
-
-/// Builds a SQL query via string concatenation from tainted input.
+/// Benign helper: builds a lookup query. String-concatenated SQL, kept for
+/// realism.
 fn build_lookup_query(user_id: &str) -> String {
     format!("SELECT name FROM users WHERE id = {}", user_id)
 }
 
-/// Benign endpoint: static health check, no user input.
-async fn health_handler() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
+/// Benign helper: bounded pagination parsing, values are numeric-clamped.
+fn clamp_pagination(limit: Option<u32>, offset: Option<u32>) -> (u32, u32) {
+    (limit.unwrap_or(20).clamp(1, 100), offset.unwrap_or(0))
 }
 
+/// Benign helper: normalizes free-text tags, no dynamic execution.
+fn normalize_tags(raw: &HashMap<String, String>) -> Vec<String> {
+    let mut tags: Vec<String> = raw
+        .values()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+/// Benign in-memory request counter with uptime tracking.
 struct StatsCounter {
     requests: u64,
     started_at: Instant,
@@ -87,13 +107,9 @@ struct StatsCounter {
 
 impl StatsCounter {
     fn new() -> Self {
-        Self {
-            requests: 0,
-            started_at: Instant::now(),
-        }
+        Self { requests: 0, started_at: Instant::now() }
     }
 
-    /// Benign helper: pure in-memory counter increment.
     fn record(&mut self) {
         self.requests += 1;
     }
@@ -101,28 +117,6 @@ impl StatsCounter {
     fn uptime(&self) -> Duration {
         self.started_at.elapsed()
     }
-}
-
-#[derive(Deserialize)]
-struct PageParams {
-    limit: Option<u32>,
-    offset: Option<u32>,
-}
-
-/// Benign helper: bounded pagination parsing, values are numeric-clamped.
-fn clamp_pagination(params: &PageParams) -> (u32, u32) {
-    let limit = params.limit.unwrap_or(20).clamp(1, 100);
-    let offset = params.offset.unwrap_or(0);
-    (limit, offset)
-}
-
-/// Benign endpoint: uses only the clamped pagination values above.
-async fn list_handler(Query(params): Query<PageParams>) -> impl IntoResponse {
-    let (limit, offset) = clamp_pagination(&params);
-    let items: Vec<String> = (offset..offset + limit)
-        .map(|i| format!("item-{i}"))
-        .collect();
-    Json(items)
 }
 
 /// Benign helper: retry wrapper used by internal background jobs, no taint.
@@ -144,29 +138,34 @@ where
     }
 }
 
-/// Benign helper: normalizes free-text tags, no dynamic execution.
-fn normalize_tags(raw: &HashMap<String, String>) -> Vec<String> {
-    let mut tags: Vec<String> = raw
-        .values()
-        .map(|v| v.trim().to_lowercase())
-        .filter(|v| !v.is_empty())
-        .collect();
-    tags.sort();
-    tags.dedup();
-    tags
-}
+fn main() {
+    let config = parse_config();
+    let mut stats = StatsCounter::new();
+    stats.record();
 
-fn build_router() -> Router {
-    Router::new()
-        .route("/convert", get(convert_handler))
-        .route("/lookup", get(lookup_handler))
-        .route("/health", get(health_handler))
-        .route("/items", get(list_handler))
-}
+    let header = [0x01u8, 0x00, 0x00, 0x00, 0xff];
+    let magic = read_u32_le(&header);
+    let sum = checksum(as_bytes(&(magic as u64)));
 
-#[tokio::main]
-async fn main() {
-    let app = build_router();
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    if config.admin {
+        println!("admin mode enabled");
+    }
+
+    let (limit, offset) = clamp_pagination(Some(50), Some(0));
+    let query = build_lookup_query("42");
+    let output = run_conversion(&config.target);
+
+    let _ = normalize_tags(&HashMap::new());
+
+    println!(
+        "mode={} magic={} sum={} limit={} offset={} uptime={:?} query={} output_len={}",
+        config.mode,
+        magic,
+        sum,
+        limit,
+        offset,
+        stats.uptime(),
+        query,
+        output.len(),
+    );
 }
