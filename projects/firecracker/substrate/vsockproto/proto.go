@@ -168,6 +168,11 @@ type Finding struct {
 type ScanResult struct {
 	Findings []Finding `json:"findings"`
 	Errors   []string  `json:"errors,omitempty"`
+	// RawCliOutput is the verbatim `semgrep --json` cli_output, preserved for
+	// consumers that need full match metadata (fingerprints, end positions,
+	// dataflow) the flattened Findings drop. Optional: existing callers that
+	// only read Findings are unaffected.
+	RawCliOutput json.RawMessage `json:"raw_cli_output,omitempty"`
 }
 
 // WriteScanRequest writes one newline-delimited JSON ScanRequest, matching the
