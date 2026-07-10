@@ -1,0 +1,90 @@
+"""Regex/text-processing pass over a synthetically generated corpus of log
+lines: exercises Python's `re` module and string handling rather than
+numeric or array workloads.
+"""
+
+import re
+import random
+
+_LEVELS = ["INFO", "WARN", "ERROR", "DEBUG"]
+_SERVICES = ["monolith", "semgrep", "sandbox", "goosecracker", "chat"]
+_MESSAGES = [
+    "request completed in {ms}ms",
+    "connection reset by peer on attempt {n}",
+    "cache miss for key user:{n}",
+    "retrying after backoff of {ms}ms",
+    "scheduled job finished with status ok",
+]
+
+_LOG_PATTERN = re.compile(
+    r"^(?P<level>INFO|WARN|ERROR|DEBUG)\s+"
+    r"\[(?P<service>[a-z\-]+)\]\s+"
+    r"(?P<message>.+)$"
+)
+_MS_PATTERN = re.compile(r"(\d+)ms")
+_KEY_PATTERN = re.compile(r"key (\w+):(\d+)")
+
+
+def generate_log_lines(count: int, rng: random.Random) -> list[str]:
+    lines = []
+    for _ in range(count):
+        level = rng.choice(_LEVELS)
+        service = rng.choice(_SERVICES)
+        template = rng.choice(_MESSAGES)
+        message = template.format(ms=rng.randint(1, 5000), n=rng.randint(1, 9999))
+        lines.append(f"{level} [{service}] {message}")
+    return lines
+
+
+def parse_lines(lines: list[str]) -> list[dict]:
+    parsed = []
+    for line in lines:
+        match = _LOG_PATTERN.match(line)
+        if match:
+            parsed.append(match.groupdict())
+    return parsed
+
+
+def extract_latencies(lines: list[str]) -> list[int]:
+    latencies = []
+    for line in lines:
+        for match in _MS_PATTERN.finditer(line):
+            latencies.append(int(match.group(1)))
+    return latencies
+
+
+def extract_cache_keys(lines: list[str]) -> list[tuple[str, int]]:
+    keys = []
+    for line in lines:
+        for match in _KEY_PATTERN.finditer(line):
+            keys.append((match.group(1), int(match.group(2))))
+    return keys
+
+
+def count_by_level(parsed: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in parsed:
+        level = entry["level"]
+        counts[level] = counts.get(level, 0) + 1
+    return counts
+
+
+def main() -> None:
+    rng = random.Random(7)
+    lines = generate_log_lines(8_000, rng)
+
+    parsed = parse_lines(lines)
+    latencies = extract_latencies(lines)
+    keys = extract_cache_keys(lines)
+    counts = count_by_level(parsed)
+
+    avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+
+    print(f"generated {len(lines)} lines, parsed {len(parsed)}")
+    print(f"latency samples = {len(latencies)}, avg = {avg_latency:.1f}ms")
+    print(f"cache key samples = {len(keys)}")
+    print(f"counts by level = {counts}")
+
+
+if __name__ == "__main__":
+    main()

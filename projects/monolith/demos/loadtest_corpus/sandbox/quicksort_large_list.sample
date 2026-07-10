@@ -1,0 +1,60 @@
+"""Merge/quicksort on a large synthetic list: exercises recursion depth and
+list allocation churn rather than raw arithmetic. Uses stdlib `random` only.
+"""
+
+import random
+
+
+def quicksort(items: list[int]) -> list[int]:
+    if len(items) <= 1:
+        return items
+    pivot = items[len(items) // 2]
+    lesser = [x for x in items if x < pivot]
+    equal = [x for x in items if x == pivot]
+    greater = [x for x in items if x > pivot]
+    return quicksort(lesser) + equal + quicksort(greater)
+
+
+def merge_sort(items: list[int]) -> list[int]:
+    if len(items) <= 1:
+        return items
+    mid = len(items) // 2
+    left = merge_sort(items[:mid])
+    right = merge_sort(items[mid:])
+    return _merge(left, right)
+
+
+def _merge(left: list[int], right: list[int]) -> list[int]:
+    merged: list[int] = []
+    i = j = 0
+    while i < len(left) and j < len(right):
+        if left[i] <= right[j]:
+            merged.append(left[i])
+            i += 1
+        else:
+            merged.append(right[j])
+            j += 1
+    merged.extend(left[i:])
+    merged.extend(right[j:])
+    return merged
+
+
+def is_sorted(items: list[int]) -> bool:
+    return all(items[i] <= items[i + 1] for i in range(len(items) - 1))
+
+
+def main() -> None:
+    rng = random.Random(42)
+    data = [rng.randint(0, 1_000_000) for _ in range(20_000)]
+
+    quick_result = quicksort(list(data))
+    merge_result = merge_sort(list(data))
+
+    print(f"input size = {len(data)}")
+    print(f"quicksort sorted correctly = {is_sorted(quick_result)}")
+    print(f"merge_sort sorted correctly = {is_sorted(merge_result)}")
+    print(f"results match = {quick_result == merge_result}")
+
+
+if __name__ == "__main__":
+    main()

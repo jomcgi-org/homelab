@@ -130,8 +130,12 @@ py_venv_binary(
         # runfiles as data or every agent run fails with FileNotFoundError.
         "//projects/firecracker/goosecracker/guest:recipe_yamls",
         "knowledge/repo_docs_manifest.ndjson",
+        # loadtest_corpus.load_corpus reads these committed .sample files at
+        # runtime via Path(__file__).parent; the "demos/**/*.py" glob does not
+        # capture non-.py data, so ship them explicitly into runfiles (mirrors
+        # the worldcup Elo snapshot and campsites catalog above).
         ":frontend_dist",
-    ],
+    ] + glob(["demos/loadtest_corpus/**/*.sample"]),
     imports = ["."],  # keep
     main = "app/main.py",
     visibility = ["//:__subpackages__"],
@@ -4597,6 +4601,17 @@ py_test(
         ":monolith_backend",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "demos_loadtest_corpus_test",
+    srcs = ["demos/loadtest_corpus_test.py"],
+    data = glob(["demos/loadtest_corpus/**/*.sample"]),
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
     ],
 )
 

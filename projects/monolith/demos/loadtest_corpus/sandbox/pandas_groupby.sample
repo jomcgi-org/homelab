@@ -1,0 +1,57 @@
+"""Small pandas DataFrame groupby/aggregation workload: exercises the warm
+scientific-library page cache (pandas is preloaded in the sandbox guest
+image) rather than raw stdlib compute.
+"""
+
+import random
+
+import pandas as pd
+
+
+def build_dataframe(rows: int, rng: random.Random) -> pd.DataFrame:
+    regions = ["us-east", "us-west", "eu-central", "ap-south"]
+    services = ["monolith", "semgrep", "sandbox", "chat"]
+    return pd.DataFrame(
+        {
+            "region": [rng.choice(regions) for _ in range(rows)],
+            "service": [rng.choice(services) for _ in range(rows)],
+            "latency_ms": [rng.randint(5, 800) for _ in range(rows)],
+            "status_code": [rng.choice([200, 200, 200, 404, 500]) for _ in range(rows)],
+        }
+    )
+
+
+def summarize(df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        df.groupby(["region", "service"])
+        .agg(
+            avg_latency_ms=("latency_ms", "mean"),
+            p95_latency_ms=("latency_ms", lambda s: s.quantile(0.95)),
+            request_count=("latency_ms", "size"),
+            error_count=("status_code", lambda s: (s >= 400).sum()),
+        )
+        .reset_index()
+    )
+
+
+def error_rate_by_service(df: pd.DataFrame) -> pd.Series:
+    errors = df["status_code"] >= 400
+    return errors.groupby(df["service"]).mean()
+
+
+def main() -> None:
+    rng = random.Random(11)
+    df = build_dataframe(15_000, rng)
+
+    summary = summarize(df)
+    error_rates = error_rate_by_service(df)
+
+    print(f"rows = {len(df)}")
+    print(f"summary rows = {len(summary)}")
+    print(summary.sort_values("request_count", ascending=False).head(5).to_string(index=False))
+    print("error rate by service:")
+    print(error_rates.round(4).to_string())
+
+
+if __name__ == "__main__":
+    main()

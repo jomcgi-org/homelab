@@ -1,0 +1,114 @@
+# Synthetic Kubernetes manifest used only as load-test scan input.
+#
+# This manifest is never applied to any cluster (GitOps applies only files
+# under projects/*/deploy/). It exists purely as corpus content POSTed to the
+# fc-invoke semgrep workload, deliberately combining several misconfigurations
+# that Semgrep Pro's Kubernetes rule pack flags structurally (no taint
+# tracking needed): privileged mode, a hostPath mount, a root-capable
+# security context, privilege escalation allowed, and missing resource
+# limits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadtest-worker
+  namespace: loadtest
+  labels:
+    app: loadtest-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: loadtest-worker
+  template:
+    metadata:
+      labels:
+        app: loadtest-worker
+    spec:
+      # Missing serviceAccountName pin and automountServiceAccountToken
+      # control, on top of the container-level issues below.
+      containers:
+        - name: worker
+          image: ghcr.io/example/loadtest-worker:latest
+          imagePullPolicy: Always
+          securityContext:
+            # Privileged containers can access the host's devices directly,
+            # bypassing most container isolation.
+            privileged: true
+            # Root-capable filesystem and no read-only root.
+            runAsNonRoot: false
+            runAsUser: 0
+            readOnlyRootFilesystem: false
+            # Allows a compromised process to gain more privileges than its
+            # parent, e.g. via setuid binaries.
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - NET_ADMIN
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: WORKER_MODE
+              value: "batch"
+            - name: LOG_LEVEL
+              value: "info"
+          volumeMounts:
+            # Mounting the host's root filesystem into the container is a
+            # container-breakout vector when combined with privileged: true.
+            - name: host-root
+              mountPath: /host
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          # No resources block at all: no requests, no limits. A runaway
+          # process can starve every other pod on the node.
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+      hostNetwork: true
+      hostPID: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: loadtest-debug-pod
+  namespace: loadtest
+  labels:
+    app: loadtest-debug
+spec:
+  containers:
+    - name: debug
+      image: busybox:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+        allowPrivilegeEscalation: true
+      volumeMounts:
+        - name: var-run
+          mountPath: /var/run
+  volumes:
+    - name: var-run
+      hostPath:
+        path: /var/run
+        type: Directory
+  restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadtest-worker
+  namespace: loadtest
+spec:
+  selector:
+    app: loadtest-worker
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
