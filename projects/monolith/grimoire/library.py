@@ -73,15 +73,6 @@ def _iso(dt: datetime | None) -> str | None:
     return coerced.isoformat() if coerced else None
 
 
-def _section_title(section_path: str | None) -> str:
-    """A short human label for a section: the last path segment, or a stable
-    placeholder for chunks with no section_path (front matter, stray blocks).
-    """
-    if not section_path:
-        return "(no section)"
-    return section_path.rsplit("/", 1)[-1].strip() or section_path
-
-
 def _kind(chunk: KnowledgeChunk) -> str:
     return "image" if chunk.image_ref else "text"
 
@@ -217,18 +208,52 @@ def _cover_chunk_by_book(session: Session) -> dict[str, str]:
     return {**fallback, **preferred}
 
 
-def list_sections(session: Session, book_id: str) -> list[dict[str, Any]]:
-    """Ordered section tree for one book.
+def _hierarchy_path(
+    section_hierarchy: str | None, section_path: str | None
+) -> list[str]:
+    """The ancestor breadcrumb for one chunk, shallowest first.
 
-    Sections are grouped by ``section_path`` in reading order (first appearance
-    by ``seq``), not alphabetically. ``first_chunk_id`` is the earliest chunk in
-    the section, so the reader can jump straight to the section start.
+    Prefers ``section_hierarchy`` (" > "-separated, e.g. "Chapter 3 > Armor >
+    Armor of Vulnerability"), which carries the full depth. Falls back to
+    ``section_path`` (split on "/") for chunks loaded before the backfill, so a
+    book with partial ``section_hierarchy`` coverage (e.g. monster-manual,
+    1222/2028) never loses a currently-reachable section. Chunks with neither
+    (front matter, stray blocks) get a stable single-node placeholder so they
+    still surface in the TOC rather than vanishing.
+    """
+    source = section_hierarchy or section_path
+    if not source:
+        return ["(no section)"]
+    sep = " > " if section_hierarchy else "/"
+    parts = [part.strip() for part in source.split(sep) if part.strip()]
+    return parts or ["(no section)"]
+
+
+def list_sections(session: Session, book_id: str) -> list[dict[str, Any]]:
+    """Ordered, nested section tree for one book.
+
+    Rows are grouped by their full ancestor breadcrumb (``section_hierarchy``,
+    falling back per-chunk to ``section_path``) rather than by the raw,
+    near-flat ``section_path`` column: for books with deep ``section_path``
+    fragmentation (e.g. a5e-srd's 4,182 distinct paths), grouping on the
+    shared breadcrumb prefix collapses the reader TOC back down to a few dozen
+    real chapters instead of thousands of top-level rows.
+
+    Returns one entry per DISTINCT breadcrumb node (chapter, sub-section,
+    etc.), each carrying its ``depth`` (0 = top-level) and ``parent_path``
+    (the joined breadcrumb of its parent, or null at depth 0) so the client
+    can nest without re-deriving structure. Order is first-appearance by
+    ``seq``, matching the pre-existing reading-order contract. ``first_chunk_id``
+    is the earliest chunk anywhere under that node (leaf or ancestor), so every
+    row -- including chapter headers with no chunks of their own -- has a
+    target the reader can jump to.
     """
     rows = session.execute(
         select(
             KnowledgeChunk.id,
             KnowledgeChunk.seq,
             KnowledgeChunk.section_path,
+            KnowledgeChunk.section_hierarchy,
             KnowledgeChunk.image_ref,
             KnowledgeChunk.created_at,
         )
@@ -236,30 +261,54 @@ def list_sections(session: Session, book_id: str) -> list[dict[str, Any]]:
         .order_by(KnowledgeChunk.seq, KnowledgeChunk.chunk_ref)
     ).all()
 
-    sections: dict[str | None, dict[str, Any]] = {}
-    order: list[str | None] = []
-    for chunk_id, _seq, section_path, image_ref, created_at in rows:
-        entry = sections.get(section_path)
-        if entry is None:
-            entry = {
-                "section_path": section_path,
-                "title": _section_title(section_path),
-                "chunk_count": 0,
-                "image_count": 0,
-                "first_chunk_id": chunk_id,
-                "latest_chunk_at": created_at,
-            }
-            sections[section_path] = entry
-            order.append(section_path)
-        entry["chunk_count"] += 1
-        if image_ref:
-            entry["image_count"] += 1
-        current = entry["latest_chunk_at"]
-        if created_at is not None and (current is None or created_at > current):
-            entry["latest_chunk_at"] = created_at
+    nodes: dict[tuple[str, ...], dict[str, Any]] = {}
+    order: list[tuple[str, ...]] = []
+    for chunk_id, _seq, section_path, section_hierarchy, image_ref, created_at in rows:
+        breadcrumb = tuple(_hierarchy_path(section_hierarchy, section_path))
+        # Every ancestor prefix gets its own node (so a chapter with no chunks
+        # of its own still appears and gets a first_chunk_id), but only the
+        # full breadcrumb's node counts this chunk/image toward its totals and
+        # collects the chunk's raw section_path (see raw_section_paths below).
+        for depth in range(len(breadcrumb)):
+            key = breadcrumb[: depth + 1]
+            entry = nodes.get(key)
+            if entry is None:
+                entry = {
+                    "section_path": " > ".join(key),
+                    "title": key[-1],
+                    "depth": depth,
+                    "parent_path": " > ".join(key[:-1]) if depth > 0 else None,
+                    "chunk_count": 0,
+                    "image_count": 0,
+                    "first_chunk_id": chunk_id,
+                    "latest_chunk_at": created_at,
+                    # The distinct raw section_path values (the chunk column,
+                    # scroll-highlight granularity) that roll up into this
+                    # node. Reader.svelte's activeSectionPath is a raw
+                    # section_path, not this node's synthesized breadcrumb
+                    # string, so the client matches against membership in this
+                    # list rather than equality on section_path.
+                    "raw_section_paths": set(),
+                }
+                nodes[key] = entry
+                order.append(key)
+            if key == breadcrumb:
+                entry["chunk_count"] += 1
+                entry["raw_section_paths"].add(section_path)
+                if image_ref:
+                    entry["image_count"] += 1
+            current = entry["latest_chunk_at"]
+            if created_at is not None and (current is None or created_at > current):
+                entry["latest_chunk_at"] = created_at
 
     return [
-        {**sections[key], "latest_chunk_at": _iso(sections[key]["latest_chunk_at"])}
+        {
+            **nodes[key],
+            "latest_chunk_at": _iso(nodes[key]["latest_chunk_at"]),
+            "raw_section_paths": sorted(
+                p for p in nodes[key]["raw_section_paths"] if p is not None
+            ),
+        }
         for key in order
     ]
 

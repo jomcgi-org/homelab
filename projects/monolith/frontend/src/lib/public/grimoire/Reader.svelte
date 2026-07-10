@@ -25,6 +25,7 @@
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
   import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
   import ChaptersNav from "$lib/public/grimoire/ChaptersNav.svelte";
+  import { buildSectionTree } from "$lib/public/grimoire/book/section-tree.js";
 
   let {
     bookId,
@@ -43,6 +44,31 @@
   let bookMeta = $state({ displayName: bookId, chunkCount: null });
   let activeSeq = $state(initialItems[0]?.seq ?? null);
   let activeSectionPath = $state(initialItems[0]?.section_path ?? null);
+
+  // Section tree for both ChaptersNav mounts below (mobile dropdown + desktop
+  // sidebar): fetched and built ONCE here rather than once per mount, since
+  // the two instances would otherwise issue duplicate GETs and duplicate
+  // tree builds for identical data.
+  let sectionsLoading = $state(true);
+  let sectionsError = $state("");
+  let sections = $state([]);
+  const sectionTree = $derived(buildSectionTree(sections));
+
+  $effect(() => {
+    loadSections(bookId);
+  });
+
+  async function loadSections(id) {
+    sectionsLoading = true;
+    sectionsError = "";
+    try {
+      sections = await apiFetch(`/books/${encodeURIComponent(id)}/sections`);
+    } catch (e) {
+      sectionsError = e.message;
+    } finally {
+      sectionsLoading = false;
+    }
+  }
 
   // Reading-progress bar: scroll fraction of the content column, 0..1.
   // scaleX (not width) on a fixed-width track so the browser only ever
@@ -321,17 +347,31 @@
        900px, so this floating Chapters button is the only way to jump
        sections on a phone (the old sticky bar that used to host it is
        gone). Hidden on desktop via CSS (the sidebar replaces it there);
-       still mounts and fetches regardless of viewport, same as the sidebar
-       instance below -- a second cheap GET of /books/{bookId}/sections, not
-       worth a JS media-query gate. -->
+       still mounts regardless of viewport, but shares the one sections
+       fetch/tree above with the sidebar instance rather than each mount
+       fetching and building independently. -->
   <div class="pub-mobile-chapters">
-    <ChaptersNav {bookId} {activeSectionPath} variant="dropdown" />
+    <ChaptersNav
+      {bookId}
+      tree={sectionTree}
+      loading={sectionsLoading}
+      error={sectionsError}
+      {activeSectionPath}
+      variant="dropdown"
+    />
   </div>
 
   <div class="pub-layout">
     <aside class="pub-toc" aria-label="Sections">
       <p class="pub-toc-label">{bookMeta.displayName}</p>
-      <ChaptersNav {bookId} {activeSectionPath} variant="sidebar" />
+      <ChaptersNav
+        {bookId}
+        tree={sectionTree}
+        loading={sectionsLoading}
+        error={sectionsError}
+        {activeSectionPath}
+        variant="sidebar"
+      />
     </aside>
 
     <div class="pub-panel" bind:this={containerEl}>
