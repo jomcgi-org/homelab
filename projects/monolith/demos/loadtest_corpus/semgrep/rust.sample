@@ -1,0 +1,172 @@
+//! Synthetic axum service used only as load-test scan input.
+//!
+//! This file is never compiled or executed. It exists purely as corpus
+//! content POSTed to the fc-invoke semgrep workload, shaped to exercise a
+//! genuine interprocedural taint path: the query parameter reaches the
+//! dangerous `Command::new("sh").arg("-c")` sink only after passing through
+//! two helper functions, requiring Semgrep Pro's cross-function analysis
+//! (OSS single-function taint tracking does not follow the chain that far).
+
+use std::collections::HashMap;
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+use axum::extract::Query;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct ConvertParams {
+    target: String,
+}
+
+#[derive(Serialize)]
+struct ConvertResponse {
+    output: String,
+}
+
+/// SOURCE: the `target` query parameter is fully attacker-controlled.
+/// Flow: convert_handler -> prepare_conversion -> run_conversion ->
+/// Command::new("sh").arg("-c"). Two hops of indirection between source
+/// and sink.
+async fn convert_handler(Query(params): Query<ConvertParams>) -> impl IntoResponse {
+    let output = prepare_conversion(&params.target);
+    Json(ConvertResponse { output })
+}
+
+/// First hop: forwards the tainted value without sanitizing it.
+fn prepare_conversion(target: &str) -> String {
+    run_conversion(target)
+}
+
+/// Second hop: the dangerous sink. Builds a shell command string from
+/// caller-controlled input and executes it via `sh -c`.
+fn run_conversion(target: &str) -> String {
+    let shell_cmd = format!("convert {} output.png", target);
+    let result = Command::new("sh").arg("-c").arg(shell_cmd).output();
+    match result {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+        Err(err) => format!("error: {err}"),
+    }
+}
+
+#[derive(Deserialize)]
+struct LookupParams {
+    user_id: String,
+}
+
+#[derive(Serialize)]
+struct LookupResponse {
+    query: String,
+}
+
+/// A second, independent taint path: a query parameter concatenated
+/// directly into a SQL string, a classic injection sink independent of the
+/// exec path above.
+async fn lookup_handler(Query(params): Query<LookupParams>) -> impl IntoResponse {
+    let query = build_lookup_query(&params.user_id);
+    Json(LookupResponse { query })
+}
+
+/// Builds a SQL query via string concatenation from tainted input.
+fn build_lookup_query(user_id: &str) -> String {
+    format!("SELECT name FROM users WHERE id = {}", user_id)
+}
+
+/// Benign endpoint: static health check, no user input.
+async fn health_handler() -> impl IntoResponse {
+    Json(serde_json::json!({ "status": "ok" }))
+}
+
+struct StatsCounter {
+    requests: u64,
+    started_at: Instant,
+}
+
+impl StatsCounter {
+    fn new() -> Self {
+        Self {
+            requests: 0,
+            started_at: Instant::now(),
+        }
+    }
+
+    /// Benign helper: pure in-memory counter increment.
+    fn record(&mut self) {
+        self.requests += 1;
+    }
+
+    fn uptime(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+}
+
+#[derive(Deserialize)]
+struct PageParams {
+    limit: Option<u32>,
+    offset: Option<u32>,
+}
+
+/// Benign helper: bounded pagination parsing, values are numeric-clamped.
+fn clamp_pagination(params: &PageParams) -> (u32, u32) {
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = params.offset.unwrap_or(0);
+    (limit, offset)
+}
+
+/// Benign endpoint: uses only the clamped pagination values above.
+async fn list_handler(Query(params): Query<PageParams>) -> impl IntoResponse {
+    let (limit, offset) = clamp_pagination(&params);
+    let items: Vec<String> = (offset..offset + limit)
+        .map(|i| format!("item-{i}"))
+        .collect();
+    Json(items)
+}
+
+/// Benign helper: retry wrapper used by internal background jobs, no taint.
+fn retry_with_backoff<F, T, E>(mut attempts: u32, mut f: F) -> Result<T, E>
+where
+    F: FnMut() -> Result<T, E>,
+{
+    loop {
+        match f() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                attempts -= 1;
+                if attempts == 0 {
+                    return Err(err);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+/// Benign helper: normalizes free-text tags, no dynamic execution.
+fn normalize_tags(raw: &HashMap<String, String>) -> Vec<String> {
+    let mut tags: Vec<String> = raw
+        .values()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+fn build_router() -> Router {
+    Router::new()
+        .route("/convert", get(convert_handler))
+        .route("/lookup", get(lookup_handler))
+        .route("/health", get(health_handler))
+        .route("/items", get(list_handler))
+}
+
+#[tokio::main]
+async fn main() {
+    let app = build_router();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}

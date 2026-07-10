@@ -1,0 +1,180 @@
+// Synthetic Go HTTP service used only as load-test scan input.
+//
+// This file is never built or executed. It exists purely as corpus content
+// POSTed to the fc-invoke semgrep workload, sized and shaped to exercise a
+// genuine interprocedural taint path: the query parameter reaches the
+// dangerous exec.Command sink only after passing through two helper
+// functions, which requires Semgrep Pro's cross-function analysis (OSS
+// single-function taint tracking does not follow the chain that far).
+package loadtest
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"net/http"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Server bundles the handlers registered below. Purely illustrative; never
+// instantiated by real code.
+type Server struct {
+	db *sql.DB
+}
+
+// NewServer is a benign constructor, no taint involved.
+func NewServer(db *sql.DB) *Server {
+	return &Server{db: db}
+}
+
+// convertHandler is the SOURCE: the "target" query param is fully
+// attacker-controlled. It flows: convertHandler -> prepareConversion ->
+// runConversion -> exec.Command("sh", "-c", ...). Two hops of indirection.
+func (s *Server) convertHandler(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("target")
+	output, err := prepareConversion(target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprintln(w, output)
+}
+
+// prepareConversion is the first hop: just forwards the tainted value.
+func prepareConversion(target string) (string, error) {
+	return runConversion(target)
+}
+
+// runConversion is the sink: builds and runs a shell command with the
+// caller-controlled target string.
+func runConversion(target string) (string, error) {
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("convert %s output.png", target))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// lookupHandler exercises a second Pro rule: string-concatenated SQL built
+// from a query parameter, a classic injection sink independent of the exec
+// path above.
+func (s *Server) lookupHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	rows, err := s.queryUser(userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if scanErr := rows.Scan(&name); scanErr == nil {
+			fmt.Fprintln(w, name)
+		}
+	}
+}
+
+// queryUser builds a query via string concatenation from tainted input.
+func (s *Server) queryUser(userID string) (*sql.Rows, error) {
+	query := "SELECT name FROM users WHERE id = " + userID
+	return s.db.Query(query)
+}
+
+// healthHandler is benign: no user input, no dangerous sinks.
+func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "ok")
+}
+
+// statsHandler is benign: aggregates in-memory counters only.
+func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
+	stats := computeStats()
+	fmt.Fprintf(w, "requests=%d uptime=%s\n", stats.requests, stats.uptime)
+}
+
+type serverStats struct {
+	requests int
+	uptime   time.Duration
+}
+
+var startedAt = time.Now()
+var requestCounter = 0
+
+func computeStats() serverStats {
+	requestCounter++
+	return serverStats{
+		requests: requestCounter,
+		uptime:   time.Since(startedAt),
+	}
+}
+
+// parsePageParams is a benign helper: validated pagination, not taint.
+func parsePageParams(r *http.Request) (limit, offset int) {
+	limit = 20
+	offset = 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	return limit, offset
+}
+
+// listHandler is benign: uses parsed, bounded pagination only.
+func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
+	limit, offset := parsePageParams(r)
+	for i := offset; i < offset+limit; i++ {
+		fmt.Fprintf(w, "item-%d\n", i)
+	}
+}
+
+// sanitizeName is a benign helper used by unrelated code paths.
+func sanitizeName(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	return strings.ToLower(trimmed)
+}
+
+// retryWithBackoff is a benign generic retry helper, no taint.
+func retryWithBackoff(attempts int, fn func() error) error {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(i+1) * 10 * time.Millisecond)
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+// RegisterRoutes wires the handlers above onto a mux. Never called from
+// real code; illustrative only.
+func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/convert", s.convertHandler)
+	mux.HandleFunc("/lookup", s.lookupHandler)
+	mux.HandleFunc("/health", s.healthHandler)
+	mux.HandleFunc("/stats", s.statsHandler)
+	mux.HandleFunc("/list", s.listHandler)
+}
+
+func main() {
+	db, err := sql.Open("postgres", "postgres://localhost/loadtest")
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv := NewServer(db)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	log.Println("listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", mux))
+}

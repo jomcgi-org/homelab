@@ -1,0 +1,49 @@
+"""CPU-heavy numeric loop: no imports beyond stdlib, deliberately avoids
+vectorized shortcuts so the loop body actually burns CPU cycles. Exercises
+the "heavy compute, no external libs" corner of the load-test latency
+distribution.
+"""
+
+import math
+
+
+def is_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    if n % 2 == 0:
+        return n == 2
+    limit = int(math.isqrt(n))
+    for divisor in range(3, limit + 1, 2):
+        if n % divisor == 0:
+            return False
+    return True
+
+
+def sum_of_primes(upper_bound: int) -> int:
+    total = 0
+    for candidate in range(2, upper_bound):
+        if is_prime(candidate):
+            total += candidate
+    return total
+
+
+def digit_sum_series(count: int) -> int:
+    total = 0
+    for i in range(count):
+        n = i
+        while n:
+            total += n % 10
+            n //= 10
+    return total
+
+
+def main() -> None:
+    prime_total = sum_of_primes(60_000)
+    digit_total = digit_sum_series(200_000)
+    print(f"sum_of_primes(60000) = {prime_total}")
+    print(f"digit_sum_series(200000) = {digit_total}")
+    print(f"combined = {prime_total + digit_total}")
+
+
+if __name__ == "__main__":
+    main()

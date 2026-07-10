@@ -1,0 +1,70 @@
+"""JSON serialize/parse round-trip workload: exercises stdlib `json` on a
+moderately large nested structure rather than numeric or array compute.
+"""
+
+import json
+import random
+
+
+def build_record(rng: random.Random, index: int) -> dict:
+    return {
+        "id": index,
+        "name": f"entity-{index}",
+        "tags": [f"tag-{rng.randint(0, 50)}" for _ in range(rng.randint(1, 5))],
+        "metrics": {
+            "latency_ms": rng.uniform(1.0, 500.0),
+            "requests": rng.randint(0, 10_000),
+            "error_rate": rng.uniform(0.0, 0.1),
+        },
+        "nested": {
+            "children": [
+                {"key": f"child-{i}", "value": rng.random()}
+                for i in range(rng.randint(0, 4))
+            ]
+        },
+        "active": rng.random() > 0.2,
+    }
+
+
+def build_dataset(count: int, rng: random.Random) -> list[dict]:
+    return [build_record(rng, i) for i in range(count)]
+
+
+def round_trip(records: list[dict]) -> list[dict]:
+    serialized = json.dumps(records)
+    return json.loads(serialized)
+
+
+def validate_round_trip(original: list[dict], restored: list[dict]) -> bool:
+    return original == restored
+
+
+def aggregate_metrics(records: list[dict]) -> dict:
+    total_requests = sum(r["metrics"]["requests"] for r in records)
+    avg_latency = sum(r["metrics"]["latency_ms"] for r in records) / len(records)
+    active_count = sum(1 for r in records if r["active"])
+    return {
+        "total_requests": total_requests,
+        "avg_latency_ms": avg_latency,
+        "active_count": active_count,
+    }
+
+
+def main() -> None:
+    rng = random.Random(23)
+    dataset = build_dataset(5_000, rng)
+
+    restored = round_trip(dataset)
+    matches = validate_round_trip(dataset, restored)
+    aggregates = aggregate_metrics(restored)
+
+    serialized_size = len(json.dumps(dataset))
+
+    print(f"records = {len(dataset)}")
+    print(f"round trip matches = {matches}")
+    print(f"serialized size = {serialized_size} bytes")
+    print(f"aggregates = {aggregates}")
+
+
+if __name__ == "__main__":
+    main()

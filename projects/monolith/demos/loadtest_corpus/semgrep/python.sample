@@ -1,0 +1,178 @@
+"""Synthetic Flask/FastAPI service used only as load-test scan input.
+
+This file is never imported or executed. It exists purely as corpus content
+POSTed to the fc-invoke semgrep workload so the load test exercises a
+realistic Python file size and a genuine interprocedural taint path: Semgrep
+Pro's cross-function analysis is required to connect the request parameter to
+the dangerous sink through the two intervening helper calls below. Plain OSS
+Semgrep (single-function taint) does not follow the call chain far enough to
+flag this.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import subprocess
+import time
+from dataclasses import dataclass
+from typing import Any
+
+from fastapi import APIRouter, FastAPI, Request
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI()
+router = APIRouter(prefix="/reports")
+
+
+@dataclass
+class ReportConfig:
+    name: str
+    export_format: str
+    filters: dict[str, Any]
+
+
+def _normalize_name(raw: str) -> str:
+    """Benign helper: trims and lowercases a report name."""
+    return raw.strip().lower().replace(" ", "_")
+
+
+def _cache_key(config: ReportConfig) -> str:
+    """Benign helper: builds a stable cache key from the config."""
+    blob = json.dumps({"name": config.name, "format": config.export_format}, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _load_cached_report(key: str) -> dict | None:
+    """Benign helper: looks up a cached report by key (no I/O in this stub)."""
+    cache: dict[str, dict] = {}
+    return cache.get(key)
+
+
+def _build_export_command(export_target: str) -> str:
+    """First hop: forwards the caller-controlled target into a shell helper.
+
+    This function itself does nothing dangerous; it just passes the value
+    along, which is exactly the shape that defeats single-function taint
+    tracking and requires interprocedural analysis to catch.
+    """
+    return _run_export_shell(export_target)
+
+
+def _run_export_shell(export_target: str) -> str:
+    """Second hop: the dangerous sink. shell=True with an untrusted string."""
+    cmd = f"tar czf /tmp/export.tgz {export_target}"
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return result.stdout
+
+
+@router.post("/export")
+async def export_report(request: Request):
+    """SOURCE: the export_target query/body param is fully attacker-controlled.
+
+    export_target flows: request -> export_report -> _build_export_command
+    -> _run_export_shell -> subprocess.run(..., shell=True). Two hops of
+    indirection between source and sink.
+    """
+    body = await request.json()
+    export_target = body.get("export_target", "")
+    output = _build_export_command(export_target)
+    return {"output": output}
+
+
+@router.get("/render")
+async def render_report(request: Request):
+    """A second, independent taint path via a request header instead of body.
+
+    header -> _dispatch_render -> os.system. Different sink family
+    (os.system vs subprocess.run) so this exercises a second Pro rule.
+    """
+    header_value = request.headers.get("x-render-target", "")
+    return {"ok": _dispatch_render(header_value)}
+
+
+def _dispatch_render(render_target: str) -> bool:
+    """Intermediate hop for the header-sourced path."""
+    return _execute_render(render_target)
+
+
+def _execute_render(render_target: str) -> bool:
+    """Sink for the header-sourced path: os.system with tainted input."""
+    os.system(f"wkhtmltopdf {render_target} /tmp/out.pdf")
+    return True
+
+
+@router.get("/list")
+async def list_reports(limit: int = 20, offset: int = 0) -> list[dict]:
+    """Benign endpoint: no taint, just pagination bookkeeping."""
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    return [{"id": i, "name": f"report-{i}"} for i in range(offset, offset + limit)]
+
+
+def _validate_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    """Benign helper: strips unknown filter keys."""
+    allowed = {"status", "owner", "created_after"}
+    return {k: v for k, v in filters.items() if k in allowed}
+
+
+def _summarize(reports: list[dict]) -> dict:
+    """Benign helper: aggregates counts by status."""
+    counts: dict[str, int] = {}
+    for r in reports:
+        status = r.get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+@router.post("/config")
+async def save_config(config: ReportConfig) -> dict:
+    """Benign endpoint: builds a cache key, no dangerous sink involved."""
+    key = _cache_key(config)
+    cached = _load_cached_report(key)
+    if cached is not None:
+        return cached
+    filters = _validate_filters(config.filters)
+    return {"key": key, "name": _normalize_name(config.name), "filters": filters}
+
+
+class ReportScheduler:
+    """Benign class: periodic housekeeping, no taint or shell calls."""
+
+    def __init__(self) -> None:
+        self._last_run = 0.0
+        self._interval_s = 300.0
+
+    def due(self) -> bool:
+        return (time.time() - self._last_run) >= self._interval_s
+
+    def mark_run(self) -> None:
+        self._last_run = time.time()
+
+    def run_once(self) -> dict:
+        self.mark_run()
+        logger.info("scheduled report sweep completed")
+        return {"status": "ok", "ran_at": self._last_run}
+
+
+def _retry(fn, attempts: int = 3):
+    """Benign generic retry wrapper used by internal jobs, not the API."""
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            time.sleep(0.01 * (attempt + 1))
+    if last_exc:
+        raise last_exc
+
+
+def register(app_: FastAPI) -> None:
+    app_.include_router(router)
+
+
+register(app)

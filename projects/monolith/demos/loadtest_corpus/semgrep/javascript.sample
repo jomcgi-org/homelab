@@ -1,0 +1,164 @@
+/**
+ * Synthetic Express/TypeScript service used only as load-test scan input.
+ *
+ * This file is never compiled or executed. It exists purely as corpus
+ * content POSTed to the fc-invoke semgrep workload, shaped to exercise a
+ * genuine interprocedural taint path: the request parameter reaches the
+ * dangerous child_process.exec sink only after passing through two helper
+ * functions, requiring Semgrep Pro's cross-function analysis (OSS
+ * single-function taint tracking does not follow the chain that far).
+ */
+
+import * as childProcess from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import express, { type Request, type Response } from "express";
+
+const app = express();
+app.use(express.json());
+
+interface ThumbnailRequest {
+  source: string;
+  size: string;
+}
+
+/** Benign helper: validates a requested thumbnail size against an allowlist. */
+function normalizeSize(size: string): string {
+  const allowed = new Set(["small", "medium", "large"]);
+  return allowed.has(size) ? size : "medium";
+}
+
+/**
+ * First hop: forwards the caller-controlled source path into the shell
+ * helper below. This function performs no sanitization itself.
+ */
+function prepareThumbnail(source: string, size: string): string {
+  return runThumbnailTool(source, size);
+}
+
+/** Second hop: the dangerous sink. exec() with an unsanitized string. */
+function runThumbnailTool(source: string, size: string): string {
+  const cmd = `convert ${source} -resize ${size} /tmp/out.jpg`;
+  let output = "";
+  childProcess.exec(cmd, (err, stdout) => {
+    output = stdout ?? "";
+  });
+  return output;
+}
+
+/**
+ * SOURCE: req.body.source is fully attacker-controlled.
+ * Flow: handler -> prepareThumbnail -> runThumbnailTool -> exec(). Two hops
+ * of indirection between source and sink.
+ */
+app.post("/thumbnail", (req: Request, res: Response) => {
+  const body = req.body as ThumbnailRequest;
+  const size = normalizeSize(body.size);
+  const result = prepareThumbnail(body.source, size);
+  res.json({ result });
+});
+
+/**
+ * A second, independent taint path: a query-param-driven path traversal via
+ * fs.readFile(path.join(base, userPath)). Different vulnerability class
+ * (traversal, not command injection) so this exercises a second Pro rule.
+ */
+app.get("/download", (req: Request, res: Response) => {
+  const userPath = String(req.query.file ?? "");
+  const resolved = resolveDownloadPath(userPath);
+  fs.readFile(resolved, (err, data) => {
+    if (err) {
+      res.status(404).send("not found");
+      return;
+    }
+    res.send(data);
+  });
+});
+
+/** Intermediate hop for the traversal path: still no sanitization. */
+function resolveDownloadPath(userPath: string): string {
+  const base = "/var/data/exports";
+  return path.join(base, userPath);
+}
+
+/** Benign endpoint: static health check, no user input at all. */
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({ status: "ok", ts: Date.now() });
+});
+
+interface StatsCounter {
+  requests: number;
+  startedAt: number;
+}
+
+const stats: StatsCounter = { requests: 0, startedAt: Date.now() };
+
+/** Benign helper: pure in-memory counter increment. */
+function recordRequest(): void {
+  stats.requests += 1;
+}
+
+/** Benign endpoint: reports in-memory stats, no taint. */
+app.get("/stats", (_req: Request, res: Response) => {
+  recordRequest();
+  res.json({
+    requests: stats.requests,
+    uptimeMs: Date.now() - stats.startedAt,
+  });
+});
+
+/** Benign helper: bounded pagination parsing, values are numeric-clamped. */
+function parsePagination(req: Request): { limit: number; offset: number } {
+  const rawLimit = Number(req.query.limit ?? 20);
+  const rawOffset = Number(req.query.offset ?? 0);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+  const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
+  return { limit, offset };
+}
+
+/** Benign endpoint: uses only the clamped pagination values above. */
+app.get("/items", (req: Request, res: Response) => {
+  const { limit, offset } = parsePagination(req);
+  const items = Array.from({ length: limit }, (_, i) => `item-${offset + i}`);
+  res.json({ items });
+});
+
+/** Benign helper: simple retry wrapper used by internal background jobs. */
+async function retry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      await new Promise((resolve) => setTimeout(resolve, 10 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+/** Benign helper: formats a byte count for display, no dynamic execution. */
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)}${units[unitIndex]}`;
+}
+
+app.get("/disk-usage", (_req: Request, res: Response) => {
+  const bytesUsed = 1024 * 1024 * 42;
+  res.json({ formatted: formatBytes(bytesUsed) });
+});
+
+export function startServer(port: number): void {
+  app.listen(port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`listening on ${port}`);
+  });
+}
+
+export default app;

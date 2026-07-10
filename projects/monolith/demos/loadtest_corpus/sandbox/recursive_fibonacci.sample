@@ -1,0 +1,46 @@
+"""Naive recursive Fibonacci: deliberately exponential (no memoization) to
+exercise deep call-stack recursion and function-call overhead rather than
+loop or array throughput. Also includes a memoized variant for comparison.
+"""
+
+import time
+
+
+def fib_naive(n: int) -> int:
+    if n < 2:
+        return n
+    return fib_naive(n - 1) + fib_naive(n - 2)
+
+
+def fib_memo(n: int, cache: dict[int, int] | None = None) -> int:
+    if cache is None:
+        cache = {}
+    if n < 2:
+        return n
+    if n in cache:
+        return cache[n]
+    result = fib_memo(n - 1, cache) + fib_memo(n - 2, cache)
+    cache[n] = result
+    return result
+
+
+def fib_sequence_memo(count: int) -> list[int]:
+    cache: dict[int, int] = {}
+    return [fib_memo(i, cache) for i in range(count)]
+
+
+def main() -> None:
+    naive_n = 27
+    start = time.perf_counter()
+    naive_result = fib_naive(naive_n)
+    naive_elapsed = time.perf_counter() - start
+
+    sequence = fib_sequence_memo(40)
+
+    print(f"fib_naive({naive_n}) = {naive_result} in {naive_elapsed:.3f}s")
+    print(f"fib_memo sequence (first 40) tail = {sequence[-5:]}")
+    print(f"sum of memoized sequence = {sum(sequence)}")
+
+
+if __name__ == "__main__":
+    main()
