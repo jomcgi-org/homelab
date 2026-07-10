@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -291,9 +292,15 @@ func (inv *Invoker) BuildBase(ctx context.Context) error {
 //   - any other error: the RoundTrip itself failed after the guest started;
 //     map to 502.
 func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) (*http.Response, error) {
+	// queueWait is how long this request blocked on the per-workload concurrency
+	// cap before a microVM slot came free. It is stamped onto the response as
+	// X-Fc-Queue-Wait-Ms on a successful invoke so the caller can read per-scan
+	// queue pressure. Zero when there is no semaphore (unbounded concurrency).
+	var queueWait time.Duration
 	if inv.sem != nil {
 		// acquire_slot measures queue wait: how long the request blocked on the
 		// per-workload concurrency cap before a microVM slot came free.
+		t0 := time.Now()
 		_, span := tracer.Start(ctx, "acquire_slot")
 		err := inv.sem.Acquire(ctx, 1)
 		if err != nil {
@@ -301,6 +308,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 			span.SetStatus(codes.Error, err.Error())
 		}
 		span.End()
+		queueWait = time.Since(t0)
 		if err != nil {
 			return nil, &GuestUnavailableError{Err: fmt.Errorf("acquire invoke slot: %w", err)}
 		}
@@ -325,7 +333,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 			Arch:            inv.cfg.Arch,
 			BaseSnapshotRef: base,
 		}
-		resp, td, err := inv.claimInvoke(ctx, warmSpec, session, body, true)
+		resp, td, err := inv.claimInvoke(ctx, warmSpec, session, body, true, queueWait)
 		if err == nil {
 			return inv.ownResponse(ctx, resp, td, releaseSlot), nil
 		}
@@ -347,7 +355,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 	coldSpec := substrate.ClaimSpec{
 		Arch: inv.cfg.Arch,
 	}
-	resp, td, err := inv.claimInvoke(ctx, coldSpec, session, body, false)
+	resp, td, err := inv.claimInvoke(ctx, coldSpec, session, body, false, queueWait)
 	if err != nil {
 		releaseSlot()
 		return nil, err
@@ -369,7 +377,7 @@ func (inv *Invoker) Invoke(ctx context.Context, session string, body io.Reader) 
 //
 // A Claim or WaitReady failure returns *GuestUnavailableError. A RoundTrip
 // failure is returned as-is (the caller decides the 502/503 mapping).
-func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader, warm bool) (*http.Response, invokeTeardown, error) {
+func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, session string, body io.Reader, warm bool, queueWait time.Duration) (*http.Response, invokeTeardown, error) {
 	// Each claim gets a fresh single-use microVM, so the host bundle + vsock
 	// socket identity MUST be unique per claim, never the logical session. The
 	// egress listen socket is derived from VsockUDSPath(threadID) as
@@ -531,6 +539,29 @@ func (inv *Invoker) claimInvoke(ctx context.Context, spec substrate.ClaimSpec, s
 	// response body still streams lazily over the live guest, but that is guest
 	// I/O owned by the caller, not part of the exec span.
 	execSpan.End()
+
+	// Stamp per-scan resource headers on a successful (2xx) response, sampled
+	// HERE: the guest exec has returned (so VmHWM already reflects the scan peak)
+	// but the guest is still live and the response headers have NOT yet been
+	// flushed to the client (ingress copies resp.Header only after this returns).
+	// The existing teardown sample (vm_release, at body Close) is too late to
+	// reach headers, so this is a second, header-time sample; the teardown span
+	// stays untouched. Skip on error statuses (502/503 paths never reach here;
+	// a guest-produced non-2xx has no meaningful scan stats). Best-effort: a
+	// Stats read failure just omits the two guest headers. queueWait is always
+	// available and is stamped regardless of the Stats read.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if resp.Header == nil {
+			resp.Header = make(http.Header)
+		}
+		resp.Header.Set("X-Fc-Queue-Wait-Ms", strconv.FormatInt(queueWait.Milliseconds(), 10))
+		if stats, serr := inv.driver.Stats(h); serr == nil {
+			resp.Header.Set("X-Fc-Cpu-Ms", strconv.FormatInt(stats.CPUMillis, 10))
+			resp.Header.Set("X-Fc-Peak-Rss-Mib", strconv.FormatInt(stats.PeakRSSMib, 10))
+		} else {
+			inv.logger.Debug("invoker: guest stats unavailable for response headers", "thread", h.ThreadID, "err", serr)
+		}
+	}
 	// Success: the response body is a lazy stream over the still-live guest. Hand
 	// the caller the teardown pieces (guest handle, egress-cancel, request-context
 	// cancel); ownResponse folds them into the body's Close so the guest stays live
