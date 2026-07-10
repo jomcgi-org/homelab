@@ -20,6 +20,7 @@ function signReadItem(item) {
       section_path: item.section_path,
       kind: item.kind,
       content: item.content,
+      entities: item.entities ?? [],
     };
   }
   return {
@@ -29,6 +30,7 @@ function signReadItem(item) {
     kind: item.kind,
     content: item.content,
     image_url: signedGrimImgUrl(item.image_key, "display"),
+    entities: item.entities ?? [],
   };
 }
 
