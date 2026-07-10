@@ -22,6 +22,12 @@ const ROUTES = [
 ];
 const PREFIX = [["/api/trips/trip/", "fixtures/api/trips_trip.json"]];
 
+// Chunk image requests (book covers, entity art): /api/grimoire/chunks/:id/image.
+// Matched separately from the JSON ROUTES/PREFIX tables since it serves a
+// binary PNG, not a fixture file; reuses the same committed placeholder the
+// basemap/imgproxy interception uses.
+const CHUNK_IMAGE_RE = /^\/api\/grimoire\/chunks\/[^/]+\/image$/;
+
 export function resolveFixture(pathname) {
   for (const [p, f] of ROUTES) if (pathname === p) return f;
   for (const [p, f] of PREFIX) if (pathname.startsWith(p)) return f;
@@ -31,6 +37,17 @@ export function resolveFixture(pathname) {
 export function startMock(port) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
+    if (CHUNK_IMAGE_RE.test(url.pathname)) {
+      const body = readFileSync(join(HERE, "fixtures/basemap/placeholder.png"));
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "access-control-allow-origin": "*",
+        etag: '"mock"',
+        "last-modified": "Thu, 01 Jan 1970 00:00:00 GMT",
+      });
+      res.end(body);
+      return;
+    }
     const fixture = resolveFixture(url.pathname);
     if (!fixture) {
       res.writeHead(404, { "content-type": "application/json" });

@@ -21,7 +21,8 @@
     "entity_count": 412,
     "copyrighted_content": true,
     "latest_chunk_at": "2024-01-10T12:00:00Z",
-    "last_loaded_at": "2024-01-05T12:00:00Z"
+    "last_loaded_at": "2024-01-05T12:00:00Z",
+    "cover_chunk_id": "cos-cover-chunk"
   },
   {
     "book_id": "lost-mine-of-phandelver",
@@ -69,7 +70,8 @@
     "entity_count": 2412,
     "copyrighted_content": true,
     "latest_chunk_at": "2023-06-01T12:00:00Z",
-    "last_loaded_at": "2023-06-01T12:00:00Z"
+    "last_loaded_at": "2023-06-01T12:00:00Z",
+    "cover_chunk_id": "mm-cover-chunk"
   },
   {
     "book_id": "players-handbook-2024",
@@ -81,6 +83,7 @@
     "entity_count": 1806,
     "copyrighted_content": true,
     "latest_chunk_at": "2023-06-01T12:00:00Z",
-    "last_loaded_at": "2023-06-01T12:00:00Z"
+    "last_loaded_at": "2023-06-01T12:00:00Z",
+    "cover_chunk_id": "phb-cover-chunk"
   }
 ]
