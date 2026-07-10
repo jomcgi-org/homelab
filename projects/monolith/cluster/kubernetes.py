@@ -220,6 +220,24 @@ class KubernetesClient:
             "memory_capacity_bytes": mem_cap,
         }
 
+    async def pod_metrics(self, namespace: str) -> list[dict]:
+        """Return raw pod-metrics objects for a namespace (metrics.k8s.io).
+
+        Each item carries ``metadata.name`` and a ``containers`` list of
+        ``{name, usage: {cpu, memory}}``. Used by the load-test sampler to read
+        the fc-invoke pod's cpu/rss footprint. Requires the ``metrics.k8s.io``
+        ``pods`` ``get``/``list`` RBAC verbs (see chart/templates/rbac.yaml).
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        result = await custom.list_namespaced_custom_object(
+            group="metrics.k8s.io",
+            version="v1beta1",
+            namespace=namespace,
+            plural="pods",
+        )
+        return result.get("items", [])
+
     def _typed_api(self, group: str, api: ApiClient):
         return client.CoreV1Api(api) if group == "core" else client.AppsV1Api(api)
 

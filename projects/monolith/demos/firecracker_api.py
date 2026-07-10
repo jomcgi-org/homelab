@@ -25,6 +25,7 @@ owns no fc-invoke or ClickHouse client of its own.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from time import perf_counter
 from uuid import uuid4
@@ -33,8 +34,13 @@ from fastapi import APIRouter, HTTPException
 from opentelemetry import trace
 from opentelemetry.context import Context
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlmodel import Session
 
+import demos.loadtest as loadtest
 import goosecracker.api as goosecracker
+from app.db import get_engine
+from demos.loadtest_corpus import load_corpus
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
 from sandbox.client import run_python_in_sandbox
 from semgrep.client import scan_files
@@ -42,6 +48,17 @@ from semgrep.client import scan_files
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/demos/firecracker", tags=["demos"])
+
+# Per-workload VM memory (MiB) recorded in the run config for the frontend.
+_WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox": 512}
+
+# Agent (goose) run ledger non-terminal states: an active agent run holds
+# node-4 capacity, so a load test must not run concurrently with one.
+_AGENT_BUSY_STATES = ("PENDING", "RUNNING", "IDLE")
+
+# Detached drain tasks are stashed here so the event loop keeps a strong
+# reference (an unreferenced task can be GC'd mid-run).
+_RUNNING_DRAINS: set[asyncio.Task] = set()
 
 _tracer = trace.get_tracer("demos.firecracker")
 
@@ -192,3 +209,298 @@ async def get_trace(trace_id: str) -> dict:
     spans = await fetch_trace_spans(trace_id)
     correlated = await fetch_correlated_spans(trace_id)
     return {"spans": spans, "correlated": correlated, "complete": len(spans) > 0}
+
+
+# ---------------------------------------------------------------------------
+# Load test (workload-parametric drain over the fc-invoke daemon).
+# ---------------------------------------------------------------------------
+
+
+def _running_load_run() -> dict | None:
+    """Return the id/started_at of any load_run still 'running', or None.
+
+    Sync; call via asyncio.to_thread.
+    """
+    with Session(get_engine()) as session:
+        row = session.execute(
+            text(
+                "SELECT id, workload FROM demo.load_run "
+                "WHERE status = 'running' ORDER BY started_at DESC LIMIT 1"
+            )
+        ).fetchone()
+    return {"id": str(row.id), "workload": row.workload} if row else None
+
+
+def _agent_is_busy() -> bool:
+    """Return True when any goose agent run is in a non-terminal state.
+
+    ASSUMPTION: an active agent run holds node-4 capacity, so a load test must
+    not run alongside one. The goosecracker run ledger is
+    ``claude_agent.agent_threads`` (state PENDING -> RUNNING -> IDLE ->
+    COMPLETED | FAILED per migration 20260627120000_agent_threads.sql); the
+    non-terminal states are PENDING, RUNNING, IDLE. Sync; call via to_thread.
+    """
+    with Session(get_engine()) as session:
+        row = session.execute(
+            text(
+                "SELECT 1 FROM claude_agent.agent_threads "
+                "WHERE state = ANY(:states) LIMIT 1"
+            ),
+            {"states": list(_AGENT_BUSY_STATES)},
+        ).fetchone()
+    return row is not None
+
+
+def _insert_load_run(workload: str, config: dict) -> str:
+    """Insert a running load_run row and return its id. Sync; via to_thread."""
+    with Session(get_engine()) as session:
+        row = session.execute(
+            text(
+                """
+                INSERT INTO demo.load_run (workload, config)
+                VALUES (:workload, CAST(:config AS jsonb))
+                RETURNING id
+                """
+            ),
+            {"workload": workload, "config": json.dumps(config)},
+        ).fetchone()
+        session.commit()
+    return str(row.id)
+
+
+def _load_run_rollup(run_id: str) -> dict | None:
+    """Return the run row plus a cheap live rollup over its scans.
+
+    A single aggregate query over demo.load_scan (no per-row fetch) keeps the
+    1s poll cheap. Returns None when the run id is unknown. Sync; via to_thread.
+    """
+    with Session(get_engine()) as session:
+        run = session.execute(
+            text(
+                "SELECT id, workload, started_at, finished_at, duration_s, "
+                "status, config, summary FROM demo.load_run WHERE id = :id"
+            ),
+            {"id": run_id},
+        ).fetchone()
+        if run is None:
+            return None
+
+        agg = session.execute(
+            text(
+                """
+                SELECT
+                    count(*) AS total_scans,
+                    count(*) FILTER (WHERE status = 'error') AS errors,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)
+                        AS latency_p50,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                        AS latency_p95,
+                    avg(cpu_ms) AS cpu_ms_mean,
+                    avg(peak_rss_mib) AS peak_rss_mib_mean,
+                    extract(epoch FROM (
+                        coalesce(max(created_at), now()) - min(created_at)
+                    )) AS scan_span_s
+                FROM demo.load_scan WHERE run_id = :id
+                """
+            ),
+            {"id": run_id},
+        ).fetchone()
+
+        per_lang = session.execute(
+            text(
+                "SELECT name, count(*) AS c FROM demo.load_scan "
+                "WHERE run_id = :id GROUP BY name"
+            ),
+            {"id": run_id},
+        ).fetchall()
+
+    total = agg.total_scans or 0
+    # Elapsed against the run's wall clock (started_at -> finished_at or now).
+    finished = run.finished_at
+    started = run.started_at
+    if finished is not None:
+        elapsed_s = (finished - started).total_seconds()
+    else:
+        # scan_span_s is the observed span of recorded scans; a good live proxy.
+        elapsed_s = float(agg.scan_span_s or 0.0)
+    throughput = (total / elapsed_s) if elapsed_s and elapsed_s > 0 else 0.0
+    # In-flight estimate: the drain oversubscribes at client_concurrency but the
+    # daemon caps concurrent work at its own concurrency, so while running the
+    # steady in-flight count is ~ the daemon concurrency.
+    cfg = run.config or {}
+    in_flight = cfg.get("daemon_concurrency", 0) if run.status == "running" else 0
+
+    return {
+        "run_id": str(run.id),
+        "workload": run.workload,
+        "status": run.status,
+        "started_at": started.isoformat() if started else None,
+        "finished_at": finished.isoformat() if finished else None,
+        "duration_s": run.duration_s,
+        "config": cfg,
+        "elapsed_s": elapsed_s,
+        "total_scans": total,
+        "errors": agg.errors or 0,
+        "throughput_per_s": throughput,
+        "in_flight_estimate": in_flight,
+        "latency_p50": float(agg.latency_p50) if agg.latency_p50 is not None else None,
+        "latency_p95": float(agg.latency_p95) if agg.latency_p95 is not None else None,
+        "per_lang_counts": {r.name: r.c for r in per_lang},
+        "cpu_ms_mean": float(agg.cpu_ms_mean) if agg.cpu_ms_mean is not None else None,
+        "peak_rss_mib_mean": (
+            float(agg.peak_rss_mib_mean) if agg.peak_rss_mib_mean is not None else None
+        ),
+        "summary": run.summary if run.status == "done" else None,
+    }
+
+
+def _load_scans_page(run_id: str, offset: int, limit: int) -> dict:
+    """Return a page of scan rows (no ``result`` column) plus a total count.
+
+    Sync; call via asyncio.to_thread.
+    """
+    with Session(get_engine()) as session:
+        total = session.execute(
+            text("SELECT count(*) AS c FROM demo.load_scan WHERE run_id = :id"),
+            {"id": run_id},
+        ).fetchone()
+        rows = session.execute(
+            text(
+                """
+                SELECT id, seq, name, status, latency_ms, queue_wait_ms,
+                       cpu_ms, peak_rss_mib, result_count
+                FROM demo.load_scan
+                WHERE run_id = :id
+                ORDER BY seq
+                OFFSET :offset LIMIT :limit
+                """
+            ),
+            {"id": run_id, "offset": offset, "limit": limit},
+        ).fetchall()
+    return {
+        "total": total.c,
+        "offset": offset,
+        "limit": limit,
+        "scans": [
+            {
+                "id": r.id,
+                "seq": r.seq,
+                "name": r.name,
+                "status": r.status,
+                "latency_ms": r.latency_ms,
+                "queue_wait_ms": r.queue_wait_ms,
+                "cpu_ms": r.cpu_ms,
+                "peak_rss_mib": r.peak_rss_mib,
+                "result_count": r.result_count,
+            }
+            for r in rows
+        ],
+    }
+
+
+def _load_scan_detail(run_id: str, scan_id: int) -> dict | None:
+    """Return one scan row WITH its ``result``, or None. Sync; via to_thread."""
+    with Session(get_engine()) as session:
+        r = session.execute(
+            text(
+                """
+                SELECT id, seq, name, status, latency_ms, queue_wait_ms,
+                       cpu_ms, peak_rss_mib, result_count, result, error
+                FROM demo.load_scan
+                WHERE run_id = :id AND id = :scan_id
+                """
+            ),
+            {"id": run_id, "scan_id": scan_id},
+        ).fetchone()
+    if r is None:
+        return None
+    return {
+        "id": r.id,
+        "seq": r.seq,
+        "name": r.name,
+        "status": r.status,
+        "latency_ms": r.latency_ms,
+        "queue_wait_ms": r.queue_wait_ms,
+        "cpu_ms": r.cpu_ms,
+        "peak_rss_mib": r.peak_rss_mib,
+        "result_count": r.result_count,
+        "result": r.result,
+        "error": r.error,
+    }
+
+
+async def _dispatch_drain(run_id: str, workload: str, duration_s: int) -> None:
+    """Run the drain and finalize; log (never raise) on unexpected failure."""
+    try:
+        store = loadtest.LoadStore(run_id, workload)
+        await loadtest.run_load_test(run_id, workload, store, duration_s=duration_s)
+    except Exception:  # noqa: BLE001: detached task; surface via logs only
+        logger.exception("load-test drain failed for run %s", run_id)
+
+
+@router.post("/load-test/{workload}")
+async def start_load_test(workload: str) -> dict:
+    """Start a load-test drain for ``workload`` (semgrep or sandbox).
+
+    Guards: an already-running run short-circuits (returns its id with
+    ``already_running``); an active goose agent run refuses with HTTP 409.
+    Otherwise inserts a load_run row and dispatches ``run_load_test`` on a
+    detached task, returning the new run id immediately.
+    """
+    if workload not in loadtest.WORKLOADS:
+        raise HTTPException(status_code=404, detail=f"unknown workload: {workload}")
+
+    running = await asyncio.to_thread(_running_load_run)
+    if running is not None:
+        return {"run_id": running["id"], "already_running": True}
+
+    if await asyncio.to_thread(_agent_is_busy):
+        raise HTTPException(
+            status_code=409,
+            detail="an agent run is active; load test refused to avoid "
+            "contending for node-4 capacity",
+        )
+
+    corpus = load_corpus(workload)
+    config = {
+        "workload": workload,
+        "daemon_concurrency": loadtest.DAEMON_CONCURRENCY,
+        "client_concurrency": 20,
+        "vcpus": loadtest.VCPUS_PER_SCAN,
+        "mem_mib": _WORKLOAD_MEM_MIB[workload],
+        "node": loadtest.SAMPLE_NODE,
+        "corpus": [c["name"] for c in corpus],
+    }
+    run_id = await asyncio.to_thread(_insert_load_run, workload, config)
+
+    task = asyncio.create_task(_dispatch_drain(run_id, workload, 120))
+    _RUNNING_DRAINS.add(task)
+    task.add_done_callback(_RUNNING_DRAINS.discard)
+
+    return {"run_id": run_id}
+
+
+@router.get("/load-test/{run_id}")
+async def get_load_test(run_id: str) -> dict:
+    """Return the run row + a cheap live rollup (and summary when done)."""
+    rollup = await asyncio.to_thread(_load_run_rollup, run_id)
+    if rollup is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return rollup
+
+
+@router.get("/load-test/{run_id}/scans")
+async def get_load_test_scans(run_id: str, offset: int = 0, limit: int = 50) -> dict:
+    """Return a paginated page of scan rows (without the ``result`` column)."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    return await asyncio.to_thread(_load_scans_page, run_id, offset, limit)
+
+
+@router.get("/load-test/{run_id}/scans/{scan_id}")
+async def get_load_test_scan(run_id: str, scan_id: int) -> dict:
+    """Return one scan row WITH its ``result`` payload."""
+    detail = await asyncio.to_thread(_load_scan_detail, run_id, scan_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    return detail
