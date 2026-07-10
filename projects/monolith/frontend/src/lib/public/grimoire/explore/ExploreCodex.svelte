@@ -101,8 +101,17 @@
     return entityType.replaceAll("_", " ");
   }
 
+  // entity_type is corpus-controlled; guard it before interpolating into a
+  // CSS custom-property name (same pattern as ConstellationDock's typeVar).
+  const TYPE_ALLOWLIST = /^[a-z_]+$/;
+
+  function typeVar(entityType, fallback) {
+    const type = TYPE_ALLOWLIST.test(entityType ?? "") ? entityType : "class";
+    return `var(--grim-type-${type}, ${fallback})`;
+  }
+
   function swatch(entityType) {
-    return `background: var(--grim-type-${entityType}, var(--grim-text-faint))`;
+    return `background: ${typeVar(entityType, "var(--grim-text-faint)")}`;
   }
 
   // Entity art (when the focus carries an image_chunk_id, added in Task 1) is
@@ -161,7 +170,7 @@
       {:else}
         <div
           class="monogram"
-          style={`--mono: var(--grim-type-${entity.entity_type}, var(--grim-text-faint))`}
+          style={`--mono: ${typeVar(entity.entity_type, "var(--grim-text-faint)")}`}
           aria-hidden="true"
         >
           {monogram}
@@ -186,7 +195,7 @@
                   {#if p.pre}<span class="rel-word">{p.pre}</span>{/if}<button
                     type="button"
                     class="rel-peer"
-                    style={`--peer: var(--grim-type-${r.peer.entity_type}, var(--grim-text-faint))`}
+                    style={`--peer: ${typeVar(r.peer.entity_type, "var(--grim-text-faint)")}`}
                     onclick={() => onselect?.(r.peer.id)}>{p.peer}</button
                   >{#if p.post}<span class="rel-word">{p.post}</span>{/if}
                 </p>

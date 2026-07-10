@@ -12,14 +12,16 @@
   // type-colored link into World, focused on that entity. Escape closes.
   // Hidden entirely while the constellation is empty so it never occupies
   // space with nothing to show.
+  import { onDestroy } from "svelte";
   import { constellationStore } from "./constellation-store.js";
   import { worldHref } from "./api.js";
   import MiniConstellation from "./MiniConstellation.svelte";
 
   let state = $state({ nodes: [], ids: new Set(), edges: [] });
-  constellationStore.subscribe((s) => {
+  const unsubscribe = constellationStore.subscribe((s) => {
     state = s;
   });
+  onDestroy(unsubscribe);
 
   let expanded = $state(false);
 

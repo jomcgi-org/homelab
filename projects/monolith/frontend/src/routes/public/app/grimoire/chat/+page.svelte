@@ -88,7 +88,7 @@
   // a reloaded session seeds it from history on first mount only (see
   // onMount below) so remounting this page never re-seeds duplicate work.
   let constellation = $state({ nodes: [], ids: new Set(), edges: [] });
-  constellationStore.subscribe((s) => {
+  const unsubscribeConstellation = constellationStore.subscribe((s) => {
     constellation = s;
   });
 
@@ -297,7 +297,10 @@
   }
 
   $effect(() => {
-    return () => controller?.abort();
+    return () => {
+      controller?.abort();
+      unsubscribeConstellation();
+    };
   });
 </script>
 
