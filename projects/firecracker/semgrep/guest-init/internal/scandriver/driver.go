@@ -1,6 +1,6 @@
 // Package scandriver drives the warm offline-Pro semgrep scan-server: a child
-// process (osemgrep-pro mcp --experimental --pro) that speaks newline-delimited
-// JSON over its stdio, one request -> one response.
+// process (osemgrep-pro mcp --experimental --pro-intrafile) that speaks
+// newline-delimited JSON over its stdio, one request -> one response.
 //
 // It replaces the former resident `semgrep lsp` + LSP JSON-RPC client. The old
 // path could only run OSS analysis (semgrep lsp ignores SEMGREP_CORE_BIN and
@@ -38,13 +38,16 @@ type Driver struct {
 // Start launches the scan-server and blocks until it prints exactly one
 // {"ready":true} line (per-language parsers warmed, rules compiled) — the point
 // at which the host may snapshot the VM. bin is the osemgrep-pro path; it is
-// invoked as `osemgrep-pro mcp --experimental --pro --session-id fc`.
+// invoked as `osemgrep-pro mcp --experimental --pro-intrafile --session-id fc`.
 // --experimental is REQUIRED: without it, `mcp` falls back to the Python MCP
-// server. The child's lifetime is bound to ctx (cancel -> the process is
-// killed). rulesDir and settingsFile are exported to the child as
-// SEMGREP_SCAN_RULES and SEMGREP_SETTINGS_FILE.
+// server. --pro-intrafile (not --pro) scopes Pro analysis to cross-function
+// taint WITHIN one file: every scan request is a single file, so full
+// interfile machinery has nothing to connect and only adds per-scan cost
+// (python p50 was engine-bound at ~1.2s under --pro). The child's lifetime is
+// bound to ctx (cancel -> the process is killed). rulesDir and settingsFile
+// are exported to the child as SEMGREP_SCAN_RULES and SEMGREP_SETTINGS_FILE.
 func Start(ctx context.Context, bin, rulesDir, settingsFile string) (*Driver, error) {
-	cmd := exec.CommandContext(ctx, bin, "mcp", "--experimental", "--pro", "--session-id", "fc")
+	cmd := exec.CommandContext(ctx, bin, "mcp", "--experimental", "--pro-intrafile", "--session-id", "fc")
 	cmd.Env = append(os.Environ(),
 		"SEMGREP_SCAN_RULES="+rulesDir,
 		"SEMGREP_SETTINGS_FILE="+settingsFile,

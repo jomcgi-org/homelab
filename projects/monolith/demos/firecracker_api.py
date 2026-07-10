@@ -500,7 +500,7 @@ async def start_load_test(workload: str) -> dict:
     config = {
         "workload": workload,
         "daemon_concurrency": loadtest.DAEMON_CONCURRENCY,
-        "client_concurrency": 20,
+        "client_concurrency": 32,
         "vcpus": loadtest.VCPUS_PER_SCAN,
         "mem_mib": _WORKLOAD_MEM_MIB[workload],
         "node": loadtest.SAMPLE_NODE,

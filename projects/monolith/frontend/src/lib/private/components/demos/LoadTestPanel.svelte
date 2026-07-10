@@ -22,7 +22,7 @@
   //   - demos/firecracker_api.py _load_scans_page(): total, offset, limit,
   //     scans[]{id,seq,name,status,scan_ms,cpu_ms,peak_rss_mib,result_count}
   //   - demos/firecracker_api.py _load_scan_detail(): adds result, error
-  //   - demos/loadtest.py DAEMON_CONCURRENCY=12, run duration_s=60 (see
+  //   - demos/loadtest.py DAEMON_CONCURRENCY=16, run duration_s=60 (see
   //     _dispatch_drain in firecracker_api.py)
   let { workload } = $props();
 
@@ -31,7 +31,7 @@
   let nounPlural = $derived(workload === "sandbox" ? "runs" : "scans");
 
   const RUN_DURATION_S = 60;
-  const DAEMON_CONCURRENCY = 12;
+  const DAEMON_CONCURRENCY = 16;
   const POLL_MS = 1000;
   const HARD_TIMEOUT_MS = 150_000;
   const SCANS_PAGE_SIZE = 50;
