@@ -55,6 +55,11 @@ SAMPLE_NODE = "node-4"
 # Auto-flush the scan buffer once it reaches this many rows (one INSERT).
 _FLUSH_THRESHOLD = 200
 
+# Also flush at least this often so the 1s live poll sees fresh rows promptly
+# instead of only at 200-row batch boundaries (which, at tens of scans/s, is a
+# multi-second lag where the live view looks frozen right after kickoff).
+_FLUSH_INTERVAL_S = 1.0
+
 # Grace window past the drain deadline for in-flight invokes to finish before
 # stragglers are cancelled. A normal scan is ~1s, so this lets legitimately
 # in-flight scans complete while bounding a wedged run (the run row is the
@@ -174,17 +179,25 @@ class LoadStore:
         self._all_rows: list[dict] = []
         self._sampler_series: list[dict] = []
         self._lock = asyncio.Lock()
+        self._last_flush = time.monotonic()
 
     def set_sampler_series(self, series: list[dict]) -> None:
         self._sampler_series = series
 
     async def record(self, row: dict) -> None:
-        """Append a scan row; flush the buffer to Postgres when it fills."""
+        """Append a scan row; flush the buffer to Postgres when it fills or ages.
+
+        Flushes on either the size threshold or the time interval, so the 1s live
+        poll sees rows within ~1s of a run starting, not only once 200 rows have
+        accumulated.
+        """
         async with self._lock:
             self._all_rows.append(row)
             self._buffer.append(row)
-            if len(self._buffer) >= _FLUSH_THRESHOLD:
+            due = (time.monotonic() - self._last_flush) >= _FLUSH_INTERVAL_S
+            if len(self._buffer) >= _FLUSH_THRESHOLD or due:
                 batch, self._buffer = self._buffer, []
+                self._last_flush = time.monotonic()
                 await asyncio.to_thread(self._flush_batch, batch)
 
     async def flush(self) -> None:
