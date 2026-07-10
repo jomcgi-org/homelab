@@ -25,11 +25,7 @@
   } from "$lib/public/grimoire/chat/stream.js";
   import { createChatSession } from "$lib/public/grimoire/chat/admission.js";
   import { freshChatState } from "$lib/public/grimoire/chat/chat-state.js";
-  import {
-    emptyConstellation,
-    withTouched,
-    withEgo,
-  } from "$lib/public/grimoire/chat/constellation-state.js";
+  import { constellationStore } from "$lib/public/grimoire/constellation-store.js";
   import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
   import { exploreEgo } from "$lib/public/grimoire/api.js";
   import SourceDrawer from "$lib/public/grimoire/chat/SourceDrawer.svelte";
@@ -75,26 +71,32 @@
   let activeSource = $state(null);
 
   // ── session constellation ────────────────────────────────────────
-  // A live graph of every grounded entity this conversation has touched,
-  // rendered as the side panel (MiniConstellation). Nodes come from
+  // A live graph of every entity touched ANYWHERE in the Grimoire app this
+  // session (chat grounding here, plus World card opens and reader mention
+  // taps from other pages), rendered as this page's wide-screen side panel
+  // (MiniConstellation). It is the SAME store the cross-page
+  // ConstellationDock reads (constellation-store.js); the chat page just
+  // renders its own larger panel instead of the dock (see +layout.svelte's
+  // showDock check) to avoid showing the same graph twice. Nodes come from
   // node_touched frames; edges only ever come from real exploreEgo(id)
   // responses intersected with the session's node set (constellation-state.js
-  // guarantees no fabricated relationship). Reset on NEW CHAT, seeded in full
-  // from history on a reloaded session (see onMount below).
-  let constellation = $state(emptyConstellation());
+  // guarantees no fabricated relationship). NEW CHAT clears the shared store;
+  // a reloaded session seeds it from history on first mount only (see
+  // onMount below) so remounting this page never re-seeds duplicate work.
+  let constellation = $state({ nodes: [], ids: new Set(), edges: [] });
+  constellationStore.subscribe((s) => {
+    constellation = s;
+  });
 
-  // Fold one touched entity into `constellation` and, if it is genuinely new,
-  // fire a best-effort ego fetch for it. The `.then` reads `constellation`
-  // (not a captured local) at resolve time, so two concurrent ego fetches
-  // each fold into whatever the other has already produced instead of one
-  // clobbering the other.
+  // Fold one touched entity into the shared store and, if it is genuinely
+  // new, fire a best-effort ego fetch for it.
   function ingestTouched(item) {
-    const next = withTouched(constellation, item);
-    if (next === constellation) return;
-    constellation = next;
+    const before = constellation.ids.has(item?.id);
+    constellationStore.touch(item);
+    if (before || !constellation.ids.has(item?.id)) return;
     exploreEgo(item.id)
       .then((ego) => {
-        constellation = withEgo(constellation, item.id, ego);
+        constellationStore.recordEgo(item.id, ego);
       })
       .catch(() => {});
   }
@@ -199,15 +201,20 @@
     lastUserMessage = s.lastUserMessage;
     // NEW CHAT opens a brand-new server session (see newChat's comment), so
     // any grounded entities belong to a conversation that no longer exists.
-    constellation = emptyConstellation();
+    constellationStore.clear();
   }
 
   // A reloaded session hydrates with its full transcript already committed
   // (see `messages` above), so fold every already-touched entity through the
   // same ingest path used for a live stream. The constellation panel then
   // renders fully revealed on first paint instead of replaying the reveal
-  // animation for a conversation that already happened.
+  // animation for a conversation that already happened. Guarded on the store
+  // already being empty: the store is session-persisted (sessionStorage), so
+  // a remount of this same page (e.g. navigating away to World and back)
+  // must not re-seed and duplicate ego fetches for entities the store
+  // already has.
   onMount(() => {
+    if (constellation.nodes.length > 0) return;
     for (const m of messages) {
       for (const item of m.touched ?? []) {
         if (item.kind === "entity") ingestTouched(item);

@@ -18,6 +18,7 @@
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import PageTurn from "$lib/public/grimoire/PageTurn.svelte";
+  import ConstellationDock from "$lib/public/grimoire/ConstellationDock.svelte";
   import "$lib/grimoire/theme.css";
   import {
     homeHref,
@@ -77,6 +78,12 @@
     if (id.startsWith("/public/app/grimoire/book/")) return "book";
     return section;
   });
+
+  // The chat page renders its own large "session constellation" panel
+  // (routes/public/app/grimoire/chat/+page.svelte) fed by the same shared
+  // store; showing the dock there too would double the same graph on
+  // screen, so the dock skips the chat route specifically.
+  const showDock = $derived(!($page.route.id ?? "").includes("/chat"));
 </script>
 
 <svelte:head>
@@ -132,6 +139,10 @@
     </div>
   {/if}
   </main>
+
+  {#if showDock}
+    <ConstellationDock />
+  {/if}
 </div>
 
 <style>
