@@ -6,6 +6,16 @@
     sandboxRestoreMs,
     agentFirstModelCallMs,
   } from "$lib/public/fcstory/metrics.js";
+  import { apps } from "$lib/public/apps.js";
+
+  // Live-maps chips render from the shared registry instead of a hardcoded
+  // anchor list, keyed by slug so this stays a fixed, curated subset (not
+  // "every non-featured app") if the registry grows.
+  const liveMapSlugs = ["ships", "stars", "hikes", "trips"];
+  const liveMaps = liveMapSlugs.map((slug) =>
+    apps.find((a) => a.slug === slug),
+  );
+  const featuredApps = apps.filter((a) => a.featured);
 </script>
 
 <section class="rack-section" id="homelab" aria-label="Homelab hardware and systems">
@@ -33,15 +43,40 @@
       <div class="maps">
         <span class="lbl">Live maps</span>
         <div class="chips">
-          <a href="/app/ships">Ships</a>
-          <a href="/app/stars">Stars</a>
-          <a href="/app/hikes">Hikes</a>
-          <a href="/app/trips">Trips</a>
+          {#each liveMaps as app (app.slug)}
+            <a href={app.href}>{app.label}</a>
+          {/each}
         </div>
       </div>
     </div>
 
     <div class="callouts">
+      {#each featuredApps as app (app.slug)}
+        <div class="callout featured">
+          <div class="chead">
+            <h3>{app.label.toUpperCase()}</h3>
+            <span class="where">FLAGSHIP</span>
+          </div>
+          {#if app.slug === "grimoire"}
+            <p>
+              A D&amp;D campaign manager where knowledge is granted, not
+              global: the same monster or NPC renders full stats for the DM,
+              redacted stats for a player who has fought it, or just a name
+              for one who has only heard rumours. Same corpus, same entity,
+              different view per grant.
+              <a class="more" href="/app/grimoire">play &rarr;</a>
+            </p>
+          {:else if app.slug === "firecracker"}
+            <p>
+              Watch a microVM restore from disk in <b>{sandboxRestoreMs}ms</b>,
+              scroll-scrubbed against the daemon's own trace data: boot once,
+              freeze it, then restore forever. Every number on the page is a
+              real measurement, not a made-up demo figure.
+              <a class="more" href="/app/firecracker">watch it restore &rarr;</a>
+            </p>
+          {/if}
+        </div>
+      {/each}
       <div class="callout">
         <div class="chead">
           <h3>AGENT PLATFORM</h3>
@@ -202,6 +237,15 @@
     background: var(--paper);
     border: 2px solid var(--ink);
     padding: 16px 18px 15px;
+  }
+  /* Flagship cards (Grimoire, Firecracker) get the same border/padding as
+     every other callout, plus a solid accent top rule so they read as the
+     headline pieces without inventing a new card style. */
+  .callout.featured {
+    border-top: 6px solid var(--accent);
+  }
+  .callout.featured .where {
+    background: var(--accent);
   }
   .chead {
     display: flex;

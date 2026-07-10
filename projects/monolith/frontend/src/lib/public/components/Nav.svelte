@@ -1,4 +1,6 @@
 <script>
+  import { apps as appsRegistry } from "$lib/public/apps.js";
+
   /** @type {{ route?: string, isPrivate?: boolean }} */
   let { route = "home", isPrivate = false } = $props();
 
@@ -27,42 +29,15 @@
     isPrivate ? [...publicItems, ...privateItems] : publicItems,
   );
 
-  // Interactive apps under /app/*. Relative hrefs so they resolve on
-  // whichever tier the nav renders on (the apex/public. reroute rewrites
-  // /app/* under /public/app/*). Add new apps here — the dropdown grows
-  // automatically. The matching `slug` lets the APPS trigger underline
-  // when an app page passes its own slug as `route`.
+  // Interactive apps under /app/*, from the shared registry
+  // ($lib/public/apps.js) so this dropdown and the homepage rack never
+  // drift out of sync. Featured apps (Grimoire, Firecracker) render first
+  // since they're the flagship pieces; the rest keep the registry's order.
+  // The matching `slug` lets the APPS trigger underline when an app page
+  // passes its own slug as `route`.
   const apps = [
-    {
-      slug: "trips",
-      label: "Trips",
-      desc: "Geotagged photo journeys",
-      href: "/app/trips",
-    },
-    {
-      slug: "hikes",
-      label: "Hikes",
-      desc: "Scottish hill-walk planner",
-      href: "/app/hikes",
-    },
-    {
-      slug: "ships",
-      label: "Ships",
-      desc: "Live AIS vessel tracker",
-      href: "/app/ships",
-    },
-    {
-      slug: "stars",
-      label: "Stars",
-      desc: "Scotland dark-sky planner",
-      href: "/app/stars",
-    },
-    {
-      slug: "notes",
-      label: "Notes",
-      desc: "Ask my knowledge graph",
-      href: "/app/notes",
-    },
+    ...appsRegistry.filter((a) => a.featured),
+    ...appsRegistry.filter((a) => !a.featured),
   ];
 
   const appsActive = $derived(apps.some((a) => a.slug === route));
@@ -154,7 +129,48 @@
                     onclick={() => (open = false)}
                   >
                     <span class="md-apps-icon" aria-hidden="true">
-                      {#if app.slug === "trips"}
+                      {#if app.slug === "grimoire"}
+                        <svg width="22" height="22" viewBox="0 0 24 24">
+                          <path
+                            d="M12 5 C 9.5 3.5 6 3.5 3 4.5 V19 C 6 18 9.5 18 12 19.5 C 14.5 18 18 18 21 19 V4.5 C 18 3.5 14.5 3.5 12 5 Z"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linejoin="round"
+                          />
+                          <path
+                            d="M12 5 V19.5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                          />
+                        </svg>
+                      {:else if app.slug === "firecracker"}
+                        <svg width="22" height="22" viewBox="0 0 24 24">
+                          <rect
+                            x="4"
+                            y="7"
+                            width="16"
+                            height="12"
+                            rx="1.5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                          />
+                          <path
+                            d="M12 3 C 10 5.5 10 7 12 8.5 C 14 7 14 5.5 12 3 Z"
+                            fill="currentColor"
+                            stroke="none"
+                          />
+                          <path
+                            d="M8 12 H16 M8 15 H16"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                          />
+                        </svg>
+                      {:else if app.slug === "trips"}
                         <svg width="22" height="22" viewBox="0 0 24 24">
                           <path
                             d="M5 20 C 7 14 12 14 17 12"
@@ -399,6 +415,24 @@
   .md-apps-item:focus-visible {
     border-color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
     outline: none;
+  }
+
+  .md-apps-item[data-app="grimoire"]:hover,
+  .md-apps-item[data-app="grimoire"]:focus-visible {
+    background: #f4ecff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="grimoire"]:hover .md-apps-icon,
+  .md-apps-item[data-app="grimoire"]:focus-visible .md-apps-icon {
+    background: #b14fff; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+
+  .md-apps-item[data-app="firecracker"]:hover,
+  .md-apps-item[data-app="firecracker"]:focus-visible {
+    background: #ffece9; /* nosemgrep: svelte-hardcoded-color-in-style */
+  }
+  .md-apps-item[data-app="firecracker"]:hover .md-apps-icon,
+  .md-apps-item[data-app="firecracker"]:focus-visible .md-apps-icon {
+    background: #ff8d7a; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
 
   .md-apps-item[data-app="hikes"]:hover,
