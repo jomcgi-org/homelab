@@ -1,20 +1,23 @@
 <script>
   // Section list for the public reader. Mirrors the private tier's
   // ChaptersNav.svelte (see that file's docblock for the full rationale):
-  // fetches the book's section hierarchy once and renders a flat,
-  // indentation-by-depth list with the active section highlighted.
+  // fetches the book's section hierarchy once, then folds the flat
+  // {section_path, title, ...} rows into a two-level chapter/leaf tree via
+  // section-tree.js's buildSectionTree (pure, unit-tested separately).
   //
-  // Two variants, one fetch/highlight implementation:
-  //  - "sidebar" (default reading surface, desktop >760px): the list is
-  //    always expanded, rendered as Reader.svelte's left section-hierarchy
-  //    sidebar (see docs/plans/assets/2026-07-05-grimoire-reskin-mockup.html's
-  //    Reader tab). No button, no open/close state.
-  //  - "dropdown" (mobile <=760px, where the sidebar is hidden): the original
-  //    compact affordance -- a "Chapters" button in the sticky bar that
-  //    toggles a floating panel.
-  // Styled with the clean grimoire theme (--grim-* tokens), not the
-  // site-wide brutalist design-system tokens this component used before.
+  // Two variants, one fetch/highlight/tree implementation:
+  //  - "sidebar" (default reading surface, desktop >900px): the tree is
+  //    rendered as Reader.svelte's left TOC column. Chapter rows are
+  //    collapsible buttons (chevron, aria-expanded); every chapter starts
+  //    collapsed except the one containing the current section, which
+  //    auto-expands. Leaf rows carry no chunk-count number (removed per the
+  //    showcase redesign: the count was noise, not a reading aid).
+  //  - "dropdown" (mobile <=900px, where the sidebar is hidden): the same
+  //    tree, same collapse behavior, in a floating panel behind a "Chapters"
+  //    toggle button in the sticky bar.
+  // Styled with the clean grimoire theme (--grim-* tokens).
   import { apiFetch, chunkHref } from "$lib/public/grimoire/api.js";
+  import { buildSectionTree } from "$lib/public/grimoire/book/section-tree.js";
 
   let { bookId, activeSectionPath = null, variant = "dropdown" } = $props();
 
@@ -22,10 +25,30 @@
   let sections = $state([]);
   let loading = $state(true);
   let error = $state("");
+  // Chapter titles currently expanded. Recomputed (not just initialized)
+  // whenever the active section moves into a different chapter, so scrolling
+  // into a new chapter auto-opens it without clobbering a chapter the visitor
+  // opened by hand elsewhere in the tree.
+  let expanded = $state(new Set());
   let rootEl;
+
+  const tree = $derived(buildSectionTree(sections));
 
   $effect(() => {
     load(bookId);
+  });
+
+  // Auto-expand the chapter containing the active section. Runs whenever
+  // activeSectionPath or the tree changes; adds (never removes) so a manual
+  // toggle elsewhere in the tree survives scroll-driven updates.
+  $effect(() => {
+    const path = activeSectionPath;
+    if (!path) return;
+    const chapterTitle = path.includes("/") ? path.split("/")[0] : null;
+    if (!chapterTitle) return;
+    if (!expanded.has(chapterTitle)) {
+      expanded = new Set(expanded).add(chapterTitle);
+    }
   });
 
   async function load(id) {
@@ -40,9 +63,11 @@
     }
   }
 
-  function depth(sectionPath) {
-    if (!sectionPath) return 1;
-    return Math.max(1, sectionPath.split("/").filter(Boolean).length);
+  function toggleChapter(title) {
+    const next = new Set(expanded);
+    if (next.has(title)) next.delete(title);
+    else next.add(title);
+    expanded = next;
   }
 
   function onWindowClick(e) {
@@ -75,28 +100,76 @@
         <p class="pub-chapters-status">Loading…</p>
       {:else if error}
         <p class="pub-chapters-status">{error}</p>
-      {:else if sections.length === 0}
+      {:else if tree.length === 0}
         <p class="pub-chapters-status">This book has no chunks yet.</p>
       {:else}
         <ul class="pub-chapters-list">
-          {#each sections as section (section.section_path)}
-            {@const d = depth(section.section_path)}
-            <li>
-              <a
-                class="pub-chapters-row"
-                class:pub-chapters-row--h1={d <= 1}
-                class:pub-chapters-row--active={section.section_path ===
-                  activeSectionPath}
-                style:padding-left="{0.75 + (d - 1) * 0.9}rem"
-                href={chunkHref(bookId, section.first_chunk_id)}
-                onclick={() => (open = false)}
-              >
-                <span class="pub-chapters-row-title">{section.title}</span>
-                <span class="pub-chapters-row-count"
-                  >{section.chunk_count}</span
+          {#each tree as node (node.section ? node.section.section_path : node.title)}
+            {#if node.children.length === 0}
+              <li>
+                <a
+                  class="pub-chapters-row pub-chapters-row--h1"
+                  class:pub-chapters-row--active={node.section?.section_path ===
+                    activeSectionPath}
+                  href={chunkHref(bookId, node.section?.first_chunk_id)}
+                  onclick={() => (open = false)}
                 >
-              </a>
-            </li>
+                  <span class="pub-chapters-row-title">{node.title}</span>
+                </a>
+              </li>
+            {:else}
+              {@const isOpen = expanded.has(node.title)}
+              <li>
+                <button
+                  type="button"
+                  class="pub-chapters-chapter"
+                  aria-expanded={isOpen}
+                  aria-controls={"pub-chapter-" + node.title}
+                  onclick={() => toggleChapter(node.title)}
+                >
+                  <svg
+                    class="pub-chapters-chevron"
+                    class:pub-chapters-chevron--open={isOpen}
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M2 1 L7 5 L2 9"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span class="pub-chapters-row-title">{node.title}</span>
+                </button>
+                {#if isOpen}
+                  <ul
+                    class="pub-chapters-list pub-chapters-list--nested"
+                    id={"pub-chapter-" + node.title}
+                  >
+                    {#each node.children as child (child.section.section_path)}
+                      <li>
+                        <a
+                          class="pub-chapters-row"
+                          class:pub-chapters-row--active={child.section
+                            .section_path === activeSectionPath}
+                          href={chunkHref(bookId, child.section.first_chunk_id)}
+                          onclick={() => (open = false)}
+                        >
+                          <span class="pub-chapters-row-title"
+                            >{child.title}</span
+                          >
+                        </a>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </li>
+            {/if}
           {/each}
         </ul>
       {/if}
@@ -179,10 +252,13 @@
     flex-direction: column;
   }
 
+  .pub-chapters-list--nested {
+    margin-left: 0.25rem;
+  }
+
   .pub-chapters-row {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
     gap: 12px;
     min-height: 36px;
     padding: 7px 14px;
@@ -192,9 +268,11 @@
 
   .pub-chapters--sidebar .pub-chapters-row {
     min-height: auto;
-    padding-top: 4px;
-    padding-bottom: 4px;
-    padding-right: 4px;
+    padding: 4px 4px 4px 1.65rem;
+  }
+
+  .pub-chapters--sidebar .pub-chapters-row--h1 {
+    padding-left: 0.75rem;
   }
 
   .pub-chapters-row:hover {
@@ -228,13 +306,56 @@
     font-size: 12.5px;
   }
 
-  .pub-chapters-row-count {
+  /* Chapter toggle: same visual rhythm as a leaf row (button, not a div, so
+   * it's keyboard reachable with a plain Tab + Enter/Space), plus a chevron
+   * that rotates open/closed. */
+  .pub-chapters-chapter {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 14px;
+    background: none;
+    border: 0;
+    border-left: 2px solid transparent;
+    font: inherit;
+    text-align: left;
+    color: var(--grim-ink);
+    cursor: pointer;
+  }
+
+  .pub-chapters--sidebar .pub-chapters-chapter {
+    min-height: auto;
+    padding: 4px 4px 4px 0.75rem;
+  }
+
+  .pub-chapters-chapter:hover {
+    color: var(--grim-accent);
+  }
+
+  .pub-chapters-chapter .pub-chapters-row-title {
+    font-family: var(--grim-serif);
+    font-weight: 600;
+    font-size: 12.5px;
+  }
+
+  .pub-chapters-chevron {
     flex-shrink: 0;
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    min-width: 22px;
+    align-self: center;
     color: var(--grim-text-faint);
+    transform: rotate(0deg);
+    transition: transform 140ms ease;
+  }
+
+  .pub-chapters-chevron--open {
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pub-chapters-chevron {
+      transition: none;
+    }
   }
 
   .pub-chapters-status {

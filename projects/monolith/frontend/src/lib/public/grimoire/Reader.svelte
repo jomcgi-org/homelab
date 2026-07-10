@@ -11,14 +11,16 @@
   // body copy, hairline rules, small-caps section labels, no hard ink
   // borders or mono chrome.
   //
-  // Layout: a left section-hierarchy sidebar (desktop, >760px) alongside the
-  // reading column, per docs/plans/assets/2026-07-05-grimoire-reskin-
-  // mockup.html's Reader tab. The sidebar is ChaptersNav in its new
-  // `variant="sidebar"` mode: the same fetch + active-section-highlight
-  // logic as the original Chapters dropdown, just rendered inline and always
-  // expanded instead of behind a toggle. Below 760px the sidebar is hidden
-  // and the original dropdown affordance (`variant="dropdown"`) reappears in
-  // the sticky bar as the compact mobile chapters entry point.
+  // Layout (showcase redesign): a left TOC sidebar (desktop, >900px)
+  // alongside a wider ~72ch reading column, laid out as one centered grid
+  // using the available width. No sub-nav strip: the old bar with the book
+  // name and a "SECTION n/total" position readout is gone. A 2px
+  // scroll-fraction progress bar (fixed under the app topbar) replaces it as
+  // the sole reading-position indicator -- cheaper to compute (one
+  // scroll-fraction number, transform: scaleX, no reflow) and less noisy
+  // than a text readout that updated on every heading crossing. Below 900px
+  // the sidebar hides and the dropdown Chapters affordance reappears (in a
+  // slim floating toggle, since the sticky bar itself is gone).
   import { apiFetch, bookAttribution } from "$lib/public/grimoire/api.js";
   import { renderChunk } from "$lib/public/grimoire/renderChunk.js";
   import ChaptersNav from "$lib/public/grimoire/ChaptersNav.svelte";
@@ -40,6 +42,12 @@
   let bookMeta = $state({ displayName: bookId, chunkCount: null });
   let activeSeq = $state(initialItems[0]?.seq ?? null);
   let activeSectionPath = $state(initialItems[0]?.section_path ?? null);
+
+  // Reading-progress bar: scroll fraction of the content column, 0..1.
+  // scaleX (not width) on a fixed-width track so the browser only ever
+  // composites a transform, never reflows layout on scroll.
+  let progress = $state(0);
+  let progressVisible = $state(false);
 
   let containerEl;
   let sentinelEl;
@@ -99,10 +107,10 @@
 
   // Ingest prepends the section name as a title line to every chunk's content
   // (marker.py flush(), so the entity extractor can name the monster from text
-  // alone). The reader already shows that name as the section <h2> and in the
-  // sticky bar, so a leading block that merely repeats it renders the title
-  // twice. Drop it, comparing case-insensitively against both the full
-  // section_path and its last "/" segment (the visible title).
+  // alone). The reader already shows that name as the section <h2>, so a
+  // leading block that merely repeats it renders the title twice. Drop it,
+  // comparing case-insensitively against both the full section_path and its
+  // last "/" segment (the visible title).
   function bodyBlocks(item) {
     const blocks = renderChunk(item.content);
     const first = blocks[0];
@@ -217,28 +225,73 @@
     ).matches;
     el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
   });
+
+  // Reading-progress bar. The app root scrolls the window (see the
+  // IntersectionObserver comment above), so progress is the content
+  // column's own scrolled fraction: how far containerEl's top has traveled
+  // above the viewport versus its total scrollable height. rAF-throttled so
+  // a scroll storm never queues more than one recompute per frame; the write
+  // itself is a single scaleX transform (see .pub-progress-fill), so there
+  // is no layout thrash to throttle beyond that. Hidden entirely when the
+  // content already fits the viewport (nothing to scroll).
+  $effect(() => {
+    void items.length;
+    if (!containerEl || typeof window === "undefined") return;
+    let ticking = false;
+    function measure() {
+      ticking = false;
+      const rect = containerEl.getBoundingClientRect();
+      const total = rect.height - window.innerHeight;
+      if (total <= 0) {
+        progressVisible = false;
+        progress = 0;
+        return;
+      }
+      progressVisible = true;
+      const scrolled = -rect.top;
+      progress = Math.min(1, Math.max(0, scrolled / total));
+    }
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(measure);
+    }
+    measure();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  });
 </script>
 
 <div class="pub-reader">
-  <div class="pub-bar">
-    <span class="pub-bar-title">{bookMeta.displayName}</span>
-    <div class="pub-bar-right">
-      <span class="pub-bar-pos">
-        {sectionTitle(activeSectionPath)}
-        {#if activeSeq != null && bookMeta.chunkCount}
-          · {activeSeq + 1}/{bookMeta.chunkCount}
-        {/if}
-      </span>
-      <!-- Compact mobile-only affordance: the sidebar below is hidden under
-           760px, so the dropdown Chapters button is the only way to jump
-           sections on a phone. Hidden on desktop via CSS (the sidebar
-           replaces it there); still mounts and fetches regardless of
-           viewport, same as the sidebar instance below -- a second cheap GET
-           of /books/{bookId}/sections, not worth a JS media-query gate. -->
-      <div class="pub-bar-chapters">
-        <ChaptersNav {bookId} {activeSectionPath} variant="dropdown" />
-      </div>
-    </div>
+  <!-- Reading-progress bar: fixed under the app topbar (58px, see
+       +layout.svelte's `.topbar`). scaleX only -- never width -- so a scroll
+       storm is pure compositor work, no reflow. Hidden entirely when the
+       content already fits the viewport. -->
+  <div
+    class="pub-progress"
+    class:pub-progress--visible={progressVisible}
+    role="progressbar"
+    aria-label="Reading progress"
+    aria-valuenow={Math.round(progress * 100)}
+    aria-valuemin="0"
+    aria-valuemax="100"
+  >
+    <div class="pub-progress-fill" style:transform="scaleX({progress})"></div>
+  </div>
+
+  <!-- Compact mobile-only affordance: the sidebar below is hidden under
+       900px, so this floating Chapters button is the only way to jump
+       sections on a phone (the old sticky bar that used to host it is
+       gone). Hidden on desktop via CSS (the sidebar replaces it there);
+       still mounts and fetches regardless of viewport, same as the sidebar
+       instance below -- a second cheap GET of /books/{bookId}/sections, not
+       worth a JS media-query gate. -->
+  <div class="pub-mobile-chapters">
+    <ChaptersNav {bookId} {activeSectionPath} variant="dropdown" />
   </div>
 
   <div class="pub-layout">
@@ -291,6 +344,7 @@
                   class="pub-image"
                   src={row.item.image_url}
                   alt={row.item.content || "sourcebook illustration"}
+                  loading="lazy"
                 />
               {/if}
               {#if row.item.content}
@@ -338,68 +392,64 @@
     color: var(--grim-ink);
   }
 
-  .pub-bar {
-    position: sticky;
-    /* 58px is the app-shell topbar's own height (see the grimoire
-       +layout.svelte `.topbar`); both bars are sticky at once, so this one
-       has to park below it rather than at top:0 or they'd overlap. */
+  /* Reading-progress bar: fixed directly under the app topbar (58px, see
+     +layout.svelte's `.topbar`). A track + a scaleX-transformed fill,
+     transform-origin left, so the only per-scroll write is a compositor-only
+     transform -- no width/layout property ever changes. */
+  .pub-progress {
+    position: fixed;
     top: 58px;
-    z-index: 5;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 10px 20px;
-    background: color-mix(in srgb, var(--grim-paper) 90%, transparent);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--grim-line);
-    font-size: 11px;
-    letter-spacing: 0.12em;
+    left: 0;
+    right: 0;
+    z-index: 6;
+    height: 2px;
+    background: var(--grim-line-soft);
+    opacity: 0;
+    transition: opacity 160ms ease;
+    pointer-events: none;
   }
 
-  .pub-bar-title {
-    text-transform: uppercase;
-    font-weight: 600;
-    color: var(--grim-ink);
+  .pub-progress--visible {
+    opacity: 1;
   }
 
-  .pub-bar-right {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
+  .pub-progress-fill {
+    height: 100%;
+    width: 100%;
+    background: var(--grim-accent);
+    transform: scaleX(0);
+    transform-origin: left center;
   }
 
-  .pub-bar-pos {
-    text-transform: uppercase;
-    color: var(--grim-text-faint);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  @media (prefers-reduced-motion: reduce) {
+    .pub-progress {
+      transition: none;
+    }
   }
 
-  /* Sidebar covers this on desktop; only the mobile breakpoint below
-     switches it back on. */
-  .pub-bar-chapters {
+  /* Floating mobile-only Chapters affordance. The sidebar below is hidden
+     under 900px, so this is the only way to jump sections on a phone (the
+     old sticky sub-nav bar that used to host it is gone). */
+  .pub-mobile-chapters {
     display: none;
   }
 
   .pub-layout {
-    max-width: 1080px;
+    max-width: 1180px;
     margin: 0 auto;
     padding: clamp(24px, 5vw, 48px) clamp(20px, 6vw, 48px) 80px;
     display: grid;
-    grid-template-columns: 244px 1fr;
-    gap: 44px;
+    grid-template-columns: 280px minmax(0, 72ch);
+    justify-content: center;
+    gap: 56px;
     align-items: start;
   }
 
   .pub-toc {
     position: sticky;
-    /* Approx: 58px app topbar + this reader's own ~42px sticky bar. */
-    top: 100px;
-    max-height: calc(100vh - 140px);
+    /* 58px app topbar + 2px progress bar + a little breathing room. */
+    top: 76px;
+    max-height: calc(100vh - 116px);
     overflow-y: auto;
     border-right: 1px solid var(--grim-line-soft);
     padding-right: 20px;
@@ -420,7 +470,7 @@
   }
 
   .pub-rule {
-    max-width: 68ch;
+    max-width: 72ch;
     margin: 28px 0;
     height: 1px;
     border: 0;
@@ -429,7 +479,7 @@
 
   .pub-heading {
     position: relative;
-    max-width: 68ch;
+    max-width: 72ch;
     margin: 0 0 18px;
   }
 
@@ -456,7 +506,7 @@
 
   .pub-chunk {
     position: relative;
-    max-width: 68ch;
+    max-width: 72ch;
     font-family: var(--grim-serif);
     font-size: 17px;
     line-height: 1.66;
@@ -511,20 +561,21 @@
 
   .pub-figure {
     margin: 24px 0;
-    max-width: 68ch;
+    max-width: 72ch;
   }
 
-  /* Never upscale: max-width (not width) + no forced height keep small
-     illustrations at their natural size, while max-height caps oversized
-     scans so they never dominate the reading column. */
+  /* Full column width: the wider ~72ch column gives illustrations real
+     presence, so images fill it (width: 100%, not an auto-sized max-width)
+     rather than sitting small and centered. max-height still caps oversized
+     scans so a tall scan never dominates the whole viewport. */
   .pub-image {
     display: block;
-    max-width: 100%;
+    width: 100%;
     height: auto;
-    max-height: 60vh;
-    margin-inline: auto;
+    max-height: 70vh;
+    object-fit: contain;
     border: 1px solid var(--grim-line);
-    border-radius: 8px;
+    border-radius: 10px;
   }
 
   .pub-caption {
@@ -540,7 +591,7 @@
     display: flex;
     justify-content: center;
     padding: 32px 0 8px;
-    max-width: 68ch;
+    max-width: 72ch;
   }
 
   .pub-status {
@@ -580,17 +631,20 @@
     border-color: var(--grim-accent);
   }
 
-  @media (max-width: 760px) {
+  @media (max-width: 900px) {
     .pub-layout {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 72ch);
+      padding-top: 20px;
     }
 
     .pub-toc {
       display: none;
     }
 
-    .pub-bar-chapters {
-      display: inline-flex;
+    .pub-mobile-chapters {
+      display: flex;
+      justify-content: flex-end;
+      padding: 10px clamp(20px, 6vw, 48px) 0;
     }
   }
 
