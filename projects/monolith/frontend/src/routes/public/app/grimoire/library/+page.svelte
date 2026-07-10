@@ -126,7 +126,6 @@
 </script>
 
 <div class="library-page">
-  <p class="eyebrow">The Grimoire</p>
   <h1 class="grim-title lib-title">Library</h1>
 
   {#if !loading && !error && books.length > 0}
@@ -262,18 +261,9 @@
     padding: 40px 28px 80px;
   }
 
-  .eyebrow {
-    font-size: 11px;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: var(--grim-text-faint);
-    font-weight: 600;
-    margin: 0;
-  }
-
   .lib-title {
     font-size: clamp(36px, 6vw, 46px);
-    margin: 6px 0 0;
+    margin: 0;
   }
 
   .summary {

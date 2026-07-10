@@ -16,7 +16,6 @@
     exploreGraph,
     exploreEgo,
     listAllAdventures,
-    libraryHref,
   } from "$lib/public/grimoire/api.js";
   import ExploreCanvas from "$lib/public/grimoire/explore/ExploreCanvas.svelte";
   import ExploreCodex from "$lib/public/grimoire/explore/ExploreCodex.svelte";
@@ -272,7 +271,6 @@
 <div class="explore-page">
   <div class="ex-head">
     <div>
-      <a class="eyebrow back-link" href={libraryHref()}>&larr; Library</a>
       <h1 class="grim-title page-title">Explore</h1>
       {#if !graphLoading && !graphError}
         <p class="eyebrow count-line">
@@ -385,15 +383,6 @@
     color: var(--grim-text-faint);
     font-weight: 600;
     margin: 0;
-  }
-
-  .back-link {
-    display: inline-block;
-    text-decoration: none;
-  }
-
-  .back-link:hover {
-    color: var(--grim-text-dim);
   }
 
   .ex-head {

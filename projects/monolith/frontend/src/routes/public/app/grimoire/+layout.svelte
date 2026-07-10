@@ -1,7 +1,7 @@
 <script>
   // Public Grimoire app shell: a slim app-own topbar (wordmark + Library /
-  // Entities nav) and a Turnstile gate around the derived-corpus surfaces
-  // (Entities, Explore, Chat, adventure detail): those only mount after
+  // World / Chat nav) and a Turnstile gate around the derived-corpus
+  // surfaces (World, Chat, adventure detail): those only mount after
   // onAdmitted fires. The gate no longer wraps the Library or the reader:
   // the Library serves only book metadata plus open-licensed full text, and
   // the reader serves only open-licensed books (copyrighted books 403 and
@@ -10,14 +10,19 @@
   // Nav/Footer: this is a standalone shareable app, not a page of the
   // portfolio site. noindex keeps the whole tree out of search regardless of
   // admission state.
+  //
+  // World is the merged Entities+Explore surface (a later task); until that
+  // route lands, the legacy /entities, /entity/*, and /explore pages keep
+  // working directly and are treated as "world" for nav highlighting so the
+  // active tab reads correctly no matter which URL a visitor lands on.
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
+  import PageTurn from "$lib/public/grimoire/PageTurn.svelte";
   import "$lib/grimoire/theme.css";
   import {
     homeHref,
     libraryHref,
-    entitiesHref,
-    exploreHref,
+    worldHref,
     chatHref,
   } from "$lib/public/grimoire/api.js";
 
@@ -43,17 +48,34 @@
     );
   });
 
-  // Highlight the active topbar link: the entities index and entity detail
-  // pages both count as "entities"; the EXPLORE canvas is its own section;
-  // the homepage highlights nothing; every other page (library, book reader,
-  // adventures) is the library flow.
+  // Highlight the active topbar link. World covers its own future route
+  // (/world) plus the legacy /entities, /entity/*, and /explore paths it
+  // will absorb: those still 404-redirect today (Task 5), but the nav
+  // should already read as World when a visitor lands on one of them
+  // directly (e.g. an old bookmarked link). Every other page (library,
+  // book reader, adventures) is the library flow; the homepage highlights
+  // nothing.
   const section = $derived.by(() => {
     const id = $page.route.id ?? "";
-    if (id.includes("/entities") || id.includes("/entity/")) return "entities";
-    if (id.includes("/explore")) return "explore";
+    if (
+      id.includes("/world") ||
+      id.includes("/entities") ||
+      id.includes("/entity/") ||
+      id.includes("/explore")
+    )
+      return "world";
     if (id.includes("/chat")) return "chat";
     if (isHome) return "home";
     return "library";
+  });
+
+  // Top-level section used to key the page-turn transition: the book/*
+  // segment reads as its own section (distinct from the library index) even
+  // though it's grouped with library for nav highlighting.
+  const pageTurnSegment = $derived.by(() => {
+    const id = $page.route.id ?? "";
+    if (id.startsWith("/public/app/grimoire/book/")) return "book";
+    return section;
   });
 </script>
 
@@ -70,7 +92,7 @@
 
 <div class="grimoire-app grimoire" class:home={isHome}>
   <header class="topbar">
-    <a class="wordmark" href={homeHref()}>Grimoire</a>
+    <a class="wordmark grim-title" href={homeHref()}>Grimoire</a>
     <nav class="topbar-nav" aria-label="Grimoire sections">
       <a
         class="topbar-link"
@@ -79,13 +101,8 @@
       >
       <a
         class="topbar-link"
-        class:active={section === "entities"}
-        href={entitiesHref()}>Entities</a
-      >
-      <a
-        class="topbar-link"
-        class:active={section === "explore"}
-        href={exploreHref()}>Explore</a
+        class:active={section === "world"}
+        href={worldHref()}>World</a
       >
       <a class="topbar-link" class:active={section === "chat"} href={chatHref()}
         >Chat</a
@@ -96,7 +113,9 @@
 
   <main class="grimoire-shell">
   {#if isUngated || admitted}
-    {@render children()}
+    <PageTurn section={pageTurnSegment}>
+      {@render children()}
+    </PageTurn>
   {:else}
     <div class="wrap-narrow gate">
       <p class="gate-eyebrow">Grimoire Access</p>
@@ -140,9 +159,12 @@
     gap: 20px;
     padding: 0 28px;
     height: 58px;
-    background: color-mix(in srgb, var(--grim-paper) 88%, transparent);
+    /* Dark ledger-cover surface, not the light reading paper: the topbar is
+       the book's spine, so it should read as its own material rather than a
+       plain white app header. */
+    background: color-mix(in srgb, var(--grim-nav-surface) 92%, transparent);
     backdrop-filter: blur(10px);
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--grim-nav-line);
     transition: opacity 0.25s ease;
   }
 
@@ -165,11 +187,11 @@
   }
 
   .wordmark {
-    font-weight: 700;
-    font-size: 14px;
-    letter-spacing: 0.28em;
-    text-transform: uppercase;
-    color: var(--grim-ink);
+    /* .grim-title already sets the serif display face + weight; this layers
+       size, tracking, and the ledger-cover ink color on top of it. */
+    font-size: 17px;
+    letter-spacing: 0.06em;
+    color: var(--grim-nav-ink);
     text-decoration: none;
     flex: none;
   }
@@ -190,19 +212,21 @@
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--grim-nav-text-dim);
     text-decoration: none;
     border-bottom: 2px solid transparent;
   }
 
-  /* Quiet indigo underline on hover/active, no fill: matches the reskin's
-     denoised chrome (the brutalist ink-block hover is gone). */
+  /* Weighted accent underline on hover/active against the dark ledger
+     surface, no fill: heavier than the reskin's light-mode hairline so it
+     still reads clearly on the darker chrome. */
   .topbar-link:hover {
-    color: var(--grim-text-dim);
+    color: var(--grim-nav-ink);
   }
 
   .topbar-link.active {
-    color: var(--grim-ink);
+    color: var(--grim-nav-ink);
+    border-bottom-width: 3px;
     border-bottom-color: var(--grim-accent);
   }
 

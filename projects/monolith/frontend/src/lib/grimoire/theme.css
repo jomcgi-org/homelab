@@ -48,6 +48,15 @@
   --grim-text-faint: #656e7c;
   --grim-accent-soft: rgba(51, 80, 122, 0.1);
 
+  /* Nav chrome: a dark parchment/ledger-cover surface, deliberately breaking
+   * from the light --grim-paper reading surface so the topbar reads as the
+   * book's spine, not a generic light SaaS header. Text/line tokens tuned for
+   * contrast against it, not against --grim-paper. */
+  --grim-nav-surface: #1c1712;
+  --grim-nav-line: #3a3226;
+  --grim-nav-ink: #f1e9da;
+  --grim-nav-text-dim: #b8ab93;
+
   /* Entity-type accent colors: used by Entities rows, statblocks, and the
    * Explore canvas to give each entity type a stable, distinct hue. */
   --grim-type-location: #0f9e63;

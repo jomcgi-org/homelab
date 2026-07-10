@@ -2,7 +2,7 @@
   // Public entity index: type filter + name search over the whole corpus (no
   // campaign/grants -- everything is visible). Results page via next_cursor.
   import { onMount } from "svelte";
-  import { apiFetch, libraryHref, entityHref } from "$lib/public/grimoire/api.js";
+  import { apiFetch, entityHref } from "$lib/public/grimoire/api.js";
   import EntityCodexRow from "./EntityCodexRow.svelte";
 
   // Color-coded filter chips: only the 10 entity types theme.css assigns a
@@ -208,7 +208,6 @@
 <svelte:window onkeydown={onWindowKeydown} />
 
 <div class="entities-page">
-  <a class="eyebrow back-link" href={libraryHref()}>&larr; Library</a>
   <h1 class="grim-title page-title">Entities</h1>
   <p class="eyebrow count-line">
     {#if !loading}{total.toLocaleString()} indexed{/if}
@@ -332,16 +331,6 @@
     color: var(--grim-text-faint);
     font-weight: 600;
     margin: 0;
-  }
-
-  .back-link {
-    display: inline-block;
-    margin-bottom: 20px;
-    text-decoration: none;
-  }
-
-  .back-link:hover {
-    color: var(--grim-text-dim);
   }
 
   .page-title {

@@ -3,12 +3,7 @@
   // and sources (mentions) best-effort (a failure there must not blank the
   // stat block). Dispatches on entity_type via EntityDetail.
   import { page } from "$app/stores";
-  import {
-    apiFetch,
-    entitiesHref,
-    entityHref,
-    chunkHref,
-  } from "$lib/public/grimoire/api.js";
+  import { apiFetch, entityHref, chunkHref } from "$lib/public/grimoire/api.js";
   import EntityDetail from "$lib/public/grimoire/statblock/EntityDetail.svelte";
 
   const entityId = $derived($page.params.id);
@@ -56,8 +51,6 @@
 </script>
 
 <div class="wrap-narrow detail-page page">
-  <a class="eyebrow back-link" href={entitiesHref()}>&larr; ENTITIES</a>
-
   {#if loading}
     <div class="skeleton-block"></div>
   {:else if notFound}
@@ -122,15 +115,6 @@
     color: var(--grim-text-faint);
     font-weight: 600;
     margin: 0;
-  }
-
-  .back-link {
-    display: inline-block;
-    align-self: flex-start;
-  }
-
-  .back-link:hover {
-    color: var(--grim-ink);
   }
 
   .head {
