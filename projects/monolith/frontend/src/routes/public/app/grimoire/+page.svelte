@@ -44,6 +44,17 @@
   ];
 </script>
 
+<svelte:head>
+  <title>Grimoire: a grant-scoped D&D campaign manager · jomcgi.dev</title>
+  <meta
+    name="description"
+    content="Scan a sourcebook, extract its entities and relationships, then ask it questions with grounded, cited answers. Every player sees only what their DM has granted."
+  />
+  <!-- Only this landing page is crawlable: every other route under
+       /public/app/grimoire stays noindex (see the layout's svelte:head). -->
+  <meta name="robots" content="index, follow" />
+</svelte:head>
+
 <ScrollStory />
 
 <div class="home">
