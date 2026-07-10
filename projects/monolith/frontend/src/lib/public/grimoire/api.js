@@ -59,6 +59,9 @@ export const homeHref = () => "/app/grimoire";
 export const libraryHref = () => "/app/grimoire/library";
 export const entitiesHref = () => "/app/grimoire/entities";
 export const exploreHref = () => "/app/grimoire/explore";
+// World is the merged Entities+Explore surface landing in a later task; the
+// nav links here already, ahead of the route existing (expected 404 mid-branch).
+export const worldHref = () => "/app/grimoire/world";
 export const chatHref = () => "/app/grimoire/chat";
 export const entityHref = (id) =>
   `/app/grimoire/entity/${encodeURIComponent(id)}`;
