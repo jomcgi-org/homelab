@@ -57,11 +57,13 @@ export const bookAttribution = (bookId) => BOOK_ATTRIBUTION[bookId] ?? "";
 
 export const homeHref = () => "/app/grimoire";
 export const libraryHref = () => "/app/grimoire/library";
-export const entitiesHref = () => "/app/grimoire/entities";
-export const exploreHref = () => "/app/grimoire/explore";
-// World is the merged Entities+Explore surface landing in a later task; the
-// nav links here already, ahead of the route existing (expected 404 mid-branch).
-export const worldHref = () => "/app/grimoire/world";
+// World is the merged Entities+Explore surface. With an id it deep-links to
+// that entity focused (the ?e= contract the dock, chat mentions, and the World
+// page's own re-center all share); without one it lands on the featured entity.
+export const worldHref = (id) =>
+  id
+    ? `/app/grimoire/world?e=${encodeURIComponent(id)}`
+    : "/app/grimoire/world";
 export const chatHref = () => "/app/grimoire/chat";
 export const entityHref = (id) =>
   `/app/grimoire/entity/${encodeURIComponent(id)}`;
@@ -100,3 +102,18 @@ export const explorePath = (from, to) =>
 // Every adventure across the whole corpus (not scoped to one book), for the
 // EXPLORE scope selector.
 export const listAllAdventures = () => apiFetch("/adventures");
+
+// ── Entity list / search (router_public.py's /entities) ──
+
+// Paginated entity list -> {items, total, next_cursor}. With no q and no type
+// the backend orders by relationship degree (most-connected first); with a q or
+// a type it orders by name. `signal` lets the caller abort a superseded
+// typeahead request. Empty/whitespace q and type are dropped so an empty search
+// falls back to the degree-ordered "everything" list.
+export function listEntities({ q = "", type = "", limit = 40, signal } = {}) {
+  const params = new URLSearchParams();
+  if (type) params.set("type", type);
+  if (q && q.trim()) params.set("q", q.trim());
+  params.set("limit", String(limit));
+  return apiFetch(`/entities?${params.toString()}`, signal ? { signal } : {});
+}

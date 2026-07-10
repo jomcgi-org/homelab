@@ -19,6 +19,17 @@
     focusId = null,
     guestIds = new Set(),
     onselect = null,
+    // Reports the settled node positions after each layout as a Map(id ->
+    // {x, y}) in sim-space, so a parent re-render (the World re-center) can
+    // seed shared nodes back into place via `initialPositions`.
+    onpositions = null,
+    // Optional seed positions for nodes that have no position yet (id ->
+    // {x, y} in sim-space). Used by the World page's re-center so a node the
+    // old and new ego share stays put across the fetch instead of hash-jumping
+    // to a fresh spot; a node present here but not in the current layout keeps
+    // its passed-in position, anything absent still falls back to the
+    // deterministic hash placement below.
+    initialPositions = null,
   } = $props();
 
   let stageEl;
@@ -42,6 +53,17 @@
   let energy = 1;
   let rafId = null;
   let hoverId = null;
+  // Camera auto-fit (ported from MiniConstellation): after each settle the
+  // view is fitted to the settled bounding box. The first fit (and resizes)
+  // snaps; later fits (a scope/lens/ego change re-centering the graph) ease
+  // from the current view to the new fit so on-screen nodes never jump. A user
+  // pan/zoom sets `userMoved`, which suppresses auto-fit until the next
+  // content change resets it (a data change is a fresh view, a manual nudge is
+  // not undone under the user's fingers).
+  const CAMERA_MS = 520;
+  let hasFit = false;
+  let userMoved = false;
+  let viewAnim = null;
   // Reactive (unlike the rest of the sim state above): bound to a template
   // `class:dragging`, so it needs Svelte to notice it changed.
   let dragging = $state(false);
@@ -116,17 +138,24 @@
     const nextById = new Map();
     const nextSim = nextNodes.map((n) => {
       const prev = prevById.get(n.id);
+      const seed = prev ? null : initialPositions?.get?.(n.id);
       const h = hashOf(n.id);
       const angle = ((h % 3600) / 3600) * Math.PI * 2;
       const radius = 108 + ((h >>> 12) % 4) * 34;
       const node = {
         ...n,
-        x: prev?.x ?? Math.cos(angle) * radius,
-        y: prev?.y ?? Math.sin(angle) * radius,
+        // Position priority: an existing sim node keeps its live position
+        // (continuity across a merge); otherwise a caller-seeded position
+        // (World re-center reusing the old layout); otherwise the
+        // deterministic hash placement.
+        x: prev?.x ?? seed?.x ?? Math.cos(angle) * radius,
+        y: prev?.y ?? seed?.y ?? Math.sin(angle) * radius,
         vx: prev?.vx ?? 0,
         vy: prev?.vy ?? 0,
         deg: 0,
-        isNew: !prev,
+        // A seeded node is not "new": it carries a known position from the
+        // previous view, so it should not fade in as if it just appeared.
+        isNew: !prev && !seed,
       };
       nextById.set(n.id, node);
       return node;
@@ -339,6 +368,13 @@
     if (!rafId) draw();
   }
 
+  function reportPositions() {
+    if (!onpositions) return;
+    const map = new Map();
+    for (const n of sim) map.set(n.id, { x: n.x, y: n.y });
+    onpositions(map);
+  }
+
   let fadeUntil = 0;
 
   // Run the physics forward a fixed number of steps synchronously, off
@@ -351,8 +387,63 @@
     energy = 0;
   }
 
+  // Fit the view to the settled bounding box with padding, clamped so a lone
+  // node or a dense cluster both stay legible. `snap` (resize, reduced motion,
+  // first fit) applies instantly; otherwise the camera eases from the current
+  // view. Suppressed once the user has panned/zoomed so a redraw never yanks
+  // the view out from under them.
+  function fitToContent(snap = false) {
+    if (!sim.length || !width || !height) return;
+    if (userMoved && !snap) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    sim.forEach((n) => {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x);
+      maxY = Math.max(maxY, n.y);
+    });
+    const pad = 60;
+    const w = Math.max(maxX - minX, 1);
+    const h = Math.max(maxY - minY, 1);
+    const availW = Math.max(width - pad * 2, 1);
+    const availH = Math.max(height - pad * 2, 1);
+    const k = Math.max(0.4, Math.min(1.6, Math.min(availW / w, availH / h)));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const target = { k, x: width / 2 - cx * k, y: height / 2 - cy * k };
+    if (snap || !hasFit || REDUCED_MOTION) {
+      view = target;
+      viewAnim = null;
+      hasFit = true;
+      return;
+    }
+    // Skip an imperceptible refit so a same-shape rebuild does not start a
+    // pointless camera glide.
+    if (
+      Math.abs(target.k - view.k) < 0.01 &&
+      Math.abs(target.x - view.x) < 1 &&
+      Math.abs(target.y - view.y) < 1
+    ) {
+      return;
+    }
+    viewAnim = { from: { ...view }, to: target, start: performance.now() };
+    fadeUntil = Math.max(fadeUntil, viewAnim.start + CAMERA_MS);
+    if (!rafId) rafId = requestAnimationFrame(fadeFrame);
+  }
+
   function startSim() {
     settleNow();
+    // Positions are final after settleNow (the fade loop only animates
+    // opacity/scale, never moves nodes): report them so a re-center can seed
+    // shared nodes back into place.
+    reportPositions();
+    // A content change is a fresh view: re-enable auto-fit so the new graph
+    // centers even if the user had panned the previous one.
+    userMoved = false;
+    fitToContent();
     if (REDUCED_MOTION) {
       // No fades: everything is visible at full alpha from the first draw.
       sim.forEach((n) => delete n.bornAt);
@@ -375,16 +466,31 @@
     if (i > 0) {
       fadeUntil = now + 320 + Math.min(i * 14, 350);
       if (!rafId) rafId = requestAnimationFrame(fadeFrame);
+    } else if (viewAnim) {
+      // No new nodes but the camera is easing to a new fit (e.g. an ego
+      // re-center where every node was shared/seeded): drive frames for the
+      // glide even though nothing is fading in.
+      if (!rafId) rafId = requestAnimationFrame(fadeFrame);
     } else {
-      // Rebuild with no new nodes (an edges-only change): nothing fades, so
-      // skip the fade loop and just draw the settled layout once.
+      // Rebuild with no new nodes and no camera glide (an edges-only change):
+      // nothing to animate, so just draw the settled layout once.
       draw();
     }
   }
 
   function fadeFrame() {
+    if (viewAnim) {
+      const p = Math.min(1, (performance.now() - viewAnim.start) / CAMERA_MS);
+      const e = 1 - Math.pow(1 - p, 3);
+      view = {
+        k: viewAnim.from.k + (viewAnim.to.k - viewAnim.from.k) * e,
+        x: viewAnim.from.x + (viewAnim.to.x - viewAnim.from.x) * e,
+        y: viewAnim.from.y + (viewAnim.to.y - viewAnim.from.y) * e,
+      };
+      if (p >= 1) viewAnim = null;
+    }
     draw();
-    if (performance.now() < fadeUntil) {
+    if (performance.now() < fadeUntil || viewAnim) {
       rafId = requestAnimationFrame(fadeFrame);
     } else {
       rafId = null;
@@ -410,14 +516,16 @@
     height = canvasEl.clientHeight;
     canvasEl.width = width * dpr;
     canvasEl.height = height * dpr;
+    // A container geometry change re-fits instantly (easing here would read as
+    // lag). `snap` overrides the userMoved guard: a genuine resize should
+    // always bring the content back into view.
+    fitToContent(true);
     requestDraw();
   }
 
   onMount(() => {
     ctx = canvasEl.getContext("2d");
     resize();
-    view.x = width / 2;
-    view.y = height / 2;
     refreshColors();
     startSim();
 
@@ -506,6 +614,10 @@
         view.k = k2;
         view.x = midX - wx * k2;
         view.y = midY - wy * k2;
+        // A manual pinch owns the view: suppress auto-fit and cancel any
+        // in-flight camera glide so the gesture is not fought by an ease.
+        userMoved = true;
+        viewAnim = null;
         requestDraw();
         return;
       }
@@ -516,6 +628,8 @@
         if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
         view.x = panStart.vx + dx;
         view.y = panStart.vy + dy;
+        userMoved = true;
+        viewAnim = null;
         requestDraw();
       }
     }
@@ -575,6 +689,8 @@
       view.k = k2;
       view.x = mx - wx * k2;
       view.y = my - wy * k2;
+      userMoved = true;
+      viewAnim = null;
       requestDraw();
     }
 

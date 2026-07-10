@@ -32,8 +32,8 @@
       "static_initial": true
     },
     {
-      "id": "grimoire-entities",
-      "path": "/app/grimoire/entities",
+      "id": "grimoire-world",
+      "path": "/app/grimoire/world",
       "static_initial": true
     },
     { "id": "firecracker", "path": "/app/firecracker" },

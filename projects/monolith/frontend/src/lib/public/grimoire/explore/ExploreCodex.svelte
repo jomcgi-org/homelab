@@ -16,11 +16,13 @@
   // guest), `onclose()` out for the close button. This component owns its own
   // fetching (keyed on `entityId`); it does not know about scope/lens/guests.
   import {
+    API,
     apiFetch,
     exploreEgo,
     chunkHref,
   } from "$lib/public/grimoire/api.js";
   import EntityDetail from "$lib/public/grimoire/statblock/EntityDetail.svelte";
+  import { phrase } from "$lib/public/grimoire/world/relationship-phrases.js";
 
   let { entityId = null, onselect = null, onclose = null } = $props();
 
@@ -62,8 +64,9 @@
   }
 
   // Ego edges are undirected pairs {from, to, rel_type}; resolve each into
-  // "the other entity" plus arrow direction relative to the focus, using
-  // ego's own node list (no extra fetch needed for the peer's name/type).
+  // "the other entity" plus the raw edge (so the phrase builder can word it by
+  // direction relative to the focus), using ego's own node list (no extra
+  // fetch needed for the peer's name/type).
   function buildRelationships(id, ego) {
     const nodesById = new Map((ego?.nodes ?? []).map((n) => [n.id, n]));
     return (ego?.edges ?? [])
@@ -71,7 +74,7 @@
         const out = e.from === id;
         const peer = nodesById.get(out ? e.to : e.from);
         if (!peer) return null;
-        return { rel_type: e.rel_type, peer, out };
+        return { rel_type: e.rel_type, peer, edge: e };
       })
       .filter(Boolean)
       .sort(
@@ -101,6 +104,25 @@
   function swatch(entityType) {
     return `background: var(--grim-type-${entityType}, var(--grim-text-faint))`;
   }
+
+  // Entity art (when the focus carries an image_chunk_id, added in Task 1) is
+  // the same chunk-image endpoint the library covers use. Absent an image we
+  // fall back to a type-tinted monogram device, so every entity has a visual
+  // anchor above its description.
+  const artUrl = $derived(
+    entity?.image_chunk_id
+      ? `${API}/chunks/${encodeURIComponent(entity.image_chunk_id)}/image`
+      : null,
+  );
+
+  const monogram = $derived(
+    (entity?.name ?? "?").trim().charAt(0).toUpperCase() || "?",
+  );
+
+  // Build the reading phrase for one relationship row relative to the focus.
+  function relPhrase(r) {
+    return phrase({ focusId: entityId, edge: r.edge, peerName: r.peer.name });
+  }
 </script>
 
 <aside
@@ -124,10 +146,27 @@
     {:else if error}
       <p class="status-error">{error}</p>
     {:else if entity}
-      <div class="type-row">
-        <span class="sw" style={swatch(entity.entity_type)}></span>
-        <span class="eyebrow">{typeLabel(entity.entity_type)}</span>
-      </div>
+      <header class="codex-head">
+        <div class="type-row">
+          <span class="sw" style={swatch(entity.entity_type)}></span>
+          <span class="eyebrow">{typeLabel(entity.entity_type)}</span>
+        </div>
+        <h2 class="codex-name grim-title">{entity.name}</h2>
+      </header>
+
+      {#if artUrl}
+        <div class="art">
+          <img src={artUrl} alt={`Illustration of ${entity.name}`} loading="lazy" />
+        </div>
+      {:else}
+        <div
+          class="monogram"
+          style={`--mono: var(--grim-type-${entity.entity_type}, var(--grim-text-faint))`}
+          aria-hidden="true"
+        >
+          {monogram}
+        </div>
+      {/if}
 
       <div class="detail-wrap">
         <EntityDetail {entity} />
@@ -141,16 +180,16 @@
           {#each groups as g (g.rel_type)}
             <div class="rel-group">
               <p class="rel-type-label">{relLabel(g.rel_type)}</p>
-              {#each g.items as r, i (r.peer.id + "|" + r.rel_type + "|" + r.out + "|" + i)}
-                <button
-                  type="button"
-                  class="rel-row"
-                  onclick={() => onselect?.(r.peer.id)}
-                >
-                  <span class="arrow">{r.out ? "→" : "←"}</span>
-                  <span class="sw" style={swatch(r.peer.entity_type)}></span>
-                  <span class="peer-name">{r.peer.name}</span>
-                </button>
+              {#each g.items as r, i (r.peer.id + "|" + r.rel_type + "|" + i)}
+                {@const p = relPhrase(r)}
+                <p class="rel-line">
+                  {#if p.pre}<span class="rel-word">{p.pre}</span>{/if}<button
+                    type="button"
+                    class="rel-peer"
+                    style={`--peer: var(--grim-type-${r.peer.entity_type}, var(--grim-text-faint))`}
+                    onclick={() => onselect?.(r.peer.id)}>{p.peer}</button
+                  >{#if p.post}<span class="rel-word">{p.post}</span>{/if}
+                </p>
               {/each}
             </div>
           {/each}
@@ -231,11 +270,24 @@
     margin: 0;
   }
 
+  .codex-head {
+    margin-top: 4px;
+  }
+
   .type-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 4px;
+  }
+
+  .codex-name {
+    /* Compact, NOT the giant fill: the statblock's own name (hidden below) was
+       the loud display head; the codex owns a quieter ~1.5rem serif line so
+       the art and description carry the panel. */
+    font-size: 1.5rem;
+    line-height: 1.15;
+    margin: 6px 0 0;
+    color: var(--grim-ink);
   }
 
   .sw {
@@ -245,8 +297,39 @@
     flex: none;
   }
 
+  .art {
+    margin-top: 14px;
+    aspect-ratio: 3 / 2;
+    border-radius: 9px;
+    overflow: hidden;
+    border: 1px solid var(--grim-line-soft);
+    background: var(--grim-surface-2);
+  }
+
+  .art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .monogram {
+    margin-top: 14px;
+    aspect-ratio: 3 / 2;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--grim-serif);
+    font-size: 4rem;
+    font-weight: 600;
+    color: var(--mono);
+    background: color-mix(in srgb, var(--mono) 12%, var(--grim-surface-2));
+    border: 1px solid color-mix(in srgb, var(--mono) 28%, var(--grim-line-soft));
+  }
+
   .detail-wrap {
-    margin-top: 12px;
+    margin-top: 14px;
   }
 
   /* EntityDetail's statblocks set their own max-width (40rem) for the wide
@@ -256,6 +339,14 @@
     max-width: none;
     padding: 0;
     border: 0;
+  }
+
+  /* The codex renders its own compact name/type header above, so hide the
+     statblock's loud display name + type strap (EntityDetail is shared with
+     the full entity page, where those still show). */
+  .detail-wrap :global(.name),
+  .detail-wrap :global(.strap) {
+    display: none;
   }
 
   .section-head {
@@ -279,34 +370,38 @@
     margin: 0 0 2px;
   }
 
-  .rel-row {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    width: 100%;
-    padding: 6px 0;
-    background: none;
-    border: 0;
-    cursor: pointer;
-    text-align: left;
-    font-family: inherit;
-    color: inherit;
-  }
-
-  .arrow {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--grim-text-faint);
-    flex: none;
-  }
-
-  .peer-name {
+  /* Relationships read as phrases: quiet body words with the peer name as a
+     type-underlined inline link that refocuses. No arrows or glyphs. */
+  .rel-line {
+    margin: 0;
+    padding: 5px 0;
     font-family: var(--grim-serif);
     font-size: 14.5px;
-    color: var(--grim-ink);
+    line-height: 1.4;
+    color: var(--grim-text-dim);
   }
 
-  .rel-row:hover .peer-name {
+  .rel-word {
+    color: var(--grim-text-dim);
+  }
+
+  .rel-peer {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    color: var(--grim-ink);
+    text-decoration: underline;
+    text-decoration-color: var(--peer, var(--grim-line));
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+  }
+
+  .rel-peer:hover,
+  .rel-peer:focus-visible {
     color: var(--grim-accent);
   }
 
