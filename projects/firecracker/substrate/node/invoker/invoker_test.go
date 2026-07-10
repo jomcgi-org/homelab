@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,11 @@ type fakeDriver struct {
 
 	statsCalls        int  // number of Stats calls
 	statsAfterRelease bool // set if Stats was called after Release for a handle (a bug)
+
+	// Canned Stats return values. Zero defaults preserve the historical
+	// (20, 128) sample used by tests that only assert ordering.
+	statsCPUMillis  int64
+	statsPeakRSSMib int64
 
 	seq int // monotonic counter for generated threadIDs
 }
@@ -97,7 +103,11 @@ func (f *fakeDriver) Stats(h substrate.Handle) (substrate.GuestStats, error) {
 			f.statsAfterRelease = true
 		}
 	}
-	return substrate.GuestStats{CPUMillis: 20, PeakRSSMib: 128}, nil
+	cpu, peak := f.statsCPUMillis, f.statsPeakRSSMib
+	if cpu == 0 && peak == 0 {
+		cpu, peak = 20, 128
+	}
+	return substrate.GuestStats{CPUMillis: cpu, PeakRSSMib: peak}, nil
 }
 
 // statsCount returns the number of Stats calls recorded so far.
@@ -368,6 +378,37 @@ func TestBuildBaseSamplesGuestStatsBeforeRelease(t *testing.T) {
 	}
 	if drv.statsAfterRelease {
 		t.Error("Stats was called after Release in BuildBase; it must sample the live guest first")
+	}
+}
+
+// TestInvokeStampsResourceHeaders verifies that a successful (2xx) invoke stamps
+// the guest's resource counters and the concurrency queue wait onto the response
+// headers, sampled post-exec (so VmHWM reflects the scan peak) and before the
+// response headers are flushed to the client. The fake driver returns canned
+// Stats (cpu 812ms, peak 631 MiB) for this test.
+func TestInvokeStampsResourceHeaders(t *testing.T) {
+	drv := &fakeDriver{statsCPUMillis: 812, statsPeakRSSMib: 631}
+	tr := &funcTransport{}
+	inv := New(drv, tr, defaultConfig(), nil)
+
+	if err := inv.BuildBase(context.Background()); err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	resp, err := inv.Invoke(context.Background(), "sess-hdr", strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if got := resp.Header.Get("X-Fc-Cpu-Ms"); got != "812" {
+		t.Errorf("X-Fc-Cpu-Ms = %q, want %q", got, "812")
+	}
+	if got := resp.Header.Get("X-Fc-Peak-Rss-Mib"); got != "631" {
+		t.Errorf("X-Fc-Peak-Rss-Mib = %q, want %q", got, "631")
+	}
+	qw := resp.Header.Get("X-Fc-Queue-Wait-Ms")
+	if !regexp.MustCompile(`^\d+$`).MatchString(qw) {
+		t.Errorf("X-Fc-Queue-Wait-Ms = %q, want a non-negative integer", qw)
 	}
 }
 

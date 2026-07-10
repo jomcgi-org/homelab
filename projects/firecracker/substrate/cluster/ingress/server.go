@@ -149,6 +149,17 @@ func (h *Handler) handleInvoke(w http.ResponseWriter, r *http.Request) {
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
+	// Forward the per-scan resource headers the invoker stamps on a successful
+	// invoke (cumulative guest CPU ms, peak RSS in MiB, and how long the request
+	// queued on the concurrency cap) so the caller can read them per scan. The
+	// ingress copies specific headers (not a blanket loop), so each new key must
+	// be added here explicitly. Absent keys (an error path, or a Stats read that
+	// failed) are simply not copied.
+	for _, key := range []string{"X-Fc-Cpu-Ms", "X-Fc-Peak-Rss-Mib", "X-Fc-Queue-Wait-Ms"} {
+		if v := resp.Header.Get(key); v != "" {
+			w.Header().Set(key, v)
+		}
+	}
 	w.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		h.logger.Warn("invoke: stream response body", "workload", workload, "session", session, "err", err)
