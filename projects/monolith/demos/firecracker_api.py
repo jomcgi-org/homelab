@@ -54,7 +54,7 @@ _WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox": 512}
 
 # Agent (goose) run ledger non-terminal states: an active agent run holds
 # node-4 capacity, so a load test must not run concurrently with one.
-_AGENT_BUSY_STATES = ("PENDING", "RUNNING", "IDLE")
+_AGENT_BUSY_STATES = ("RUNNING",)
 
 # Detached drain tasks are stashed here so the event loop keeps a strong
 # reference (an unreferenced task can be GC'd mid-run).
@@ -236,9 +236,10 @@ def _agent_is_busy() -> bool:
 
     ASSUMPTION: an active agent run holds node-4 capacity, so a load test must
     not run alongside one. The goosecracker run ledger is
-    ``claude_agent.agent_threads`` (state PENDING -> RUNNING -> IDLE ->
-    COMPLETED | FAILED per migration 20260627120000_agent_threads.sql); the
-    non-terminal states are PENDING, RUNNING, IDLE. Sync; call via to_thread.
+    ``claude_agent.agent_threads``. In the current model the runner only ever
+    writes RUNNING (at dispatch) then COMPLETED or FAILED; the older
+    PENDING/IDLE lifecycle states are vestigial and never set, so RUNNING is the
+    sole active state that matters here. Sync; call via to_thread.
     """
     with Session(get_engine()) as session:
         row = session.execute(
