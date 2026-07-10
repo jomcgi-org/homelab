@@ -5,6 +5,7 @@
   // selecting a result (mouse or keyboard) reports it up via `onselect(id)` so
   // the World page focuses that entity. Purely a control: it owns its own
   // fetching and dropdown state, never the graph.
+  import { onDestroy } from "svelte";
   import { listEntities } from "$lib/public/grimoire/api.js";
 
   let { onselect = null } = $props();
@@ -48,6 +49,11 @@
   let inputEl;
   let debounceTimer = null;
   let inFlight = null; // AbortController for the current request
+
+  onDestroy(() => {
+    clearTimeout(debounceTimer);
+    inFlight?.abort();
+  });
 
   // Group the flat results by entity_type for display, but keep a parallel
   // flat list (in group order) so arrow-key nav has a single linear index that
