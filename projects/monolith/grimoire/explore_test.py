@@ -14,8 +14,8 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from grimoire.explore import lens_predicate
-from grimoire.models import Entity
+from grimoire.explore import ego_subgraph, lens_predicate
+from grimoire.models import ChunkEntityMention, Entity, KnowledgeChunk, Relationship
 
 
 @pytest.fixture(name="session")
@@ -103,6 +103,65 @@ class TestRulesLens:
         _seed_entity(session, "spell", "Fireball")
         _seed_entity(session, "npc", "Strahd")
         assert _lens_names(session, "rules") == {"Wizard", "Fireball"}
+
+
+class TestEgoSubgraphImageChunkId:
+    def test_focus_entity_gets_earliest_image_mention(self, session):
+        """The focus node's card carries image_chunk_id; a neighbor's does
+        not, even when the neighbor also has an image mention."""
+        strahd = _seed_entity(session, "npc", "Strahd")
+        ireena = _seed_entity(session, "npc", "Ireena")
+        session.add(
+            Relationship(
+                from_entity_id=strahd.id, to_entity_id=ireena.id, rel_type="pursues"
+            )
+        )
+        text_chunk = KnowledgeChunk(
+            book_id="cos", chunk_ref="r0", content="Strahd broods.", seq=0
+        )
+        image_chunk = KnowledgeChunk(
+            book_id="cos",
+            chunk_ref="r1",
+            content="A portrait of Strahd.",
+            seq=1,
+            image_ref="s3://grimoire/books/cos/img/strahd.png",
+        )
+        neighbor_image_chunk = KnowledgeChunk(
+            book_id="cos",
+            chunk_ref="r2",
+            content="A portrait of Ireena.",
+            seq=2,
+            image_ref="s3://grimoire/books/cos/img/ireena.png",
+        )
+        session.add_all([text_chunk, image_chunk, neighbor_image_chunk])
+        session.commit()
+        session.add_all(
+            [
+                ChunkEntityMention(
+                    chunk_id=text_chunk.id, entity_id=strahd.id, mention_text="Strahd"
+                ),
+                ChunkEntityMention(
+                    chunk_id=image_chunk.id, entity_id=strahd.id, mention_text="Strahd"
+                ),
+                ChunkEntityMention(
+                    chunk_id=neighbor_image_chunk.id,
+                    entity_id=ireena.id,
+                    mention_text="Ireena",
+                ),
+            ]
+        )
+        session.commit()
+
+        graph = ego_subgraph(session, strahd.id)
+        by_id = {node["id"]: node for node in graph["nodes"]}
+        assert by_id[strahd.id]["image_chunk_id"] == image_chunk.id
+        assert "image_chunk_id" not in by_id[ireena.id]
+
+    def test_focus_entity_without_image_mention_gets_none(self, session):
+        strahd = _seed_entity(session, "npc", "Strahd")
+        graph = ego_subgraph(session, strahd.id)
+        by_id = {node["id"]: node for node in graph["nodes"]}
+        assert by_id[strahd.id]["image_chunk_id"] is None
 
 
 class TestUnknownLens:

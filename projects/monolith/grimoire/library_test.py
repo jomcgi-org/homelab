@@ -159,7 +159,7 @@ def seed_book(session):
 
 class TestListBooks:
     def test_coverage_counts(self, session, client):
-        seed_book(session)
+        seed = seed_book(session)
         body = client.get("/api/grimoire/books").json()
         assert len(body) == 1
         book = body[0]
@@ -174,6 +174,61 @@ class TestListBooks:
         assert book["entity_count"] == 2
         assert book["latest_chunk_at"] is not None
         assert book["last_loaded_at"] is not None
+        # Only image chunk is c2 (seq 2, below _COVER_MIN_SEQ): falls back to it.
+        assert book["cover_chunk_id"] == seed.c2.id
+
+
+class TestCoverChunk:
+    def test_no_images_yields_none_cover(self, session, client):
+        session.add(Book(id="empty-book", display_name="No Pictures"))
+        session.add(
+            KnowledgeChunk(
+                book_id="empty-book", chunk_ref="r0", content="Just words.", seq=0
+            )
+        )
+        session.commit()
+        body = client.get("/api/grimoire/books").json()
+        book = next(b for b in body if b["book_id"] == "empty-book")
+        assert book["cover_chunk_id"] is None
+
+    def test_prefers_seq_at_or_past_min_over_earlier_image(self, session, client):
+        """An image at seq 1 (front matter) loses to a later image at seq 5,
+        even though seq 1 comes first in reading order."""
+        session.add(Book(id="illustrated", display_name="Illustrated Tome"))
+        front_matter = _chunk(
+            session,
+            book_id="illustrated",
+            chunk_ref="r1",
+            content="Title page scan.",
+            seq=1,
+            image_ref="s3://grimoire/books/illustrated/img/title.png",
+        )
+        art = _chunk(
+            session,
+            book_id="illustrated",
+            chunk_ref="r5",
+            content="A proper illustration.",
+            seq=5,
+            image_ref="s3://grimoire/books/illustrated/img/art.png",
+        )
+        body = client.get("/api/grimoire/books").json()
+        book = next(b for b in body if b["book_id"] == "illustrated")
+        assert book["cover_chunk_id"] == art.id
+        assert book["cover_chunk_id"] != front_matter.id
+
+    def test_falls_back_to_earliest_image_when_none_past_min_seq(self, session, client):
+        session.add(Book(id="only-front-matter", display_name="Sparse Tome"))
+        only_image = _chunk(
+            session,
+            book_id="only-front-matter",
+            chunk_ref="r1",
+            content="The only art in this book, alas.",
+            seq=1,
+            image_ref="s3://grimoire/books/only-front-matter/img/cover.png",
+        )
+        body = client.get("/api/grimoire/books").json()
+        book = next(b for b in body if b["book_id"] == "only-front-matter")
+        assert book["cover_chunk_id"] == only_image.id
 
 
 class TestSections:

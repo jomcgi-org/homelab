@@ -43,6 +43,12 @@ from grimoire.visibility import Viewer, project_entity, visible_entities_query
 # search._CHUNK_PREVIEW_LEN so previews are consistent across surfaces).
 _PREVIEW_LEN = 200
 
+# The Library shelf cover prefers an image chunk at or past this seq: loaders
+# typically emit a handful of front-matter scans (title page, legal text,
+# table of contents) as the first few chunks of a book, and those make poor
+# shelf covers even though they are technically image chunks.
+_COVER_MIN_SEQ = 4
+
 # Default and max page size for the paged chunk list.
 DEFAULT_CHUNK_PAGE = 100
 MAX_CHUNK_PAGE = 500
@@ -95,14 +101,22 @@ def is_book_copyrighted(session: Session, book_id: str) -> bool:
 def list_books(session: Session) -> list[dict[str, Any]]:
     """Per-book coverage rows for the Library.
 
-    Combines four cheap grouped scans (chunk counts, extraction coverage under
-    the live model+prompt, distinct entity yield, book display names) into one
-    row per book. ``extracted_count`` counts distinct chunks with a
-    ``chunk_extraction`` marker for the current ``(model, prompt_version)`` key,
-    so it ticks up as the extraction CronWorkflow runs and resets if the model or
-    prompt version changes (mirroring extract._select_pending_chunks). Books appear if
-    they have either a grimoire.book row or any chunk, so a freshly-registered
-    empty book still shows.
+    Combines five cheap grouped scans (chunk counts, extraction coverage under
+    the live model+prompt, distinct entity yield, book display names, cover
+    chunk) into one row per book. ``extracted_count`` counts distinct chunks
+    with a ``chunk_extraction`` marker for the current ``(model, prompt_version)``
+    key, so it ticks up as the extraction CronWorkflow runs and resets if the
+    model or prompt version changes (mirroring extract._select_pending_chunks).
+    Books appear if they have either a grimoire.book row or any chunk, so a
+    freshly-registered empty book still shows.
+
+    ``cover_chunk_id`` is the id of the earliest image chunk (image_ref IS NOT
+    NULL) that the Library shelf uses as the book's cover, preferring
+    ``seq >= _COVER_MIN_SEQ`` (front-matter scans at the very start of a book
+    are usually title pages/legal text, not art) and falling back to the
+    earliest image chunk of any seq if none qualifies. None if the book has no
+    image chunks at all. Computed with two seq-ordered scans total (one per
+    preference tier, see ``_cover_chunk_by_book``), not N+1 per book.
     """
     chunk_rows = session.execute(
         select(
@@ -141,6 +155,7 @@ def list_books(session: Session) -> list[dict[str, Any]]:
     entity_by_book = {r.book_id: r.n for r in entity_rows}
 
     books = {b.id: b for b in session.exec(select(Book)).all()}
+    cover_by_book = _cover_chunk_by_book(session)
 
     book_ids = set(chunk_by_book) | set(books)
     result: list[dict[str, Any]] = []
@@ -161,10 +176,45 @@ def list_books(session: Session) -> list[dict[str, Any]]:
                 "entity_count": entity_by_book.get(book_id, 0),
                 "last_loaded_at": _iso(book.created_at) if book else None,
                 "latest_chunk_at": _iso(chunks.latest_chunk_at) if chunks else None,
+                "cover_chunk_id": cover_by_book.get(book_id),
             }
         )
     result.sort(key=lambda item: (item["display_name"].lower(), item["book_id"]))
     return result
+
+
+def _cover_chunk_by_book(session: Session) -> dict[str, str]:
+    """book_id -> cover chunk id, one seq-ordered scan per preference tier
+    (preferred: seq >= _COVER_MIN_SEQ, fallback: any seq), so this is two
+    queries total regardless of book count, not N+1 per book.
+
+    A book with a qualifying preferred-tier image always wins that tier over
+    every fallback-tier image, matching "prefer seq >= 4, falling back to any
+    image chunk" from the picking rule: the fallback map is only consulted for
+    books absent from the preferred map.
+    """
+
+    def _earliest_image_per_book(*, min_seq: int | None) -> dict[str, str]:
+        query = select(KnowledgeChunk.book_id, KnowledgeChunk.id).where(
+            KnowledgeChunk.image_ref.is_not(None)
+        )
+        if min_seq is not None:
+            query = query.where(KnowledgeChunk.seq >= min_seq)
+        query = query.order_by(
+            KnowledgeChunk.book_id,
+            KnowledgeChunk.seq,
+            KnowledgeChunk.chunk_ref,
+        )
+        by_book: dict[str, str] = {}
+        for book_id, chunk_id in session.exec(query).all():
+            # First row per book_id in seq order is the earliest; later rows
+            # for the same book_id are skipped.
+            by_book.setdefault(book_id, chunk_id)
+        return by_book
+
+    preferred = _earliest_image_per_book(min_seq=_COVER_MIN_SEQ)
+    fallback = _earliest_image_per_book(min_seq=None)
+    return {**fallback, **preferred}
 
 
 def list_sections(session: Session, book_id: str) -> list[dict[str, Any]]:

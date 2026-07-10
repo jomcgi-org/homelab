@@ -174,6 +174,13 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
     non-public focus entity yields an empty graph, and any neighbor that
     isn't ``is_global`` (plus the edge to it) is dropped rather than shown,
     exactly like the private-entity-neighbor drop in that function.
+
+    The focus node's card carries an extra ``image_chunk_id`` (earliest
+    image-bearing chunk mentioning it, via
+    ``public.focus_entity_image_chunk_id``) for the detail card's
+    illustration; neighbor cards never get this field computed, since a wander
+    click only ever focuses one node at a time and computing art for every
+    neighbor would turn a bounded ego-graph fetch into an N+1 query.
     """
     focus = session.get(Entity, entity_id)
     if focus is None or not focus.is_global:
@@ -210,6 +217,13 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
         if r.from_entity_id in visible_ids and r.to_entity_id in visible_ids
     ]
     nodes = public.entity_cards(session, [focus, *neighbors_by_id.values()])
+    for node in nodes:
+        if node["id"] == entity_id:
+            node["image_chunk_id"] = public.focus_entity_image_chunk_id(
+                session, entity_id
+            )
+            break
+
     return {"nodes": nodes, "edges": edges}
 
 
