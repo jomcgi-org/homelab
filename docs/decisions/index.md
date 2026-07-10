@@ -83,6 +83,7 @@ ADRs document significant architectural decisions and their context.
 | [008 - Monolith Module Boundaries](platform/008-monolith-module-boundaries.md)                                                       | Internal module boundaries within the monolith                                                                                |
 | [009 - Post-Merge Chart Versioning and Kargo Promotion](platform/009-post-merge-chart-versioning-kargo-promotion.md)                 | Bump versions post-merge on main, not on branches; Kargo dev->prod promotion with synthetic gates                             |
 | [010 - Memory Oversubscription via Burstable QoS + PriorityClasses](platform/010-memory-oversubscription-burstable-priorityclass.md) | Reserve steady-state via requests and peaks via limits; PriorityClass hierarchy with agent microVMs as designated OOM victims |
+| [012 - Cilium Replaces Linkerd (CNI + Network Policy + Encryption)](platform/012-cilium-replaces-linkerd.md) | Retire Linkerd sidecar mesh and flannel for Cilium eBPF: native NetworkPolicy everywhere, WireGuard encryption, delete injection machinery and opt-outs; trades per-workload mTLS identity for label-based Cilium identity |
 
 ## Security
 
