@@ -4616,6 +4616,20 @@ py_test(
 )
 
 py_test(
+    name = "demos_loadtest_test",
+    srcs = ["demos/loadtest_test.py"],
+    # run_load_test defaults its corpus to load_corpus(workload), which reads
+    # the committed .sample files at runtime.
+    data = glob(["demos/loadtest_corpus/**/*.sample"]),
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "home_observability_rollup_test",
     srcs = ["home/observability/rollup_test.py"],
     imports = ["."],
