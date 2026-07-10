@@ -4,6 +4,7 @@ go_library(
     name = "auth",
     srcs = [
         "auth.go",
+        "cache.go",
         "reviewer.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/cluster/auth",
@@ -16,11 +17,15 @@ go_library(
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//codes",
         "@io_opentelemetry_go_otel//propagation",
+        "@org_golang_x_sync//singleflight",
     ],
 )
 
 go_test(
     name = "auth_test",
-    srcs = ["auth_test.go"],
+    srcs = [
+        "auth_test.go",
+        "cache_test.go",
+    ],
     embed = [":auth"],
 )
