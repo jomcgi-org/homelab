@@ -62,21 +62,31 @@
   // never wrongly disabled before we know.
   let lensCounts = $state({ world: 1, story: 1, quests: 1, rules: 1 });
 
+  // True when the current `ego` is the unfiltered fallback graph (fetched
+  // after a scope/lens combo returned an empty neighborhood), so the UI can
+  // say the view was widened. `fellBackFor` is the `focusId|scope|lens` key
+  // the fallback already ran for, guarding against re-fetching every time
+  // this same empty combination re-renders.
+  let fellBackToFullEgo = $state(false);
+  let fellBackFor = null;
+
   // Positions from the previous layout, handed to the canvas so a re-center
   // keeps shared nodes in place (seed) rather than hash-jumping them. The
   // canvas reports its settled positions back after each layout.
   let seedPositions = $state(null);
 
-  // The nodes/edges handed to the canvas. This is the raw ego neighborhood:
-  // the /explore/ego endpoint is scope/lens-agnostic (it returns only the
-  // focus's 1-hop is_global neighbors, with no per-node scope or lens
-  // membership and no lens_counts), so there is nothing to filter it by here.
-  // Scope + lens are kept as controls (they update the URL for continuity with
-  // the old Explore surface and a future ego-filtering endpoint), but by design
-  // an entity's immediate world is always shown whole rather than blanked
-  // because a neighbor sits in a different adventure or lens. If a scope-aware
-  // ego endpoint lands later, filter here and fall back to the full ego when
-  // the intersection is empty (never a blank canvas).
+  // The nodes/edges handed to the canvas. /explore/ego now takes scope/lens
+  // and narrows the neighbor set server-side (the focus entity itself is
+  // always kept, see explore.ego_subgraph), so `ego` IS the already-scoped
+  // graph; `displayGraph` just guards against a missing response shape.
+  //
+  // A scope/lens combo can legitimately leave a focus entity with zero
+  // visible neighbors (e.g. an NPC with no relationships inside the picked
+  // adventure). Rather than show a blank canvas, the $effect below falls
+  // back to the unfiltered ego (scope=everything, lens=world) and flips
+  // `fellBackToFullEgo` so the UI can say so; `fellBackFor` remembers which
+  // focus+scope+lens combination the fallback already ran for, so a repeat
+  // render of the same empty combo doesn't refetch in a loop.
   const displayGraph = $derived({
     nodes: ego.nodes ?? [],
     edges: ego.edges ?? [],
@@ -113,7 +123,7 @@
 
     const e = params.get("e");
     if (e) {
-      await focusEntity(e, { push: false });
+      focusEntity(e, { push: false });
     } else {
       await landOnFeatured();
     }
@@ -143,7 +153,7 @@
     const name = FEATURED[dayOfYear % FEATURED.length];
     const id = (await resolveByName(name)) ?? (await resolveFirstEntity());
     if (id != null) {
-      await focusEntity(id, { push: false });
+      focusEntity(id, { push: false });
     } else {
       egoLoading = false;
     }
@@ -172,38 +182,85 @@
     }
   }
 
-  // Focus an entity: fetch its ego, render it centered, report to the
-  // constellation, and (unless bootstrapping from the URL) push ?e= so
-  // back/forward and sharing land in the same state. Seeds shared node
-  // positions from the current layout so a re-center settles around the move.
-  async function focusEntity(id, { push = true } = {}) {
+  // Focus an entity: render it centered, report to the constellation, and
+  // (unless bootstrapping from the URL) push ?e= so back/forward and sharing
+  // land in the same state. Seeds shared node positions from the current
+  // layout so a re-center settles around the move. The actual ego fetch
+  // happens in the $effect below, which reacts to `focusId` alongside
+  // `scope`/`lens` so every trigger (search, node tap, scope/lens change)
+  // goes through one fetch path.
+  function focusEntity(id, { push = true } = {}) {
     if (id == null) return;
-    egoLoading = true;
-    loadError = "";
     // Capture positions of the outgoing layout to seed the incoming one.
     seedPositions = lastPositions;
     focusId = id;
     if (push) syncUrl();
-    try {
-      const res = (await exploreEgo(id)) ?? { nodes: [], edges: [] };
-      ego = res;
-      lensCounts = res.lens_counts ?? { world: 1, story: 1, quests: 1, rules: 1 };
-      // Trail: mark this entity touched and record its ego for the dock's
-      // cross-page constellation.
-      const node = (res.nodes ?? []).find((n) => n.id === id);
-      constellationStore.touch({
-        id,
-        title: node?.name ?? "",
-        kind: "entity",
-        entity_type: node?.entity_type,
-      });
-      constellationStore.recordEgo(id, res);
-    } catch (e) {
-      loadError = e.message;
-      ego = { nodes: [], edges: [] };
-    } finally {
-      egoLoading = false;
-    }
+  }
+
+  // Single driver for every ego fetch: reacts to focusId, scope, and lens,
+  // so a search/tap re-center and a scope/lens change while focused both
+  // funnel through the same path (no separate call sites re-fetching and no
+  // double-fetch when focusId changes for other reasons).
+  //
+  // If the scope/lens-narrowed result has no visible neighbors (a combo can
+  // legitimately leave a focus entity isolated, e.g. an NPC with no
+  // relationships inside the picked adventure), falls back to the
+  // unfiltered ego (scope=everything, lens=world) rather than showing a
+  // blank canvas, and sets `fellBackToFullEgo` so the UI can say so.
+  // `fellBackFor` remembers the exact focusId+scope+lens key the fallback
+  // already ran for, so re-rendering the same empty combo does not refetch.
+  $effect(() => {
+    const id = focusId;
+    const currentScope = scope;
+    const currentLens = lens;
+    if (id == null) return;
+    const comboKey = `${id}|${currentScope}|${currentLens}`;
+    egoLoading = true;
+    loadError = "";
+    (async () => {
+      try {
+        const res = (await exploreEgo(id, currentScope, currentLens)) ?? {
+          nodes: [],
+          edges: [],
+        };
+        const isNarrowed = currentScope !== "everything" || currentLens !== "world";
+        const isEmpty = (res.nodes ?? []).length <= 1;
+        if (isNarrowed && isEmpty && fellBackFor !== comboKey) {
+          fellBackFor = comboKey;
+          const full = (await exploreEgo(id, "everything", "world")) ?? {
+            nodes: [],
+            edges: [],
+          };
+          applyEgo(id, full);
+          fellBackToFullEgo = true;
+          return;
+        }
+        fellBackFor = comboKey;
+        fellBackToFullEgo = false;
+        applyEgo(id, res);
+      } catch (e) {
+        loadError = e.message;
+        ego = { nodes: [], edges: [] };
+      } finally {
+        egoLoading = false;
+      }
+    })();
+  });
+
+  // Shared tail of a successful ego fetch: sets state, records the trail
+  // touch, and reports to the constellation. Shared by both the direct
+  // fetch and the full-ego fallback above.
+  function applyEgo(id, res) {
+    ego = res;
+    lensCounts = res.lens_counts ?? { world: 1, story: 1, quests: 1, rules: 1 };
+    const node = (res.nodes ?? []).find((n) => n.id === id);
+    constellationStore.touch({
+      id,
+      title: node?.name ?? "",
+      kind: "entity",
+      entity_type: node?.entity_type,
+    });
+    constellationStore.recordEgo(id, res);
   }
 
   // The canvas reports its settled node positions here after each layout, so
@@ -309,6 +366,11 @@
           onselect={handleSelect}
           onpositions={onPositions}
         />
+        {#if fellBackToFullEgo}
+          <p class="fallback-note">
+            No neighbors in this scope/lens; showing the full world instead.
+          </p>
+        {/if}
         {#if legendTypes.length}
           <div class="legend">
             {#each legendTypes as t (t)}
@@ -479,6 +541,21 @@
 
   .world-main:not(.wide) .codex-dock :global(.codex.open) {
     transform: translateY(0);
+  }
+
+  .fallback-note {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    max-width: 32ch;
+    background: color-mix(in srgb, var(--grim-surface) 80%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--grim-line);
+    border-radius: 9px;
+    padding: 8px 12px;
+    font-size: 11.5px;
+    color: var(--grim-text-dim);
+    pointer-events: none;
   }
 
   .legend {

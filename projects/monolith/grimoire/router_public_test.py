@@ -643,11 +643,64 @@ class TestExploreEgo:
         assert {(e["from"], e["to"]) for e in body["edges"]} == {
             ("e-aboleth", "e-fireball")
         }
+        # Aboleth (creature -> lore) and Fireball (spell) are both in the
+        # neighborhood; "rules" unions spells in by entity_type, so the
+        # rules count is 1 (Fireball) and world's is 1 (Aboleth, lore).
+        assert body["lens_counts"] == {
+            "world": 1,
+            "story": 0,
+            "quests": 0,
+            "rules": 1,
+        }
 
     def test_missing_or_non_public_focus_returns_empty_graph(self, session, client):
         r = client.get("/api/grimoire/explore/ego?id=nope")
         assert r.status_code == 200
-        assert r.json() == {"nodes": [], "edges": []}
+        assert r.json() == {
+            "nodes": [],
+            "edges": [],
+            "lens_counts": {"world": 0, "story": 0, "quests": 0, "rules": 0},
+        }
+
+    def test_adventure_scope_drops_neighbor_outside_adventure_keeps_focus(
+        self, session, client
+    ):
+        # Aboleth is the focus and is never filtered out even though it has
+        # no adventure roster membership seeded here; Fireball (its only
+        # neighbor) is outside the adventure's roster, so an adventure scope
+        # should drop it while keeping Aboleth.
+        seed_corpus(session)  # e-aboleth --knows--> e-fireball
+        book = Book(id="cos", display_name="Curse of Strahd", copyrighted_content=False)
+        session.add(book)
+        adventure = Adventure(
+            id="cos-death-house",
+            book_id="cos",
+            name="Death House",
+            seq=0,
+            start_seq=0,
+        )
+        session.add(adventure)
+        session.commit()
+
+        r = client.get(
+            "/api/grimoire/explore/ego?id=e-aboleth&scope=adventure:cos-death-house"
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert {n["name"] for n in body["nodes"]} == {"Aboleth"}
+        assert body["edges"] == []
+
+    def test_lens_filters_ego_neighbors(self, session, client):
+        # Aboleth is a creature (category "lore", not a spell), so the
+        # "rules" lens (mechanics category, or entity_type spell) drops it
+        # as a neighbor even though the focus itself (Fireball, a spell) is
+        # always kept.
+        seed_corpus(session)  # e-aboleth --knows--> e-fireball
+        r = client.get("/api/grimoire/explore/ego?id=e-fireball&lens=rules")
+        assert r.status_code == 200
+        body = r.json()
+        assert {n["name"] for n in body["nodes"]} == {"Fireball"}
+        assert body["edges"] == []
 
 
 class TestExplorePath:

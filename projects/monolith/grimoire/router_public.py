@@ -285,12 +285,17 @@ def explore_graph(
 
 @router.get("/explore/ego")
 def explore_ego(
-    id: str = Query(...), session: Session = Depends(get_session)
+    id: str = Query(...),
+    scope: str = Query(default="everything"),
+    lens: str = Query(default="world"),
+    session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Focus entity + its 1-hop is_global neighbors, same ``{nodes, edges}``
-    shape as /explore/graph, for click-to-expand ("wander"). See
+    """Focus entity + its 1-hop is_global neighbors, same ``{nodes, edges,
+    lens_counts}`` shape as /explore/graph, for click-to-expand ("wander").
+    ``scope``/``lens`` narrow the neighbor set the same way they narrow
+    /explore/graph; the focus node is always kept. See
     explore.ego_subgraph."""
-    return explore.ego_subgraph(session, id)
+    return explore.ego_subgraph(session, id, scope, lens)
 
 
 @router.get("/explore/path")

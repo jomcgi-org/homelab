@@ -165,7 +165,12 @@ def scope_subgraph(session: Session, scope: str, lens: str) -> dict[str, Any]:
     return {"nodes": nodes, "edges": edges, "lens_counts": lens_counts}
 
 
-def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
+def ego_subgraph(
+    session: Session,
+    entity_id: str,
+    scope: str = "everything",
+    lens: str = "world",
+) -> dict[str, Any]:
     """Focus entity + its 1-hop neighbors, as the SAME ``{nodes, edges}``
     shape ``scope_subgraph`` returns, so the canvas can merge a click-to-
     expand ("wander") result straight into the current view.
@@ -174,6 +179,22 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
     non-public focus entity yields an empty graph, and any neighbor that
     isn't ``is_global`` (plus the edge to it) is dropped rather than shown,
     exactly like the private-entity-neighbor drop in that function.
+
+    ``scope``/``lens`` narrow the NEIGHBOR set to ``scope_entity_ids(session,
+    scope, lens)``, the same predicate ``scope_subgraph`` uses, so a World
+    page scoped to one adventure or lensed to "rules" only shows neighbors
+    that belong to that slice. The FOCUS node is always kept regardless of
+    scope/lens (an entity's own page never hides itself), matching the
+    is_global-only gate a caller gets with the defaults
+    ``scope="everything", lens="world"``... except "world" is NOT a no-op
+    lens (see lens_predicate), so callers wanting the old unfiltered
+    every-neighbor behavior should pass lens="everything" explicitly.
+
+    ``lens_counts`` is returned alongside, one count per lens over the
+    UNFILTERED is_global neighbor set (via ``scope_entity_ids`` restricted to
+    those neighbor ids), so the frontend's lens tabs can grey out lenses with
+    no entities in this ego neighborhood, the same UX ``scope_subgraph``'s
+    lens_counts gives the EXPLORE canvas.
 
     The focus node's card carries an extra ``image_chunk_id`` (earliest
     image-bearing chunk mentioning it, via
@@ -184,7 +205,11 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
     """
     focus = session.get(Entity, entity_id)
     if focus is None or not focus.is_global:
-        return {"nodes": [], "edges": []}
+        return {
+            "nodes": [],
+            "edges": [],
+            "lens_counts": {name: 0 for name in _LENS_NAMES},
+        }
 
     touching = session.exec(
         select(Relationship).where(
@@ -199,7 +224,7 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
         for r in touching
     }
     neighbor_ids.discard(entity_id)
-    neighbors_by_id = (
+    all_neighbors_by_id = (
         {
             e.id: e
             for e in session.exec(
@@ -209,6 +234,16 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
         if neighbor_ids
         else {}
     )
+
+    lens_counts = _ego_lens_counts(session, set(all_neighbors_by_id))
+
+    if scope == "everything" and lens == "world":
+        neighbors_by_id = all_neighbors_by_id
+    else:
+        scoped_ids = scope_entity_ids(session, scope, lens) & set(all_neighbors_by_id)
+        neighbors_by_id = {
+            eid: e for eid, e in all_neighbors_by_id.items() if eid in scoped_ids
+        }
 
     visible_ids = {entity_id, *neighbors_by_id}
     edges = [
@@ -224,7 +259,28 @@ def ego_subgraph(session: Session, entity_id: str) -> dict[str, Any]:
             )
             break
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "lens_counts": lens_counts}
+
+
+def _ego_lens_counts(session: Session, neighbor_ids: set[str]) -> dict[str, int]:
+    """Per-lens entity count over a fixed ego neighbor id set, the ego
+    analogue of ``_lens_counts``: that helper re-runs ``scope_entity_ids``
+    per lens over a whole scope, but an ego neighborhood is already a small,
+    bounded set of ids in hand, so this queries ``lens_predicate`` restricted
+    to ``neighbor_ids`` directly (one query per lens, never a full-corpus
+    scan) instead of re-deriving a roster from scratch."""
+    if not neighbor_ids:
+        return {name: 0 for name in _LENS_NAMES}
+    return {
+        name: len(
+            session.exec(
+                select(Entity.id).where(
+                    Entity.id.in_(neighbor_ids), lens_predicate(name)
+                )
+            ).all()
+        )
+        for name in _LENS_NAMES
+    }
 
 
 # Hop bound for shortest_path's BFS: a D&D corpus graph has a modest

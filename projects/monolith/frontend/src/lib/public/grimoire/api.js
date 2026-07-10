@@ -85,11 +85,15 @@ export const exploreGraph = (scope, lens) =>
     `/explore/graph?scope=${encodeURIComponent(scope)}&lens=${encodeURIComponent(lens)}`,
   );
 
-// Focus entity + its 1-hop is_global neighbors, same {nodes, edges} shape as
-// exploreGraph, for click-to-expand ("wander") and the codex's relationship
-// list. Query param is `id`, not `entity_id` (see router_public.py).
-export const exploreEgo = (id) =>
-  apiFetch(`/explore/ego?id=${encodeURIComponent(id)}`);
+// Focus entity + its 1-hop is_global neighbors, same {nodes, edges,
+// lens_counts} shape as exploreGraph, for click-to-expand ("wander") and the
+// codex's relationship list. Query param is `id`, not `entity_id` (see
+// router_public.py). scope/lens narrow the neighbor set the same way they
+// narrow exploreGraph; the focus entity itself is always kept.
+export const exploreEgo = (id, scope = "everything", lens = "world") =>
+  apiFetch(
+    `/explore/ego?id=${encodeURIComponent(id)}&scope=${encodeURIComponent(scope)}&lens=${encodeURIComponent(lens)}`,
+  );
 
 // Six-degrees BFS between two entities -> {path: [{entity, via}, ...]}.
 // Wired here for completeness; no UI consumes it yet (deferred to a later
