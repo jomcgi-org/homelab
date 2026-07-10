@@ -31,11 +31,8 @@
       "path": "/app/grimoire/library",
       "static_initial": true
     },
-    {
-      "id": "grimoire-world",
-      "path": "/app/grimoire/world",
-      "static_initial": true
-    },
+    { "id": "grimoire-world", "path": "/app/grimoire/world" },
+    { "id": "grimoire-chat", "path": "/app/grimoire/chat" },
     { "id": "firecracker", "path": "/app/firecracker" },
     { "id": "docs", "path": "/docs" },
     { "id": "docs-slug", "path": "/docs/agents" },

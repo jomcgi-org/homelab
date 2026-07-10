@@ -43,6 +43,12 @@ export async function serve() {
       PORT: String(APP_PORT),
       API_BASE: `http://127.0.0.1:${MOCK_PORT}`,
       ORIGIN: `http://127.0.0.1:${APP_PORT}`,
+      // Dummy site key so TurnstileGate mounts the widget instead of
+      // rendering its "Chat is unavailable" fallback (no env var = no
+      // widget). The real Cloudflare script + admission POST are
+      // intercepted at the Playwright layer in capture.mjs, so this value
+      // never has to resolve to anything real.
+      TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     },
     stdio: "inherit",
   });
