@@ -209,11 +209,18 @@
   // blank canvas, and sets `fellBackToFullEgo` so the UI can say so.
   // `fellBackFor` remembers the exact focusId+scope+lens key the fallback
   // already ran for, so re-rendering the same empty combo does not refetch.
+  //
+  // `egoRequestSeq` guards against out-of-order resolution: each effect run
+  // takes a ticket, and a run only applies its result (or its error) while
+  // its ticket is still the latest, so a slow older fetch can never
+  // overwrite the graph of a newer focus/scope/lens.
+  let egoRequestSeq = 0;
   $effect(() => {
     const id = focusId;
     const currentScope = scope;
     const currentLens = lens;
     if (id == null) return;
+    const requestId = ++egoRequestSeq;
     const comboKey = `${id}|${currentScope}|${currentLens}`;
     egoLoading = true;
     loadError = "";
@@ -223,6 +230,7 @@
           nodes: [],
           edges: [],
         };
+        if (requestId !== egoRequestSeq) return;
         const isNarrowed = currentScope !== "everything" || currentLens !== "world";
         const isEmpty = (res.nodes ?? []).length <= 1;
         if (isNarrowed && isEmpty && fellBackFor !== comboKey) {
@@ -231,6 +239,7 @@
             nodes: [],
             edges: [],
           };
+          if (requestId !== egoRequestSeq) return;
           applyEgo(id, full);
           fellBackToFullEgo = true;
           return;
@@ -239,10 +248,11 @@
         fellBackToFullEgo = false;
         applyEgo(id, res);
       } catch (e) {
+        if (requestId !== egoRequestSeq) return;
         loadError = e.message;
         ego = { nodes: [], edges: [] };
       } finally {
-        egoLoading = false;
+        if (requestId === egoRequestSeq) egoLoading = false;
       }
     })();
   });
