@@ -19,6 +19,8 @@ const ROUTES = [
   ["/api/grimoire/books/mm/read", "fixtures/api/grimoire_read.json"],
   ["/api/grimoire/books/mm/sections", "fixtures/api/grimoire_sections.json"],
   ["/api/grimoire/entities", "fixtures/api/grimoire_entities.json"],
+  ["/api/grimoire/adventures", "fixtures/api/grimoire_adventures.json"],
+  ["/api/grimoire/explore/ego", "fixtures/api/grimoire_explore_ego.json"],
 ];
 const PREFIX = [["/api/trips/trip/", "fixtures/api/trips_trip.json"]];
 

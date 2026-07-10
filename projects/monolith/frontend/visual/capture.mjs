@@ -15,11 +15,22 @@
 //     `/img/unsafe/...` (or `/img/<sig>/...`) when IMGPROXY keys are unset at
 //     mock boot; the adapter-node app does not serve `/img/**`, so without this
 //     those requests 404 and add noise / can stall networkidle.
-//   - Chat SSE endpoints (`/chat/message`, `/chat/session`) are aborted so the
-//     open stream never prevents `waitUntil: "networkidle"` from resolving;
-//     pages flagged `static_initial` are additionally loaded with
-//     `domcontentloaded` + a fixed settle so we capture their static initial
-//     state rather than hanging on a live stream.
+//   - Chat SSE message endpoints (`**/chat/message`, matching both the notes
+//     chat and the Grimoire chat proxy under `/app/grimoire/chat/message`)
+//     are aborted so an open stream never prevents `waitUntil: "networkidle"`
+//     from resolving; pages flagged `static_initial` are additionally loaded
+//     with `domcontentloaded` + a fixed settle so we capture their static
+//     initial state rather than hanging on a live stream.
+//   - Turnstile: the challenge script (`challenges.cloudflare.com/turnstile/
+//     v0/api.js`) is fulfilled with a stub `window.turnstile` that solves
+//     itself on render(), and the session-admission POSTs it triggers
+//     (`/chat/session`, the notes-chat gate stub's proxy; `/app/grimoire/
+//     chat/session`, the real Grimoire chat's proxy) are fulfilled with a
+//     synthetic `{ ok: true }` instead of hitting a real backend. This is
+//     what lets the World and Chat targets capture real gated content
+//     instead of the Turnstile gate itself (see serve.mjs for the paired
+//     TURNSTILE_SITE_KEY env var that makes the gate mount in the first
+//     place).
 // @playwright/test is imported DYNAMICALLY below, after PLAYWRIGHT_BROWSERS_PATH
 // is absolutized: Playwright reads that env when its module is first evaluated,
 // and a static import would be hoisted above the env fix.
@@ -38,6 +49,25 @@ const placeholderPng = readFileSync(
   join(HERE, "fixtures/basemap/placeholder.png"),
 );
 const FROZEN = Date.UTC(2026, 0, 1, 12, 0, 0); // deterministic wall clock
+// Stub for the Cloudflare Turnstile challenge script. Implements the subset of
+// the real window.turnstile API TurnstileGate.svelte calls: render() reports a
+// solve on the next microtask (so admission proceeds deterministically without
+// an actual widget or network round trip), remove()/reset() are no-ops so the
+// gate's unmount cleanup has something to call. widgetId counts up so repeated
+// renders (e.g. NEW CHAT re-gating) each get a distinct id, mirroring the real
+// widget registry closely enough for TurnstileGate's own-render-once guard.
+const TURNSTILE_STUB = `
+  let widgetId = 0;
+  window.turnstile = {
+    render(el, opts) {
+      const id = "visual-stub-" + widgetId++;
+      setTimeout(() => opts.callback("visual-test-token"), 0);
+      return id;
+    },
+    remove(id) {},
+    reset(id) {},
+  };
+`;
 // The public tier lives under /public in the route tree; the apex reroute that
 // strips that prefix is hostname-gated (jomcgi.dev) and does not fire on
 // 127.0.0.1, so we navigate the real /public/* routes directly. The render is
@@ -127,9 +157,30 @@ try {
         body: placeholderPng,
       }),
     );
-    // Chat SSE: abort so the open stream never blocks networkidle.
+    // Chat SSE: abort so the open stream never blocks networkidle. Matches
+    // both the notes chat and the Grimoire chat proxy (/app/grimoire/chat/
+    // message), since Playwright's ** glob spans slashes.
     await ctx.route("**/chat/message", (route) => route.abort());
-    await ctx.route("**/chat/session", (route) => route.abort());
+    // Turnstile challenge script: fulfill with the self-solving stub so the
+    // gate admits deterministically instead of loading the real widget.
+    await ctx.route(
+      "https://challenges.cloudflare.com/turnstile/v0/api.js*",
+      (route) =>
+        route.fulfill({
+          contentType: "application/javascript",
+          body: TURNSTILE_STUB,
+        }),
+    );
+    // Session-admission POSTs the stub's solve triggers: fulfill with a
+    // synthetic success (there is no backend behind the mock server to admit
+    // against). The glob matches both the notes-chat gate stub's proxy
+    // (/chat/session) and the real Grimoire chat's proxy (/app/grimoire/
+    // chat/session), since Playwright's ** spans slashes; both proxies want
+    // the identical fulfillment, so one rule covers both. Distinct from the
+    // **/chat/message glob above, so this never touches the SSE endpoints.
+    await ctx.route("**/chat/session", (route) =>
+      route.fulfill({ contentType: "application/json", body: '{"ok":true}' }),
+    );
 
     for (const page of targets.pages) {
       const p = await ctx.newPage();
