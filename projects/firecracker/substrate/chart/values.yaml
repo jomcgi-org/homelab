@@ -204,16 +204,20 @@ workloads:
     requestTimeout: 30s
 
 # The limit must hold the capped peak of every workload's guests plus the
-# daemon. Sized for the load tests, which run one workload at a time: semgrep
-# caps at concurrency 15 * 1536Mi = ~22.5Gi, sandbox at 15 * 512Mi = ~7.5Gi, so
-# the peak is the larger semgrep case (~22.5Gi) plus ~1Gi daemon overhead. A
-# load test assumes the other workloads sit idle (the global one-run-at-a-time
-# guard enforces this). 26Gi covers that peak and leaves node-4 headroom (16c /
-# 62Gi, ~35Gi free). Bursty: request a small floor, let the limit cover the
-# admission-capped peak (the firecracker guests are child processes in this
-# container's cgroup, so they count against this limit, not the request).
-# The per-workload concurrency cap guarantees the cgroup never exceeds it, and
-# oom_score_adj guarantees a guest dies first if it nears (ADR platform/010).
+# daemon. A load test drives ONE workload to its concurrency cap: semgrep
+# 15 * 1536Mi = ~22.5Gi, or sandbox 15 * 512Mi = ~7.5Gi (a global one-run guard
+# in the monolith serializes load tests, so these two never stack). The agent
+# (goose) workload is idle in practice during a load test, and the monolith
+# guard refuses to start a load test while an agent run is active, so the honest
+# peak is semgrep (~22.5Gi) + ~1Gi daemon overhead. 26Gi covers that with margin
+# and keeps the daemon's burst ceiling low, which leaves node-4 headroom (16c /
+# 62Gi, ~35Gi free) for critical tenants (inference, clickhouse) rather than
+# over-reserving for a coexistence that does not happen. The request stays a
+# small floor (2Gi), so this ceiling is only realized during a load test, not
+# reserved. Firecracker guests are child processes in this cgroup, so they count
+# against this limit, not the request; in the rare case an agent run lands
+# mid-test and breaches the cgroup, oom_score_adj makes a guest die first, never
+# the daemon and never a node-critical tenant (ADR platform/010).
 resources:
   requests:
     cpu: 50m
