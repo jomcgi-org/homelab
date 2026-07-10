@@ -69,3 +69,37 @@ class TestToolSchemaSignposts:
         """Agent is configured with a prepare_tools callback."""
         agent = create_agent(base_url="http://fake:8080")
         assert agent._prepare_tools is not None
+
+
+class TestNoReplyTool:
+    def test_no_reply_tool_registered(self):
+        """create_agent() registers 'no_reply' as a callable tool."""
+        agent = create_agent(base_url="http://fake:8080")
+        tool_names = set(agent._function_toolset.tools.keys())
+        assert "no_reply" in tool_names
+
+    def test_no_reply_sets_flag_and_reason(self):
+        """Calling no_reply flags the deps so the bot suppresses the post."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from chat.agent import ChatDeps
+
+        agent = create_agent(base_url="http://fake:8080")
+        fn = agent._function_toolset.tools["no_reply"].function
+        deps = ChatDeps(channel_id="c1", store=None, embed_client=None)
+        assert deps.no_reply_requested is False
+        result = asyncio.run(fn(SimpleNamespace(deps=deps), reason="idle banter"))
+        assert deps.no_reply_requested is True
+        assert deps.no_reply_reason == "idle banter"
+        assert isinstance(result, str)
+
+    def test_no_reply_tolerates_missing_deps(self):
+        """no_reply survives a deps-less run (tool unit tests, agent.run)."""
+        import asyncio
+        from types import SimpleNamespace
+
+        agent = create_agent(base_url="http://fake:8080")
+        fn = agent._function_toolset.tools["no_reply"].function
+        result = asyncio.run(fn(SimpleNamespace(deps=None)))
+        assert isinstance(result, str)
