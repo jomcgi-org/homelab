@@ -112,7 +112,18 @@ def _is_empty_reply(text: str) -> bool:
     """A reply with no real content: blank, whitespace-only, or a bare
     placeholder marker the model emits when it has nothing to say."""
     stripped = text.strip()
-    return not stripped or stripped.lower() in _EMPTY_REPLY_MARKERS
+    if not stripped or stripped.lower() in _EMPTY_REPLY_MARKERS:
+        return True
+    # The same failure in prose form: a bracketed meta-note explaining the
+    # silence ("[No response required - message contains only casual
+    # meme/reaction...]") leaked to the channel and read as a bug
+    # (/improve-ambient episode 190).
+    lowered = stripped.lower()
+    return (
+        stripped.startswith("[")
+        and stripped.endswith("]")
+        and ("no response" in lowered or "no reply" in lowered)
+    )
 
 
 def _truncate_thinking(thinking: str) -> str:
