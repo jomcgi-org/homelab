@@ -10,5 +10,5 @@
 import { redirect } from "@sveltejs/kit";
 
 export function load() {
-  redirect(301, "/app/grimoire/world");
+  throw redirect(301, "/app/grimoire/world");
 }
