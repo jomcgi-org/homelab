@@ -9,20 +9,29 @@ const strahd = {
 };
 
 describe("highlightMentions", () => {
-  it("wraps a plain-text mention with the type-colored span", () => {
+  it("wraps a plain-text mention with a colored, clickable link to its world page", () => {
     expect(
       highlightMentions("<p>Strahd von Zarovich rules.</p>", [strahd]),
     ).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</span> rules.</p>',
+      '<p><a class="gmark" data-type="npc" href="/app/grimoire/world?e=7" style="color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</a> rules.</p>',
     );
   });
 
   it("never touches tag internals: an attribute containing the name is left alone", () => {
-    const html = '<a title="Strahd von Zarovich">Strahd von Zarovich</a>';
+    const html = '<p title="Strahd von Zarovich">Strahd von Zarovich</p>';
     const out = highlightMentions(html, [strahd]);
     expect(out).toBe(
-      '<a title="Strahd von Zarovich"><span class="gmark" style="text-decoration-color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</span></a>',
+      '<p title="Strahd von Zarovich"><a class="gmark" data-type="npc" href="/app/grimoire/world?e=7" style="color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</a></p>',
     );
+  });
+
+  it("does not nest an <a> inside an already-open <a> (e.g. a [[wikilink]]): the mention inside is left unwrapped", () => {
+    // renderMarkdown emits [[wikilinks]] as <a class="wl dead">...</a> when
+    // the title map is empty (both chat call sites pass one). Nesting our
+    // <a class="gmark"> inside that anchor would be invalid HTML.
+    const html = '<a class="wl dead">Strahd von Zarovich</a> rules.';
+    const out = highlightMentions(html, [strahd]);
+    expect(out).toBe(html);
   });
 
   it("matches case-insensitively but preserves the original casing in output", () => {
@@ -30,7 +39,7 @@ describe("highlightMentions", () => {
       strahd,
     ]);
     expect(out).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-npc, currentColor)">STRAHD VON ZAROVICH</span> awoke.</p>',
+      '<p><a class="gmark" data-type="npc" href="/app/grimoire/world?e=7" style="color: var(--grim-type-npc, currentColor)">STRAHD VON ZAROVICH</a> awoke.</p>',
     );
   });
 
@@ -38,7 +47,7 @@ describe("highlightMentions", () => {
     const pair = { id: 9, title: "A & B", kind: "entity", entity_type: "org" };
     const out = highlightMentions("<p>A &amp; B is a guild.</p>", [pair]);
     expect(out).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-org, currentColor)">A &amp; B</span> is a guild.</p>',
+      '<p><a class="gmark" data-type="org" href="/app/grimoire/world?e=9" style="color: var(--grim-type-org, currentColor)">A &amp; B</a> is a guild.</p>',
     );
   });
 
@@ -59,7 +68,7 @@ describe("highlightMentions", () => {
     const html = "<p>K'thriss (the Devourer) stirs.</p>";
     expect(() => highlightMentions(html, [weird])).not.toThrow();
     expect(highlightMentions(html, [weird])).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-npc, currentColor)">K\'thriss (the Devourer)</span> stirs.</p>',
+      '<p><a class="gmark" data-type="npc" href="/app/grimoire/world?e=3" style="color: var(--grim-type-npc, currentColor)">K\'thriss (the Devourer)</a> stirs.</p>',
     );
   });
 
@@ -83,7 +92,7 @@ describe("highlightMentions", () => {
       long,
     ]);
     expect(out).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</span> rules.</p>',
+      '<p><a class="gmark" data-type="npc" href="/app/grimoire/world?e=5" style="color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</a> rules.</p>',
     );
   });
 
@@ -98,7 +107,7 @@ describe("highlightMentions", () => {
       hostile,
     ]);
     expect(out).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-class, currentColor)">Strahd von Zarovich</span> rules.</p>',
+      '<p><a class="gmark" data-type="class" href="/app/grimoire/world?e=6" style="color: var(--grim-type-class, currentColor)">Strahd von Zarovich</a> rules.</p>',
     );
   });
 
@@ -108,7 +117,22 @@ describe("highlightMentions", () => {
       noType,
     ]);
     expect(out).toBe(
-      '<p><span class="gmark" style="text-decoration-color: var(--grim-type-class, currentColor)">Strahd von Zarovich</span> rules.</p>',
+      '<p><a class="gmark" data-type="class" href="/app/grimoire/world?e=8" style="color: var(--grim-type-class, currentColor)">Strahd von Zarovich</a> rules.</p>',
+    );
+  });
+
+  it("URL-encodes the entity id in the href", () => {
+    const weirdId = {
+      id: "a b&c",
+      title: "Strahd von Zarovich",
+      kind: "entity",
+      entity_type: "npc",
+    };
+    const out = highlightMentions("<p>Strahd von Zarovich rules.</p>", [
+      weirdId,
+    ]);
+    expect(out).toBe(
+      '<p><a class="gmark" data-type="npc" href="/app/grimoire/world?e=a%20b%26c" style="color: var(--grim-type-npc, currentColor)">Strahd von Zarovich</a> rules.</p>',
     );
   });
 

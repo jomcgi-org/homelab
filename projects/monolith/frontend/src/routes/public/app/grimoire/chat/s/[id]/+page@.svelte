@@ -28,15 +28,23 @@
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import { forkChatSession } from "$lib/public/grimoire/chat/admission.js";
+  import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
+  import { worldHref } from "$lib/public/grimoire/api.js";
   import "$lib/grimoire/theme.css";
 
   let { data } = $props();
 
   const BOT_LABEL = "THE GRIMOIRE";
+  // Same allow-list mention-highlight.js applies before interpolating
+  // entity_type into a CSS custom-property name: entity_type is
+  // corpus-controlled, and this chip's --chip-color also interpolates it.
+  const TYPE_ALLOWLIST = /^[a-z_]+$/;
 
-  function renderReply(text) {
+  function renderReply(text, touched) {
     // Empty title map: [[wikilinks]] render as inert text (no graph nav here).
-    return renderMarkdown(text ?? "", new Map());
+    // highlightMentions runs on the FRESH renderMarkdown output only (never
+    // on its own return value, per its header contract).
+    return highlightMentions(renderMarkdown(text ?? "", new Map()), touched);
   }
 
   // ── fork this chat ───────────────────────────────────────────────
@@ -112,18 +120,38 @@
           {:else}
             <article class="turn turn-bot">
               <p class="bot-label">{BOT_LABEL}</p>
-              <div class="turn-md">{@html renderReply(m.content)}</div>
-              {#if m.touched && m.touched.length}
-                <!-- The same GROUNDED IN set the live app shows, persisted on
-                     the assistant turn and carried into the snapshot. Static
-                     labels here (read-only view: there is no graph to open). -->
-                <div class="turn-touched">
-                  <span class="turn-touched-label">GROUNDED IN</span>
-                  {#each m.touched as n}
-                    <span class="touched-chip">{n.title || "untitled passage"}</span>
-                  {/each}
-                </div>
-              {/if}
+              <div class="turn-card">
+                <div class="turn-md">{@html renderReply(m.content, m.touched)}</div>
+                {#if m.touched && m.touched.length}
+                  <!-- The same GROUNDED IN set the live app shows, persisted on
+                       the assistant turn and carried into the snapshot.
+                       Entity touches link to the World page, same as the
+                       live app; chunk touches stay plain (no drawer here in
+                       a read-only snapshot). -->
+                  <div class="turn-touched">
+                    <span class="turn-touched-label">GROUNDED IN</span>
+                    {#each m.touched as n}
+                      {#if n.kind === "entity"}
+                        <a
+                          href={worldHref(n.id)}
+                          class="touched-chip touched-chip-entity"
+                          style="--chip-color: var(--grim-type-{TYPE_ALLOWLIST.test(
+                            n.entity_type ?? '',
+                          )
+                            ? n.entity_type
+                            : 'class'}, currentColor)"
+                        >
+                          {n.title || "untitled entity"}
+                        </a>
+                      {:else}
+                        <span class="touched-chip"
+                          >{n.title || "untitled passage"}</span
+                        >
+                      {/if}
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             </article>
           {/if}
         {/each}
@@ -357,12 +385,19 @@
     padding: 2px 8px;
     margin-bottom: 9px;
   }
+  /* The reply card: a near-white surface on the parchment background so the
+     ANSWER text has real contrast, matching the live chat app. */
+  .turn-card {
+    background: var(--grim-surface);
+    border: 1px solid var(--grim-line);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(20, 24, 32, 0.05);
+    padding: 16px 18px;
+  }
   .turn-md {
     font-size: 13px;
     line-height: 1.65;
     min-width: 0;
-    padding-left: 14px;
-    border-left: 2px solid var(--grim-line);
     overflow-wrap: anywhere;
     word-break: break-word;
   }
@@ -442,16 +477,34 @@
     letter-spacing: 0.06em;
     font-family: var(--font-mono);
   }
+  /* Grounded entity mentions (highlightMentions): a visible, clickable link
+     to the entity's World page, matching the live chat app. */
+  .turn-md :global(.gmark) {
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
+    border-radius: 4px;
+    padding: 0.5px 4px;
+    margin: 0 -1px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    transition: background 120ms ease;
+  }
+  .turn-md :global(.gmark:hover),
+  .turn-md :global(.gmark:focus-visible) {
+    background: color-mix(in srgb, currentColor 20%, transparent);
+  }
 
-  /* Grounding chips under a bot turn: same look as the live app's GROUNDED IN
-     row, but static (no graph to open in a read-only snapshot). */
+  /* Grounding chips under a bot turn: quiet footer inside the .turn-card,
+     same look as the live app's GROUNDED IN row. Entity touches link to the
+     World page; chunk touches stay static (no drawer in a read-only
+     snapshot). */
   .turn-touched {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 7px;
-    margin-top: 12px;
-    margin-left: 14px;
+    margin-top: 14px;
     padding-top: 10px;
     border-top: 1px dashed var(--grim-line);
   }
@@ -463,6 +516,9 @@
     color: var(--grim-text-faint);
   }
   .touched-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-family: var(--font-mono);
     font-size: 11px;
     padding: 3px 9px;
@@ -470,10 +526,33 @@
     border: 1px solid var(--grim-line);
     background: var(--grim-surface-2);
     color: var(--grim-text-dim);
+    text-decoration: none;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      color 120ms ease;
+  }
+  .touched-chip-entity {
+    color: var(--chip-color, var(--grim-text-dim));
+    cursor: pointer;
+  }
+  .touched-chip-entity::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--chip-color, currentColor);
+    flex-shrink: 0;
+  }
+  .touched-chip-entity:hover,
+  .touched-chip-entity:focus-visible {
+    color: var(--chip-color, var(--grim-ink));
+    border-color: var(--chip-color, var(--grim-accent));
+    background: color-mix(in srgb, var(--chip-color, var(--grim-accent)) 12%, transparent);
   }
 
   .share-foot {

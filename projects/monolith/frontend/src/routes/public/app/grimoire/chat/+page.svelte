@@ -27,7 +27,7 @@
   import { freshChatState } from "$lib/public/grimoire/chat/chat-state.js";
   import { constellationStore } from "$lib/public/grimoire/constellation-store.js";
   import { highlightMentions } from "$lib/public/grimoire/chat/mention-highlight.js";
-  import { exploreEgo } from "$lib/public/grimoire/api.js";
+  import { exploreEgo, worldHref } from "$lib/public/grimoire/api.js";
   import SourceDrawer from "$lib/public/grimoire/chat/SourceDrawer.svelte";
   import MiniConstellation from "$lib/public/grimoire/MiniConstellation.svelte";
 
@@ -66,6 +66,10 @@
   // highlight set the way the notes chat's GraphView did: activeSource below
   // just tracks whichever single chip is currently open.
   const BOT_LABEL = "THE GRIMOIRE";
+  // Same allow-list mention-highlight.js applies before interpolating
+  // entity_type into a CSS custom-property name: entity_type is
+  // corpus-controlled, and this chip's --chip-color also interpolates it.
+  const TYPE_ALLOWLIST = /^[a-z_]+$/;
 
   // The touched item currently open in the SourceDrawer, or null when closed.
   let activeSource = $state(null);
@@ -375,21 +379,39 @@
           {:else}
             <article class="turn turn-bot">
               <p class="bot-label">{BOT_LABEL}</p>
-              <div class="turn-md">{@html renderReply(m.content, m.touched)}</div>
-              {#if m.touched && m.touched.length}
-                <div class="turn-touched">
-                  <span class="turn-touched-label">GROUNDED IN</span>
-                  {#each m.touched as n}
-                    <button
-                      type="button"
-                      class="touched-chip"
-                      onclick={() => (activeSource = n)}
-                    >
-                      {n.title || "untitled passage"}
-                    </button>
-                  {/each}
+              <div class="turn-card">
+                <div class="turn-md">
+                  {@html renderReply(m.content, m.touched)}
                 </div>
-              {/if}
+                {#if m.touched && m.touched.length}
+                  <div class="turn-touched">
+                    <span class="turn-touched-label">GROUNDED IN</span>
+                    {#each m.touched as n}
+                      {#if n.kind === "entity"}
+                        <a
+                          href={worldHref(n.id)}
+                          class="touched-chip touched-chip-entity"
+                          style="--chip-color: var(--grim-type-{TYPE_ALLOWLIST.test(
+                            n.entity_type ?? '',
+                          )
+                            ? n.entity_type
+                            : 'class'}, currentColor)"
+                        >
+                          {n.title || "untitled entity"}
+                        </a>
+                      {:else}
+                        <button
+                          type="button"
+                          class="touched-chip"
+                          onclick={() => (activeSource = n)}
+                        >
+                          {n.title || "untitled passage"}
+                        </button>
+                      {/if}
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             </article>
           {/if}
         {/each}
@@ -398,10 +420,12 @@
           <article class="turn turn-bot">
             <p class="bot-label">{BOT_LABEL}</p>
             {#if turn.assistant}
-              <div class="turn-md">
-                {@html renderReply(turn.assistant, turn.touched)}<span
-                  class="caret"
-                ></span>
+              <div class="turn-card">
+                <div class="turn-md">
+                  {@html renderReply(turn.assistant, turn.touched)}<span
+                    class="caret"
+                  ></span>
+                </div>
               </div>
             {:else}
               <p class="turn-thinking">
@@ -787,7 +811,7 @@
   .user-bubble {
     background: var(--grim-accent-soft);
     border: 1px solid var(--grim-accent);
-    border-radius: 10px;
+    border-radius: 12px;
     padding: 11px 14px;
     font-size: 13px;
     line-height: 1.55;
@@ -811,12 +835,20 @@
     padding: 2px 8px;
     margin: 0 0 9px;
   }
+  /* The reply card: a near-white surface on the parchment background so the
+     ANSWER text has real contrast, while the GROUNDED IN row (inside, as a
+     muted footer) recedes instead of competing with it. */
+  .turn-card {
+    background: var(--grim-surface);
+    border: 1px solid var(--grim-line);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(20, 24, 32, 0.05);
+    padding: 16px 18px;
+  }
   .turn-md {
     font-size: 13.5px;
     line-height: 1.68;
     min-width: 0;
-    padding-left: 14px;
-    border-left: 2px solid var(--grim-line);
     overflow-wrap: anywhere;
     word-break: break-word;
   }
@@ -896,12 +928,25 @@
     letter-spacing: 0.06em;
     font-family: var(--font-mono);
   }
-  /* Grounded entity mentions (highlightMentions): the color rides in via the
-     inline text-decoration-color the module sets per span. */
+  /* Grounded entity mentions (highlightMentions): a visible, clickable link
+     to the entity's World page. The color rides in via the inline
+     `color` style the module sets per anchor; the pill background and
+     underline both derive from it (currentColor) via color-mix so a new
+     entity type never needs a new rule here. */
   .turn-md :global(.gmark) {
+    font-weight: 600;
     text-decoration: underline;
-    text-decoration-thickness: 2px;
+    text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
+    border-radius: 4px;
+    padding: 0.5px 4px;
+    margin: 0 -1px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    transition: background 120ms ease;
+  }
+  .turn-md :global(.gmark:hover),
+  .turn-md :global(.gmark:focus-visible) {
+    background: color-mix(in srgb, currentColor 20%, transparent);
   }
 
   .caret {
@@ -954,17 +999,19 @@
   }
 
   /* ── grounded badges ─────────────────────────────────────────
-     Clickable: every touched item carries a kind ("chunk" | "entity") plus
-     enough to fetch and deep-link it, so a chip opens the SourceDrawer for
-     that item rather than sitting inert. Styled as a real button (cursor,
-     hover/focus affordance) while keeping the same pill look as before. */
+     Quiet by design: this metadata row lives inside the white .turn-card as
+     a muted footer, so it recedes while the answer text above it pops.
+     Every touched item carries a kind ("chunk" | "entity") plus enough to
+     fetch and deep-link it. Entity chips are real links to the World page
+     (worldHref); their left dot picks up the entity's type color as a quiet
+     visual echo of the inline mention links above. Non-entity (chunk) chips
+     stay buttons that open the SourceDrawer, as before. */
   .turn-touched {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 7px;
-    margin-top: 12px;
-    margin-left: 14px;
+    margin-top: 14px;
     padding-top: 10px;
     border-top: 1px dashed var(--grim-line);
   }
@@ -976,6 +1023,9 @@
     color: var(--grim-text-faint);
   }
   .touched-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-family: var(--font-mono);
     font-size: 11px;
     padding: 3px 9px;
@@ -983,6 +1033,7 @@
     border: 1px solid var(--grim-line);
     background: var(--grim-surface-2);
     color: var(--grim-text-dim);
+    text-decoration: none;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -998,6 +1049,26 @@
     background: var(--grim-accent-soft);
     border-color: var(--grim-accent);
     color: var(--grim-ink);
+  }
+  /* Entity chips: a small dot tinted with the entity's type color, same
+     currentColor-driven idea as .gmark above but a solid dot instead of a
+     pill background, since this row wants to stay quiet. */
+  .touched-chip-entity {
+    color: var(--chip-color, var(--grim-text-dim));
+  }
+  .touched-chip-entity::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--chip-color, currentColor);
+    flex-shrink: 0;
+  }
+  .touched-chip-entity:hover,
+  .touched-chip-entity:focus-visible {
+    color: var(--chip-color, var(--grim-ink));
+    border-color: var(--chip-color, var(--grim-accent));
+    background: color-mix(in srgb, var(--chip-color, var(--grim-accent)) 12%, transparent);
   }
 
   /* ── notice ─────────────────────────────────────────────────── */
