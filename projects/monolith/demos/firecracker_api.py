@@ -493,7 +493,7 @@ async def start_load_test(workload: str) -> dict:
     }
     run_id = await asyncio.to_thread(_insert_load_run, workload, config)
 
-    task = asyncio.create_task(_dispatch_drain(run_id, workload, 120))
+    task = asyncio.create_task(_dispatch_drain(run_id, workload, 60))
     _RUNNING_DRAINS.add(task)
     task.add_done_callback(_RUNNING_DRAINS.discard)
 

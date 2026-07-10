@@ -26,7 +26,7 @@
   let noun = $derived(workload === "sandbox" ? "run" : "scan");
   let nounPlural = $derived(workload === "sandbox" ? "runs" : "scans");
 
-  const RUN_DURATION_S = 120;
+  const RUN_DURATION_S = 60;
   const DAEMON_CONCURRENCY = 6;
   const POLL_MS = 1000;
   const HARD_TIMEOUT_MS = 150_000;
@@ -236,7 +236,7 @@
 <div class="load-test">
   <div class="lt-header">
     <p class="lt-blurb">
-      Fixed 2 minute drain against the fc-invoke daemon at concurrency
+      Fixed 60 second drain against the fc-invoke daemon at concurrency
       {DAEMON_CONCURRENCY}, oversubscribed by the client so the daemon stays
       saturated for the whole run.
     </p>
