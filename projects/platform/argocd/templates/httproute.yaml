@@ -29,4 +29,31 @@ updated to include /app/argocd.
 {{- include "cf-ingress.httproute" $routeParams }}
 ---
 {{- include "cf-ingress.security-policy" (dict "name" "argocd-private") }}
+---
+{{- /*
+GitHub push webhook ingress. GitHub POSTs to
+private.jomcgi.dev/webhooks/github/argocd (a clean, service-agnostic webhook
+namespace); the gateway rewrites that to argocd-server's real endpoint
+/app/argocd/api/webhook. That target is verified live: argocd-server honors
+server.rootpath=/app/argocd server-side, so /app/argocd/api/webhook returns 200
+while the bare /api/webhook 404s.
+
+Deliberately NO cf-ingress.security-policy on this route: GitHub bypasses
+Cloudflare Access at the edge via an IP-allowlist Bypass policy, so its request
+carries no Cf-Access-Jwt-Assertion. A cf-access SecurityPolicy would make the
+Envoy gateway reject the (JWT-less) webhook even though Cloudflare admitted it.
+Access control for this path is the edge IP allowlist; argocd treats the hook as
+a refresh trigger (no webhook secret configured, unsigned hooks are harmless).
+*/}}
+{{- $webhookParams := dict
+  "name" "argocd-github-webhook"
+  "tier" .Values.cfIngress.tier
+  "hostname" .Values.cfIngress.hostname
+  "pathPrefix" "/webhooks/github/argocd"
+  "rewritePrefix" "/app/argocd/api/webhook"
+  "serviceName" .Values.cfIngress.serviceName
+  "servicePort" .Values.cfIngress.servicePort
+  "gateway" .Values.cfIngress.gateway
+}}
+{{- include "cf-ingress.httproute" $webhookParams }}
 {{- end }}
