@@ -304,23 +304,21 @@ def _load_run_rollup(run_id: str) -> dict | None:
                 SELECT
                     count(*) AS total_scans,
                     count(*) FILTER (WHERE status = 'error') AS errors,
-                    -- The headline "latency" is the fc-invoke WALL per scan
+                    -- The headline per-scan time is the fc-invoke WALL
                     -- (restore + guest exec), i.e. client wall minus the time
                     -- spent waiting for a daemon slot. Under a saturating drain
                     -- the raw client wall is dominated by that semaphore queue
-                    -- (clients / throughput), which measures oversubscription,
-                    -- not the daemon. Subtracting queue_wait shows the real
-                    -- per-scan cost; the queue is reported separately below.
+                    -- (clients / throughput), which measures the drain's own
+                    -- oversubscription, not the daemon: the load is artificial,
+                    -- so every non-resource number the page reports is aligned
+                    -- on this execution time. Raw latency_ms / queue_wait_ms
+                    -- stay in demo.load_scan for ad-hoc queries.
                     percentile_cont(0.5) WITHIN GROUP (
                         ORDER BY greatest(latency_ms - coalesce(queue_wait_ms, 0), 0)
                     ) AS latency_p50,
                     percentile_cont(0.95) WITHIN GROUP (
                         ORDER BY greatest(latency_ms - coalesce(queue_wait_ms, 0), 0)
                     ) AS latency_p95,
-                    percentile_cont(0.5) WITHIN GROUP (ORDER BY queue_wait_ms)
-                        AS queue_p50,
-                    percentile_cont(0.95) WITHIN GROUP (ORDER BY queue_wait_ms)
-                        AS queue_p95,
                     avg(cpu_ms) AS cpu_ms_mean,
                     avg(peak_rss_mib) AS peak_rss_mib_mean,
                     extract(epoch FROM (
@@ -371,8 +369,6 @@ def _load_run_rollup(run_id: str) -> dict | None:
         "in_flight_estimate": in_flight,
         "latency_p50": float(agg.latency_p50) if agg.latency_p50 is not None else None,
         "latency_p95": float(agg.latency_p95) if agg.latency_p95 is not None else None,
-        "queue_p50": float(agg.queue_p50) if agg.queue_p50 is not None else None,
-        "queue_p95": float(agg.queue_p95) if agg.queue_p95 is not None else None,
         "per_lang_counts": {r.name: r.c for r in per_lang},
         "cpu_ms_mean": float(agg.cpu_ms_mean) if agg.cpu_ms_mean is not None else None,
         "peak_rss_mib_mean": (
@@ -395,7 +391,11 @@ def _load_scans_page(run_id: str, offset: int, limit: int) -> dict:
         rows = session.execute(
             text(
                 """
-                SELECT id, seq, name, status, latency_ms, queue_wait_ms,
+                SELECT id, seq, name, status,
+                       -- fc-invoke execution wall: client wall minus the drain's
+                       -- own oversubscription queue (see _load_run_rollup).
+                       greatest(latency_ms - coalesce(queue_wait_ms, 0), 0)
+                           AS scan_ms,
                        cpu_ms, peak_rss_mib, result_count
                 FROM demo.load_scan
                 WHERE run_id = :id
@@ -415,8 +415,7 @@ def _load_scans_page(run_id: str, offset: int, limit: int) -> dict:
                 "seq": r.seq,
                 "name": r.name,
                 "status": r.status,
-                "latency_ms": r.latency_ms,
-                "queue_wait_ms": r.queue_wait_ms,
+                "scan_ms": r.scan_ms,
                 "cpu_ms": r.cpu_ms,
                 "peak_rss_mib": r.peak_rss_mib,
                 "result_count": r.result_count,
@@ -432,7 +431,9 @@ def _load_scan_detail(run_id: str, scan_id: int) -> dict | None:
         r = session.execute(
             text(
                 """
-                SELECT id, seq, name, status, latency_ms, queue_wait_ms,
+                SELECT id, seq, name, status,
+                       greatest(latency_ms - coalesce(queue_wait_ms, 0), 0)
+                           AS scan_ms,
                        cpu_ms, peak_rss_mib, result_count, result, error
                 FROM demo.load_scan
                 WHERE run_id = :id AND id = :scan_id
@@ -447,8 +448,7 @@ def _load_scan_detail(run_id: str, scan_id: int) -> dict | None:
         "seq": r.seq,
         "name": r.name,
         "status": r.status,
-        "latency_ms": r.latency_ms,
-        "queue_wait_ms": r.queue_wait_ms,
+        "scan_ms": r.scan_ms,
         "cpu_ms": r.cpu_ms,
         "peak_rss_mib": r.peak_rss_mib,
         "result_count": r.result_count,
