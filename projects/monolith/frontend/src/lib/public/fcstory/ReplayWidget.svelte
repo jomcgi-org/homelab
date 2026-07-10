@@ -132,6 +132,12 @@
     Every number on this page is a real measurement exported by the daemon's
     own tracing, recorded and baked in at build time. Warm restores: {restores.length}
     consecutive live runs.
+    <br />
+    source:
+    <a
+      href="https://github.com/jomcgi/homelab/tree/main/projects/firecracker"
+      >projects/firecracker</a
+    >
   </div>
 </div>
 
@@ -272,5 +278,8 @@
     font-size: 13px;
     color: var(--fc-muted);
     line-height: 1.7;
+  }
+  .provenance a {
+    color: var(--fc-ember-deep);
   }
 </style>

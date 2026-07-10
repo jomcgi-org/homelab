@@ -53,7 +53,8 @@
           to first model call), reverse-proxy over vsock into the microVM. The guest never holds
           a real secret; an egress proxy swaps placeholder tokens for credentials at the network
           hop. Coding agents and Semgrep scans run as peers on the same substrate.
-          <a class="more" href="/docs/agents">how &rarr;</a>
+          <a class="more" href="/app/firecracker">how &rarr;</a>
+          <a class="more" href="/docs/agents">docs &rarr;</a>
         </p>
       </div>
       <div class="callout">
