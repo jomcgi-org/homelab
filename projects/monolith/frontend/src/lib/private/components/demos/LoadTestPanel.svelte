@@ -319,7 +319,10 @@
           <div class="progress-fill" style={`width: ${progressPct}%;`}></div>
         </div>
         <div class="progress-label">
-          {fmt(rollup.elapsed_s, 0)}s / {RUN_DURATION_S}s
+          <!-- elapsed_s is the run row's wall clock (finished_at - started_at),
+               which includes the drain grace + finalize, so it can exceed the
+               configured duration; cap the display like the bar above. -->
+          {fmt(Math.min(rollup.elapsed_s ?? 0, RUN_DURATION_S), 0)}s / {RUN_DURATION_S}s
           {#if isRunning}<span class="pulse-dot" aria-hidden="true"></span>{/if}
         </div>
 
