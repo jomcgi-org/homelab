@@ -102,6 +102,10 @@ func (c *cachingReviewer) Review(ctx context.Context, token string) (string, err
 	if username, ok := c.lookup(key, c.now()); ok {
 		return username, nil
 	}
+	// The shared inner call runs under the ctx of whichever caller won the
+	// singleflight slot; if that caller cancels mid-flight, co-flight waiters see
+	// its cancellation as an error. That error is not cached and maps to a
+	// retryable 401, and auth calls are short, so the coupling is benign here.
 	v, err, _ := c.group.Do(key, func() (any, error) {
 		// A concurrent caller may have populated the cache while this call queued
 		// on the singleflight lock; re-check before hitting the API server.
