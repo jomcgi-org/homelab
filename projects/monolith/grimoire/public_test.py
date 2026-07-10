@@ -332,6 +332,18 @@ class TestGetEntityPublic:
         seed_corpus(session)
         assert public.get_entity_public(session, "nope") is None
 
+    def test_image_chunk_id_from_mentioned_image_chunk(self, session):
+        """Aboleth is mentioned on c1, which carries an image_ref."""
+        seed = seed_corpus(session)
+        entity = public.get_entity_public(session, "e-aboleth")
+        assert entity["image_chunk_id"] == seed.c1.id
+
+    def test_image_chunk_id_none_without_image_mention(self, session):
+        """Fireball is only mentioned on c2, a text chunk."""
+        seed_corpus(session)
+        entity = public.get_entity_public(session, "e-fireball")
+        assert entity["image_chunk_id"] is None
+
 
 class TestListRelationshipsPublic:
     def test_both_directions_no_dimming(self, session):

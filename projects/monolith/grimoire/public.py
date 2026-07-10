@@ -68,6 +68,28 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
     return name, ident
 
 
+def focus_entity_image_chunk_id(session: Session, entity_id: str) -> str | None:
+    """Earliest chunk (by seq) that mentions ``entity_id`` and carries an
+    image, for the entity detail card's illustration. None if the entity has
+    no mention on an image chunk.
+
+    One extra query per call, deliberately not batched: this is only ever
+    called for a single focused entity (ego_subgraph's focus node, the entity
+    detail payload), never for a list of neighbors, so the N+1 concern that
+    drives the batched ``entity_cards`` helper does not apply here.
+    """
+    return session.exec(
+        select(KnowledgeChunk.id)
+        .join(ChunkEntityMention, ChunkEntityMention.chunk_id == KnowledgeChunk.id)
+        .where(
+            ChunkEntityMention.entity_id == entity_id,
+            KnowledgeChunk.image_ref.is_not(None),
+        )
+        .order_by(KnowledgeChunk.seq, KnowledgeChunk.chunk_ref)
+        .limit(1)
+    ).first()
+
+
 def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
     """One chunk with full content, image URL, seq neighbours, and ALL
     on-page entity mentions, unprojected (no grants). Mirrors
@@ -339,6 +361,12 @@ def get_entity_public(session: Session, entity_id: str) -> dict[str, Any] | None
     Reuses visibility._flatten_detail so the typed-column flattening logic
     (getattr over SQLAlchemy column introspection, not model_dump, to survive
     post-commit attribute expiry) lives in exactly one place.
+
+    ``image_chunk_id`` is the earliest image-bearing chunk that mentions this
+    entity (see focus_entity_image_chunk_id), for the detail card's
+    illustration; null if the entity has no image mention. This is computed
+    only for the single focused entity here, never for a list, so it stays a
+    one-extra-query cost per detail fetch.
     """
     entity = session.get(Entity, entity_id)
     # A campaign-private entity (is_global false) is not public: treat it as
@@ -348,7 +376,11 @@ def get_entity_public(session: Session, entity_id: str) -> dict[str, Any] | None
     detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
     detail = session.get(detail_model, entity_id) if detail_model else None
     spine = {field: getattr(entity, field) for field in _PUBLIC_SPINE_FIELDS}
-    return {**spine, **_flatten_detail(detail)}
+    return {
+        **spine,
+        **_flatten_detail(detail),
+        "image_chunk_id": focus_entity_image_chunk_id(session, entity_id),
+    }
 
 
 def list_relationships_public(session: Session, entity_id: str) -> list[dict[str, Any]]:
