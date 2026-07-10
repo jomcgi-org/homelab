@@ -335,12 +335,16 @@
             >
           </div>
           <div class="stat">
-            <span class="stat-label">latency p50</span>
+            <span class="stat-label">{noun} time p50</span>
             <span class="stat-value">{fmt(rollup.latency_p50, 0)}ms</span>
           </div>
           <div class="stat">
-            <span class="stat-label">latency p95</span>
+            <span class="stat-label">{noun} time p95</span>
             <span class="stat-value">{fmt(rollup.latency_p95, 0)}ms</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">queue wait p50</span>
+            <span class="stat-value">{fmt(rollup.queue_p50, 0)}ms</span>
           </div>
           <div class="stat">
             <span class="stat-label">mean cpu</span>
@@ -422,7 +426,7 @@
             <span class="section-title">latency + per-{noun} resources</span>
             <div class="stat-grid">
               <div class="stat">
-                <span class="stat-label">latency p50/p95/max</span>
+                <span class="stat-label">{noun} time p50/p95/max</span>
                 <span class="stat-value"
                   >{fmt(s.latency_ms?.p50, 0)} / {fmt(s.latency_ms?.p95, 0)} / {fmt(s.latency_ms?.max, 0)}ms</span
                 >
